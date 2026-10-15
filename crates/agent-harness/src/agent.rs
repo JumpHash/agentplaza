@@ -788,9 +788,12 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                             .profile
                             .as_ref()
                             .map_or_else(Vec::new, |profile| profile.tools.clone());
+                        let protocol = self.profile.as_ref().map_or(1, |profile| {
+                            crate::acp::run::protocol_offer(&profile.engine_transport)
+                        });
                         self.run_local(move || {
                             let link = HubLink::new(shared, work, call, &cancel, tools);
-                            crate::acp::run::run(workspace, input, &link)
+                            crate::acp::run::run(workspace, input, &link, protocol)
                         })?
                     }
                     None => self.run_local(move || run_guest_tool(workspace, name, input))?,

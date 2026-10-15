@@ -16,6 +16,12 @@
 //! A top-level `"modes"` value is what `session/new` offers (`{"availableModes": [...]}`).
 //! `session/resume`, `session/set_mode` and `session/set_config_option` are answered `{}`.
 //!
+//! With `"protocol": 2` in the script and a client that offers 2 in `initialize`, the agent speaks the ACP v2
+//! draft: `initialize` is answered in v2's shape, the updates and the permission steps are sent as written
+//! (in v2's shapes, so they are not checked against the v1 types), and `session/prompt` is answered
+//! `{"messageId"}` at once. The turn plays on in the background and ends with a `state_update` idle that
+//! carries its stop reason. Any other client gets v1.
+//!
 //! The session id is always `fake-1`. Every answer the client gives to one of the agent's requests is
 //! written to `APZ_ACP_FAKE_LOG` (when set) as a JSON array, rewritten after each answer, so a test can
 //! check what the client replied.
@@ -26,7 +32,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -69,15 +75,20 @@ fn main() {
         cancelled: AtomicBool::new(false),
         log_path: env::var_os("APZ_ACP_FAKE_LOG").map(PathBuf::from),
         log: Mutex::new(Vec::new()),
+        v2_script: script.get("protocol").and_then(Value::as_u64) == Some(2),
+        v2: AtomicBool::new(false),
+        peer: OnceLock::new(),
     });
     let for_requests = Arc::clone(&agent);
     let for_notes = Arc::clone(&agent);
-    let peer = Peer::new(
+    let peer = Arc::new(Peer::new(
         io::stdin(),
         io::stdout(),
         move |peer, method, params| for_requests.request(peer, method, params),
         move |_peer, method, params| for_notes.notification(method, &params),
-    );
+    ));
+    // A v2 turn plays on in the background, so it needs the connection after its request is answered.
+    let _ = agent.peer.set(Arc::clone(&peer));
     // The stdin stream ends when the client goes away; the connection closes with it.
     while !peer.is_closed() {
         thread::sleep(Duration::from_millis(10));
@@ -96,17 +107,38 @@ struct Agent {
     cancelled: AtomicBool,
     log_path: Option<PathBuf>,
     log: Mutex<Vec<Value>>,
+    /// The script speaks v2 (`"protocol": 2`).
+    v2_script: bool,
+    /// The client offered v2 and this connection speaks it.
+    v2: AtomicBool,
+    /// The connection, for a v2 turn that plays after its answer.
+    peer: OnceLock<Arc<Peer>>,
 }
 
 impl Agent {
-    fn request(&self, peer: &Peer, method: &str, _params: Value) -> Result<Value, types::Error> {
+    fn request(
+        self: &Arc<Self>,
+        peer: &Peer,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, types::Error> {
         let names = &AGENT_METHOD_NAMES;
         if method == names.initialize {
-            Ok(json!({
-                "protocolVersion": 1,
-                "agentCapabilities": {"loadSession": true},
-                "authMethods": [],
-            }))
+            if self.v2_script && params["protocolVersion"] == 2 {
+                self.v2.store(true, Ordering::SeqCst);
+                Ok(json!({
+                    "protocolVersion": 2,
+                    "info": {"name": "fake-agent", "version": "0.0.0"},
+                    "capabilities": {"session": {"prompt": {}, "mcp": {"stdio": {}}}},
+                    "authMethods": [],
+                }))
+            } else {
+                Ok(json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": {"loadSession": true},
+                    "authMethods": [],
+                }))
+            }
         } else if method == names.session_new {
             Ok(match &self.modes {
                 Some(modes) => json!({"sessionId": SESSION_ID, "modes": modes}),
@@ -131,10 +163,47 @@ impl Agent {
         }
     }
 
-    fn prompt(&self, peer: &Peer) -> Result<Value, types::Error> {
+    /// One prompt. A v1 turn plays before its answer. A v2 turn is answered at once with its message id
+    /// and plays on in the background.
+    fn prompt(self: &Arc<Self>, peer: &Peer) -> Result<Value, types::Error> {
+        let turn = self.begin_turn();
+        if self.v2.load(Ordering::SeqCst) {
+            let agent = Arc::clone(self);
+            thread::spawn(move || agent.end_v2(&turn));
+            return Ok(json!({"messageId": "fake-message"}));
+        }
+        self.play(peer, &turn)
+    }
+
+    /// Counts the prompt and clears a cancel left by the last one. The turn is the script's next one, and
+    /// the last one once the script runs out.
+    fn begin_turn(&self) -> Value {
         let number = self.prompts.fetch_add(1, Ordering::SeqCst);
         self.cancelled.store(false, Ordering::SeqCst);
-        let turn = &self.turns[number.min(self.turns.len() - 1)];
+        self.turns[number.min(self.turns.len() - 1)].clone()
+    }
+
+    /// The end of a v2 turn: its steps, then the idle update that carries the stop reason.
+    fn end_v2(&self, turn: &Value) {
+        let Some(peer) = self.peer.get() else {
+            return;
+        };
+        let Ok(reply) = self.play(peer, turn) else {
+            return;
+        };
+        let update = json!({
+            "sessionUpdate": "state_update",
+            "state": "idle",
+            "stopReason": reply["stopReason"],
+        });
+        let _ = peer.notify(
+            CLIENT_METHOD_NAMES.session_update,
+            json!({"sessionId": SESSION_ID, "update": update}),
+        );
+    }
+
+    /// Plays a turn's steps and answers its stop reason: `cancelled` when a cancel came first.
+    fn play(&self, peer: &Peer, turn: &Value) -> Result<Value, types::Error> {
         let stop_reason = turn
             .get("stopReason")
             .cloned()
@@ -172,15 +241,20 @@ impl Agent {
         let names = &CLIENT_METHOD_NAMES;
         if let Some(update) = step.get("update") {
             // Checked here so that a typo in a script fails the turn instead of being dropped by the client.
-            serde_json::from_value::<SessionUpdate>(update.clone())
-                .map_err(|err| invalid_step(index, &err.to_string()))?;
+            // A v2 script's updates are v2's, which the v1 types do not describe.
+            if !self.v2.load(Ordering::SeqCst) {
+                serde_json::from_value::<SessionUpdate>(update.clone())
+                    .map_err(|err| invalid_step(index, &err.to_string()))?;
+            }
             let params = json!({"sessionId": SESSION_ID, "update": update});
             peer.notify(names.session_update, params)
                 .map_err(|err| transport(&err))?;
         } else if let Some(params) = step.get("permission") {
             let params = with_session(params.clone());
-            serde_json::from_value::<RequestPermissionRequest>(params.clone())
-                .map_err(|err| invalid_step(index, &err.to_string()))?;
+            if !self.v2.load(Ordering::SeqCst) {
+                serde_json::from_value::<RequestPermissionRequest>(params.clone())
+                    .map_err(|err| invalid_step(index, &err.to_string()))?;
+            }
             let answer = peer.call(
                 names.session_request_permission,
                 params,

@@ -42,7 +42,12 @@ const CACHE_DIR: &str = "engine-cache";
 const ENGINES_DIR: &str = "/workspace/.engines";
 
 /// Runs one `code_engine` call as an ACP prompt turn and returns its summary for the model.
-pub fn run(workspace: &Workspace, input: &Value, link: &dyn EngineLink) -> Result<String, String> {
+pub fn run(
+    workspace: &Workspace,
+    input: &Value,
+    link: &dyn EngineLink,
+    protocol: u16,
+) -> Result<String, String> {
     let request = Request::parse(workspace, input)?;
     let entry = request.entry;
     install(workspace, entry)?;
@@ -58,6 +63,7 @@ pub fn run(workspace: &Workspace, input: &Value, link: &dyn EngineLink) -> Resul
         cwd: request.cwd.clone(),
         argv: argv(entry, env),
         model,
+        protocol,
         mode: request.mode.clone(),
         resume: request.resume.as_ref().map(|session| session.id.clone()),
         context: request
@@ -153,6 +159,12 @@ struct Session {
     last_used: u64,
     /// The end of the last turn's message, at most [`STORED_SUMMARY_BYTES`].
     summary: String,
+}
+
+/// The ACP protocol version the harness offers an engine of a profile: 2 when the owner turned v2 on
+/// (`engine_transport` `acp2`), else 1. The agent loop takes `acp2` as ACP, like the empty transport.
+pub fn protocol_offer(engine_transport: &str) -> u16 {
+    if engine_transport == "acp2" { 2 } else { 1 }
 }
 
 /// The program the ACP session starts: `/usr/bin/env` with the engine's pairs, the installed
@@ -735,7 +747,7 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(
-                run(&workspace, &input, &NoLink).expect_err("a refused call"),
+                run(&workspace, &input, &NoLink, 1).expect_err("a refused call"),
                 expected
             );
         }
@@ -816,6 +828,13 @@ mod tests {
         assert_eq!(find_binary(&dir, "goose"), Some(nested.clone()));
         assert_eq!(find_binary(&dir, "bin/goose"), Some(nested));
         assert_eq!(find_binary(&dir, "missing"), None);
+    }
+
+    #[test]
+    fn the_v2_offer_is_made_only_to_the_acp2_transport() {
+        assert_eq!(protocol_offer("acp2"), 2);
+        assert_eq!(protocol_offer(""), 1);
+        assert_eq!(protocol_offer("headless"), 1);
     }
 
     #[test]

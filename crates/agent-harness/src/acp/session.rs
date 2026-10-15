@@ -17,7 +17,17 @@
 //! A cancel (the link's `cancelled()`) or the deadline sends `session/cancel`; open permission
 //! requests are answered `cancelled`; after [`CANCEL_GRACE`] the process group is killed. The process
 //! group is always killed when the session ends.
+//!
+//! On protocol version 2 (offered when the profile's `engine_transport` is `acp2`, and answered so by the
+//! engine) the handshake and the messages are translated by `apz_acp::compat`: the updates pass through
+//! `update_to_v1` and the [`V2Updates`] state before the stream sees them, the turn ends on the idle
+//! `state_update` (the prompt's own answer is only the message id), and permission requests and answers
+//! are translated too. v2 has no client `fs` and `terminal` methods: the engine does its own file and
+//! command work, after asking permission through the hub's gate. The client methods' extra checks (the
+//! path label, the checkpoint before a write, the terminals) do not see that work, so v2 stays behind the
+//! owner's `acp_v2` setting.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
@@ -27,6 +37,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use apz_acp::compat::{
+    initialize_request_to_v2, initialize_response_to_v1, permission_request_to_v1,
+    permission_response_to_v2, update_to_v1,
+};
 use apz_acp::rpc::{self, Peer};
 use apz_acp::types::{self as types, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
@@ -75,6 +89,9 @@ pub struct Options<'w> {
     pub context: Option<String>,
     /// When the turn must be over; then it is cancelled.
     pub deadline: Instant,
+    /// The ACP protocol version offered in `initialize`: 2 when the owner turned v2 on for this engine,
+    /// else 1. An engine that answers 1 gets the v1 session whatever is offered.
+    pub protocol: u16,
 }
 
 /// How one prompt turn went.
@@ -185,6 +202,8 @@ struct Ctx<'a> {
     deadline: Instant,
     /// The checkpoint of this turn, taken before its first write.
     checkpoint: Mutex<Option<String>>,
+    /// The engine speaks v2: its permission requests and answers are in v2's shape.
+    v2: bool,
 }
 
 impl Ctx<'_> {
@@ -192,9 +211,20 @@ impl Ctx<'_> {
     fn answer(&self, method: &str, params: &Value) -> Result<Value, types::Error> {
         let names = &CLIENT_METHOD_NAMES;
         if method == names.session_request_permission {
-            let (name, input) = gate::permission_check(self.entry.id, params);
+            // The gate reads the v1 request; a v2 engine's answer goes back in v2's shape.
+            let request = if self.v2 {
+                permission_request_to_v1(params)
+            } else {
+                params.clone()
+            };
+            let (name, input) = gate::permission_check(self.entry.id, &request);
             let verdict = self.link.decide(&name, &input, self.deadline);
-            Ok(gate::permission_answer(params, &verdict))
+            let answer = gate::permission_answer(&request, &verdict);
+            Ok(if self.v2 {
+                permission_response_to_v2(&answer)
+            } else {
+                answer
+            })
         } else if method == names.fs_read_text_file {
             let label = self.path_label(params)?;
             self.check(method, params, Some(&label))?;
@@ -321,27 +351,42 @@ fn run_turn(
     let names = &AGENT_METHOD_NAMES;
     let cwd = options.cwd.to_string_lossy().into_owned();
 
-    let init = peer
-        .call(
-            names.initialize,
-            json!({
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": true, "writeTextFile": true},
-                    "terminal": true,
-                },
-                "clientInfo": {"name": "agentplaza", "version": env!("CARGO_PKG_VERSION")},
-            }),
-            START_TIMEOUT,
-        )
-        .map_err(|err| rpc_failure("initialize", err))?;
-    if init.get("protocolVersion").and_then(Value::as_u64) != Some(1) {
-        return Err(format!(
-            "the {} engine speaks ACP protocol version {}, the harness speaks 1",
-            entry.id,
-            init.get("protocolVersion").unwrap_or(&Value::Null)
-        ));
+    let mut request = json!({
+        "protocolVersion": 1,
+        "clientCapabilities": {
+            "fs": {"readTextFile": true, "writeTextFile": true},
+            "terminal": true,
+        },
+        "clientInfo": {"name": "agentplaza", "version": env!("CARGO_PKG_VERSION")},
+    });
+    // The v2 offer is the same request in v2's shape. The v1 client fields ride along, so an engine that
+    // answers 1 still gets the client methods (and their checks) rather than a session without them.
+    if options.protocol == 2 {
+        let v1 = request.clone();
+        request = initialize_request_to_v2(&v1);
+        request["clientCapabilities"] = v1["clientCapabilities"].clone();
+        request["clientInfo"] = v1["clientInfo"].clone();
     }
+    let init = peer
+        .call(names.initialize, request, START_TIMEOUT)
+        .map_err(|err| rpc_failure("initialize", err))?;
+    let reported = init.get("protocolVersion").unwrap_or(&Value::Null);
+    let v2 = match reported.as_u64() {
+        Some(1) => false,
+        Some(2) if options.protocol == 2 => true,
+        _ => {
+            let speaks = if options.protocol == 2 { "1 or 2" } else { "1" };
+            return Err(format!(
+                "the {} engine speaks ACP protocol version {reported}, the harness speaks {speaks}",
+                entry.id
+            ));
+        }
+    };
+    let init = if v2 {
+        initialize_response_to_v1(&init)
+    } else {
+        init
+    };
     let caps = init
         .get("agentCapabilities")
         .cloned()
@@ -433,6 +478,7 @@ fn run_turn(
         terminals: &terminals,
         deadline: options.deadline,
         checkpoint: Mutex::new(None),
+        v2,
     };
     let mut stream = Stream::new(link, entry.id, &session);
     let prompt_params = json!({"sessionId": session, "prompt": blocks});
@@ -449,6 +495,9 @@ fn run_turn(
         let mut cancel_at: Option<Instant> = None;
         let mut killed = false;
         let mut finished: Option<Result<Value, rpc::Error>> = None;
+        // A v2 turn ends on its idle update, which carries the stop reason.
+        let mut turn_end: Option<String> = None;
+        let mut translator = V2Updates::default();
         loop {
             let now = Instant::now();
             if cancel_at.is_none() && (link.cancelled() || now >= options.deadline) {
@@ -463,7 +512,21 @@ fn run_turn(
                 break;
             }
             match events.recv_timeout(TICK) {
-                Ok(Event::Update(update)) => stream.absorb(update),
+                Ok(Event::Update(update)) => {
+                    let updates = if v2 {
+                        translator.translate(&update)
+                    } else {
+                        vec![update]
+                    };
+                    for update in updates {
+                        if update["sessionUpdate"] == "_apz_turn_end" {
+                            let stop = update["stopReason"].as_str().unwrap_or("end_turn");
+                            turn_end = Some(stop.to_string());
+                        } else {
+                            stream.absorb(update);
+                        }
+                    }
+                }
                 Ok(Event::Request {
                     method,
                     params,
@@ -474,12 +537,17 @@ fn run_turn(
                         let _ = reply.send(ctx.answer(&method, &params));
                     });
                 }
+                // A v2 prompt is answered at once with its message id; the turn is still running.
+                Ok(Event::Done(Ok(_))) if v2 => {}
                 Ok(Event::Done(answer)) => {
                     finished = Some(answer);
                     break;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if turn_end.is_some() {
+                break;
             }
             if stream.due(Instant::now()) {
                 stream.flush();
@@ -489,6 +557,9 @@ fn run_turn(
         // A terminal's `wait_for_exit` does not see the deadline, so the commands end here, or the
         // workers that wait for them would hold the scope open.
         terminals.release_all();
+        if let Some(stop) = turn_end {
+            return Ok(stop);
+        }
         match finished {
             Some(Ok(reply)) => reply
                 .get("stopReason")
@@ -515,6 +586,58 @@ fn run_turn(
         checkpoint,
         modes,
     })
+}
+
+/// The state the v2 updates are translated with. `update_to_v1` is stateless, so this keeps what the
+/// turn needs between updates.
+#[derive(Default)]
+struct V2Updates {
+    /// The tool calls whose first update has gone out, as their `tool_call`.
+    started: HashSet<String>,
+    /// The content each tool call has gathered. v1 replaces a call's content on each update, while v2
+    /// streams it in chunks; terminal output is streamed the same way.
+    content: HashMap<String, Vec<Value>>,
+}
+
+impl V2Updates {
+    /// The v1 updates one v2 update becomes, in the order the stream sees them. The first update of a tool
+    /// call is its `tool_call`; the output of a terminal belongs to the synthetic tool call `term-<id>`.
+    fn translate(&mut self, update: &Value) -> Vec<Value> {
+        let kind = update["sessionUpdate"].as_str().unwrap_or_default();
+        let terminal = matches!(kind, "terminal_output_chunk" | "terminal_update");
+        let streamed = terminal || kind == "tool_call_content_chunk";
+        let mut out = Vec::new();
+        for mut item in update_to_v1(update) {
+            if item["sessionUpdate"] != "tool_call_update" {
+                out.push(item);
+                continue;
+            }
+            let Some(raw) = item["toolCallId"].as_str() else {
+                out.push(item);
+                continue;
+            };
+            let id = if terminal {
+                format!("term-{raw}")
+            } else {
+                raw.to_string()
+            };
+            if streamed {
+                let content = self.content.entry(id.clone()).or_default();
+                content.extend(item["content"].as_array().cloned().unwrap_or_default());
+                item["content"] = json!(content);
+            }
+            if self.started.insert(id.clone()) {
+                item["sessionUpdate"] = json!("tool_call");
+                if terminal {
+                    item["title"] = json!("terminal");
+                    item["kind"] = json!("execute");
+                }
+            }
+            item["toolCallId"] = json!(id);
+            out.push(item);
+        }
+        out
+    }
 }
 
 /// Drops the updates and answers the requests queued so far; a request that arrives before the turn
@@ -667,6 +790,7 @@ mod tests {
             resume: None,
             context: None,
             deadline: Instant::now() + Duration::from_secs(20),
+            protocol: 1,
         }
     }
 
@@ -907,5 +1031,136 @@ mod tests {
 
         assert_eq!(outcome.commands.len(), 1);
         assert!(read_log(&log)[0]["answer"]["result"]["terminalId"].is_string());
+    }
+
+    #[test]
+    fn a_v2_turn_streams_its_text_and_tool_calls_and_ends_on_the_idle_state() {
+        let dir = scratch("v2-turn");
+        // The fake answers v2 here: the updates are v2's, and the turn ends on its idle update.
+        let script = write_script(
+            &dir,
+            &json!({
+                "protocol": 2,
+                "steps": [
+                    {"update": {"sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": {"type": "text", "text": "hello "}}},
+                    {"update": {"sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": {"type": "text", "text": "world"}}},
+                    {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "title": "edit a.txt", "kind": "edit", "status": "in_progress"}},
+                    {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"}},
+                ],
+                "stopReason": "end_turn",
+            }),
+        );
+        let workspace = Workspace::at(&dir);
+        let link = TestLink::new(Verdict::Allow, None);
+        let mut options = options(&workspace, &dir, argv(&script));
+        options.protocol = 2;
+        let started = Instant::now();
+
+        let outcome = prompt_turn(&options, "hello", &link).expect("the turn runs");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.turn.message, "hello world");
+        assert_eq!(outcome.turn.tool_calls.len(), 1);
+        assert_eq!(outcome.turn.tool_calls[0].id, "t1");
+        assert_eq!(outcome.turn.tool_calls[0].status, "completed");
+        // Ended by the idle update, not by the deadline and its cancel.
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn v2_terminal_output_belongs_to_a_synthetic_tool_call_and_the_turn_end_is_the_marker() {
+        let mut translator = V2Updates::default();
+        let first = translator.translate(&json!({
+            "sessionUpdate": "terminal_output_chunk",
+            "terminalId": "t9",
+            "data": "a",
+        }));
+        assert_eq!(first[0]["sessionUpdate"], "tool_call");
+        assert_eq!(first[0]["toolCallId"], "term-t9");
+        assert_eq!(first[0]["content"].as_array().map(Vec::len), Some(1));
+
+        // v1 replaces a call's content on each update, so the output gathered so far goes out again.
+        let next = translator.translate(&json!({
+            "sessionUpdate": "terminal_output_chunk",
+            "terminalId": "t9",
+            "data": "b",
+        }));
+        assert_eq!(next[0]["sessionUpdate"], "tool_call_update");
+        assert_eq!(next[0]["content"].as_array().map(Vec::len), Some(2));
+
+        let end = translator.translate(&json!({
+            "sessionUpdate": "state_update",
+            "state": "idle",
+            "stopReason": "end_turn",
+        }));
+        assert_eq!(end[0]["sessionUpdate"], "_apz_turn_end");
+        assert_eq!(end[0]["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn a_v2_permission_request_round_trips_through_the_gate() {
+        let dir = scratch("v2-permission");
+        let log = dir.join("log.json");
+        let script = write_script(
+            &dir,
+            &json!({
+                "protocol": 2,
+                "steps": [{"permission": {
+                    "title": "edit a.txt",
+                    "subject": {"type": "tool_call", "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"}},
+                    "options": [
+                        {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                        {"optionId": "no", "name": "Reject", "kind": "reject_once"},
+                    ],
+                }}],
+                "stopReason": "end_turn",
+            }),
+        );
+        let workspace = Workspace::at(&dir);
+        let link = TestLink::new(Verdict::Deny("not today".to_string()), None);
+        let mut options = options(&workspace, &dir, argv_logged(&script, &log));
+        options.protocol = 2;
+
+        let outcome = prompt_turn(&options, "hello", &link).expect("the turn runs");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        let decisions = lock(&link.decisions).clone();
+        assert_eq!(decisions[0].0, "engine.edit");
+        // The engine gets its answer in v2's shape: the outcome, under the same key.
+        let answer = read_log(&log)[0]["answer"]["result"].clone();
+        assert_eq!(answer["outcome"]["optionId"], "no");
+    }
+
+    #[test]
+    fn an_offer_of_version_2_to_a_version_1_engine_falls_back_to_v1() {
+        let dir = scratch("v2-fallback");
+        let log = dir.join("log.json");
+        let script = write_script(
+            &dir,
+            &json!({
+                "steps": [
+                    {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}},
+                    {"permission": {
+                        "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"},
+                        "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}],
+                    }},
+                ],
+                "stopReason": "end_turn",
+            }),
+        );
+        let workspace = Workspace::at(&dir);
+        let link = TestLink::new(Verdict::Allow, None);
+        let mut options = options(&workspace, &dir, argv_logged(&script, &log));
+        options.protocol = 2;
+
+        let outcome = prompt_turn(&options, "hello", &link).expect("the turn runs");
+
+        assert_eq!(outcome.stop_reason, "end_turn");
+        assert_eq!(outcome.turn.message, "hi");
+        // The v1 engine still got the client's permission check, so the request was not left out.
+        assert_eq!(
+            read_log(&log)[0]["answer"]["result"]["outcome"]["optionId"],
+            "yes"
+        );
     }
 }
