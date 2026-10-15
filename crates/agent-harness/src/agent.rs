@@ -705,6 +705,7 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                     output,
                     is_error,
                     program,
+                    ..
                 } if call == id => Ok((decision, output, is_error, program)),
                 other => Err(other),
             })?;
@@ -743,6 +744,12 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 Ok((output, !ok))
             }
             Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
+            // Held for the owner (only an ACP engine's requests are held, and those wait on their own
+            // nested ids). A model's call that comes back held is an error it can retry later.
+            Decision::Pending => Ok((
+                "the owner has not decided this tool call yet; try again later".to_string(),
+                true,
+            )),
             Decision::Deny if output.is_empty() => {
                 Ok(("the host denied this tool call".to_string(), true))
             }

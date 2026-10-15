@@ -32,6 +32,7 @@ impl StoredAgent {
             usage: Default::default(),
             species: self.species,
             kind: "llm".into(),
+            caps: Vec::new(),
         }
     }
 }
@@ -121,6 +122,7 @@ mod tests {
             usage: Default::default(),
             species: "owl".into(),
             kind: "llm".into(),
+            caps: Vec::new(),
         }
     }
 

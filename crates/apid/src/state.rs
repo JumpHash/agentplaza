@@ -115,6 +115,8 @@ pub struct App {
     /// External-tool connectors (AP-063): settings and vaulted keys.
     pub connectors: crate::connectors::Store,
     pub approvals: crate::approvals::Store,
+    /// The engines' session updates: what each engine call adds to the transcript, per turn.
+    pub engine_feed: crate::engine_feed::Feed,
     /// Agent-made tools (the plaza's library).
     pub library: crate::library::Store,
     /// The Library of deliverables: files agents handed in, in Garage or a local folder.
@@ -234,6 +236,7 @@ impl App {
             laws: attached_laws(&config.state_dir),
             connectors: crate::connectors::Store::load(&config.state_dir, Arc::clone(&vault))?,
             approvals: crate::approvals::Store::load(&config.state_dir),
+            engine_feed: crate::engine_feed::Feed::default(),
             library: crate::library::Store::load(&config.state_dir),
             deliverables: Arc::clone(&library),
             society: crate::society::Society::default(),

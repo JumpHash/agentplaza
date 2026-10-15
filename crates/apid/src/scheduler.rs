@@ -1117,6 +1117,7 @@ mod tests {
             usage: Default::default(),
             species: String::new(),
             kind: "llm".to_string(),
+            caps: Vec::new(),
         }
     }
 

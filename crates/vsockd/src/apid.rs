@@ -63,9 +63,16 @@ impl Apid {
         self.token_file.is_some()
     }
 
-    /// The agent's profile from apid (`None` when apid has none for it).
-    pub fn hello(&self, cid: u32, role: &str, vm: u32) -> Result<Option<AgentProfile>, String> {
-        let body = json!({ "role": role, "vm": vm }).to_string();
+    /// The agent's profile from apid (`None` when apid has none for it). `caps` are the harness's
+    /// features from its hello; apid keeps them on the agent.
+    pub fn hello(
+        &self,
+        cid: u32,
+        role: &str,
+        vm: u32,
+        caps: &[String],
+    ) -> Result<Option<AgentProfile>, String> {
+        let body = hello_body(role, vm, caps);
         let reply = self.post(
             &format!("/internal/v1/agents/{cid}/hello"),
             &body,
@@ -183,6 +190,16 @@ fn port_of(url: &str) -> Result<u16, String> {
         .map_err(|err| format!("{url:?}: invalid port: {err}"))
 }
 
+/// The body of an agent's hello to apid. `caps` are added only when the harness sent some, so a
+/// harness from before v4 produces the body it always did.
+fn hello_body(role: &str, vm: u32, caps: &[String]) -> String {
+    if caps.is_empty() {
+        json!({ "role": role, "vm": vm }).to_string()
+    } else {
+        json!({ "role": role, "vm": vm, "caps": caps }).to_string()
+    }
+}
+
 /// The reply that unblocks a guest whose forward failed: a model call fails
 /// with `reason`, a tool request is denied with it. Lines that expect no
 /// answer get none.
@@ -200,6 +217,7 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
             output: reason.to_string(),
             is_error: true,
             program: None,
+            approval: None,
         }),
         _ => None,
     }
@@ -208,6 +226,18 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hello_body_carries_caps_only_when_the_harness_sent_some() {
+        assert_eq!(
+            hello_body("builder", 0, &[]),
+            r#"{"role":"builder","vm":0}"#
+        );
+        assert_eq!(
+            hello_body("builder", 0, &["acp".to_string()]),
+            r#"{"caps":["acp"],"role":"builder","vm":0}"#
+        );
+    }
 
     #[test]
     fn apid_is_reached_on_loopback_only_over_plain_http() {

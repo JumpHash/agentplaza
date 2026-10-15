@@ -26,6 +26,7 @@ mod control;
 mod db;
 mod decisions;
 mod deliverables;
+mod engine_feed;
 mod events;
 mod fleet;
 mod foundry;

@@ -714,6 +714,7 @@ pub fn model_agent(cid: u64, card: &ModelCard, now_ms: u64) -> Agent {
         name: card.name.clone(),
         role: MODEL_ROLE.into(),
         kind: MODEL_KIND.into(),
+        caps: Vec::new(),
         model_override: None,
         status: Status::Idle,
         connected_at_ms: now_ms,

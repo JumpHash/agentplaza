@@ -136,12 +136,13 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
         "[guest {peer_cid} vm? ->] {}",
         sanitize_for_log(&line)
     ));
-    let (vm, role, keepalive) = match GuestMessage::from_line(&line) {
+    let (vm, role, keepalive, caps) = match GuestMessage::from_line(&line) {
         Ok(GuestMessage::Hello {
             vm,
             guest_cid,
             role,
             keepalive,
+            caps,
         }) => {
             // Identity is the socket path's; a guest claiming another CID is dropped.
             if guest_cid != peer_cid {
@@ -150,7 +151,7 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
                 )));
             }
             log.line(&format!("vsockd: guest {peer_cid} vm {vm} says hello (accepted on the socket for cid {peer_cid})"));
-            (vm, role, keepalive == Some(true))
+            (vm, role, keepalive == Some(true), caps)
         }
         Ok(other) => return Err(violation(format!("{} before hello", guest_kind(&other)))),
         Err(err) => {
@@ -177,7 +178,14 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
     lines
         .get_ref()
         .set_read_timeout(Some(limits.keepalive_read_slice))?;
-    let outcome = session.keepalive(lines, role.as_deref().unwrap_or(""), idle, hub, clock);
+    let outcome = session.keepalive(
+        lines,
+        role.as_deref().unwrap_or(""),
+        &caps,
+        idle,
+        hub,
+        clock,
+    );
     session.gone(hub, &outcome);
     outcome
 }
@@ -253,6 +261,7 @@ impl Session<'_> {
         &self,
         lines: &mut Lines<S>,
         role: &str,
+        caps: &[String],
         idle: Duration,
         hub: &Hub,
         clock: &dyn Clock,
@@ -275,7 +284,7 @@ impl Session<'_> {
         let mut profile = None;
         let mut next_hello = None;
         if apid.enabled() {
-            match apid.hello(cid, role, self.vm) {
+            match apid.hello(cid, role, self.vm, caps) {
                 Ok(found) => profile = found,
                 Err(err) => self
                     .log
@@ -311,7 +320,7 @@ impl Session<'_> {
             }
             if next_hello.is_some_and(|due| clock.now() >= due) {
                 next_hello = Some(clock.now() + HELLO_RETRY);
-                bridge.hello(cid, role, self.vm);
+                bridge.hello(cid, role, self.vm, caps);
             }
             // Once a stop is out, nothing more is dispatched.
             while !stopping && let Ok(command) = steering.try_recv() {
@@ -403,6 +412,7 @@ impl Session<'_> {
                 }
                 message @ (GuestMessage::ModelCall { .. }
                 | GuestMessage::ToolRequest { .. }
+                | GuestMessage::EngineUpdate { .. }
                 | GuestMessage::ToolReport { .. }
                 | GuestMessage::WorkDone { .. }
                 | GuestMessage::Compressed { .. }) => {
@@ -537,14 +547,15 @@ struct Settled {
 
 impl Bridge {
     /// Asks apid for the profile again, on a thread (a hello is bounded at 2 s).
-    fn hello(&self, cid: u32, role: &str, vm: u32) {
-        let (apid, tx, role) = (
+    fn hello(&self, cid: u32, role: &str, vm: u32, caps: &[String]) {
+        let (apid, tx, role, caps) = (
             Arc::clone(&self.apid),
             self.settled_tx.clone(),
             role.to_string(),
+            caps.to_vec(),
         );
         thread::spawn(move || {
-            let done = match apid.hello(cid, &role, vm) {
+            let done = match apid.hello(cid, &role, vm, &caps) {
                 Ok(Some(profile)) => Settled {
                     note: "got its profile from apid".to_string(),
                     line: Some(HostMessage::Profile { profile }),
@@ -579,6 +590,7 @@ impl Drop for Registration<'_> {
 fn guest_kind(message: &GuestMessage) -> &'static str {
     match message {
         GuestMessage::Hello { .. } => "hello",
+        GuestMessage::EngineUpdate { .. } => "engine_update",
         GuestMessage::ToolCall { .. } => "tool_call",
         GuestMessage::ToolResult { .. } => "tool_result",
         GuestMessage::Heartbeat { .. } => "heartbeat",

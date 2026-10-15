@@ -1081,6 +1081,7 @@ mod tests {
             usage: apz_proto::chat::Usage::default(),
             species: String::new(),
             kind: "llm".into(),
+            caps: Vec::new(),
         }
     }
 
