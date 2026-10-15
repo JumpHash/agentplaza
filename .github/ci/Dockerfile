@@ -63,6 +63,10 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
     PKG_CONFIG_ALLOW_CROSS=1
+# The runner's -L reaches only the test binary. A process a test starts (the fake ACP agent, a helper) is an
+# aarch64 binary the kernel hands to binfmt's qemu without -L, so it could not find /lib/ld-linux-aarch64.so.1
+# and died at once. qemu reads the same prefix from this variable, which every child inherits.
+ENV QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path \
  && arch="$(uname -m)" \
