@@ -25,7 +25,6 @@
 .mx-ctl { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .mx-ctl .mx-find { display: inline-flex; gap: 8px; align-items: center; min-width: 150px; color: var(--ink-3); }
 .mx-scope-btn { display: none; }
-.mx-sel { background: var(--sheet); border: 1px solid var(--rule); padding: 4px 8px; font: 500 12px var(--sans); color: var(--ink-2); max-width: 210px; }
 .mx-live { display: inline-flex; align-items: center; gap: 6px; }
 .mx-live .mx-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
 .mx-live[aria-pressed="true"] .mx-dot { background: var(--ok-ink); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok-ink) 25%, transparent); }
@@ -278,7 +277,8 @@ table.mx-t tr.mx-sel td { background: var(--hover); }
   .mx-ctl .mx-find { min-width: 0; }
   .mx-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
   .mx-c3, .mx-c2 { grid-column: span 12; }
-  .mx-wf .mx-row { grid-template-columns: 120px 1fr 54px; }
+  .mx-wf .mx-row, .mx-wf-row { grid-template-columns: 120px 1fr 54px; }
+  .mx-traces { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Overlays answer to the window. */
@@ -292,5 +292,75 @@ table.mx-t tr.mx-sel td { background: var(--hover); }
 .mx-ctl select { width: auto; min-width: 0; max-width: 220px; flex: none; }
 .mx-panel-body { min-width: 0; }
 /* A legend entry that narrows to its scope reads as text until hovered. */
-.mx-legend button { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
-.mx-legend button:hover { color: var(--ink); text-decoration: underline; }
+.mx-legend button, .mx-scope { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+.mx-legend button:hover, .mx-scope:hover { color: var(--ink); text-decoration: underline; }
+
+/* Classes the modules add in code that had no rule: selected rows, waterfall rows, trace layout, tree nodes,
+   drawer header, dialog form controls, splits, stats and figures. Colours and rules come from the tokens. */
+
+.mx-sel { background: var(--hover); }
+.mx-title { min-width: 0; }
+.mx-sub { font-size: 11.5px; color: var(--ink-3); margin: 2px 0 8px; }
+.mx-figure { min-width: 0; }
+.mx-gauges { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.mx-swim { overflow-x: auto; max-width: 100%; }
+.mx-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.mx-spk { width: 120px; max-width: 100%; }
+.mx-spk svg { display: block; }
+.mx-sev { display: block; width: 4px; background: var(--rule); }
+
+/* Waterfall rows: one timing per row, name, track and duration */
+
+.mx-wf-row { display: grid; grid-template-columns: 220px minmax(0, 1fr) 64px; gap: 8px; align-items: center; cursor: pointer; }
+.mx-wf-row:hover .mx-wf-name, .mx-wf-row.mx-sel .mx-wf-name { color: var(--ink); }
+.mx-wf-row.mx-sel .mx-wf-track { outline: 1px solid var(--ink-3); }
+.mx-wf-name { overflow: hidden; text-overflow: ellipsis; white-space: pre; color: var(--ink-2); }
+.mx-wf-track { position: relative; height: 14px; background: var(--rule-faint); }
+.mx-wf-track i { position: absolute; top: 0; bottom: 0; }
+.mx-wf-dur { text-align: right; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* Traces: the list beside the selected trace's detail (stacked in a narrow view) */
+
+.mx-traces { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; align-items: start; padding-top: 8px; }
+.mx-traces-list { min-width: 0; overflow-x: auto; }
+.mx-trace-detail { min-width: 0; display: grid; gap: 8px; align-content: start; }
+.mx-trace-detail h3 { font: 600 13px/1.4 var(--sans); margin: 0; }
+
+/* Scope tree: the node buttons and their list */
+
+.mx-tree-list { display: grid; min-width: 0; }
+.mx-node { display: flex; width: 100%; align-items: center; gap: 6px; text-align: left; background: none; border: 0; padding: 4px 12px; color: var(--ink-2); cursor: pointer; font: inherit; }
+.mx-node:hover { background: var(--hover); color: var(--ink); }
+.mx-node[aria-current="true"] { background: var(--hover); color: var(--ink); box-shadow: inset 3px 0 0 var(--signal); }
+
+/* Drawer header: the title, then the close button at the far end */
+
+.mx-drawer-head { display: flex; align-items: center; gap: 8px; }
+.mx-drawer-head h2 { margin: 0 auto 0 0; }
+
+/* Dialog form controls */
+
+.mx-form { display: grid; gap: 4px; min-width: 0; }
+.mx-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.mx-row > label { color: var(--ink-2); }
+.mx-sec { border-top: 1px solid var(--rule-faint); padding-top: 12px; margin-top: 14px; min-width: 0; }
+.mx-sec h3 { font: 600 11px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px; }
+.mx-stack { display: grid; gap: 8px; justify-items: start; min-width: 0; }
+.mx-inline { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.mx-inline > input { flex: 1 1 0; min-width: 0; }
+.mx-unit { font: 500 11px var(--sans); color: var(--ink-3); white-space: nowrap; }
+.mx-caps { display: grid; gap: 6px; min-width: 0; }
+.mx-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.mx-checks { display: grid; gap: 6px; }
+.mx-radios { display: grid; gap: 8px; }
+.mx-radio { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.mx-radio .mx-hint { grid-column: 2; margin-top: 0; }
+.mx-token { font: 12px/1.5 var(--mono); background: var(--paper); border: 1px solid var(--rule); padding: 8px 10px; word-break: break-all; user-select: all; }
+
+/* Splits (one bar per row, divided by tone) and stacked stats */
+
+.mx-split { display: grid; min-width: 0; }
+.mx-split-row { display: grid; grid-template-columns: 80px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-bottom: 6px; }
+.mx-split-row > div { display: flex; height: 10px; background: var(--rule-faint); }
+.mx-split-row > div > i { display: block; height: 100%; }
+.mx-stats { display: grid; gap: 10px; margin-top: 6px; }
