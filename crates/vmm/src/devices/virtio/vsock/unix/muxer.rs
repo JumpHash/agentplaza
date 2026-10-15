@@ -36,6 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 
@@ -48,6 +49,27 @@ use super::{MuxerConnection, VsockUnixBackendError, defs};
 use crate::devices::virtio::vsock::metrics::IncMetric;
 use crate::devices::virtio::vsock::metrics::METRICS;
 use crate::devices::virtio::vsock::packet::{VsockPacketRx, VsockPacketTx};
+
+/// How long a paused host socket stays out of the poll set before `tick` puts it back.
+const HOST_SOCK_RETRY: Duration = Duration::from_secs(1);
+
+/// Whether an `accept` failure is resource exhaustion (no descriptors or buffers left). That can
+/// end without any vsock connection closing, so it pauses the host socket for a retry. Other
+/// failures, such as `ECONNABORTED` for a client that gave up before the accept, are transient
+/// and must not pause it.
+#[cfg(unix)]
+fn exhausted(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+/// Windows: `WSAEMFILE` and `WSAENOBUFS`.
+#[cfg(windows)]
+fn exhausted(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(10024 | 10055))
+}
 
 /// A unique identifier of a `MuxerConnection` object. Connections are stored in a hash map,
 /// keyed by a `ConnMapKey` object.
@@ -115,6 +137,13 @@ pub struct VsockMuxer {
     /// This appears to have been a design decision dating back to the initial introduction of the
     /// vsock implementation.
     pub(crate) local_port_last: u32,
+    /// When the host socket's listener was taken out of the poll set after an `accept` failed
+    /// for lack of descriptors; `None` while it is polled. `tick` puts it back once
+    /// `HOST_SOCK_RETRY` has passed, and a connection closing does too.
+    host_sock_paused: Option<Instant>,
+    /// Whether the current exhaustion episode has been logged. The pause is logged once per
+    /// episode, and a successful accept ends the episode.
+    exhaustion_logged: bool,
 }
 
 impl VsockChannel for VsockMuxer {
@@ -294,10 +323,16 @@ impl VsockBackend for VsockMuxer {
     fn activate(&mut self) -> Result<(), VsockError> {
         // Listen on the host-initiated socket, for incoming connections.
         self.add_listener(self.host_sock.as_raw_fd(), EpollListener::HostSock)
-            .map_err(VsockError::VsockUdsBackend)
+            .map_err(VsockError::VsockUdsBackend)?;
+        self.host_sock_paused = None;
+        Ok(())
     }
 
     fn reset(&mut self) {
+        // `reset` takes the host socket out of the poll set below, so it is no longer paused;
+        // clearing the flag first also stops the connection removals from re-adding it.
+        self.host_sock_paused = None;
+
         // Remove all connections and their epoll listeners.
         let keys: Vec<ConnMapKey> = self.conn_map.keys().copied().collect();
         for key in keys {
@@ -313,6 +348,15 @@ impl VsockBackend for VsockMuxer {
         self.killq = MuxerKillQ::new();
         self.local_port_set.clear();
         self.local_port_last = (1u32 << 30) - 1;
+    }
+
+    fn tick(&mut self) {
+        if self
+            .host_sock_paused
+            .is_some_and(|since| since.elapsed() >= HOST_SOCK_RETRY)
+        {
+            self.resume_host_sock();
+        }
     }
 }
 
@@ -371,6 +415,8 @@ impl VsockMuxer {
             killq: MuxerKillQ::new(),
             local_port_last: (1u32 << 30) - 1,
             local_port_set: HashSet::with_capacity(defs::MAX_CONNECTIONS),
+            host_sock_paused: None,
+            exhaustion_logged: false,
         };
 
         Ok(muxer)
@@ -403,12 +449,22 @@ impl VsockMuxer {
                     // If we're already maxed-out on connections, we'll just accept and
                     // immediately discard this potentially new one.
                     eprintln!("vsock: connection limit reached; refusing new host connection");
-                    self.host_sock.accept().map(|_| 0).unwrap_or(0);
+                    if let Err(err) = self.host_sock.accept()
+                        && exhausted(&err)
+                    {
+                        self.pause_host_sock(&err);
+                    }
                     return;
                 }
                 self.host_sock
                     .accept()
-                    .map_err(VsockUnixBackendError::UnixAccept)
+                    .inspect(|_| self.exhaustion_logged = false)
+                    .map_err(|err| {
+                        if exhausted(&err) {
+                            self.pause_host_sock(&err);
+                        }
+                        VsockUnixBackendError::UnixAccept(err)
+                    })
                     .and_then(|(stream, _)| {
                         stream
                             .set_nonblocking(true)
@@ -550,8 +606,42 @@ impl VsockMuxer {
         if let Some(conn) = self.conn_map.remove(&key) {
             self.remove_listener(conn.as_raw_fd());
             METRICS.conns_removed.inc();
+            // A connection is gone, so host connections can be accepted again.
+            self.resume_host_sock();
         }
         self.free_local_port(key.local_port);
+    }
+
+    /// Take the host socket's listener out of the poll set after an `accept` failed for lack of
+    /// descriptors. A level-triggered listener left in would be reported on every wait, spinning
+    /// the event thread while the pending connection stays in the backlog. `tick` retries it.
+    fn pause_host_sock(&mut self, err: &std::io::Error) {
+        if self.host_sock_paused.is_some() {
+            return;
+        }
+        self.remove_listener(self.host_sock.as_raw_fd());
+        self.host_sock_paused = Some(Instant::now());
+        if !self.exhaustion_logged {
+            self.exhaustion_logged = true;
+            eprintln!(
+                "vsock: cannot accept a host connection ({err}); retrying every {HOST_SOCK_RETRY:?}"
+            );
+        }
+    }
+
+    /// Put the host socket's listener back in the poll set once a paused state can end: a
+    /// connection closed, or the retry interval passed. A failure keeps it paused.
+    fn resume_host_sock(&mut self) {
+        if self.host_sock_paused.is_none() {
+            return;
+        }
+        match self.add_listener(self.host_sock.as_raw_fd(), EpollListener::HostSock) {
+            Ok(()) => self.host_sock_paused = None,
+            Err(err) => {
+                eprintln!("vsock: cannot resume accepting host connections: {err:?}");
+                self.host_sock_paused = Some(Instant::now());
+            }
+        }
     }
 
     /// Schedule a connection for immediate termination.
@@ -1067,5 +1157,83 @@ mod tests {
         drop(muxer);
         drop(pending);
         let _ = std::fs::remove_file(&listener_path);
+    }
+
+    /// An `accept` that fails for lack of descriptors takes the host socket out of the
+    /// poll set, so the level-triggered listener is no longer reported on every wait. A
+    /// second failure while paused is absorbed: still paused, still out, no panic.
+    #[test]
+    fn an_accept_failure_takes_the_host_socket_out_of_the_poll_set() {
+        let path = test_socket_path("paused");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+
+        let host_fd = muxer.host_sock.as_raw_fd();
+        assert!(muxer.listener_map.contains_key(&host_fd));
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "the failed accept pauses the host socket"
+        );
+        assert!(
+            !muxer.listener_map.contains_key(&host_fd),
+            "a paused host socket is out of the poll set"
+        );
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "a second failure keeps it paused"
+        );
+        assert!(!muxer.listener_map.contains_key(&host_fd));
+
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Only exhaustion pauses the host socket: a client that gave up before the accept
+    /// (`ECONNABORTED`) is transient, and must not take the listener out of the poll set.
+    #[test]
+    fn a_transient_accept_error_does_not_pause() {
+        assert!(!exhausted(&std::io::Error::from_raw_os_error(
+            libc::ECONNABORTED
+        )));
+        assert!(exhausted(&std::io::Error::from_raw_os_error(libc::EMFILE)));
+    }
+
+    /// Exhaustion can end without any connection closing, so a paused host socket is put back by
+    /// `tick` once `HOST_SOCK_RETRY` has passed: right after the pause it stays out, and once the
+    /// interval has passed it is registered again.
+    #[test]
+    fn a_paused_host_socket_is_retried_after_a_second() {
+        let path = test_socket_path("retry");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+        let host_fd = muxer.host_sock.as_raw_fd();
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        muxer.tick();
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "a tick within the retry interval keeps the host socket paused"
+        );
+        assert!(!muxer.listener_map.contains_key(&host_fd));
+
+        muxer.host_sock_paused = Some(Instant::now() - Duration::from_secs(2));
+        muxer.tick();
+        assert!(
+            muxer.host_sock_paused.is_none(),
+            "the retry resumes accepting"
+        );
+        assert!(
+            muxer.listener_map.contains_key(&host_fd),
+            "the host socket is back in the poll set"
+        );
+
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
     }
 }

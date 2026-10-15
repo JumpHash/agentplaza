@@ -239,4 +239,8 @@ pub trait VsockBackend: VsockChannel + VsockEpollListener + Send {
     /// Reset the backend, dropping all active connections and removing its listeners
     /// from the poll set.
     fn reset(&mut self);
+
+    /// Called by the event thread on every pass of its loop (at least every
+    /// `EXIT_POLL_TIMEOUT_MS` while idle), for work that waits on time rather than on a descriptor.
+    fn tick(&mut self) {}
 }
