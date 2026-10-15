@@ -175,7 +175,8 @@ pub fn backoff_delay(failures: u32, jitter: u64) -> Duration {
 }
 
 /// The delay before the next attempt. A template still waiting for its first welcome retries every
-/// [`TEMPLATE_RETRY_MS`]. After a transport reset from a restore (`after_restore`), the attempt
+/// [`TEMPLATE_RETRY_MS`]. In the quick window after a drop that followed an adoption (`after_restore`, a
+/// restore's transport reset among them), the attempt
 /// waits less than [`RESTORE_RETRY_MS`]. Every other guest, and a template once the hub has
 /// accepted it, follows [`backoff_delay`].
 pub fn reconnect_delay(

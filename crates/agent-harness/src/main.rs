@@ -306,7 +306,7 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
     let mut failures = 0u32;
     // Set by the first welcome the hub accepts. A template retries quickly only until then.
     let mut welcomed = false;
-    // Quick attempts left after a vsock transport reset from a restore.
+    // Quick attempts left after a drop following an adoption (a restore's transport reset among them).
     let mut fast_left = 0u32;
     loop {
         match keepalive_once(config, out) {
@@ -349,11 +349,7 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                 // A template waiting for its restore retries every 25 ms: only its first failure
                 // is printed, so the serial console (and the template's memory) is not flooded.
                 if !(config.template && !welcomed) || failures == 1 {
-                    let restored = if after_restore {
-                        " (after a restore)"
-                    } else {
-                        ""
-                    };
+                    let restored = if after_restore { " (quick retry)" } else { "" };
                     let _ = writeln!(
                         out,
                         "agent-harness: keepalive: {reason}; reconnecting in {} ms{restored} (failure {failures})",
