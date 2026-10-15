@@ -7,11 +7,13 @@
 //!   runs}` (the local vsockd's `GET /v1/status`, noded's `GET /v1/runs`; Null when down).
 //! - A refused signature (403) stops the loop with an error: the node was revoked.
 
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use apz_http::auth::InternalToken;
 use apz_http::client;
 use apz_trust::node::NodeKey;
 use serde_json::{Value, json};
@@ -23,7 +25,7 @@ use crate::{forward, join};
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// The local daemons this node drives, on 127.0.0.1.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Local {
     /// noded's port (default 8899).
     pub noded: u16,
@@ -31,6 +33,9 @@ pub struct Local {
     pub vsockd: u16,
     /// The forwarder's port, which vsockd uses as its `--apid` (default 7701).
     pub forward: u16,
+    /// The node's internal token, sent on every call to noded and vsockd (`run` sets it to
+    /// `node/internal-token`, the file they are started with).
+    pub token: InternalToken,
 }
 
 impl Default for Local {
@@ -39,8 +44,26 @@ impl Default for Local {
             noded: 8899,
             vsockd: 9180,
             forward: 7701,
+            token: InternalToken::none(),
         }
     }
+}
+
+/// A request to a local daemon on 127.0.0.1, with the node's internal token.
+fn send_local(
+    local: &Local,
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<client::Reply> {
+    let header = local.token.header();
+    let headers: Vec<(&str, &str)> = header
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    client::send_with(port, method, path, &headers, body, timeout)
 }
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,7 +94,7 @@ pub fn execute(local: &Local, command: &Value) -> Value {
         .get("body")
         .filter(|body| !body.is_null())
         .map(|body| serde_json::to_vec(body).unwrap_or_default());
-    match client::send(port, method, path, body.as_deref(), COMMAND_TIMEOUT) {
+    match send_local(local, port, method, path, body.as_deref(), COMMAND_TIMEOUT) {
         Ok(reply) => {
             json!({"command": id, "ok": reply.status < 400, "status": reply.status, "body": reply_body(&reply.body)})
         }
@@ -95,6 +118,11 @@ fn reply_body(bytes: &[u8]) -> Value {
 pub fn run(dir: &Path, local: Local) -> Result<(), String> {
     let (identity, key) = identity::load(dir)?;
     let token = identity::internal_token(dir)?;
+    // The file noded and vsockd are started with: each call to them re-reads it.
+    let local = Local {
+        token: InternalToken::file(dir.join("internal-token")),
+        ..local
+    };
     let identity = Arc::new(identity);
     let key = Arc::new(key);
     let _forwarder =
@@ -105,10 +133,10 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
             )
         })?;
     let _heartbeat = {
-        let (identity, key) = (identity.clone(), key.clone());
+        let (identity, key, local) = (identity.clone(), key.clone(), local.clone());
         thread::spawn(move || beat_forever(identity, key, local))
     };
-    command_loop(&identity, &key, local)
+    command_loop(&identity, &key, &local)
 }
 
 /// Why a hub request failed: a refused signature is final, anything else is retried.
@@ -139,8 +167,10 @@ fn hub_request(
 }
 
 /// The local daemon's JSON answer for a heartbeat field; Null when it is down.
-fn local_json(port: u16, path: &str) -> Value {
-    match client::get_json(port, path, LOCAL_TIMEOUT) {
+fn local_json(local: &Local, port: u16, path: &str) -> Value {
+    let answer = send_local(local, port, "GET", path, None, LOCAL_TIMEOUT)
+        .and_then(|reply| Ok((reply.status, reply.json()?)));
+    match answer {
         Ok((status, body)) if status < 400 => body,
         _ => Value::Null,
     }
@@ -176,10 +206,10 @@ fn stats_report(stats: &Value) -> Value {
 /// The machine a heartbeat reports: this machine's summary (`join::machine_summary`) with
 /// noded's machine facts (`NODED_MACHINE_FIELDS`) laid over it when the daemon answers, and its
 /// live `stats`, so the hub holds the same description a local view shows.
-fn machine_report(noded: u16) -> Value {
+fn machine_report(local: &Local) -> Value {
     let mut machine = join::machine_summary();
     if let (Value::Object(report), Value::Object(facts)) =
-        (&mut machine, local_json(noded, "/v1/machine"))
+        (&mut machine, local_json(local, local.noded, "/v1/machine"))
     {
         for key in NODED_MACHINE_FIELDS {
             if let Some(value) = facts.get(key) {
@@ -190,7 +220,7 @@ fn machine_report(noded: u16) -> Value {
     if let Value::Object(report) = &mut machine {
         report.insert(
             "stats".to_string(),
-            stats_report(&local_json(noded, "/v1/machine/stats")),
+            stats_report(&local_json(local, local.noded, "/v1/machine/stats")),
         );
     }
     machine
@@ -229,12 +259,12 @@ mod machine_tests {
     }
 }
 
-fn heartbeat_once(identity: &Identity, key: &NodeKey, local: Local) {
+fn heartbeat_once(identity: &Identity, key: &NodeKey, local: &Local) {
     let path = format!("/v1/nodes/{}/heartbeat", identity.node_id);
     let body = json!({
-        "machine": machine_report(local.noded),
-        "status": local_json(local.vsockd, "/v1/status"),
-        "runs": local_json(local.noded, "/v1/runs"),
+        "machine": machine_report(local),
+        "status": local_json(local, local.vsockd, "/v1/status"),
+        "runs": local_json(local, local.noded, "/v1/runs"),
     });
     let bytes = serde_json::to_vec(&body).unwrap_or_default();
     // A failed beat is not reported here: the command loop reports the hub's state.
@@ -250,7 +280,7 @@ fn heartbeat_once(identity: &Identity, key: &NodeKey, local: Local) {
 
 fn beat_forever(identity: Arc<Identity>, key: Arc<NodeKey>, local: Local) {
     loop {
-        heartbeat_once(&identity, &key, local);
+        heartbeat_once(&identity, &key, &local);
         thread::sleep(HEARTBEAT);
     }
 }
@@ -290,7 +320,7 @@ fn deliver(identity: &Identity, key: &NodeKey, path: &str, result: &Value) -> Re
     }
 }
 
-fn command_loop(identity: &Identity, key: &NodeKey, local: Local) -> Result<(), String> {
+fn command_loop(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
     let poll_path = format!("/v1/nodes/{}/commands?wait=25", identity.node_id);
     let results_path = format!("/v1/nodes/{}/results", identity.node_id);
     let mut backoff = BACKOFF_MIN;
@@ -304,7 +334,7 @@ fn command_loop(identity: &Identity, key: &NodeKey, local: Local) -> Result<(), 
                 }
                 backoff = BACKOFF_MIN;
                 for command in &commands {
-                    deliver(identity, key, &results_path, &execute(&local, command))?;
+                    deliver(identity, key, &results_path, &execute(local, command))?;
                 }
             }
             Err(Failure::Revoked) => return Err(revoked()),
@@ -324,6 +354,7 @@ fn command_loop(identity: &Identity, key: &NodeKey, local: Local) -> Result<(), 
 mod tests {
     use super::*;
     use apz_http::{Response, Router, Server};
+    use std::fs;
 
     fn daemon() -> apz_http::Handle {
         let router: Router<()> = Router::new().get("/v1/runs", |_, _, _| {
@@ -342,6 +373,7 @@ mod tests {
             noded: daemon.port(),
             vsockd: 0,
             forward: 0,
+            ..Local::default()
         };
         let result = execute(
             &local,
@@ -351,6 +383,35 @@ mod tests {
             result,
             json!({"command": 7, "ok": true, "status": 200, "body": {"runs": []}})
         );
+    }
+
+    #[test]
+    fn a_guarded_daemon_gets_the_nodes_token_and_refuses_without_it() {
+        let dir = std::env::temp_dir().join(format!("apz-link-run-token-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("internal-token"), "node-secret\n").unwrap();
+        let router: Router<()> = Router::new().get("/v1/runs", |_, _, _| {
+            Response::json(200, &json!({"runs": []}))
+        });
+        let guarded = InternalToken::file(dir.join("internal-token"))
+            .guard(move |request| router.handle(&(), request));
+        let daemon = Server::bind(0)
+            .expect("an ephemeral port")
+            .spawn(guarded)
+            .expect("serves");
+        let mut local = Local {
+            noded: daemon.port(),
+            vsockd: 0,
+            forward: 0,
+            ..Local::default()
+        };
+        let command =
+            json!({"id": 8, "target": "noded", "method": "GET", "path": "/v1/runs", "body": null});
+        // Without the token the daemon refuses; with it, the daemon answers.
+        assert_eq!(execute(&local, &command)["status"], json!(401));
+        local.token = InternalToken::file(dir.join("internal-token"));
+        assert_eq!(execute(&local, &command)["status"], json!(200));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

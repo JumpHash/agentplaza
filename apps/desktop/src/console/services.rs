@@ -293,6 +293,8 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
                     &uds_dir(),
                     "--agents",
                     &roles,
+                    "--internal-token-file",
+                    &internal,
                 ]),
                 // The per-VM process mode and its jailer are Linux-only.
                 env: if cfg!(target_os = "linux") {
@@ -687,6 +689,21 @@ mod tests {
         assert!(
             !runs_plan(&hub_noded_cmd, &node_proc("noded")),
             "a hub's noded is not the node's"
+        );
+        // Each daemon guards its HTTP API with its own token: the hub's noded with the hub's, the node's
+        // with the node's, as the node's vsockd is.
+        assert!(
+            hub_noded
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--internal-token-file"
+                    && pair[1].ends_with("internal.token"))
+        );
+        assert!(
+            node_proc("noded")
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--internal-token-file", "/state/node/internal-token"])
         );
         assert!(runs_plan(&hub_apid_cmd, &hub_apid));
 

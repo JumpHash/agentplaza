@@ -18,6 +18,8 @@
 
 use serde::Deserialize;
 
+use apz_http::auth::InternalToken;
+
 use crate::dispatch::Operator;
 use crate::http::{self, Target};
 use crate::views::Tell;
@@ -26,14 +28,16 @@ use crate::views::Tell;
 #[derive(Debug, Clone)]
 pub struct Hub {
     target: Target,
+    auth: InternalToken,
 }
 
 impl Hub {
     /// A client for the hub's admin surface at `url`
-    /// (`http://127.0.0.1:19081`).
-    pub fn new(url: &str) -> Result<Self, String> {
+    /// (`http://127.0.0.1:19081`), sending `auth` on every call.
+    pub fn new(url: &str, auth: InternalToken) -> Result<Self, String> {
         Ok(Self {
             target: Target::parse(url)?,
+            auth,
         })
     }
 
@@ -58,7 +62,13 @@ impl Operator for Hub {
             "timeout_ms": timeout_ms,
         })
         .to_string();
-        let answer = http::post(&self.target, "/tell", body.as_bytes(), http::TELL_TIMEOUT)?;
+        let answer = http::post(
+            &self.target,
+            "/tell",
+            &self.auth,
+            body.as_bytes(),
+            http::TELL_TIMEOUT,
+        )?;
         match answer.status() {
             200 => {
                 let view: TellView = serde_json::from_slice(answer.body())
@@ -156,7 +166,10 @@ mod tests {
             ),
             (200, r#"{"ok":false,"output":"denied: nope"}"#),
         ]);
-        let hub = Hub { target };
+        let hub = Hub {
+            target,
+            auth: InternalToken::none(),
+        };
 
         let answer = hub
             .tell(
@@ -209,7 +222,10 @@ mod tests {
             (504, r#"{"error":"agent did not answer within 5000 ms"}"#),
             (500, r#"{"error":"boom"}"#),
         ]);
-        let hub = Hub { target };
+        let hub = Hub {
+            target,
+            auth: InternalToken::none(),
+        };
         let args = serde_json::json!({});
 
         assert_eq!(
@@ -241,7 +257,10 @@ mod tests {
             403,
             r#"{"ok":false,"output":"role librarian does not grant write_file"}"#,
         )]);
-        let hub = Hub { target };
+        let hub = Hub {
+            target,
+            auth: InternalToken::none(),
+        };
         let answer = hub
             .tell(
                 310,
@@ -264,7 +283,10 @@ mod tests {
     #[test]
     fn an_answer_that_is_not_the_surfaces_shape_is_an_error() {
         let (target, _requests, served) = stub(vec![(200, r#"{"ok":"yes"}"#)]);
-        let hub = Hub { target };
+        let hub = Hub {
+            target,
+            auth: InternalToken::none(),
+        };
         let err = hub
             .tell(300, "echo", &serde_json::json!({}), 5_000)
             .expect_err("the shape is wrong");
@@ -280,6 +302,7 @@ mod tests {
         drop(listener);
         let hub = Hub {
             target: Target::parse(&format!("http://127.0.0.1:{}", addr.port())).expect("a URL"),
+            auth: InternalToken::none(),
         };
         let err = hub
             .tell(300, "echo", &serde_json::json!({}), 5_000)
