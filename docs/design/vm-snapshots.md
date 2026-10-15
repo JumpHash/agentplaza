@@ -124,6 +124,16 @@ snapshot. The harness reconnects within moments, its hello marks it idle, and th
 | `POST /v1/runs/{id}/vms/{index}/sleep` (noded) | Snapshots the VM and stops it. |
 | `POST /v1/runs/{id}/vms/{index}/wake` (noded) | Restores the VM from its sleep snapshot. |
 
+## Crash recovery
+
+A keepalive agent or sandbox that stops by itself (the guest shuts down, resets or crashes) comes back on the node.
+The watcher hands the VM to a recovery thread, which boots it again with its CID, workspace and spec. It boots from the
+newest of the VM's checkpoints and its sleep snapshot when that is under a day old (a checkpoint's `workspace.img` is
+copied back, as a restore does), and cold from its spec otherwise. The VM stays `running` with no handle while it
+boots, so the run stays up, and the log says what it recovered from. A VM recovered three times in ten minutes stays
+`exited`. A kill, stop, sleep, wipe, restore or move is never recovered, and neither is a frozen demo session or a
+churn run (`beats`). `--no-recover` turns recovery off.
+
 ## Checkpoints, rollback, forks
 
 A checkpoint is a snapshot of the whole VM: memory, disk and the running processes. The IDE's file checkpoints

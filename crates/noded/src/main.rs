@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
-use noded::registry::Detail;
+use noded::registry::{self, Detail};
 use noded::{Config, Server};
 
 const USAGE: &str = "\
@@ -37,6 +37,8 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   --no-snapshots   keep no VM snapshots: sleep, checkpoint, restore, fork and export are
                    refused, and no warm templates are kept either
   --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
+  --no-recover    leave a keepalive agent or sandbox that stops by itself exited, instead of
+                  recovering it from its newest snapshot (or cold)
   --vm-processes   run each VM in its own apz-vmm process (jailed), with its own cgroup v2
                    limits (memory, CPU, pids) under agentplaza.slice when the user's cgroup
                    tree is delegated
@@ -230,6 +232,7 @@ fn defaults() -> Config {
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = defaults();
     let mut no_snapshots = false;
+    let mut no_recover = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         let mut value = |flag: &str| {
@@ -249,6 +252,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--no-snapshots" => no_snapshots = true,
+            "--no-recover" => no_recover = true,
             "--no-warm-templates" => config.warm_templates = false,
             "--vm-processes" => config.vm_processes = true,
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
@@ -288,6 +292,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    // A keepalive agent or sandbox that stops by itself is recovered unless `--no-recover` says not.
+    // The setting is the daemon's own (`Registry` reads it when a VM stops), so it is set here, as
+    // the snapshot root is.
+    registry::set_crash_recovery(!no_recover);
     // Snapshots go where the flag names; otherwise with the persistent state when there is one, else
     // under the node's state directory, so a node started with no state flags keeps them too.
     // `--no-snapshots` keeps none, and the warm templates live under the snapshot dir, so they go too.

@@ -32,6 +32,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -93,6 +94,32 @@ const CONSOLE: &str = "console=ttyS0";
 /// long *outside* the run's lock, so its polls stay non-blocking and no other
 /// caller of the run can be starved by them.
 const WATCH_INTERVAL: Duration = Duration::from_millis(5);
+
+/// The newest a snapshot may be for a recovery to boot from it, in milliseconds: a day. An older
+/// snapshot is a stale copy of an agent, so the recovery boots the VM cold instead.
+const RECOVERY_SNAPSHOT_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// How many recoveries one VM may have within [`RECOVERY_WINDOW_MS`]. A VM that keeps crashing
+/// is a crash loop: past this it stays exited, so the node does not boot it again in a tight loop.
+const RECOVERY_LIMIT: usize = 3;
+
+/// The window [`RECOVERY_LIMIT`] counts recoveries in, in milliseconds: ten minutes.
+const RECOVERY_WINDOW_MS: u64 = 10 * 60 * 1000;
+
+/// Whether noded recovers a VM that stops by itself (see [`set_crash_recovery`]). Set once at
+/// start-up from `--no-recover`, and on by default.
+static CRASH_RECOVERY: AtomicBool = AtomicBool::new(true);
+
+/// Turns crash recovery on or off for the whole daemon: `--no-recover` turns it off. A VM that
+/// stops by itself while it is off stays exited, as it did before recovery existed.
+pub fn set_crash_recovery(on: bool) {
+    CRASH_RECOVERY.store(on, Ordering::SeqCst);
+}
+
+/// Whether crash recovery is on (see [`set_crash_recovery`]).
+fn crash_recovery() -> bool {
+    CRASH_RECOVERY.load(Ordering::SeqCst)
+}
 
 /// The guest images every run boots from.
 #[derive(Debug, Clone)]
@@ -1079,6 +1106,87 @@ fn boot_from(
         .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
     let handle = spawner::spawn(VmSpec {
         restore: Some(snapshot.to_path_buf()),
+        ..spec.clone()
+    })
+    .map_err(|err| err.to_string())?;
+    Ok((handle, base))
+}
+
+/// What a recovery of a VM that stopped by itself boots it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// The snapshot named `name`: the sleep snapshot, or a checkpoint.
+    From(String),
+    /// No snapshot is fresh enough: the VM boots cold from its spec.
+    Cold,
+    /// The VM has been recovered too often lately: it stays exited.
+    GiveUp,
+}
+
+/// Decides how to recover a VM that stopped by itself, from the snapshots it has (`snapshots`, its
+/// checkpoints and sleep snapshot) and the times its earlier recoveries started (`recent`, all of
+/// them; only those inside [`RECOVERY_WINDOW_MS`] count). The rate limit comes first: a VM in a
+/// crash loop is given up on whatever it has. Otherwise the newest snapshot taken within
+/// [`RECOVERY_SNAPSHOT_AGE_MS`] is the one to boot from, and with none the VM boots cold.
+pub(crate) fn recovery_decision(now: u64, snapshots: &[SnapshotView], recent: &[u64]) -> Recovery {
+    let recovered = recent
+        .iter()
+        .filter(|&&at| now.saturating_sub(at) < RECOVERY_WINDOW_MS)
+        .count();
+    if recovered >= RECOVERY_LIMIT {
+        return Recovery::GiveUp;
+    }
+    snapshots
+        .iter()
+        .filter(|view| now.saturating_sub(view.taken_at_ms) <= RECOVERY_SNAPSHOT_AGE_MS)
+        .max_by_key(|view| view.taken_at_ms)
+        .map_or(Recovery::Cold, |view| Recovery::From(view.name.clone()))
+}
+
+/// Whether a run's VMs are recovered when they stop by themselves: a keepalive agent or a sandbox
+/// that does not churn. A frozen demo session and a churn run (`beats`) end by design, so their
+/// exit is their normal end and is never recovered.
+pub(crate) fn is_recoverable_run(keepalive: bool, sandbox: bool, beats: Option<u32>) -> bool {
+    (keepalive || sandbox) && beats.is_none()
+}
+
+/// Whether a VM's stop is one recovery takes over. Only a guest-initiated exit of a VM that was
+/// running counts: a kill (the host's stop, a wipe, a restart, a sleep, a move) is reported as
+/// [`VmExit::Killed`], and a paused or asleep VM is not one that ran on its own.
+pub(crate) fn recovers(exit: VmExit, state: VmState, recoverable: bool, enabled: bool) -> bool {
+    matches!(exit, VmExit::GuestExited { .. })
+        && state == VmState::Running
+        && recoverable
+        && enabled
+}
+
+/// Boots a recovered VM from its snapshot `name` in `store`, with the same CID and spec. A
+/// checkpoint's workspace is copied back, as a restore does; the sleep snapshot leaves the
+/// workspace as the stopped VM had it, as a wake does. Returns the VM and the diff base its next
+/// snapshot is written over.
+fn boot_recovered(
+    store: &SnapshotStore,
+    cid: u64,
+    spec: &VmSpec,
+    name: &str,
+) -> Result<(VmHandle, PathBuf), String> {
+    let snapshot = store.dir(cid, name);
+    let base = if name == snapshots::SLEEP {
+        snapshot.clone()
+    } else {
+        if let Some(workspace) = &spec.workspace {
+            let saved = snapshot.join(snapshots::WORKSPACE_FILE);
+            if saved.is_file() {
+                clone_file(&saved, workspace)
+                    .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
+            }
+        }
+        store
+            .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+            .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?
+    };
+    let handle = spawner::spawn(VmSpec {
+        restore: Some(snapshot),
         ..spec.clone()
     })
     .map_err(|err| err.to_string())?;
@@ -2436,6 +2544,8 @@ impl Registry {
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
+            snapshots: self.snapshots.clone(),
+            recoveries: Mutex::new(Vec::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -2583,6 +2693,12 @@ pub struct Run {
     /// The node's CID book: this run's span is held there for the run's
     /// lifetime and released when it ends ([`Run::release_cids`]).
     cids: Arc<CidBook>,
+    /// The node's snapshot store, or `None` for a node that keeps none: where a
+    /// recovery looks for the VM's newest snapshot.
+    snapshots: Option<SnapshotStore>,
+    /// The recoveries this run's VMs have started, as `(VM index, when)`, kept
+    /// for the last [`RECOVERY_WINDOW_MS`] (the crash-loop limit counts them).
+    recoveries: Mutex<Vec<(u32, u64)>>,
     inner: Mutex<RunInner>,
 }
 
@@ -3100,6 +3216,67 @@ impl Run {
         self.cids.release(&self.id);
     }
 
+    /// Whether this run's VMs are recovered when they stop by themselves (see [`is_recoverable_run`]).
+    fn recoverable(&self) -> bool {
+        is_recoverable_run(self.keepalive, self.sandbox, self.beats)
+    }
+
+    /// Whether the run is still running: a recovery that boots a VM for it checks this first.
+    fn is_running(&self) -> bool {
+        self.lock().state == RunState::Running
+    }
+
+    /// Records that a recovery of VM `vm` started at `at`, and forgets the recoveries outside the
+    /// window (the crash-loop limit only counts the ones inside it).
+    fn record_recovery(&self, vm: u32, at: u64) {
+        let mut recoveries = self
+            .recoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recoveries.retain(|(_, when)| at.saturating_sub(*when) < RECOVERY_WINDOW_MS);
+        recoveries.push((vm, at));
+    }
+
+    /// When VM `vm`'s recent recoveries started, for [`recovery_decision`].
+    fn recent_recoveries(&self, vm: u32) -> Vec<u64> {
+        let recoveries = self
+            .recoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recoveries
+            .iter()
+            .filter(|(index, _)| *index == vm)
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
+    /// Puts back the handle of VM `vm` that a recovery could not boot, and sets it `exited`: it
+    /// stays as the guest left it. A run a kill ended while the recovery ran leaves the VM `killed`
+    /// instead, and gives its CIDs back once its VMs are all stopped.
+    fn set_vm_exited(&self, vm: u32, handle: VmHandle) {
+        let mut inner = self.lock();
+        let run_state = inner.state;
+        let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) else {
+            return;
+        };
+        slot.handle = Some(handle);
+        slot.state = if run_state == RunState::Running {
+            VmState::Exited
+        } else {
+            VmState::Killed
+        };
+        self.events.publish(Event::Vm {
+            run: self.id.clone(),
+            vm,
+            state: slot.state.as_str(),
+        });
+        let release = run_state.is_finished() && inner.all_vms_stopped();
+        drop(inner);
+        if release {
+            self.release_cids();
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, RunInner> {
         self.inner
             .lock()
@@ -3136,7 +3313,7 @@ fn watch(run: Arc<Run>) {
     thread::spawn(move || watch_run(&run));
 }
 
-fn watch_run(run: &Run) {
+fn watch_run(run: &Arc<Run>) {
     loop {
         {
             let mut inner = run.lock();
@@ -3163,14 +3340,28 @@ fn watch_run(run: &Run) {
                 // and nothing else: a GET or a kill of the run never waits
                 // behind the watcher.
                 match handle.wait_timeout(Duration::ZERO) {
-                    Ok(Some(exit)) => {
-                        slot.state = VmState::from_exit(exit);
-                        run.events.publish(Event::Vm {
-                            run: run.id.clone(),
-                            vm: slot.id,
-                            state: slot.state.as_str(),
-                        });
-                    }
+                    Ok(Some(exit)) => match (slot.spec.clone(), slot.guest_cid) {
+                        // A keepalive agent or sandbox that stopped by itself is recovered, not
+                        // left exited: its handle goes to the recovery, and the slot keeps its
+                        // state with no handle, which the watcher skips and the run waits on.
+                        (Some(spec), Some(cid))
+                            if recovers(exit, slot.state, run.recoverable(), crash_recovery()) =>
+                        {
+                            if let Some(exited) = slot.handle.take() {
+                                let run = Arc::clone(run);
+                                let vm = slot.id;
+                                thread::spawn(move || recover_vm(run, vm, cid, spec, exited));
+                            }
+                        }
+                        _ => {
+                            slot.state = VmState::from_exit(exit);
+                            run.events.publish(Event::Vm {
+                                run: run.id.clone(),
+                                vm: slot.id,
+                                state: slot.state.as_str(),
+                            });
+                        }
+                    },
                     Ok(None) => {}
                     Err(err) => {
                         eprintln!(
@@ -3210,6 +3401,86 @@ fn watch_run(run: &Run) {
         // for longer than it holds it.
         thread::sleep(WATCH_INTERVAL);
     }
+}
+
+/// Recovers VM `vm` of `run` after it stopped by itself: boots it again with the CID, workspace and
+/// spec it had, from its newest snapshot taken in the last day or cold (see [`recovery_decision`]).
+///
+/// It runs on its own thread, outside the run's lock, since a boot takes a while. Meanwhile the VM's
+/// slot keeps its state with no handle, which is how the watcher and the host's own operations leave
+/// a VM they are working on alone, and the run stays up for it.
+fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) {
+    let mut exited = exited;
+    // The stop is idempotent for a process that has exited. A failure means it is still there, and a
+    // boot on the same CID would fail on its muxer socket, so the VM stays exited.
+    if let Err(err) = exited.kill() {
+        eprintln!(
+            "noded: run {}: VM {vm} stopped by itself, and its process did not go ({err}); it stays exited",
+            run.id
+        );
+        run.set_vm_exited(vm, exited);
+        return;
+    }
+    let views = match &run.snapshots {
+        Some(store) => {
+            let mut views = store.checkpoints(cid);
+            views.extend(store.view(cid, snapshots::SLEEP));
+            views
+        }
+        None => Vec::new(),
+    };
+    let now = now_ms();
+    let decision = recovery_decision(now, &views, &run.recent_recoveries(vm));
+    if decision == Recovery::GiveUp {
+        eprintln!(
+            "noded: run {}: VM {vm} stopped by itself again, after {RECOVERY_LIMIT} recoveries in {} minutes; it stays exited",
+            run.id,
+            RECOVERY_WINDOW_MS / 60_000
+        );
+        run.set_vm_exited(vm, exited);
+        return;
+    }
+    run.record_recovery(vm, now);
+    // A kill that landed while the snapshots were read ended the run: the VM is the kill's to stop.
+    if !run.is_running() {
+        run.set_vm_killed(vm, exited);
+        return;
+    }
+    let restored = match (&decision, &run.snapshots) {
+        (Recovery::From(name), Some(store)) => match boot_recovered(store, cid, &spec, name) {
+            Ok((fresh, base)) => Some((fresh, base, name.clone())),
+            Err(err) => {
+                eprintln!(
+                    "noded: run {}: VM {vm} did not recover from {name} ({err}); booting it cold",
+                    run.id
+                );
+                None
+            }
+        },
+        _ => None,
+    };
+    let (fresh, base, from) = match restored {
+        Some((fresh, base, name)) if name == snapshots::SLEEP => {
+            (fresh, Some(base), "the sleep snapshot".to_string())
+        }
+        Some((fresh, base, name)) => (fresh, Some(base), format!("checkpoint {name}")),
+        None => match spawner::spawn(spec.clone()) {
+            Ok(fresh) => (fresh, None, "a cold boot".to_string()),
+            Err(err) => {
+                eprintln!(
+                    "noded: run {}: VM {vm} stopped by itself and did not boot again ({err}); it stays exited",
+                    run.id
+                );
+                run.set_vm_exited(vm, exited);
+                return;
+            }
+        },
+    };
+    eprintln!(
+        "noded: run {}: VM {vm} stopped by itself; recovered from {from}",
+        run.id
+    );
+    run.seat_vm(vm, exited, fresh, base);
 }
 
 /// Publishes the part of the VM's serial capture that grew since the last
@@ -3477,6 +3748,8 @@ mod tests {
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
+            snapshots: None,
+            recoveries: Mutex::new(Vec::new()),
             inner: Mutex::new(RunInner {
                 state: run_state,
                 ended_at: None,
@@ -3506,6 +3779,179 @@ mod tests {
             VmState::Exited
         );
         assert_eq!(VmState::from_exit(VmExit::Killed), VmState::Killed);
+    }
+
+    const MINUTE: u64 = 60 * 1000;
+    const HOUR: u64 = 60 * MINUTE;
+    const NOW: u64 = 1_000 * HOUR;
+
+    /// A snapshot named `name`, taken at `taken_at_ms`, as a view reads it back from disk.
+    fn snapshot(name: &str, taken_at_ms: u64) -> SnapshotView {
+        SnapshotView {
+            name: name.to_string(),
+            cid: 7,
+            label: String::new(),
+            kind: "diff".to_string(),
+            taken_at_ms,
+            memory_written: 0,
+            disk_bytes: 0,
+            paused_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_recovery_boots_from_the_newest_snapshot_of_the_last_day_or_cold() {
+        assert_eq!(recovery_decision(NOW, &[], &[]), Recovery::Cold);
+
+        let checkpoints = [
+            snapshot("cp-a", NOW - 5 * HOUR),
+            snapshot("cp-b", NOW - 2 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &checkpoints, &[]),
+            Recovery::From("cp-b".to_string()),
+            "the newest checkpoint"
+        );
+
+        let sleep_newer = [
+            snapshot("cp-b", NOW - 2 * HOUR),
+            snapshot(snapshots::SLEEP, NOW - HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &sleep_newer, &[]),
+            Recovery::From(snapshots::SLEEP.to_string()),
+            "the sleep snapshot, when it is newer"
+        );
+
+        let sleep_older = [
+            snapshot(snapshots::SLEEP, NOW - 3 * HOUR),
+            snapshot("cp-b", NOW - 2 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &sleep_older, &[]),
+            Recovery::From("cp-b".to_string()),
+            "a checkpoint newer than the sleep snapshot"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_older_than_a_day_is_never_booted_from() {
+        let stale = [snapshot("cp-stale", NOW - 25 * HOUR)];
+        assert_eq!(recovery_decision(NOW, &stale, &[]), Recovery::Cold);
+
+        let mixed = [
+            snapshot("cp-stale", NOW - 30 * HOUR),
+            snapshot("cp-day", NOW - 24 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &mixed, &[]),
+            Recovery::From("cp-day".to_string()),
+            "a snapshot a day old still counts; the older one does not"
+        );
+    }
+
+    #[test]
+    fn a_vm_recovered_three_times_in_ten_minutes_stays_exited() {
+        let views = [snapshot("cp-a", NOW - HOUR)];
+        let from_a = Recovery::From("cp-a".to_string());
+
+        assert_eq!(
+            recovery_decision(NOW, &views, &[NOW - MINUTE, NOW - 5 * MINUTE]),
+            from_a,
+            "two recent recoveries are under the limit"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &views,
+                &[NOW - MINUTE, NOW - 5 * MINUTE, NOW - 9 * MINUTE]
+            ),
+            Recovery::GiveUp,
+            "the third recovery in the window is refused"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &[],
+                &[NOW - MINUTE, NOW - 2 * MINUTE, NOW - 3 * MINUTE]
+            ),
+            Recovery::GiveUp,
+            "the limit holds with no snapshot to boot from too"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &views,
+                &[
+                    NOW - MINUTE,
+                    NOW - 2 * MINUTE,
+                    NOW - 11 * MINUTE,
+                    NOW - 12 * MINUTE
+                ]
+            ),
+            from_a,
+            "recoveries older than ten minutes do not count"
+        );
+    }
+
+    #[test]
+    fn recoveries_are_counted_per_vm_and_the_old_ones_are_forgotten() {
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Running,
+            Some(7),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        run.record_recovery(0, 1_000);
+        run.record_recovery(1, 2_000);
+        assert_eq!(run.recent_recoveries(0), vec![1_000]);
+        assert_eq!(run.recent_recoveries(1), vec![2_000]);
+
+        let later = 1_000 + 11 * MINUTE;
+        run.record_recovery(0, later);
+        assert_eq!(
+            run.recent_recoveries(0),
+            vec![later],
+            "the recovery eleven minutes back is out of the window"
+        );
+    }
+
+    #[test]
+    fn only_a_guest_stop_of_a_running_recoverable_vm_is_recovered() {
+        let guest = VmExit::GuestExited { reset: false };
+        assert!(recovers(guest, VmState::Running, true, true));
+        assert!(
+            recovers(
+                VmExit::GuestExited { reset: true },
+                VmState::Running,
+                true,
+                true
+            ),
+            "a guest reset is a crash too"
+        );
+        // A host's stop, kill, wipe, restart, sleep or move kills the VM's process, which reports
+        // as `Killed`, never as a guest exit.
+        assert!(!recovers(VmExit::Killed, VmState::Running, true, true));
+        // A paused or asleep VM is not one that ran on its own.
+        assert!(!recovers(guest, VmState::Paused, true, true));
+        assert!(!recovers(guest, VmState::Asleep, true, true));
+        assert!(!recovers(guest, VmState::Killed, true, true));
+        // Not a keepalive agent or sandbox, or with recovery turned off (`--no-recover`).
+        assert!(!recovers(guest, VmState::Running, false, true));
+        assert!(!recovers(guest, VmState::Running, true, false));
+    }
+
+    #[test]
+    fn keepalive_agents_and_sandboxes_are_recovered_unless_the_run_churns() {
+        assert!(is_recoverable_run(true, false, None));
+        assert!(is_recoverable_run(false, true, None));
+        assert!(
+            !is_recoverable_run(false, false, None),
+            "the frozen demo session ends by design"
+        );
+        assert!(!is_recoverable_run(true, false, Some(3)), "a churn run");
+        assert!(!is_recoverable_run(false, true, Some(3)), "a churn sandbox");
     }
 
     /// A run whose CIDs the caller pins is the demo task's frozen session, and
@@ -4280,6 +4726,8 @@ mod sandbox_tests {
             created_at: now_ms(),
             events: EventBus::new(),
             cids: Arc::new(CidBook::default()),
+            snapshots: None,
+            recoveries: Mutex::new(Vec::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Running,
                 ended_at: None,
