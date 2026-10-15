@@ -171,6 +171,13 @@ fn mix_entropy(bytes: &[u8; ENTROPY_BYTES]) -> io::Result<()> {
     Ok(())
 }
 
+/// Writes every dirty page of the guest's filesystems to disk (sync(2)), before the host stops the VM
+/// without keeping its memory.
+pub fn sync_filesystems() {
+    // SAFETY: sync(2) takes no arguments and cannot fail.
+    unsafe { libc::sync() };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

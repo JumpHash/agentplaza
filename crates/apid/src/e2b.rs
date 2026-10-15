@@ -61,7 +61,10 @@ const DEFAULT_TIMEOUT_S: u32 = 300;
 const MAX_TIMEOUT_S: u32 = 86_400;
 const MAX_REFRESH_S: u32 = 3_600;
 const DEFAULT_REFRESH_S: u32 = 300;
-const ENVD_VERSION: &str = "0.2.0";
+/// The envd version sandboxes report. The SDKs turn features on by it: 0.3.0 command stdin, 0.4.0 the
+/// daemon's default user (no `username` sent), 0.5.2 `CloseStdin`, 0.5.7 raw octet-stream uploads.
+/// The daemon serves all of them; 0.6.2 (file metadata in entries) and later it does not.
+const ENVD_VERSION: &str = "0.5.7";
 const CLIENT_ID: &str = "agentplaza";
 const SANDBOX_VCPUS: u32 = 1;
 const SANDBOX_MEMORY_MIB: u32 = 512;
@@ -1181,6 +1184,20 @@ fn memory_body(keep_memory: bool) -> Value {
     }
 }
 
+/// Asks the sandbox's daemon to flush the guest's filesystems (`POST /sync`). A failure is logged and
+/// the pause goes on: the disk then holds what the guest had written back.
+fn flush(sandbox: &Sandbox) {
+    let token = sandbox.access_token.as_deref();
+    match gateway(&sandbox.id, token, "POST", "/sync", None, GATEWAY_CALL) {
+        Ok(reply) if (200..300).contains(&reply.status) => {}
+        Ok(reply) => eprintln!(
+            "apid: sandbox {}: /sync answered {}",
+            sandbox.id, reply.status
+        ),
+        Err(why) => eprintln!("apid: sandbox {}: /sync failed: {why}", sandbox.id),
+    }
+}
+
 fn pause_sandbox(
     app: &App,
     sandbox: &Sandbox,
@@ -1188,6 +1205,9 @@ fn pause_sandbox(
     reason: &str,
     keep_memory: bool,
 ) -> Result<(), Refused> {
+    if !keep_memory && sandbox.phase == Phase::Running {
+        flush(sandbox);
+    }
     noded_ok(
         app,
         "POST",
@@ -1401,11 +1421,14 @@ fn resume(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Ref
     Ok(Response::json(201, &created_view(&woken)))
 }
 
-/// Connect: a paused sandbox wakes (201); a running one gets its time to live set (200).
-fn connect(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
+/// Connect: a paused sandbox wakes (201); a running one gets its time to live set (200). The v1 body
+/// must name a timeout; the v2 one (`ConnectSandboxV2`) defaults it.
+fn connect(app: &App, req: &Request, id: &str, key: &str, v2: bool) -> Result<Response, Refused> {
     let body: WakeBody = body_or_default(req)?;
-    let Some(timeout) = body.timeout else {
-        return Err(invalid("timeout is required"));
+    let timeout = match (body.timeout, v2) {
+        (Some(timeout), _) => timeout,
+        (None, true) => i64::from(DEFAULT_TIMEOUT_S),
+        (None, false) => return Err(invalid("timeout is required")),
     };
     let timeout = seconds(timeout, 0, MAX_TIMEOUT_S, "timeout")?;
     if find(app, id)?.phase == Phase::Running {
@@ -1732,7 +1755,21 @@ pub fn routes(router: Router<App>) -> Router<App> {
             guard(app, req, |key| resume(app, req, p.get("id"), key))
         })
         .post("/e2b/sandboxes/{id}/connect", |app, req, p| {
-            guard(app, req, |key| connect(app, req, p.get("id"), key))
+            guard(app, req, |key| connect(app, req, p.get("id"), key, false))
+        })
+        // The v2 routes the current SDKs call: create (`NewSandboxV2`, always secured) and connect.
+        .post("/e2b/v2/sandboxes", |app, req, _| {
+            guard(app, req, |key| create(app, req, key))
+        })
+        .post("/e2b/v2/sandboxes/{id}/connect", |app, req, p| {
+            guard(app, req, |key| connect(app, req, p.get("id"), key, true))
+        })
+        // Metrics are not sampled for sandboxes: the list is empty, as for a sandbox that just started.
+        .get("/e2b/sandboxes/{id}/metrics", |app, req, p| {
+            guard(app, req, |_| {
+                find(app, p.get("id"))?;
+                Ok(Response::json(200, &json!([])))
+            })
         })
         .post("/e2b/sandboxes/{id}/snapshots", |app, req, p| {
             guard(app, req, |key| snapshot(app, req, p.get("id"), key))
@@ -2014,7 +2051,7 @@ mod tests {
         assert_eq!(created["sandboxID"], "sb0123456789abcdef");
         assert_eq!(created["templateID"], "base");
         assert_eq!(created["clientID"], "agentplaza");
-        assert_eq!(created["envdVersion"], "0.2.0");
+        assert_eq!(created["envdVersion"], "0.5.7");
         assert_eq!(created["envdAccessToken"], "token");
         assert!(created["domain"].is_null());
 

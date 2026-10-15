@@ -136,6 +136,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The program to run for `cmd`. The E2B SDKs run every command as `/bin/bash -l -c <cmd>` (and a
+/// PTY as `/bin/bash -i -l`); a guest with no bash runs them with its POSIX shell, `/bin/sh`, which
+/// takes the same flags. `exists` is `Path::exists` outside tests.
+fn shell_of(cmd: &str, exists: impl Fn(&Path) -> bool) -> &str {
+    if cmd == "/bin/bash" && !exists(Path::new(cmd)) && exists(Path::new("/bin/sh")) {
+        "/bin/sh"
+    } else {
+        cmd
+    }
+}
+
 /// Starts the process `request.process` describes, lists it, and starts the threads that feed its
 /// queue: one per output, and one that waits for the exit and then queues the end event.
 fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
@@ -148,6 +159,7 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
         .and_then(Value::as_str)
         .filter(|cmd| !cmd.is_empty())
         .ok_or_else(|| invalid("process.cmd must be a non-empty string"))?;
+    let cmd = shell_of(cmd, Path::exists);
     let args = string_list(process.get("args"), "process.args")?;
     let envs = string_map(process.get("envs"), "process.envs")?;
     let dir = match process.get("cwd").and_then(Value::as_str) {
@@ -700,6 +712,24 @@ mod tests {
 
     use super::super::test_support::{call, call_stream, json_body, test_ctx, wait_for_tag};
     use super::*;
+
+    #[test]
+    fn bash_falls_back_to_sh_only_when_the_guest_has_no_bash() {
+        fn has(paths: &'static [&'static str]) -> impl Fn(&Path) -> bool {
+            move |p: &Path| paths.iter().any(|x| Path::new(x) == p)
+        }
+        assert_eq!(shell_of("/bin/bash", has(&["/bin/sh"])), "/bin/sh");
+        assert_eq!(
+            shell_of("/bin/bash", has(&["/bin/sh", "/bin/bash"])),
+            "/bin/bash"
+        );
+        assert_eq!(
+            shell_of("/bin/bash", has(&[])),
+            "/bin/bash",
+            "nothing to fall back to"
+        );
+        assert_eq!(shell_of("/usr/bin/env", has(&["/bin/sh"])), "/usr/bin/env");
+    }
 
     fn output_of(events: &[Value], stream: &str) -> Vec<u8> {
         events

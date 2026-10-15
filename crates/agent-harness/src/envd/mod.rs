@@ -240,6 +240,12 @@ fn dispatch(request: &Request, shared: &Shared) -> Reply {
     match (request.method.as_str(), last_segment(&request.path)) {
         ("GET", "health") => Reply::empty(204),
         ("POST", "init") => init(request, shared),
+        // A plaza extension: the hub flushes the guest's filesystems before it stops the VM without
+        // a memory image (an E2B pause with `memory: false`), so what was written survives the boot.
+        ("POST", "sync") => {
+            crate::restore::sync_filesystems();
+            Reply::empty(204)
+        }
         ("GET" | "POST", "files") => {
             let ctx = read_lock(shared).clone();
             files::handle(request, &ctx)
@@ -1096,7 +1102,10 @@ mod tests {
             ]
         );
         assert_eq!(decode_all(&[]), Ok(Vec::new()));
-        assert!(decode_all(&body[..body.len() - 1]).is_err(), "a truncated run");
+        assert!(
+            decode_all(&body[..body.len() - 1]).is_err(),
+            "a truncated run"
+        );
     }
 
     #[test]

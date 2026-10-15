@@ -46,6 +46,9 @@ struct Who {
     gid: u32,
 }
 
+/// The user E2B's SDKs name when they name none (envd before 0.4.0, and some clients still do).
+const E2B_DEFAULT_USER: &str = "user";
+
 impl Who {
     fn new(username: Option<&str>, ctx: &Ctx) -> Result<Self, Reply> {
         match username.filter(|name| !name.is_empty()) {
@@ -54,13 +57,24 @@ impl Who {
                 uid: ctx.uid,
                 gid: ctx.gid,
             }),
-            Some(name) => lookup_user(name)
-                .map(|user| Self {
+            Some(name) => match lookup_user(name) {
+                Some(user) => Ok(Self {
                     home: user.home,
                     uid: user.uid,
                     gid: user.gid,
-                })
-                .ok_or_else(|| error(401, format!("error looking up user '{name}': unknown user"))),
+                }),
+                // E2B's templates name their default user `user`; a guest without one has its own
+                // default user, which is what the caller means.
+                None if name == E2B_DEFAULT_USER => Ok(Self {
+                    home: ctx.home.clone(),
+                    uid: ctx.uid,
+                    gid: ctx.gid,
+                }),
+                None => Err(error(
+                    401,
+                    format!("error looking up user '{name}': unknown user"),
+                )),
+            },
         }
     }
 }
