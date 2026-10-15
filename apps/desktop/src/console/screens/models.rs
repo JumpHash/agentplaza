@@ -288,13 +288,28 @@ pub struct Settings {
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
-const ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
+const ENGINE_IDS: [&str; 4] = ["claude", "codex", "opencode", "gemini"];
+
+/// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI is off until the owner
+/// turns it on.
+const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// The name an engine's switch shows.
+fn engine_label(id: &'static str) -> &'static str {
+    match id {
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "opencode" => "OpenCode",
+        "gemini" => "Gemini CLI",
+        other => other,
+    }
+}
 
 /// The transports `engines_mode` may name. `acp` is the first, and the default.
 const ENGINE_MODES: [&str; 2] = ["acp", "headless"];
 
 fn default_engines() -> Vec<String> {
-    ENGINE_IDS.into_iter().map(String::from).collect()
+    DEFAULT_ENGINE_IDS.into_iter().map(String::from).collect()
 }
 
 fn default_engines_mode() -> String {
@@ -2594,7 +2609,7 @@ fn engines_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
         .into_iter()
         .map(|id| {
             iced::widget::checkbox(s.engines_enabled.iter().any(|e| e == id))
-                .label(id)
+                .label(engine_label(id))
                 .on_toggle(move |on| Msg::PolicyEngine(id.to_string(), on))
                 .into()
         })
@@ -2684,6 +2699,16 @@ mod tests {
 
     fn engines(list: &[&str]) -> Vec<String> {
         list.iter().map(|e| e.to_string()).collect()
+    }
+
+    #[test]
+    fn gemini_is_named_but_off_by_default() {
+        assert_eq!(default_engines(), ["claude", "codex", "opencode"]);
+        assert_eq!(
+            engines_after(&engines(&["claude"]), "gemini", true),
+            Some(engines(&["claude", "gemini"]))
+        );
+        assert_eq!(engine_label("gemini"), "Gemini CLI");
     }
 
     #[test]

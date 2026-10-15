@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
-import { ENGINES, toggleEngine } from '../src/views/engines-model';
+import { DEFAULT_ENGINES, ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
@@ -383,7 +383,10 @@ sectionEnd('hub mcp tests: ok');
 
 // The coding engines: switching one on or off keeps the canonical order, and the last engine stays on.
 {
-  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode'], 'engines: the three engines in order');
+  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini'], 'engines: the four engines in order');
+  eq(ENGINES.find((e) => e.value === 'gemini')?.label, 'Gemini CLI', 'engines: Gemini CLI is labelled');
+  eq(DEFAULT_ENGINES, ['claude', 'codex', 'opencode'], 'engines: Gemini CLI is off by default');
+  eq(toggleEngine(['claude'], 'gemini', true), ['claude', 'gemini'], 'engines: Gemini CLI switches on after the others');
   eq(toggleEngine(['claude', 'codex'], 'codex', false), ['claude'], 'engines: switching one off leaves the rest');
   eq(toggleEngine(['claude'], 'claude', false), ['claude'], 'engines: the last engine cannot be switched off');
   eq(toggleEngine(['codex'], 'claude', true), ['claude', 'codex'], 'engines: switching on keeps the canonical order');

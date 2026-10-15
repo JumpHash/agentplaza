@@ -220,8 +220,22 @@ pub(crate) fn code_engine_model(
     let Some(model) = model_input(input)? else {
         return Ok(None);
     };
+    engine_provider(input, model)?;
     app.settings.allowed(tier_of(role), model)?;
     Ok(Some(model.to_string()))
+}
+
+/// The provider a `gemini` engine's model must name: Gemini CLI reaches only the gateway's Gemini
+/// route, so `gemini/<model>` is the one shape it takes. The other engines keep their own routes.
+fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
+    if input.get("engine").and_then(Value::as_str) == Some("gemini")
+        && !model.starts_with("gemini/")
+    {
+        return Err(format!(
+            "invalid input: \"model\" is {model:?}; Gemini CLI takes gemini/<model> models"
+        ));
+    }
+    Ok(())
 }
 
 /// Refuses a `code_engine` call that names an engine the owner has not enabled (`engines_enabled`).
@@ -395,9 +409,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1288,6 +1302,26 @@ mod tests {
     }
 
     #[test]
+    fn code_engine_gemini_takes_only_gemini_models() {
+        let ask =
+            |engine: &str, model: &str| json!({"engine": engine, "prompt": "p", "model": model});
+        assert!(
+            engine_provider(
+                &ask("gemini", "gemini/gemini-2.5-pro@high"),
+                "gemini/gemini-2.5-pro@high"
+            )
+            .is_ok()
+        );
+        let err = engine_provider(&ask("gemini", "openrouter/x"), "openrouter/x").unwrap_err();
+        assert!(
+            err.contains("Gemini CLI takes gemini/<model> models"),
+            "{err}"
+        );
+        // The other engines keep their own routes.
+        assert!(engine_provider(&ask("claude", "openrouter/x"), "openrouter/x").is_ok());
+    }
+
+    #[test]
     fn code_engine_model_absent_or_empty_is_the_default() {
         assert_eq!(model_input(&json!({"prompt": "p"})), Ok(None));
         assert_eq!(model_input(&json!({"model": "  "})), Ok(None));
@@ -1299,7 +1333,12 @@ mod tests {
         let spec = spec("code_engine").expect("code_engine is a spec");
         assert!(spec.description.contains("streams live"));
         assert!(spec.description.contains("`session`"));
+        assert!(spec.description.contains("gemini = Gemini CLI"));
         let props = &spec.input_schema["properties"];
+        assert_eq!(
+            props["engine"]["enum"],
+            json!(["claude", "codex", "opencode", "gemini"])
+        );
         assert_eq!(props["session"]["type"], "string");
         assert_eq!(props["mode"]["type"], "string");
         let mut schema = spec.input_schema.clone();

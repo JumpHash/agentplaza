@@ -9,7 +9,7 @@ import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
 import { tierChoices } from './agent-detail';
-import { ENGINES, toggleEngine } from './engines-model';
+import { DEFAULT_ENGINES, ENGINES, toggleEngine } from './engines-model';
 
 type Tier = 'orchestrator' | 'worker';
 type Price = { input: number; output: number };
@@ -251,7 +251,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   /** The coding engines an agent may run, and how they run. At least one engine stays on (the last box is locked). */
   function enginesCard(): HTMLElement {
     // A hub from before the engine settings sends neither field: it runs the three engines over ACP.
-    copy.engines_enabled ??= ENGINES.map((engine) => engine.value);
+    copy.engines_enabled ??= [...DEFAULT_ENGINES];
     copy.engines_mode ??= 'acp';
     const enabled = copy.engines_enabled;
     const boxes = ENGINES.map((engine) => {

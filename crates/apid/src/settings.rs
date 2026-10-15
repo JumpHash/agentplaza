@@ -146,8 +146,11 @@ impl BoardPauses {
 /// The default for `review_timeout_minutes`: half an hour.
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
 
-/// The coding engines a `code_engine` call may name, all enabled by default.
-pub const ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
+/// The coding engines a `code_engine` call may name.
+pub const ENGINE_IDS: [&str; 4] = ["claude", "codex", "opencode", "gemini"];
+
+/// The engines enabled out of the box. Gemini CLI is named but off until the owner enables it.
+pub const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The transports `engines_mode` may name: the Agent Client Protocol, or the headless engines.
 pub const ENGINE_MODES: [&str; 2] = ["acp", "headless"];
@@ -214,7 +217,7 @@ impl Default for Settings {
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
             workstation_recordings: RecordingDefaults::default(),
             board_pauses: BoardPauses::default(),
-            engines_enabled: ENGINE_IDS.map(String::from).to_vec(),
+            engines_enabled: DEFAULT_ENGINE_IDS.map(String::from).to_vec(),
             engines_mode: ENGINE_MODES[0].into(),
             acp_enabled: false,
         }
@@ -1413,7 +1416,9 @@ mod tests {
         assert!(check_engines(&s).is_ok());
 
         s.engines_enabled = vec!["gemini".into()];
-        assert!(check_engines(&s).unwrap_err().contains("gemini"));
+        assert!(check_engines(&s).is_ok(), "Gemini CLI may be enabled");
+        s.engines_enabled = vec!["bash".into()];
+        assert!(check_engines(&s).unwrap_err().contains("bash"));
         s.engines_enabled = Vec::new();
         assert!(check_engines(&s).unwrap_err().contains("at least one"));
         s.engines_enabled = vec!["claude".into(), "claude".into()];
@@ -1430,24 +1435,24 @@ mod tests {
     fn engines_repair_on_load_and_old_settings_load_the_defaults() {
         // Settings saved before the engines existed carry neither key: they load the defaults.
         let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
-        assert_eq!(old.engines_enabled, ENGINE_IDS);
+        assert_eq!(old.engines_enabled, DEFAULT_ENGINE_IDS);
         assert_eq!(old.engines_mode, "acp");
 
         // A hand-edited file: an unknown or repeated id is dropped, a bad mode is reset.
         let mut s = Settings::default();
-        s.engines_enabled = vec!["claude".into(), "gemini".into(), "claude".into()];
+        s.engines_enabled = vec!["claude".into(), "bash".into(), "claude".into()];
         s.engines_mode = "pipes".into();
         let (fixed, notes) = repair(s, false);
         assert_eq!(fixed.engines_enabled, ["claude"]);
         assert_eq!(fixed.engines_mode, "acp");
-        assert!(notes.iter().any(|n| n.contains("gemini")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("bash")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("pipes")), "{notes:?}");
 
         // A list with no engine left is the defaults.
         let mut none = Settings::default();
-        none.engines_enabled = vec!["gemini".into()];
+        none.engines_enabled = vec!["bash".into()];
         let (fixed, _) = repair(none, false);
-        assert_eq!(fixed.engines_enabled, ENGINE_IDS);
+        assert_eq!(fixed.engines_enabled, DEFAULT_ENGINE_IDS);
     }
 
     #[test]

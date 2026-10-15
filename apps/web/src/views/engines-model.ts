@@ -5,7 +5,11 @@ export const ENGINES: { value: string; label: string }[] = [
   { value: 'claude', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
+  { value: 'gemini', label: 'Gemini CLI' },
 ];
+
+/** The engines enabled out of the box: Gemini CLI is listed but off until the owner turns it on (apid's settings). */
+export const DEFAULT_ENGINES = ['claude', 'codex', 'opencode'];
 
 /**
  * The enabled list after one engine is switched, in the order of ENGINES. Switching off the last engine is refused:

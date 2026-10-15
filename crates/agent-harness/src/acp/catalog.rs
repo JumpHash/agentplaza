@@ -32,8 +32,8 @@ pub struct Entry {
     pub refused_modes: &'static [&'static str],
 }
 
-/// Every engine the harness knows, in the order they are listed to the model. (Gemini CLI speaks ACP
-/// too, `gemini --acp`, but the gateway does not relay Gemini models yet, so it is not listed.)
+/// Every engine the harness knows, in the order they are listed to the model. Gemini CLI is ACP
+/// only (`gemini --acp`): it has no headless run, and the owner enables it in `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -64,6 +64,18 @@ pub const ENGINES: &[Entry] = &[
         args: &["acp"],
         model: ModelVia::ConfigOption,
         refused_modes: &[],
+    },
+    Entry {
+        id: "gemini",
+        package: "@google/gemini-cli",
+        version: "0.62.0",
+        integrity: "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww==",
+        binary: "gemini",
+        args: &["--acp"],
+        // Gemini CLI takes its model from the environment (`GEMINI_MODEL`), not the session, so the
+        // launch names no model for it (`engines::acp_launch`).
+        model: ModelVia::ConfigOption,
+        refused_modes: &["yolo"],
     },
 ];
 
@@ -101,5 +113,19 @@ mod tests {
             assert_eq!(entry(engine.id), Some(engine));
         }
         assert_eq!(entry("bash"), None);
+    }
+
+    #[test]
+    fn gemini_is_the_cli_in_acp_mode_with_yolo_refused() {
+        let gemini = entry("gemini").expect("gemini");
+        assert_eq!(gemini.package, "@google/gemini-cli");
+        assert_eq!(gemini.version, "0.62.0");
+        assert_eq!(gemini.binary, "gemini");
+        assert_eq!(gemini.args, ["--acp"]);
+        assert_eq!(gemini.refused_modes, ["yolo"]);
+        assert_eq!(
+            gemini.integrity,
+            "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww=="
+        );
     }
 }

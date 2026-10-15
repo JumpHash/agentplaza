@@ -73,6 +73,11 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
+            // Gemini CLI has no headless run: its ACP adapter is the only way it runs.
+            "gemini" => Err(
+                "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
             _ => Err(format!(
                 "invalid input: \"engine\" must be claude, codex or opencode, not {name:?}"
             )),
@@ -294,6 +299,10 @@ pub(crate) fn acp_launch(
     engine_id: &str,
     model: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), String> {
+    if engine_id == "gemini" {
+        // Gemini CLI reads its model from `GEMINI_MODEL`, so the session is given none.
+        return Ok((engine_env(workspace.dir(), &gemini_route(model)?), None));
+    }
     let engine = Engine::parse(engine_id)?;
     let route = model_route(engine, model)?;
     let model_id = match (engine, model) {
@@ -305,6 +314,30 @@ pub(crate) fn acp_launch(
         _ => route.model.clone(),
     };
     Ok((engine_env(workspace.dir(), &route), model_id))
+}
+
+/// The route for Gemini CLI, which runs over ACP only: the gateway's Gemini route, the placeholder
+/// key, and the model as `GEMINI_MODEL`. The model is `gemini/<model>`; no other provider is served
+/// to the CLI. The workspace is trusted because it is the agent's own folder inside its VM.
+fn gemini_route(model: Option<&str>) -> Result<Route, String> {
+    let mut env = vec![
+        (
+            "GOOGLE_GEMINI_BASE_URL".to_string(),
+            format!("{GATEWAY}/gemini"),
+        ),
+        ("GEMINI_API_KEY".to_string(), "plaza".to_string()),
+        ("GEMINI_CLI_TRUST_WORKSPACE".to_string(), "true".to_string()),
+    ];
+    if let Some(model) = model {
+        let (provider, rest) = split_model(model)?;
+        if provider != "gemini" {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Gemini CLI takes gemini/<model> models"
+            ));
+        }
+        env.push(("GEMINI_MODEL".to_string(), rest.to_string()));
+    }
+    Ok(Route { env, model: None })
 }
 
 /// The `env` arguments that start the headless engine: its pairs (see [`engine_env`]), then the
@@ -800,6 +833,45 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+
+    #[test]
+    fn gemini_launch_points_at_the_gateway_and_takes_its_model_from_the_environment() {
+        let workspace = scratch("gemini-launch");
+        let (env, model) = acp_launch(&workspace, "gemini", None).expect("gemini");
+        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert!(env.contains(&"GOOGLE_GEMINI_BASE_URL=http://plaza.gateway/gemini".to_string()));
+        assert!(env.contains(&"GEMINI_API_KEY=plaza".to_string()));
+        assert!(env.contains(&"GEMINI_CLI_TRUST_WORKSPACE=true".to_string()));
+        assert!(!env.iter().any(|pair| pair.starts_with("GEMINI_MODEL=")));
+        assert_eq!(model, None);
+
+        let (env, model) =
+            acp_launch(&workspace, "gemini", Some("gemini/gemini-2.5-pro")).expect("a model");
+        assert!(env.contains(&"GEMINI_MODEL=gemini-2.5-pro".to_string()));
+        assert_eq!(model, None);
+    }
+
+    #[test]
+    fn gemini_refuses_a_model_from_another_provider() {
+        let workspace = scratch("gemini-refuse");
+        let err =
+            acp_launch(&workspace, "gemini", Some("anthropic/claude-x")).expect_err("refused");
+        assert_eq!(
+            err,
+            "invalid input: \"model\" is \"anthropic/claude-x\"; Gemini CLI takes gemini/<model> models"
+        );
+    }
+
+    #[test]
+    fn gemini_is_acp_only_under_the_headless_engines() {
+        let workspace = scratch("gemini-headless");
+        let input = json!({"engine": "gemini", "prompt": "p"});
+        let err = Job::parse(&workspace, &input).err().expect("refused");
+        assert!(
+            err.contains("Gemini CLI runs over ACP only; switch engines_mode to acp"),
+            "{err}"
+        );
     }
 
     #[test]
