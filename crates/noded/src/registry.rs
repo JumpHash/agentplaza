@@ -1571,12 +1571,31 @@ impl Registry {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
+        let sleep = store.dir(cid, snapshots::SLEEP);
+        // A VM that arrived asleep from another node has never run here: there is no old handle to
+        // swap out, only its spec.
+        if let Some(spec) = run.take_unbooted(vm)? {
+            return match spawner::spawn(VmSpec {
+                restore: Some(sleep.clone()),
+                ..spec.clone()
+            }) {
+                Ok(fresh) => {
+                    run.seat_first(vm, spec, fresh, Some(sleep));
+                    Ok(run)
+                }
+                Err(err) => {
+                    run.untake_unbooted(vm, spec);
+                    Err(VmOpError::Failed(format!(
+                        "VM {vm} did not wake from its imported snapshot: {err}"
+                    )))
+                }
+            };
+        }
         let Held {
             handle: killed,
             spec,
             ..
         } = run.take_vm(vm, &[VmState::Asleep])?;
-        let sleep = store.dir(cid, snapshots::SLEEP);
         let woken = match spawner::spawn(VmSpec {
             restore: Some(sleep.clone()),
             ..spec.clone()
@@ -2817,6 +2836,57 @@ impl Run {
         }
         if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
             // The new VM has a new serial capture, which starts empty.
+            slot.runtime = fresh.runtime();
+            slot.handle = Some(fresh);
+            slot.state = VmState::Running;
+            slot.serial_seen = 0;
+            slot.restored_from = restored_from;
+            self.events.publish(Event::Vm {
+                run: self.id.clone(),
+                vm,
+                state: VmState::Running.as_str(),
+            });
+        }
+    }
+
+    /// For an asleep VM that has never run on this node (imported, so its slot has no handle): takes
+    /// its spec out of the slot, so a second wake finds it busy, and returns it. `None` for a VM that
+    /// has a handle (the usual wake path).
+    fn take_unbooted(&self, vm: u32) -> Result<Option<VmSpec>, VmOpError> {
+        let mut inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter_mut()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        if slot.handle.is_some() {
+            return Ok(None);
+        }
+        if slot.state != VmState::Asleep {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
+        slot.spec.take().map(Some).ok_or(VmOpError::Busy(vm))
+    }
+
+    /// Puts back the spec [`Run::take_unbooted`] took (its wake failed).
+    fn untake_unbooted(&self, vm: u32, spec: VmSpec) {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            slot.spec = Some(spec);
+        }
+    }
+
+    /// Seats the first VM an imported slot runs: its spec back, its handle, running.
+    fn seat_first(&self, vm: u32, spec: VmSpec, fresh: VmHandle, restored_from: Option<PathBuf>) {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            slot.spec = Some(spec);
             slot.runtime = fresh.runtime();
             slot.handle = Some(fresh);
             slot.state = VmState::Running;
