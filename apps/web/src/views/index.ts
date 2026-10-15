@@ -7,6 +7,7 @@ import { mount as approvals } from './approvals';
 import { mount as board } from './board';
 import { mount as conversations } from './conversations';
 import { mount as e2b } from './e2b';
+import { mount as volumes } from './volumes';
 import { mount as egressCredentials } from './egress-credentials';
 import { mount as council } from './council';
 import { mount as files } from './files';
@@ -73,6 +74,7 @@ export const SCREENS: Screen[] = [
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },
   { key: 'egress', label: 'Egress credentials', icon: 'key', section: 'Setup', mount: egressCredentials },
   { key: 'e2b', label: 'E2B API', icon: 'wrench', section: 'Setup', mount: e2b },
+  { key: 'volumes', label: 'Volumes', icon: 'wrench', section: 'Setup', mount: volumes },
   { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
   { key: 'workstations', label: 'Workstations', icon: 'harness', section: 'Setup', mount: workstations },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },

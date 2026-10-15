@@ -178,6 +178,8 @@ export interface Settings {
   idle_sleep_min: number;
   /** Roles whose agents never sleep when idle. */
   sleep_never_roles: string[];
+  /** Shared read-only data volumes per role: agents of the role mount each one at /data/<name>. */
+  role_volumes: Record<string, string[]>;
   /** Take a checkpoint of the agent's VM before each irreversible tool call. */
   vm_auto_checkpoints: boolean;
 }
@@ -1245,6 +1247,14 @@ export const e2bApi = {
   pauseSandbox: (id: string) => post<null>(`/v1/e2b/sandboxes/${seg(id)}/pause`, {}),
   /** Resumes a paused sandbox (200 or 201). */
   resumeSandbox: (id: string) => post<unknown>(`/v1/e2b/sandboxes/${seg(id)}/resume`, {}),
+};
+
+/** A shared read-only data volume on the hub machine (`/v1/volumes`): agents of a role mount it at /data/<name>. */
+export interface DataVolume { name: string; size_bytes: number; created_ms: number; source: string; in_use: number[] }
+export const volumesApi = {
+  list: () => get<DataVolume[]>('/v1/volumes'),
+  create: (name: string, source: string) => post<DataVolume>('/v1/volumes', { name, source }),
+  remove: (name: string) => del<{ removed: boolean }>(`/v1/volumes/${seg(name)}`),
 };
 
 export const mcpApi = {

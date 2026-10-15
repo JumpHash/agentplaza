@@ -40,6 +40,7 @@ import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
 import { e2bSetupText, memoryText, sandboxActions, sandboxTime } from '../src/views/e2b';
 import { movableNodes, moveText } from '../src/views/agent-detail';
+import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1408,6 +1409,10 @@ sectionEnd('board owner composer tests: ok');
   eq([wholeInRange('1441', 0, 1440), wholeInRange('-1', 0, 1440), wholeInRange('2.5', 0, 1440), wholeInRange('', 0, 1440), wholeInRange('   ', 0, 1440), wholeInRange('x', 0, 1440)], [null, null, null, null, null, null], 'wholeInRange: out of range, negative, fractional, blank or text is refused');
   eq(sleepRoles('coder, reviewer,, coder ,'), ['coder', 'reviewer'], 'sleepRoles: trimmed, blanks and repeats dropped, order kept');
   eq(sleepRoles('   '), [], 'sleepRoles: a blank field names no role');
+  eq([volumeNameOk('deps'), volumeNameOk('a'.repeat(20)), volumeNameOk('a'.repeat(21)), volumeNameOk('Deps'), volumeNameOk('-deps'), volumeNameOk('')], [true, true, false, false, false, false], 'volumes: a name is a-z, 0-9 and dashes, 1 to 20 characters, not starting with a dash');
+  eq(parseVolumeList('deps, models  ,, ci-2').names, ['deps', 'models', 'ci-2'], 'volumes: a role list splits on commas and spaces, blanks dropped, order kept');
+  eq(parseVolumeList('   ').names, [], 'volumes: a blank role list names no volume');
+  eq([parseVolumeList('deps, Data').error === undefined, parseVolumeList('a,a').error === undefined, parseVolumeList('a,b,c,d,e').error === undefined], [false, false, false], 'volumes: a bad name, a repeat, or a fifth volume is refused');
 }
 sectionEnd('sleep and checkpoint tests: ok');
 
