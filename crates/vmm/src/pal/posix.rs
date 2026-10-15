@@ -236,7 +236,9 @@ pub mod eventfd {
 }
 
 pub mod epoll {
+    use super::eventfd::EventFd;
     use super::{AsRawFd, RawFd, lock};
+    use std::cell::OnceCell;
     use std::collections::HashMap;
     use std::io::{self, ErrorKind};
     use std::ops::{BitAnd, BitOr, BitOrAssign};
@@ -266,11 +268,64 @@ pub mod epoll {
         rc < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
     }
 
+    /// The registrations of one Epoll, and the wakes of the threads now waiting on it.
     struct Registry {
         entries: Mutex<HashMap<RawFd, EpollEvent>>,
-        /// Written by every successful `ctl`, so that a `wait` blocked in poll(2)
-        /// wakes and looks at the registrations again.
-        wake: super::eventfd::EventFd,
+        /// The wakes of the threads waiting on this registry, directly or through an outer Epoll that
+        /// flattens it. Every successful `ctl` writes each one, so a `wait` blocked in poll(2) looks at
+        /// the registrations again.
+        waiters: Mutex<Vec<Arc<EventFd>>>,
+    }
+
+    thread_local! {
+        /// This thread's wake descriptor, created by its first `wait`.
+        static THREAD_WAKE: OnceCell<Arc<EventFd>> = const { OnceCell::new() };
+    }
+
+    /// This thread's wake descriptor, created on first use.
+    fn this_thread_wake() -> io::Result<Arc<EventFd>> {
+        THREAD_WAKE.with(|cell| -> io::Result<Arc<EventFd>> {
+            if let Some(wake) = cell.get() {
+                return Ok(Arc::clone(wake));
+            }
+            let wake = Arc::new(EventFd::new(0)?);
+            // Only this thread sets the cell, and only once, so `set` cannot fail.
+            let _ = cell.set(Arc::clone(&wake));
+            Ok(wake)
+        })
+    }
+
+    /// A waiting thread's wake, registered with the registries one `wait` pass polls. Dropping it
+    /// unregisters the wake from each, so every return path leaves nothing registered.
+    struct Registration {
+        wake: Arc<EventFd>,
+        registries: Vec<Arc<Registry>>,
+    }
+
+    impl Registration {
+        fn new(wake: Arc<EventFd>) -> Registration {
+            Registration {
+                wake,
+                registries: Vec::new(),
+            }
+        }
+
+        /// Registers the wake with `registry`, unless it already is.
+        fn add(&mut self, registry: &Arc<Registry>) {
+            if self.registries.iter().any(|r| Arc::ptr_eq(r, registry)) {
+                return;
+            }
+            lock(&registry.waiters).push(Arc::clone(&self.wake));
+            self.registries.push(Arc::clone(registry));
+        }
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            for registry in &self.registries {
+                lock(&registry.waiters).retain(|w| !Arc::ptr_eq(w, &self.wake));
+            }
+        }
     }
 
     // Bit-compatible with the Linux `EPOLL*` values for the flags listed.
@@ -415,8 +470,8 @@ pub mod epoll {
         inner: Option<EventSet>,
         /// The nested registry it was read from, or `None` for a direct entry.
         home: Option<Arc<Registry>>,
-        /// For a wake descriptor, the registry whose wake it is. Never reported.
-        wake: Option<Arc<Registry>>,
+        /// Whether this is the waiting thread's wake descriptor. Never reported.
+        wake: bool,
     }
 
     impl Epoll {
@@ -424,7 +479,7 @@ pub mod epoll {
             let handle = -NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
             let registry = Arc::new(Registry {
                 entries: Mutex::new(HashMap::new()),
-                wake: super::eventfd::EventFd::new(0)?,
+                waiters: Mutex::new(Vec::new()),
             });
             lock(registries()).insert(handle, Arc::downgrade(&registry));
             Ok(Epoll {
@@ -460,7 +515,9 @@ pub mod epoll {
             }
             // Release the lock before waking, so the woken waiter can take it.
             drop(entries);
-            let _ = self.registry.wake.write(1);
+            for wake in lock(&self.registry.waiters).iter() {
+                let _ = wake.write(1);
+            }
             Ok(())
         }
 
@@ -471,18 +528,35 @@ pub mod epoll {
         /// registrations again. With nothing registered it blocks for the whole
         /// timeout, as Linux `epoll_wait` does.
         ///
-        /// One thread waits on an Epoll at a time (as every caller here does). A
-        /// second concurrent waiter may drain the wake that a registration made for
-        /// the first, which would then sleep until its timeout or another event.
+        /// Concurrent waiters are supported, as on Linux: each waiting thread
+        /// registers its own wake with every registry it polls, and a change wakes
+        /// them all.
         pub fn wait(&self, timeout_ms: i32, events: &mut [EpollEvent]) -> io::Result<usize> {
             let deadline = (timeout_ms >= 0)
                 .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
+            let wake = this_thread_wake()?;
             loop {
+                // This pass's registration: the wake is registered with this registry, then drained.
+                // A change made before the snapshot below is in it, and one made after writes the wake.
+                let mut registration = Registration::new(Arc::clone(&wake));
+                registration.add(&self.registry);
+                let _ = wake.read();
                 // Snapshot first so no registry lock is held while blocking.
                 let snapshot: Vec<(RawFd, EpollEvent)> = lock(&self.registry.entries)
                     .iter()
                     .map(|(fd, ev)| (*fd, *ev))
                     .collect();
+                // Each nested Epoll is registered with before its entries are snapshotted below.
+                let mut nested: HashMap<RawFd, Arc<Registry>> = HashMap::new();
+                for (fd, _) in &snapshot {
+                    if *fd >= 0 {
+                        continue;
+                    }
+                    if let Some(inner) = live_registry(*fd) {
+                        registration.add(&inner);
+                        nested.insert(*fd, inner);
+                    }
+                }
 
                 // One poll entry per descriptor. `sources` says which snapshot entry it
                 // reports for, and which registry it was registered in.
@@ -494,30 +568,19 @@ pub mod epoll {
                         // entries is ready for the events that entry asked for, so each inner
                         // entry is polled with its own registered set. Deeper nesting, and a
                         // dropped Epoll, contribute nothing.
-                        if let Some(inner) = live_registry(*fd) {
+                        if let Some(inner) = nested.get(fd) {
                             let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
                                 .iter()
                                 .filter(|(f, _)| **f >= 0)
                                 .map(|(f, e)| (*f, *e))
                                 .collect();
-                            // The nested registry's wake: a change to it wakes this wait too.
-                            pfds.push(poll_entry(
-                                inner.wake.as_raw_fd(),
-                                EpollEvent::new(EventSet::IN, 0),
-                            ));
-                            sources.push(Source {
-                                owner: i,
-                                inner: None,
-                                home: None,
-                                wake: Some(Arc::clone(&inner)),
-                            });
                             for (sock, sev) in inner_entries {
                                 pfds.push(poll_entry(sock, sev));
                                 sources.push(Source {
                                     owner: i,
                                     inner: Some(sev.event_set()),
-                                    home: Some(Arc::clone(&inner)),
-                                    wake: None,
+                                    home: Some(Arc::clone(inner)),
+                                    wake: false,
                                 });
                             }
                         }
@@ -527,22 +590,22 @@ pub mod epoll {
                             owner: i,
                             inner: None,
                             home: None,
-                            wake: None,
+                            wake: false,
                         });
                     }
                 }
 
-                // This registry's own wake descriptor. It is always polled, so the
-                // set is never empty and poll(2) blocks for the full timeout.
+                // This thread's wake. It is always polled, so the set is never empty and
+                // poll(2) blocks for the full timeout.
                 pfds.push(poll_entry(
-                    self.registry.wake.as_raw_fd(),
+                    wake.as_raw_fd(),
                     EpollEvent::new(EventSet::IN, 0),
                 ));
                 sources.push(Source {
                     owner: 0,
                     inner: None,
                     home: None,
-                    wake: Some(Arc::clone(&self.registry)),
+                    wake: true,
                 });
                 // Rounded up to the next millisecond, so a positive remainder never becomes a busy 0.
                 let timeout = match deadline {
@@ -569,11 +632,11 @@ pub mod epoll {
                 // Descriptors found closed (POLLNVAL), with the registry each came from.
                 let mut closed: Vec<(Option<Arc<Registry>>, RawFd)> = Vec::new();
                 for (pfd, src) in pfds.iter().zip(sources.iter()) {
-                    if let Some(reg) = &src.wake {
+                    if src.wake {
                         // A wake is never reported. A readable one is drained and marks the
                         // registrations as changed.
                         if pfd.revents & libc::POLLIN != 0 {
-                            let _ = reg.wake.read();
+                            let _ = wake.read();
                             woke = true;
                         }
                         continue;
@@ -953,6 +1016,81 @@ mod tests {
             .unwrap();
         let mut out = [EpollEvent::default(); 4];
         assert_eq!(outer.wait(0, &mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn two_waiters_both_see_a_registration() {
+        let ep = Arc::new(Epoll::new().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let waiter = Arc::clone(&ep);
+            let tx = tx.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut out = [EpollEvent::default(); 4];
+                tx.send(waiter.wait(-1, &mut out).unwrap()).unwrap();
+            }));
+        }
+        drop(tx);
+        std::thread::sleep(Duration::from_millis(150));
+        // Quiet on registration: the waiters can only see it by the wakes that `ctl` writes.
+        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
+        ep.ctl(
+            ControlOperation::Add,
+            efd.as_raw_fd(),
+            EpollEvent::new(EventSet::IN, 5),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        efd.write(1).unwrap();
+        for _ in 0..2 {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        drop(efd);
+    }
+
+    #[test]
+    fn a_waiter_on_the_inner_epoll_and_one_on_the_outer_both_wake() {
+        let inner = Arc::new(Epoll::new().unwrap());
+        let outer = Arc::new(Epoll::new().unwrap());
+        outer
+            .ctl(
+                ControlOperation::Add,
+                inner.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 42),
+            )
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut handles = Vec::new();
+        for ep in [Arc::clone(&inner), Arc::clone(&outer)] {
+            let tx = tx.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut out = [EpollEvent::default(); 4];
+                tx.send(ep.wait(-1, &mut out).unwrap()).unwrap();
+            }));
+        }
+        drop(tx);
+        std::thread::sleep(Duration::from_millis(150));
+        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
+        inner
+            .ctl(
+                ControlOperation::Add,
+                efd.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 5),
+            )
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        efd.write(1).unwrap();
+        for _ in 0..2 {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        drop(efd);
     }
 
     #[test]
