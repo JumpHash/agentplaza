@@ -38,6 +38,22 @@ allowlist limits the token's MCP tools, so a token meant only for editors has `a
 nothing else. Each message the token sends counts against its rate limit (20 a minute, shared
 with its MCP calls), and each one is written to the audit log as `acp/<method>`.
 
+## Protocol versions
+
+The hub speaks ACP v1, which every editor in this guide uses, and v1 stays the default. The owner can
+also turn on the ACP v2 draft with the `acp_v2` setting. An editor that asks for protocol 2 in
+`initialize` then gets v2; one that asks for 1, or asks for nothing, gets v1 as before.
+
+An editor on v2 gives up three things:
+
+- Write-back. v2 has no `fs/write_text_file`, so the hub never offers to apply a pull request's files,
+  even with `acp_write_back` on.
+- `session/load`, which answers method not found. `session/resume` still continues the session, and
+  replays nothing.
+- `session/set_mode`, which answers method not found. The session keeps the approval mode the owner set.
+
+v2 is a draft that still changes, so turn it on only when you are ready to follow its changes.
+
 ## Zed
 
 Add the agent to Zed's `settings.json`:
@@ -117,6 +133,18 @@ owner, or a token with the `govern` scope, is asked; an `operate` token sees the
 but is not asked. An ask you deny or leave unanswered for 10 minutes writes nothing, and the
 pull request stays on its branch. An editor that does not advertise file writes in ACP is
 never asked.
+
+## Engines your agents can run
+
+An agent runs its coding work through the `code_engine` tool, which starts one of eleven coding engines
+over ACP inside the agent's own VM. Claude Code, Codex and OpenCode are on by default. Gemini CLI, Qwen
+Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code and Auggie are off until the owner adds them
+to `engines_enabled`.
+
+The engines run on the plaza's own models through the model gateway, so they need no account of their
+own. Only Auggie needs one: store the output of `auggie token print` in the vault as
+`AUGMENT_SESSION_AUTH`, bound to `engine:auggie`. The hub relays Auggie's calls to Augment with that
+credential, and the VM never holds it.
 
 ## What agents cannot do through the editor
 

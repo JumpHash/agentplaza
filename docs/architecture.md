@@ -110,16 +110,26 @@ model calls; three identical failing tool calls in a row (stuck); a `cancel` or
 `stop` from the host; a refusal. A conversation past `compress_at` is summarised
 (the `compressed` line records it), keeping the recent messages.
 
-**Coding engines over ACP.** `code_engine` runs Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Kilo Code or Cline as
-an ACP agent (the Agent Client Protocol) inside the agent's VM. The harness is the
+**Coding engines over ACP.** `code_engine` runs eleven coding engines as an ACP agent (the Agent Client
+Protocol) inside the agent's VM: Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Kilo Code, Cline,
+GitHub Copilot CLI, Goose, Kimi Code and Auggie (`ENGINES` in `catalog.rs`). The harness is the
 ACP client (`crates/agent-harness/src/acp`), and the engine's adapter runs as a child
-process on its stdio. The adapters are pinned in `catalog.rs` with their registry
-sha512: `@agentclientprotocol/claude-agent-acp` 0.84.0, `@agentclientprotocol/codex-acp`
-2.0.1 and `opencode-ai` 1.18.34 (`opencode acp`), `@google/gemini-cli` 0.62.0 (`gemini --acp`),
-`@qwen-code/qwen-code` 0.24.7 (`qwen --acp`), `@kilocode/cli` 7.8.1 (`kilo acp`) and `cline` 3.0.67
-(`cline --acp`).
-They are installed in the VM on first use under `/workspace/.npm-global` and checked
-against the integrity before they run. The engine's model still comes from the hub: each
+process on its stdio. Each engine is pinned to one version, never `latest`, and is installed in the VM
+on first use and checked before it runs. There are two ways to install one:
+
+- npm: `npm pack` fetches the exact version, and its tarball must match the registry's sha512
+  `dist.integrity`. The engines are `@agentclientprotocol/claude-agent-acp` 0.84.0,
+  `@agentclientprotocol/codex-acp` 2.0.1, `opencode-ai` 1.18.34 (`opencode acp`), `@google/gemini-cli`
+  0.62.0 (`gemini --acp`), `@qwen-code/qwen-code` 0.24.7 (`qwen --acp`), `@kilocode/cli` 7.8.1
+  (`kilo acp`), `cline` 3.0.67 (`cline --acp`), `@github/copilot` 1.0.90 (`copilot --acp --stdio`),
+  `@moonshot-ai/kimi-code` 2.1.1 (`kimi acp`) and `@augmentcode/auggie` 0.36.0 (`auggie --acp`). They are
+  installed under `/workspace/.npm-global`. Kimi Code needs Node 22.19 or later, which the harness checks
+  on the VM's `node` before it installs.
+- Release archive: Goose 1.52.0 (`goose acp`) is downloaded for the VM's architecture (`x86_64` or
+  `aarch64`), checked against that architecture's sha256, and extracted. Its binary is linked into the
+  same npm prefix's `bin`, beside the others.
+
+The engine's model still comes from the hub: each
 request goes to `/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`),
 so the same keys, model policy and metering apply, and no key enters the VM. Gemini CLI
 calls `/gateway/gemini/v1beta/models/<model>:generateContent`, `:streamGenerateContent` and
@@ -132,6 +142,22 @@ gets the same from an OpenCode-style inline config in `KILO_CONFIG_CONTENT`; Cli
 settings are written with `cline auth` before each call (`engines::setup_args`). Their model
 calls through the gateway are metered under their work item, as the other engines' are, so an
 editor's `usage_update` includes them (`crates/apid/src/usage.rs`).
+
+GitHub Copilot CLI runs in its bring-your-own-key mode: the harness sets `COPILOT_OFFLINE=true` and a
+provider at the gateway (`COPILOT_PROVIDER_*`, `COPILOT_MODEL`). No GitHub credential is given to it, and
+the harness never sets `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` or `COPILOT_ALLOW_ALL`. Goose
+takes its model and provider from the environment and runs with `GOOSE_MODE=approve`. Kimi Code reads an
+env provider (`KIMI_MODEL_*`) that points at the gateway.
+
+**Vendor relay.** An engine whose vendor needs its own account runs without that credential in its VM.
+The VM sends its calls to `plaza.gateway/vendor/<vendor>/…`, which reaches the hub as
+`/internal/v1/agents/{cid}/gateway/vendor/<vendor>/…`. The hub relays each call to the vendor's own base
+URL with the owner's credential, read from the vault for the agent's binding (Augment:
+`AUGMENT_SESSION_AUTH`, bound to `engine:auggie`), and streams the answer back
+(`crates/apid/src/vendor_relay.rs`). The relay sends only to the vendor's own https hosts, only for an
+engine the owner has enabled, and only for an agent whose role may run engines. The Auggie VM holds only a
+placeholder session that points at `http://plaza.gateway/vendor/augment/`; the credential never enters the
+VM.
 
 Every action an engine takes is a nested `tool_request` named `engine.read`,
 `engine.edit`, `engine.exec`, `engine.fetch` or `engine.other`, decided by the laws,
@@ -160,12 +186,12 @@ plan and usage, and mode changes. Text chunks are not kept, and a turn keeps at 
 session (`session`, kept in `<workspace>/.plaza/engine-sessions.json`), and `model`
 and `mode` are session options. Bypass modes are refused whatever the engine offers.
 
-The owner's settings choose the engines. `engines_enabled` lists them (`claude`,
-`codex`, `opencode`, `gemini`, `qwen`, `kilo`, `cline`; the offer shows only these). Claude, Codex
-and OpenCode are on by default (`DEFAULT_ENGINE_IDS`); Gemini CLI, Qwen Code, Kilo Code and Cline
-are off until the owner adds them. `engines_mode` is `acp` (the
-default) or `headless`, the one-process-per-job runner that stays for one release. Gemini CLI,
-Qwen Code, Kilo Code and Cline have no headless run: they run only over ACP.
+The owner's settings choose the engines. `engines_enabled` lists their ids (`claude`, `codex`,
+`opencode`, `gemini`, `qwen`, `kilo`, `cline`, `copilot`, `goose`, `kimi`, `auggie`), and the offer shows
+only the enabled ones. Claude, Codex and OpenCode are on by default (`DEFAULT_ENGINE_IDS`); the other
+eight are off until the owner adds them. `engines_mode` is `acp` (the default) or `headless`, the
+one-process-per-job runner that stays for one release. Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub
+Copilot CLI, Goose, Kimi Code and Auggie have no headless run: they run only over ACP.
 
 **Internet access goes through the hub.** The harness runs a proxy on the
 guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools
@@ -319,6 +345,22 @@ advertised `fs.writeTextFile` is asked after the pull request's `tool_call` whet
 (`session/request_permission`, id `apply-pr-<n>`, 10 minutes to answer). On apply the editor gets one
 `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`. Deleted files are
 left for the owner. The agent never writes the project itself.
+
+### ACP v2 (draft)
+
+The hub and the harness speak ACP v1 by default. The owner can turn on the ACP v2 draft with the `acp_v2`
+setting, which the desktop console exposes (`apps/desktop/src/console/screens/models.rs`). With it on, an
+editor that asks for protocol 2 in `initialize` gets v2, and so does a coding engine that answers v2; the
+harness offers v2 to engines first only then. Otherwise both get v1.
+
+`apz_acp::compat` translates between the two as pure JSON at the connection's edge
+(`crates/apz-acp/src/compat.rs`). On v2, `session/prompt` answers `{messageId}` at once, and the turn
+follows as `state_update`s, ending with an idle one that carries the stop reason and the usage. Tool calls
+are `tool_call_update`s, and plans have ids. v2 has no client `fs` or `terminal` methods, so the hub does
+not offer write-back on a v2 connection, and a v2 engine does its own file and command work after asking
+permission through the hub's gate. `session/load` and `session/set_mode` are method not found on v2.
+
+v1 stays the default because v2 is a draft that still changes.
 
 ## The Lab (Foundry)
 
@@ -495,6 +537,7 @@ from a remote node are signed with the node's key instead (`crates/apid/src/node
 | `/internal/v1/agents/{cid}/egress` | an `Egress` record: the relay reports one connection the agent made (kept as a transcript entry) | — |
 | `/internal/egress/check` | the egress proxy asks before it dials a host for an agent: the fetch blocklist and the laws | the answer |
 | `/internal/v1/agents/{cid}/gateway/...` | the model gateway (`anthropic`, `openai`, `openrouter`, `opencode` routes, and `gemini/v1beta/models/<model>:generateContent|streamGenerateContent|countTokens` and `gemini/v1beta/models`), `files`, `decisions`, and `git` for the plaza repositories | the provider's reply, streamed |
+| `/internal/v1/agents/{cid}/gateway/vendor/<vendor>/...` | a vendor's API for an engine that needs its own account (Augment, for Auggie): relayed with the owner's vaulted credential, to the vendor's https hosts only (`crates/apid/src/vendor_relay.rs`) | the vendor's answer, streamed |
 | `/internal/v1/agents/{cid}/stations/{id}/leases` (`/{lease}`) | the agent's own lease on a workstation: `POST {task?, kind}` → the lease; `DELETE` releases it | the lease |
 
 ## Hub HTTP (`vsockd`, `127.0.0.1:19080`)
