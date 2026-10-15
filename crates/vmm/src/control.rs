@@ -261,16 +261,18 @@ impl VmControl for InProcessControl {
         let devices = self.save_devices()?;
         let regions = layout(vm.guest_memory());
         // Read before the memory is written: the write reads the touched pages back in.
+        // The working set is a hint for the restore: failing to read or write it never fails the snapshot.
         let working_set = {
             let kept = lock(&self.reclaimed_working_set);
             merge_runs(
                 kept.as_deref().unwrap_or(&[]),
-                &resident_pages(&vm, &regions)?,
+                &resident_or_none(&vm, &regions),
             )
         };
         let (kind, memory_written) = self.save_memory(&vm, dir, &regions)?;
-        write_working_set(dir, &working_set)
-            .map_err(|err| step("write the working-set file", err))?;
+        if let Err(err) = write_working_set(dir, &working_set) {
+            eprintln!("warning: snapshot: the working-set hint was not written: {err}");
+        }
 
         let mut meta = meta_now(kind, self.vcpus, self.memory_mib, regions);
         meta.memory_written = memory_written;
@@ -308,7 +310,7 @@ impl VmControl for InProcessControl {
         {
             let regions = layout(vm.guest_memory());
             let mut kept = lock(&self.reclaimed_working_set);
-            let resident = resident_pages(&vm, &regions)?;
+            let resident = resident_or_none(&vm, &regions);
             *kept = Some(merge_runs(kept.as_deref().unwrap_or(&[]), &resident));
         }
         let mut advised = 0;
@@ -327,6 +329,14 @@ impl VmControl for InProcessControl {
 
 /// The guest memory's resident pages, as runs of memory-file offsets. `regions` is the snapshot's
 /// [`layout`] of `vm`'s memory.
+/// [`resident_pages`], or no runs (and one warning) when they cannot be read: the set is only a hint.
+fn resident_or_none(vm: &KvmVm, regions: &[RegionMeta]) -> Vec<Run> {
+    resident_pages(vm, regions).unwrap_or_else(|err| {
+        eprintln!("warning: snapshot: the guest's resident pages could not be read: {err}");
+        Vec::new()
+    })
+}
+
 fn resident_pages(vm: &KvmVm, regions: &[RegionMeta]) -> Result<Vec<Run>, SpawnError> {
     let page = usize_to_u64(host_page_size());
     let mut runs = Vec::new();
@@ -515,6 +525,7 @@ mod tests {
         assert!(!control.paused.load(Ordering::SeqCst));
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn reclaim_is_refused_while_running_and_advises_every_region_when_paused() {
         if !crate::vstate::kvm::usable_for_tests() {
