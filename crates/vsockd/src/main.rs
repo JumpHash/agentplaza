@@ -371,8 +371,7 @@ struct Served {
     /// Stops the session accept loop; checked on every poll.
     stop: Arc<AtomicBool>,
     session: JoinHandle<()>,
-    /// Present only when egress is on, and joined only at shutdown: `egress::accept_loop` has no
-    /// stop request of its own, so it runs until the daemon stops.
+    /// Present only when egress is on; it stops on the same request as the session loop.
     egress: Option<JoinHandle<()>>,
     paths: Vec<PathBuf>,
 }
@@ -391,9 +390,6 @@ pub(crate) struct Bound {
 pub(crate) enum RemoveError {
     /// No listener serves the CID.
     NotServed,
-    /// The CID has an egress listener, which cannot be stopped without a restart. The CID stays
-    /// served rather than being half-removed.
-    EgressListener,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -494,9 +490,9 @@ impl Registry {
         let mut egress_loop = None;
         if let (Some((path, listener)), Some((policy, apid))) = (egress, &self.egress) {
             paths.push(path);
-            let (policy, apid) = (Arc::clone(policy), apid.clone());
+            let (policy, apid, stop) = (Arc::clone(policy), apid.clone(), Arc::clone(&stop));
             egress_loop = Some(thread::spawn(move || {
-                egress::accept_loop(cid, listener, policy, apid)
+                egress::accept_loop(cid, listener, policy, apid, stop)
             }));
         }
         Served {
@@ -512,13 +508,10 @@ impl Registry {
     /// an egress listener.
     pub(crate) fn remove(&self, cid: u32) -> Result<(), RemoveError> {
         let mut served = self.lock();
-        match served.get(&cid).map(|entry| entry.egress.is_some()) {
+        match served.remove(&cid) {
             None => Err(RemoveError::NotServed),
-            Some(true) => Err(RemoveError::EgressListener),
-            Some(false) => {
-                if let Some(entry) = served.remove(&cid) {
-                    entry.stop_and_join(false);
-                }
+            Some(entry) => {
+                entry.stop_and_join();
                 Ok(())
             }
         }
@@ -528,7 +521,7 @@ impl Registry {
     pub(crate) fn close(&self) {
         let entries = std::mem::take(&mut *self.lock());
         for entry in entries.into_values() {
-            entry.stop_and_join(true);
+            entry.stop_and_join();
         }
     }
 }
@@ -537,10 +530,10 @@ impl Registry {
 impl Served {
     /// Stops the session accept loop and joins it; with `egress` also joins the egress loop, which
     /// only returns once the daemon stops, so only at shutdown. Then removes the socket files.
-    fn stop_and_join(self, egress: bool) {
+    fn stop_and_join(self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.session.join();
-        if let (true, Some(loop_)) = (egress, self.egress) {
+        if let Some(loop_) = self.egress {
             let _ = loop_.join();
         }
         remove_socket_files(&self.paths);

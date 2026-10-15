@@ -182,13 +182,6 @@ fn unserve_cid(surface: &Surface, segment: &str) -> Response {
         Err(RemoveError::NotServed) => {
             Response::error(404, &format!("guest CID {cid} is not served"))
         }
-        // Refused before anything changes: the CID keeps serving both listeners.
-        Err(RemoveError::EgressListener) => Response::error(
-            501,
-            &format!(
-                "guest CID {cid} has an egress listener, which cannot be stopped at run time; it stays served"
-            ),
-        ),
     }
 }
 
@@ -518,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn with_egress_on_a_run_time_cid_is_kept_because_its_egress_listener_cannot_stop() {
+    fn with_egress_on_a_run_time_cid_stops_both_of_its_listeners() {
         let hub = Arc::new(hub_with(None).1);
         let policy = Arc::new(egress::Policy::new(Vec::new()));
         let registry = Arc::new(Registry::new(
@@ -538,9 +531,9 @@ mod tests {
             },
         };
         assert_eq!(post(&surface, "/v1/cids/70", "").0, 200);
-        assert_eq!(call(&surface, "DELETE", "/v1/cids/70", "").0, 501);
+        assert_eq!(call(&surface, "DELETE", "/v1/cids/70", "").0, 200);
         let (_, body) = call(&surface, "GET", "/v1/status", "");
-        assert_eq!(body["cids"], serde_json::json!([70]));
+        assert_eq!(body["cids"], serde_json::json!([]));
     }
 
     #[test]

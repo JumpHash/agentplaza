@@ -301,8 +301,16 @@ impl Audit {
 
 /// Accepts guest proxy connections for one CID, each served on its own
 /// thread, until a stop request.
-pub fn accept_loop(cid: u32, listener: UnixListener, policy: Arc<Policy>, apid: Apid) {
-    while !sys::shutdown_requested() {
+pub fn accept_loop(
+    cid: u32,
+    listener: UnixListener,
+    policy: Arc<Policy>,
+    apid: Apid,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) {
+    // `stop` is the CID's own stop request (it is no longer served), checked on every poll like
+    // the daemon-wide shutdown.
+    while !sys::shutdown_requested() && !stop.load(std::sync::atomic::Ordering::SeqCst) {
         if let Err(err) = sys::poll_readable(&listener, super::ACCEPT_POLL_MS) {
             eprintln!("vsockd: egress poll failed: {err}");
         }

@@ -193,7 +193,10 @@ pub(crate) fn agent_env(home: &std::path::Path) -> Result<apz_ops::Env, String> 
         USER_PATH
     };
     // The egress CA's bundle reaches every command the same way, IDE runs and terminals included.
-    Ok(with_trust(with_proxy(apz_ops::Env::new(home, path)).with_uid(uid), home))
+    Ok(with_trust(
+        with_proxy(apz_ops::Env::new(home, path)).with_uid(uid),
+        home,
+    ))
 }
 
 /// The egress proxy's variables, which every guest command gets.
