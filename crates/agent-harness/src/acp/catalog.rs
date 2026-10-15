@@ -56,6 +56,7 @@ pub enum Install {
 
 impl Install {
     /// The pinned version, whichever way the engine is installed.
+    #[cfg(test)]
     pub fn version(&self) -> &'static str {
         match self {
             Install::Npm { version, .. }
