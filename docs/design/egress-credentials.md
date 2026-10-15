@@ -112,3 +112,8 @@ The `internal` routes take the node's internal token, as the other `/internal` r
   agent (see [`architecture.md`](../architecture.md), "The agent loop").
 
 See also [`vm-snapshots.md`](vm-snapshots.md) and [`e2b.md`](e2b.md), which both use the same egress path.
+
+## In the consoles
+
+The Egress screen of the web console and the desktop app lists the rules, adds one (with the defaults above), enables or
+disables it and deletes it; the CLI does the same with `agentplaza egress list|add|enable|disable|rm`.

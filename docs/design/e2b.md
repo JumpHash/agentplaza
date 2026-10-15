@@ -137,3 +137,9 @@ The VM underneath is the one [`vm-snapshots.md`](vm-snapshots.md) measures: a sa
 pause is a snapshot.
 
 See also [`architecture.md`](../architecture.md), "`apid` HTTP API", for the hub's route families.
+
+## In the consoles
+
+The E2B API screen of the web console and the desktop app mints keys (shown once, with the three environment lines an
+SDK needs), revokes them, and lists the sandboxes with Pause, Resume and End; the CLI has `agentplaza e2b keys
+list|create|revoke`, `agentplaza e2b sandboxes` and `agentplaza e2b kill|pause|resume`.

@@ -256,3 +256,11 @@ AgentPlaza differs in four ways:
   plaza's laws (see [`egress-credentials.md`](egress-credentials.md)).
 
 See also [`architecture.md`](../architecture.md) for the processes and the routes.
+
+## In the consoles
+
+Every action has the same surface in the web console, the desktop app and the CLI (see the fifth pass in
+[parity.md](parity.md)): on an agent's page, Sleep and Wake, the Machine checkpoints card (take, restore, delete), Fork…
+and Move…; in the model policy, the sleep and automatic-checkpoint settings; and `agentplaza agents sleep|wake|checkpoint|
+checkpoints|rollback|checkpoint-delete|fork|move`, `agentplaza models policy set --idle-sleep-min …`, and
+`agentplaza templates list|rm`.
