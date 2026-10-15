@@ -773,7 +773,7 @@ fn dispatch_step(status: Option<Status>, paused: bool) -> DispatchStep {
     match status {
         _ if paused => DispatchStep::Hold,
         None | Some(Status::Offline) => DispatchStep::Hold,
-        Some(Status::Asleep) => DispatchStep::Wake,
+        Some(Status::Asleep | Status::Dozing) => DispatchStep::Wake,
         Some(Status::Idle | Status::Working) => DispatchStep::Send,
     }
 }
@@ -1358,6 +1358,15 @@ mod tests {
             dispatch_step(Some(Status::Asleep), true),
             DispatchStep::Hold,
             "STOP ALL holds even a wake"
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Dozing), false),
+            DispatchStep::Wake,
+            "work for a dozing agent wakes it (an undoze), it is not sent to the paused VM"
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Dozing), true),
+            DispatchStep::Hold
         );
         assert_eq!(dispatch_step(None, false), DispatchStep::Hold);
         assert_eq!(

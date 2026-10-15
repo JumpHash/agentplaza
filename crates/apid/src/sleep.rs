@@ -7,6 +7,11 @@
 //! unless its role is in `sleep_never_roles`. Sleeping is a snapshot of its VM and a stop
 //! (noded `POST /v1/runs/{run}/vms/{vm}/sleep`); the agent shows as `asleep`, its memory is free.
 //!
+//! A shorter idle dozes first (`doze_idle_s`, 60 s; 0 = never): the VM is paused and its memory paged
+//! out (noded `.../doze`, ~0.4 s), and the agent shows as `dozing`. Its session stays up: the gateway
+//! keeps it while quiet (vsockd `POST /v1/agents/{cid}/quiet`), so an undoze (noded `.../resume`, ~1 ms,
+//! then quiet off) needs no reconnect and no hello. A dozing agent that reaches `idle_sleep_min` sleeps.
+//!
 //! It wakes **before** the work is delivered: the scheduler's dispatch, a chat, a `tell`, an IDE
 //! request and the owner's wake all call [`wake`] / [`ensure_awake`], which restore the VM from its
 //! sleep snapshot (noded `.../wake`); the harness reconnects within moments, its hello marks it idle,
@@ -54,6 +59,12 @@ struct Book {
     waking: BTreeSet<u64>,
     /// Wakes in flight, timed until the agent's hello ends them (see [`woke`]).
     wake_started: BTreeMap<u64, WakeTimes>,
+    /// Agents whose doze is in flight. A wake for them waits for the doze to end (`wake_after_doze`).
+    dozing: BTreeSet<u64>,
+    /// Agents a wake asked for while their doze was in flight: the doze ends with an undoze.
+    wake_after_doze: BTreeSet<u64>,
+    /// Agents whose doze was refused (a VM that cannot doze): not retried until they are touched again.
+    doze_refused: BTreeSet<u64>,
 }
 
 static BOOK: Mutex<Book> = Mutex::new(Book {
@@ -61,7 +72,16 @@ static BOOK: Mutex<Book> = Mutex::new(Book {
     sleeping: BTreeSet::new(),
     waking: BTreeSet::new(),
     wake_started: BTreeMap::new(),
+    dozing: BTreeSet::new(),
+    wake_after_doze: BTreeSet::new(),
+    doze_refused: BTreeSet::new(),
 });
+
+/// Whether an agent in `status` is put away (asleep, or dozing): it needs a wake before work or a chat
+/// reaches it.
+fn napping(status: Status) -> bool {
+    matches!(status, Status::Asleep | Status::Dozing)
+}
 
 /// Drops `cid`'s wake timing and its in-flight count, when the wake gave up before the agent's hello.
 fn forget_wake(cid: u64) {
@@ -100,25 +120,28 @@ pub fn routes(router: Router<App>) -> Router<App> {
 }
 
 /// Records activity for `cid` (work started or ended, a chat, an IDE call, a tool call): the idle
-/// clock restarts.
+/// clock restarts, and a refused doze is tried again. Activity does not wake a dozing agent.
 pub fn touch(app: &App, cid: u64) {
     let _ = app;
-    book().touched.insert(cid, apz_plaza::now_ms());
+    let mut book = book();
+    book.touched.insert(cid, apz_plaza::now_ms());
+    book.doze_refused.remove(&cid);
 }
 
-/// Starts waking `cid` if it is asleep (returns at once; idempotent while a wake is in flight). An
-/// interactive wake: a person or a tool call is waiting for the agent.
+/// Starts waking `cid` if it is asleep or dozing (returns at once; idempotent while a wake is in
+/// flight). An interactive wake: a person or a tool call is waiting for the agent.
 pub fn wake(app: &App, cid: u64) {
     wake_with(app, cid, WakePriority::Interactive);
 }
 
-/// Starts waking `cid` if it is asleep, in `priority`'s lane (returns at once; idempotent while a
-/// wake is in flight).
+/// Starts waking `cid` if it is asleep or dozing, in `priority`'s lane (returns at once; idempotent
+/// while a wake is in flight). A dozing agent is undozed (`run_wake`); one whose doze is still in
+/// flight is woken when the doze ends.
 pub fn wake_with(app: &App, cid: u64, priority: WakePriority) {
     if app
         .agents
         .get(cid)
-        .is_none_or(|agent| agent.status != Status::Asleep)
+        .is_none_or(|agent| !napping(agent.status))
     {
         return;
     }
@@ -129,7 +152,14 @@ pub fn wake_with(app: &App, cid: u64, priority: WakePriority) {
     }
     {
         let mut book = book();
-        if book.sleeping.contains(&cid) || !book.waking.insert(cid) {
+        if book.sleeping.contains(&cid) {
+            return;
+        }
+        if book.dozing.contains(&cid) {
+            book.wake_after_doze.insert(cid);
+            return;
+        }
+        if !book.waking.insert(cid) {
             return;
         }
         book.wake_started.insert(
@@ -334,6 +364,14 @@ fn run_wake(cid: u64, node: &str) {
         eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
         return;
     };
+    if hub
+        .agents
+        .get(cid)
+        .is_some_and(|agent| agent.status == Status::Dozing)
+    {
+        undoze(&hub, cid, node);
+        return;
+    }
     let started = std::time::Instant::now();
     let result = noded_post(&hub, node, cid, "wake");
     crate::metrics::WAKE_NODE.observe(started.elapsed());
@@ -349,6 +387,57 @@ fn run_wake(cid: u64, node: &str) {
             forget_wake(cid);
             eprintln!("apid: could not wake agent {cid}: {err}");
         }
+    }
+}
+
+/// Undozes `cid` on `node`: noded resumes its paused VM (`.../resume`), the gateway's session is no
+/// longer quiet, and the agent is idle, so the work queued for it goes out. No hello comes: the session
+/// never ended. Its wake ends here, timed from the request into `timing op=undoze` and
+/// `apz_hub_undoze_seconds`. A failed resume leaves the agent dozing; the sweep asks again for busy ones.
+fn undoze(app: &App, cid: u64, node: &str) {
+    let started = std::time::Instant::now();
+    let requested = book().wake_started.get(&cid).map(|times| times.requested);
+    let result = noded_post(app, node, cid, "resume");
+    book().waking.remove(&cid);
+    match result {
+        Ok(_) => {
+            if let Err(err) = set_quiet(app, cid, false) {
+                eprintln!("apid: agent {cid} undozed, but its session stays quiet: {err}");
+            }
+            app.agents.update(cid, |agent| {
+                if agent.status == Status::Dozing {
+                    agent.status = Status::Idle;
+                }
+            });
+            publish(app, cid);
+            app.work.dispatch_idle(app);
+            let now = std::time::Instant::now();
+            let total = now.duration_since(requested.unwrap_or(started));
+            forget_wake(cid);
+            crate::metrics::UNDOZE.observe(total);
+            eprintln!(
+                "timing op=undoze id={cid} total_ms={:.1} node_ms={:.1}",
+                ms(total),
+                ms(now.duration_since(started))
+            );
+        }
+        Err(err) => {
+            forget_wake(cid);
+            eprintln!("apid: could not undoze agent {cid}: {err}");
+        }
+    }
+}
+
+/// Holds or releases `cid`'s session on the gateway: while quiet, a paused VM's silent session is not
+/// reaped. The flag lives on the connected session, so it ends with the session.
+fn set_quiet(app: &App, cid: u64, quiet: bool) -> Result<(), String> {
+    let path = format!("/v1/agents/{cid}/quiet");
+    match crate::fleet::gateway(app, cid, "POST", &path, Some(&json!({ "quiet": quiet }))) {
+        Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+        Ok((code, body)) => Err(format!(
+            "the gateway answered {code} to quiet={quiet}: {body}"
+        )),
+        Err(err) => Err(format!("the gateway is unreachable: {err}")),
     }
 }
 
@@ -386,21 +475,21 @@ pub fn woke(cid: u64) {
     );
 }
 
-/// Wakes `cid` if it is asleep and waits until it is connected again, up to `timeout`. Ok when the
+/// Wakes `cid` if it is asleep or dozing and waits until it is awake again, up to `timeout`. Ok when the
 /// agent is idle or working (or gone: the caller's own checks answer for that); Err when it is still
 /// waking at the timeout.
 pub fn ensure_awake(app: &App, cid: u64, timeout: Duration) -> Result<(), String> {
     if !app
         .agents
         .get(cid)
-        .is_some_and(|agent| agent.status == Status::Asleep)
+        .is_some_and(|agent| napping(agent.status))
     {
         touch(app, cid);
         return Ok(());
     }
     wake(app, cid);
     app.agents.wait_until(cid, timeout, |agent| {
-        !matches!(agent.map(|a| a.status), Some(Status::Asleep))
+        !agent.is_some_and(|a| napping(a.status))
     });
     match app.agents.get(cid).map(|agent| agent.status) {
         Some(Status::Idle | Status::Working) => {
@@ -408,7 +497,9 @@ pub fn ensure_awake(app: &App, cid: u64, timeout: Duration) -> Result<(), String
             Ok(())
         }
         None | Some(Status::Offline) => Ok(()),
-        Some(Status::Asleep) => Err(format!("agent {cid} is still waking after {timeout:?}")),
+        Some(status @ (Status::Asleep | Status::Dozing)) => Err(format!(
+            "agent {cid} is still waking ({status:?}) after {timeout:?}"
+        )),
     }
 }
 
@@ -444,7 +535,7 @@ fn sweep_once(app: &App) {
         .map(|item| item.cid)
         .collect();
     let mut on_roster = BTreeSet::new();
-    let mut to_sleep: Vec<u64> = Vec::new();
+    let mut to_nap: Vec<(u64, Nap)> = Vec::new();
     // The fields the sweep reads, of every agent (Offline ones count as on the roster too).
     struct Row {
         cid: u64,
@@ -465,16 +556,17 @@ fn sweep_once(app: &App) {
         on_roster.insert(cid);
         let busy = app.work.current(cid).is_some() || !app.work.queued(cid).is_empty();
         match agent.status {
-            Status::Asleep => {
-                // Queued work for an asleep agent (a failed wake, or work restored after a restart) gets
+            Status::Asleep | Status::Dozing if busy => {
+                // Queued work for a napping agent (a failed wake, or work restored after a restart) gets
                 // another wake, but not while STOP ALL holds the plaza.
-                if busy && !stop_all {
+                if !stop_all {
                     wake_with(app, cid, WakePriority::Background);
                 }
             }
+            Status::Asleep => {}
             Status::Working => touch(app, cid),
             Status::Idle if busy => touch(app, cid),
-            Status::Idle => {
+            Status::Idle | Status::Dozing => {
                 let last = book()
                     .touched
                     .get(&cid)
@@ -495,24 +587,44 @@ fn sweep_once(app: &App) {
                 if should_sleep(&check) {
                     check.placed = place(app, cid).is_ok();
                     if should_sleep(&check) {
-                        to_sleep.push(cid);
+                        to_nap.push((cid, Nap::Sleep));
+                    }
+                } else if agent.status == Status::Idle
+                    && settings.doze_idle_s > 0
+                    && !book().doze_refused.contains(&cid)
+                    && should_doze(&check, settings.doze_idle_s)
+                {
+                    check.placed = place(app, cid).is_ok();
+                    if should_doze(&check, settings.doze_idle_s) {
+                        to_nap.push((cid, Nap::Doze));
                     }
                 }
             }
             Status::Offline => {}
         }
     }
-    // The sleeps run side by side: each is a noded snapshot that can take a while.
-    if !to_sleep.is_empty() {
+    // The sleeps and dozes run side by side: each is a noded call that can take a while.
+    if !to_nap.is_empty() {
         std::thread::scope(|scope| {
-            for chunk in to_sleep.chunks(to_sleep.len().div_ceil(SLEEP_PARALLEL).max(1)) {
+            for chunk in to_nap.chunks(to_nap.len().div_ceil(SLEEP_PARALLEL).max(1)) {
                 scope.spawn(move || {
-                    for &cid in chunk {
-                        if let Err(res) = put_to_sleep(app, cid) {
-                            eprintln!(
-                                "apid: agent {cid} stays awake: its sleep was refused ({})",
-                                res.status
-                            );
+                    for &(cid, nap) in chunk {
+                        match nap {
+                            Nap::Sleep => {
+                                if let Err(res) = put_to_sleep(app, cid) {
+                                    eprintln!(
+                                        "apid: agent {cid} stays awake: its sleep was refused ({})",
+                                        res.status
+                                    );
+                                }
+                            }
+                            // put_to_doze says why a doze is refused; the note keeps the sweep from asking
+                            // again until the agent is touched.
+                            Nap::Doze => {
+                                if put_to_doze(app, cid).is_err() {
+                                    book().doze_refused.insert(cid);
+                                }
+                            }
                         }
                     }
                 });
@@ -528,6 +640,7 @@ fn sweep_once(app: &App) {
 /// many wake timings it dropped, so the caller can take them off the in-flight count.
 fn prune_book(book: &mut Book, on_roster: &BTreeSet<u64>, now: std::time::Instant) -> usize {
     book.touched.retain(|cid, _| on_roster.contains(cid));
+    book.doze_refused.retain(|cid| on_roster.contains(cid));
     let before = book.wake_started.len();
     book.wake_started
         .retain(|_, times| now.saturating_duration_since(times.requested) <= 2 * WAKE_WAIT);
@@ -552,11 +665,11 @@ pub struct SleepCheck<'a> {
     pub placed: bool,
 }
 
-/// Whether the sweeper puts this agent to sleep: idle, with nothing to do, nothing waiting on the
-/// owner, its idle time at least `idle_sleep_min` minutes (0 never), its role not one that never
+/// Whether the sweeper puts this agent to sleep: idle or dozing, with nothing to do, nothing waiting on
+/// the owner, its idle time at least `idle_sleep_min` minutes (0 never), its role not one that never
 /// sleeps, the plaza not held, and a VM to snapshot.
 pub fn should_sleep(check: &SleepCheck) -> bool {
-    check.status == Status::Idle
+    matches!(check.status, Status::Idle | Status::Dozing)
         && !check.busy
         && !check.approval_pending
         && !check.stop_all
@@ -566,35 +679,61 @@ pub fn should_sleep(check: &SleepCheck) -> bool {
         && !check.never_roles.iter().any(|role| role == check.role)
 }
 
+/// Whether the sweeper dozes this agent: idle, with the same conditions as [`should_sleep`] but for
+/// its idle time reaching `doze_idle_s` seconds (0 never). An agent that qualifies for a sleep is put
+/// to sleep, not dozed.
+pub fn should_doze(check: &SleepCheck, doze_idle_s: u32) -> bool {
+    check.status == Status::Idle
+        && !check.busy
+        && !check.approval_pending
+        && !check.stop_all
+        && check.placed
+        && doze_idle_s > 0
+        && check.idle_ms >= u64::from(doze_idle_s) * 1_000
+        && !check.never_roles.iter().any(|role| role == check.role)
+        && !should_sleep(check)
+}
+
+/// What the sweep does to an agent that qualifies: put it to sleep, or doze it.
+#[derive(Clone, Copy)]
+enum Nap {
+    Sleep,
+    Doze,
+}
+
 /// Puts an idle agent to sleep: its VM is snapshotted and stopped (noded `.../sleep`). The agent is
 /// asleep from the first step, so the session ending is not an offline agent (`agents::gone`). A
 /// refused sleep puts it back to idle and sends its waiting work.
 pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
     place(app, cid)?;
     book().sleeping.insert(cid);
-    // Idle is checked and left under the roster lock, so a delivery cannot slip in between.
-    let mut flipped = false;
+    // Idle (or dozing: noded sleeps a paused VM too) is checked and left under the roster lock, so a
+    // delivery cannot slip in between. `was` is the status a refused sleep puts back.
+    let mut was = None;
     app.agents.update(cid, |agent| {
-        if agent.status == Status::Idle {
+        if matches!(agent.status, Status::Idle | Status::Dozing) {
+            was = Some(agent.status);
             agent.status = Status::Asleep;
-            flipped = true;
         }
     });
-    if !flipped {
+    let Some(was) = was else {
         book().sleeping.remove(&cid);
         return Err(Response::error(409, &format!("agent {cid} is not idle")));
-    }
+    };
     publish(app, cid);
     // Work that came in after the check: it goes out after the wake below.
     if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
         book().sleeping.remove(&cid);
         app.agents.update(cid, |agent| {
             if agent.status == Status::Asleep {
-                agent.status = Status::Idle;
+                agent.status = was;
             }
         });
         publish(app, cid);
         app.work.dispatch_idle(app);
+        if was == Status::Dozing {
+            wake_with(app, cid, WakePriority::Background);
+        }
         return Err(Response::error(409, &format!("agent {cid} has work")));
     }
     let started = std::time::Instant::now();
@@ -622,7 +761,7 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
         Err(err) => {
             app.agents.update(cid, |agent| {
                 if agent.status == Status::Asleep {
-                    agent.status = Status::Idle;
+                    agent.status = was;
                 }
             });
             publish(app, cid);
@@ -633,6 +772,73 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
             ))
         }
     }
+}
+
+/// Dozes an idle agent: the gateway holds its session quiet, then noded pauses its VM and pages its
+/// memory out (`.../doze`). The agent is dozing from the first step, so a delivery cannot slip in
+/// between; a wake asked for while the doze is in flight waits for it and then undozes. A refused doze
+/// puts the agent back to idle, resumes what it paused (best effort), and says why once on stderr.
+pub(crate) fn put_to_doze(app: &App, cid: u64) -> Result<(), Response> {
+    place(app, cid)?;
+    book().dozing.insert(cid);
+    let mut flipped = false;
+    app.agents.update(cid, |agent| {
+        if agent.status == Status::Idle {
+            agent.status = Status::Dozing;
+            flipped = true;
+        }
+    });
+    if !flipped {
+        book().dozing.remove(&cid);
+        return Err(Response::error(409, &format!("agent {cid} is not idle")));
+    }
+    publish(app, cid);
+    // Work that came in after the check: the agent stays awake for it.
+    let outcome = if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
+        Err("it has work in flight or queued".to_string())
+    } else {
+        doze_steps(app, cid)
+    };
+    // The doze is over: a wake that came in while it ran is now served.
+    let asked = {
+        let mut book = book();
+        book.dozing.remove(&cid);
+        book.wake_after_doze.remove(&cid)
+    };
+    match outcome {
+        Ok(()) => {
+            crate::metrics::DOZES.inc();
+            if asked {
+                wake_with(app, cid, WakePriority::Interactive);
+            }
+            Ok(())
+        }
+        Err(why) => {
+            // Best effort: a VM that was never paused refuses the resume, which is no harm.
+            let node = crate::fleet::node_of(app, cid);
+            let _ = noded_post(app, &node, cid, "resume");
+            let _ = set_quiet(app, cid, false);
+            app.agents.update(cid, |agent| {
+                if agent.status == Status::Dozing {
+                    agent.status = Status::Idle;
+                }
+            });
+            publish(app, cid);
+            app.work.dispatch_idle(app);
+            eprintln!("apid: agent {cid} stays awake: its doze was refused ({why})");
+            Err(Response::error(
+                409,
+                &format!("agent {cid} did not doze: {why}"),
+            ))
+        }
+    }
+}
+
+/// The doze itself, after the agent is marked dozing: the session is held quiet, then the VM paused.
+fn doze_steps(app: &App, cid: u64) -> Result<(), String> {
+    set_quiet(app, cid, true)?;
+    let node = crate::fleet::node_of(app, cid);
+    noded_post(app, &node, cid, "doze").map(|_| ())
 }
 
 /// Publishes the agent on the bus after a status change.
@@ -686,8 +892,8 @@ fn wake_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(res) => return res,
     };
-    if agent.status != Status::Asleep {
-        return Response::error(409, &format!("agent {} is not asleep", agent.cid));
+    if !napping(agent.status) {
+        return Response::error(409, &format!("agent {} is not asleep or dozing", agent.cid));
     }
     match awake_or_503(app, agent.cid) {
         Ok(()) => Response::json(200, &json!({ "ok": true })),
@@ -773,9 +979,14 @@ mod tests {
             sleeping: BTreeSet::new(),
             waking: BTreeSet::new(),
             wake_started: BTreeMap::new(),
+            dozing: BTreeSet::new(),
+            wake_after_doze: BTreeSet::new(),
+            doze_refused: BTreeSet::new(),
         };
         state.touched.insert(1, 10);
         state.touched.insert(2, 20);
+        state.doze_refused.insert(1);
+        state.doze_refused.insert(2);
         state.wake_started.insert(
             1,
             WakeTimes {
@@ -795,6 +1006,11 @@ mod tests {
         let on_roster = BTreeSet::from([1]);
         assert_eq!(prune_book(&mut state, &on_roster, now), 1);
         assert_eq!(state.touched.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            state.doze_refused.iter().copied().collect::<Vec<_>>(),
+            vec![1],
+            "a refused doze is kept while its agent is on the roster"
+        );
         assert_eq!(
             state.wake_started.keys().copied().collect::<Vec<_>>(),
             vec![2]
@@ -874,5 +1090,96 @@ mod tests {
                 "with no never-role the orchestrator may sleep"
             );
         }
+    }
+
+    #[test]
+    fn a_dozing_agent_sleeps_once_its_idle_minutes_pass() {
+        let never = vec!["orchestrator".to_string()];
+        let mut c = check(&never);
+        c.status = Status::Dozing;
+        assert!(
+            should_sleep(&c),
+            "a dozing agent past its idle minutes sleeps"
+        );
+        c.idle_ms = 10 * 60_000 - 1;
+        assert!(
+            !should_sleep(&c),
+            "a dozing agent not yet idle long enough stays dozed"
+        );
+        let mut c = check(&never);
+        c.status = Status::Dozing;
+        c.busy = true;
+        assert!(
+            !should_sleep(&c),
+            "work for a dozing agent keeps it from sleeping"
+        );
+    }
+
+    #[test]
+    fn idle_agents_doze_after_doze_idle_s_unless_a_condition_keeps_them_awake() {
+        let never = vec!["orchestrator".to_string()];
+        // An idle agent past doze_idle_s (60 s) and short of its sleep (10 min) dozes.
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        assert!(should_doze(&c, 60), "an idle agent past doze_idle_s dozes");
+        c.idle_ms = 59_999;
+        assert!(!should_doze(&c, 60), "not idle long enough to doze yet");
+        c.idle_ms = 60_000;
+        assert!(!should_doze(&c, 0), "0 means agents never doze");
+
+        // The sleep wins once the idle time reaches idle_sleep_min: such an agent sleeps, it does not doze.
+        let mut c = check(&never);
+        c.idle_ms = 10 * 60_000;
+        assert!(should_sleep(&c));
+        assert!(
+            !should_doze(&c, 60),
+            "an agent due for a sleep is not dozed"
+        );
+
+        // With idle_sleep_min 0 (agents never sleep on their own) an idle agent still dozes.
+        let mut c = check(&never);
+        c.idle_sleep_min = 0;
+        c.idle_ms = u64::MAX / 2;
+        assert!(!should_sleep(&c));
+        assert!(!should_doze(&c, 0));
+        assert!(should_doze(&c, 60), "agents that never sleep still doze");
+
+        // Each condition that keeps an agent awake holds the doze too, as it holds the sleep.
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.status = Status::Working;
+        assert!(!should_doze(&c, 60), "a working agent stays awake");
+        c.status = Status::Dozing;
+        assert!(!should_doze(&c, 60), "a dozing agent is already dozing");
+        c.status = Status::Asleep;
+        assert!(!should_doze(&c, 60), "an asleep agent is already asleep");
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.busy = true;
+        assert!(
+            !should_doze(&c, 60),
+            "work in flight or queued keeps it awake"
+        );
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.approval_pending = true;
+        assert!(!should_doze(&c, 60), "a pending approval keeps it awake");
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.stop_all = true;
+        assert!(!should_doze(&c, 60), "STOP ALL holds the doze");
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.placed = false;
+        assert!(
+            !should_doze(&c, 60),
+            "an agent with no VM here has nothing to pause"
+        );
+
+        // A role that never sleeps never dozes either.
+        let mut c = check(&never);
+        c.idle_ms = 60_000;
+        c.role = "orchestrator";
+        assert!(!should_doze(&c, 60), "a never-sleep role never dozes");
     }
 }

@@ -110,9 +110,15 @@ waits on, and its workstation leases. It must also have been idle for `idle_slee
 |---|---|---|
 | `idle_sleep_min` | 10 | Minutes an idle agent waits before its VM sleeps. `0` means agents never sleep on their own. The most is 1440. |
 | `sleep_never_roles` | `["orchestrator"]` | Roles whose agents never sleep on their own, so the owner can talk to the orchestrator at any time. |
+| `doze_idle_s` | 60 | Seconds an idle agent waits before it dozes. `0` means agents never doze. The most is 86400. |
 
 Sleeping is a snapshot of the VM followed by a stop (`POST /v1/runs/{run}/vms/{vm}/sleep`). The agent shows as
 `asleep`, and its memory is freed.
+
+Dozing comes first, after `doze_idle_s`: the VM is paused and its memory paged out (`POST .../doze`, about 0.4 s). The
+agent shows as `dozing` and keeps its session, held quiet on the gateway (`POST /v1/agents/{cid}/quiet`), so it resumes
+in about a millisecond (`POST .../resume`) with no reconnect and no hello. A dozing agent that reaches
+`idle_sleep_min` sleeps. Roles in `sleep_never_roles` never doze.
 
 **Wake comes before work.** Every path that delivers work calls `wake` or `ensure_awake` first: the scheduler's
 dispatch, a chat message, a `tell`, an IDE request and the owner's wake. The node restores the VM from its sleep

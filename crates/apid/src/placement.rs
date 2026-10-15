@@ -249,7 +249,9 @@ pub fn status_refusal(cid: u64, status: Status) -> Option<(u16, String)> {
             409,
             format!("agent {cid} is offline; it has no running VM to move"),
         )),
-        Status::Idle | Status::Asleep => None,
+        // A dozing agent moves like an idle one: the move's first step is `sleep::put_to_sleep`, which
+        // noded takes from a paused VM too (`take_vm` accepts Running or Paused).
+        Status::Idle | Status::Asleep | Status::Dozing => None,
     }
 }
 
@@ -975,6 +977,11 @@ mod tests {
         assert_eq!(status_refusal(7, Status::Offline).map(|r| r.0), Some(409));
         assert_eq!(status_refusal(7, Status::Idle), None);
         assert_eq!(status_refusal(7, Status::Asleep), None);
+        assert_eq!(
+            status_refusal(7, Status::Dozing),
+            None,
+            "a dozing agent moves like an idle one"
+        );
     }
 
     #[test]

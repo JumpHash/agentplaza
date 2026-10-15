@@ -100,8 +100,10 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
         })
     });
     let needs_runs = agents.iter().any(|agent| {
-        !matches!(agent.status, Status::Offline | Status::Asleep)
-            && agent.run.is_some()
+        !matches!(
+            agent.status,
+            Status::Offline | Status::Asleep | Status::Dozing
+        ) && agent.run.is_some()
             && agent.vm.is_some()
     });
     let runs = if needs_runs {
@@ -116,7 +118,11 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
         if agent.status == Status::Offline {
             last_busy.remove(&agent.cid);
         }
-        if matches!(agent.status, Status::Offline | Status::Asleep) {
+        // A dozing guest is paused: its balloon cannot act, as an asleep one's cannot.
+        if matches!(
+            agent.status,
+            Status::Offline | Status::Asleep | Status::Dozing
+        ) {
             continue;
         }
         let working = agent.status == Status::Working;

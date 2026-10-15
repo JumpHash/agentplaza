@@ -29,6 +29,9 @@ pub enum Status {
     /// The agent's VM was snapshotted and stopped while it had nothing to do; it is woken (restored
     /// from that snapshot) as soon as work, a chat or the owner needs it (`crate::sleep`).
     Asleep,
+    /// The agent's VM is paused and its memory paged out after a short idle (`crate::sleep`): it keeps
+    /// its session, and resumes in milliseconds when work, a chat or the owner needs it.
+    Dozing,
 }
 
 /// One agent. `cid` is its identity.
@@ -750,9 +753,10 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
 }
 
 /// Whether a session ending takes an agent in `status` offline. An agent put to sleep ends its session
-/// on purpose: it is not offline, and its queued work waits for its wake.
+/// on purpose: it is not offline, and its queued work waits for its wake. A dozing agent keeps its
+/// session through its doze, so the same holds for it: its work waits for its undoze.
 fn ends_offline(status: Status) -> bool {
-    status != Status::Asleep
+    !matches!(status, Status::Asleep | Status::Dozing)
 }
 
 /// A session ended: mark the agent offline and fail its work.
@@ -811,7 +815,8 @@ fn reconcile_once(app: &App) {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
                 };
-                // A session on the gateway means the agent is awake: an asleep one is registered idle.
+                // A session on the gateway means the agent is awake: an asleep one is registered idle. A
+                // dozing one has its session still (its VM is paused), so it is online and never hello'd.
                 let known_online = app
                     .agents
                     .get(cid)
@@ -820,10 +825,13 @@ fn reconcile_once(app: &App) {
                     hello(app, cid, role, 0, &[]);
                 }
             }
-            // An asleep agent has no session by design: it is not gone.
+            // An asleep agent has no session by design: it is not gone. Nor is a dozing one, whose paused
+            // session the gateway keeps (quiet) and may not list while its VM is paused.
             let missing = app.agents.select(|agent| {
-                (!matches!(agent.status, Status::Offline | Status::Asleep)
-                    && !live.contains(&agent.cid))
+                (!matches!(
+                    agent.status,
+                    Status::Offline | Status::Asleep | Status::Dozing
+                ) && !live.contains(&agent.cid))
                 .then_some(agent.cid)
             });
             for cid in missing {
@@ -1405,8 +1413,9 @@ mod route_tests {
     use super::*;
 
     #[test]
-    fn a_session_ending_keeps_an_asleep_agent_and_takes_the_others_offline() {
+    fn a_session_ending_keeps_an_asleep_or_dozing_agent_and_takes_the_others_offline() {
         assert!(!ends_offline(Status::Asleep));
+        assert!(!ends_offline(Status::Dozing));
         assert!(ends_offline(Status::Idle));
         assert!(ends_offline(Status::Working));
         assert!(ends_offline(Status::Offline));
@@ -1565,6 +1574,7 @@ mod roster_index_tests {
             Status::Idle,
             Status::Working,
             Status::Asleep,
+            Status::Dozing,
         ] {
             let want: Vec<u64> = expected
                 .get(&status)
@@ -1582,6 +1592,7 @@ mod roster_index_tests {
             Status::Idle,
             Status::Working,
             Status::Asleep,
+            Status::Dozing,
         ];
         let mut seed: u64 = 7;
         let mut next = move || {
@@ -1592,7 +1603,7 @@ mod roster_index_tests {
         };
         for step in 0..600 {
             let cid = next() % 20;
-            let status = statuses[(next() % 4) as usize];
+            let status = statuses[(next() % statuses.len() as u64) as usize];
             match next() % 6 {
                 0 => roster.upsert(agent(cid, status)),
                 1 => {

@@ -40,6 +40,13 @@ pub static SLEEP: Histogram = Histogram::new(
     "apz_hub_sleep_seconds",
     "A sleep: the node's snapshot and stop",
 );
+/// Dozes the hub started (a VM paused and paged out).
+pub static DOZES: Counter = Counter::new("apz_hub_dozes_total", "Agent dozes the hub started");
+/// An undoze, from the wake request to the agent idle again (the node's resume and the gateway's quiet off).
+pub static UNDOZE: Histogram = Histogram::new(
+    "apz_hub_undoze_seconds",
+    "An undoze, from the wake request to the agent idle again",
+);
 
 /// `GET /v1/metrics`.
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -53,6 +60,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
             &WAKE_RECONNECT,
             &SLEEPS,
             &SLEEP,
+            &DOZES,
+            &UNDOZE,
         ]);
         text.push_str(&agents_by_status(app));
         text.push_str(&wakes_queued());
@@ -73,15 +82,17 @@ fn wakes_queued() -> String {
 fn agents_by_status(app: &App) -> String {
     let counts = app.agents.count_by_status();
     let of = |status: Status| counts.get(&status).copied().unwrap_or(0);
-    let (idle, working, asleep, offline) = (
+    let (idle, working, asleep, dozing, offline) = (
         of(Status::Idle),
         of(Status::Working),
         of(Status::Asleep),
+        of(Status::Dozing),
         of(Status::Offline),
     );
     format!(
         "# HELP apz_hub_agents Agents on the roster, by status\n# TYPE apz_hub_agents gauge\n\
          apz_hub_agents{{status=\"idle\"}} {idle}\napz_hub_agents{{status=\"working\"}} {working}\n\
-         apz_hub_agents{{status=\"asleep\"}} {asleep}\napz_hub_agents{{status=\"offline\"}} {offline}\n"
+         apz_hub_agents{{status=\"asleep\"}} {asleep}\napz_hub_agents{{status=\"dozing\"}} {dozing}\n\
+         apz_hub_agents{{status=\"offline\"}} {offline}\n"
     )
 }

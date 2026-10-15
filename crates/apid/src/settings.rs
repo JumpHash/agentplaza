@@ -139,6 +139,9 @@ pub struct Settings {
     /// Roles whose agents never sleep on their own. The orchestrator is awake so the owner can chat
     /// with it at any time.
     pub sleep_never_roles: Vec<String>,
+    /// Seconds an agent must be idle before the sweeper dozes it (`sleep.rs`): its VM paused and its
+    /// memory paged out, resumed in milliseconds. 0: agents never doze. A sleep due sooner wins.
+    pub doze_idle_s: u32,
     /// Shared data volumes (noded's `/v1/volumes`) by role: every agent of the role spawned from now
     /// on mounts them read-only at `/data/<name>`. At most four per role.
     pub role_volumes: BTreeMap<String, Vec<String>>,
@@ -183,6 +186,12 @@ pub const DEFAULT_IDLE_SLEEP_MIN: u32 = 10;
 
 /// The most `idle_sleep_min` may be: a day.
 pub const MAX_IDLE_SLEEP_MIN: u32 = 1440;
+
+/// The default for `doze_idle_s`: a minute.
+pub const DEFAULT_DOZE_IDLE_S: u32 = 60;
+
+/// The most `doze_idle_s` may be: a day.
+pub const MAX_DOZE_IDLE_S: u32 = 86_400;
 
 /// A workstation's recording settings, as the hub's defaults hold them (the same fields as `StationSettings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +263,7 @@ impl Default for Settings {
             acp_v2: false,
             idle_sleep_min: DEFAULT_IDLE_SLEEP_MIN,
             sleep_never_roles: vec![ORCHESTRATOR_ROLE.into()],
+            doze_idle_s: DEFAULT_DOZE_IDLE_S,
             role_volumes: BTreeMap::new(),
         }
     }
@@ -648,6 +658,12 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
             "sleep_never_roles entry {role:?} is not a role name"
         ));
     }
+    if new.doze_idle_s > MAX_DOZE_IDLE_S {
+        return Err(format!(
+            "doze_idle_s must be 0..={MAX_DOZE_IDLE_S}, got {}",
+            new.doze_idle_s
+        ));
+    }
     for (role, volumes) in &new.role_volumes {
         check_role_volumes(role, volumes)?;
     }
@@ -871,6 +887,13 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         s.idle_sleep_min,
         d.idle_sleep_min,
         s.idle_sleep_min <= MAX_IDLE_SLEEP_MIN,
+    );
+    s.doze_idle_s = or_default(
+        &mut notes,
+        "doze_idle_s",
+        s.doze_idle_s,
+        d.doze_idle_s,
+        s.doze_idle_s <= MAX_DOZE_IDLE_S,
     );
     s.sleep_never_roles.retain(|role| {
         let ok = !role.trim().is_empty();
@@ -1663,20 +1686,25 @@ mod tests {
             let obj = old.as_object_mut().unwrap();
             obj.remove("idle_sleep_min");
             obj.remove("sleep_never_roles");
+            obj.remove("doze_idle_s");
             let loaded: Settings = serde_json::from_value(old).unwrap();
             assert_eq!(loaded.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
             assert_eq!(loaded.sleep_never_roles, vec!["orchestrator".to_string()]);
+            assert_eq!(loaded.doze_idle_s, DEFAULT_DOZE_IDLE_S);
 
             let mut bad = Settings::default();
             bad.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 5;
             bad.sleep_never_roles = vec!["".into(), "builder".into()];
+            bad.doze_idle_s = MAX_DOZE_IDLE_S + 1;
             let (fixed, notes) = repair(bad, false);
             assert_eq!(fixed.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
             assert_eq!(fixed.sleep_never_roles, vec!["builder".to_string()]);
+            assert_eq!(fixed.doze_idle_s, DEFAULT_DOZE_IDLE_S);
             assert!(
                 notes.iter().any(|n| n.contains("idle_sleep_min")),
                 "{notes:?}"
             );
+            assert!(notes.iter().any(|n| n.contains("doze_idle_s")), "{notes:?}");
             assert!(check_settings(&fixed, false).is_ok());
         }
     }
@@ -1686,12 +1714,20 @@ mod tests {
         let d = Settings::default();
         assert_eq!(d.idle_sleep_min, 10);
         assert_eq!(d.sleep_never_roles, vec!["orchestrator".to_string()]);
+        assert_eq!(d.doze_idle_s, 60);
 
         let dir = temp_dir("idle-sleep");
         let store = Store::load(&dir, false).unwrap();
         let mut too_long = Settings::default();
         too_long.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 1;
         assert!(store.put(too_long).is_err(), "above a day is refused");
+        let mut dozes_too_long = Settings::default();
+        dozes_too_long.doze_idle_s = MAX_DOZE_IDLE_S + 1;
+        assert!(store.put(dozes_too_long).is_err(), "above a day is refused");
+        let mut dozing_never = Settings::default();
+        dozing_never.doze_idle_s = 0;
+        let saved_dozing = store.put(dozing_never.clone()).unwrap();
+        assert_eq!(saved_dozing.doze_idle_s, 0, "0 (agents never doze) is kept");
         let mut blank_role = Settings::default();
         blank_role.sleep_never_roles = vec!["  ".into()];
         assert!(store.put(blank_role).is_err(), "a blank role is refused");
