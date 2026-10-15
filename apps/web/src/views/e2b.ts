@@ -5,7 +5,16 @@
 
 import '../styles/mcp.css';
 import '../styles/mcp-hub.css';
-import { ApiError, e2bApi, type E2bKey, type E2bKeyCreated, type E2bSandbox } from '../api';
+import {
+  e2bApi,
+  type BuildStatus,
+  type E2bBuild,
+  type E2bKey,
+  type E2bKeyCreated,
+  type E2bSandbox,
+  type E2bTemplate,
+} from '../api';
+export type { BuildStatus, E2bBuild, E2bTemplate } from '../api';
 import { ago, attempt, badge, button, card, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -17,15 +26,6 @@ export const SANDBOX_REFRESH_MS = 10_000;
 
 export type SandboxState = 'running' | 'paused';
 export type SandboxAction = 'pause' | 'resume' | 'end';
-export type BuildStatus = 'waiting' | 'building' | 'ready' | 'error';
-
-/** One build of a template. The hub lists a template's builds newest first; `reason` is set when a build failed. */
-export interface E2bBuild {
-  buildID: string; status: BuildStatus; createdAt: string; finishedAt: string | null; cpuCount: number; memoryMB: number;
-  tags: string[]; reason: { message: string; step: string } | null;
-}
-/** A template on the hub's E2B gateway, with its builds (newest first). The timestamps are RFC 3339 strings. */
-export interface E2bTemplate { templateID: string; name: string; createdAt: string; updatedAt: string; builds: E2bBuild[] }
 
 /**
  * The setup an SDK client reads: the API under the hub's origin, the key, and the local sandbox gateway. `key` is the
@@ -75,27 +75,6 @@ const ACTIONS: Record<SandboxAction, { label: string; done: string; send: (id: s
 
 const BUILD_TONE: Record<BuildStatus, Tone> = { waiting: 'muted', building: 'info', ready: 'ok', error: 'danger' };
 
-/**
- * The two template calls. They are not in api.ts's `e2bApi`, so they follow the same path as its `call`: JSON in and
- * out, and an ApiError that carries the hub's message. A refused delete answers `{message}` rather than `{error}`, so
- * the message is read from either.
- */
-async function templateCall<T>(method: string, path: string): Promise<T> {
-  const res = await fetch(path, { method });
-  const text = await res.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
-  if (!res.ok) {
-    if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
-    const body = data as { error?: string; message?: string } | null;
-    throw new ApiError(res.status, body?.error ?? body?.message ?? `${method} ${path}: ${res.status}`, [], data);
-  }
-  return data as T;
-}
-
-const templatesApi = {
-  list: () => templateCall<{ templates: E2bTemplate[] }>('GET', '/v1/e2b/templates').then((r) => r.templates),
-  remove: (id: string) => templateCall<null>('DELETE', `/v1/e2b/templates/${encodeURIComponent(id)}`),
-};
 
 /** A copy button for one piece of text. The text is not stored; the click copies it and says so. */
 function copyButton(text: string, label = 'Copy'): HTMLButtonElement {
@@ -398,7 +377,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const loadTemplates = async (): Promise<void> => {
     const seq = ++templatesSeq;
     try {
-      const list = await templatesApi.list();
+      const list = await e2bApi.templates();
       if (!alive || seq !== templatesSeq) return;
       templates = list;
       templatesError = null;
@@ -413,7 +392,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const doDeleteTemplate = async (t: E2bTemplate): Promise<void> => {
     replace(templateError);
     try {
-      await templatesApi.remove(t.templateID);
+      await e2bApi.deleteTemplate(t.templateID);
       if (!alive) return;
       toast(`Deleted ${t.name}`);
     } catch (err) {
