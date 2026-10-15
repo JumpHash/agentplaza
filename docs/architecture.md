@@ -110,12 +110,12 @@ model calls; three identical failing tool calls in a row (stuck); a `cancel` or
 `stop` from the host; a refusal. A conversation past `compress_at` is summarised
 (the `compressed` line records it), keeping the recent messages.
 
-**Coding engines over ACP.** `code_engine` runs eleven coding engines as an ACP agent (the Agent Client
+**Coding engines over ACP.** `code_engine` runs twelve coding engines as an ACP agent (the Agent Client
 Protocol) inside the agent's VM: Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Kilo Code, Cline,
-GitHub Copilot CLI, Goose, Kimi Code and Auggie (`ENGINES` in `catalog.rs`). The harness is the
+GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe (`ENGINES` in `catalog.rs`). The harness is the
 ACP client (`crates/agent-harness/src/acp`), and the engine's adapter runs as a child
 process on its stdio. Each engine is pinned to one version, never `latest`, and is installed in the VM
-on first use and checked before it runs. There are two ways to install one:
+on first use and checked before it runs. There are three ways to install one:
 
 - npm: `npm pack` fetches the exact version, and its tarball must match the registry's sha512
   `dist.integrity`. The engines are `@agentclientprotocol/claude-agent-acp` 0.84.0,
@@ -128,6 +128,12 @@ on first use and checked before it runs. There are two ways to install one:
 - Release archive: Goose 1.52.0 (`goose acp`) is downloaded for the VM's architecture (`x86_64` or
   `aarch64`), checked against that architecture's sha256, and extracted. Its binary is linked into the
   same npm prefix's `bin`, beside the others.
+- PyPI wheel: Mistral Vibe 2.25.0 (`vibe-acp`). `pip download --no-deps` fetches the exact wheel, which must
+  match its sha256, and it is installed into its own venv under `/workspace/.engines/vibe-2.25.0` (the VM's
+  Python must be 3.12 or later); its binary is linked into the same `bin`. Before each call the harness
+  writes Vibe's `$VIBE_HOME/config.toml` (inside `.plaza/`): one provider pointing at the gateway
+  (`openai`, `openrouter` or `opencode`; Mistral's own models go as `openrouter/mistralai/<model>`), the
+  call's model, and `bypass_tool_permissions = false`.
 
 The engine's model still comes from the hub: each
 request goes to `/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`),

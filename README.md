@@ -146,7 +146,7 @@ the desktop app.
 - **MCP both ways.** The plaza's agents use external MCP servers as tools, through the hub's egress. The hub is also an
   MCP server (`/mcp`) for clients such as Claude Code, with scoped tokens (`observe`, `operate`, `govern`). It is off
   until you turn it on.
-- **Coding engines over ACP.** Eleven coding engines run as Agent Client Protocol agents inside the agent's VM: Claude Code, Codex and OpenCode are on by default; Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code and Auggie are off until the owner enables them.
+- **Coding engines over ACP.** Twelve coding engines run as Agent Client Protocol agents inside the agent's VM: Claude Code, Codex and OpenCode are on by default; Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are off until the owner enables them.
   Their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
   (`docs/architecture.md`).
 - **Editors over ACP.** Zed, JetBrains IDEs and Neovim can prompt a plaza agent and answer its approvals through

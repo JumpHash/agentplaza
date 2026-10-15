@@ -41,7 +41,8 @@ with its MCP calls), and each one is written to the audit log as `acp/<method>`.
 ## Protocol versions
 
 The hub speaks ACP v1, which every editor in this guide uses, and v1 stays the default. The owner can
-also turn on the ACP v2 draft with the `acp_v2` setting. An editor that asks for protocol 2 in
+also turn on the ACP v2 draft: Setup › MCP › This hub as a server › **Speak the ACP v2 draft** (the
+desktop app has the same switch; the setting is `acp_v2`). An editor that asks for protocol 2 in
 `initialize` then gets v2; one that asks for 1, or asks for nothing, gets v1 as before.
 
 An editor on v2 gives up three things:
@@ -136,9 +137,10 @@ never asked.
 
 ## Engines your agents can run
 
-An agent runs its coding work through the `code_engine` tool, which starts one of eleven coding engines
+An agent runs its coding work through the `code_engine` tool, which starts one of twelve coding engines
 over ACP inside the agent's own VM. Claude Code, Codex and OpenCode are on by default. Gemini CLI, Qwen
-Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code and Auggie are off until the owner adds them
+Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are off until the owner
+adds them
 to `engines_enabled`.
 
 The engines run on the plaza's own models through the model gateway, so they need no account of their
