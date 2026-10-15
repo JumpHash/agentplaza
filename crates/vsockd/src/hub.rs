@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use crate::apid::Apid;
 use crate::serve::SessionLog;
+use crate::waker::Waker;
 
 /// One heartbeat line is logged per this many beats (and the first).
 pub const HEARTBEAT_LOG_EVERY: u64 = 12;
@@ -125,12 +126,28 @@ pub enum StopOutcome {
     NotConnected,
 }
 
+/// The way to a session's thread: its command channel, and the waker that makes the session look at it.
+#[derive(Clone)]
+pub(crate) struct Steering {
+    commands: Sender<Command>,
+    waker: Arc<Waker>,
+}
+
+impl Steering {
+    /// Sends `command` and wakes the session.
+    pub(crate) fn send(&self, command: Command) -> Result<(), std::sync::mpsc::SendError<Command>> {
+        self.commands.send(command)?;
+        self.waker.wake();
+        Ok(())
+    }
+}
+
 /// A live session's control handles.
 #[derive(Clone)]
 struct Live {
     /// Distinguishes this session from a predecessor on the same CID.
     token: u64,
-    commands: Sender<Command>,
+    steering: Steering,
     ended: Arc<SessionEnd>,
 }
 
@@ -211,16 +228,28 @@ impl Hub {
         self.steering.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    /// Registers a session; a CID already registered is re-adopted (its old
-    /// token stops matching, so the old session's cleanup cannot evict it).
-    pub fn connect(&self, cid: u32, role: &str, now: Instant) -> (u64, Receiver<Command>) {
+    /// Registers a session and returns its token, its command receiver and the
+    /// waker that makes the session look at its commands. A CID already
+    /// registered is re-adopted (its old token stops matching, so the old
+    /// session's cleanup cannot evict it). Fails only when the waker cannot be
+    /// made, and then nothing is registered.
+    pub fn connect(
+        &self,
+        cid: u32,
+        role: &str,
+        now: Instant,
+    ) -> std::io::Result<(u64, Receiver<Command>, Arc<Waker>)> {
         let token = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let (commands, receiver) = channel();
+        let waker = Arc::new(Waker::new()?);
         self.steering().insert(
             cid,
             Live {
                 token,
-                commands,
+                steering: Steering {
+                    commands,
+                    waker: Arc::clone(&waker),
+                },
                 ended: Arc::default(),
             },
         );
@@ -247,7 +276,7 @@ impl Hub {
                     .as_secs()
             ));
         }
-        (token, receiver)
+        Ok((token, receiver, waker))
     }
 
     pub fn heartbeat(&self, cid: u32, seq: u64, busy: bool, now: Instant) {
@@ -331,7 +360,7 @@ impl Hub {
         };
         let (reply, answer) = channel();
         if live
-            .commands
+            .steering
             .send(Command::Call {
                 name: name.to_string(),
                 args,
@@ -357,7 +386,7 @@ impl Hub {
         };
         let (written, taken) = channel();
         if live
-            .commands
+            .steering
             .send(Command::Send { message, written })
             .is_err()
         {
@@ -376,7 +405,7 @@ impl Hub {
             return StopOutcome::NotConnected;
         };
         if live
-            .commands
+            .steering
             .send(Command::Stop {
                 reason: reason.to_string(),
             })
@@ -393,8 +422,8 @@ impl Hub {
     }
 
     #[cfg(test)]
-    pub(crate) fn steer(&self, cid: u32) -> Option<Sender<Command>> {
-        self.live(cid).map(|live| live.commands)
+    pub(crate) fn steer(&self, cid: u32) -> Option<Steering> {
+        self.live(cid).map(|live| live.steering)
     }
 
     #[cfg(test)]
@@ -469,8 +498,8 @@ pub(crate) mod tests {
     #[test]
     fn a_reconnect_is_adopted_and_the_old_session_cannot_evict_it() {
         let (_log, hub) = hub_with(None);
-        let (first, _old) = hub.connect(10, "builder", Instant::now());
-        let (_second, _new) = hub.connect(10, "builder", Instant::now());
+        let (first, _old, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
+        let (_second, _new, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
         hub.hangup(10, first);
         assert_eq!(hub.agent_count(), 1, "the predecessor's token owns nothing");
         assert!(hub.steer(10).is_some());
@@ -484,7 +513,7 @@ pub(crate) mod tests {
             TellOutcome::NotConnected
         );
 
-        let (_token, steering) = hub.connect(10, "builder", Instant::now());
+        let (_token, steering, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
         let agent = thread::spawn(move || {
             if let Ok(Command::Call {
                 name,
@@ -528,7 +557,7 @@ pub(crate) mod tests {
         let (_log, hub) = hub_with(None);
         let hub = Arc::new(hub);
         for (bye, expected) in [(true, 2), (false, 3)] {
-            let (token, steering) = hub.connect(10, "builder", Instant::now());
+            let (token, steering, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
             let session = {
                 let hub = Arc::clone(&hub);
                 thread::spawn(move || {
@@ -548,7 +577,7 @@ pub(crate) mod tests {
             );
             session.join().unwrap();
         }
-        let (_token, _steering) = hub.connect(10, "builder", Instant::now());
+        let (_token, _steering, _waker) = hub.connect(10, "builder", Instant::now()).unwrap();
         assert_eq!(
             hub.stop(10, "operator stop", Duration::from_millis(50)),
             StopOutcome::StillUp
@@ -568,8 +597,10 @@ pub(crate) mod tests {
             anchor,
             1_700_000_000_000,
         );
-        hub.connect(11, "builder", anchor + Duration::from_millis(250));
-        hub.connect(10, "reviewer", anchor + Duration::from_millis(500));
+        hub.connect(11, "builder", anchor + Duration::from_millis(250))
+            .unwrap();
+        hub.connect(10, "reviewer", anchor + Duration::from_millis(500))
+            .unwrap();
         hub.note_calls(10, 4);
         hub.heartbeat(10, 7, true, anchor + Duration::from_millis(5_500));
         let snapshot = hub.snapshot();

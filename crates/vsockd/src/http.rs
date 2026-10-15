@@ -403,7 +403,8 @@ mod tests {
         let surface = surface(Hub::started_at(log, Apid::off(), anchor, 1_700_000_000_000));
         surface
             .hub
-            .connect(10, "builder", anchor + Duration::from_millis(250));
+            .connect(10, "builder", anchor + Duration::from_millis(250))
+            .unwrap();
         surface.hub.note_calls(10, 2);
         assert_eq!(
             status_json(&surface, 42),
@@ -459,7 +460,10 @@ mod tests {
     #[test]
     fn a_tell_is_trusted_and_its_tool_is_dispatched_with_its_args_and_answer_returned() {
         let surface = surface(hub_with(None).1);
-        let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
+        let (_token, steering, _waker) = surface
+            .hub
+            .connect(10, "librarian", Instant::now())
+            .unwrap();
         let agent = thread::spawn(move || {
             let mut dispatched = Vec::new();
             while let Ok(Command::Call { name, args, reply }) =

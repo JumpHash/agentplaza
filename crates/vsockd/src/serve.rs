@@ -267,12 +267,20 @@ impl Session<'_> {
         // the profile names the role the agent is registered under, and with no profile there
         // is no role to register it with, so the session is refused rather than registered
         // with an empty one.
-        let (token, steering, role, profile, mut next_hello) = match role.filter(|r| !r.is_empty())
+        let (token, steering, waker, role, profile, mut next_hello) = match role
+            .filter(|r| !r.is_empty())
         {
             Some(role) => {
-                let (token, steering) = hub.connect(cid, role, last_heartbeat);
+                let (token, steering, waker) = hub.connect(cid, role, last_heartbeat)?;
                 let (profile, next_hello) = self.ask_apid(&apid, role, caps, clock);
-                (token, steering, role.to_string(), profile, next_hello)
+                (
+                    token,
+                    steering,
+                    waker,
+                    role.to_string(),
+                    profile,
+                    next_hello,
+                )
             }
             None => {
                 let (profile, _) = self.ask_apid(&apid, "", caps, clock);
@@ -284,10 +292,12 @@ impl Session<'_> {
                         ));
                     }
                 };
-                let (token, steering) = hub.connect(cid, &role, last_heartbeat);
-                (token, steering, role, profile, None)
+                let (token, steering, waker) = hub.connect(cid, &role, last_heartbeat)?;
+                (token, steering, waker, role, profile, None)
             }
         };
+        // The waker makes this session look at the hub's commands; the session loop takes it up later.
+        let _waker = waker;
         // Registered before the welcome; the guard unregisters on every exit.
         let _registered = Registration { hub, cid, token };
         let (settled_tx, settled) = channel();
