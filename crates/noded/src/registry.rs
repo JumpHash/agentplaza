@@ -4714,7 +4714,10 @@ mod tests {
         let (registry, _run) =
             registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
         for n in [0, MAX_FORKS + 1] {
-            let refused = registry.fork_vm("r1", 0, n, None).err().expect("out of range");
+            let refused = registry
+                .fork_vm("r1", 0, n, None)
+                .err()
+                .expect("out of range");
             assert_eq!(refused.status(), 400);
         }
         assert!(

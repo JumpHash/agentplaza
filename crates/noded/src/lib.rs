@@ -1759,6 +1759,13 @@ fn router() -> Router<Node> {
         .post("/v1/workstations/{id}/start", |node, _, params| {
             workstation_answer(node.workstations.start(params.get("id")))
         })
+        // A plaza VM sleeps (its memory kept) and a start, or a wake, resumes it from there.
+        .post("/v1/workstations/{id}/sleep", |node, _, params| {
+            workstation_answer(node.workstations.sleep(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/wake", |node, _, params| {
+            workstation_answer(node.workstations.start(params.get("id")))
+        })
         .post("/v1/workstations/{id}/stop", |node, _, params| {
             workstation_answer(node.workstations.stop(params.get("id")))
         })
@@ -1812,9 +1819,12 @@ fn router() -> Router<Node> {
                 Registry::resume_vm,
             )
         })
-        .post("/v1/runs/{id}/vms/{index}/sleep", |node, request, params| {
-            sleep_vm(node, params.get("id"), params.get("index"), &request.body)
-        })
+        .post(
+            "/v1/runs/{id}/vms/{index}/sleep",
+            |node, request, params| {
+                sleep_vm(node, params.get("id"), params.get("index"), &request.body)
+            },
+        )
         .post("/v1/runs/{id}/vms/{index}/wake", |node, request, params| {
             wake_vm(node, params.get("id"), params.get("index"), &request.body)
         })

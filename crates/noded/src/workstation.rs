@@ -7,8 +7,13 @@
 //! and that holds on both backends. The guest's display is the daemon's own virtual display (the guest recipe runs
 //! Xvfb), so the node's screen is never touched.
 //!
-//! Snapshot and revert work on the disk. The VMM takes no live snapshots, so the VM is stopped, its disk is copied
-//! to (or back from) a snapshot file, and the VM starts again. The hub sequences those calls around a lease.
+//! Snapshot and revert work on the disk of a stopped VM: its disk is copied to (or back from) a snapshot file. A running
+//! plaza VM takes a live snapshot instead: its memory and its disk together (`live/`), with the VM paused for the copy
+//! and running on after it; a revert to a live snapshot puts the VM back where it was, running, without a boot. A plaza
+//! VM also sleeps (`sleep/`: its memory written, its VMM stopped) and a start of a sleeping VM wakes it from that image,
+//! so the desktop is back in a fraction of a second instead of booting. A restored VM runs from a private copy of its
+//! image (`running/`), so a later snapshot never writes a file the VM still maps. The hub sequences those calls around a
+//! lease, live when the node can and stop-copy-start when it cannot (QEMU).
 //!
 //! GPU options: `none`; `virtual` (the guest's software renderer, no device attached); and `vfio:<pci-id>`, which is
 //! checked against sysfs and refused unless the device is bound to `vfio-pci` with an IOMMU group. The node never
@@ -34,7 +39,7 @@ use std::time::Duration;
 use apz_station::vsock::{NodeConfig, config_address, link_address};
 use serde::{Deserialize, Serialize};
 use vmm::clonefile;
-use vmm::spawner::{self, VmHandle, VmSpec, VsockConfig};
+use vmm::spawner::{self, SnapshotKind, VmHandle, VmSpec, VsockConfig};
 
 use crate::ws_qemu::{self, Available};
 use crate::ws_relay::{self, Destination, Relay};
@@ -457,6 +462,12 @@ pub struct Record {
     /// until the node loads it, which assigns its CID.
     #[serde(default)]
     pub cid: u32,
+    /// The snapshot is a live one (`live/`: memory and disk of a running plaza VM), not a disk copy.
+    #[serde(default)]
+    pub live_snapshot: bool,
+    /// The VM is asleep: its memory is in `sleep/`, and a start wakes it from there.
+    #[serde(default)]
+    pub asleep: bool,
 }
 
 /// The node's desktop guest: the kernel and initramfs every Linux workstation VM boots, the disk image each VM
@@ -625,6 +636,8 @@ pub struct View {
     pub state: &'static str,
     pub pid: Option<u32>,
     pub snapshot: bool,
+    /// Whether the snapshot holds the VM's memory too (a revert resumes it without a boot).
+    pub live_snapshot: bool,
     pub created_ms: u64,
     pub backend: Backend,
 }
@@ -680,6 +693,8 @@ struct Slot {
     record: Record,
     handle: Option<Handle>,
     link: Option<Link>,
+    /// The image a restored plaza VM runs from (`running/`): its next snapshot is a diff over this memory.
+    restored_from: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -747,6 +762,7 @@ impl Store {
                                 record,
                                 handle: None,
                                 link: None,
+                                restored_from: None,
                             };
                             if slot.record.backend == Backend::Qemu
                                 && let Some(attached) = ws_qemu::reattach(&dir)
@@ -838,6 +854,8 @@ impl Store {
             snapshot: false,
             backend,
             cid: cid_for(&id),
+            live_snapshot: false,
+            asleep: false,
         };
         let dir = self.guest.dir.join(&id);
         // The launch is checked before anything is copied: a missing kernel is refused with no directory made.
@@ -860,6 +878,7 @@ impl Store {
                 record,
                 handle: Some(handle),
                 link,
+                restored_from: None,
             },
         );
         inner
@@ -885,10 +904,37 @@ impl Store {
                     .map_err(|e| (500, e))?;
                 let spec = boot_spec(&slot.record, &self.guest, &dir.join(PLAZA_DISK))
                     .map_err(|e| (503, e))?;
-                let handle = spawner::spawn(spec)
-                    .map(Handle::Plaza)
-                    .map_err(|err| (500, format!("the workstation VM did not boot: {err}")))?;
-                (handle, link)
+                // A sleeping VM wakes from its memory: a warm start, no boot. An image that will not
+                // restore is not fatal; the VM boots from its disk as a stopped one does.
+                let woken = if slot.record.asleep {
+                    match restore_from(&dir, &dir.join(SLEEP_DIR), &spec) {
+                        Ok(handle) => Some(handle),
+                        Err(err) => {
+                            eprintln!(
+                                "noded: workstation {id} did not wake from its sleep image ({err}); booting it"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let (handle, restored_from) = match woken {
+                    Some(handle) => (handle, Some(dir.join(RUNNING_DIR))),
+                    None => (
+                        spawner::spawn(spec).map_err(|err| {
+                            (500, format!("the workstation VM did not boot: {err}"))
+                        })?,
+                        None,
+                    ),
+                };
+                if slot.record.asleep {
+                    slot.record.asleep = false;
+                    let _ = fs::remove_dir_all(dir.join(SLEEP_DIR));
+                    write_record(&dir, &slot.record).map_err(|e| (500, e))?;
+                }
+                slot.restored_from = restored_from;
+                (Handle::Plaza(handle), link)
             }
             Backend::Qemu => {
                 let available = self.qemu()?;
@@ -917,7 +963,8 @@ impl Store {
         Ok(view_of(slot))
     }
 
-    /// Stops a VM. A plaza VM's VMM is killed. A QEMU VM is powered down, given its grace, then quit, then killed.
+    /// Stops a VM. A plaza VM's VMM is killed. A QEMU VM is powered down, given its grace, then quit, then killed. A
+    /// sleeping VM forgets its memory image: its next start boots it.
     pub fn stop(&self, id: &str) -> Result<View, Refusal> {
         let mut inner = self.lock();
         let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
@@ -929,14 +976,93 @@ impl Store {
             return Err((500, format!("workstation {id} did not stop: {err}")));
         }
         slot.link = None;
+        slot.restored_from = None;
+        if slot.record.asleep {
+            let dir = self.dir_of(id);
+            slot.record.asleep = false;
+            let _ = fs::remove_dir_all(dir.join(SLEEP_DIR));
+            write_record(&dir, &slot.record).map_err(|e| (500, e))?;
+        }
         Ok(view_of(slot))
     }
 
-    /// Copies a stopped VM's disk to its snapshot file. The VM must be stopped: the copy is of a quiet disk.
+    /// Puts a running plaza VM to sleep: its memory is written to `sleep/` (the VM paused for it), its VMM stops, and its
+    /// next start wakes it from there. QEMU VMs do not sleep.
+    pub fn sleep(&self, id: &str) -> Result<View, Refusal> {
+        let mut inner = self.lock();
+        let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
+        refresh(slot);
+        let Some(Handle::Plaza(handle)) = slot.handle.as_ref() else {
+            return Err(if slot.handle.is_none() {
+                (409, format!("workstation {id} is not running"))
+            } else {
+                (
+                    409,
+                    format!("workstation {id} runs under QEMU, which does not sleep"),
+                )
+            });
+        };
+        let dir = self.dir_of(id);
+        let partial = dir.join(SLEEP_PARTIAL_DIR);
+        if let Err(err) = write_memory(handle, slot.restored_from.as_deref(), &partial) {
+            let _ = fs::remove_dir_all(&partial);
+            let _ = handle.resume();
+            return Err((500, format!("workstation {id} did not sleep: {err}")));
+        }
+        if let Some(mut handle) = slot.handle.take()
+            && let Err(err) = handle.halt()
+        {
+            let _ = fs::remove_dir_all(&partial);
+            if let Handle::Plaza(vm) = &handle {
+                let _ = vm.resume();
+            }
+            slot.handle = Some(handle);
+            return Err((500, format!("workstation {id} did not stop: {err}")));
+        }
+        slot.link = None;
+        slot.restored_from = None;
+        replace_dir(&partial, &dir.join(SLEEP_DIR)).map_err(|e| (500, e))?;
+        slot.record.asleep = true;
+        write_record(&dir, &slot.record).map_err(|e| (500, e))?;
+        Ok(view_of(slot))
+    }
+
+    /// Copies a stopped VM's disk to its snapshot file: the copy is of a quiet disk. A running plaza VM takes a live
+    /// snapshot instead: its memory and its disk together, the VM paused for the copy and running on after it. A
+    /// running QEMU VM must be stopped first.
     pub fn snapshot(&self, id: &str) -> Result<View, Refusal> {
         let mut inner = self.lock();
         let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
         refresh(slot);
+        if let Some(Handle::Plaza(handle)) = slot.handle.as_ref() {
+            let dir = self.dir_of(id);
+            let partial = dir.join(LIVE_PARTIAL_DIR);
+            let taken =
+                write_memory(handle, slot.restored_from.as_deref(), &partial).and_then(|()| {
+                    clonefile::clone_file(&dir.join(PLAZA_DISK), &partial.join(PLAZA_DISK))
+                        .map(|_| ())
+                        .map_err(|err| format!("cannot copy the disk: {err}"))
+                });
+            // The control leaves the VM paused after its memory is written, so the disk copy matches it.
+            let resumed = handle.resume();
+            if let Err(err) = taken {
+                let _ = fs::remove_dir_all(&partial);
+                return Err((500, format!("workstation {id} did not snapshot: {err}")));
+            }
+            replace_dir(&partial, &dir.join(LIVE_DIR)).map_err(|e| (500, e))?;
+            // The disk-only snapshot is older than this one, and a revert takes the newest.
+            let _ = fs::remove_file(dir.join(PLAZA_SNAPSHOT));
+            slot.record.snapshot = true;
+            slot.record.live_snapshot = true;
+            write_record(&dir, &slot.record).map_err(|e| (500, e))?;
+            if let Err(err) = resumed {
+                return Err((
+                    500,
+                    format!("workstation {id} did not resume after its snapshot: {err}"),
+                ));
+            }
+            return Ok(view_of(slot));
+        }
         if slot.handle.is_some() {
             return Err((
                 409,
@@ -962,15 +1088,22 @@ impl Store {
             }
         }
         slot.record.snapshot = true;
+        slot.record.live_snapshot = false;
+        let _ = fs::remove_dir_all(dir.join(LIVE_DIR));
         write_record(&dir, &slot.record).map_err(|e| (500, e))?;
         Ok(view_of(slot))
     }
 
-    /// Copies a stopped VM's snapshot back over its disk: the disk is what it was when the snapshot was taken.
+    /// Copies a stopped VM's snapshot back over its disk: the disk is what it was when the snapshot was taken. A live
+    /// snapshot puts a plaza VM back where it was, running or not before: its disk is copied back and the VM resumes from
+    /// the snapshot's memory, with no boot.
     pub fn revert(&self, id: &str) -> Result<View, Refusal> {
         let mut inner = self.lock();
         let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
         refresh(slot);
+        if slot.record.live_snapshot && slot.record.backend == Backend::Plaza {
+            return self.revert_live(id, slot);
+        }
         if slot.handle.is_some() {
             return Err((
                 409,
@@ -997,6 +1130,52 @@ impl Store {
                     .map_err(|e| (500, e))?;
             }
         }
+        Ok(view_of(slot))
+    }
+
+    /// [`Store::revert`] to a live snapshot: the running VM (if any) stops, the snapshot's disk is copied back, and the
+    /// VM is restored from the snapshot's memory with its hub link opened again.
+    fn revert_live(&self, id: &str, slot: &mut Slot) -> Result<View, Refusal> {
+        let dir = self.dir_of(id);
+        let live = dir.join(LIVE_DIR);
+        if !live.join(PLAZA_DISK).is_file() {
+            return Err((
+                409,
+                format!("workstation {id} has no live snapshot to revert to"),
+            ));
+        }
+        if let Some(mut handle) = slot.handle.take()
+            && let Err(err) = handle.halt()
+        {
+            slot.handle = Some(handle);
+            return Err((500, format!("workstation {id} did not stop: {err}")));
+        }
+        slot.link = None;
+        slot.restored_from = None;
+        replace_file(
+            &live.join(PLAZA_DISK),
+            &dir.join("disk.tmp"),
+            &dir.join(PLAZA_DISK),
+        )
+        .map_err(|e| (500, e))?;
+        let link = open_link(&self.host, &self.guest.vsock_dir, &slot.record, None)
+            .map_err(|e| (500, e))?;
+        let spec =
+            boot_spec(&slot.record, &self.guest, &dir.join(PLAZA_DISK)).map_err(|e| (503, e))?;
+        let handle = restore_from(&dir, &live, &spec).map_err(|err| {
+            (
+                500,
+                format!("workstation {id} did not resume its snapshot: {err}"),
+            )
+        })?;
+        if slot.record.asleep {
+            slot.record.asleep = false;
+            let _ = fs::remove_dir_all(dir.join(SLEEP_DIR));
+            write_record(&dir, &slot.record).map_err(|e| (500, e))?;
+        }
+        slot.handle = Some(Handle::Plaza(handle));
+        slot.link = link;
+        slot.restored_from = Some(dir.join(RUNNING_DIR));
         Ok(view_of(slot))
     }
 
@@ -1199,14 +1378,72 @@ fn view_of(slot: &mut Slot) -> View {
         gpu: record.gpu.text(),
         state: if slot.handle.is_some() {
             "running"
+        } else if record.asleep {
+            "asleep"
         } else {
             "stopped"
         },
         pid: slot.handle.as_ref().and_then(Handle::pid),
         snapshot: record.snapshot,
+        live_snapshot: record.live_snapshot,
         created_ms: record.created_ms,
         backend: record.backend,
     }
+}
+
+/// A plaza VM's live snapshot (memory, state and disk), and the one being written.
+const LIVE_DIR: &str = "live";
+const LIVE_PARTIAL_DIR: &str = "live.new";
+/// A sleeping plaza VM's memory and state, and the one being written.
+const SLEEP_DIR: &str = "sleep";
+const SLEEP_PARTIAL_DIR: &str = "sleep.new";
+/// The private copy of the image a restored plaza VM runs from (its memory is mapped from here).
+const RUNNING_DIR: &str = "running";
+
+/// Writes a plaza VM's memory and state into `dir`: a diff over the memory it was restored from (`base`, copied first),
+/// or every page it touched. The VM is left paused.
+fn write_memory(handle: &VmHandle, base: Option<&Path>, dir: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(dir);
+    if let Some(base) = base {
+        crate::snapshots::private_dir(dir)
+            .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+        clonefile::clone_file(
+            &base.join(crate::snapshots::MEMORY_FILE),
+            &dir.join(crate::snapshots::MEMORY_FILE),
+        )
+        .map_err(|err| format!("cannot copy the memory the VM was restored from: {err}"))?;
+    }
+    handle
+        .snapshot(dir, SnapshotKind::Diff)
+        .map(|_| ())
+        .map_err(|err| format!("the VM did not snapshot: {err}"))
+}
+
+/// Restores a plaza VM from the image in `image` (its memory and state): the image is copied to `<dir>/running` first,
+/// so the VM maps a file nothing else writes, and `image` can be replaced while the VM runs.
+fn restore_from(dir: &Path, image: &Path, spec: &VmSpec) -> Result<VmHandle, String> {
+    let running = dir.join(RUNNING_DIR);
+    let _ = fs::remove_dir_all(&running);
+    crate::snapshots::private_dir(&running)
+        .map_err(|err| format!("cannot create {}: {err}", running.display()))?;
+    for file in [
+        crate::snapshots::MEMORY_FILE,
+        vmm::vstate::snapshot::STATE_FILE,
+    ] {
+        clonefile::clone_file(&image.join(file), &running.join(file))
+            .map_err(|err| format!("cannot copy {file}: {err}"))?;
+    }
+    spawner::spawn(VmSpec {
+        restore: Some(running),
+        ..spec.clone()
+    })
+    .map_err(|err| err.to_string())
+}
+
+/// Renames the directory `partial` over `to`, removing the old one first.
+fn replace_dir(partial: &Path, to: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(to);
+    fs::rename(partial, to).map_err(|err| format!("cannot keep {}: {err}", to.display()))
 }
 
 /// Copies `from` to `tmp` and renames it over `to`, so a copy that fails leaves `to` as it was.
@@ -1300,6 +1537,8 @@ mod tests {
             snapshot: false,
             backend: Backend::Plaza,
             cid: cid_for(id),
+            live_snapshot: false,
+            asleep: false,
         }
     }
 
