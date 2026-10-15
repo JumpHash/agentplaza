@@ -1216,7 +1216,7 @@ impl SharedVm {
         // The virtio transports: a queue notification is served here, on the
         // vCPU that wrote it (a block request runs to completion before the
         // vCPU resumes; the vsock device hands it to its event thread).
-        self.mmio.write(ipa, bytes).is_ok()
+        self.mmio.write_and_wait(ipa, bytes).is_ok()
     }
 }
 

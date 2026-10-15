@@ -76,6 +76,9 @@ pub mod eventfd {
 
     pub struct EventFd {
         inner: Arc<Inner>,
+        /// This handle's own duplicate of the read end. Its socket is the fd, so
+        /// each clone is a distinct handle on the same counter, as a `dup` gives.
+        rx: TcpStream,
     }
 
     /// A connected loopback pair. The accepted end must come from the address
@@ -105,12 +108,14 @@ pub mod eventfd {
     impl EventFd {
         pub fn new(_flags: i32) -> io::Result<EventFd> {
             let (tx, rx) = socket_pair()?;
+            let inner = Arc::new(Inner {
+                counter: Mutex::new(0),
+                tx,
+                rx,
+            });
             Ok(EventFd {
-                inner: Arc::new(Inner {
-                    counter: Mutex::new(0),
-                    tx,
-                    rx,
-                }),
+                rx: inner.rx.try_clone()?,
+                inner,
             })
         }
 
@@ -154,17 +159,25 @@ pub mod eventfd {
             }
         }
 
-        /// A second handle to the same counter and socket pair.
+        /// A second handle to the same counter and socket pair, with its own
+        /// socket handle on the read end, as a `dup` gives.
+        ///
+        /// One difference from Linux remains: a registration in an `Epoll` is
+        /// by this handle's own descriptor, so it ends when this handle is
+        /// dropped, even while a clone lives on (Linux keeps it until the last
+        /// duplicate closes). Every caller keeps the handle it registered for
+        /// as long as the registration.
         pub fn try_clone(&self) -> io::Result<EventFd> {
             Ok(EventFd {
                 inner: Arc::clone(&self.inner),
+                rx: self.inner.rx.try_clone()?,
             })
         }
     }
 
     impl AsRawFd for EventFd {
         fn as_raw_fd(&self) -> RawFd {
-            self.inner.rx.as_raw_socket()
+            self.rx.as_raw_socket()
         }
     }
 
@@ -186,7 +199,7 @@ pub mod epoll {
     use std::ops::{BitAnd, BitOr, BitOrAssign};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::Networking::WinSock::{
         POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, SOCKET, SOCKET_ERROR, WSAGetLastError, WSAPOLLFD,
         WSAPoll,
@@ -195,8 +208,6 @@ pub mod epoll {
     /// Pseudo handles of `Epoll` instances carry this bit, so they cannot
     /// collide with a SOCKET (which never has it set on Windows).
     const PSEUDO_BIT: RawFd = 1 << 63;
-    /// Longest sleep when there is nothing to poll.
-    const IDLE_CAP_MS: i32 = 50;
 
     static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
@@ -213,6 +224,9 @@ pub mod epoll {
 
     struct Registry {
         entries: Mutex<HashMap<RawFd, EpollEvent>>,
+        /// Written by every `ctl`, so a `wait` blocked on the set it snapshotted
+        /// notices the change.
+        wake: super::eventfd::EventFd,
     }
 
     // Bit-compatible with the Linux `EPOLL*` values for the flags listed.
@@ -355,6 +369,7 @@ pub mod epoll {
             let handle = PSEUDO_BIT | NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
             let registry = Arc::new(Registry {
                 entries: Mutex::new(HashMap::new()),
+                wake: super::eventfd::EventFd::new(0)?,
             });
             lock(registries()).insert(handle, Arc::downgrade(&registry));
             Ok(Epoll {
@@ -388,128 +403,167 @@ pub mod epoll {
                     }
                 }
             }
+            drop(entries);
+            // Wakes a `wait` that is blocked on the set as it was before this change.
+            let _ = self.registry.wake.write(1);
             Ok(())
         }
 
         /// Waits up to `timeout_ms` (negative: forever) and reports up to
-        /// `events.len()` ready entries. Returns how many were written.
+        /// `events.len()` ready entries. Returns how many were written. A
+        /// registration made from another thread wakes a blocked wait, which then
+        /// polls the new set; an empty set waits out the whole timeout.
         pub fn wait(&self, timeout_ms: i32, events: &mut [EpollEvent]) -> io::Result<usize> {
-            let timeout = if timeout_ms < 0 { -1 } else { timeout_ms };
+            let deadline = (timeout_ms >= 0)
+                .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
 
-            // Snapshot first so no registry lock is held while blocking.
-            let snapshot: Vec<(RawFd, EpollEvent)> = lock(&self.registry.entries)
-                .iter()
-                .map(|(fd, ev)| (*fd, *ev))
-                .collect();
+            loop {
+                // Snapshot first so no registry lock is held while blocking.
+                let snapshot: Vec<(RawFd, EpollEvent)> = lock(&self.registry.entries)
+                    .iter()
+                    .map(|(fd, ev)| (*fd, *ev))
+                    .collect();
 
-            // One poll entry per socket. `owner` maps it to its snapshot index;
-            // `inner_sets` holds the nested entry's registered set (`None` for a
-            // direct socket).
-            let mut pfds: Vec<WSAPOLLFD> = Vec::new();
-            let mut owner: Vec<usize> = Vec::new();
-            let mut inner_sets: Vec<Option<EventSet>> = Vec::new();
-            for (i, (fd, ev)) in snapshot.iter().enumerate() {
-                if *fd & PSEUDO_BIT != 0 {
-                    // A nested Epoll reports IN when any of its entries is ready for
-                    // what that entry registered, as on Linux. Deeper nesting, and a
-                    // dropped Epoll, contribute nothing.
-                    if let Some(inner) = live_registry(*fd) {
-                        let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
-                            .iter()
-                            .filter(|(f, _)| **f & PSEUDO_BIT == 0)
-                            .map(|(f, e)| (*f, *e))
-                            .collect();
-                        for (sock, sev) in inner_entries {
-                            pfds.push(poll_entry(sock, sev));
-                            owner.push(i);
-                            inner_sets.push(Some(sev.event_set()));
+                // One poll entry per socket, then one per wake socket: this
+                // registry's, and those of the nested registries whose entries are
+                // polled. `owner` maps a socket entry to its snapshot index;
+                // `inner_sets` holds the nested entry's registered set (`None` for a
+                // direct socket); `wakes` pairs with the wake entries.
+                let mut pfds: Vec<WSAPOLLFD> = Vec::new();
+                let mut owner: Vec<usize> = Vec::new();
+                let mut inner_sets: Vec<Option<EventSet>> = Vec::new();
+                let mut wakes: Vec<Arc<Registry>> = vec![Arc::clone(&self.registry)];
+                for (i, (fd, ev)) in snapshot.iter().enumerate() {
+                    if *fd & PSEUDO_BIT != 0 {
+                        // A nested Epoll reports IN when any of its entries is ready for
+                        // what that entry registered, as on Linux. Deeper nesting, and a
+                        // dropped Epoll, contribute nothing.
+                        if let Some(inner) = live_registry(*fd) {
+                            let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
+                                .iter()
+                                .filter(|(f, _)| **f & PSEUDO_BIT == 0)
+                                .map(|(f, e)| (*f, *e))
+                                .collect();
+                            for (sock, sev) in inner_entries {
+                                pfds.push(poll_entry(sock, sev));
+                                owner.push(i);
+                                inner_sets.push(Some(sev.event_set()));
+                            }
+                            wakes.push(inner);
                         }
+                    } else {
+                        pfds.push(poll_entry(*fd, *ev));
+                        owner.push(i);
+                        inner_sets.push(None);
                     }
-                } else {
-                    pfds.push(poll_entry(*fd, *ev));
-                    owner.push(i);
-                    inner_sets.push(None);
                 }
-            }
+                let entries_len = pfds.len();
+                for registry in &wakes {
+                    pfds.push(WSAPOLLFD {
+                        fd: registry.wake.as_raw_fd() as SOCKET,
+                        events: POLLRDNORM,
+                        revents: 0,
+                    });
+                }
 
-            if pfds.is_empty() {
-                // Nothing can wake us, so do not block: wait out a bounded
-                // timeout and report nothing.
-                let nap = if timeout < 0 {
-                    IDLE_CAP_MS
-                } else {
-                    timeout.min(IDLE_CAP_MS)
+                // What is left of the timeout, rounded up so that a sub-millisecond
+                // remainder still waits rather than spins.
+                let remaining = match deadline {
+                    None => -1,
+                    Some(end) => {
+                        let left = end.saturating_duration_since(Instant::now());
+                        i32::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+                    }
                 };
-                std::thread::sleep(Duration::from_millis(nap as u64));
-                return Ok(0);
-            }
 
-            let n = {
-                // SAFETY: `pfds` is an exclusively borrowed, initialised Vec of
-                // `pfds.len()` WSAPOLLFD values; WSAPoll reads and writes only
-                // the first `len` entries, and the length passed is exactly that.
-                unsafe { WSAPoll(pfds.as_mut_ptr(), pfds.len() as u32, timeout) }
-            };
-            if n == SOCKET_ERROR {
-                // SAFETY: WSAGetLastError has no preconditions; it reads this
-                // thread's last-error value.
-                let code = unsafe { WSAGetLastError() };
-                return Err(io::Error::from_raw_os_error(code));
-            }
+                let n = {
+                    // SAFETY: `pfds` is an exclusively borrowed, initialised Vec of
+                    // `pfds.len()` WSAPOLLFD values; WSAPoll reads and writes only
+                    // the first `len` entries, and the length passed is exactly that.
+                    unsafe { WSAPoll(pfds.as_mut_ptr(), pfds.len() as u32, remaining) }
+                };
+                if n == SOCKET_ERROR {
+                    // SAFETY: WSAGetLastError has no preconditions; it reads this
+                    // thread's last-error value.
+                    let code = unsafe { WSAGetLastError() };
+                    return Err(io::Error::from_raw_os_error(code));
+                }
 
-            // Map readiness back onto each snapshot entry.
-            let mut ready = vec![EventSet::empty(); snapshot.len()];
-            for ((pfd, &i), inner_set) in pfds.iter().zip(owner.iter()).zip(inner_sets.iter()) {
-                let r = pfd.revents;
-                let mut bits = EventSet::empty();
-                if r & POLLRDNORM != 0 {
-                    bits |= EventSet::IN;
-                }
-                if r & POLLHUP != 0 {
-                    bits |= EventSet::IN | EventSet::HANG_UP;
-                }
-                if r & POLLWRNORM != 0 {
-                    bits |= EventSet::OUT;
-                }
-                if r & POLLERR != 0 {
-                    bits |= EventSet::ERROR;
-                }
-                match inner_set {
-                    // A socket inside a nested Epoll counts only when it is ready for
-                    // what its own entry registered (or errored or hung up); the outer
-                    // entry then reports IN, and nothing else.
-                    Some(inner) => {
-                        let asked = (*inner & (EventSet::IN | EventSet::OUT))
-                            | EventSet::ERROR
-                            | EventSet::HANG_UP;
-                        if !(bits & asked).is_empty() {
-                            ready[i] |= EventSet::IN;
-                        }
+                // A readable wake socket was written by a `ctl`. Drain it so that it
+                // stays quiet until the next change.
+                let mut woke = false;
+                for (pfd, registry) in pfds[entries_len..].iter().zip(&wakes) {
+                    if pfd.revents != 0 {
+                        let _ = registry.wake.read();
+                        woke = true;
                     }
-                    None => ready[i] |= bits,
                 }
-            }
 
-            let len = snapshot.len();
-            let start = self.cursor.fetch_add(1, Ordering::Relaxed) % len;
-            let mut written = 0;
-            for k in 0..len {
-                if written == events.len() {
-                    break;
+                // Map readiness back onto each snapshot entry.
+                let mut ready = vec![EventSet::empty(); snapshot.len()];
+                for ((pfd, &i), inner_set) in pfds[..entries_len]
+                    .iter()
+                    .zip(owner.iter())
+                    .zip(inner_sets.iter())
+                {
+                    let r = pfd.revents;
+                    let mut bits = EventSet::empty();
+                    if r & POLLRDNORM != 0 {
+                        bits |= EventSet::IN;
+                    }
+                    if r & POLLHUP != 0 {
+                        bits |= EventSet::IN | EventSet::HANG_UP;
+                    }
+                    if r & POLLWRNORM != 0 {
+                        bits |= EventSet::OUT;
+                    }
+                    if r & POLLERR != 0 {
+                        bits |= EventSet::ERROR;
+                    }
+                    match inner_set {
+                        // A socket inside a nested Epoll counts only when it is ready for
+                        // what its own entry registered (or errored or hung up); the outer
+                        // entry then reports IN, and nothing else.
+                        Some(inner) => {
+                            let asked = (*inner & (EventSet::IN | EventSet::OUT))
+                                | EventSet::ERROR
+                                | EventSet::HANG_UP;
+                            if !(bits & asked).is_empty() {
+                                ready[i] |= EventSet::IN;
+                            }
+                        }
+                        None => ready[i] |= bits,
+                    }
                 }
-                let i = (start + k) % len;
-                let (_, registered) = snapshot[i];
-                // Only what was asked for, plus the always-reported error and hang-up.
-                let wanted = (registered.event_set() & (EventSet::IN | EventSet::OUT))
-                    | EventSet::ERROR
-                    | EventSet::HANG_UP;
-                let bits = ready[i] & wanted;
-                if !bits.is_empty() {
-                    events[written] = EpollEvent::new(bits, registered.data());
-                    written += 1;
+
+                let len = snapshot.len();
+                // With no entries the loop below does not run, so the start is moot.
+                let start = self.cursor.fetch_add(1, Ordering::Relaxed) % len.max(1);
+                let mut written = 0;
+                for k in 0..len {
+                    if written == events.len() {
+                        break;
+                    }
+                    let i = (start + k) % len;
+                    let (_, registered) = snapshot[i];
+                    // Only what was asked for, plus the always-reported error and hang-up.
+                    let wanted = (registered.event_set() & (EventSet::IN | EventSet::OUT))
+                        | EventSet::ERROR
+                        | EventSet::HANG_UP;
+                    let bits = ready[i] & wanted;
+                    if !bits.is_empty() {
+                        events[written] = EpollEvent::new(bits, registered.data());
+                        written += 1;
+                    }
+                }
+
+                // Nothing ready, but the set changed while waiting: poll again, unless
+                // the timeout has run out.
+                let expired = deadline.is_some_and(|end| Instant::now() >= end);
+                if written > 0 || !woke || expired {
+                    return Ok(written);
                 }
             }
-            Ok(written)
         }
     }
 
@@ -540,6 +594,48 @@ mod tests {
     use super::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
     use super::eventfd::{EFD_NONBLOCK, EventFd};
     use std::io::ErrorKind;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn try_clone_gives_a_distinct_handle_on_the_same_counter() {
+        let a = EventFd::new(EFD_NONBLOCK).unwrap();
+        let b = a.try_clone().unwrap();
+        assert_ne!(a.as_raw_fd(), b.as_raw_fd());
+        b.write(3).unwrap();
+        assert_eq!(a.read().unwrap(), 3);
+    }
+
+    #[test]
+    fn an_empty_epoll_blocks_for_its_timeout() {
+        let ep = Epoll::new().unwrap();
+        let mut out = [EpollEvent::default(); 4];
+        let start = Instant::now();
+        assert_eq!(ep.wait(150, &mut out).unwrap(), 0);
+        assert!(start.elapsed() >= Duration::from_millis(140));
+    }
+
+    #[test]
+    fn a_registration_from_another_thread_wakes_a_blocked_wait() {
+        let ep = Arc::new(Epoll::new().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = Arc::clone(&ep);
+        std::thread::spawn(move || {
+            let mut out = [EpollEvent::default(); 4];
+            tx.send(waiter.wait(-1, &mut out).unwrap()).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
+        efd.write(1).unwrap();
+        ep.ctl(
+            ControlOperation::Add,
+            efd.as_raw_fd(),
+            EpollEvent::new(EventSet::IN, 7),
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(1));
+        // `efd` lives to the end of the test, so its registration stays valid.
+    }
 
     #[test]
     fn eventfd_counts_and_would_block() {

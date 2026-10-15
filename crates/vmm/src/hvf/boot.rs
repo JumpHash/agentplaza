@@ -581,8 +581,11 @@ fn attach_devices(
     };
 
     // The interrupt relay, when there is anything to relay. It holds the VM
-    // weakly: the VM is released when its last vCPU finishes, not when the
-    // relay notices the stop.
+    // weakly, upgrading only to raise an SPI, so it never keeps a stopped VM
+    // alive. If that upgrade is the last reference when the vCPUs finish, the
+    // VM's teardown runs on the relay thread: that is safe, since every vCPU
+    // has destroyed its own vCPU by then and `hv_vm_destroy` and the memory
+    // unmap have no thread affinity.
     if !irq_sources.is_empty() {
         let exit = shared.exit_signal();
         let exit_evt = exit.evt.try_clone().map_err(BootError::Device)?;

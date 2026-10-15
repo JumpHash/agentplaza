@@ -288,6 +288,17 @@ impl Bus {
             dev.write(base, offset, data)
         })
     }
+
+    /// Writes `data` like [`Bus::write`], then waits on the barrier the device
+    /// returned, if any: what a vCPU does with a guest store, so a device that
+    /// needs the writing vCPU held until it has acted gets that. The device's
+    /// lock is released before the wait.
+    pub fn write_and_wait(&self, addr: u64, data: &[u8]) -> Result<(), BusError> {
+        if let Some(barrier) = self.write(addr, data)? {
+            barrier.wait();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

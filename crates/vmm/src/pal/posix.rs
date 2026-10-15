@@ -59,7 +59,7 @@ pub mod eventfd {
 
     struct Inner {
         counter: Mutex<u64>,
-        /// Readable while the counter is non-zero; its descriptor is the fd.
+        /// Readable while the counter is non-zero.
         rx: OwnedFd,
         /// Written to when the counter goes from zero to non-zero.
         tx: OwnedFd,
@@ -67,10 +67,30 @@ pub mod eventfd {
 
     pub struct EventFd {
         inner: Arc<Inner>,
+        /// A duplicate of the pipe's read end: its own descriptor, on the same
+        /// pipe. This is the fd that is registered and polled, so each handle
+        /// has a distinct number, as a Linux `dup` of an eventfd does.
+        fd: OwnedFd,
+    }
+
+    /// Duplicates `fd` as a new close-on-exec descriptor.
+    fn dup_cloexec(fd: RawFd) -> io::Result<OwnedFd> {
+        // SAFETY: F_DUPFD_CLOEXEC takes an int argument and touches no memory; `fd` is only read.
+        let new = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if new < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fcntl succeeded, so `new` is a fresh descriptor owned by nothing else; it is wrapped exactly once.
+        Ok(unsafe { OwnedFd::from_raw_fd(new) })
     }
 
     /// A pipe whose ends are both close-on-exec and non-blocking. Each end is
     /// wrapped as soon as it exists, so a failed flag change closes both.
+    ///
+    /// macOS has neither `pipe2` nor `SOCK_CLOEXEC`, so close-on-exec is set
+    /// right after creation. A `fork` and `exec` by another thread in between
+    /// would let the child inherit the descriptor. std's own `pipe` on macOS
+    /// has the same window, and it cannot be closed from here.
     fn pipe_pair() -> io::Result<(OwnedFd, OwnedFd)> {
         let mut fds: [libc::c_int; 2] = [-1; 2];
         // SAFETY: pipe(2) writes exactly two descriptors into the two-element array.
@@ -92,12 +112,14 @@ pub mod eventfd {
     impl EventFd {
         pub fn new(_flags: i32) -> io::Result<EventFd> {
             let (rx, tx) = pipe_pair()?;
+            let fd = dup_cloexec(rx.as_raw_fd())?;
             Ok(EventFd {
                 inner: Arc::new(Inner {
                     counter: Mutex::new(0),
                     rx,
                     tx,
                 }),
+                fd,
             })
         }
 
@@ -170,17 +192,24 @@ pub mod eventfd {
             }
         }
 
-        /// A second handle to the same counter and pipe.
+        /// A second handle to the same counter and pipe, with its own descriptor.
+        ///
+        /// One difference from Linux remains: a registration in an `Epoll` is
+        /// by this handle's own descriptor, so it ends when this handle is
+        /// dropped, even while a clone lives on (Linux keeps it until the last
+        /// duplicate closes). Every caller keeps the handle it registered for
+        /// as long as the registration.
         pub fn try_clone(&self) -> io::Result<EventFd> {
             Ok(EventFd {
                 inner: Arc::clone(&self.inner),
+                fd: dup_cloexec(self.fd.as_raw_fd())?,
             })
         }
     }
 
     impl AsRawFd for EventFd {
         fn as_raw_fd(&self) -> RawFd {
-            self.inner.rx.as_raw_fd()
+            self.fd.as_raw_fd()
         }
     }
 
@@ -202,10 +231,7 @@ pub mod epoll {
     use std::ops::{BitAnd, BitOr, BitOrAssign};
     use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
-    use std::time::Duration;
-
-    /// Longest sleep when there is nothing to poll.
-    const IDLE_CAP_MS: i32 = 50;
+    use std::time::{Duration, Instant};
 
     /// Pseudo handles are negative, so they cannot collide with a real
     /// descriptor (which is never negative). Starts at 2 so -1 is never issued.
@@ -231,6 +257,9 @@ pub mod epoll {
 
     struct Registry {
         entries: Mutex<HashMap<RawFd, EpollEvent>>,
+        /// Written by every successful `ctl`, so that a `wait` blocked in poll(2)
+        /// wakes and looks at the registrations again.
+        wake: super::eventfd::EventFd,
     }
 
     // Bit-compatible with the Linux `EPOLL*` values for the flags listed.
@@ -369,12 +398,14 @@ pub mod epoll {
 
     /// Where one poll entry came from.
     struct Source {
-        /// Snapshot index of the entry the descriptor reports for.
+        /// Snapshot index of the entry the descriptor reports for. Unused for a wake descriptor.
         owner: usize,
         /// For a descriptor of a nested Epoll, the events its inner entry registered.
         inner: Option<EventSet>,
         /// The nested registry it was read from, or `None` for a direct entry.
         home: Option<Arc<Registry>>,
+        /// For a wake descriptor, the registry whose wake it is. Never reported.
+        wake: Option<Arc<Registry>>,
     }
 
     impl Epoll {
@@ -382,6 +413,7 @@ pub mod epoll {
             let handle = -NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
             let registry = Arc::new(Registry {
                 entries: Mutex::new(HashMap::new()),
+                wake: super::eventfd::EventFd::new(0)?,
             });
             lock(registries()).insert(handle, Arc::downgrade(&registry));
             Ok(Epoll {
@@ -415,148 +447,205 @@ pub mod epoll {
                     }
                 }
             }
+            // Release the lock before waking, so the woken waiter can take it.
+            drop(entries);
+            let _ = self.registry.wake.write(1);
             Ok(())
         }
 
         /// Waits up to `timeout_ms` (negative: forever) and reports up to
         /// `events.len()` ready entries. Returns how many were written.
+        ///
+        /// A `ctl` from any thread wakes a blocked wait, which then looks at the
+        /// registrations again. With nothing registered it blocks for the whole
+        /// timeout, as Linux `epoll_wait` does.
         pub fn wait(&self, timeout_ms: i32, events: &mut [EpollEvent]) -> io::Result<usize> {
-            let timeout = if timeout_ms < 0 { -1 } else { timeout_ms };
+            let deadline = (timeout_ms >= 0)
+                .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
+            loop {
+                // Snapshot first so no registry lock is held while blocking.
+                let snapshot: Vec<(RawFd, EpollEvent)> = lock(&self.registry.entries)
+                    .iter()
+                    .map(|(fd, ev)| (*fd, *ev))
+                    .collect();
 
-            // Snapshot first so no registry lock is held while blocking.
-            let snapshot: Vec<(RawFd, EpollEvent)> = lock(&self.registry.entries)
-                .iter()
-                .map(|(fd, ev)| (*fd, *ev))
-                .collect();
-
-            // One poll entry per descriptor. `sources` says which snapshot entry it
-            // reports for, and which registry it was registered in.
-            let mut pfds: Vec<libc::pollfd> = Vec::new();
-            let mut sources: Vec<Source> = Vec::new();
-            for (i, (fd, ev)) in snapshot.iter().enumerate() {
-                if *fd < 0 {
-                    // A nested Epoll. As on Linux, it is readable when any of its own
-                    // entries is ready for the events that entry asked for, so each inner
-                    // entry is polled with its own registered set. Deeper nesting, and a
-                    // dropped Epoll, contribute nothing.
-                    if let Some(inner) = live_registry(*fd) {
-                        let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
-                            .iter()
-                            .filter(|(f, _)| **f >= 0)
-                            .map(|(f, e)| (*f, *e))
-                            .collect();
-                        for (sock, sev) in inner_entries {
-                            pfds.push(poll_entry(sock, sev));
+                // One poll entry per descriptor. `sources` says which snapshot entry it
+                // reports for, and which registry it was registered in.
+                let mut pfds: Vec<libc::pollfd> = Vec::new();
+                let mut sources: Vec<Source> = Vec::new();
+                for (i, (fd, ev)) in snapshot.iter().enumerate() {
+                    if *fd < 0 {
+                        // A nested Epoll. As on Linux, it is readable when any of its own
+                        // entries is ready for the events that entry asked for, so each inner
+                        // entry is polled with its own registered set. Deeper nesting, and a
+                        // dropped Epoll, contribute nothing.
+                        if let Some(inner) = live_registry(*fd) {
+                            let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
+                                .iter()
+                                .filter(|(f, _)| **f >= 0)
+                                .map(|(f, e)| (*f, *e))
+                                .collect();
+                            // The nested registry's wake: a change to it wakes this wait too.
+                            pfds.push(poll_entry(
+                                inner.wake.as_raw_fd(),
+                                EpollEvent::new(EventSet::IN, 0),
+                            ));
                             sources.push(Source {
                                 owner: i,
-                                inner: Some(sev.event_set()),
-                                home: Some(Arc::clone(&inner)),
+                                inner: None,
+                                home: None,
+                                wake: Some(Arc::clone(&inner)),
                             });
+                            for (sock, sev) in inner_entries {
+                                pfds.push(poll_entry(sock, sev));
+                                sources.push(Source {
+                                    owner: i,
+                                    inner: Some(sev.event_set()),
+                                    home: Some(Arc::clone(&inner)),
+                                    wake: None,
+                                });
+                            }
                         }
+                    } else {
+                        pfds.push(poll_entry(*fd, *ev));
+                        sources.push(Source {
+                            owner: i,
+                            inner: None,
+                            home: None,
+                            wake: None,
+                        });
                     }
-                } else {
-                    pfds.push(poll_entry(*fd, *ev));
-                    sources.push(Source {
-                        owner: i,
-                        inner: None,
-                        home: None,
-                    });
                 }
-            }
 
-            if pfds.is_empty() {
-                // Nothing can wake us, so do not block: wait out a bounded
-                // timeout and report nothing.
-                let nap = if timeout < 0 {
-                    IDLE_CAP_MS
-                } else {
-                    timeout.min(IDLE_CAP_MS)
+                // This registry's own wake descriptor. It is always polled, so the
+                // set is never empty and poll(2) blocks for the full timeout.
+                pfds.push(poll_entry(
+                    self.registry.wake.as_raw_fd(),
+                    EpollEvent::new(EventSet::IN, 0),
+                ));
+                sources.push(Source {
+                    owner: 0,
+                    inner: None,
+                    home: None,
+                    wake: Some(Arc::clone(&self.registry)),
+                });
+                // Rounded up to the next millisecond, so a positive remainder never becomes a busy 0.
+                let timeout = match deadline {
+                    None => -1,
+                    Some(d) => d
+                        .saturating_duration_since(Instant::now())
+                        .as_micros()
+                        .div_ceil(1000)
+                        .min(i32::MAX as u128) as i32,
                 };
-                std::thread::sleep(Duration::from_millis(nap as u64));
-                return Ok(0);
-            }
 
-            let rc = {
-                // SAFETY: `pfds` is an exclusively borrowed, initialised Vec of `pfds.len()` pollfd values; poll(2) reads and writes only the first `nfds` entries, and `nfds` is exactly that length.
-                unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout) }
-            };
-            if rc < 0 {
-                // An EINTR is returned as is; the callers retry.
-                return Err(io::Error::last_os_error());
-            }
+                let rc = {
+                    // SAFETY: `pfds` is an exclusively borrowed, initialised Vec of `pfds.len()` pollfd values; poll(2) reads and writes only the first `nfds` entries, and `nfds` is exactly that length.
+                    unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout) }
+                };
+                if rc < 0 {
+                    // An EINTR is returned as is; the callers retry.
+                    return Err(io::Error::last_os_error());
+                }
 
-            // Map readiness back onto each snapshot entry.
-            let mut ready = vec![EventSet::empty(); snapshot.len()];
-            // Descriptors found closed (POLLNVAL), with the registry each came from.
-            let mut closed: Vec<(Option<Arc<Registry>>, RawFd)> = Vec::new();
-            for (pfd, src) in pfds.iter().zip(sources.iter()) {
-                let r = pfd.revents;
-                if r & libc::POLLNVAL != 0 {
-                    // Closed without a Delete. Linux drops such a descriptor by itself, so
-                    // report nothing for it and drop it from its registry below.
-                    closed.push((src.home.clone(), pfd.fd));
-                    continue;
-                }
-                let mut bits = EventSet::empty();
-                if r & libc::POLLIN != 0 {
-                    bits |= EventSet::IN;
-                }
-                if r & libc::POLLHUP != 0 {
-                    bits |= EventSet::IN | EventSet::HANG_UP;
-                }
-                if r & libc::POLLOUT != 0 {
-                    bits |= EventSet::OUT;
-                }
-                if r & libc::POLLERR != 0 {
-                    bits |= EventSet::ERROR;
-                }
-                match src.inner {
-                    // Linux semantics for a nested epoll: it is readable when one of its
-                    // entries is ready for the events that entry registered, whatever the
-                    // outer entry asked for. So the outer entry gets IN and nothing else.
-                    Some(inner) => {
-                        let inner_wanted = (inner & (EventSet::IN | EventSet::OUT))
-                            | EventSet::ERROR
-                            | EventSet::HANG_UP;
-                        if bits.intersects(inner_wanted) {
-                            ready[src.owner] |= EventSet::IN;
+                // Map readiness back onto each snapshot entry.
+                let mut woke = false;
+                let mut ready = vec![EventSet::empty(); snapshot.len()];
+                // Descriptors found closed (POLLNVAL), with the registry each came from.
+                let mut closed: Vec<(Option<Arc<Registry>>, RawFd)> = Vec::new();
+                for (pfd, src) in pfds.iter().zip(sources.iter()) {
+                    if let Some(reg) = &src.wake {
+                        // A wake is never reported. A readable one is drained and marks the
+                        // registrations as changed.
+                        if pfd.revents & libc::POLLIN != 0 {
+                            let _ = reg.wake.read();
+                            woke = true;
                         }
+                        continue;
                     }
-                    None => ready[src.owner] |= bits,
+                    let r = pfd.revents;
+                    if r & libc::POLLNVAL != 0 {
+                        // Closed without a Delete. Linux drops such a descriptor by itself, so
+                        // report nothing for it and drop it from its registry below. That is
+                        // a change of registrations, so an otherwise empty pass looks again
+                        // rather than end an infinite wait with nothing.
+                        closed.push((src.home.clone(), pfd.fd));
+                        woke = true;
+                        continue;
+                    }
+                    let mut bits = EventSet::empty();
+                    if r & libc::POLLIN != 0 {
+                        bits |= EventSet::IN;
+                    }
+                    if r & libc::POLLHUP != 0 {
+                        bits |= EventSet::IN | EventSet::HANG_UP;
+                    }
+                    if r & libc::POLLOUT != 0 {
+                        bits |= EventSet::OUT;
+                    }
+                    if r & libc::POLLERR != 0 {
+                        bits |= EventSet::ERROR;
+                    }
+                    match src.inner {
+                        // Linux semantics for a nested epoll: it is readable when one of its
+                        // entries is ready for the events that entry registered, whatever the
+                        // outer entry asked for. So the outer entry gets IN and nothing else.
+                        Some(inner) => {
+                            let inner_wanted = (inner & (EventSet::IN | EventSet::OUT))
+                                | EventSet::ERROR
+                                | EventSet::HANG_UP;
+                            if bits.intersects(inner_wanted) {
+                                ready[src.owner] |= EventSet::IN;
+                            }
+                        }
+                        None => ready[src.owner] |= bits,
+                    }
                 }
-            }
-            // Drop the closed descriptors, each from the registry it came from. Only
-            // brief locks: none is held while polling. A descriptor reopened under the
-            // same number since the poll is kept: each is removed only if it is still
-            // closed when checked under its registry's lock.
-            for (home, fd) in closed {
-                let registry = home.as_deref().unwrap_or(&*self.registry);
-                let mut entries = lock(&registry.entries);
-                if is_closed(fd) {
-                    entries.remove(&fd);
+                // Drop the closed descriptors, each from the registry it came from. Only
+                // brief locks: none is held while polling. A descriptor reopened under the
+                // same number since the poll is kept: each is removed only if it is still
+                // closed when checked under its registry's lock.
+                for (home, fd) in closed {
+                    let registry = home.as_deref().unwrap_or(&*self.registry);
+                    let mut entries = lock(&registry.entries);
+                    if is_closed(fd) {
+                        entries.remove(&fd);
+                    }
                 }
-            }
 
-            let len = snapshot.len();
-            let start = self.cursor.fetch_add(1, Ordering::Relaxed) % len;
-            let mut written = 0;
-            for k in 0..len {
-                if written == events.len() {
-                    break;
+                let len = snapshot.len();
+                let start = if len == 0 {
+                    0
+                } else {
+                    self.cursor.fetch_add(1, Ordering::Relaxed) % len
+                };
+                let mut written = 0;
+                for k in 0..len {
+                    if written == events.len() {
+                        break;
+                    }
+                    let i = (start + k) % len;
+                    let (_, registered) = snapshot[i];
+                    // Only what was asked for, plus the always-reported error and hang-up.
+                    let wanted = (registered.event_set() & (EventSet::IN | EventSet::OUT))
+                        | EventSet::ERROR
+                        | EventSet::HANG_UP;
+                    let bits = ready[i] & wanted;
+                    if !bits.is_empty() {
+                        events[written] = EpollEvent::new(bits, registered.data());
+                        written += 1;
+                    }
                 }
-                let i = (start + k) % len;
-                let (_, registered) = snapshot[i];
-                // Only what was asked for, plus the always-reported error and hang-up.
-                let wanted = (registered.event_set() & (EventSet::IN | EventSet::OUT))
-                    | EventSet::ERROR
-                    | EventSet::HANG_UP;
-                let bits = ready[i] & wanted;
-                if !bits.is_empty() {
-                    events[written] = EpollEvent::new(bits, registered.data());
-                    written += 1;
+                if written > 0 {
+                    return Ok(written);
+                }
+                // Nothing to report. Look again only if the registrations changed and the
+                // deadline has not passed; otherwise the timeout is over.
+                let deadline_passed = deadline.is_some_and(|d| Instant::now() >= d);
+                if !woke || deadline_passed {
+                    return Ok(0);
                 }
             }
-            Ok(written)
         }
     }
 
@@ -602,6 +691,10 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     }
     // SAFETY: socket(2) succeeded, so `fd` is a fresh descriptor owned by nothing else; the stream takes ownership and closes it on every error path below.
     let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    // macOS has no `SOCK_CLOEXEC`, so close-on-exec is set right after creation. A `fork` and `exec`
+    // by another thread in between would let the child inherit the socket, which would keep a vsock
+    // connection open after the muxer closes it. std's own sockets on macOS have the same window; it
+    // cannot be closed from here.
     set_cloexec(fd)?;
     stream.set_nonblocking(true)?;
 
@@ -631,6 +724,8 @@ mod tests {
     use super::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
     use super::eventfd::{EFD_NONBLOCK, EventFd};
     use std::io::ErrorKind;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn eventfd_counts_and_would_block() {
@@ -651,6 +746,27 @@ mod tests {
     }
 
     #[test]
+    fn try_clone_gives_a_distinct_descriptor_on_the_same_counter() {
+        let a = EventFd::new(EFD_NONBLOCK).unwrap();
+        let b = a.try_clone().unwrap();
+        assert_ne!(a.as_raw_fd(), b.as_raw_fd());
+        b.write(3).unwrap();
+        assert_eq!(a.read().unwrap(), 3);
+        let ep = Epoll::new().unwrap();
+        ep.ctl(
+            ControlOperation::Add,
+            b.as_raw_fd(),
+            EpollEvent::new(EventSet::IN, 4),
+        )
+        .unwrap();
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
+        a.write(1).unwrap();
+        assert_eq!(ep.wait(0, &mut out).unwrap(), 1);
+        assert_eq!(out[0].data(), 4);
+    }
+
+    #[test]
     fn epoll_reports_eventfd_readiness() {
         let ep = Epoll::new().unwrap();
         let efd = EventFd::new(EFD_NONBLOCK).unwrap();
@@ -668,6 +784,37 @@ mod tests {
         assert!(out[0].event_set().contains(EventSet::IN));
         efd.read().unwrap();
         assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_registration_from_another_thread_wakes_a_blocked_wait() {
+        let ep = Arc::new(Epoll::new().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = Arc::clone(&ep);
+        let handle = std::thread::spawn(move || {
+            let mut out = [EpollEvent::default(); 4];
+            tx.send(waiter.wait(-1, &mut out).unwrap()).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
+        efd.write(1).unwrap();
+        ep.ctl(
+            ControlOperation::Add,
+            efd.as_raw_fd(),
+            EpollEvent::new(EventSet::IN, 5),
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_empty_epoll_blocks_for_its_timeout() {
+        let ep = Epoll::new().unwrap();
+        let started = Instant::now();
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(ep.wait(150, &mut out).unwrap(), 0);
+        assert!(started.elapsed() >= Duration::from_millis(140));
     }
 
     #[test]
