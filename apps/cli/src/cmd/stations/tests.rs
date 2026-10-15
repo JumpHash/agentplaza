@@ -679,6 +679,20 @@ fn vms_parse_with_the_list_as_the_default() {
         panic!("vms delete")
     };
     assert_eq!((id.as_str(), yes), ("v3", true));
+    let Cmd::Vms {
+        action: Some(vms::VmsCmd::Sleep { id }),
+    } = parsed(&["vms", "sleep", "v3"])
+    else {
+        panic!("vms sleep")
+    };
+    assert_eq!(id, "v3");
+    let Cmd::Vms {
+        action: Some(vms::VmsCmd::Wake { id }),
+    } = parsed(&["vms", "wake", "v3"])
+    else {
+        panic!("vms wake")
+    };
+    assert_eq!(id, "v3");
 }
 
 #[test]
