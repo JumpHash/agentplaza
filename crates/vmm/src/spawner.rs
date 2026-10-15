@@ -1330,8 +1330,10 @@ pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Re
 }
 
 /// Copies the data extents of `src` into `dst`, found with `SEEK_DATA` and
-/// `SEEK_HOLE`. `Ok(false)` means the filesystem cannot report holes (`EINVAL`):
-/// the caller falls back and rewrites what was copied, identically.
+/// `SEEK_HOLE`. Each extent moves in the kernel with `copy_file_range`; one the
+/// kernel refuses is copied through `buf` instead. `Ok(false)` means the
+/// filesystem cannot report holes (`EINVAL`): the caller falls back and rewrites
+/// what was copied, identically.
 #[cfg(target_os = "linux")]
 fn copy_data_extents(
     src: &std::fs::File,
@@ -1358,8 +1360,55 @@ fn copy_data_extents(
                 "SEEK_HOLE did not move past the data it followed",
             ));
         }
-        copy_range(src, dst, start, end, buf)?;
+        if !copy_extent_in_kernel(src, dst, start, end - start)? {
+            copy_range(src, dst, start, end, buf)?;
+        }
         at = end;
+    }
+    Ok(true)
+}
+
+/// Copies `len` bytes at `offset` from `src` to the same offset in `dst` with `copy_file_range(2)`, in the
+/// kernel. `Ok(false)` when the kernel or filesystem cannot (ENOSYS, EXDEV, EINVAL, EOPNOTSUPP): the caller
+/// copies that extent through its buffer instead.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // copy_file_range is not wrapped by std; the offsets are explicit, so no file position moves
+fn copy_extent_in_kernel(
+    src: &std::fs::File,
+    dst: &std::fs::File,
+    offset: u64,
+    len: u64,
+) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let (src_fd, dst_fd) = (src.as_raw_fd(), dst.as_raw_fd());
+    let mut off_in = offset as libc::loff_t;
+    let mut off_out = offset as libc::loff_t;
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = remaining.min(1 << 30) as usize;
+        // SAFETY: both descriptors belong to the caller's live `File`s and stay open for the call. The offsets
+        // are local variables the kernel advances, so the descriptors' own file positions are not touched.
+        let n =
+            unsafe { libc::copy_file_range(src_fd, &mut off_in, dst_fd, &mut off_out, chunk, 0) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            let refused = matches!(
+                err.raw_os_error(),
+                Some(libc::ENOSYS | libc::EXDEV | libc::EINVAL | libc::EOPNOTSUPP)
+            );
+            return if refused && remaining == len {
+                Ok(false)
+            } else {
+                Err(err)
+            };
+        }
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the source ended inside a data extent",
+            ));
+        }
+        remaining -= n as u64;
     }
     Ok(true)
 }
@@ -1691,6 +1740,34 @@ mod tests {
             .expect("the fallback");
         drop(dst);
         assert_eq!(std::fs::read(&fallback).expect("the fallback copy"), want);
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A sparse copy moves each data extent to its own offset: data at 0, a 1 MiB
+    /// hole, then data at 1 MiB + 4096 copies to the same bytes.
+    #[cfg(unix)]
+    #[test]
+    fn a_sparse_copy_moves_each_extent_to_the_same_offsets() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = scratch("extents");
+        let base = dir.join("extents.img");
+        {
+            let mut file = std::fs::File::create(&base).expect("the extent base");
+            file.write_all(&[0x5Au8; 4096]).expect("a data extent at 0");
+            file.seek(SeekFrom::Start((1 << 20) + 4096))
+                .expect("seek past the 1 MiB hole");
+            file.write_all(&[0xC3u8; 8192])
+                .expect("a data extent at 1 MiB + 4096");
+        }
+        let want = std::fs::read(&base).expect("the base");
+
+        let copy = dir.join("extents-copy.img");
+        assert_eq!(
+            copy_sparse(&base, &copy).expect("a sparse copy"),
+            want.len() as u64
+        );
+        assert_eq!(std::fs::read(&copy).expect("the copy"), want);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }
