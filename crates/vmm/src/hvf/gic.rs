@@ -58,6 +58,10 @@ pub const NR_PRIORITY_BITS: u32 = 5;
 pub const RESET_PMR: u8 = 0x00;
 /// Priority of an interrupt that is signalled before the guest programs it.
 pub const DEFAULT_PRIORITY: u8 = 0xa0;
+/// The running priority with no interrupt active (`ICC_RPR_EL1` when nothing
+/// is running): the lowest possible priority, so any enabled interrupt that
+/// passes the priority mask is signalled.
+pub const IDLE_PRIORITY: u8 = 0xff;
 /// The maintenance interrupt (PPI), declared by the device tree.
 pub const MAINTENANCE_PPI: u32 = 9;
 /// The virtual timer interrupt as the device tree's timer node numbers it, and
@@ -325,12 +329,16 @@ struct CpuInterface {
     /// `ICC_IGRPEN0_EL1` / `ICC_IGRPEN1_EL1`.
     igrpen0: bool,
     igrpen1: bool,
-    /// `ICC_AP0R<n>_EL1` / `ICC_AP1R<n>_EL1`, stored (no preemption).
+    /// `ICC_AP0R<n>_EL1`: stored only, as Group 0 is not modelled.
     ap0r: [u32; 4],
+    /// `ICC_AP1R<n>_EL1`. Only `ap1r[0]` is used: bit `g` is set while an
+    /// interrupt of priority group `g` (`priority >> 3`) is active. The running
+    /// priority is derived from it, so a guest write here takes effect at once.
     ap1r: [u32; 4],
-    /// `ICC_RPR_EL1`: the priority of the running interrupt. This model does
-    /// not preempt, so it reports the priority of the last acknowledged
-    /// interrupt (or the idle priority once it is end-of-interrupted).
+    /// `ICC_RPR_EL1`: the running priority, derived from `ap1r` (see
+    /// [`CpuInterface::refresh_running_priority`]); [`IDLE_PRIORITY`] when no
+    /// interrupt is active. An interrupt is signalled only if its priority is
+    /// higher than this (see [`CpuInterface::accepts`]).
     running_priority: u8,
     /// `GICR_WAKER`.
     waker: u32,
@@ -349,15 +357,35 @@ impl CpuInterface {
             igrpen1: false,
             ap0r: [0; 4],
             ap1r: [0; 4],
-            running_priority: DEFAULT_PRIORITY,
+            running_priority: IDLE_PRIORITY,
             waker: GICR_WAKER_PROCESSOR_SLEEP | GICR_WAKER_CHILDREN_ASLEEP,
         }
     }
 
+    /// The running priority the active interrupts imply: the group of the
+    /// highest active priority, which is the lowest set bit of `ap1r[0]`, or
+    /// [`IDLE_PRIORITY`] when no bit is set. With [`NR_PRIORITY_BITS`] = 5 a
+    /// group holds 8 priorities, so priority `p` is group `p >> 3`.
+    fn derived_running_priority(&self) -> u8 {
+        if self.ap1r[0] == 0 {
+            IDLE_PRIORITY
+        } else {
+            (self.ap1r[0].trailing_zeros() as u8) << 3
+        }
+    }
+
+    /// Sets `running_priority` from the active priorities in `ap1r`.
+    fn refresh_running_priority(&mut self) {
+        self.running_priority = self.derived_running_priority();
+    }
+
     /// Whether the CPU interface would signal an interrupt of `priority`
-    /// right now.
+    /// right now: Group 1 is enabled, the priority passes the mask, and the
+    /// priority is higher than the running priority. An active interrupt is
+    /// therefore not signalled again before its end-of-interrupt, and only a
+    /// higher-priority one preempts it.
     fn accepts(&self, priority: u8) -> bool {
-        self.igrpen1 && priority < self.pmr
+        self.igrpen1 && priority < self.pmr && priority < self.running_priority
     }
 }
 
@@ -579,7 +607,7 @@ impl Gic {
             .cpus
             .iter()
             .map(|cpu| {
-                Ok(CpuInterface {
+                let mut restored = CpuInterface {
                     private: Interrupts::from_state(&cpu.private)?,
                     sre: cpu.sre,
                     pmr: cpu.pmr,
@@ -592,7 +620,11 @@ impl Gic {
                     ap1r: cpu.ap1r,
                     running_priority: cpu.running_priority,
                     waker: cpu.waker,
-                })
+                };
+                // Snapshots taken before this change stored the idle value as
+                // DEFAULT_PRIORITY; the running priority comes from `ap1r`.
+                restored.refresh_running_priority();
+                Ok(restored)
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
@@ -744,7 +776,10 @@ impl Gic {
                 self.spis.pending[intid as usize - NUM_PRIVATE_INTIDS] = false;
                 self.spis.active[intid as usize - NUM_PRIVATE_INTIDS] = true;
             }
-            cpu_state.running_priority = priority;
+            // The interrupt's priority group stays active until the guest ends
+            // it; the running priority follows the active groups.
+            cpu_state.ap1r[0] |= 1u32 << (priority >> 3);
+            cpu_state.refresh_running_priority();
         }
         intid
     }
@@ -763,7 +798,11 @@ impl Gic {
             self.deactivate(cpu, intid);
         }
         if let Some(cpu_state) = self.cpus.get_mut(cpu) {
-            cpu_state.running_priority = DEFAULT_PRIORITY;
+            // Priority drop: the highest active priority group (the lowest set
+            // bit of `ap1r[0]`) stops being active, and the running priority
+            // falls back to the next one still active, or to idle.
+            cpu_state.ap1r[0] &= cpu_state.ap1r[0].wrapping_sub(1);
+            cpu_state.refresh_running_priority();
         }
     }
 
@@ -1113,7 +1152,10 @@ impl Gic {
             ICC_AP0R1_EL1 => state.ap0r[1] = value as u32,
             ICC_AP0R2_EL1 => state.ap0r[2] = value as u32,
             ICC_AP0R3_EL1 => state.ap0r[3] = value as u32,
-            ICC_AP1R0_EL1 => state.ap1r[0] = value as u32,
+            ICC_AP1R0_EL1 => {
+                state.ap1r[0] = value as u32;
+                state.refresh_running_priority();
+            }
             ICC_AP1R1_EL1 => state.ap1r[1] = value as u32,
             ICC_AP1R2_EL1 => state.ap1r[2] = value as u32,
             ICC_AP1R3_EL1 => state.ap1r[3] = value as u32,
@@ -1512,9 +1554,111 @@ mod tests {
         gic.raise_spi(UART_SPI);
         assert_eq!(gic.hppir(0), u64::from(SPI_BASE + 3));
         assert_eq!(gic.ack(0), SPI_BASE + 3);
+        // The UART's priority is lower than the running one, so it waits for
+        // the end of SPI 3's handler.
+        gic.eoi(0, SPI_BASE + 3);
         assert_eq!(gic.hppir(0), u64::from(UART_INTID));
         assert_eq!(gic.ack(0), UART_INTID);
         assert_eq!(gic.ack(0), SPURIOUS_INTID);
+    }
+
+    #[test]
+    fn the_idle_running_priority_is_0xff() {
+        let gic = gic(1);
+        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0xff));
+    }
+
+    #[test]
+    fn an_active_spi_is_not_signalled_again_before_eoi() {
+        let mut gic = gic(1);
+        unmask(&mut gic, 0);
+        enable_spi(&mut gic, 2, 0);
+        gic.raise_spi(2);
+        assert_eq!(gic.ack(0), SPI_BASE + 2);
+
+        // The edge is raised again while the handler runs. The interrupt is
+        // still active, so it is not signalled until its end-of-interrupt.
+        gic.raise_spi(2);
+        assert!(!gic.irq_line(0));
+        assert_eq!(gic.ack(0), SPURIOUS_INTID);
+
+        gic.eoi(0, SPI_BASE + 2);
+        assert!(gic.irq_line(0));
+        assert_eq!(gic.ack(0), SPI_BASE + 2);
+    }
+
+    #[test]
+    fn a_higher_priority_spi_preempts_a_running_one() {
+        let mut gic = gic(1);
+        unmask(&mut gic, 0);
+        enable_spi(&mut gic, 2, 0);
+        enable_spi(&mut gic, 8, 0);
+        gic.dist_write(GICD_IPRIORITYR + 2, 1, 0xc0);
+        gic.dist_write(GICD_IPRIORITYR + 8, 1, 0x80);
+
+        gic.raise_spi(2);
+        assert_eq!(gic.ack(0), SPI_BASE + 2);
+        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0xc0));
+
+        // SPI 8 is more urgent than the running SPI 2, so it preempts it.
+        gic.raise_spi(8);
+        assert_eq!(gic.ack(0), SPI_BASE + 8);
+        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0x80));
+
+        gic.eoi(0, SPI_BASE + 8);
+        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0xc0));
+
+        gic.eoi(0, SPI_BASE + 2);
+        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0xff));
+    }
+
+    #[test]
+    fn the_console_and_the_virtio_spis_are_delivered_independently() {
+        let mut gic = gic(1);
+        unmask(&mut gic, 0);
+        // The console's SPI and the virtio devices' SPIs: vsock (1), the
+        // workspace (2) and a data volume (8), all routed to CPU 0.
+        let spis = [UART_SPI, 1, 2, 8];
+        for spi in spis {
+            enable_spi(&mut gic, spi, 0);
+        }
+        for spi in spis {
+            gic.raise_spi(spi);
+        }
+
+        let mut acked = Vec::new();
+        for _ in 0..4 {
+            let intid = gic.ack(0);
+            assert_ne!(intid, SPURIOUS_INTID, "every raised SPI is taken");
+            acked.push(intid);
+            gic.eoi(0, intid);
+        }
+        acked.sort_unstable();
+        let mut expected: Vec<u32> = spis.iter().map(|spi| SPI_BASE + spi).collect();
+        expected.sort_unstable();
+        assert_eq!(acked, expected, "each SPI is delivered exactly once");
+        assert_eq!(gic.ack(0), SPURIOUS_INTID);
+    }
+
+    #[test]
+    fn priorities_order_the_console_and_a_volume() {
+        let mut gic = gic(1);
+        unmask(&mut gic, 0);
+        enable_spi(&mut gic, UART_SPI, 0);
+        enable_spi(&mut gic, 8, 0);
+        // The volume is more urgent than the console (lower priority number).
+        gic.dist_write(GICD_IPRIORITYR + u64::from(UART_SPI), 1, 0xc0);
+        gic.dist_write(GICD_IPRIORITYR + 8, 1, 0x80);
+
+        gic.raise_spi(UART_SPI);
+        gic.raise_spi(8);
+        assert_eq!(
+            gic.ack(0),
+            SPI_BASE + 8,
+            "the more urgent volume goes first"
+        );
+        gic.eoi(0, SPI_BASE + 8);
+        assert_eq!(gic.ack(0), UART_INTID);
     }
 
     #[test]
