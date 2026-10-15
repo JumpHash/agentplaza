@@ -140,6 +140,9 @@ enum Command {
     /// The hub's E2B-compatible sandbox API: its keys for the E2B SDKs, and the sandboxes on the hub.
     #[command(subcommand)]
     E2b(cmd::e2b::Cmd),
+    /// The hub machine's warm templates: new agents and sandboxes restore one instead of booting.
+    #[command(subcommand)]
+    Templates(cmd::templates::Cmd),
 }
 
 fn main() {
@@ -213,6 +216,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Stations(c) => cmd::stations::run(&ctx, c),
         Command::Egress(c) => cmd::egress::run(&ctx, c),
         Command::E2b(c) => cmd::e2b::run(&ctx, c),
+        Command::Templates(c) => cmd::templates::run(&ctx, c),
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
         Command::Unfurl(a) => cmd::unfurl::run(&ctx, a),
         Command::Decide(a) => cmd::decide::run(&ctx, a),

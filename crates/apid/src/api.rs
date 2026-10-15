@@ -43,6 +43,14 @@ pub fn router() -> Router<App> {
                 &format!("/v1/runs/{}/input", p.get("id")),
                 &req.body,
             )
+        })
+        // The hub machine's warm templates (new agents and sandboxes restore one instead of booting).
+        .get("/v1/templates", |app, _, _| {
+            app.noded.proxy("GET", "/v1/templates", b"")
+        })
+        .delete("/v1/templates/{key}", |app, _, p| {
+            app.noded
+                .proxy("DELETE", &format!("/v1/templates/{}", p.get("key")), b"")
         });
     let router = events::routes(router);
     let router = settings::routes(router);

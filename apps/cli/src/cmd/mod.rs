@@ -30,6 +30,7 @@ pub mod skills;
 pub mod society;
 pub mod stations;
 pub mod tasks;
+pub mod templates;
 pub mod tools;
 pub mod treasury;
 pub mod unfurl;
