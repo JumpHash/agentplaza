@@ -240,7 +240,7 @@ mod tests {
         regs.desc = vq.desc_table_addr().0;
         regs.avail = vq.avail_ring_addr().0;
         regs.used = vq.used_ring_addr().0;
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         VirtioDevice::activate(&mut device, mem, &irq).expect("the device activates");
         (file, device)
     }
@@ -314,7 +314,7 @@ mod tests {
         chain.publish();
 
         let device = VirtioBlock::new(file.as_path()).expect("a block device");
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         let irq_probe = irq.try_clone().expect("a probe of the interrupt event fd");
         let mut transport =
             VirtioMmioTransport::new(Box::new(BlockMmioDevice::new(device)), mem.clone(), irq);
@@ -393,7 +393,7 @@ mod tests {
         let mem = default_mem();
         let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
         let device = VirtioBlock::new(file.as_path()).expect("a block device");
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         let mut transport =
             VirtioMmioTransport::new(Box::new(BlockMmioDevice::new(device)), mem.clone(), irq);
 

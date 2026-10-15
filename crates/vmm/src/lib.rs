@@ -50,7 +50,8 @@
 //   * `arch::aarch64::gic::regs` — `KVM_GET_DEVICE_ATTR`, which `kvm-ioctls`
 //     exposes as an `unsafe fn` because the caller owns the out-pointer.
 //   * `devices::virtio::iov_deque` — `memfd_create`/`ftruncate`/`fcntl`/`mmap`
-//     and the volatile double-mapped ring access.
+//     and the volatile double-mapped ring access (Linux; elsewhere the ring is a
+//     plain `Vec`).
 //   * `devices::virtio::queue` — volatile guest-memory access, the
 //     `ByteValued` descriptor types and the `Send` impls.
 //   * `devices::virtio::iovec` — guest descriptor-chain walking (volatile
@@ -61,6 +62,10 @@
 //   * `whp::{sys,vm,vcpu,snapshot}` and `pal::windows` (Windows only) — the WHP and
 //     WinSock FFI, the guest memory allocation, the exit-context reads, and a
 //     snapshot's register unions and guest-memory slices.
+//   * `pal::posix` (macOS; compiled into Linux test builds for its tests) —
+//     `pipe(2)`, `fcntl(2)`, `poll(2)` and the non-blocking
+//     `socket(2)`/`connect(2)` pair, the macOS counterparts of `vmm-sys-util`'s
+//     eventfd and epoll and of `sys`.
 //   * `hvf::{sys,vm,vcpu,snapshot}` (macOS only) — the Hypervisor.framework FFI
 //     declarations, the framework calls, the exit-structure reads, the call of
 //     `hv_vcpu_set_simd_fp_reg` (a NEON vector argument, by inline assembly),
@@ -133,6 +138,7 @@ pub mod whp;
 
 /// The event primitives the virtio devices are built on (`EventFd`, `Epoll`),
 /// as one API on every platform: `vmm-sys-util`'s on Linux, a WinSock
-/// (`WSAPoll`) implementation with the same surface on Windows.
-#[cfg(any(target_os = "linux", windows))]
+/// (`WSAPoll`) implementation with the same surface on Windows, and a pipe and
+/// `poll(2)` implementation on macOS.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod pal;

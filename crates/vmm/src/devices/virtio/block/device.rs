@@ -558,7 +558,7 @@ mod tests {
     /// Activates `device` against `mem` with `device`'s queue already over the
     /// [`VirtQueue`] at `mem`'s start.
     fn activate(device: &mut VirtioBlock, mem: &GuestMemoryMmap) {
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         device
             .activate(mem.clone(), irq)
             .expect("the device activates against guest memory");

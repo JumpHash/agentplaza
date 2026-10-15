@@ -4,7 +4,9 @@
 //!
 //! Hypervisor.framework only lets a vCPU's own thread read or write its registers, so a snapshot is
 //! a pause in which each vCPU thread reads its own state before it parks (`SharedVm::pause_vcpus`),
-//! and a restore hands each thread its state to write before its first run. The framework has no
+//! and a restore hands each thread its state to write before its first run. The virtio transports
+//! are saved with the vCPUs parked (a block request runs on the vCPU that rang its doorbell, so none
+//! is in flight) and the vsock event thread gated, as on WHP. The framework has no
 //! dirty-page log and the guest memory is anonymous, so every snapshot is a full one.
 //!
 //! Not run on hardware here: this needs an Apple Silicon Mac. The pure half's tests run everywhere;
@@ -13,13 +15,15 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use vm_memory::{Address, GuestMemoryBackend, GuestMemoryRegion};
 
 use super::snapshot_state::{HvfSnapshot, write_state};
 use super::vcpu::SharedVm;
+use crate::devices::virtio::mmio::VirtioMmioTransport;
+use crate::devices::virtio::vsock::event_thread::DeviceGate;
 use crate::spawner::{SnapshotInfo, SnapshotKind, SpawnError, VmControl};
 use crate::vstate::memory::GuestMemoryMmap;
 use crate::vstate::snapshot::{meta_now, read_memory_file, write_memory_file};
@@ -67,6 +71,12 @@ pub fn fill_memory(
 /// The VM's [`VmControl`]: a weak handle on the shared VM state (the vCPU threads own it).
 pub struct HvfControl {
     pub vm: Weak<SharedVm>,
+    /// The virtio transports, weakly (the VM holds them).
+    pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
+    pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
+    pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The vsock event thread's gate: held for writing while the devices and memory are saved.
+    pub gate: DeviceGate,
     pub vcpus: u8,
     pub memory_mib: usize,
     /// One snapshot at a time.
@@ -115,10 +125,34 @@ impl VmControl for HvfControl {
             .pause_vcpus(true, PAUSE_LIMIT)
             .map_err(|err| failed(format!("pause the vCPUs: {err}")))?;
         self.paused.store(true, Ordering::SeqCst);
+        // Held to the end: the vsock event thread must not land a packet between the device state
+        // and the memory dump.
+        let _gate = self.gate.write().unwrap_or_else(PoisonError::into_inner);
         let guest_counter = vm.guest_counter();
         let serial = vm
             .serial_registers()
             .ok_or_else(|| failed("the serial console is gone"))?;
+        let save = |transport: &Weak<Mutex<VirtioMmioTransport>>, what: &str| {
+            let transport: Arc<Mutex<VirtioMmioTransport>> = transport
+                .upgrade()
+                .ok_or_else(|| failed(format!("the {what} device is gone")))?;
+            let state = transport
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .save_state();
+            Ok::<_, SpawnError>(state)
+        };
+        let vsock = self.vsock.as_ref().map(|t| save(t, "vsock")).transpose()?;
+        let workspace = self
+            .workspace
+            .as_ref()
+            .map(|t| save(t, "workspace"))
+            .transpose()?;
+        let volumes = self
+            .volumes
+            .iter()
+            .map(|t| save(t, "data volume"))
+            .collect::<Result<Vec<_>, SpawnError>>()?;
         std::fs::create_dir_all(dir).map_err(|err| failed(format!("{}: {err}", dir.display())))?;
         // SAFETY: `vm` holds the memory, and its vCPUs are paused.
         let (regions, memory_written) = write_memory_file(dir, &unsafe { regions(vm.memory()) })
@@ -134,6 +168,9 @@ impl VmControl for HvfControl {
                 guest_counter,
                 gic: vm.gic_state(),
                 serial,
+                vsock,
+                workspace,
+                volumes,
             },
         )
         .map_err(|err| failed(format!("write the state file: {err}")))?;

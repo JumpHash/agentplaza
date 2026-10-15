@@ -7,8 +7,9 @@
 //! (`vstate::snapshot::write_memory_file`). Each vCPU keeps its general registers, its SIMD/FP
 //! registers and the EL0/EL1 system registers the guest owns (the identification registers and
 //! `MPIDR_EL1` are set by the VMM on every start and are not kept); the VM keeps the userspace GIC,
-//! the UART, which vCPUs were powered on (PSCI), and the guest's virtual counter, so a restored
-//! guest's counter goes on from where it stopped.
+//! the UART, which vCPUs were powered on (PSCI), the guest's virtual counter, so a restored
+//! guest's counter goes on from where it stopped, and the virtio-mmio transports (vsock, workspace,
+//! data volumes) as the KVM and WHP backends keep them.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -17,6 +18,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::gic::GicState;
+use crate::devices::virtio::mmio::MmioDeviceState;
 use crate::vstate::snapshot::{
     STATE_FILE, SerialRegisters, SnapshotError, SnapshotMeta, check_compatible,
 };
@@ -46,6 +48,15 @@ pub struct HvfSnapshot {
     pub guest_counter: u64,
     pub gic: GicState,
     pub serial: SerialRegisters,
+    /// The vsock device's transport.
+    #[serde(default)]
+    pub vsock: Option<MmioDeviceState>,
+    /// The workspace volume's transport.
+    #[serde(default)]
+    pub workspace: Option<MmioDeviceState>,
+    /// The shared data volumes' transports, in the spec's order.
+    #[serde(default)]
+    pub volumes: Vec<MmioDeviceState>,
 }
 
 fn io_error(path: &Path, source: io::Error) -> SnapshotError {
@@ -113,6 +124,9 @@ mod tests {
             guest_counter: 123_456_789,
             gic: Gic::new(2).state(),
             serial: SerialRegisters::default(),
+            vsock: None,
+            workspace: None,
+            volumes: Vec::new(),
         };
         write_state(&dir, &snapshot).expect("written");
         assert_eq!(read_state(&dir).expect("read back"), snapshot);

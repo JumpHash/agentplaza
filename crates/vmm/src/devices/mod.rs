@@ -16,9 +16,10 @@ pub mod legacy;
 /// Virtio devices over the MMIO transport, and the **userspace** vsock device
 /// behind this port's vsock transport.
 ///
-/// Linux-only: the device's backend is the VMM's own muxer, which mediates the
+/// Built on Linux, Windows and macOS (the KVM, WHP and Hypervisor.framework
+/// backends): the device's backend is the VMM's own muxer, which mediates the
 /// guest's vsock traffic over host Unix-domain sockets — there is no
-/// `/dev/vhost-vsock` on the boot path. (The Hypervisor.framework backend on
-/// Apple Silicon has no vsock device at all.)
-#[cfg(any(target_os = "linux", windows))]
+/// `/dev/vhost-vsock` on the boot path. The event primitives come from
+/// [`crate::pal`].
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod virtio;

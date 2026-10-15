@@ -79,8 +79,11 @@ pub const VIRTUAL_TIMER_PPI: u32 = 11;
 /// never take a timer interrupt. [`Gic::raise_virtual_timer`] and
 /// [`Gic::lower_virtual_timer`] are the only things that should touch it.
 pub const VIRTUAL_TIMER_INTID: u32 = VIRTUAL_TIMER_PPI + 16;
-/// The serial console's SPI, as the device tree's `uart` node numbers it.
-pub const UART_SPI: u32 = 2;
+/// The serial console's SPI, as the device tree's `uart` node numbers it: the
+/// first legacy GSI, as on the KVM backend (`arch::aarch64::layout`), so that
+/// the virtio transports take the layout's own GSIs (vsock 1, workspace 2,
+/// data volumes from 8) on this backend too.
+pub const UART_SPI: u32 = 0;
 /// The serial console's interrupt ID (`UART_SPI` offset by the SPI base).
 pub const UART_INTID: u32 = SPI_BASE + UART_SPI;
 

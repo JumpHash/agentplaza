@@ -664,6 +664,13 @@ impl VsockMuxer {
         UnixStream::connect_nonblocking(path)
     }
 
+    /// macOS has no `SOCK_CLOEXEC` and no `crate::sys`; the platform layer's
+    /// connect makes the descriptor non-blocking before `connect(2)` the same way.
+    #[cfg(target_os = "macos")]
+    fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
+        crate::pal::connect_unix_nonblocking(path)
+    }
+
     /// Handle a new connection request comming from our peer (the guest vsock driver).
     ///
     /// This will attempt to connect to a host-side Unix socket, expected to be listening at

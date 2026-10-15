@@ -13,28 +13,49 @@
 //! the device tree, wire the devices, and start the vCPU threads. What differs
 //! is who owns which mapping: Hypervisor.framework has no in-kernel interrupt
 //! controller here, so the controller and the console live in this process.
+//!
+//! The virtio devices (the vsock device, the workspace volume and the shared
+//! data volumes) are the KVM backend's, on the same virtio-mmio transports at
+//! the same windows and GSIs (`arch::aarch64::layout`). What replaces KVM's
+//! irqfds is an *interrupt relay*, as on WHP: the devices signal `EventFd`s,
+//! and a relay thread polls them and raises the matching SPI of the userspace
+//! GICv3, which wakes the vCPU it is routed to.
 
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::Duration;
 
 use linux_loader::loader::Cmdline;
 use vm_memory::{Address, Bytes};
 
-use crate::arch::aarch64::layout::{CMDLINE_MAX_SIZE, MMIO_LEN, SERIAL_MEM_START};
-use crate::arch::aarch64::{
-    FdtError, GicFdt, InitrdConfig, InitrdError, SerialFdtInfo, arch_memory_regions, create_fdt,
-    get_fdt_addr, load_kernel,
+use crate::arch::aarch64::layout::{
+    CMDLINE_MAX_SIZE, DATA_GSI_START, DATA_MMIO_START, MMIO_LEN, SERIAL_MEM_START, VSOCK_GSI,
+    VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
 };
+use crate::arch::aarch64::{
+    FdtError, GicFdt, InitrdConfig, InitrdError, SerialFdtInfo, VirtioMmioFdtInfo,
+    arch_memory_regions, create_fdt, get_fdt_addr, load_kernel,
+};
+use crate::devices::virtio::VirtioError;
+use crate::devices::virtio::mmio::{MmioDeviceState, VirtioMmioTransport};
+use crate::devices::virtio::vsock::event_thread::{self, DeviceGate};
+use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
+use crate::devices::virtio::vsock::unix::VsockUnixBackend;
+use crate::devices::virtio::vsock::{Vsock, VsockError};
 use crate::hvf::gic::{self, GICV3_DIST_BASE, GICV3_DIST_SIZE, GICV3_REDIST_BASE};
+use crate::hvf::snapshot_state::HvfSnapshot;
 use crate::hvf::sys::HvfError;
 use crate::hvf::uart::{ConsoleLine, SerialDevice};
-use crate::hvf::vcpu::{BootParams, MAX_VCPUS, SharedVm, run_vcpu};
+use crate::hvf::vcpu::{BootParams, ExitSignal, MAX_VCPUS, SharedVm, run_vcpu};
 use crate::hvf::vm::HvfVm;
-use crate::spawner::{SpawnError, VmRuntime, VmSpec};
+use crate::pal::AsRawFd;
+use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use crate::pal::eventfd::{EFD_NONBLOCK, EventFd};
+use crate::spawner::{MAX_DATA_VOLUMES, SpawnError, VmRuntime, VmSpec};
 use crate::vstate::memory::{
     GuestAddress, GuestMemoryMmap, GuestRegionMmapExt, MemoryError, anonymous, mib_to_bytes,
 };
@@ -43,6 +64,21 @@ use crate::vstate::memory::{
 /// VM did not start. Creating a vCPU is a call into the framework, so this is
 /// a failure detector, not a scheduling policy.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether `spi` is one of the virtio transports' SPIs (the layout's GSIs).
+const fn is_virtio_spi(spi: u32) -> bool {
+    spi == VSOCK_GSI
+        || spi == WORKSPACE_GSI
+        || (spi >= DATA_GSI_START && spi - DATA_GSI_START < MAX_DATA_VOLUMES as u32)
+}
+
+// The console and the virtio transports share the controller's SPIs: each
+// needs its own, and every one must be an SPI the controller implements.
+const _: () = {
+    let spis = (gic::NUM_INTIDS - gic::NUM_PRIVATE_INTIDS) as u32;
+    assert!(!is_virtio_spi(gic::UART_SPI));
+    assert!(DATA_GSI_START + MAX_DATA_VOLUMES as u32 <= spis);
+};
 
 /// Errors from `boot`.
 #[derive(Debug, thiserror::Error)]
@@ -104,26 +140,18 @@ pub enum BootError {
     /// Failed to create a VM thread: {0}
     #[error("failed to create a VM thread: {0}")]
     Thread(io::Error),
-    /// The VM asked for a vsock device, which this backend cannot provide
-    #[error(
-        "this VM asked for a vsock device, which the Apple Silicon backend cannot provide: \
-         Hypervisor.framework has no vhost-vsock interface, and this port has no network device \
-         to fall back to"
-    )]
-    UnsupportedVsock,
-    /// The VM asked for a workspace volume, which this backend cannot provide
-    #[error(
-        "this VM asked for a workspace volume, which the Apple Silicon backend cannot provide: \
-         its virtio-mmio transports have no device model on Hypervisor.framework (no block \
-         device is implemented for that backend)"
-    )]
-    UnsupportedWorkspace,
-    /// Shared data volumes are virtio-mmio block devices too, which this backend does not have.
-    #[error(
-        "this VM asked for shared data volumes, which Hypervisor.framework VMs cannot carry yet \
-         (no block device is implemented for that backend)"
-    )]
-    UnsupportedVolumes,
+    /// The data volumes are not ones this VM can carry.
+    #[error("{0}")]
+    Volumes(String),
+    /// A device's event could not be created.
+    #[error("failed to create a device: {0}")]
+    Device(io::Error),
+    /// A virtio transport could not be put on the MMIO bus.
+    #[error("failed to register a device on the MMIO bus: {0}")]
+    Bus(#[from] crate::vstate::bus::BusError),
+    /// A virtio device could not be created or restored.
+    #[error("failed to create a virtio device: {0}")]
+    Virtio(#[from] VirtioError),
     /// The VM did not start: {0}
     #[error("the VM did not start: {0}")]
     Startup(String),
@@ -139,23 +167,13 @@ pub fn boot(spec: &VmSpec, id: u32, runtime: Arc<VmRuntime>) -> Result<(), Spawn
 }
 
 /// Refuses what this backend cannot build, before anything is; returns the vCPU count.
-fn check_spec(spec: &VmSpec) -> Result<usize, BootError> {
-    // A vsock device is what a VM with a job needs (it is the only way to reach
-    // the orchestrator), so a spec that asks for one must not boot a VM that
-    // cannot have it: this backend has no vhost-vsock (Hypervisor.framework
-    // exposes no such interface) and this port has no network device to fall
-    // back to.
-    if spec.vsock.is_some() {
-        return Err(BootError::UnsupportedVsock);
-    }
-    // A workspace volume is a virtio-mmio block device, and this backend has no
-    // virtio-mmio device model at all: refusing the spec keeps a caller from
-    // booting a guest that would wait forever for a device that never appears.
-    if spec.workspace.is_some() {
-        return Err(BootError::UnsupportedWorkspace);
-    }
-    if !spec.volumes.is_empty() {
-        return Err(BootError::UnsupportedVolumes);
+fn check_spec(spec: &VmSpec, id: u32) -> Result<usize, BootError> {
+    crate::spawner::check_volumes(&spec.volumes).map_err(BootError::Volumes)?;
+    if spec.balloon.is_some() {
+        eprintln!(
+            "hvf: VM {id}: the balloon is Linux-only; booting with all {} MiB usable",
+            spec.memory_mib
+        );
     }
 
     let vcpu_count = usize::from(spec.vcpus);
@@ -190,7 +208,7 @@ fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
 }
 
 fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
-    let vcpu_count = check_spec(spec)?;
+    let vcpu_count = check_spec(spec, id)?;
     let memory = guest_memory(spec)?;
 
     // The VM, and the guest memory mapped into its address space. A device
@@ -232,9 +250,9 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             len: MMIO_LEN,
             gsi: gic::UART_SPI,
         },
-        // This backend has no virtio-mmio devices at all (no vsock device, and
-        // no block device either), so no transport is described.
-        &[],
+        // The vsock device, the workspace and the data volumes, in the
+        // layout's slots: the same nodes the KVM backend writes.
+        &transports_of(spec),
         &GicFdtNode::new(vcpu_count),
         &initrd,
     )?;
@@ -254,6 +272,7 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             fdt: fdt_addr,
         },
         None,
+        ExitSignal::new().map_err(BootError::Device)?,
     );
     run(spec, id, runtime, shared, None)
 }
@@ -268,15 +287,27 @@ fn restore_inner(
     id: u32,
     runtime: &Arc<VmRuntime>,
 ) -> Result<(), BootError> {
-    let vcpu_count = check_spec(spec)?;
+    let vcpu_count = check_spec(spec, id)?;
     let snapshot = crate::hvf::snapshot_state::read_state(dir)
         .map_err(|err| BootError::Snapshot(err.to_string()))?;
-    if snapshot.vcpus.len() != vcpu_count || snapshot.meta.memory_mib != spec.memory_mib {
+    if snapshot.vcpus.len() != vcpu_count
+        || snapshot.meta.memory_mib != spec.memory_mib
+        || snapshot.vsock.is_some() != spec.vsock.is_some()
+        || snapshot.workspace.is_some() != spec.workspace.is_some()
+        || snapshot.volumes.len() != spec.volumes.len()
+    {
         return Err(BootError::Snapshot(format!(
-            "the spec ({vcpu_count} vCPUs, {} MiB) is not the snapshot's machine ({} vCPUs, {} MiB)",
+            "the spec ({vcpu_count} vCPUs, {} MiB, vsock {}, workspace {}, {} data volumes) is not \
+             the snapshot's machine ({} vCPUs, {} MiB, vsock {}, workspace {}, {} data volumes)",
             spec.memory_mib,
+            spec.vsock.is_some(),
+            spec.workspace.is_some(),
+            spec.volumes.len(),
             snapshot.vcpus.len(),
-            snapshot.meta.memory_mib
+            snapshot.meta.memory_mib,
+            snapshot.vsock.is_some(),
+            snapshot.workspace.is_some(),
+            snapshot.volumes.len()
         )));
     }
     let gic = gic::Gic::from_state(&snapshot.gic, vcpu_count).map_err(BootError::Snapshot)?;
@@ -301,24 +332,26 @@ fn restore_inner(
         vcpu_count,
         BootParams { entry: 0, fdt: 0 },
         Some(restore),
+        ExitSignal::new().map_err(BootError::Device)?,
     );
-    run(spec, id, runtime, shared, Some(&snapshot.serial))
+    run(spec, id, runtime, shared, Some(&snapshot))
 }
 
-/// The rest of a boot or a restore, once the shared VM state exists: the console (new, or with the
-/// registers a snapshot kept), the input, stop and snapshot controls, and the vCPU threads.
+/// The rest of a boot or a restore, once the shared VM state exists: the console and the virtio
+/// devices (new, or rebuilt from the state a snapshot kept), the input, stop and snapshot controls,
+/// and the device and vCPU threads.
 fn run(
     spec: &VmSpec,
     id: u32,
     runtime: &Arc<VmRuntime>,
     shared: Arc<SharedVm>,
-    serial: Option<&crate::vstate::snapshot::SerialRegisters>,
+    restored: Option<&HvfSnapshot>,
 ) -> Result<(), BootError> {
     let vcpu_count = usize::from(spec.vcpus);
     let console: Arc<dyn ConsoleLine> = shared.clone();
-    shared.install_serial(match serial {
-        Some(registers) => {
-            SerialDevice::from_registers(registers, Arc::clone(&runtime.serial), &console)
+    shared.install_serial(match restored {
+        Some(snapshot) => {
+            SerialDevice::from_registers(&snapshot.serial, Arc::clone(&runtime.serial), &console)
                 .map_err(BootError::Snapshot)?
         }
         None => SerialDevice::new(Arc::clone(&runtime.serial), &console),
@@ -348,9 +381,34 @@ fn run(
         }
     });
 
-    // The snapshot control, holding the VM weakly as the stop control does.
+    // The virtio devices, their threads and the interrupt relay. A failure
+    // stops the device threads already started before it is reported: no vCPU
+    // runs yet, and nothing else would ever tell them the VM is gone.
+    // The vsock event thread takes the gate for reading around its work; a
+    // snapshot holds it for writing, so no packet lands between the device
+    // state and the memory dump.
+    let gate: DeviceGate = Arc::new(RwLock::new(()));
+    let transports = match attach_devices(spec, runtime, &shared, &gate, restored) {
+        Ok(transports) => transports,
+        Err(err) => {
+            shared.stop();
+            return Err(match runtime.join_threads() {
+                Ok(()) => err,
+                Err(join) => BootError::Startup(format!(
+                    "{err}, and stopping the device threads left behind failed: {join}"
+                )),
+            });
+        }
+    };
+
+    // The snapshot control, holding the VM and its devices weakly as the stop
+    // control does.
     runtime.set_vm_control(Arc::new(crate::hvf::snapshot::HvfControl {
         vm: Arc::downgrade(&shared),
+        vsock: transports.vsock.as_ref().map(Arc::downgrade),
+        workspace: transports.workspace.as_ref().map(Arc::downgrade),
+        volumes: transports.volumes.iter().map(Arc::downgrade).collect(),
+        gate,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
         busy: std::sync::Mutex::new(()),
@@ -381,6 +439,293 @@ fn run(
         });
     }
     Ok(())
+}
+
+/// The virtio-mmio transports a VM of `spec` carries, as its device tree
+/// describes them: the vsock device, the workspace volume and the shared data
+/// volumes, in the aarch64 layout's slots and GSIs (the KVM backend's).
+fn transports_of(spec: &VmSpec) -> Vec<VirtioMmioFdtInfo> {
+    let mut transports = Vec::new();
+    if spec.vsock.is_some() {
+        transports.push(VirtioMmioFdtInfo {
+            addr: VSOCK_MMIO_START,
+            len: MMIO_LEN,
+            gsi: VSOCK_GSI,
+        });
+    }
+    if spec.workspace.is_some() {
+        transports.push(VirtioMmioFdtInfo {
+            addr: WORKSPACE_MMIO_START,
+            len: MMIO_LEN,
+            gsi: WORKSPACE_GSI,
+        });
+    }
+    for index in 0..spec.volumes.len() {
+        transports.push(VirtioMmioFdtInfo {
+            addr: DATA_MMIO_START + index as u64 * MMIO_LEN,
+            len: MMIO_LEN,
+            gsi: DATA_GSI_START + index as u32,
+        });
+    }
+    transports
+}
+
+/// The VM's virtio transports, held strongly by the VM itself (see
+/// `SharedVm::attach_transport`); these handles are for the snapshot control.
+struct Transports {
+    vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
+    workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
+    volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
+}
+
+/// One device interrupt: the event the transport signals, and the SPI the
+/// relay raises for it.
+type IrqSource = (EventFd, u32);
+
+/// Builds the virtio devices of `spec` (rebuilt from `restored`'s state for a
+/// restore), puts their transports on the VM's MMIO bus, and starts the vsock
+/// event thread and the interrupt relay.
+fn attach_devices(
+    spec: &VmSpec,
+    runtime: &Arc<VmRuntime>,
+    shared: &Arc<SharedVm>,
+    gate: &DeviceGate,
+    restored: Option<&HvfSnapshot>,
+) -> Result<Transports, BootError> {
+    let mut irq_sources: Vec<IrqSource> = Vec::new();
+    // SPIs to raise once the devices are up: a restored transport whose
+    // interrupt the guest had not acknowledged yet. A pending SPI is in the
+    // controller's state already unless the relay raised it after the
+    // controller was saved; an extra edge is harmless (the driver reads the
+    // transport's interrupt status first).
+    let mut pending: Vec<u32> = Vec::new();
+
+    // The vsock device: the userspace device and its muxer, which binds
+    // `uds_path` (a taken path fails the boot here), and its ring-processing
+    // event thread.
+    let vsock = match &spec.vsock {
+        Some(config) => {
+            let irq = new_irq(&mut irq_sources, VSOCK_GSI)?;
+            let backend = VsockUnixBackend::new(
+                config.guest_cid,
+                config.uds_path.to_string_lossy().into_owned(),
+            )
+            .map_err(VsockError::from)
+            .map_err(VirtioError::from)?;
+            let device = Arc::new(Mutex::new(
+                Vsock::new(config.guest_cid, backend).map_err(VirtioError::from)?,
+            ));
+            let exit = shared.exit_signal();
+            let handle = event_thread::start_event_thread(
+                Arc::clone(&device),
+                exit.evt.try_clone().map_err(BootError::Device)?,
+                Arc::clone(&exit.signalled),
+                Arc::clone(gate),
+                runtime.id,
+            )
+            .map_err(BootError::Thread)?;
+            runtime.add_thread(handle);
+            let device = Box::new(VsockMmioDevice::new(device));
+            let state = restored.and_then(|s| s.vsock.as_ref());
+            let transport = match state {
+                Some(state) => {
+                    let mut transport =
+                        VirtioMmioTransport::restore(device, shared.memory().clone(), irq, state)?;
+                    // The muxer's connections did not survive: the guest is told so, and re-reads
+                    // its CID (a restore may give the VM another).
+                    transport.on_restored()?;
+                    transport
+                }
+                None => VirtioMmioTransport::new(device, shared.memory().clone(), irq),
+            };
+            note_pending(&mut pending, state, VSOCK_GSI);
+            Some(attach(shared, transport, VSOCK_MMIO_START)?)
+        }
+        None => None,
+    };
+
+    // The block devices: the workspace volume and the shared data volumes.
+    // Their requests are served on the vCPU that rings their doorbell, so they
+    // need no thread of their own.
+    let workspace = match &spec.workspace {
+        Some(image) => {
+            let state = restored.and_then(|s| s.workspace.as_ref());
+            note_pending(&mut pending, state, WORKSPACE_GSI);
+            Some(attach_block(
+                shared,
+                image,
+                None,
+                WORKSPACE_MMIO_START,
+                WORKSPACE_GSI,
+                state,
+                &mut irq_sources,
+            )?)
+        }
+        None => None,
+    };
+    let mut volumes = Vec::with_capacity(spec.volumes.len());
+    for (index, volume) in spec.volumes.iter().enumerate() {
+        let gsi = DATA_GSI_START + index as u32;
+        let state = restored.and_then(|s| s.volumes.get(index));
+        note_pending(&mut pending, state, gsi);
+        volumes.push(attach_block(
+            shared,
+            &volume.image,
+            Some(&volume.name),
+            DATA_MMIO_START + index as u64 * MMIO_LEN,
+            gsi,
+            state,
+            &mut irq_sources,
+        )?);
+    }
+
+    // The interrupt relay, when there is anything to relay. It holds the VM
+    // weakly: the VM is released when its last vCPU finishes, not when the
+    // relay notices the stop.
+    if !irq_sources.is_empty() {
+        let exit = shared.exit_signal();
+        let exit_evt = exit.evt.try_clone().map_err(BootError::Device)?;
+        let exit_signalled = Arc::clone(&exit.signalled);
+        let vm = Arc::downgrade(shared);
+        let relay = thread::Builder::new()
+            .name(format!("apz_vm{}_irq", runtime.id))
+            .spawn(move || relay_interrupts(&vm, &exit_evt, &exit_signalled, irq_sources))
+            .map_err(BootError::Thread)?;
+        runtime.add_thread(relay);
+    }
+    for spi in pending {
+        shared.raise_spi(spi);
+    }
+
+    Ok(Transports {
+        vsock,
+        workspace,
+        volumes,
+    })
+}
+
+/// A new interrupt event for the device on SPI `spi`, registered with the relay.
+fn new_irq(irq_sources: &mut Vec<IrqSource>, spi: u32) -> Result<EventFd, BootError> {
+    let irq = EventFd::new(EFD_NONBLOCK).map_err(BootError::Device)?;
+    irq_sources.push((irq.try_clone().map_err(BootError::Device)?, spi));
+    Ok(irq)
+}
+
+/// Records `spi` for raising when a restored transport had an unacknowledged interrupt.
+fn note_pending(pending: &mut Vec<u32>, state: Option<&MmioDeviceState>, spi: u32) {
+    if state.is_some_and(|state| state.transport.interrupt_status != 0) {
+        pending.push(spi);
+    }
+}
+
+/// Puts `transport` on the VM's MMIO bus at `base`.
+fn attach(
+    shared: &SharedVm,
+    transport: VirtioMmioTransport,
+    base: u64,
+) -> Result<Arc<Mutex<VirtioMmioTransport>>, BootError> {
+    let transport = Arc::new(Mutex::new(transport));
+    shared.attach_transport(&transport, base, MMIO_LEN)?;
+    Ok(transport)
+}
+
+/// A block device on the VM's MMIO bus at `base`, its interrupt relayed to SPI `spi`: the writable
+/// workspace (`id` is `None`) or a read-only data volume named `id`. Rebuilt from `state` for a
+/// restore.
+fn attach_block(
+    shared: &SharedVm,
+    image: &std::path::Path,
+    id: Option<&str>,
+    base: u64,
+    spi: u32,
+    state: Option<&MmioDeviceState>,
+    irq_sources: &mut Vec<IrqSource>,
+) -> Result<Arc<Mutex<VirtioMmioTransport>>, BootError> {
+    use crate::devices::virtio::block::device::VirtioBlock;
+    use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
+    let irq = new_irq(irq_sources, spi)?;
+    let device = match id {
+        Some(name) => VirtioBlock::new_read_only(image, name),
+        None => VirtioBlock::new(image),
+    }
+    .map_err(VirtioError::from)?;
+    let device = Box::new(BlockMmioDevice::new(device));
+    let transport = match state {
+        Some(state) => VirtioMmioTransport::restore(device, shared.memory().clone(), irq, state)?,
+        None => VirtioMmioTransport::new(device, shared.memory().clone(), irq),
+    };
+    attach(shared, transport, base)
+}
+
+/// Polls every device interrupt event and raises its SPI, until the VM stops.
+fn relay_interrupts(
+    vm: &Weak<SharedVm>,
+    exit_evt: &EventFd,
+    exit_signalled: &AtomicBool,
+    sources: Vec<IrqSource>,
+) {
+    const EXIT: u64 = u64::MAX;
+    let stop_vm = || {
+        if let Some(vm) = vm.upgrade() {
+            vm.stop();
+        }
+    };
+    let epoll = match Epoll::new() {
+        Ok(epoll) => epoll,
+        Err(err) => {
+            eprintln!("hvf: cannot create the interrupt relay's poll set: {err}; stopping the VM");
+            stop_vm();
+            return;
+        }
+    };
+    let mut registered = true;
+    for (index, (evt, _)) in sources.iter().enumerate() {
+        registered &= epoll
+            .ctl(
+                ControlOperation::Add,
+                evt.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, index as u64),
+            )
+            .is_ok();
+    }
+    registered &= epoll
+        .ctl(
+            ControlOperation::Add,
+            exit_evt.as_raw_fd(),
+            EpollEvent::new(EventSet::IN, EXIT),
+        )
+        .is_ok();
+    if !registered {
+        eprintln!("hvf: cannot register the device interrupts; stopping the VM");
+        stop_vm();
+        return;
+    }
+    let mut events = vec![EpollEvent::default(); sources.len() + 1];
+    while !exit_signalled.load(Ordering::SeqCst) {
+        let ready = match epoll.wait(200, &mut events) {
+            Ok(ready) => ready,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => {
+                eprintln!("hvf: the interrupt relay failed: {err}; stopping the VM");
+                stop_vm();
+                return;
+            }
+        };
+        for event in &events[..ready] {
+            let data = event.data();
+            if data == EXIT {
+                continue;
+            }
+            if let Some((evt, spi)) = sources.get(data as usize)
+                && evt.read().is_ok()
+            {
+                match vm.upgrade() {
+                    Some(vm) => vm.raise_spi(*spi),
+                    None => return,
+                }
+            }
+        }
+    }
 }
 
 /// The interrupt controller as the device tree describes it: an `arm,gic-v3`
@@ -421,8 +766,9 @@ impl GicFdt for GicFdtNode {
     }
 
     fn msi_properties(&self) -> Option<&[u64]> {
-        // No ITS: the only interrupt source is the serial console's SPI, and
-        // wire interrupts do not need a message-based controller.
+        // No ITS: the interrupt sources are the console's and the virtio
+        // transports' SPIs, and wire interrupts do not need a message-based
+        // controller.
         None
     }
 }

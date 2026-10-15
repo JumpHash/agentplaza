@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::devices::virtio::mmio::VirtioMmioTransport;
 use crate::hvf::exit::{Exception, MmioAccess, Wait};
 use crate::hvf::gic::{self, Gic, GicMmio};
 use crate::hvf::psci::{self, Action, Machine};
@@ -56,8 +57,9 @@ use crate::hvf::sys::{self, HvfError};
 use crate::hvf::uart::SerialDevice;
 use crate::hvf::vm::HvfVm;
 use crate::hvf::wait::{self, Start, WaitSlot, wake_asserted};
+use crate::pal::eventfd::{EFD_NONBLOCK, EventFd};
 use crate::spawner::VmRuntime;
-use crate::vstate::bus::BusDevice;
+use crate::vstate::bus::{Bus, BusDevice, BusError};
 use crate::vstate::memory::GuestMemoryMmap;
 
 /// PSTATE for EL1h with D, A, I and F set: the state the Linux boot protocol
@@ -604,6 +606,36 @@ struct VcpuSlot {
     wait: WaitSlot,
 }
 
+/// How the VM's other threads - the vsock event thread and the interrupt
+/// relay - learn that it has stopped: the flag is set and the event written
+/// when the VM stops. The event is never consumed (every thread polling it sees
+/// it), and the flag is what a thread re-checks after a wait times out.
+#[derive(Debug)]
+pub struct ExitSignal {
+    /// Readable once the VM has stopped.
+    pub evt: EventFd,
+    /// Set once the VM has stopped.
+    pub signalled: Arc<AtomicBool>,
+}
+
+impl ExitSignal {
+    /// A signal that has not fired.
+    pub fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            evt: EventFd::new(EFD_NONBLOCK)?,
+            signalled: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Fires the signal (again, harmlessly, if it already has).
+    fn signal(&self) {
+        self.signalled.store(true, Ordering::SeqCst);
+        if let Err(err) = self.evt.write(1) {
+            eprintln!("warning: cannot signal the VM's exit to its device threads: {err}");
+        }
+    }
+}
+
 /// What the vCPUs of one VM share, and what the devices and the spawner
 /// reach them through.
 pub struct SharedVm {
@@ -626,6 +658,15 @@ pub struct SharedVm {
     /// interrupt line points back at this VM (which has to exist first); no
     /// vCPU runs before boot installs it.
     serial: Mutex<Option<SerialDevice>>,
+    /// The virtio-mmio transports (vsock, workspace, data volumes), by guest
+    /// physical window. A guest access that neither the interrupt controller
+    /// nor the console claims is looked up here.
+    mmio: Bus,
+    /// The strong references to the transports on [`Self::mmio`], which holds
+    /// them weakly: they live as long as the VM.
+    transports: Mutex<Vec<Arc<Mutex<VirtioMmioTransport>>>>,
+    /// Fired when the VM stops, for the threads that are not vCPUs.
+    exit: ExitSignal,
     /// Where the guest's view of the virtual counter starts.
     vtimer_offset: u64,
     /// The vCPUs.
@@ -673,6 +714,7 @@ impl SharedVm {
         vcpu_count: usize,
         boot: BootParams,
         restore: Option<Restore>,
+        exit: ExitSignal,
     ) -> Arc<Self> {
         // The guest's counter starts where the VM does; the framework
         // subtracts this offset from the host counter it reports as
@@ -705,6 +747,9 @@ impl SharedVm {
             runtime,
             interrupts: Mutex::new(gic),
             serial: Mutex::new(None),
+            mmio: Bus::new(),
+            transports: Mutex::new(Vec::new()),
+            exit,
             vtimer_offset,
             slots,
             stop: AtomicBool::new(false),
@@ -857,6 +902,31 @@ impl SharedVm {
     /// Installs the console. Called once, before any vCPU runs.
     pub fn install_serial(&self, serial: SerialDevice) {
         *lock(&self.serial) = Some(serial);
+    }
+
+    /// Puts a virtio-mmio transport on the VM's MMIO bus at `[base, base + len)`.
+    /// Called before any vCPU runs.
+    pub(crate) fn attach_transport(
+        &self,
+        transport: &Arc<Mutex<VirtioMmioTransport>>,
+        base: u64,
+        len: u64,
+    ) -> Result<(), BusError> {
+        self.mmio.insert(transport.clone(), base, len)?;
+        lock(&self.transports).push(Arc::clone(transport));
+        Ok(())
+    }
+
+    /// The signal the VM's device threads stop on.
+    pub(crate) fn exit_signal(&self) -> &ExitSignal {
+        &self.exit
+    }
+
+    /// Raises the SPI numbered `spi` (the device tree's numbering) and wakes
+    /// the vCPU it is routed to: a device interrupt, edge-triggered, one event
+    /// per call.
+    pub(crate) fn raise_spi(&self, spi: u32) {
+        self.with_interrupts(|gic| gic.raise_spi(spi));
     }
 
     /// Queues host bytes as console input: the guest reads them from the UART
@@ -1016,6 +1086,7 @@ impl SharedVm {
             StopCause::GuestReset => self.runtime.mark_guest_reset(),
         }
         self.stop.store(true, Ordering::SeqCst);
+        self.exit.signal();
         for index in 0..self.slots.len() {
             self.wake(index);
         }
@@ -1100,7 +1171,10 @@ impl SharedVm {
                 return true;
             }
         }
-        false
+        // The virtio transports. No controller lock is held here: a transport
+        // signals its interrupt through an event the relay thread turns into
+        // an SPI, never by calling back into the controller.
+        self.mmio.read(ipa, bytes).is_ok()
     }
 
     /// Writes `bytes` to a device register at guest physical address `ipa`.
@@ -1131,7 +1205,10 @@ impl SharedVm {
                 return true;
             }
         }
-        false
+        // The virtio transports: a queue notification is served here, on the
+        // vCPU that wrote it (a block request runs to completion before the
+        // vCPU resumes; the vsock device hands it to its event thread).
+        self.mmio.write(ipa, bytes).is_ok()
     }
 }
 

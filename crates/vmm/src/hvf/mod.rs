@@ -16,8 +16,9 @@
 //! |---|---|---|
 //! | vCPUs | `KVM_RUN` on a vCPU fd | `hv_vcpu_run` on a vCPU per thread |
 //! | memory | a KVM memory slot per region | `hv_vm_map` of this process's pages |
-//! | devices | in-kernel irqchip + userspace MMIO | unmapped IPA ranges + userspace MMIO |
+//! | devices | in-kernel irqchip + userspace MMIO | unmapped IPA ranges + userspace MMIO (GIC, UART, virtio-mmio) |
 //! | interrupt controller | in-kernel vGIC (or none on x86) | [`gic`]: a userspace GICv3 |
+//! | device interrupts | KVM irqfds | an interrupt relay thread raising [`gic`] SPIs from the devices' `EventFd`s |
 //! | console | `vm-superio` UART + `EventFd` | [`uart`]: the same UART, no event fd |
 //! | power management | PSCI in the kernel | [`psci`]: PSCI in the VMM |
 //! | boot | `KVM_*` register ioctls | `vm` + `vcpu` register calls |
@@ -42,7 +43,10 @@
 //! so they are checked by type and by review, and their protocol decisions are
 //! documented against the reference implementation (QEMU's HVF backend) and
 //! Apple's headers. Booting a guest on this backend needs an Apple Silicon
-//! machine and a kernel image for it.
+//! machine and a kernel image for it. The virtio devices (vsock, workspace, data
+//! volumes) are the shared `devices::virtio` ones over the [`crate::pal`] POSIX
+//! event layer, whose tests run on Linux; their wiring here has not run on a Mac
+//! either.
 //!
 //! # One VM per process
 //!

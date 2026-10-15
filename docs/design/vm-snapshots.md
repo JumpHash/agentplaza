@@ -249,7 +249,7 @@ time. The owner's console and `agentplaza nodes` expose it.
 |---|---|---|
 | Linux x86_64 | KVM | Snapshot, restore, diff, sleep, checkpoints, forks, moves. Tested end to end on this machine. |
 | Linux aarch64 | KVM | Boot, full snapshot, restore, and diff snapshot and its restore, verified on an emulated arm64 host. Not run on arm64 hardware. |
-| macOS (Apple Silicon) | Hypervisor.framework (`crates/vmm/src/hvf`) | Snapshot and restore code, compile-checked for `aarch64-apple-darwin`. Not run on a Mac. |
+| macOS (Apple Silicon) | Hypervisor.framework (`crates/vmm/src/hvf`) | Snapshot and restore code, including the vsock, workspace and data-volume transports, compile-checked for `aarch64-apple-darwin`. Not run on a Mac. |
 | Windows | WHP (`crates/vmm/src/whp`) | Snapshot and restore code, compile-checked for `x86_64-pc-windows-msvc`. Not run on Windows. The snapshot format builds on every platform, so a Windows or macOS daemon can read snapshot metadata. |
 
 ### aarch64 KVM
@@ -288,6 +288,9 @@ vCPUs are all woken. A restore gives each thread its state to write before its f
 - the EL0 and EL1 system registers, including the pointer-authentication keys and the virtual timer;
 - the userspace GICv3, the UART, the PSCI power states, and the guest's virtual counter. A restore sets the timer
   offset so the counter goes on;
+- the vsock, workspace and data-volume transports, as WHP's snapshot does. A restore rebuilds them (the spec must have the
+  same devices) and re-raises the SPI of any transport whose interrupt the guest had not acknowledged. vsock connections
+  don't survive a restore;
 - a full memory image.
 
 `hv_vcpu_set_simd_fp_reg` takes a NEON vector by value, so it is called through a small inline-assembly shim.
