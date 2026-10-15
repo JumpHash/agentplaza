@@ -67,7 +67,6 @@ def _agent_lab(ctx, roles: list[str], tag: str, extra_cids: list[int] | None = N
         ctx,
         cids,
         f"lifecycle-{tag}",
-        status_port=0,
         agents=_manifest(ctx, roles, tag),
         agents_cid_base=AGENT_CID_BASE,
         noded_args=["--snapshot-dir", str(snapshots)],
