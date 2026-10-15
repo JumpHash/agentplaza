@@ -38,7 +38,7 @@ import { api, e2bApi, egressApi } from '../src/api';
 import { statusPill } from '../src/views/agent-list';
 import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
-import { e2bSetupText, memoryText, sandboxActions, sandboxTime } from '../src/views/e2b';
+import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
 import { movableNodes, moveText } from '../src/views/agent-detail';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 
@@ -1496,6 +1496,24 @@ sectionEnd('sleep and checkpoint tests: ok');
   eq([sandboxActions('running'), sandboxActions('paused')], [['pause', 'end'], ['resume', 'end']], 'e2b sandboxes: a running one pauses, a paused one resumes, and either ends');
   eq([memoryText(512), memoryText(1536), memoryText(2048)], ['512 MB', '1.5 GB', '2.0 GB'], 'e2b sandboxes: memory reads in MB below a gibibyte, then GB');
   eq(sandboxTime('not a time'), '—', 'e2b sandboxes: an unreadable time shows a dash');
+  // The templates: the newest build, the tags of the ready builds, and the failure of a newest build that failed.
+  const buildSample = (over: Partial<E2bBuild>): E2bBuild => ({ buildID: 'b', status: 'ready', createdAt: '2026-10-01T00:00:00Z', finishedAt: null, cpuCount: 2, memoryMB: 512, tags: [], reason: null, ...over });
+  const tplSample: E2bTemplate = {
+    templateID: 't1',
+    name: 'base',
+    createdAt: '2026-10-01T00:00:00Z',
+    updatedAt: '2026-10-02T00:00:00Z',
+    builds: [
+      buildSample({ buildID: 'b3', status: 'error', tags: ['v3'], reason: { message: 'step 4 failed', step: 'RUN npm ci' } }),
+      buildSample({ buildID: 'b2', tags: ['v2', 'latest'] }),
+      buildSample({ buildID: 'b1', tags: ['latest', 'v1'] }),
+    ],
+  };
+  eq(latestBuild(tplSample)?.buildID, 'b3', 'e2b templates: the newest build is the first one listed');
+  eq(templateTags(tplSample), ['v2', 'latest', 'v1'], 'e2b templates: the tags of the ready builds, each once, in listed order');
+  eq(templateFailure(tplSample), 'step 4 failed', 'e2b templates: a newest build that failed shows its reason');
+  eq(templateFailure({ ...tplSample, builds: [buildSample({ status: 'error' })] }), 'The build failed.', 'e2b templates: a failed build without a reason still says it failed');
+  eq([templateFailure({ ...tplSample, builds: [buildSample({ status: 'ready' })] }), latestBuild({ ...tplSample, builds: [] }), templateTags({ ...tplSample, builds: [] })], [null, null, []], 'e2b templates: a ready newest build has no failure, and no builds means no latest build and no tags');
   // Move: the nodes an agent can move to, and the outcome line.
   const nodes = [
     { id: 'n1', name: 'alpha', draining: false, revoked: false },

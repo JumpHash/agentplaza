@@ -1,12 +1,12 @@
-// Setup > E2B API: the owner's keys for the hub's E2B gateway, the setup an SDK client needs, and the sandboxes the
-// gateway runs (refreshed every 10 s while the screen is open). A key is shown once, in the reveal box, and is never
-// stored: leaving the screen clears it. The pure helpers (the setup text, the actions a sandbox row offers, the memory
-// text) are exported and unit-tested (test/tests.ts).
+// Setup > E2B API: the owner's keys for the hub's E2B gateway, the setup an SDK client needs, the sandboxes the gateway
+// runs, and the templates they start from (all refreshed every 10 s while the screen is open). A key is shown once, in
+// the reveal box, and is never stored: leaving the screen clears it. The pure helpers (the setup text, the actions a
+// sandbox row offers, the memory text, the template builds) are exported and unit-tested (test/tests.ts).
 
 import '../styles/mcp.css';
 import '../styles/mcp-hub.css';
-import { e2bApi, type E2bKey, type E2bKeyCreated, type E2bSandbox } from '../api';
-import { ago, attempt, badge, button, card, empty, field, input, modal, toast } from '../ui/components';
+import { ApiError, e2bApi, type E2bKey, type E2bKeyCreated, type E2bSandbox } from '../api';
+import { ago, attempt, badge, button, card, empty, field, input, modal, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { errorText } from './vault-common';
@@ -17,6 +17,15 @@ export const SANDBOX_REFRESH_MS = 10_000;
 
 export type SandboxState = 'running' | 'paused';
 export type SandboxAction = 'pause' | 'resume' | 'end';
+export type BuildStatus = 'waiting' | 'building' | 'ready' | 'error';
+
+/** One build of a template. The hub lists a template's builds newest first; `reason` is set when a build failed. */
+export interface E2bBuild {
+  buildID: string; status: BuildStatus; createdAt: string; finishedAt: string | null; cpuCount: number; memoryMB: number;
+  tags: string[]; reason: { message: string; step: string } | null;
+}
+/** A template on the hub's E2B gateway, with its builds (newest first). The timestamps are RFC 3339 strings. */
+export interface E2bTemplate { templateID: string; name: string; createdAt: string; updatedAt: string; builds: E2bBuild[] }
 
 /**
  * The setup an SDK client reads: the API under the hub's origin, the key, and the local sandbox gateway. `key` is the
@@ -42,10 +51,50 @@ export function sandboxTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
+/** The template's newest build (the hub lists builds newest first), or null when it has none. */
+export function latestBuild(t: E2bTemplate): E2bBuild | null {
+  return t.builds[0] ?? null;
+}
+
+/** The tags of all ready builds, each once, in the order the builds list them. */
+export function templateTags(t: E2bTemplate): string[] {
+  return [...new Set(t.builds.filter((b) => b.status === 'ready').flatMap((b) => b.tags))];
+}
+
+/** The newest build's failure message when the newest build failed; null when it did not (or there is none). */
+export function templateFailure(t: E2bTemplate): string | null {
+  const b = latestBuild(t);
+  return b?.status === 'error' ? (b.reason?.message ?? 'The build failed.') : null;
+}
+
 const ACTIONS: Record<SandboxAction, { label: string; done: string; send: (id: string) => Promise<unknown> }> = {
   pause: { label: 'Pause', done: 'Paused the sandbox', send: (id) => e2bApi.pauseSandbox(id) },
   resume: { label: 'Resume', done: 'Resumed the sandbox', send: (id) => e2bApi.resumeSandbox(id) },
   end: { label: 'End', done: 'Ended the sandbox', send: (id) => e2bApi.endSandbox(id) },
+};
+
+const BUILD_TONE: Record<BuildStatus, Tone> = { waiting: 'muted', building: 'info', ready: 'ok', error: 'danger' };
+
+/**
+ * The two template calls. They are not in api.ts's `e2bApi`, so they follow the same path as its `call`: JSON in and
+ * out, and an ApiError that carries the hub's message. A refused delete answers `{message}` rather than `{error}`, so
+ * the message is read from either.
+ */
+async function templateCall<T>(method: string, path: string): Promise<T> {
+  const res = await fetch(path, { method });
+  const text = await res.text();
+  const data = text ? (JSON.parse(text) as unknown) : null;
+  if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
+    const body = data as { error?: string; message?: string } | null;
+    throw new ApiError(res.status, body?.error ?? body?.message ?? `${method} ${path}: ${res.status}`, [], data);
+  }
+  return data as T;
+}
+
+const templatesApi = {
+  list: () => templateCall<{ templates: E2bTemplate[] }>('GET', '/v1/e2b/templates').then((r) => r.templates),
+  remove: (id: string) => templateCall<null>('DELETE', `/v1/e2b/templates/${encodeURIComponent(id)}`),
 };
 
 /** A copy button for one piece of text. The text is not stored; the click copies it and says so. */
@@ -57,10 +106,13 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let alive = true;
   let keysSeq = 0;
   let sandboxesSeq = 0;
+  let templatesSeq = 0;
   let keys: E2bKey[] | null = null;
   let keysError: unknown = null;
   let sandboxes: E2bSandbox[] | null = null;
   let sandboxesError: unknown = null;
+  let templates: E2bTemplate[] | null = null;
+  let templatesError: unknown = null;
   // The key made in this visit: the setup text names it, and the reveal box shows it. Neither outlives the screen.
   let madeKey: string | null = null;
   let timer: number | undefined;
@@ -71,6 +123,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const setupSlot = h('div.stack');
   const sandboxError = h('p.mcp-danger');
   const sandboxSlot = h('div', null, h('p.mcp-loading', null, 'Loading the sandboxes...'));
+  const templateError = h('p.mcp-danger');
+  const templateSlot = h('div', null, h('p.mcp-loading', null, 'Loading the templates...'));
 
   // ---- Keys -----------------------------------------------------------------------------------------------------
 
@@ -339,6 +393,117 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     );
   };
 
+  // ---- Templates ------------------------------------------------------------------------------------------------
+
+  const loadTemplates = async (): Promise<void> => {
+    const seq = ++templatesSeq;
+    try {
+      const list = await templatesApi.list();
+      if (!alive || seq !== templatesSeq) return;
+      templates = list;
+      templatesError = null;
+    } catch (err) {
+      if (!alive || seq !== templatesSeq) return;
+      templates = null;
+      templatesError = err;
+    }
+    drawTemplates();
+  };
+
+  const doDeleteTemplate = async (t: E2bTemplate): Promise<void> => {
+    replace(templateError);
+    try {
+      await templatesApi.remove(t.templateID);
+      if (!alive) return;
+      toast(`Deleted ${t.name}`);
+    } catch (err) {
+      if (alive) replace(templateError, errorText(err));
+    }
+    if (alive) void loadTemplates();
+  };
+
+  // Deleting a template asks first. A build that runs, or one that starts from it, makes the hub refuse (409).
+  const confirmDeleteTemplate = (t: E2bTemplate): void => {
+    const close = modal(
+      `Delete ${t.name}`,
+      h(
+        'div.mcp-confirm',
+        null,
+        h(
+          'p',
+          null,
+          'Deletes the template and all its builds. This cannot be undone. A build that is running, or one that starts from it, blocks the delete until it finishes.',
+          ' ',
+          h('span.mcp-mono', null, t.templateID),
+        ),
+        h(
+          'div.mcp-actions',
+          null,
+          button('Cancel', () => close()),
+          button(
+            'Delete',
+            () => {
+              close();
+              void doDeleteTemplate(t);
+            },
+            { kind: 'danger' },
+          ),
+        ),
+      ),
+    );
+  };
+
+  const templateRow = (t: E2bTemplate): HTMLElement => {
+    const latest = latestBuild(t);
+    return h(
+      'tr',
+      null,
+      h('td', { 'data-label': 'Template' }, t.name),
+      h('td', { 'data-label': 'ID' }, h('span.mcp-mono', null, t.templateID.slice(0, 8))),
+      h('td', { 'data-label': 'Build' }, latest ? badge(latest.status, BUILD_TONE[latest.status]) : '—'),
+      h('td', { 'data-label': 'Tags' }, templateTags(t).join(', ') || '—'),
+      h('td', { 'data-label': 'Size' }, latest ? `${latest.cpuCount} vCPU, ${memoryText(latest.memoryMB)}` : '—'),
+      h('td', { 'data-label': 'Updated' }, sandboxTime(t.updatedAt)),
+      h('td', { 'data-label': 'Failure' }, templateFailure(t) ?? '—'),
+      h(
+        'td',
+        { 'data-label': 'Actions', class: 'mcp-actions-cell' },
+        button('Delete', () => confirmDeleteTemplate(t), { kind: 'danger', size: 'sm', icon: 'trash' }),
+      ),
+    );
+  };
+
+  const drawTemplates = (): void => {
+    if (templatesError) {
+      replace(templateSlot, empty('alert', 'Could not load the templates', errorText(templatesError)));
+      return;
+    }
+    if (!templates) return;
+    replace(
+      templateSlot,
+      templates.length
+        ? h(
+            'div.mcp-table-wrap',
+            null,
+            h(
+              'table.mcp-table',
+              null,
+              h(
+                'thead',
+                null,
+                h(
+                  'tr',
+                  null,
+                  ['Template', 'ID', 'Build', 'Tags', 'Size', 'Updated', 'Failure', 'Actions'].map((c) => h('th', null, c)),
+                ),
+              ),
+              h('tbody', null, templates.map(templateRow)),
+            ),
+          )
+        : empty('harness', 'No templates', 'Templates are built with the E2B SDK\'s Template.build.'),
+    );
+  };
+
   // ---- Page -----------------------------------------------------------------------------------------------------
 
   const keysCard = card('Keys', [
@@ -348,14 +513,20 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   ]);
   const setupCard = card('Setup for SDK clients', setupSlot);
   const sandboxCard = card('Sandboxes', [sandboxError, sandboxSlot]);
+  const templatesCard = card('Templates', [templateError, templateSlot]);
 
-  replace(root, h('div.mcp-page', null, h('div.stack', null, keysCard, setupCard, sandboxCard)));
+  replace(root, h('div.mcp-page', null, h('div.stack', null, keysCard, setupCard, sandboxCard, templatesCard)));
   drawSetup();
   drawKeys();
   drawSandboxes();
+  drawTemplates();
   void loadKeys();
   void loadSandboxes();
-  timer = window.setInterval(() => void loadSandboxes(), SANDBOX_REFRESH_MS);
+  void loadTemplates();
+  timer = window.setInterval(() => {
+    void loadSandboxes();
+    void loadTemplates();
+  }, SANDBOX_REFRESH_MS);
 
   return () => {
     alive = false;
