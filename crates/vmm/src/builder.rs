@@ -1163,6 +1163,12 @@ mod x86_64 {
             let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
             vm.register_irq(serial.serial.interrupt_evt(), COM1_GSI)
                 .map_err(BootError::Irq)?;
+            // A restored console's interrupt the guest had not taken is raised again on the new line.
+            if restored.is_some() {
+                serial
+                    .raise_pending_interrupt()
+                    .map_err(BootError::EventFd)?;
+            }
         }
         {
             let i8042 = i8042.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1698,6 +1704,12 @@ mod aarch64 {
             let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
             vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
                 .map_err(BootError::Irq)?;
+            // A restored console's interrupt the guest had not taken is raised again on the new line.
+            if restored.is_some() {
+                serial
+                    .raise_pending_interrupt()
+                    .map_err(BootError::EventFd)?;
+            }
         }
 
         // The vsock device, when the caller configured one: the transport sits on

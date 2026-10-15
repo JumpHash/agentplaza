@@ -21,6 +21,7 @@ use std::sync::{Arc, Barrier, Condvar, Mutex};
 
 use crate::pal::eventfd::EventFd;
 use vm_superio::Serial;
+use vm_superio::Trigger;
 use vm_superio::serial::{Error as SerialError, SerialEvents};
 
 use crate::devices::legacy::EventFdTrigger;
@@ -99,6 +100,9 @@ pub enum SerialOutInner {
 /// Output past the bound is dropped; the head (which holds the boot log) is
 /// kept.
 const MAX_SERIAL_CAPTURE: usize = 4 << 20;
+
+/// The UART's IIR "no interrupt pending" bit (16550A).
+const IIR_NONE_BIT: u8 = 0b0000_0001;
 
 /// Output sink for the serial device.
 #[derive(Debug)]
@@ -224,6 +228,20 @@ impl SerialDevice {
         Ok(SerialDevice { serial })
     }
 
+    /// Raises the UART's interrupt again when its saved registers hold one the guest has not taken.
+    ///
+    /// The model raises an interrupt only while its IIR bit is clear, and the line is a KVM irqfd
+    /// pulse. A snapshot can catch the bit set while the pulse never reached the saved interrupt
+    /// controller state, so the restored guest would wait for an interrupt that never comes, and every
+    /// console write would block until something else read the IIR. A spurious pulse is harmless: the
+    /// driver reads IIR "none" and returns.
+    pub fn raise_pending_interrupt(&self) -> std::io::Result<()> {
+        if self.serial.state().interrupt_identification & IIR_NONE_BIT == 0 {
+            self.serial.interrupt_evt().trigger()?;
+        }
+        Ok(())
+    }
+
     /// Queues `data` as console input for the guest to read from the UART's
     /// data register, raising the console's received-data interrupt.
     ///
@@ -272,6 +290,26 @@ mod tests {
     /// Helper to create a `SerialOut` with `Sink` inner for tests.
     fn test_serial_out_sink() -> SerialOut {
         SerialOut::new(SerialOutInner::Sink)
+    }
+
+    #[test]
+    fn a_restored_console_raises_the_interrupt_the_guest_had_not_taken() {
+        // The registers a snapshot kept: THRE raised and not yet read (IIR 0x02), or nothing pending
+        // (IIR 0x01). Only the first raises the line again.
+        for (iir, raised) in [(0x02u8, true), (IIR_NONE_BIT, false)] {
+            let mut registers = SerialDevice::new(test_serial_out_sink())
+                .unwrap()
+                .registers();
+            registers.interrupt_enable = 0x02;
+            registers.interrupt_identification = iir;
+            let serial = SerialDevice::from_registers(&registers, test_serial_out_sink()).unwrap();
+            serial.raise_pending_interrupt().unwrap();
+            assert_eq!(
+                serial.serial.interrupt_evt().read().is_ok(),
+                raised,
+                "IIR {iir:#04x}"
+            );
+        }
     }
 
     #[test]
