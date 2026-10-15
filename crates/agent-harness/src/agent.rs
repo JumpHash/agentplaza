@@ -47,6 +47,9 @@ const STUCK_FAILURES: u32 = 3;
 const TOKEN_LIMIT_CONTINUES: u32 = 1;
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
+/// How long queued work waits for the profile. A hub restart can welcome the agent before its
+/// profile is ready, and the profile follows a few seconds later.
+const PROFILE_WAIT: Duration = Duration::from_secs(60);
 
 /// A local tool's result: its output, or why it failed.
 type Outcome = Result<String, String>;
@@ -196,15 +199,23 @@ pub fn serve<S: Duplex, W: Write + Send>(
 
 impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
     /// The agent loop: runs queued work and waits for the host, until the host stops it.
+    /// Work does not start before the profile arrives; it waits up to `PROFILE_WAIT`, and
+    /// then fails as having no model.
     fn run(&mut self) -> Result<(), SessionError> {
+        // When the queued work first found no profile.
+        let mut waiting_since: Option<Instant> = None;
         loop {
-            let halt = match self.queue.pop_front() {
-                Some(job) => self.run_job(job).err(),
-                None => match self.pump() {
-                    Ok(Incoming::Stop(reason)) => Some(Halt::Stop(reason)),
-                    Ok(_) => None,
-                    Err(error) => Some(Halt::Failed(error)),
-                },
+            let halt = if self.queue.is_empty() {
+                waiting_since = None;
+                self.wait_for_host()
+            } else if self.profile.is_some() {
+                waiting_since = None;
+                self.run_next()
+            } else if waiting_since.get_or_insert_with(Instant::now).elapsed() < PROFILE_WAIT {
+                self.wait_for_host()
+            } else {
+                // Still no profile: `run_job` fails the work item.
+                self.run_next()
             };
             match halt {
                 None => {}
@@ -214,6 +225,21 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 }
                 Some(Halt::Failed(error)) => return Err(error),
             }
+        }
+    }
+
+    /// Runs the next queued work item; `None` when the queue is empty.
+    fn run_next(&mut self) -> Option<Halt> {
+        let job = self.queue.pop_front()?;
+        self.run_job(job).err()
+    }
+
+    /// Waits for the host's next message or the heartbeat, as the loop does when idle.
+    fn wait_for_host(&mut self) -> Option<Halt> {
+        match self.pump() {
+            Ok(Incoming::Stop(reason)) => Some(Halt::Stop(reason)),
+            Ok(_) => None,
+            Err(error) => Some(Halt::Failed(error)),
         }
     }
 
@@ -1282,6 +1308,38 @@ mod tests {
             host.send(&answer(2, json!([text("found")]), "end_turn"))
                 .unwrap();
             expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn work_that_arrives_before_the_profile_waits_for_it_and_then_runs() {
+        let workspace = scratch("profile-wait");
+        run_hub(&workspace, |host| {
+            // A hub restart can welcome the agent before its profile is ready.
+            let mut bare: Value = serde_json::from_str(&welcome(10)).expect("a welcome");
+            let profile = bare
+                .as_object_mut()
+                .expect("a welcome object")
+                .remove("profile")
+                .expect("a profile");
+            host.send(&bare.to_string()).unwrap();
+            host.send(&work(1, "task", "t", "say hi")).unwrap();
+            // The work is held, not failed: the next line is a heartbeat, not its result.
+            let early: Value = serde_json::from_str(&next(host)).expect("a JSON line");
+            assert_eq!(early["type"], "heartbeat", "{early}");
+            thread::sleep(Duration::from_millis(100));
+            host.send(&json!({"type": "profile", "profile": profile}).to_string())
+                .unwrap();
+            let call = expect_type(host, "model_call");
+            assert_eq!(call["request"]["system"], "be brief", "{call}");
+            host.send(&answer(1, json!([text("hi back")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(
+                (done["work"].clone(), done["status"].clone()),
+                (json!(1), json!("done"))
+            );
             stop(host);
         });
     }
