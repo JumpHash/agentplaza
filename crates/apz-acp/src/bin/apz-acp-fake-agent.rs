@@ -13,6 +13,9 @@
 //! - `{"ignore_cancel": true}`: from here on, a cancel does not end this turn.
 //! - `{"crash": true}`: exits with status 1, as an agent that dies mid-turn would.
 //!
+//! A top-level `"modes"` value is what `session/new` offers (`{"availableModes": [...]}`).
+//! `session/resume`, `session/set_mode` and `session/set_config_option` are answered `{}`.
+//!
 //! The session id is always `fake-1`. Every answer the client gives to one of the agent's requests is
 //! written to `APZ_ACP_FAKE_LOG` (when set) as a JSON array, rewritten after each answer, so a test can
 //! check what the client replied.
@@ -61,6 +64,7 @@ fn main() {
         .unwrap_or_else(|| vec![script.clone()]);
     let agent = Arc::new(Agent {
         turns,
+        modes: script.get("modes").cloned(),
         prompts: AtomicUsize::new(0),
         cancelled: AtomicBool::new(false),
         log_path: env::var_os("APZ_ACP_FAKE_LOG").map(PathBuf::from),
@@ -87,6 +91,7 @@ fn die(message: &str) -> ! {
 
 struct Agent {
     turns: Vec<Value>,
+    modes: Option<Value>,
     prompts: AtomicUsize,
     cancelled: AtomicBool,
     log_path: Option<PathBuf>,
@@ -103,8 +108,15 @@ impl Agent {
                 "authMethods": [],
             }))
         } else if method == names.session_new {
-            Ok(json!({"sessionId": SESSION_ID}))
-        } else if method == names.session_load {
+            Ok(match &self.modes {
+                Some(modes) => json!({"sessionId": SESSION_ID, "modes": modes}),
+                None => json!({"sessionId": SESSION_ID}),
+            })
+        } else if method == names.session_load
+            || method == names.session_resume
+            || method == names.session_set_mode
+            || method == names.session_set_config_option
+        {
             Ok(json!({}))
         } else if method == names.session_prompt {
             self.prompt(peer)
