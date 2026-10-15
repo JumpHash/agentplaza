@@ -24,6 +24,11 @@ use serde_json::json;
 use crate::apid::{Apid, EgressAnswer, TOKEN_HEADER};
 use crate::sys;
 
+/// The TLS intercept for an allowed CONNECT whose decision says `intercept`. Declared here, by path,
+/// so the CONNECT path owns it; its module docs say how it works.
+#[path = "egress_tls.rs"]
+mod egress_tls;
+
 /// The vsock port the guest's proxy traffic arrives on.
 pub const EGRESS_PORT: u32 = 5001;
 /// The request head (request line and headers) is capped at this many bytes.
@@ -257,6 +262,10 @@ pub struct Audit {
     host: String,
     port: u16,
     allowed: bool,
+    /// The TLS was terminated and credentials were injected (`injected` counts the requests).
+    /// Never a header value.
+    intercepted: bool,
+    injected: u64,
     up: u64,
     down: u64,
 }
@@ -265,8 +274,8 @@ impl Audit {
     fn report(&self, cid: u32, elapsed: Duration, apid: &Apid) {
         let ms = elapsed.as_millis() as u64;
         println!(
-            "vsockd: egress cid={cid} host={} port={} allowed={} bytes_up={} bytes_down={} ms={ms}",
-            self.host, self.port, self.allowed, self.up, self.down
+            "vsockd: egress cid={cid} host={} port={} allowed={} intercepted={} injected={} bytes_up={} bytes_down={} ms={ms}",
+            self.host, self.port, self.allowed, self.intercepted, self.injected, self.up, self.down
         );
         if apid.enabled() {
             let record = json!({
@@ -274,6 +283,8 @@ impl Audit {
                 "host": self.host,
                 "port": self.port,
                 "allowed": self.allowed,
+                "intercepted": self.intercepted,
+                "injected": self.injected,
                 "bytes_up": self.up,
                 "bytes_down": self.down,
                 "ms": ms,
@@ -368,6 +379,31 @@ fn proxy(
     }
     let addrs = checked_addrs(policy, &host, port)?;
     audit.allowed = true;
+
+    // A CONNECT apid wants intercepted: the guest is answered, then its TLS is terminated and each
+    // request is injected (see `egress_tls`). A failure after the answer cannot be an HTTP answer,
+    // so the connection is closed and the reason logged.
+    if let (true, Head::Connect { .. }) = (answer.intercept, &parsed) {
+        guest
+            .write_all(ESTABLISHED)
+            .map_err(|_| Stop::Unreachable)?;
+        audit.intercepted = true;
+        let target = egress_tls::Target {
+            cid,
+            host: &host,
+            port,
+            addrs: &addrs,
+        };
+        let mut tally = egress_tls::Tally::default();
+        let result = egress_tls::intercept(guest, &target, apid, &mut tally);
+        audit.up = tally.up;
+        audit.down = tally.down;
+        audit.injected = tally.injected;
+        if let Err(reason) = result {
+            println!("vsockd: egress intercept cid={cid} host={host} port={port} closed: {reason}");
+        }
+        return Ok(());
+    }
 
     let mut upstream = None;
     for addr in &addrs {
@@ -857,6 +893,7 @@ fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer
         EgressAnswer {
             allow: false,
             reason: "refused: apid could not decide".to_string(),
+            intercept: false,
         }
     });
     let now = Instant::now();

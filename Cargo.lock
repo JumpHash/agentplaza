@@ -8197,8 +8197,11 @@ dependencies = [
  "apz-proto",
  "apz-uds",
  "libc",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
+ "webpki-roots",
  "windows-sys 0.61.2",
 ]
 

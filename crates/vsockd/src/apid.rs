@@ -24,12 +24,33 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const GONE_TIMEOUT: Duration = Duration::from_secs(2);
 /// An egress check is made before a connection is dialled, so it is kept short.
 const EGRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+/// A leaf certificate is fetched once per host and kept, so this is rarely waited on.
+const EGRESS_CERT_TIMEOUT: Duration = Duration::from_secs(5);
+/// An injection is asked per intercepted request, and the request waits for it.
+const EGRESS_INJECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// apid's decision on one egress connection: allowed, or refused with the reason the guest is told.
+/// `intercept` says a credential rule could match this agent and host, so the proxy must terminate
+/// the guest's TLS and ask per request (see `egress_tls`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressAnswer {
     pub allow: bool,
     pub reason: String,
+    pub intercept: bool,
+}
+
+/// The leaf certificate and key apid signed for one host. Holds a private key, so it has no `Debug`
+/// and nothing logs it.
+pub struct EgressLeaf {
+    pub cert_pem: String,
+    pub key_pem: String,
+}
+
+/// The header apid says to add to one intercepted request. The value is a secret: no `Debug`, and
+/// nothing logs it.
+pub struct Injection {
+    pub header: String,
+    pub value: String,
 }
 
 /// Where apid's internal surface is, and the file that holds its token.
@@ -121,7 +142,51 @@ impl Apid {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("refused")
             .to_string();
-        Ok(EgressAnswer { allow, reason })
+        // Absent means no interception: the tunnel stays opaque, as before rules existed.
+        let intercept = reply
+            .get("intercept")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(EgressAnswer {
+            allow,
+            reason,
+            intercept,
+        })
+    }
+
+    /// The leaf certificate apid signs for `host` as the agent at `cid` (`POST /internal/egress/cert`).
+    /// apid answers 403 when the agent may not be intercepted for that host.
+    pub fn egress_cert(&self, cid: u32, host: &str) -> Result<EgressLeaf, String> {
+        let body = json!({ "cid": cid, "host": host }).to_string();
+        let reply = self.post("/internal/egress/cert", &body, EGRESS_CERT_TIMEOUT)?;
+        let text = |key: &str| {
+            reply
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("apid's egress certificate names no {key}"))
+        };
+        Ok(EgressLeaf {
+            cert_pem: text("cert_pem")?,
+            key_pem: text("key_pem")?,
+        })
+    }
+
+    /// The header to add to one request of the agent at `cid` to `host:port` (`method`, origin-form
+    /// `path` without its query): `Ok(None)` when no rule matches. The path is what the rules match.
+    pub fn egress_inject(
+        &self,
+        cid: u32,
+        host: &str,
+        port: u16,
+        method: &str,
+        path: &str,
+    ) -> Result<Option<Injection>, String> {
+        let body =
+            json!({ "cid": cid, "host": host, "port": port, "method": method, "path": path })
+                .to_string();
+        let reply = self.post("/internal/egress/inject", &body, EGRESS_INJECT_TIMEOUT)?;
+        injection_of(&reply)
     }
 
     /// A plain TCP connection to apid's internal surface, for a relay that
@@ -163,6 +228,34 @@ impl Apid {
         }
         Ok(token.to_string())
     }
+}
+
+/// The injection in apid's answer (`{header, value, rule}`), or `None` for the `{}` of no rule. The
+/// header must be a plain token and the value free of line breaks, so a bad answer cannot split the
+/// guest's request. Errors never repeat the value.
+fn injection_of(reply: &serde_json::Value) -> Result<Option<Injection>, String> {
+    let Some(header) = reply.get("header").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let value = reply
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("apid's injection names no value")?;
+    let plain_header = !header.is_empty()
+        && header
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    if !plain_header
+        || value
+            .bytes()
+            .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+    {
+        return Err("apid's injection is not a header".to_string());
+    }
+    Ok(Some(Injection {
+        header: header.to_string(),
+        value: value.to_string(),
+    }))
 }
 
 /// The port of `http://127.0.0.1:PORT` (a trailing `/` is allowed).
@@ -226,5 +319,27 @@ mod tests {
             "the paths are fixed"
         );
         assert!(!Apid::off().enabled() && Apid::off().token().is_err());
+    }
+
+    #[test]
+    fn an_injection_answer_is_a_plain_header_or_nothing() {
+        let rule = json!({ "header": "x-api-key", "value": "sk-test", "rule": "r1" });
+        let injection = injection_of(&rule).unwrap().expect("a header");
+        assert_eq!(
+            (injection.header.as_str(), injection.value.as_str()),
+            ("x-api-key", "sk-test")
+        );
+        assert!(
+            injection_of(&json!({})).unwrap().is_none(),
+            "no rule, no header"
+        );
+        for bad in [
+            json!({ "header": "x:y", "value": "v" }),
+            json!({ "header": "", "value": "v" }),
+            json!({ "header": "x-a", "value": "v\r\nX-Evil: 1" }),
+            json!({ "header": "x-a" }),
+        ] {
+            assert!(injection_of(&bad).is_err(), "{bad} must be refused");
+        }
     }
 }
