@@ -12,6 +12,7 @@ The workflows live in `.github/workflows`. Workflows run on main only, never on 
 | `guest.yml` | from `release.yml` | Builds the agents' guest kernel and initramfs per architecture |
 | `raspberry-pi.yml` | from `release.yml` | Packages the Raspberry Pi `.deb` and tarball |
 | `relay.yml` | from `release.yml` | Builds the MCP relay container |
+| `console.yml` | from `release.yml` | Builds and tests the web console (`apps/web/dist`, not committed) once per commit; the package jobs restore it from the cache |
 | `migrations.yml` | every push to main | Checks that applied database migrations are not edited (`scripts/check-migrations.sh`) |
 | `trainer.yml` | pushes to main that touch `trainer/`, or by hand | Runs the trainer's tests (`pytest`) |
 | `release.yml` | every push to main, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), runs the platform workflows, and publishes the GitHub Release with its changelog and deliverables |

@@ -254,8 +254,8 @@ scripts/mk-guest.sh x86_64          # or aarch64
 `cargo build` without `-p` skips the desktop app (`default-members` excludes it). When noded runs from a source tree,
 point it at the guest files with `--kernel target/guest/x86_64/vmlinux --initrd target/guest/x86_64/initrd.gz`.
 
-The web console needs no build step to run: its compiled files are committed in `apps/web/dist`, and the hub serves
-them. Node.js is needed only when you change the console:
+The web console is built, not committed: build it once before the hub serves it from `apps/web/dist` (Node.js and
+`cargo`):
 
 ```sh
 cd apps/web && npm ci && npm run build
