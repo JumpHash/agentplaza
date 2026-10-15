@@ -1,5 +1,5 @@
-//! The model gateway for coding engines inside agents' VMs. Claude Code, Codex and
-//! OpenCode point their base URLs at `plaza.gateway`; the hub relays each request to
+//! The model gateway for coding engines inside agents' VMs. Claude Code, Codex, OpenCode and
+//! Gemini CLI point their base URLs at `plaza.gateway`; the hub relays each request to
 //! `/internal/v1/agents/{cid}/gateway/...`. apid holds the real provider keys, applies
 //! the owner's model policy, streams the answer back and meters what it can.
 //!
@@ -151,6 +151,26 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 authorized(app, req, p.get("cid"), |cid| {
                     list_models(app, cid, "opencode")
                 })
+            },
+        )
+        .post(
+            "/internal/v1/agents/{cid}/gateway/gemini/v1beta/models/{call}",
+            |app, req, p| {
+                authorized(app, req, p.get("cid"), |cid| {
+                    let (model, method) = gemini_call(p.get("call")).ok_or_else(|| {
+                        Response::error(
+                            404,
+                            "the gateway relays generateContent, streamGenerateContent and countTokens",
+                        )
+                    })?;
+                    relay_gemini(app, req, cid, model, method)
+                })
+            },
+        )
+        .get(
+            "/internal/v1/agents/{cid}/gateway/gemini/v1beta/models",
+            |app, req, p| {
+                authorized(app, req, p.get("cid"), |cid| list_gemini_models(app, cid))
             },
         )
 }
@@ -365,6 +385,62 @@ fn defer_usage(cid: u64, model: String, metered: Metered) {
         .push((cid, model, metered));
 }
 
+/// The usage of one Gemini `usageMetadata` object. Gemini's prompt count includes the cached part
+/// (reported apart as `cachedContentTokenCount`), and its thinking tokens are billed as output.
+/// Gemini reports no cost, so the price table estimates it.
+fn gemini_metered(usage: &Value) -> Option<Metered> {
+    let prompt = count(usage, "/promptTokenCount");
+    let candidates = count(usage, "/candidatesTokenCount");
+    if prompt.is_none() && candidates.is_none() {
+        return None;
+    }
+    let cached = count(usage, "/cachedContentTokenCount").unwrap_or(0);
+    Some(Metered {
+        tokens: Tokens {
+            input: prompt.unwrap_or(0).saturating_sub(cached),
+            output: candidates.unwrap_or(0) + count(usage, "/thoughtsTokenCount").unwrap_or(0),
+            cache_read: cached,
+            cache_write: 0,
+        },
+        cost_usd: None,
+    })
+}
+
+/// The usage of a Gemini response: a JSON object, or the array of chunks a stream sent without
+/// `alt=sse`. Each `usageMetadata` counts the call so far, so the last one wins.
+fn tokens_in_gemini(body: &Value) -> Option<Metered> {
+    match body {
+        Value::Array(chunks) => chunks
+            .iter()
+            .rev()
+            .find_map(|chunk| chunk.get("usageMetadata").and_then(gemini_metered)),
+        other => other.get("usageMetadata").and_then(gemini_metered),
+    }
+}
+
+/// The usage of a Gemini stream from its SSE text: the last event that carries `usageMetadata`.
+fn tokens_in_gemini_sse(text: &str) -> Option<Metered> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+        .filter_map(|event| event.get("usageMetadata").and_then(gemini_metered))
+        .last()
+}
+
+/// The model and method a Gemini path names (`{model}:{method}` after `/v1beta/models/`), or `None`
+/// for a method the gateway does not relay. The model must be a plain id: it goes into the upstream path.
+fn gemini_call(call: &str) -> Option<(&str, &'static str)> {
+    let (model, method) = call.rsplit_once(':')?;
+    let method = ["generateContent", "streamGenerateContent", "countTokens"]
+        .into_iter()
+        .find(|known| *known == method)?;
+    let plain = !model.is_empty()
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
+    plain.then_some((model, method))
+}
+
 /// Records the usage of streams that have ended.
 pub fn drain_usage(app: &App) {
     let done: Vec<_> = std::mem::take(
@@ -565,6 +641,9 @@ fn upstream_post(
     let mut call = client.post(url.as_str());
     if provider == "anthropic" {
         call = call.header("x-api-key", key);
+    } else if provider == "gemini" {
+        // Gemini takes its key in its own header, not as a bearer token.
+        call = call.header("x-goog-api-key", key);
     } else {
         call = call.header("authorization", format!("Bearer {key}"));
         // The Messages path of OpenRouter and OpenCode takes the key as `x-api-key` too.
@@ -647,7 +726,7 @@ pub fn opencode_endpoint_error(path: &str, model: &str) -> Option<String> {
         }
         if model.starts_with("gemini-") || model.starts_with("jev-") {
             return Some(format!(
-                "`{model}` is not relayed by the gateway: gemini- and jev- models are not served here"
+                "OpenCode does not serve gemini- or jev- models on chat completions; `{model}` is not relayed here"
             ));
         }
     }
@@ -729,6 +808,82 @@ fn relay(
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in(&value) {
+            record_usage(app, cid, &model, tokens);
+        }
+    }
+    Ok(Response::json(status, &value))
+}
+
+/// Relays one Gemini API call for agent `cid`: `model` and `method` as the path names them. The agent's
+/// key is the placeholder the CLI holds; the provider's key goes upstream in Gemini's own header, and the
+/// agent's key never does. The model is metered bare, as [`relay`] meters the other providers.
+fn relay_gemini(
+    app: &App,
+    req: &Request,
+    cid: u64,
+    model: &str,
+    method: &str,
+) -> Result<Response, Response> {
+    if app.control.paused() {
+        return Err(Response::error(
+            409,
+            "the plaza is held (STOP ALL); waiting for the owner to resume",
+        ));
+    }
+    let agent = app
+        .agents
+        .get(cid)
+        .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    let body: Value = req
+        .json()
+        .map_err(|e| Response::error(400, &e.to_string()))?;
+    // The model is in the path, so the policy checks a body that names only it.
+    let mut named = json!({ "model": model });
+    if let Some(list) = held_to(app, &agent) {
+        let own = crate::agents::model_of(app, &agent);
+        check_model(&mut named, "gemini", &own, &list)
+            .map_err(|message| Response::json(403, &json!({ "error": message })))?;
+    }
+    let model = named
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Some(message) = payment_refusal(app, cid) {
+        return Err(Response::json(402, &json!({ "error": message })));
+    }
+    let (base, key) = provider_upstream(app, "gemini", cid)?;
+    // Only `alt=sse` is forwarded: the query string is otherwise the client's to leave out.
+    let event_stream = method == "streamGenerateContent" && req.query_param("alt") == Some("sse");
+    let mut path = format!("/v1beta/models/{model}:{method}");
+    if event_stream {
+        path.push_str("?alt=sse");
+    }
+    let resp = upstream_post("gemini", &base, &key, &path, &[], &body)
+        .map_err(|e| Response::error(502, &e))?;
+
+    let status = resp.status().as_u16();
+    let ok = (200..300).contains(&status);
+    let mut reader = resp.into_body().into_reader();
+    if event_stream && ok {
+        return Ok(Response::sse(move |sse| {
+            // The stream's last event carries the usage; it is metered once the stream ends.
+            let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
+            if let Some(tokens) = tokens_in_gemini_sse(&tail) {
+                defer_usage(cid, model, tokens);
+            }
+            Ok(())
+        }));
+    }
+
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|e| Response::error(502, &format!("upstream: {e}")))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
+    if ok {
+        if let Some(tokens) = tokens_in_gemini(&value) {
             record_usage(app, cid, &model, tokens);
         }
     }
@@ -1102,8 +1257,8 @@ fn text_frame(id: &Value, event: &str, data: &str) -> Message {
     text(sse_frame(id, event, data))
 }
 
-/// The models agent `cid` may use on `provider`, in that provider's list shape.
-fn list_models(app: &App, cid: u64, provider: &str) -> Result<Response, Response> {
+/// The model ids agent `cid` may use on `provider`: its tier's list, without the provider's prefix.
+fn allowed_ids(app: &App, cid: u64, provider: &str) -> Result<Vec<String>, Response> {
     let agent = app
         .agents
         .get(cid)
@@ -1114,11 +1269,18 @@ fn list_models(app: &App, cid: u64, provider: &str) -> Result<Response, Response
         Tier::Worker => policy.worker,
     };
     let prefix = format!("{provider}/");
-    let ids: Vec<&str> = list
+    Ok(list
         .iter()
         .map(|m| canonical(m))
         .filter_map(|m| m.strip_prefix(prefix.as_str()))
-        .collect();
+        .map(str::to_string)
+        .collect())
+}
+
+/// The models agent `cid` may use on `provider`, in that provider's list shape.
+fn list_models(app: &App, cid: u64, provider: &str) -> Result<Response, Response> {
+    let owned = allowed_ids(app, cid, provider)?;
+    let ids: Vec<&str> = owned.iter().map(String::as_str).collect();
     let body = if provider == "anthropic" {
         let data: Vec<Value> = ids
             .iter()
@@ -1133,6 +1295,15 @@ fn list_models(app: &App, cid: u64, provider: &str) -> Result<Response, Response
         json!({ "object": "list", "data": data })
     };
     Ok(Response::json(200, &body))
+}
+
+/// The Gemini models agent `cid` may use, in Gemini's list shape (`models/{id}` names).
+fn list_gemini_models(app: &App, cid: u64) -> Result<Response, Response> {
+    let models: Vec<Value> = allowed_ids(app, cid, "gemini")?
+        .iter()
+        .map(|id| json!({ "name": format!("models/{id}") }))
+        .collect();
+    Ok(Response::json(200, &json!({ "models": models })))
 }
 
 #[cfg(test)]
@@ -1186,6 +1357,86 @@ mod tests {
             Err((503, "vault sealed".to_string()))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gemini_path_names_a_plain_model_and_one_of_three_methods() {
+        assert_eq!(
+            gemini_call("gemini-3-flash:generateContent"),
+            Some(("gemini-3-flash", "generateContent"))
+        );
+        assert_eq!(
+            gemini_call("gemini-2.5-pro:streamGenerateContent"),
+            Some(("gemini-2.5-pro", "streamGenerateContent"))
+        );
+        assert_eq!(
+            gemini_call("gemini-2.5-flash:countTokens"),
+            Some(("gemini-2.5-flash", "countTokens"))
+        );
+        // Other methods, a missing method, and any model that could reach another upstream path.
+        assert_eq!(gemini_call("gemini-2.5-flash:embedContent"), None);
+        assert_eq!(gemini_call("gemini-2.5-flash"), None);
+        assert_eq!(gemini_call(":generateContent"), None);
+        assert_eq!(gemini_call("models/x:generateContent"), None);
+        assert_eq!(gemini_call("../x:generateContent"), None);
+    }
+
+    #[test]
+    fn gemini_usage_is_read_from_usage_metadata_with_cached_and_thinking_tokens() {
+        let body = json!({
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 1200,
+                "cachedContentTokenCount": 200,
+                "candidatesTokenCount": 50,
+                "thoughtsTokenCount": 30,
+            }
+        });
+        let metered = tokens_in_gemini(&body).expect("usage");
+        assert_eq!(metered.tokens.input, 1000);
+        assert_eq!(metered.tokens.output, 80);
+        assert_eq!(metered.tokens.cache_read, 200);
+        assert_eq!(metered.cost_usd, None);
+        assert!(tokens_in_gemini(&json!({ "candidates": [] })).is_none());
+    }
+
+    #[test]
+    fn a_gemini_stream_is_metered_by_its_last_usage_metadata() {
+        let sse = r#"data: {"candidates":[{"content":{"parts":[{"text":"Hi"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":1}}
+
+data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":7}}
+
+"#;
+        let metered = tokens_in_gemini_sse(sse).expect("usage");
+        assert_eq!((metered.tokens.input, metered.tokens.output), (10, 7));
+        assert!(tokens_in_gemini_sse("data: {\"candidates\":[]}\n\n").is_none());
+    }
+
+    #[test]
+    fn a_buffered_gemini_stream_takes_its_usage_from_the_last_chunk_that_has_it() {
+        let chunks = json!([
+            { "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 2 } },
+            { "candidates": [] }
+        ]);
+        let metered = tokens_in_gemini(&chunks).expect("usage");
+        assert_eq!((metered.tokens.input, metered.tokens.output), (5, 2));
+    }
+
+    #[test]
+    fn gemini_calls_are_held_to_the_gemini_list() {
+        let list = vec!["gemini/gemini-3-flash".to_string()];
+        assert_eq!(
+            decide_model("gemini", "gemini-3-flash", "anthropic/claude-x", &list),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide_model("gemini", "gemini-3-pro", "gemini/gemini-3-flash", &list),
+            Decision::Rewrite("gemini-3-flash".to_string())
+        );
+        assert!(matches!(
+            decide_model("gemini", "gemini-3-pro", "anthropic/claude-x", &list),
+            Decision::Refuse(_)
+        ));
     }
 
     /// A booted vault in `dir` with one Anthropic key entry in `scope`.
