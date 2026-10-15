@@ -157,6 +157,46 @@ mod tests {
         );
     }
 
+    /// A reader polling with short timeouts (as noded's relay and vsockd's pumps do) gets the peer's bytes and then its
+    /// half-close as EOF, wherever the half-close falls against a timeout. On Windows, `SO_RCVTIMEO` could lose that
+    /// EOF when it arrived as a timed-out receive was cancelled, and the relay then never passed the end on.
+    #[test]
+    fn a_polling_reader_sees_the_peers_half_close_as_eof() {
+        use std::time::{Duration, Instant};
+        for round in 0..40u64 {
+            let (mut reader, mut writer) = UnixStream::pair().unwrap();
+            reader
+                .set_read_timeout(Some(Duration::from_millis(5)))
+                .unwrap();
+            let polling = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut got = Vec::new();
+                let mut buf = [0u8; 16];
+                loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "round {round}: no EOF after {got:?}"
+                    );
+                    match reader.read(&mut buf) {
+                        Ok(0) => return got,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                        Err(err)
+                            if matches!(
+                                err.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(err) => panic!("round {round}: {err}"),
+                    }
+                }
+            });
+            std::thread::sleep(Duration::from_millis(round % 7));
+            writer.write_all(b"hello").unwrap();
+            std::thread::sleep(Duration::from_millis(round % 5));
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
+            assert_eq!(polling.join().expect("the polling reader"), b"hello");
+        }
+    }
+
     /// A `shutdown` through one handle ends a read blocked on another, as EOF
     /// (how vsockd's egress relays stop each other).
     #[test]
