@@ -47,6 +47,8 @@
 )]
 
 #[cfg(target_os = "linux")]
+mod acp;
+#[cfg(target_os = "linux")]
 mod agent;
 mod bash;
 #[cfg(target_os = "linux")]

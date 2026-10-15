@@ -62,6 +62,7 @@ dependencies = [
 name = "agent-harness"
 version = "0.1.0"
 dependencies = [
+ "apz-acp",
  "apz-ide",
  "apz-ops",
  "apz-proto",
