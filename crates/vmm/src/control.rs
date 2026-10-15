@@ -315,8 +315,7 @@ fn save_vm_state(vm: &KvmVm, _vcpus: &[VcpuState]) -> Result<VmState, KvmVmError
 /// The VM's own state. aarch64 saves its GIC per vCPU, keyed by the vCPUs' MPIDRs.
 #[cfg(target_arch = "aarch64")]
 fn save_vm_state(vm: &KvmVm, vcpus: &[VcpuState]) -> Result<VmState, KvmVmError> {
-    let mpidrs: Vec<u64> = vcpus.iter().map(|vcpu| vcpu.mpidr).collect();
-    vm.save_state(&mpidrs)
+    vm.save_state(&crate::arch::aarch64::vcpu::kvm_mpidrs(vcpus))
 }
 
 #[cfg(test)]

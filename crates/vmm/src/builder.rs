@@ -1631,7 +1631,7 @@ mod aarch64 {
                 .restore_state(state)
                 .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
         }
-        let mpidrs: Vec<u64> = snapshot.vcpus.iter().map(|state| state.mpidr).collect();
+        let mpidrs = crate::arch::aarch64::vcpu::kvm_mpidrs(&snapshot.vcpus);
         vm.restore_state(&mpidrs, &snapshot.vm)
             .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
         if let Some(vsock) = &devices.vsock {

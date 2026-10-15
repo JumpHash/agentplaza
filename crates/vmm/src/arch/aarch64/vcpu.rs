@@ -308,6 +308,22 @@ pub struct VcpuState {
     pub kvi: kvm_vcpu_init,
 }
 
+/// The vCPUs' MPIDRs as the vGIC's per-vCPU register attributes name them
+/// (`KVM_DEV_ARM_VGIC_GRP_REDIST_REGS`, `KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS`): the affinity fields
+/// Aff3..Aff0 packed into 32 bits (`KVM_DEV_ARM_VGIC_V3_MPIDR_MASK`) and shifted into the top half.
+/// MPIDR_EL1 keeps Aff3 in bits 32..40 and Aff2..Aff0 in bits 0..24, so the raw register would be
+/// masked to zero: every vCPU would read and write vCPU 0's redistributor, and a restored VM's
+/// other vCPUs would get no timer interrupt. Firecracker's `construct_kvm_mpidrs`.
+pub fn kvm_mpidrs(states: &[VcpuState]) -> Vec<u64> {
+    states
+        .iter()
+        .map(|state| {
+            let affinity = ((state.mpidr & 0xFF_0000_0000) >> 8) | (state.mpidr & 0xFF_FFFF);
+            affinity << 32
+        })
+        .collect()
+}
+
 impl KvmVcpu {
     /// Saves this vCPU's state. The vCPU must be paused (out of `KVM_RUN`).
     pub fn save_state(&self) -> Result<VcpuState, KvmVcpuError> {
@@ -434,6 +450,28 @@ fn reg_value_str(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vGIC names a vCPU by its affinity fields in the top 32 bits: Aff0..Aff2 from MPIDR bits
+    /// 0..24, Aff3 from bits 32..40; the RES1 bit 31 and the MT/U bits are dropped.
+    #[test]
+    fn kvm_mpidrs_pack_the_affinity_fields_into_the_top_half() {
+        let state = |mpidr: u64| VcpuState {
+            mp_state: kvm_mp_state::default(),
+            regs: Vec::new(),
+            mpidr,
+            kvi: kvm_vcpu_init::default(),
+        };
+        let states = [
+            state(0x8000_0000),
+            state(0x8000_0001),
+            state(0x8000_0102),
+            state(0x0000_0003_8001_0203),
+        ];
+        assert_eq!(
+            kvm_mpidrs(&states),
+            vec![0, 1 << 32, 0x102 << 32, 0x0301_0203 << 32]
+        );
+    }
 
     /// A register whose data is not as wide as its ID encodes is refused, since KVM would read
     /// past the buffer it is given.

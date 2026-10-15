@@ -15,7 +15,10 @@
 //! snapshot under another CID must go on heartbeating and answer the console; a second, diff
 //! snapshot of the restored VM must restore too.
 
-#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -52,9 +55,19 @@ fn workspace_image(dir: &Path) -> PathBuf {
     image
 }
 
+/// How much longer than on hardware the guest may take: `APZ_VMM_TEST_SLOWDOWN` (default 1), for a
+/// host that is itself emulated (an arm64 host under qemu's TCG runs the guest many times slower).
+fn slowdown() -> u32 {
+    env::var("APZ_VMM_TEST_SLOWDOWN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(1)
+}
+
 /// Waits until the VM's serial capture, from byte `from` on, contains `needle`.
 fn wait_for(vm: &VmHandle, from: usize, needle: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + timeout * slowdown();
     while Instant::now() < deadline {
         let serial = vm.serial();
         if serial.get(from..).is_some_and(|tail| tail.contains(needle)) {
