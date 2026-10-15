@@ -610,6 +610,7 @@ pub(crate) fn role_on_hello(spawned_role: Option<String>) -> String {
 /// A session said hello: register the agent (idle) and return its profile. `caps` are the
 /// harness's features from its hello; an older harness sends none.
 pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Option<AgentProfile> {
+    crate::sleep::woke(cid);
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);

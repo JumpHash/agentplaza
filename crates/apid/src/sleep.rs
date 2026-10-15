@@ -33,6 +33,13 @@ const SWEEP_EVERY: Duration = Duration::from_secs(30);
 /// How long a route that needs the agent waits for it to wake before it answers 503.
 const WAKE_WAIT: Duration = Duration::from_secs(15);
 
+/// When one wake started and how far it got: the request, the worker picking it up, and noded's answer.
+struct WakeTimes {
+    requested: std::time::Instant,
+    dequeued: Option<std::time::Instant>,
+    node_done: Option<std::time::Instant>,
+}
+
 /// What the sleep state holds: when each agent last did something, and which agents are being put to
 /// sleep or woken right now.
 struct Book {
@@ -42,13 +49,28 @@ struct Book {
     sleeping: BTreeSet<u64>,
     /// Agents whose wake is in flight (one noded call at a time per agent).
     waking: BTreeSet<u64>,
+    /// Wakes in flight, timed until the agent's hello ends them (see [`woke`]).
+    wake_started: BTreeMap<u64, WakeTimes>,
 }
 
 static BOOK: Mutex<Book> = Mutex::new(Book {
     touched: BTreeMap::new(),
     sleeping: BTreeSet::new(),
     waking: BTreeSet::new(),
+    wake_started: BTreeMap::new(),
 });
+
+/// Drops `cid`'s wake timing and its in-flight count, when the wake gave up before the agent's hello.
+fn forget_wake(cid: u64) {
+    let removed = book().wake_started.remove(&cid).is_some();
+    if removed {
+        crate::metrics::WAKES_IN_FLIGHT.add(-1);
+    }
+}
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
 
 /// The hub, for the wake threads: a wake is spawned from a `&App` (the scheduler's dispatch), which
 /// cannot be moved into a thread. Set once by [`spawn_sweeper`], which runs at start.
@@ -100,14 +122,27 @@ pub fn wake(app: &App, cid: u64) {
         if book.sleeping.contains(&cid) || !book.waking.insert(cid) {
             return;
         }
+        book.wake_started.insert(
+            cid,
+            WakeTimes {
+                requested: std::time::Instant::now(),
+                dequeued: None,
+                node_done: None,
+            },
+        );
     }
+    crate::metrics::WAKES.inc();
+    crate::metrics::WAKES_IN_FLIGHT.add(1);
     if HUB.get().and_then(Weak::upgrade).is_none() {
         book().waking.remove(&cid);
+        forget_wake(cid);
         eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
         return;
     }
     if wake_queue().try_send(cid).is_err() {
         book().waking.remove(&cid);
+        forget_wake(cid);
+        crate::metrics::WAKES_REFUSED.inc();
         eprintln!("apid: cannot wake agent {cid}: {WAKE_QUEUE} wakes are already queued");
     }
 }
@@ -152,19 +187,66 @@ fn wake_queue() -> &'static SyncSender<u64> {
 
 /// Runs one wake on a worker: noded restores `cid`'s VM, then the wake is recorded.
 fn run_wake(cid: u64) {
+    let dequeued = std::time::Instant::now();
+    if let Some(times) = book().wake_started.get_mut(&cid) {
+        times.dequeued = Some(dequeued);
+    }
     let Some(hub) = HUB.get().and_then(Weak::upgrade) else {
         book().waking.remove(&cid);
+        forget_wake(cid);
         eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
         return;
     };
+    let started = std::time::Instant::now();
     let result = noded_post(&hub, cid, "wake");
+    crate::metrics::WAKE_NODE.observe(started.elapsed());
     book().waking.remove(&cid);
     match result {
         Ok(_) => {
+            if let Some(times) = book().wake_started.get_mut(&cid) {
+                times.node_done = Some(std::time::Instant::now());
+            }
             hub.transcripts.record(&hub.bus, cid, 0, "wake", json!({}));
         }
-        Err(err) => eprintln!("apid: could not wake agent {cid}: {err}"),
+        Err(err) => {
+            forget_wake(cid);
+            eprintln!("apid: could not wake agent {cid}: {err}");
+        }
     }
+}
+
+/// The agent's harness said hello: its wake, if one was in flight, is over. Times it end to end and
+/// writes one `timing op=wake` line on stderr.
+pub fn woke(cid: u64) {
+    let Some(times) = book().wake_started.remove(&cid) else {
+        return;
+    };
+    crate::metrics::WAKES_IN_FLIGHT.add(-1);
+    let now = std::time::Instant::now();
+    let total = now.duration_since(times.requested);
+    crate::metrics::WAKE.observe(total);
+    let queue = times
+        .dequeued
+        .map_or(Duration::ZERO, |d| d.duration_since(times.requested));
+    let node = match (times.dequeued, times.node_done) {
+        (Some(d), Some(n)) => n.duration_since(d),
+        _ => Duration::ZERO,
+    };
+    let reconnect = match times.node_done {
+        Some(n) => {
+            let elapsed = now.duration_since(n);
+            crate::metrics::WAKE_RECONNECT.observe(elapsed);
+            elapsed
+        }
+        None => Duration::ZERO,
+    };
+    eprintln!(
+        "timing op=wake id={cid} total_ms={:.1} queue_ms={:.1} node_ms={:.1} reconnect_ms={:.1}",
+        ms(total),
+        ms(queue),
+        ms(node),
+        ms(reconnect)
+    );
 }
 
 /// Wakes `cid` if it is asleep and waits until it is connected again, up to `timeout`. Ok when the
@@ -331,10 +413,15 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
         app.work.dispatch_idle(app);
         return Err(Response::error(409, &format!("agent {cid} has work")));
     }
+    let started = std::time::Instant::now();
     let result = noded_post(app, cid, "sleep");
+    let elapsed = started.elapsed();
     book().sleeping.remove(&cid);
     match result {
         Ok(body) => {
+            crate::metrics::SLEEPS.inc();
+            crate::metrics::SLEEP.observe(elapsed);
+            eprintln!("timing op=sleep id={cid} total_ms={:.1}", ms(elapsed));
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -445,6 +532,24 @@ mod tests {
             stop_all: false,
             placed: true,
         }
+    }
+
+    #[test]
+    fn a_wake_is_timed_until_the_agent_says_hello() {
+        let cid = 9_000_001;
+        let now = std::time::Instant::now();
+        book().wake_started.insert(
+            cid,
+            WakeTimes {
+                requested: now,
+                dequeued: Some(now),
+                node_done: Some(now),
+            },
+        );
+        let before = crate::metrics::WAKE.count();
+        woke(cid);
+        assert!(!book().wake_started.contains_key(&cid));
+        assert_eq!(crate::metrics::WAKE.count(), before + 1);
     }
 
     #[test]
