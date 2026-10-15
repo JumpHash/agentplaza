@@ -277,7 +277,7 @@ impl Tool for TellAgent {
     }
 
     fn output_schema(&self) -> Value {
-        json!({ "type": "object", "description": "the node's answer to the note" })
+        json!({ "type": "object", "description": "the queued work: {work, cid}" })
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
