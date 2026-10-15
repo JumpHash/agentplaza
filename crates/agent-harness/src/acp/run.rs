@@ -34,6 +34,8 @@ const STORED_SUMMARY_BYTES: usize = 2 * 1024;
 const MAX_SESSIONS: usize = 50;
 /// The most changed-file summary lines a summary lists.
 const FILE_LINES: usize = 40;
+/// The most a setup command (Cline's `auth`) may take, in seconds.
+const SETUP_TIMEOUT_S: u64 = 60;
 const SESSIONS_FILE: &str = "engine-sessions.json";
 const CACHE_DIR: &str = "engine-cache";
 
@@ -43,6 +45,11 @@ pub fn run(workspace: &Workspace, input: &Value, link: &dyn EngineLink) -> Resul
     let entry = request.entry;
     install(workspace, entry)?;
     let (env, model) = engines::acp_launch(workspace, entry.id, request.model.as_deref())?;
+    // Before the turn and on every call: the setup rewrites the engine's saved settings, so a new
+    // model takes effect.
+    if let Some(args) = engines::setup_args(entry.id, request.model.as_deref())? {
+        setup(workspace, entry, env.clone(), &args)?;
+    }
     let options = Options {
         entry,
         workspace,
@@ -149,12 +156,41 @@ struct Session {
 /// The program the ACP session starts: `/usr/bin/env` with the engine's pairs, the installed
 /// binary and its arguments. The model is not among them: every engine takes it as a session config
 /// option.
-fn argv(entry: &Entry, mut env: Vec<String>) -> Vec<String> {
+fn argv(entry: &Entry, env: Vec<String>) -> Vec<String> {
+    let args: Vec<String> = entry.args.iter().map(|arg| arg.to_string()).collect();
+    command(entry, env, &args)
+}
+
+/// `/usr/bin/env` with the engine's pairs, the installed binary and `args`: the one command line
+/// both the session and the setup run.
+fn command(entry: &Entry, mut env: Vec<String>, args: &[String]) -> Vec<String> {
     let mut argv = vec![engines::ENV_PROGRAM.to_string()];
     argv.append(&mut env);
     argv.push(npm_binary(entry).display().to_string());
-    argv.extend(entry.args.iter().map(|arg| arg.to_string()));
+    argv.extend(args.iter().cloned());
     argv
+}
+
+/// Runs an engine's setup command (see [`engines::setup_args`]) as the agent, in the workspace and
+/// with the engine's environment. A failure says which engine and carries the command's tail.
+fn setup(
+    workspace: &Workspace,
+    entry: &Entry,
+    env: Vec<String>,
+    args: &[String],
+) -> Result<(), String> {
+    let mut argv = command(entry, env, args);
+    let program = argv.remove(0);
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    bash::execute(
+        workspace.dir(),
+        &program,
+        &refs,
+        SETUP_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map(|_| ())
+    .map_err(|err| format!("cannot set up {}: {}", entry.id, engines::tail(&err)))
 }
 
 /// The engine's binary in the npm prefix that installs go to.
@@ -445,6 +481,30 @@ mod tests {
         fn cancelled(&self) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn cline_setup_runs_its_binary_with_the_engine_environment_before_the_args() {
+        let workspace = scratch("cline-setup");
+        let entry = catalog::entry("cline").expect("cline");
+        let (env, _) = engines::acp_launch(&workspace, "cline", None).expect("cline");
+        let args = engines::setup_args("cline", Some("openai/gpt-x"))
+            .expect("a setup")
+            .expect("Cline has one");
+        let argv = command(entry, env.clone(), &args);
+        assert_eq!(argv[0], engines::ENV_PROGRAM);
+        assert_eq!(argv[1..=env.len()], env[..]);
+        assert!(argv[env.len() + 1].ends_with("/bin/cline"));
+        assert_eq!(argv[env.len() + 2..], args[..]);
+        assert_eq!(argv[env.len() + 2], "auth");
+    }
+
+    #[test]
+    fn cline_refuses_a_call_without_a_model_before_it_starts() {
+        let workspace = scratch("cline-no-model");
+        let err = engines::setup_args("cline", None).expect_err("refused");
+        assert_eq!(err, "invalid input: Cline needs \"model\"");
+        assert!(engines::acp_launch(&workspace, "cline", None).is_ok());
     }
 
     fn scratch(name: &str) -> Workspace {

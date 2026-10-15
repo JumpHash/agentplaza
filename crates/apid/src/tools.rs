@@ -218,6 +218,7 @@ pub(crate) fn code_engine_model(
     input: &Value,
 ) -> Result<Option<String>, String> {
     let Some(model) = model_input(input)? else {
+        model_required(input)?;
         return Ok(None);
     };
     engine_provider(input, model)?;
@@ -225,10 +226,21 @@ pub(crate) fn code_engine_model(
     Ok(Some(model.to_string()))
 }
 
+/// Refuses a call without a model where its engine needs one: Cline is configured with its model
+/// before the call, so it has no default to fall back on.
+fn model_required(input: &Value) -> Result<(), String> {
+    match input.get("engine").and_then(Value::as_str) {
+        Some("cline") => Err("invalid input: Cline needs \"model\"".to_string()),
+        _ => Ok(()),
+    }
+}
+
 /// The provider an engine's model must name. Gemini CLI reaches only the gateway's Gemini route, so
 /// `gemini/<model>` is the one shape it takes. Qwen Code speaks chat completions and takes the three
-/// routes that serve them. Kilo Code takes what OpenCode takes, so it has no rule here (the route
-/// checks the provider's shape). The other engines keep their own routes.
+/// routes that serve them. Cline takes the four routes its setup maps (Anthropic-shaped
+/// `anthropic/` and `openrouter/`, and `openai/` and `opencode/`). Kilo Code takes what OpenCode
+/// takes, so it has no rule here (the route checks the provider's shape). The other engines keep
+/// their own routes.
 fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
     let provider = model.split_once('/').map(|(provider, _)| provider);
     match input.get("engine").and_then(Value::as_str) {
@@ -238,6 +250,16 @@ fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
         Some("qwen") if !matches!(provider, Some("openai" | "openrouter" | "opencode")) => {
             Err(format!(
                 "invalid input: \"model\" is {model:?}; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
+            ))
+        }
+        Some("cline")
+            if !matches!(
+                provider,
+                Some("anthropic" | "openrouter" | "openai" | "opencode")
+            ) =>
+        {
+            Err(format!(
+                "invalid input: \"model\" is {model:?}; Cline takes anthropic/..., openrouter/..., openai/... or opencode/... models"
             ))
         }
         _ => Ok(()),
@@ -415,9 +437,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1344,6 +1366,28 @@ mod tests {
     }
 
     #[test]
+    fn code_engine_cline_takes_the_four_routes_and_needs_a_model() {
+        let ask = |model: &str| json!({"engine": "cline", "prompt": "p", "model": model});
+        for model in [
+            "anthropic/claude-x",
+            "openrouter/anthropic/claude-x",
+            "openai/gpt-x",
+            "opencode/deepseek-v4-pro",
+        ] {
+            assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+        }
+        let err = engine_provider(&ask("gemini/x"), "gemini/x").unwrap_err();
+        assert!(err.contains("Cline takes anthropic/..."), "{err}");
+
+        let no_model = json!({"engine": "cline", "prompt": "p"});
+        assert_eq!(
+            model_required(&no_model).unwrap_err(),
+            "invalid input: Cline needs \"model\""
+        );
+        assert!(model_required(&json!({"engine": "claude", "prompt": "p"})).is_ok());
+    }
+
+    #[test]
     fn code_engine_kilo_has_no_provider_rule_of_its_own() {
         let input = json!({"engine": "kilo", "prompt": "p", "model": "anthropic/x"});
         assert!(engine_provider(&input, "anthropic/x").is_ok());
@@ -1364,10 +1408,13 @@ mod tests {
         assert!(spec.description.contains("gemini = Gemini CLI"));
         assert!(spec.description.contains("qwen = Qwen Code"));
         assert!(spec.description.contains("kilo = Kilo Code"));
+        assert!(spec.description.contains("cline = Cline"));
         let props = &spec.input_schema["properties"];
         assert_eq!(
             props["engine"]["enum"],
-            json!(["claude", "codex", "opencode", "gemini", "qwen", "kilo"])
+            json!([
+                "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline"
+            ])
         );
         assert_eq!(props["session"]["type"], "string");
         assert_eq!(props["mode"]["type"], "string");

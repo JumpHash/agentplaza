@@ -383,11 +383,13 @@ sectionEnd('hub mcp tests: ok');
 
 // The coding engines: switching one on or off keeps the canonical order, and the last engine stays on.
 {
-  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini', 'qwen', 'kilo'], 'engines: the six engines in order');
+  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini', 'qwen', 'kilo', 'cline'], 'engines: the seven engines in order');
+  eq(ENGINES.find((e) => e.value === 'cline')?.label, 'Cline', 'engines: Cline is labelled');
+  eq(toggleEngine(['claude'], 'cline', true), ['claude', 'cline'], 'engines: Cline switches on last');
   eq(ENGINES.find((e) => e.value === 'gemini')?.label, 'Gemini CLI', 'engines: Gemini CLI is labelled');
   eq(ENGINES.find((e) => e.value === 'qwen')?.label, 'Qwen Code', 'engines: Qwen Code is labelled');
   eq(ENGINES.find((e) => e.value === 'kilo')?.label, 'Kilo Code', 'engines: Kilo Code is labelled');
-  eq(DEFAULT_ENGINES, ['claude', 'codex', 'opencode'], 'engines: Gemini CLI, Qwen Code and Kilo Code are off by default');
+  eq(DEFAULT_ENGINES, ['claude', 'codex', 'opencode'], 'engines: Gemini CLI, Qwen Code, Kilo Code and Cline are off by default');
   eq(toggleEngine(['claude'], 'gemini', true), ['claude', 'gemini'], 'engines: Gemini CLI switches on after the others');
   eq(toggleEngine(['claude'], 'kilo', true), ['claude', 'kilo'], 'engines: Kilo Code switches on last');
   eq(toggleEngine(['claude', 'codex'], 'codex', false), ['claude'], 'engines: switching one off leaves the rest');

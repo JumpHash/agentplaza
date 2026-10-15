@@ -288,10 +288,12 @@ pub struct Settings {
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
-const ENGINE_IDS: [&str; 6] = ["claude", "codex", "opencode", "gemini", "qwen", "kilo"];
+const ENGINE_IDS: [&str; 7] = [
+    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline",
+];
 
-/// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI, Qwen Code and
-/// Kilo Code are off until the owner turns them on.
+/// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI, Qwen Code,
+/// Kilo Code and Cline are off until the owner turns them on.
 const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The name an engine's switch shows.
@@ -303,6 +305,7 @@ fn engine_label(id: &'static str) -> &'static str {
         "gemini" => "Gemini CLI",
         "qwen" => "Qwen Code",
         "kilo" => "Kilo Code",
+        "cline" => "Cline",
         other => other,
     }
 }
@@ -2710,6 +2713,7 @@ mod tests {
             ("gemini", "Gemini CLI"),
             ("qwen", "Qwen Code"),
             ("kilo", "Kilo Code"),
+            ("cline", "Cline"),
         ] {
             assert_eq!(
                 engines_after(&engines(&["claude"]), id, true),

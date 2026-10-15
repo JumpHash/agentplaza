@@ -8,6 +8,7 @@ export const ENGINES: { value: string; label: string }[] = [
   { value: 'gemini', label: 'Gemini CLI' },
   { value: 'qwen', label: 'Qwen Code' },
   { value: 'kilo', label: 'Kilo Code' },
+  { value: 'cline', label: 'Cline' },
 ];
 
 /** The engines enabled out of the box: Gemini CLI, Qwen Code and Kilo Code are listed but off until the owner turns them on (apid's settings). */

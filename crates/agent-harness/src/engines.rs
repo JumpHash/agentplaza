@@ -73,8 +73,8 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            // Gemini CLI, Qwen Code and Kilo Code have no headless run: their ACP adapters are the
-            // only way they run.
+            // Gemini CLI, Qwen Code, Kilo Code and Cline have no headless run: their ACP adapters are
+            // the only way they run.
             "gemini" => Err(
                 "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
                     .to_string(),
@@ -85,6 +85,10 @@ impl Engine {
             ),
             "kilo" => Err(
                 "invalid input: \"engine\" is kilo: Kilo Code runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "cline" => Err(
+                "invalid input: \"engine\" is cline: Cline runs over ACP only; switch engines_mode to acp"
                     .to_string(),
             ),
             _ => Err(format!(
@@ -313,6 +317,8 @@ pub(crate) fn acp_launch(
         // Gemini CLI and Qwen Code read their model from the environment, so the session is given none.
         "gemini" => return Ok((engine_env(home, &gemini_route(model)?), None)),
         "qwen" => return Ok((engine_env(home, &qwen_route(model)?), None)),
+        // Cline's model is in its saved settings (see `setup_args`), so the session is given none.
+        "cline" => return Ok((engine_env(home, &Route::default()), None)),
         "opencode" => {
             let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
@@ -326,6 +332,52 @@ pub(crate) fn acp_launch(
     let engine = Engine::parse(engine_id)?;
     let route = model_route(engine, model)?;
     Ok((engine_env(home, &route), route.model.clone()))
+}
+
+/// The command that writes an engine's saved configuration before each call, for the engines that
+/// are configured by a command rather than by environment: Cline keeps its provider, base URL, key
+/// and model under HOME, so `cline auth` runs first and rewrites them. A call with a new model
+/// therefore takes effect. Cline's provider is the plaza model's provider: `anthropic`, and
+/// `openrouter` (both Anthropic-shaped on the gateway, as Claude Code reaches them), or `openai` and
+/// `opencode` (chat completions), with `opencode/claude-` on the Anthropic route as OpenCode's own
+/// blocks are. The key is the gateway's placeholder, as for every engine.
+pub(crate) fn setup_args(
+    engine_id: &str,
+    model: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    if engine_id != "cline" {
+        return Ok(None);
+    }
+    let Some(model) = model else {
+        return Err("invalid input: Cline needs \"model\"".to_string());
+    };
+    let (provider, rest) = split_model(model)?;
+    let (cline_provider, base_url) = match provider {
+        "anthropic" | "openrouter" => ("anthropic", format!("{GATEWAY}/{provider}")),
+        "opencode" if rest.starts_with("claude-") => ("anthropic", format!("{GATEWAY}/opencode")),
+        "openai" | "opencode" => ("openai", format!("{GATEWAY}/{provider}/v1")),
+        _ => {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Cline takes anthropic/..., openrouter/..., openai/... or opencode/... models"
+            ));
+        }
+    };
+    Ok(Some(
+        [
+            "auth",
+            "-p",
+            cline_provider,
+            "-k",
+            "plaza",
+            "-b",
+            base_url.as_str(),
+            "-m",
+            rest,
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect(),
+    ))
 }
 
 /// The route for Qwen Code, which runs over ACP only and speaks chat completions: the placeholder
@@ -1006,7 +1058,11 @@ mod tests {
     #[test]
     fn qwen_and_kilo_are_acp_only_under_the_headless_engines() {
         let workspace = scratch("acp-only-headless");
-        for (engine, name) in [("qwen", "Qwen Code"), ("kilo", "Kilo Code")] {
+        for (engine, name) in [
+            ("qwen", "Qwen Code"),
+            ("kilo", "Kilo Code"),
+            ("cline", "Cline"),
+        ] {
             let input = json!({"engine": engine, "prompt": "p"});
             let err = Job::parse(&workspace, &input).err().expect("refused");
             assert!(
@@ -1016,6 +1072,61 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn cline_launch_is_given_no_model_and_its_home() {
+        let workspace = scratch("cline-launch");
+        let (env, model) = acp_launch(&workspace, "cline", None).expect("cline");
+        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(model, None);
+        let (_, model) =
+            acp_launch(&workspace, "cline", Some("anthropic/claude-x")).expect("a model");
+        assert_eq!(model, None);
+    }
+
+    #[test]
+    fn cline_setup_follows_the_model_provider_to_its_gateway_route() {
+        let setup = |model: &str| {
+            setup_args("cline", Some(model))
+                .expect("a setup")
+                .expect("Cline has one")
+                .join(" ")
+        };
+        assert_eq!(
+            setup("anthropic/claude-x"),
+            "auth -p anthropic -k plaza -b http://plaza.gateway/anthropic -m claude-x"
+        );
+        assert_eq!(
+            setup("openrouter/anthropic/claude-x"),
+            "auth -p anthropic -k plaza -b http://plaza.gateway/openrouter -m anthropic/claude-x"
+        );
+        assert_eq!(
+            setup("opencode/claude-x"),
+            "auth -p anthropic -k plaza -b http://plaza.gateway/opencode -m claude-x"
+        );
+        assert_eq!(
+            setup("openai/gpt-x"),
+            "auth -p openai -k plaza -b http://plaza.gateway/openai/v1 -m gpt-x"
+        );
+        assert_eq!(
+            setup("opencode/deepseek-v4-pro"),
+            "auth -p openai -k plaza -b http://plaza.gateway/opencode/v1 -m deepseek-v4-pro"
+        );
+    }
+
+    #[test]
+    fn cline_setup_needs_a_model_and_a_provider_it_can_reach() {
+        assert_eq!(
+            setup_args("cline", None).expect_err("refused"),
+            "invalid input: Cline needs \"model\""
+        );
+        let err = setup_args("cline", Some("gemini/x")).expect_err("refused");
+        assert!(err.contains("Cline takes anthropic/..."), "{err}");
+        assert_eq!(
+            setup_args("qwen", Some("openai/x")).expect("no setup"),
+            None
+        );
     }
 
     #[test]

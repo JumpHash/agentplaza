@@ -32,9 +32,9 @@ pub struct Entry {
     pub refused_modes: &'static [&'static str],
 }
 
-/// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code
-/// and Kilo Code are ACP only (`gemini --acp`, `qwen --acp`, `kilo acp`): they have no headless run,
-/// and the owner enables them in `engines_enabled`.
+/// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code,
+/// Kilo Code and Cline are ACP only (`gemini --acp`, `qwen --acp`, `kilo acp`, `cline --acp`): they
+/// have no headless run, and the owner enables them in `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -97,6 +97,18 @@ pub const ENGINES: &[Entry] = &[
         integrity: "sha512-3dNWXhFhMxLkTXt8lMJ8fH1ZK8Ws7D6jEipMCmxejkaMNp9hd7FPnjCGUjK6zknnSJZokkA4+guFxoJQ+njYYw==",
         binary: "kilo",
         args: &["acp"],
+        model: ModelVia::ConfigOption,
+        refused_modes: &[],
+    },
+    Entry {
+        id: "cline",
+        package: "cline",
+        version: "3.0.67",
+        integrity: "sha512-4aMoB/jww42vDt/9iXqdMbmA7QiVNP5dPLDrz4mt4veKp9Y2DL041RL67PCrEH0TeWsLuAo4nIjEiwsa93TL3A==",
+        binary: "cline",
+        args: &["--acp"],
+        // Cline takes its model from its saved provider settings, which `engines::setup_args` writes
+        // before each call, so the session is given none.
         model: ModelVia::ConfigOption,
         refused_modes: &[],
     },
@@ -163,6 +175,20 @@ mod tests {
         assert_eq!(
             qwen.integrity,
             "sha512-NE+Ps9juMJS7DaHEVENIAJWCrzTiO/2bNq2TidmxmFc0ZbSMVKCfX3tlu2RY+CoP8xHFfUcy3MfQDQNszBJpJQ=="
+        );
+    }
+
+    #[test]
+    fn cline_is_the_cli_in_acp_mode_with_no_mode_refused() {
+        let cline = entry("cline").expect("cline");
+        assert_eq!(cline.package, "cline");
+        assert_eq!(cline.version, "3.0.67");
+        assert_eq!(cline.binary, "cline");
+        assert_eq!(cline.args, ["--acp"]);
+        assert!(cline.refused_modes.is_empty());
+        assert_eq!(
+            cline.integrity,
+            "sha512-4aMoB/jww42vDt/9iXqdMbmA7QiVNP5dPLDrz4mt4veKp9Y2DL041RL67PCrEH0TeWsLuAo4nIjEiwsa93TL3A=="
         );
     }
 
