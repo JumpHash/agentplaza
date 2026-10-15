@@ -81,9 +81,11 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
-/// How often a keepalive session wakes to take the relay's commands.
+/// How often a keepalive session wakes to take the relay's commands and apid's
+/// settled answers. Both wait at most one slice, so it is kept short: a hub
+/// command or a settled answer otherwise adds up to a full slice of latency.
 #[cfg(any(target_os = "linux", windows))]
-const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(250);
+const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(20);
 #[cfg(any(target_os = "linux", windows))]
 const MAX_TOOL_CALLS: u64 = 1024;
 

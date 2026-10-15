@@ -3,6 +3,7 @@
 import { badge, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { badgeOf, languageFor, stationBadgeOf, stationCrumb } from '../ide/model';
+import type { Entry } from '../ide/types';
 import { centreViewsFor, hasDiff, hasTerminal, rightViewsFor } from '../ide/layout';
 import { rowStatus } from '../ide/view';
 import { VIEWS, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
@@ -196,6 +197,9 @@ export function renderRight(c: IdeCtx): void {
   }
 }
 
+/** The key of what each node (the tree, the checkpoints panel) last painted; see renderFiles. */
+const painted = new WeakMap<Node, string>();
+
 /** The Files tab's tree, its changed-only filter, its search and the checkpoints. */
 export function renderFiles(c: IdeCtx): void {
   const { dom } = c;
@@ -207,29 +211,84 @@ export function renderFiles(c: IdeCtx): void {
   dom.changedBox.checked = filter;
   const all = [...c.entries.values()];
   const keep = filter ? new Set(c.ide.changedFilter(all, { files: c.files }).map((e) => e.path)) : null;
-  const rows = treeRows({
-    ide: c.ide,
-    all,
-    loaded: c.loadedDirs,
-    expanded: c.expanded,
-    changed: new Set(c.files.map((f) => f.path)),
-    keep,
-    active: c.state?.active ?? null,
-    hasWorkspace: c.ws !== null,
-    onOpen: (path) => {
-      closeDrawerIfNarrow(c);
-      void openTab(c, path);
-    },
-    onToggle: (path) => void toggleDir(c, path),
-  });
-  if (c.ws && rows.length === 0) rows.push(h('p.ide-note', null, filter ? 'No changed files in the loaded tree.' : 'The workspace is empty.'));
-  replace(dom.treeList, rows);
-  if (!c.ws) replace(dom.treeList, noWorkspaceNote(c));
+  const changed = new Set(c.files.map((f) => f.path));
+  const active = c.state?.active ?? null;
+  // The rows are rebuilt only when their inputs changed: the screen repaints several times a second while events arrive,
+  // and a rebuild between a press and its release on a row would drop the click. The workspace-less note is cheap and redone.
+  if (!c.ws) {
+    painted.delete(dom.treeList);
+    replace(dom.treeList, noWorkspaceNote(c));
+  } else {
+    const key = treeKey({ workspace: c.ws.id, all, loaded: c.loadedDirs, expanded: c.expanded, changed, keep, active, hasWorkspace: true });
+    if (painted.get(dom.treeList) !== key) {
+      painted.set(dom.treeList, key);
+      const rows = treeRows({
+        ide: c.ide,
+        all,
+        loaded: c.loadedDirs,
+        expanded: c.expanded,
+        changed,
+        keep,
+        active,
+        hasWorkspace: true,
+        onOpen: (path) => {
+          closeDrawerIfNarrow(c);
+          void openTab(c, path);
+        },
+        onToggle: (path) => void toggleDir(c, path),
+      });
+      if (rows.length === 0) rows.push(h('p.ide-note', null, filter ? 'No changed files in the loaded tree.' : 'The workspace is empty.'));
+      replace(dom.treeList, rows);
+    }
+  }
   if (!dom.searchHost.hidden) {
     const s = searchUi(c);
     replace(dom.searchHost, s ? s.el : h('p.ide-note', null, 'Search runs in a workspace.'));
   }
-  replace(dom.cpHost, c.ws && diff ? checkpointsPanel({ checkpoints: c.checkpoints, canRestore: true, onRestore: (cp) => confirmRestore(c, cp) }) : null);
+  const cpKey = checkpointsKey(c.ws?.id ?? null, diff, c.checkpoints);
+  if (painted.get(dom.cpHost) !== cpKey) {
+    painted.set(dom.cpHost, cpKey);
+    replace(dom.cpHost, c.ws && diff ? checkpointsPanel({ checkpoints: c.checkpoints, canRestore: true, onRestore: (cp) => confirmRestore(c, cp) }) : null);
+  }
+}
+
+/** What the tree paints, as a key: the inputs that decide its rows. Equal keys mean equal rows. The changed-only filter is on
+    when `keep` is not null, and its kept paths are then the key's. */
+export interface TreeKeyInput {
+  workspace: string | null;
+  all: Entry[];
+  loaded: Set<string>;
+  expanded: Set<string>;
+  changed: Set<string>;
+  keep: Set<string> | null;
+  active: string | null;
+  hasWorkspace: boolean;
+}
+
+export function treeKey(p: TreeKeyInput): string {
+  return JSON.stringify([
+    p.workspace,
+    p.hasWorkspace,
+    [...p.loaded].sort(),
+    [...p.expanded].sort(),
+    p.all.map((e) => [e.path, e.kind, e.binary]),
+    [...p.changed].sort(),
+    p.keep === null ? null : [...p.keep].sort(),
+    p.active,
+  ]);
+}
+
+/** What the checkpoints panel paints, as a key: the workspace, and each checkpoint's number, label and file count. A
+    workspace without a diff shows no panel (the key is then null). */
+export function checkpointsKey(
+  workspace: string | null,
+  diff: boolean,
+  checkpoints: { n: number; label: string; files: number }[],
+  now: number = Date.now(),
+): string {
+  // The minute is in the key so the rows' relative times ("2m ago") still move on.
+  const minute = Math.floor(now / 60_000);
+  return JSON.stringify(workspace === null || !diff ? null : [workspace, minute, checkpoints.map((cp) => [cp.n, cp.label, cp.files])]);
 }
 
 /** The bottom drawer: its tab strip, and the run panel while the Run tab shows. */

@@ -500,7 +500,8 @@ pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
 }
 
 /// The workspace list: the agent workspaces (every agent that has a VM, in CID order), then the station ones,
-/// then the repo ones.
+/// then the repo ones. Each row is an `apz_ide::Workspace` (`id`, `kind`, `owner` as text, `ref`, `root`,
+/// `writable`), which the desktop parses strictly, plus the console's `name` and `status`.
 pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpace]) -> Value {
     let mut rows: Vec<&Agent> = agents
         .iter()
@@ -513,7 +514,9 @@ pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpac
             json!({
                 "id": workspace_of(agent.cid),
                 "kind": "agent",
-                "owner": agent.cid,
+                "owner": agent.cid.to_string(),
+                "ref": null,
+                "root": "/workspace",
                 "name": agent.name,
                 "writable": true,
                 "status": status_name(agent.status),
@@ -525,6 +528,8 @@ pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpac
             "id": format!("station:{}", station.id),
             "kind": "station",
             "owner": station.id,
+            "ref": null,
+            "root": "",
             "name": station.name,
             "os": station.os,
             "writable": true,
@@ -536,6 +541,8 @@ pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpac
             "id": format!("repo:{}@{}", repo.name, repo.default_branch),
             "kind": "repo",
             "owner": repo.name,
+            "ref": repo.default_branch,
+            "root": repo.name,
             "name": repo.name,
             "writable": true,
             "status": "idle",
@@ -2072,7 +2079,12 @@ mod tests {
         assert_eq!(rows[0]["status"], json!("idle"));
         assert_eq!(rows[1]["id"], json!("agent:42"));
         assert_eq!(rows[1]["status"], json!("working"));
-        assert_eq!(rows[1]["owner"], json!(42));
+        assert_eq!(rows[1]["owner"], json!("42"));
+        // Every row parses as the IDE's own workspace type, which the desktop reads strictly.
+        for row in rows.iter() {
+            serde_json::from_value::<apz_ide::Workspace>(row.clone())
+                .expect("an apz_ide::Workspace");
+        }
         assert_eq!(rows[1]["kind"], json!("agent"));
         assert_eq!(rows[1]["writable"], json!(true));
         assert_eq!(
@@ -2081,6 +2093,8 @@ mod tests {
                 "id": "repo:p1-plaza@main",
                 "kind": "repo",
                 "owner": "p1-plaza",
+                "ref": "main",
+                "root": "p1-plaza",
                 "name": "p1-plaza",
                 "writable": true,
                 "status": "idle",
