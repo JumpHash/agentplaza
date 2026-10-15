@@ -24,7 +24,6 @@
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread;
 use std::time::Duration;
@@ -47,13 +46,12 @@ use crate::devices::virtio::vsock::mmio_device::VsockMmioDevice;
 use crate::devices::virtio::vsock::unix::VsockUnixBackend;
 use crate::devices::virtio::vsock::{Vsock, VsockError};
 use crate::hvf::gic::{self, GICV3_DIST_BASE, GICV3_DIST_SIZE, GICV3_REDIST_BASE};
+use crate::hvf::relay::IrqSource;
 use crate::hvf::snapshot_state::HvfSnapshot;
 use crate::hvf::sys::HvfError;
 use crate::hvf::uart::{ConsoleLine, SerialDevice};
 use crate::hvf::vcpu::{BootParams, ExitSignal, MAX_VCPUS, SharedVm, run_vcpu};
 use crate::hvf::vm::HvfVm;
-use crate::pal::AsRawFd;
-use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 use crate::pal::eventfd::{EFD_NONBLOCK, EventFd};
 use crate::spawner::{MAX_DATA_VOLUMES, SpawnError, VmRuntime, VmSpec};
 use crate::vstate::memory::{
@@ -478,10 +476,6 @@ struct Transports {
     volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
 }
 
-/// One device interrupt: the event the transport signals, and the SPI the
-/// relay raises for it.
-type IrqSource = (EventFd, u32);
-
 /// Builds the virtio devices of `spec` (rebuilt from `restored`'s state for a
 /// restore), puts their transports on the VM's MMIO bus, and starts the vsock
 /// event thread and the interrupt relay.
@@ -593,7 +587,9 @@ fn attach_devices(
         let vm = Arc::downgrade(shared);
         let relay = thread::Builder::new()
             .name(format!("apz_vm{}_irq", runtime.id))
-            .spawn(move || relay_interrupts(&vm, &exit_evt, &exit_signalled, irq_sources))
+            .spawn(move || {
+                crate::hvf::relay::run(&WeakVm(vm), &exit_evt, &exit_signalled, irq_sources)
+            })
             .map_err(BootError::Thread)?;
         runtime.add_thread(relay);
     }
@@ -661,78 +657,27 @@ fn attach_block(
     attach(shared, transport, base)
 }
 
-/// Polls every device interrupt event and raises its SPI, until the VM stops.
-fn relay_interrupts(
-    vm: &Weak<SharedVm>,
-    exit_evt: &EventFd,
-    exit_signalled: &AtomicBool,
-    sources: Vec<IrqSource>,
-) {
-    const EXIT: u64 = u64::MAX;
-    let stop_vm = || {
-        if let Some(vm) = vm.upgrade() {
+/// The relay's view of the VM: held weakly, upgraded only to raise an SPI or stop it.
+struct WeakVm(Weak<SharedVm>);
+
+impl crate::hvf::relay::SpiSink for WeakVm {
+    fn raise(&self, spi: u32) -> bool {
+        match self.0.upgrade() {
+            Some(vm) => {
+                vm.raise_spi(spi);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.0.strong_count() > 0
+    }
+
+    fn stop(&self) {
+        if let Some(vm) = self.0.upgrade() {
             vm.stop();
-        }
-    };
-    let epoll = match Epoll::new() {
-        Ok(epoll) => epoll,
-        Err(err) => {
-            eprintln!("hvf: cannot create the interrupt relay's poll set: {err}; stopping the VM");
-            stop_vm();
-            return;
-        }
-    };
-    let mut registered = true;
-    for (index, (evt, _)) in sources.iter().enumerate() {
-        registered &= epoll
-            .ctl(
-                ControlOperation::Add,
-                evt.as_raw_fd(),
-                EpollEvent::new(EventSet::IN, index as u64),
-            )
-            .is_ok();
-    }
-    registered &= epoll
-        .ctl(
-            ControlOperation::Add,
-            exit_evt.as_raw_fd(),
-            EpollEvent::new(EventSet::IN, EXIT),
-        )
-        .is_ok();
-    if !registered {
-        eprintln!("hvf: cannot register the device interrupts; stopping the VM");
-        stop_vm();
-        return;
-    }
-    let mut events = vec![EpollEvent::default(); sources.len() + 1];
-    while !exit_signalled.load(Ordering::SeqCst) {
-        let ready = match epoll.wait(200, &mut events) {
-            Ok(ready) => ready,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(err) => {
-                eprintln!("hvf: the interrupt relay failed: {err}; stopping the VM");
-                stop_vm();
-                return;
-            }
-        };
-        // A VM released without its exit signal (its last reference dropped):
-        // nothing is left to interrupt.
-        if ready == 0 && vm.strong_count() == 0 {
-            return;
-        }
-        for event in &events[..ready] {
-            let data = event.data();
-            if data == EXIT {
-                continue;
-            }
-            if let Some((evt, spi)) = sources.get(data as usize)
-                && evt.read().is_ok()
-            {
-                match vm.upgrade() {
-                    Some(vm) => vm.raise_spi(*spi),
-                    None => return,
-                }
-            }
         }
     }
 }

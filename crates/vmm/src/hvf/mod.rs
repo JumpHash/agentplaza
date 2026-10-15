@@ -60,6 +60,9 @@
 pub mod exit;
 pub mod gic;
 pub mod psci;
+// The interrupt relay needs only the event primitives, so it builds (and is tested) wherever they do.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod relay;
 pub mod snapshot_state;
 // The serial device is built on `vstate::bus`, which exists on Linux and macOS only.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
