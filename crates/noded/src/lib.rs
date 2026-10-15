@@ -21,7 +21,9 @@
 pub mod events;
 pub mod fleet;
 pub mod registry;
+pub mod snapshots;
 pub mod stats;
+pub mod templates;
 pub mod train;
 pub mod workstation;
 pub mod ws_qemu;

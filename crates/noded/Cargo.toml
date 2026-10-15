@@ -12,6 +12,8 @@ apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }
 serde.workspace = true
 serde_json.workspace = true
+# Warm templates are keyed by the SHA-256 of their images and shape (`templates`).
+sha2.workspace = true
 vmm = { path = "../vmm" }
 
 [lib]
