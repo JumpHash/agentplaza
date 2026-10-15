@@ -1442,6 +1442,7 @@ pub(super) fn chat_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        ChatMsg::Decide(..) | ChatMsg::Decided(_) => ide_chat::decision_task(st, msg, ctx),
         ChatMsg::Scrolled(_) | ChatMsg::JumpToNewest => {
             ide_chat::update_scroll(st, msg).unwrap_or_else(Task::none)
         }
