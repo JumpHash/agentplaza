@@ -740,7 +740,8 @@ pub struct NetworkBody {
     allow_out: Option<Vec<String>>,
     #[serde(rename = "denyOut")]
     deny_out: Option<Vec<String>>,
-    /// Only in an update: the internet access, as the create's `allow_internet_access`.
+    /// The internet access. At create it overrides the top-level `allow_internet_access`; in an
+    /// update it is the sandbox's internet access (an omitted one is on).
     allow_internet_access: Option<bool>,
     rules: Option<Value>,
     #[serde(rename = "egressProxy")]
@@ -813,7 +814,12 @@ impl Spec {
                 "volumeMounts are not served: the plaza's volumes are read-only and given by role",
             ));
         }
-        let (allow_out, deny_out) = body.network.unwrap_or_default().lists()?;
+        let network = body.network.unwrap_or_default();
+        let allow_internet = network
+            .allow_internet_access
+            .or(body.allow_internet_access)
+            .unwrap_or(true);
+        let (allow_out, deny_out) = network.lists()?;
         Ok(Spec {
             template,
             timeout_s: match body.timeout {
@@ -822,7 +828,7 @@ impl Spec {
             },
             auto_pause: body.auto_pause.unwrap_or(false),
             secure: body.secure.unwrap_or(true),
-            allow_internet: body.allow_internet_access.unwrap_or(true),
+            allow_internet,
             metadata: pairs(body.metadata.unwrap_or_default(), "metadata", 128, 1024)?,
             env_vars: pairs(body.env_vars.unwrap_or_default(), "envVars", 128, 4096)?,
             allow_out,
@@ -1069,6 +1075,14 @@ fn pick_snapshot(all: &[Sandbox], template: &str) -> Option<(Sandbox, Snapshot)>
     }
 }
 
+/// How many snapshots over the sandboxes `all` are named `name`.
+fn named_snapshots(all: &[Sandbox], name: &str) -> usize {
+    all.iter()
+        .flat_map(|s| s.snapshots.iter())
+        .filter(|snap| snap.name == name)
+        .count()
+}
+
 /// Starts a sandbox: a run on this node, the daemon's health, its environment and token. The record is
 /// kept only when the daemon answers; a failed start ends its run.
 fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
@@ -1083,6 +1097,7 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         Some((_, snapshot)) => snapshot_source(app, snapshot),
         None => snapshot_source(app, &spec.template),
     };
+    let named = named_snapshots(&sandboxes(app).list(), &spec.template);
     // A snapshot's id (or its unique name) as the template: the new sandbox is a fork of that
     // checkpoint, with the source's environment under the request's.
     let (run, cid) = match source {
@@ -1101,6 +1116,14 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
                 500,
                 "template_snapshot_missing",
                 format!("template {}: its build's snapshot is gone", spec.template),
+            ));
+        }
+        // Several snapshots share the name: refused, not booted as the base image.
+        None if named >= 2 => {
+            return Err(Refused::new(
+                409,
+                "sandbox_template_ambiguous",
+                format!("{} names {named} snapshots; use a snapshot id", spec.template),
             ));
         }
         None => new_run(app, SANDBOX_VCPUS, SANDBOX_MEMORY_MIB)?,
@@ -1676,6 +1699,9 @@ fn metrics(app: &App, id: &str) -> Result<Response, Refused> {
     Ok(Response::json(200, &list))
 }
 
+/// How long `metrics_many` keeps asking daemons, from the request's start.
+const METRICS_BUDGET: Duration = Duration::from_secs(15);
+
 /// `GET /e2b/sandboxes/metrics?sandbox_ids=a,b`: each running sandbox's sample, by id.
 fn metrics_many(app: &App, req: &Request) -> Result<Response, Refused> {
     let ids = req
@@ -1690,8 +1716,15 @@ fn metrics_many(app: &App, req: &Request) -> Result<Response, Refused> {
     if ids.len() > 100 {
         return Err(invalid("at most 100 sandbox_ids"));
     }
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<&str> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
+    let started = Instant::now();
     let mut out = serde_json::Map::new();
     for id in ids {
+        // Each daemon is asked in turn; past the budget the rest are left out of the answer.
+        if started.elapsed() >= METRICS_BUDGET {
+            break;
+        }
         let Ok(sandbox) = find(app, id) else { continue };
         if let Ok(Some(envd)) = daemon_json(&sandbox, "/metrics") {
             out.insert(id.to_string(), crate::e2b_obs::metric(&envd, rfc3339));
@@ -1759,22 +1792,38 @@ fn network(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Re
         s.allow_internet = allow_internet;
     })?;
     // vsockd keeps its egress decisions for a while; the sandbox's go now, so the rules apply to
-    // its next connection.
-    if let Err(why) = app
-        .hub
-        .post(&format!("/v1/egress/forget/{}", updated.cid), &json!({}))
-    {
-        eprintln!("apid: sandbox {id}: vsockd did not forget its egress decisions: {why}");
+    // its next connection. Up to three tries, 100 ms apart.
+    let forget = format!("/v1/egress/forget/{}", updated.cid);
+    let mut forgot = Err(String::new());
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        forgot = app.hub.post(&forget, &json!({})).map(|_| ());
+        if forgot.is_ok() {
+            break;
+        }
     }
+    let record = json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet});
+    let Err(why) = forgot else {
+        audit(app, &updated, "sandbox_network", "network", key, record);
+        return Ok(no_content());
+    };
     audit(
         app,
         &updated,
         "sandbox_network",
-        "network",
+        "network_pending",
         key,
-        json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet}),
+        json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet, "why": why.clone()}),
     );
-    Ok(no_content())
+    Err(Refused::new(
+        502,
+        "sandbox_rules_pending",
+        format!(
+            "the rules are saved, but vsockd kept its earlier decisions; they expire within 60 s ({why})"
+        ),
+    ))
 }
 
 /// The body of `POST /e2b/sandboxes/{id}/fork` (E2B's SandboxForkRequest).
@@ -2212,6 +2261,51 @@ mod tests {
             "a name two snapshots share names neither"
         );
         assert_eq!(found("base"), None, "a template that is no snapshot");
+    }
+
+    #[test]
+    fn a_name_two_snapshots_share_is_counted_for_the_refusal() {
+        let snap = |sandbox: &str, checkpoint: &str, name: &str| Snapshot {
+            id: format!("{sandbox}:{checkpoint}"),
+            name: name.into(),
+            checkpoint: checkpoint.into(),
+            taken_ms: 1,
+            memory: true,
+        };
+        let mut a = sample(true);
+        a.snapshots = vec![snap("sba", "cp-1-x", "both"), snap("sba", "cp-2-y", "solo")];
+        let mut b = sample(true);
+        b.id = "sbb".into();
+        b.snapshots = vec![snap("sbb", "cp-3-z", "both")];
+        let all = vec![a, b];
+        assert_eq!(named_snapshots(&all, "both"), 2);
+        assert_eq!(named_snapshots(&all, "solo"), 1);
+        assert_eq!(named_snapshots(&all, "base"), 0);
+        assert!(
+            pick_snapshot(&all, "both").is_none(),
+            "two of one name are no template"
+        );
+    }
+
+    #[test]
+    fn network_allow_internet_access_is_applied_at_create() {
+        let parse = |text: &str| serde_json::from_str::<NewSandbox>(text).unwrap();
+        let netted = Spec::from_body(parse(
+            r#"{"templateID":"base","allow_internet_access":true,"network":{"allow_internet_access":false}}"#,
+        ))
+        .unwrap();
+        assert!(
+            !netted.allow_internet,
+            "network.allow_internet_access overrides the top-level one"
+        );
+        let top = Spec::from_body(parse(
+            r#"{"templateID":"base","allow_internet_access":false,"network":{}}"#,
+        ))
+        .unwrap();
+        assert!(
+            !top.allow_internet,
+            "the top-level field stands when the network one is omitted"
+        );
     }
 
     #[test]
