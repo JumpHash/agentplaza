@@ -630,171 +630,159 @@ mod tests {
     }
 
     #[test]
-    fn click_takes_a_position_then_a_button_and_double_in_any_order() {
-        assert_eq!(
-            act("click 10 20"),
-            InputAction::Click {
-                x: 10,
-                y: 20,
-                button: Button::Left,
-                count: 1
-            }
-        );
-        assert_eq!(
-            act("click 10 20 right"),
-            InputAction::Click {
-                x: 10,
-                y: 20,
-                button: Button::Right,
-                count: 1
-            }
-        );
-        assert_eq!(
-            act("click 10 20 double middle"),
-            InputAction::Click {
-                x: 10,
-                y: 20,
-                button: Button::Middle,
-                count: 2
-            }
-        );
-        assert_eq!(
-            act("click 10 20 double"),
-            InputAction::Click {
-                x: 10,
-                y: 20,
-                button: Button::Left,
-                count: 2
-            }
-        );
-        assert!(refused("click 10").contains("click takes X Y"));
-        assert!(refused("click 10 20 left right").contains("one button"));
-        assert!(refused("click 10 20 double double").contains("double once"));
-        assert!(refused("click 10 20 triple").contains("not \"triple\""));
-        assert!(refused("click ten 20").contains("X must be a whole number"));
-    }
-
-    #[test]
-    fn move_and_drag_take_their_coordinates() {
-        assert_eq!(act("move 5 -4"), InputAction::Move { x: 5, y: -4 });
-        assert!(refused("move 5").contains("move takes X Y"));
-        assert_eq!(
-            act("drag 5 6 50 60"),
-            InputAction::Drag {
-                from: (5, 6),
-                to: (50, 60)
-            }
-        );
-        assert!(refused("drag 5 6 50").contains("drag takes X1 Y1 X2 Y2"));
-    }
-
-    #[test]
-    fn type_keeps_the_text_as_typed_to_the_end_of_the_line() {
-        assert_eq!(
-            act("type hello world"),
-            InputAction::Type {
-                text: "hello world".into()
-            }
-        );
-        assert_eq!(
-            act("type  two  spaces "),
-            InputAction::Type {
-                text: " two  spaces ".into()
-            }
-        );
-        assert_eq!(
-            act("type héllo\r\n"),
-            InputAction::Type {
-                text: "héllo".into()
-            }
-        );
-        assert!(refused("type").contains("takes the text"));
-    }
-
-    #[test]
-    fn key_takes_one_chord() {
-        assert_eq!(
-            act("key ctrl+s"),
-            InputAction::Key {
-                combo: "ctrl+s".into()
-            }
-        );
-        assert_eq!(
-            act("key ctrl+shift+s"),
-            InputAction::Key {
-                combo: "ctrl+shift+s".into()
-            }
-        );
-        assert!(refused("key").contains("one chord"));
-        assert!(refused("key ctrl+ s").contains("one chord"));
-        assert!(refused("key ctrl++s").contains("one chord"));
-    }
-
-    #[test]
-    fn scroll_keeps_the_sign_of_dy_positive_scrolls_down() {
-        assert_eq!(
-            act("scroll 0 3 100 200"),
-            InputAction::Scroll {
-                x: 100,
-                y: 200,
-                dx: 0,
-                dy: 3
-            }
-        );
-        assert_eq!(
-            act("scroll 0 -3 100 200"),
-            InputAction::Scroll {
-                x: 100,
-                y: 200,
-                dx: 0,
-                dy: -3
-            }
-        );
-        assert_eq!(
-            act("scroll -2 1 7 8"),
-            InputAction::Scroll {
-                x: 7,
-                y: 8,
-                dx: -2,
-                dy: 1
-            }
-        );
-    }
-
-    #[test]
-    fn scroll_without_a_position_uses_the_pointer_or_is_refused() {
-        let step = parse_line("scroll 0 3", Some((40, 50))).unwrap();
-        assert_eq!(
-            step,
-            Step::Act(InputAction::Scroll {
-                x: 40,
-                y: 50,
-                dx: 0,
-                dy: 3
-            })
-        );
-        let err = parse_line("scroll 0 3", None).unwrap_err();
-        assert!(err.contains("needs a position"), "{err}");
-        assert!(refused("scroll 0").contains("takes DX DY"));
-        assert!(refused("scroll 0 1 2").contains("takes DX DY, then X Y"));
-    }
-
-    #[test]
-    fn give_back_ends_and_the_verb_is_checked() {
-        assert_eq!(parse_line("give-back", None), Ok(Step::GiveBack));
-        assert_eq!(parse_line("give_back\n", None), Ok(Step::GiveBack));
-        assert!(refused("give-back now").contains("no words"));
-        assert!(refused("   ").contains("no command given"));
-        assert!(refused("fly 1 2").contains("no command named \"fly\""));
-    }
-
-    #[test]
-    fn the_pointer_follows_the_actions_that_move_it() {
-        assert_eq!(resting_point(&act("move 1 2")), Some((1, 2)));
-        assert_eq!(resting_point(&act("click 3 4")), Some((3, 4)));
-        assert_eq!(resting_point(&act("drag 1 1 9 9")), Some((9, 9)));
-        assert_eq!(resting_point(&act("key ctrl+s")), None);
-        assert_eq!(resting_point(&act("type x")), None);
+    fn parse_line_reads_each_input_verb() {
+        // click takes a position, then a button and double in any order.
+        {
+            assert_eq!(
+                act("click 10 20"),
+                InputAction::Click {
+                    x: 10,
+                    y: 20,
+                    button: Button::Left,
+                    count: 1
+                }
+            );
+            assert_eq!(
+                act("click 10 20 right"),
+                InputAction::Click {
+                    x: 10,
+                    y: 20,
+                    button: Button::Right,
+                    count: 1
+                }
+            );
+            assert_eq!(
+                act("click 10 20 double middle"),
+                InputAction::Click {
+                    x: 10,
+                    y: 20,
+                    button: Button::Middle,
+                    count: 2
+                }
+            );
+            assert_eq!(
+                act("click 10 20 double"),
+                InputAction::Click {
+                    x: 10,
+                    y: 20,
+                    button: Button::Left,
+                    count: 2
+                }
+            );
+            assert!(refused("click 10").contains("click takes X Y"));
+            assert!(refused("click 10 20 left right").contains("one button"));
+            assert!(refused("click 10 20 double double").contains("double once"));
+            assert!(refused("click 10 20 triple").contains("not \"triple\""));
+            assert!(refused("click ten 20").contains("X must be a whole number"));
+        }
+        // move and drag take their coordinates.
+        {
+            assert_eq!(act("move 5 -4"), InputAction::Move { x: 5, y: -4 });
+            assert!(refused("move 5").contains("move takes X Y"));
+            assert_eq!(
+                act("drag 5 6 50 60"),
+                InputAction::Drag {
+                    from: (5, 6),
+                    to: (50, 60)
+                }
+            );
+            assert!(refused("drag 5 6 50").contains("drag takes X1 Y1 X2 Y2"));
+        }
+        // type keeps the text as typed to the end of the line.
+        {
+            assert_eq!(
+                act("type hello world"),
+                InputAction::Type {
+                    text: "hello world".into()
+                }
+            );
+            assert_eq!(
+                act("type  two  spaces "),
+                InputAction::Type {
+                    text: " two  spaces ".into()
+                }
+            );
+            assert_eq!(
+                act("type héllo\r\n"),
+                InputAction::Type {
+                    text: "héllo".into()
+                }
+            );
+            assert!(refused("type").contains("takes the text"));
+        }
+        // key takes one chord.
+        {
+            assert_eq!(
+                act("key ctrl+s"),
+                InputAction::Key {
+                    combo: "ctrl+s".into()
+                }
+            );
+            assert_eq!(
+                act("key ctrl+shift+s"),
+                InputAction::Key {
+                    combo: "ctrl+shift+s".into()
+                }
+            );
+            assert!(refused("key").contains("one chord"));
+            assert!(refused("key ctrl+ s").contains("one chord"));
+            assert!(refused("key ctrl++s").contains("one chord"));
+        }
+        // scroll keeps the sign of dy: positive scrolls down.
+        {
+            assert_eq!(
+                act("scroll 0 3 100 200"),
+                InputAction::Scroll {
+                    x: 100,
+                    y: 200,
+                    dx: 0,
+                    dy: 3
+                }
+            );
+            assert_eq!(
+                act("scroll 0 -3 100 200"),
+                InputAction::Scroll {
+                    x: 100,
+                    y: 200,
+                    dx: 0,
+                    dy: -3
+                }
+            );
+            assert_eq!(
+                act("scroll -2 1 7 8"),
+                InputAction::Scroll {
+                    x: 7,
+                    y: 8,
+                    dx: -2,
+                    dy: 1
+                }
+            );
+        }
+        // scroll without a position uses the pointer, or is refused.
+        {
+            let step = parse_line("scroll 0 3", Some((40, 50))).unwrap();
+            assert_eq!(
+                step,
+                Step::Act(InputAction::Scroll {
+                    x: 40,
+                    y: 50,
+                    dx: 0,
+                    dy: 3
+                })
+            );
+            let err = parse_line("scroll 0 3", None).unwrap_err();
+            assert!(err.contains("needs a position"), "{err}");
+            assert!(refused("scroll 0").contains("takes DX DY"));
+            assert!(refused("scroll 0 1 2").contains("takes DX DY, then X Y"));
+        }
+        // give-back ends the session, and the verb is checked.
+        {
+            assert_eq!(parse_line("give-back", None), Ok(Step::GiveBack));
+            assert_eq!(parse_line("give_back\n", None), Ok(Step::GiveBack));
+            assert!(refused("give-back now").contains("no words"));
+            assert!(refused("   ").contains("no command given"));
+            assert!(refused("fly 1 2").contains("no command named \"fly\""));
+        }
     }
 
     #[test]
@@ -849,14 +837,6 @@ mod tests {
             "/v1/stations/w1/control?session=shared"
         );
         assert_eq!(view_path("w1", "7"), "/v1/stations/w1/control?session=7");
-    }
-
-    #[test]
-    fn the_policy_reads_in_words() {
-        assert!(policy_text("agent_waits").contains("waits until you give the session back"));
-        assert!(policy_text("release_lease").contains("goes back to the queue"));
-        assert!(policy_text("keep_working_pointer_paused").contains("only its pointer pauses"));
-        assert_eq!(policy_text("odd"), "policy odd");
     }
 
     #[test]

@@ -577,31 +577,35 @@ mod tests {
     }
 
     #[test]
-    fn login_keeps_the_owner_token_and_saves_the_mcp_one_beside_it() {
-        let mut config = Config::default();
-        config.hubs.insert(
-            "plaza".into(),
-            saved("https://plaza.test", Some("owner-token")),
-        );
-        attach_token(&mut config, "https://plaza.test", "apz_mcp_x");
-        let entry = &config.hubs["plaza"];
-        assert_eq!(
-            entry.token.as_deref(),
-            Some("owner-token"),
-            "the owner token is untouched"
-        );
-        assert_eq!(entry.mcp_token.as_deref(), Some("apz_mcp_x"));
-    }
-
-    #[test]
-    fn login_makes_an_entry_named_for_an_unknown_hub() {
-        let mut config = Config::default();
-        attach_token(&mut config, "https://hub.example:7700", "apz_mcp_y");
-        assert_eq!(
-            config.hubs["hub.example"].mcp_token.as_deref(),
-            Some("apz_mcp_y")
-        );
-        assert_eq!(config.default.as_deref(), Some("hub.example"));
+    fn attach_token_saves_the_mcp_token_on_the_hub_entry() {
+        // login_keeps_the_owner_token_and_saves_the_mcp_one_beside_it: the owner
+        // token is untouched and the MCP token is saved beside it.
+        {
+            let mut config = Config::default();
+            config.hubs.insert(
+                "plaza".into(),
+                saved("https://plaza.test", Some("owner-token")),
+            );
+            attach_token(&mut config, "https://plaza.test", "apz_mcp_x");
+            let entry = &config.hubs["plaza"];
+            assert_eq!(
+                entry.token.as_deref(),
+                Some("owner-token"),
+                "the owner token is untouched"
+            );
+            assert_eq!(entry.mcp_token.as_deref(), Some("apz_mcp_x"));
+        }
+        // login_makes_an_entry_named_for_an_unknown_hub: a hub with no saved entry
+        // gets one, named for its host, and becomes the default.
+        {
+            let mut config = Config::default();
+            attach_token(&mut config, "https://hub.example:7700", "apz_mcp_y");
+            assert_eq!(
+                config.hubs["hub.example"].mcp_token.as_deref(),
+                Some("apz_mcp_y")
+            );
+            assert_eq!(config.default.as_deref(), Some("hub.example"));
+        }
     }
 
     #[test]
@@ -627,116 +631,129 @@ mod tests {
     }
 
     #[test]
-    fn switching_the_server_keeps_the_auth_mode_open_scope_and_origins() {
-        let now = json!({
-            "enabled": false, "bind": "local", "auth_mode": "open", "open_scope": "operate",
-            "allowed_origins": ["https://console.test"],
-        });
-        let body = switch_body(
-            &now,
-            &Switch {
-                enabled: true,
-                ..Switch::default()
-            },
-        );
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["open_scope"], "operate");
-        assert_eq!(body["allowed_origins"], json!(["https://console.test"]));
-        assert_eq!(body["bind"], "local");
-        assert_eq!(
-            body["confirm_open_remote"], false,
-            "a local open hub needs no confirmation"
-        );
-    }
-
-    #[test]
-    fn switching_an_open_remote_hub_off_keeps_it_open_and_remote() {
-        let now = json!({ "enabled": true, "bind": "remote", "auth_mode": "open", "open_scope": "observe", "allowed_origins": [] });
-        let body = switch_body(&now, &Switch::default());
-        assert_eq!(body["enabled"], false);
-        assert_eq!(body["bind"], "remote");
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(
-            body["confirm_open_remote"], true,
-            "the open remote setting was confirmed when it was set"
-        );
-    }
-
-    #[test]
-    fn enabling_remote_confirms_an_open_remote_hub_only_when_flagged() {
-        let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
-        let body = switch_body(
-            &now,
-            &Switch {
+    fn switch_body_keeps_or_sets_the_auth_mode_scope_origins_and_bind() {
+        // switching_the_server_keeps_the_auth_mode_open_scope_and_origins
+        {
+            let now = json!({
+                "enabled": false, "bind": "local", "auth_mode": "open", "open_scope": "operate",
+                "allowed_origins": ["https://console.test"],
+            });
+            let body = switch_body(
+                &now,
+                &Switch {
+                    enabled: true,
+                    ..Switch::default()
+                },
+            );
+            assert_eq!(body["auth_mode"], "open");
+            assert_eq!(body["open_scope"], "operate");
+            assert_eq!(body["allowed_origins"], json!(["https://console.test"]));
+            assert_eq!(body["bind"], "local");
+            assert_eq!(
+                body["confirm_open_remote"], false,
+                "a local open hub needs no confirmation"
+            );
+        }
+        // switching_an_open_remote_hub_off_keeps_it_open_and_remote
+        {
+            let now = json!({ "enabled": true, "bind": "remote", "auth_mode": "open", "open_scope": "observe", "allowed_origins": [] });
+            let body = switch_body(&now, &Switch::default());
+            assert_eq!(body["enabled"], false);
+            assert_eq!(body["bind"], "remote");
+            assert_eq!(body["auth_mode"], "open");
+            assert_eq!(
+                body["confirm_open_remote"], true,
+                "the open remote setting was confirmed when it was set"
+            );
+        }
+        // enabling_remote_confirms_an_open_remote_hub_only_when_flagged
+        {
+            let now = json!({ "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe", "allowed_origins": [] });
+            let body = switch_body(
+                &now,
+                &Switch {
+                    enabled: true,
+                    remote: true,
+                    ..Switch::default()
+                },
+            );
+            assert_eq!(body["bind"], "remote");
+            assert_eq!(body["auth_mode"], "secure");
+            assert_eq!(body["confirm_open_remote"], false);
+            let flagged = Switch {
                 enabled: true,
                 remote: true,
-                ..Switch::default()
-            },
-        );
-        assert_eq!(body["bind"], "remote");
-        assert_eq!(body["auth_mode"], "secure");
-        assert_eq!(body["confirm_open_remote"], false);
-        let flagged = Switch {
-            enabled: true,
-            remote: true,
-            auth: Some("open".into()),
-            confirm_open_remote: true,
-            ..Switch::default()
-        };
-        let body = switch_body(&now, &flagged);
-        assert_eq!(body["bind"], "remote");
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["confirm_open_remote"], true);
-        let unflagged = Switch {
-            enabled: true,
-            remote: true,
-            auth: Some("open".into()),
-            ..Switch::default()
-        };
-        assert_eq!(
-            switch_body(&now, &unflagged)["confirm_open_remote"],
-            false,
-            "without the flag the hub refuses"
-        );
-    }
-
-    #[test]
-    fn enabling_takes_the_auth_mode_scope_and_origins_the_flags_give() {
-        let now = json!({
-            "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe",
-            "allowed_origins": ["https://old.test"],
-        });
-        let body = switch_body(
-            &now,
-            &Switch {
-                enabled: true,
                 auth: Some("open".into()),
-                open_scope: Some("operate".into()),
-                origins: Some(vec!["https://a.test".into(), "https://b.test".into()]),
+                confirm_open_remote: true,
                 ..Switch::default()
-            },
-        );
-        assert_eq!(body["auth_mode"], "open");
-        assert_eq!(body["open_scope"], "operate");
-        assert_eq!(
-            body["allowed_origins"],
-            json!(["https://a.test", "https://b.test"]),
-            "the origins replace the list"
-        );
-        assert_eq!(body["confirm_open_remote"], false);
-        let untouched = switch_body(
-            &now,
-            &Switch {
+            };
+            let body = switch_body(&now, &flagged);
+            assert_eq!(body["bind"], "remote");
+            assert_eq!(body["auth_mode"], "open");
+            assert_eq!(body["confirm_open_remote"], true);
+            let unflagged = Switch {
                 enabled: true,
+                remote: true,
+                auth: Some("open".into()),
                 ..Switch::default()
-            },
-        );
-        assert_eq!(
-            untouched["allowed_origins"],
-            json!(["https://old.test"]),
-            "no origin flag keeps the list"
-        );
-        assert_eq!(untouched["auth_mode"], "secure");
+            };
+            assert_eq!(
+                switch_body(&now, &unflagged)["confirm_open_remote"],
+                false,
+                "without the flag the hub refuses"
+            );
+        }
+        // enabling_takes_the_auth_mode_scope_and_origins_the_flags_give
+        {
+            let now = json!({
+                "enabled": false, "bind": "local", "auth_mode": "secure", "open_scope": "observe",
+                "allowed_origins": ["https://old.test"],
+            });
+            let body = switch_body(
+                &now,
+                &Switch {
+                    enabled: true,
+                    auth: Some("open".into()),
+                    open_scope: Some("operate".into()),
+                    origins: Some(vec!["https://a.test".into(), "https://b.test".into()]),
+                    ..Switch::default()
+                },
+            );
+            assert_eq!(body["auth_mode"], "open");
+            assert_eq!(body["open_scope"], "operate");
+            assert_eq!(
+                body["allowed_origins"],
+                json!(["https://a.test", "https://b.test"]),
+                "the origins replace the list"
+            );
+            assert_eq!(body["confirm_open_remote"], false);
+            let untouched = switch_body(
+                &now,
+                &Switch {
+                    enabled: true,
+                    ..Switch::default()
+                },
+            );
+            assert_eq!(
+                untouched["allowed_origins"],
+                json!(["https://old.test"]),
+                "no origin flag keeps the list"
+            );
+            assert_eq!(untouched["auth_mode"], "secure");
+        }
+        // a_hub_without_an_auth_mode_in_its_status_is_saved_secure
+        {
+            let body = switch_body(
+                &json!({ "bind": "local" }),
+                &Switch {
+                    enabled: true,
+                    ..Switch::default()
+                },
+            );
+            assert_eq!(body["auth_mode"], "secure");
+            assert_eq!(body["open_scope"], "observe");
+            assert_eq!(body["allowed_origins"], json!([]));
+        }
     }
 
     #[test]
@@ -748,20 +765,6 @@ mod tests {
             origins_of(&["https://a.test".to_string()]).unwrap(),
             Some(vec!["https://a.test".to_string()])
         );
-    }
-
-    #[test]
-    fn a_hub_without_an_auth_mode_in_its_status_is_saved_secure() {
-        let body = switch_body(
-            &json!({ "bind": "local" }),
-            &Switch {
-                enabled: true,
-                ..Switch::default()
-            },
-        );
-        assert_eq!(body["auth_mode"], "secure");
-        assert_eq!(body["open_scope"], "observe");
-        assert_eq!(body["allowed_origins"], json!([]));
     }
 
     #[test]

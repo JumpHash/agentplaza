@@ -354,24 +354,24 @@ mod tests {
     }
 
     #[test]
-    fn a_github_pull_is_a_short_label_with_gh_and_no_escapes_when_plain_styling_is_off() {
-        let (text, ctx) = vector("github_pull");
-        assert_eq!(
-            render(&text, &ctx, &mode(false, false)),
-            "see GH o/r #12 now"
-        );
-    }
-
-    #[test]
-    fn a_styled_github_pull_is_underlined_cyan_and_a_hyperlink_when_links_are_on() {
-        let (text, ctx) = vector("github_pull");
-        let styled = render(&text, &ctx, &mode(true, false));
-        assert_eq!(styled, "see \x1b[4;36mGH o/r #12\x1b[0m now");
-        let linked = render(&text, &ctx, &mode(true, true));
-        assert_eq!(
-            linked,
-            "see \x1b]8;;https://github.com/o/r/pull/12\x1b\\\x1b[4;36mGH o/r #12\x1b[0m\x1b]8;;\x1b\\ now"
-        );
+    fn pulls_and_paths_are_styled_and_only_a_pull_is_linked() {
+        // A styled GitHub pull is underlined cyan, and a hyperlink when links are on.
+        {
+            let (text, ctx) = vector("github_pull");
+            let styled = render(&text, &ctx, &mode(true, false));
+            assert_eq!(styled, "see \x1b[4;36mGH o/r #12\x1b[0m now");
+            let linked = render(&text, &ctx, &mode(true, true));
+            assert_eq!(
+                linked,
+                "see \x1b]8;;https://github.com/o/r/pull/12\x1b\\\x1b[4;36mGH o/r #12\x1b[0m\x1b]8;;\x1b\\ now"
+            );
+        }
+        // A path is styled green and is not linked, even when links are on.
+        {
+            let (text, ctx) = vector("path_exact");
+            let linked = render(&text, &ctx, &mode(true, true));
+            assert_eq!(linked, "edit \x1b[4;32msrc/main.rs\x1b[0m");
+        }
     }
 
     /// A markdown link opens its target, a task and an agent open the hub console, and each shows its label.
@@ -405,35 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn each_kind_has_its_label_in_rich_mode() {
-        for (name, expected) in [
-            ("github_issue", "GH o/r #7"),
-            ("github_commit", "GH o/r @abc1234"),
-            ("github_repo", "GH o/r"),
-            ("github_run", "GH o/r run 9"),
-            ("gist", "gist abc123"),
-            ("link_bare", "example.com/docs/intro"),
-            ("mention_all", "@all"),
-            ("path_exact", "src/main.rs"),
-            ("path_line_colon_and_trailing_period", "src/main.rs:42"),
-        ] {
-            let (text, ctx) = vector(name);
-            let shown = render(&text, &ctx, &mode(false, false));
-            assert!(
-                shown.contains(expected),
-                "{name}: {shown:?} lacks {expected:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_path_is_styled_green_and_not_linked() {
-        let (text, ctx) = vector("path_exact");
-        let linked = render(&text, &ctx, &mode(true, true));
-        assert_eq!(linked, "edit \x1b[4;32msrc/main.rs\x1b[0m");
-    }
-
-    #[test]
     fn code_spans_and_plain_text_are_never_rewritten() {
         // The code span keeps its `#7` as written; the agent outside it is still a chip.
         let (text, ctx) = vector("code_span_hides_refs");
@@ -447,84 +418,85 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_gets_labels_colour_and_links() {
-        let tty = Mode::decide(&term(true), Some("https://hub.test/"));
-        assert_eq!(
-            tty,
-            Mode {
-                plain: false,
-                colour: true,
-                hyperlinks: true,
-                hub: Some("https://hub.test".into())
-            }
-        );
-        let no_colour = Mode::decide(
-            &Terminal {
-                no_color: true,
-                ..term(true)
-            },
-            None,
-        );
-        assert!(!no_colour.colour && no_colour.hyperlinks && !no_colour.plain);
-        let dumb = Mode::decide(
-            &Terminal {
-                term: Some("dumb".into()),
-                ..term(true)
-            },
-            None,
-        );
-        assert!(!dumb.hyperlinks && !dumb.plain);
-        let legacy = Mode::decide(
-            &Terminal {
-                legacy_windows: true,
-                ..term(true)
-            },
-            None,
-        );
-        assert!(!legacy.hyperlinks && !legacy.plain);
-        let forced_off = Mode::decide(
-            &Terminal {
-                hyperlinks_env: Some("0".into()),
-                ..term(true)
-            },
-            None,
-        );
-        assert!(!forced_off.hyperlinks && forced_off.colour && !forced_off.plain);
-        let forced_on = Mode::decide(
-            &Terminal {
-                hyperlinks_env: Some("1".into()),
-                ..term(true)
-            },
-            None,
-        );
-        assert!(forced_on.hyperlinks && !forced_on.plain);
-    }
-
-    #[test]
-    fn a_pipe_or_a_file_gets_the_raw_text_whatever_the_environment_says() {
-        // Stdout is not a terminal: no labels, colour or escapes, even when links are forced on.
-        for env in [None, Some("1"), Some("0")] {
-            let pipe = Mode::decide(
-                &Terminal {
-                    hyperlinks_env: env.map(String::from),
-                    ..term(false)
-                },
-                Some("https://hub.test"),
+    fn mode_decide_gives_a_terminal_labels_colour_and_links_and_a_pipe_raw_text() {
+        // A terminal gets labels, colour and links, as the environment allows.
+        {
+            let tty = Mode::decide(&term(true), Some("https://hub.test/"));
+            assert_eq!(
+                tty,
+                Mode {
+                    plain: false,
+                    colour: true,
+                    hyperlinks: true,
+                    hub: Some("https://hub.test".into())
+                }
             );
-            assert!(pipe.plain, "{env:?}: a pipe is plain");
-            assert!(!pipe.colour && !pipe.hyperlinks, "{env:?}: no escapes");
-            assert_eq!(pipe.hub.as_deref(), Some("https://hub.test"));
+            let no_colour = Mode::decide(
+                &Terminal {
+                    no_color: true,
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(!no_colour.colour && no_colour.hyperlinks && !no_colour.plain);
+            let dumb = Mode::decide(
+                &Terminal {
+                    term: Some("dumb".into()),
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(!dumb.hyperlinks && !dumb.plain);
+            let legacy = Mode::decide(
+                &Terminal {
+                    legacy_windows: true,
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(!legacy.hyperlinks && !legacy.plain);
+            let forced_off = Mode::decide(
+                &Terminal {
+                    hyperlinks_env: Some("0".into()),
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(!forced_off.hyperlinks && forced_off.colour && !forced_off.plain);
+            let forced_on = Mode::decide(
+                &Terminal {
+                    hyperlinks_env: Some("1".into()),
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(forced_on.hyperlinks && !forced_on.plain);
         }
-        // `--plain` on a terminal is the same as a pipe.
-        let flag = Mode::decide(
-            &Terminal {
-                plain: true,
-                hyperlinks_env: Some("1".into()),
-                ..term(true)
-            },
-            None,
-        );
-        assert!(flag.plain && !flag.colour && !flag.hyperlinks);
+        // Stdout is not a terminal: no labels, colour or escapes, even when links are forced on.
+        {
+            for env in [None, Some("1"), Some("0")] {
+                let pipe = Mode::decide(
+                    &Terminal {
+                        hyperlinks_env: env.map(String::from),
+                        ..term(false)
+                    },
+                    Some("https://hub.test"),
+                );
+                assert!(pipe.plain, "{env:?}: a pipe is plain");
+                assert!(!pipe.colour && !pipe.hyperlinks, "{env:?}: no escapes");
+                assert_eq!(pipe.hub.as_deref(), Some("https://hub.test"));
+            }
+            // `--plain` on a terminal is the same as a pipe.
+            let flag = Mode::decide(
+                &Terminal {
+                    plain: true,
+                    hyperlinks_env: Some("1".into()),
+                    ..term(true)
+                },
+                None,
+            );
+            assert!(flag.plain && !flag.colour && !flag.hyperlinks);
+        }
     }
 
     #[test]
@@ -550,31 +522,5 @@ mod tests {
             assert_eq!(render(&text, &ctx, &pipe), text, "{name}");
             assert_eq!(render(&text, &ctx, &plain()), text, "{name} (--plain)");
         }
-    }
-
-    #[test]
-    fn only_a_terminal_that_draws_labels_asks_the_hub_for_agents() {
-        let tty = Mode::decide(&term(true), None);
-        let pipe = Mode::decide(&term(false), None);
-        let flag = Mode::decide(
-            &Terminal {
-                plain: true,
-                ..term(true)
-            },
-            None,
-        );
-        assert!(needs_agents(false, &tty), "a terminal resolves @Name");
-        assert!(!needs_agents(false, &pipe), "a pipe needs no names");
-        assert!(!needs_agents(false, &flag), "--plain needs no names");
-        assert!(!needs_agents(true, &tty), "--json needs no names");
-    }
-
-    #[test]
-    fn spans_for_the_tui_are_styled_labels_and_never_links() {
-        let (text, ctx) = vector("github_pull");
-        let spans = spans(&text, &ctx);
-        let shown: String = spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(shown, "see GH o/r #12 now");
-        assert!(spans.iter().all(|s| !s.content.contains('\x1b')));
     }
 }

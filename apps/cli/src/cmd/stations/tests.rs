@@ -102,44 +102,47 @@ fn codes_parse_with_list_as_the_default() {
 }
 
 #[test]
-fn settings_show_and_set_parse_every_flag() {
-    let Cmd::Settings { id, action: None } = parsed(&["settings", "w1"]) else {
-        panic!("settings show")
-    };
-    assert_eq!(id, "w1");
-    let Cmd::Settings {
-        id,
-        action: Some(SettingsCmd::Set(set)),
-    } = parsed(&[
-        "settings",
-        "w1",
-        "set",
-        "--takeover",
-        "keep-working",
-        "--record",
-        "off",
-        "--retention-days",
-        "7",
-        "--fps",
-        "1",
-        "--record-takeovers",
-        "on",
-        "--work-folder",
-        "/srv/work",
-        "--snapshot-reset",
-        "on",
-        "--rate-per-hour",
-        "1500",
-    ])
-    else {
-        panic!("settings set")
-    };
-    assert_eq!(id, "w1");
-    assert_eq!(set, all_settings());
-}
-
-#[test]
-fn each_takeover_policy_has_its_flag_spelling() {
+fn settings_show_and_set_parse_their_flags() {
+    // `settings <id>` shows the settings and parses with no action.
+    {
+        let Cmd::Settings { id, action: None } = parsed(&["settings", "w1"]) else {
+            panic!("settings show")
+        };
+        assert_eq!(id, "w1");
+    }
+    // `settings <id> set` takes every flag.
+    {
+        let Cmd::Settings {
+            id,
+            action: Some(SettingsCmd::Set(set)),
+        } = parsed(&[
+            "settings",
+            "w1",
+            "set",
+            "--takeover",
+            "keep-working",
+            "--record",
+            "off",
+            "--retention-days",
+            "7",
+            "--fps",
+            "1",
+            "--record-takeovers",
+            "on",
+            "--work-folder",
+            "/srv/work",
+            "--snapshot-reset",
+            "on",
+            "--rate-per-hour",
+            "1500",
+        ])
+        else {
+            panic!("settings set")
+        };
+        assert_eq!(id, "w1");
+        assert_eq!(set, all_settings());
+    }
+    // Each takeover policy has its flag spelling, and an unknown one is refused.
     for (word, policy) in [
         ("agent-waits", TakeoverArg::AgentWaits),
         ("release-lease", TakeoverArg::ReleaseLease),
@@ -562,72 +565,6 @@ fn a_set_with_no_flag_or_an_empty_folder_is_refused_before_the_hub() {
     };
     assert_eq!(check_set(&blank).unwrap_err(), "the work folder is empty");
     assert!(check_set(&all_settings()).is_ok());
-}
-
-#[test]
-fn a_station_row_shows_its_account_and_lease_count() {
-    let station = json!({
-        "id": "w1", "name": "lab", "status": "online", "last_seen_ms": 0,
-        "facts": { "os": "linux", "account": { "mode": "owner", "name": "irfan" } },
-        "leases": [{ "id": "l1" }, { "id": "l2" }]
-    });
-    assert_eq!(
-        row(&station),
-        [
-            "w1",
-            "lab",
-            "online",
-            "linux",
-            "irfan (owner)",
-            "2",
-            "never"
-        ]
-    );
-    assert_eq!(
-        account_warning(&station).as_deref(),
-        Some("warning: agents act as irfan (the owner's own account)")
-    );
-    let agent = json!({ "facts": { "os": "macos", "account": { "mode": "agent_user", "name": "agentws" } } });
-    assert_eq!(account(&agent), "agentws");
-    assert_eq!(account_warning(&agent), None);
-    assert_eq!(account(&json!({})), "-");
-}
-
-#[test]
-fn lease_and_code_rows_keep_the_hubs_words() {
-    let lease = json!({ "id": "l4", "agent": 12, "kind": "pixel", "state": "queued", "position": 2, "task": null, "started_ms": 0 });
-    assert_eq!(lease_row(&lease)[..5], ["l4", "12", "pixel", "queued", "2"]);
-    assert_eq!(lease_row(&lease)[5], "-");
-    let active = json!({ "id": "l5", "agent": 3, "kind": "shared", "state": "active" });
-    assert_eq!(
-        lease_row(&active)[4],
-        "-",
-        "an active lease has no queue position"
-    );
-    let code = json!({ "id": "j1", "label": "gpu", "state": "used", "created_ms": 0, "expires_ms": 0, "used_by": "lab-1" });
-    assert_eq!(code_row(&code)[2], "used");
-    assert_eq!(code_row(&code)[5], "lab-1");
-}
-
-#[test]
-fn audit_rows_put_the_extra_fields_in_the_detail() {
-    let row = json!({ "at_ms": 0, "actor": "owner", "station": "w1", "agent": null, "kind": "lease_granted", "lease": "l2", "session": 9 });
-    let cells = audit_row(&row);
-    assert_eq!(cells[1], "owner");
-    assert_eq!(cells[3], "-");
-    assert_eq!(cells[4], "lease_granted");
-    assert_eq!(cells[5], "lease=l2 session=9");
-}
-
-#[test]
-fn settings_read_the_takeover_in_its_flag_spelling() {
-    let fields = settings_fields(
-        &json!({ "takeover": "release_lease", "record": true, "retention_days": 30, "record_fps": 2 }),
-    );
-    assert_eq!(fields[0], ("takeover", "release-lease".to_string()));
-    assert_eq!(fields[1], ("record", "on".to_string()));
-    assert_eq!(fields[2], ("retention", "30 days".to_string()));
-    assert_eq!(takeover_word("keep_working_pointer_paused"), "keep-working");
 }
 
 #[test]

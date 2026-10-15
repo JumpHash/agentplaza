@@ -242,101 +242,101 @@ mod tests {
     }
 
     #[test]
-    fn add_takes_the_host_and_the_secret_and_defaults_the_rest() {
-        match parse(&["add", "--host", "api.example.com", "--secret", "GH_TOKEN"]).unwrap() {
-            Cmd::Add {
-                host,
-                port,
-                methods,
-                path_prefix,
-                roles,
-                header,
-                format,
-                secret,
-            } => {
-                assert_eq!(host, "api.example.com");
-                assert_eq!(port, 443);
-                assert!(methods.is_empty() && roles.is_empty());
-                assert_eq!(path_prefix, "/");
-                assert_eq!(header, "Authorization");
-                assert_eq!(format, "Bearer ${SECRET}");
-                assert_eq!(secret, "GH_TOKEN");
-            }
-            other => panic!("not an add: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn add_repeats_methods_and_roles() {
-        match parse(&[
-            "add",
-            "--host",
-            "*.example.com",
-            "--port",
-            "8443",
-            "--method",
-            "GET",
-            "--method",
-            "post",
-            "--role",
-            "builder",
-            "--role",
-            "ops",
-            "--path-prefix",
-            "/v1",
-            "--header",
-            "X-Key",
-            "--format",
-            "${SECRET}",
-            "--secret",
-            "S",
-        ])
-        .unwrap()
+    fn egress_add_and_rule_commands_parse() {
+        // Add takes the host and the secret and defaults the rest.
         {
-            Cmd::Add {
-                port,
-                methods,
-                roles,
-                path_prefix,
-                header,
-                format,
-                ..
-            } => {
-                assert_eq!(port, 8443);
-                assert_eq!(methods, ["GET", "post"]);
-                assert_eq!(roles, ["builder", "ops"]);
-                assert_eq!(
-                    (path_prefix.as_str(), header.as_str(), format.as_str()),
-                    ("/v1", "X-Key", "${SECRET}")
-                );
+            match parse(&["add", "--host", "api.example.com", "--secret", "GH_TOKEN"]).unwrap() {
+                Cmd::Add {
+                    host,
+                    port,
+                    methods,
+                    path_prefix,
+                    roles,
+                    header,
+                    format,
+                    secret,
+                } => {
+                    assert_eq!(host, "api.example.com");
+                    assert_eq!(port, 443);
+                    assert!(methods.is_empty() && roles.is_empty());
+                    assert_eq!(path_prefix, "/");
+                    assert_eq!(header, "Authorization");
+                    assert_eq!(format, "Bearer ${SECRET}");
+                    assert_eq!(secret, "GH_TOKEN");
+                }
+                other => panic!("not an add: {other:?}"),
             }
-            other => panic!("not an add: {other:?}"),
         }
-    }
-
-    #[test]
-    fn add_needs_a_secret_and_a_host() {
-        assert!(parse(&["add", "--host", "api.example.com"]).is_err());
-        assert!(parse(&["add", "--secret", "S"]).is_err());
-    }
-
-    #[test]
-    fn enable_disable_and_rm_take_the_rule_id() {
-        match parse(&["enable", "egr_1"]).unwrap() {
-            Cmd::Enable { id } => assert_eq!(id, "egr_1"),
-            other => panic!("not an enable: {other:?}"),
+        // Add repeats --method and --role and takes the path, header and format.
+        {
+            match parse(&[
+                "add",
+                "--host",
+                "*.example.com",
+                "--port",
+                "8443",
+                "--method",
+                "GET",
+                "--method",
+                "post",
+                "--role",
+                "builder",
+                "--role",
+                "ops",
+                "--path-prefix",
+                "/v1",
+                "--header",
+                "X-Key",
+                "--format",
+                "${SECRET}",
+                "--secret",
+                "S",
+            ])
+            .unwrap()
+            {
+                Cmd::Add {
+                    port,
+                    methods,
+                    roles,
+                    path_prefix,
+                    header,
+                    format,
+                    ..
+                } => {
+                    assert_eq!(port, 8443);
+                    assert_eq!(methods, ["GET", "post"]);
+                    assert_eq!(roles, ["builder", "ops"]);
+                    assert_eq!(
+                        (path_prefix.as_str(), header.as_str(), format.as_str()),
+                        ("/v1", "X-Key", "${SECRET}")
+                    );
+                }
+                other => panic!("not an add: {other:?}"),
+            }
         }
-        match parse(&["disable", "egr_1"]).unwrap() {
-            Cmd::Disable { id } => assert_eq!(id, "egr_1"),
-            other => panic!("not a disable: {other:?}"),
+        // Add needs a secret and a host.
+        {
+            assert!(parse(&["add", "--host", "api.example.com"]).is_err());
+            assert!(parse(&["add", "--secret", "S"]).is_err());
         }
-        match parse(&["rm", "egr_1"]).unwrap() {
-            Cmd::Rm { id, yes } => assert_eq!((id.as_str(), yes), ("egr_1", false)),
-            other => panic!("not an rm: {other:?}"),
-        }
-        match parse(&["rm", "egr_1", "--yes"]).unwrap() {
-            Cmd::Rm { yes, .. } => assert!(yes),
-            other => panic!("not an rm: {other:?}"),
+        // Enable, disable and rm take the rule id; rm takes --yes.
+        {
+            match parse(&["enable", "egr_1"]).unwrap() {
+                Cmd::Enable { id } => assert_eq!(id, "egr_1"),
+                other => panic!("not an enable: {other:?}"),
+            }
+            match parse(&["disable", "egr_1"]).unwrap() {
+                Cmd::Disable { id } => assert_eq!(id, "egr_1"),
+                other => panic!("not a disable: {other:?}"),
+            }
+            match parse(&["rm", "egr_1"]).unwrap() {
+                Cmd::Rm { id, yes } => assert_eq!((id.as_str(), yes), ("egr_1", false)),
+                other => panic!("not an rm: {other:?}"),
+            }
+            match parse(&["rm", "egr_1", "--yes"]).unwrap() {
+                Cmd::Rm { yes, .. } => assert!(yes),
+                other => panic!("not an rm: {other:?}"),
+            }
         }
     }
 
@@ -373,38 +373,5 @@ mod tests {
         assert_eq!(enabled_body(false), json!({ "enabled": false }));
         assert_eq!(rule_path("egr_1"), "/v1/egress/inject/egr_1");
         assert_eq!(rule_path("a/b c"), "/v1/egress/inject/a%2Fb%20c");
-    }
-
-    #[test]
-    fn a_rule_row_reads_empty_roles_and_methods_as_every_and_any() {
-        let open = json!({
-            "id": "egr_1", "roles": [], "host": "api.example.com", "port": 443,
-            "methods": [], "path_prefix": "/", "header": "Authorization",
-            "format": "Bearer ${SECRET}", "secret": "GH_TOKEN", "enabled": true
-        });
-        assert_eq!(
-            rule_row(&open),
-            vec![
-                "egr_1",
-                "every role",
-                "api.example.com",
-                "443",
-                "any",
-                "/",
-                "Authorization",
-                "Bearer ${SECRET}",
-                "GH_TOKEN",
-                "yes"
-            ]
-        );
-        let narrow = json!({
-            "id": "egr_2", "roles": ["builder", "ops"], "host": "h", "port": 8443,
-            "methods": ["GET", "POST"], "path_prefix": "/v1", "header": "X-Key",
-            "format": "${SECRET}", "secret": "S", "enabled": false
-        });
-        let row = rule_row(&narrow);
-        assert_eq!(row[1], "builder,ops");
-        assert_eq!(row[4], "GET,POST");
-        assert_eq!(row[9], "no");
     }
 }

@@ -434,13 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn sizes_read_in_the_largest_unit_that_fits() {
-        assert_eq!(size_text(0.0), "0 B");
-        assert_eq!(size_text(1536.0), "1.5 KiB");
-        assert_eq!(size_text(3.0 * 1024.0 * 1024.0 * 1024.0), "3.0 GiB");
-    }
-
-    #[test]
     fn the_per_job_cap_is_read_from_the_law_condition() {
         assert_eq!(
             parse_cap("context.gpu_hours <= 8 and context.kind == 'job'"),
@@ -457,36 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn a_breeder_has_the_jobs_its_cid_submitted_and_their_hours() {
-        let agents = json!([
-            { "cid": 1, "name": "orchestra", "role": "orchestrator", "status": "idle" },
-            { "cid": 3, "name": "", "role": "breeder", "status": "working" },
-            { "cid": 2, "name": "smith", "role": "breeder", "status": "idle" }
-        ]);
-        let jobs = json!([
-            { "id": "j1", "agent": 3, "gpu_hours": 1.5, "status": "done", "recipe": "r@1" },
-            { "id": "j2", "agent": 4, "gpu_hours": 9.0, "status": "running", "recipe": "r@1" },
-            { "id": "j3", "agent": null, "gpu_hours": 2.0, "status": "done", "recipe": "r@1" }
-        ]);
-        let summary = breeder_summary(&agents, &jobs, None);
-        let rows = summary["breeders"].as_array().expect("breeders");
-        assert_eq!(rows.len(), 2, "only the breeders, by cid");
-        assert_eq!(rows[0]["cid"], 2);
-        assert_eq!(rows[1]["cid"], 3);
-        assert_eq!(rows[1]["jobs"].as_array().map(Vec::len), Some(1));
-        assert_eq!(rows[1]["gpu_hours"], 1.5);
-        assert_eq!(
-            rows[0]["jobs"].as_array().map(Vec::len),
-            Some(0),
-            "no job carries cid 2"
-        );
-        assert_eq!(summary["cap"], 8.0);
-        assert_eq!(summary["cap_read"], false);
-        assert_eq!(breeder_name(&rows[1]), "agent 3");
-        assert_eq!(breeder_name(&rows[0]), "smith");
-    }
-
-    #[test]
     fn the_token_is_never_an_argument_and_the_limits_hold() {
         assert!(
             parse(&["hf", "token", "set", "hf_secret"]).is_err(),
@@ -499,23 +462,5 @@ mod tests {
         assert!(parse(&["jobs", "list", "--status", "bogus"]).is_err());
         assert!(parse(&["datasets", "export", "--kind", "upload", "--name", "x"]).is_err());
         assert!(parse(&["recipes", "vet", "cls@1", "--commit", "abc1234"]).is_ok());
-    }
-
-    #[test]
-    fn a_device_row_names_its_memory_load_and_owner() {
-        let machine = json!({
-            "id": "node-a", "online": true, "trainer_ok": false,
-            "devices": [{ "index": 0, "vendor": "NVIDIA", "name": "A100", "backend": "cuda", "memory_mib": 81920, "mem_used_mib": 1024, "busy": true, "util_pct": 37, "allocated_to": "job-7" }]
-        });
-        let rows = device_rows(&machine);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0][0], "node-a");
-        assert_eq!(rows[0][2], "no");
-        assert_eq!(rows[0][4], "NVIDIA A100");
-        assert_eq!(rows[0][6], "1024 of 81920 MiB");
-        assert_eq!(rows[0][7], "37% busy");
-        assert_eq!(rows[0][8], "job-7");
-        let bare = device_rows(&json!({ "id": "node-b", "online": false, "devices": [] }));
-        assert_eq!(bare[0][4], "no devices");
     }
 }

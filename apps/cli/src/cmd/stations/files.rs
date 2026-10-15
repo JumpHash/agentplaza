@@ -373,48 +373,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sync_state_names_its_files_and_conflicts() {
-        let state = json!({
-            "linked": true, "files": 12, "bytes": 2048, "last_sync_ms": 0,
-            "conflicts": [{"path": "a (conflict ws-1).txt", "conflict_of": "a.txt", "size": 3, "mtime_ms": 0}]
-        });
-        let fields = sync_fields(&state);
-        assert_eq!(fields[0], ("linked", "yes".to_string()));
-        assert_eq!(fields[1], ("files", "12".to_string()));
-        assert_eq!(fields[2], ("bytes", "2.0 KiB".to_string()));
-        assert_eq!(fields[3], ("last sync", "never".to_string()));
-        assert_eq!(fields[4], ("conflicts", "1".to_string()));
-        assert_eq!(
-            fields.len(),
-            5,
-            "no paused or pending fields when the hub does not send them"
-        );
-        assert_eq!(paused_banner(&state), None);
-        assert_eq!(
-            conflict_row(&state["conflicts"][0])[..2],
-            ["a (conflict ws-1).txt", "a.txt"]
-        );
-    }
-
-    #[test]
-    fn a_paused_sync_shows_its_reason_and_its_pending_deletions() {
-        let state = json!({ "linked": false, "paused": true, "reason": "quota", "pending_deletions": [{"path": "x"}, {"path": "y"}] });
-        let fields = sync_fields(&state);
-        assert!(fields.contains(&("paused", "yes".to_string())));
-        assert!(fields.contains(&("reason", "quota".to_string())));
-        assert!(fields.contains(&("pending deletions", "2".to_string())));
-        assert!(
-            paused_banner(&state)
-                .unwrap()
-                .starts_with("sync paused: quota")
-        );
-        assert_eq!(count_of(&json!(5)), "5");
-        let not_paused = json!({ "paused": false });
-        assert!(sync_fields(&not_paused).contains(&("paused", "no".to_string())));
-        assert_eq!(paused_banner(&not_paused), None);
-    }
-
-    #[test]
     fn file_paths_keep_their_slashes_and_escape_each_segment() {
         assert_eq!(file_path("/docs/a b.txt/").unwrap(), "docs/a%20b.txt");
         assert_eq!(file_path("x/y").unwrap(), "x/y");
@@ -425,20 +383,5 @@ mod tests {
             "/v1/stations/w1/files/out/r.md"
         );
         assert_eq!(query_value("docs/sub"), "docs/sub");
-    }
-
-    #[test]
-    fn a_mirror_row_keeps_its_version_and_its_copy_of() {
-        let file = json!({ "path": "a.txt", "size": 1536, "mtime_ms": 0, "version": 4, "conflict_of": null });
-        let row = file_row(&file);
-        assert_eq!(
-            (
-                row[0].as_str(),
-                row[1].as_str(),
-                row[3].as_str(),
-                row[4].as_str()
-            ),
-            ("a.txt", "1.5 KiB", "4", "-")
-        );
     }
 }

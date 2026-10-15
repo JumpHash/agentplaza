@@ -1146,271 +1146,272 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_add_binds_its_secret_and_keeps_its_fixed_settings() {
-        let body = new_config(
-            &catalog(),
-            Some("github"),
-            false,
-            None,
-            None,
-            &fields(|f| f.env = strings(&["GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN"])),
-        )
-        .unwrap();
-        assert_eq!(body["id"], "github", "the preset id is the default id");
-        assert_eq!(body["name"], "GitHub");
-        assert_eq!(body["enabled"], true);
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "stdio", "image": "ghcr.io/github/github-mcp-server", "command": [] })
-        );
-        assert_eq!(
-            body["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
-            json!({ "secret": "GH_TOKEN" })
-        );
-        assert_eq!(
-            body["env"]["GITHUB_TOOLSETS"],
-            json!({ "value": "default" }),
-            "a fixed setting is filled in"
-        );
-        assert!(
-            body["env"].get("GITHUB_HOST").is_none(),
-            "an optional setting nobody gave is left out"
-        );
-        assert_eq!(body["tools"]["allow"], "all");
-        assert_eq!(
-            body["access"],
-            json!({ "roles": [], "nodes": [] }),
-            "nobody may use it until the owner says so"
-        );
-        assert_eq!(
-            body["limits"],
-            json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 })
-        );
-    }
-
-    #[test]
-    fn a_preset_refuses_a_missing_secret_no_image_or_a_transport_flag_and_names_the_fix() {
-        let err = new_config(
-            &catalog(),
-            Some("github"),
-            false,
-            None,
-            None,
-            &Fields::default(),
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("GITHUB_PERSONAL_ACCESS_TOKEN is required"),
-            "{err}"
-        );
-        assert!(
-            err.contains("--env GITHUB_PERSONAL_ACCESS_TOKEN=@vault:SECRET"),
-            "{err}"
-        );
-        let err = new_config(
-            &catalog(),
-            Some("custom-only"),
-            false,
-            None,
-            None,
-            &Fields::default(),
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("no official image") && err.contains("--custom"),
-            "{err}"
-        );
-        assert!(
-            new_config(
-                &catalog(),
-                Some("nope"),
-                false,
-                None,
-                None,
-                &Fields::default()
-            )
-            .is_err()
-        );
-        let err = new_config(
-            &catalog(),
-            Some("github"),
-            false,
-            None,
-            None,
-            &fields(|f| f.image = Some("x".into())),
-        )
-        .unwrap_err();
-        assert!(err.contains("--custom"), "{err}");
-        assert!(
-            new_config(
+    fn new_config_builds_each_kind_of_server_from_its_flags() {
+        // A preset add binds its secret and keeps its fixed settings.
+        {
+            let body = new_config(
                 &catalog(),
                 Some("github"),
                 false,
                 None,
-                Some("container"),
-                &Fields::default()
+                None,
+                &fields(|f| f.env = strings(&["GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN"])),
             )
-            .is_err()
-        );
-        assert!(
-            new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(),
-            "a server is a preset or custom"
-        );
-    }
-
-    #[test]
-    fn a_preset_header_keeps_its_format_unless_the_flag_names_one() {
-        let body = new_config(
-            &catalog(),
-            Some("linear"),
-            false,
-            Some("lin"),
-            None,
-            &fields(|f| f.header = strings(&["Authorization=@vault:LINEAR_KEY"])),
-        )
-        .unwrap();
-        assert_eq!(body["id"], "lin");
-        assert_eq!(
-            body["headers"]["Authorization"],
-            json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" })
-        );
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" })
-        );
-    }
-
-    #[test]
-    fn a_preset_takes_the_volume_it_has_and_the_flags_set_the_rest() {
-        let body = new_config(
-            &catalog(),
-            Some("memory"),
-            false,
-            None,
-            None,
-            &fields(|f| {
-                f.disabled = true;
-                f.roles = strings(&["builder", "reviewer"]);
-                f.allow_tool = strings(&["remember", "recall"]);
-                f.risk = strings(&["remember=write"]);
-                f.timeout_s = Some(30);
-            }),
-        )
-        .unwrap();
-        assert_eq!(body["storage"]["volume"], true);
-        assert_eq!(body["enabled"], false, "--disabled adds it off");
-        assert_eq!(body["access"]["roles"], json!(["builder", "reviewer"]));
-        assert_eq!(body["tools"]["allow"], json!(["remember", "recall"]));
-        assert_eq!(body["tools"]["risk"], json!({ "remember": "write" }));
-        assert_eq!(body["limits"]["timeout_s"], 30);
-        assert_eq!(body["transport"]["command"], json!(["serve"]));
-    }
-
-    #[test]
-    fn a_custom_container_takes_its_image_and_command() {
-        let body = new_config(
-            &json!([]),
-            None,
-            true,
-            Some("my-server"),
-            Some("container"),
-            &fields(|f| {
-                f.image = Some("ghcr.io/me/server:1.0".into());
-                f.arg = strings(&["serve", "--stdio"]);
-                f.env = strings(&["TOKEN=@vault:MY_TOKEN"]);
-            }),
-        )
-        .unwrap();
-        assert_eq!(body["id"], "my-server");
-        assert_eq!(body["name"], "my-server", "the name defaults to the id");
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "stdio", "image": "ghcr.io/me/server:1.0", "command": ["serve", "--stdio"] })
-        );
-        assert_eq!(body["env"], json!({ "TOKEN": { "secret": "MY_TOKEN" } }));
-        assert_eq!(body["storage"]["volume"], false);
-    }
-
-    #[test]
-    fn a_custom_remote_takes_its_url_and_refuses_container_flags() {
-        let body = new_config(
-            &json!([]),
-            None,
-            true,
-            Some("docs"),
-            Some("remote"),
-            &fields(|f| {
-                f.url = Some("https://docs.test/mcp".into());
-                f.header = strings(&["Authorization=@vault:DOCS_KEY|Bearer {}"]);
-                f.name = Some("Docs".into());
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "http", "url": "https://docs.test/mcp" })
-        );
-        assert_eq!(
-            body["headers"]["Authorization"],
-            json!({ "secret": "DOCS_KEY", "format": "Bearer {}" })
-        );
-        assert_eq!(body["name"], "Docs");
-        let err = new_config(
-            &json!([]),
-            None,
-            true,
-            Some("docs"),
-            Some("remote"),
-            &fields(|f| f.image = Some("x".into())),
-        )
-        .unwrap_err();
-        assert!(err.contains("--transport container"), "{err}");
-    }
-
-    #[test]
-    fn a_custom_server_names_its_id_and_its_kind() {
-        assert!(
-            new_config(
+            .unwrap();
+            assert_eq!(body["id"], "github", "the preset id is the default id");
+            assert_eq!(body["name"], "GitHub");
+            assert_eq!(body["enabled"], true);
+            assert_eq!(
+                body["transport"],
+                json!({ "kind": "stdio", "image": "ghcr.io/github/github-mcp-server", "command": [] })
+            );
+            assert_eq!(
+                body["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+                json!({ "secret": "GH_TOKEN" })
+            );
+            assert_eq!(
+                body["env"]["GITHUB_TOOLSETS"],
+                json!({ "value": "default" }),
+                "a fixed setting is filled in"
+            );
+            assert!(
+                body["env"].get("GITHUB_HOST").is_none(),
+                "an optional setting nobody gave is left out"
+            );
+            assert_eq!(body["tools"]["allow"], "all");
+            assert_eq!(
+                body["access"],
+                json!({ "roles": [], "nodes": [] }),
+                "nobody may use it until the owner says so"
+            );
+            assert_eq!(
+                body["limits"],
+                json!({ "timeout_s": 60, "max_output_kb": 256, "idle_stop_min": 10 })
+            );
+        }
+        // A preset header keeps its format unless the flag names one.
+        {
+            let body = new_config(
+                &catalog(),
+                Some("linear"),
+                false,
+                Some("lin"),
+                None,
+                &fields(|f| f.header = strings(&["Authorization=@vault:LINEAR_KEY"])),
+            )
+            .unwrap();
+            assert_eq!(body["id"], "lin");
+            assert_eq!(
+                body["headers"]["Authorization"],
+                json!({ "secret": "LINEAR_KEY", "format": "Bearer {}" })
+            );
+            assert_eq!(
+                body["transport"],
+                json!({ "kind": "http", "url": "https://mcp.linear.app/mcp" })
+            );
+        }
+        // A preset takes the volume it has and the flags set the rest.
+        {
+            let body = new_config(
+                &catalog(),
+                Some("memory"),
+                false,
+                None,
+                None,
+                &fields(|f| {
+                    f.disabled = true;
+                    f.roles = strings(&["builder", "reviewer"]);
+                    f.allow_tool = strings(&["remember", "recall"]);
+                    f.risk = strings(&["remember=write"]);
+                    f.timeout_s = Some(30);
+                }),
+            )
+            .unwrap();
+            assert_eq!(body["storage"]["volume"], true);
+            assert_eq!(body["enabled"], false, "--disabled adds it off");
+            assert_eq!(body["access"]["roles"], json!(["builder", "reviewer"]));
+            assert_eq!(body["tools"]["allow"], json!(["remember", "recall"]));
+            assert_eq!(body["tools"]["risk"], json!({ "remember": "write" }));
+            assert_eq!(body["limits"]["timeout_s"], 30);
+            assert_eq!(body["transport"]["command"], json!(["serve"]));
+        }
+        // A custom container takes its image and command.
+        {
+            let body = new_config(
                 &json!([]),
                 None,
                 true,
-                None,
+                Some("my-server"),
                 Some("container"),
-                &fields(|f| f.image = Some("x".into()))
+                &fields(|f| {
+                    f.image = Some("ghcr.io/me/server:1.0".into());
+                    f.arg = strings(&["serve", "--stdio"]);
+                    f.env = strings(&["TOKEN=@vault:MY_TOKEN"]);
+                }),
             )
-            .is_err()
-        );
-        assert!(
-            new_config(
+            .unwrap();
+            assert_eq!(body["id"], "my-server");
+            assert_eq!(body["name"], "my-server", "the name defaults to the id");
+            assert_eq!(
+                body["transport"],
+                json!({ "kind": "stdio", "image": "ghcr.io/me/server:1.0", "command": ["serve", "--stdio"] })
+            );
+            assert_eq!(body["env"], json!({ "TOKEN": { "secret": "MY_TOKEN" } }));
+            assert_eq!(body["storage"]["volume"], false);
+        }
+        // A custom remote takes its url and refuses container flags.
+        {
+            let body = new_config(
+                &json!([]),
+                None,
+                true,
+                Some("docs"),
+                Some("remote"),
+                &fields(|f| {
+                    f.url = Some("https://docs.test/mcp".into());
+                    f.header = strings(&["Authorization=@vault:DOCS_KEY|Bearer {}"]);
+                    f.name = Some("Docs".into());
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                body["transport"],
+                json!({ "kind": "http", "url": "https://docs.test/mcp" })
+            );
+            assert_eq!(
+                body["headers"]["Authorization"],
+                json!({ "secret": "DOCS_KEY", "format": "Bearer {}" })
+            );
+            assert_eq!(body["name"], "Docs");
+            let err = new_config(
+                &json!([]),
+                None,
+                true,
+                Some("docs"),
+                Some("remote"),
+                &fields(|f| f.image = Some("x".into())),
+            )
+            .unwrap_err();
+            assert!(err.contains("--transport container"), "{err}");
+        }
+    }
+
+    #[test]
+    fn new_config_refuses_what_it_cannot_build_and_names_the_fix() {
+        // A preset refuses a missing secret, no image, or a transport flag, and names the fix.
+        {
+            let err = new_config(
+                &catalog(),
+                Some("github"),
+                false,
+                None,
+                None,
+                &Fields::default(),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("GITHUB_PERSONAL_ACCESS_TOKEN is required"),
+                "{err}"
+            );
+            assert!(
+                err.contains("--env GITHUB_PERSONAL_ACCESS_TOKEN=@vault:SECRET"),
+                "{err}"
+            );
+            let err = new_config(
+                &catalog(),
+                Some("custom-only"),
+                false,
+                None,
+                None,
+                &Fields::default(),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("no official image") && err.contains("--custom"),
+                "{err}"
+            );
+            assert!(
+                new_config(
+                    &catalog(),
+                    Some("nope"),
+                    false,
+                    None,
+                    None,
+                    &Fields::default()
+                )
+                .is_err()
+            );
+            let err = new_config(
+                &catalog(),
+                Some("github"),
+                false,
+                None,
+                None,
+                &fields(|f| f.image = Some("x".into())),
+            )
+            .unwrap_err();
+            assert!(err.contains("--custom"), "{err}");
+            assert!(
+                new_config(
+                    &catalog(),
+                    Some("github"),
+                    false,
+                    None,
+                    Some("container"),
+                    &Fields::default()
+                )
+                .is_err()
+            );
+            assert!(
+                new_config(&catalog(), None, false, None, None, &Fields::default()).is_err(),
+                "a server is a preset or custom"
+            );
+        }
+        // A custom server names its id and its kind.
+        {
+            assert!(
+                new_config(
+                    &json!([]),
+                    None,
+                    true,
+                    None,
+                    Some("container"),
+                    &fields(|f| f.image = Some("x".into()))
+                )
+                .is_err()
+            );
+            assert!(
+                new_config(
+                    &json!([]),
+                    None,
+                    true,
+                    Some("svc"),
+                    None,
+                    &fields(|f| f.image = Some("x".into()))
+                )
+                .is_err()
+            );
+            let no_image = new_config(
                 &json!([]),
                 None,
                 true,
                 Some("svc"),
-                None,
-                &fields(|f| f.image = Some("x".into()))
+                Some("container"),
+                &Fields::default(),
             )
-            .is_err()
-        );
-        let no_image = new_config(
-            &json!([]),
-            None,
-            true,
-            Some("svc"),
-            Some("container"),
-            &Fields::default(),
-        )
-        .unwrap_err();
-        assert!(no_image.contains("--image"), "{no_image}");
-        let no_url = new_config(
-            &json!([]),
-            None,
-            true,
-            Some("svc"),
-            Some("remote"),
-            &Fields::default(),
-        )
-        .unwrap_err();
-        assert!(no_url.contains("--url"), "{no_url}");
+            .unwrap_err();
+            assert!(no_image.contains("--image"), "{no_image}");
+            let no_url = new_config(
+                &json!([]),
+                None,
+                true,
+                Some("svc"),
+                Some("remote"),
+                &Fields::default(),
+            )
+            .unwrap_err();
+            assert!(no_url.contains("--url"), "{no_url}");
+        }
     }
 
     fn current() -> Value {
@@ -1429,251 +1430,206 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_changes_only_what_is_given() {
-        let body = edit_body(
-            &current(),
-            &fields(|f| {
-                f.disabled = true;
-                f.env = strings(&[
-                    "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN_2",
-                    "GITHUB_HOST=",
-                ]);
-                f.risk = strings(&["create_issue=write"]);
-                f.idle_stop_min = Some(5);
-            }),
-        )
-        .unwrap();
-        assert!(body.get("id").is_none(), "the id is not sent");
-        assert!(
-            body.get("status").is_none() && body.get("tools_count").is_none(),
-            "only config is sent"
-        );
-        assert_eq!(body["enabled"], false);
-        assert_eq!(
-            body["env"],
-            json!({ "GITHUB_PERSONAL_ACCESS_TOKEN": { "secret": "GH_TOKEN_2" } }),
-            "one rebound, one removed"
-        );
-        assert_eq!(
-            body["tools"]["allow"],
-            json!(["list_issues"]),
-            "an unflagged pick stays"
-        );
-        assert_eq!(
-            body["tools"]["risk"],
-            json!({ "list_issues": "read", "create_issue": "write" }),
-            "risks merge"
-        );
-        assert_eq!(body["access"], json!({ "roles": "all", "nodes": ["n0"] }));
-        assert_eq!(
-            body["storage"]["volume"], true,
-            "the volume setting is kept"
-        );
-        assert_eq!(body["limits"]["idle_stop_min"], 5);
-        assert_eq!(body["limits"]["timeout_s"], 60);
+    fn an_edit_changes_only_what_is_given_and_keeps_the_rest() {
+        // An edit changes only what is given.
+        {
+            let body = edit_body(
+                &current(),
+                &fields(|f| {
+                    f.disabled = true;
+                    f.env = strings(&[
+                        "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH_TOKEN_2",
+                        "GITHUB_HOST=",
+                    ]);
+                    f.risk = strings(&["create_issue=write"]);
+                    f.idle_stop_min = Some(5);
+                }),
+            )
+            .unwrap();
+            assert!(body.get("id").is_none(), "the id is not sent");
+            assert!(
+                body.get("status").is_none() && body.get("tools_count").is_none(),
+                "only config is sent"
+            );
+            assert_eq!(body["enabled"], false);
+            assert_eq!(
+                body["env"],
+                json!({ "GITHUB_PERSONAL_ACCESS_TOKEN": { "secret": "GH_TOKEN_2" } }),
+                "one rebound, one removed"
+            );
+            assert_eq!(
+                body["tools"]["allow"],
+                json!(["list_issues"]),
+                "an unflagged pick stays"
+            );
+            assert_eq!(
+                body["tools"]["risk"],
+                json!({ "list_issues": "read", "create_issue": "write" }),
+                "risks merge"
+            );
+            assert_eq!(body["access"], json!({ "roles": "all", "nodes": ["n0"] }));
+            assert_eq!(
+                body["storage"]["volume"], true,
+                "the volume setting is kept"
+            );
+            assert_eq!(body["limits"]["idle_stop_min"], 5);
+            assert_eq!(body["limits"]["timeout_s"], 60);
+        }
+        // An edit keeps a header format and can clear a pick.
+        {
+            let mut current = current();
+            current["headers"] =
+                json!({ "Authorization": { "secret": "OLD", "format": "Bearer {}" } });
+            let body = edit_body(
+                &current,
+                &fields(|f| {
+                    f.header = strings(&["Authorization=@vault:NEW"]);
+                    f.roles = strings(&["none"]);
+                    f.allow_tool = strings(&["all"]);
+                    f.name = Some("Renamed".into());
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                body["headers"]["Authorization"],
+                json!({ "secret": "NEW", "format": "Bearer {}" })
+            );
+            assert_eq!(body["access"]["roles"], json!([]));
+            assert_eq!(body["tools"]["allow"], "all");
+            assert_eq!(body["name"], "Renamed");
+        }
+        // An edit switches a container to a remote url and keeps its settings.
+        {
+            let body = edit_body(
+                &current(),
+                &fields(|f| f.url = Some("https://mcp.test/mcp".into())),
+            )
+            .unwrap();
+            assert_eq!(
+                body["transport"],
+                json!({ "kind": "http", "url": "https://mcp.test/mcp" })
+            );
+            let container = edit_body(&current(), &fields(|f| f.arg = strings(&["x"])));
+            assert_eq!(
+                container.unwrap()["transport"]["command"],
+                json!(["x"]),
+                "an arg sets the command of a container"
+            );
+            let remote = edit_body(
+                &json!({ "transport": { "kind": "http", "url": "https://a.test/mcp" } }),
+                &fields(|f| f.arg = strings(&["x"])),
+            );
+            assert!(remote.unwrap_err().contains("container"));
+        }
     }
 
     #[test]
-    fn an_edit_keeps_a_header_format_and_can_clear_a_pick() {
-        let mut current = current();
-        current["headers"] = json!({ "Authorization": { "secret": "OLD", "format": "Bearer {}" } });
-        let body = edit_body(
-            &current,
-            &fields(|f| {
-                f.header = strings(&["Authorization=@vault:NEW"]);
-                f.roles = strings(&["none"]);
-                f.allow_tool = strings(&["all"]);
-                f.name = Some("Renamed".into());
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            body["headers"]["Authorization"],
-            json!({ "secret": "NEW", "format": "Bearer {}" })
-        );
-        assert_eq!(body["access"]["roles"], json!([]));
-        assert_eq!(body["tools"]["allow"], "all");
-        assert_eq!(body["name"], "Renamed");
-    }
-
-    #[test]
-    fn an_edit_switches_a_container_to_a_remote_url_and_keeps_its_settings() {
-        let body = edit_body(
-            &current(),
-            &fields(|f| f.url = Some("https://mcp.test/mcp".into())),
-        )
-        .unwrap();
-        assert_eq!(
-            body["transport"],
-            json!({ "kind": "http", "url": "https://mcp.test/mcp" })
-        );
-        let container = edit_body(&current(), &fields(|f| f.arg = strings(&["x"])));
-        assert_eq!(
-            container.unwrap()["transport"]["command"],
-            json!(["x"]),
-            "an arg sets the command of a container"
-        );
-        let remote = edit_body(
-            &json!({ "transport": { "kind": "http", "url": "https://a.test/mcp" } }),
-            &fields(|f| f.arg = strings(&["x"])),
-        );
-        assert!(remote.unwrap_err().contains("container"));
-    }
-
-    #[test]
-    fn picks_are_all_none_or_names() {
-        assert_eq!(pick_of(&[]).unwrap(), None);
-        assert_eq!(pick_of(&strings(&["all"])).unwrap(), Some(json!("all")));
-        assert_eq!(pick_of(&strings(&["none"])).unwrap(), Some(json!([])));
-        assert_eq!(
-            pick_of(&strings(&["a", "b"])).unwrap(),
-            Some(json!(["a", "b"]))
-        );
-        assert!(pick_of(&strings(&["all", "a"])).is_err());
-        assert_eq!(pick_text(&json!("all"), "nobody"), "all");
-        assert_eq!(pick_text(&json!([]), "nobody"), "nobody");
-        assert_eq!(pick_text(&json!(["a", "b"]), "nobody"), "a, b");
-    }
-
-    #[test]
-    fn a_risk_names_a_tool_and_one_of_three_levels() {
-        assert_eq!(
-            risk_of("create_issue=write").unwrap(),
-            ("create_issue".to_string(), "write")
-        );
-        assert_eq!(risk_of("drop=irreversible").unwrap().1, "irreversible");
-        assert!(risk_of("drop=dangerous").is_err());
-        assert!(risk_of("=read").is_err());
-        assert!(risk_of("drop").is_err());
-    }
-
-    #[test]
-    fn the_settings_and_the_transport_read_back_for_the_owner() {
-        assert_eq!(
-            setting_text(&json!({ "secret": "GH", "format": "Bearer {}" })),
-            "@vault:GH|Bearer {}"
-        );
-        assert_eq!(
-            setting_text(&json!({ "value": "https://x" })),
-            "@plain:https://x"
-        );
-        assert_eq!(bindings_text(&json!({})), "(none)");
-        assert_eq!(
-            transport_text(&json!({ "kind": "http", "url": "https://x/mcp" })),
-            "remote · https://x/mcp"
-        );
-        assert_eq!(
-            needs_text(&catalog()[0]),
-            "GITHUB_PERSONAL_ACCESS_TOKEN (vault)"
-        );
-        assert_eq!(needs_text(&catalog()[2]), "nothing");
-    }
-
-    #[test]
-    fn the_flags_parse_as_the_command_line_gives_them() {
-        assert!(matches!(parse(&["list"]), Ok(ServersCmd::List)));
-        assert!(matches!(parse(&["catalog"]), Ok(ServersCmd::Catalog)));
-        assert!(
-            matches!(parse(&["show", "github"]), Ok(ServersCmd::Show { id }) if id == "github")
-        );
-        let ServersCmd::Add {
-            preset,
-            custom,
-            id,
-            transport,
-            fields,
-        } = parse(&[
-            "add",
-            "--preset",
-            "github",
-            "--id",
-            "gh",
-            "--name",
-            "Work GitHub",
-            "--env",
-            "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH",
-            "--allow-tool",
-            "list_issues",
-            "--allow-tool",
-            "get_me",
-            "--roles",
-            "builder,reviewer",
-            "--disabled",
-        ])
-        .unwrap()
-        else {
-            panic!("an add")
-        };
-        assert_eq!(preset.as_deref(), Some("github"));
-        assert!(!custom && transport.is_none());
-        assert_eq!(id.as_deref(), Some("gh"));
-        assert_eq!(fields.name.as_deref(), Some("Work GitHub"));
-        assert_eq!(fields.allow_tool, strings(&["list_issues", "get_me"]));
-        assert_eq!(fields.roles, strings(&["builder", "reviewer"]));
-        assert!(fields.disabled && !fields.enabled);
-        assert!(
-            parse(&["add", "--preset", "github", "--custom"]).is_err(),
-            "a preset and a custom server are two"
-        );
-        assert!(parse(&["add", "--custom", "--transport", "lambda", "--id", "x"]).is_err());
-        assert!(
-            parse(&[
+    fn every_verb_and_flag_parses_as_the_command_line_gives_them() {
+        // The flags parse as the command line gives them.
+        {
+            assert!(matches!(parse(&["list"]), Ok(ServersCmd::List)));
+            assert!(matches!(parse(&["catalog"]), Ok(ServersCmd::Catalog)));
+            assert!(
+                matches!(parse(&["show", "github"]), Ok(ServersCmd::Show { id }) if id == "github")
+            );
+            let ServersCmd::Add {
+                preset,
+                custom,
+                id,
+                transport,
+                fields,
+            } = parse(&[
                 "add",
-                "--custom",
-                "--transport",
-                "remote",
+                "--preset",
+                "github",
                 "--id",
-                "docs",
-                "--url",
-                "https://d.test/mcp"
+                "gh",
+                "--name",
+                "Work GitHub",
+                "--env",
+                "GITHUB_PERSONAL_ACCESS_TOKEN=@vault:GH",
+                "--allow-tool",
+                "list_issues",
+                "--allow-tool",
+                "get_me",
+                "--roles",
+                "builder,reviewer",
+                "--disabled",
             ])
-            .is_ok()
-        );
-        assert!(parse(&["add", "--preset", "github", "--enabled", "--disabled"]).is_err());
-    }
-
-    #[test]
-    fn delete_edit_and_the_other_verbs_parse() {
-        assert!(matches!(
-            parse(&["delete", "gh", "--purge", "--yes"]),
-            Ok(ServersCmd::Delete {
-                purge: true,
-                yes: true,
-                ..
-            })
-        ));
-        assert!(matches!(
-            parse(&["edit", "gh", "--no-volume", "--timeout-s", "90"]),
-            Ok(ServersCmd::Edit { .. })
-        ));
-        assert!(matches!(
-            parse(&["start", "gh"]),
-            Ok(ServersCmd::Start { .. })
-        ));
-        assert!(matches!(
-            parse(&["stop", "gh"]),
-            Ok(ServersCmd::Stop { .. })
-        ));
-        assert!(
-            matches!(parse(&["test", "gh", "--node", "n2"]), Ok(ServersCmd::Test { node: Some(n), .. }) if n == "n2")
-        );
-        assert!(matches!(
-            parse(&["tools", "gh"]),
-            Ok(ServersCmd::Tools { .. })
-        ));
-        assert!(matches!(
-            parse(&["logs", "gh", "--follow", "--limit", "500"]),
-            Ok(ServersCmd::Logs {
-                limit: 500,
-                follow: true,
-                ..
-            })
-        ));
-        assert!(
-            parse(&["logs", "gh", "--limit", "0"]).is_err(),
-            "the limit is 1 to 500"
-        );
-        assert!(parse(&["logs", "gh", "--limit", "501"]).is_err());
-        assert!(parse(&["edit", "gh", "--volume", "--no-volume"]).is_err());
+            .unwrap()
+            else {
+                panic!("an add")
+            };
+            assert_eq!(preset.as_deref(), Some("github"));
+            assert!(!custom && transport.is_none());
+            assert_eq!(id.as_deref(), Some("gh"));
+            assert_eq!(fields.name.as_deref(), Some("Work GitHub"));
+            assert_eq!(fields.allow_tool, strings(&["list_issues", "get_me"]));
+            assert_eq!(fields.roles, strings(&["builder", "reviewer"]));
+            assert!(fields.disabled && !fields.enabled);
+            assert!(
+                parse(&["add", "--preset", "github", "--custom"]).is_err(),
+                "a preset and a custom server are two"
+            );
+            assert!(parse(&["add", "--custom", "--transport", "lambda", "--id", "x"]).is_err());
+            assert!(
+                parse(&[
+                    "add",
+                    "--custom",
+                    "--transport",
+                    "remote",
+                    "--id",
+                    "docs",
+                    "--url",
+                    "https://d.test/mcp"
+                ])
+                .is_ok()
+            );
+            assert!(parse(&["add", "--preset", "github", "--enabled", "--disabled"]).is_err());
+        }
+        // Delete, edit and the other verbs parse.
+        {
+            assert!(matches!(
+                parse(&["delete", "gh", "--purge", "--yes"]),
+                Ok(ServersCmd::Delete {
+                    purge: true,
+                    yes: true,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                parse(&["edit", "gh", "--no-volume", "--timeout-s", "90"]),
+                Ok(ServersCmd::Edit { .. })
+            ));
+            assert!(matches!(
+                parse(&["start", "gh"]),
+                Ok(ServersCmd::Start { .. })
+            ));
+            assert!(matches!(
+                parse(&["stop", "gh"]),
+                Ok(ServersCmd::Stop { .. })
+            ));
+            assert!(
+                matches!(parse(&["test", "gh", "--node", "n2"]), Ok(ServersCmd::Test { node: Some(n), .. }) if n == "n2")
+            );
+            assert!(matches!(
+                parse(&["tools", "gh"]),
+                Ok(ServersCmd::Tools { .. })
+            ));
+            assert!(matches!(
+                parse(&["logs", "gh", "--follow", "--limit", "500"]),
+                Ok(ServersCmd::Logs {
+                    limit: 500,
+                    follow: true,
+                    ..
+                })
+            ));
+            assert!(
+                parse(&["logs", "gh", "--limit", "0"]).is_err(),
+                "the limit is 1 to 500"
+            );
+            assert!(parse(&["logs", "gh", "--limit", "501"]).is_err());
+            assert!(parse(&["edit", "gh", "--volume", "--no-volume"]).is_err());
+        }
     }
 }

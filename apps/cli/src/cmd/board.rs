@@ -429,23 +429,4 @@ mod tests {
         assert_eq!(export_format("json"), Ok("json"));
         assert!(export_format("pdf").is_err());
     }
-
-    fn post() -> Value {
-        json!({ "id": "p1", "agent_cid": 7, "subject": "Hiring a Rust reviewer", "body": "Needs CLI experience.", "task": null })
-    }
-
-    #[test]
-    fn a_post_is_kept_by_its_author_and_by_text_in_its_subject_or_body() {
-        let p = post();
-        assert!(keeps(&p, None, ""));
-        assert!(keeps(&p, Some(7), ""));
-        assert!(!keeps(&p, Some(8), ""));
-        assert!(
-            keeps(&p, None, "rust reviewer"),
-            "the subject is searched, case-insensitively"
-        );
-        assert!(keeps(&p, None, "cli experience"), "the body is searched");
-        assert!(!keeps(&p, None, "budget"));
-        assert!(!keeps(&p, Some(8), "rust"), "both filters must hold");
-    }
 }

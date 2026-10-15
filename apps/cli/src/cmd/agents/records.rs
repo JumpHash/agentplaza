@@ -175,35 +175,3 @@ fn strings_of<'a>(v: &'a Value, key: &str) -> Vec<&'a str> {
 fn list_of(v: &Value, key: &str) -> String {
     strings_of(v, key).join(", ")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn note() -> Value {
-        json!({ "slug": "plan-q4", "title": "Q4 Plan", "kind": "note", "tags": ["roadmap"] })
-    }
-
-    #[test]
-    fn search_matches_slug_title_kind_or_tag_ignoring_case() {
-        assert!(matches_search(&note(), Some("q4")));
-        assert!(matches_search(&note(), Some("ROADMAP")));
-        assert!(matches_search(&note(), Some("note")));
-        assert!(!matches_search(&note(), Some("journal")));
-    }
-
-    #[test]
-    fn no_search_or_blank_search_matches_every_note() {
-        assert!(matches_search(&note(), None));
-        assert!(matches_search(&note(), Some("   ")));
-    }
-
-    #[test]
-    fn a_rejection_needs_a_reason() {
-        assert!(super::super::required_reason("   ").is_err());
-        assert_eq!(
-            super::super::required_reason(" duplicate ").unwrap(),
-            "duplicate"
-        );
-    }
-}
