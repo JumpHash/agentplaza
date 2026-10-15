@@ -1466,10 +1466,11 @@ sectionEnd('board owner composer tests: ok');
   differs({ active: null }, 'the active file changing is a new paint');
   eq(treeKey({ ...base, keep: new Set(['src/a.ts']) }) === treeKey({ ...base, keep: new Set(['src/a.ts']) }), true, 'treeKey: the same filter keeps the same key');
   const cps = [{ n: 1, label: 'before refactor', files: 3 }];
-  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [{ ...cps[0] }]), true, 'checkpointsKey: the same checkpoints give the same key');
-  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [{ ...cps[0], files: 4 }]), false, 'checkpointsKey: a checkpoint whose file count changes is a new paint');
-  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [...cps, { n: 2, label: 'x', files: 0 }]), false, 'checkpointsKey: a new checkpoint is a new paint');
-  eq(checkpointsKey('agent:1', false, cps) === checkpointsKey(null, true, cps), true, 'checkpointsKey: no panel (no diff, or no workspace) is the same paint');
+  eq(checkpointsKey('agent:1', true, cps, 0) === checkpointsKey('agent:1', true, [{ ...cps[0] }], 0), true, 'checkpointsKey: the same checkpoints give the same key');
+  eq(checkpointsKey('agent:1', true, cps, 0) === checkpointsKey('agent:1', true, [{ ...cps[0], files: 4 }], 0), false, 'checkpointsKey: a checkpoint whose file count changes is a new paint');
+  eq(checkpointsKey('agent:1', true, cps, 0) === checkpointsKey('agent:1', true, [...cps, { n: 2, label: 'x', files: 0 }], 0), false, 'checkpointsKey: a new checkpoint is a new paint');
+  eq(checkpointsKey('agent:1', false, cps, 0) === checkpointsKey(null, true, cps, 0), true, 'checkpointsKey: no panel (no diff, or no workspace) is the same paint');
+  eq(checkpointsKey('agent:1', true, cps, 0) === checkpointsKey('agent:1', true, cps, 61_000), false, 'checkpointsKey: a new minute repaints, so relative times move on');
 }
 sectionEnd('ide files paint tests: ok');
 

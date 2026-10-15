@@ -280,8 +280,15 @@ export function treeKey(p: TreeKeyInput): string {
 
 /** What the checkpoints panel paints, as a key: the workspace, and each checkpoint's number, label and file count. A
     workspace without a diff shows no panel (the key is then null). */
-export function checkpointsKey(workspace: string | null, diff: boolean, checkpoints: { n: number; label: string; files: number }[]): string {
-  return JSON.stringify(workspace === null || !diff ? null : [workspace, checkpoints.map((cp) => [cp.n, cp.label, cp.files])]);
+export function checkpointsKey(
+  workspace: string | null,
+  diff: boolean,
+  checkpoints: { n: number; label: string; files: number }[],
+  now: number = Date.now(),
+): string {
+  // The minute is in the key so the rows' relative times ("2m ago") still move on.
+  const minute = Math.floor(now / 60_000);
+  return JSON.stringify(workspace === null || !diff ? null : [workspace, minute, checkpoints.map((cp) => [cp.n, cp.label, cp.files])]);
 }
 
 /** The bottom drawer: its tab strip, and the run panel while the Run tab shows. */
