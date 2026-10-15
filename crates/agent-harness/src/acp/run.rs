@@ -53,6 +53,9 @@ pub fn run(
     install(workspace, entry)?;
     let (env, model) = engines::acp_launch(workspace, entry.id, request.model.as_deref())?;
     let extra = engines::acp_args(entry.id, request.model.as_deref())?;
+    if entry.id == "vibe" {
+        engines::write_vibe_config(workspace, request.model.as_deref())?;
+    }
     // Before the turn and on every call: the setup rewrites the engine's saved settings, so a new
     // model takes effect.
     if let Some(args) = engines::setup_args(entry.id, request.model.as_deref())? {
@@ -236,6 +239,12 @@ fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
             assets,
             binary_path,
         } => install_release(workspace, entry, version, assets, binary_path),
+        Install::Pip {
+            package,
+            version,
+            file,
+            sha256,
+        } => install_pip(workspace, entry, package, version, file, sha256),
     }
 }
 
@@ -390,7 +399,7 @@ fn install_release(
         let _ = std::fs::remove_file(&archive);
         return Err(format!("integrity mismatch for {} {version}", entry.id));
     }
-    let dir = release_dir(entry.id, version);
+    let dir = engine_dir(entry.id, version);
     files::create_dirs(&dir)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
     bash::execute(
@@ -412,6 +421,150 @@ fn install_release(
     Ok(())
 }
 
+/// Installs a PyPI package into a virtualenv of its own. The VM's Python must be 3.12 or later. `pip
+/// download` fetches exactly `file` (no dependencies) into the engine cache; the file must be that name
+/// and hash to `sha256`, else it is deleted and nothing is installed. Then pip installs the file,
+/// resolving its dependencies, and the venv's binary is copied into the npm prefix's `bin`.
+fn install_pip(
+    workspace: &Workspace,
+    entry: &Entry,
+    package: &str,
+    version: &str,
+    file: &str,
+    sha256: &str,
+) -> Result<(), String> {
+    let spec = format!("{} {version}", entry.id);
+    bash::install_packages(workspace, &json!({ "packages": ["python3", "py3-pip"] }))
+        .map_err(|err| format!("cannot install python3 and pip for {spec}: {err}"))?;
+    let python = bash::execute(
+        workspace.dir(),
+        "python3",
+        &["--version"],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot run python3 for {spec}: {}", engines::tail(&err)))?;
+    check_python(entry.id, &python)?;
+    let cache = workspace.plaza_dir().join(CACHE_DIR);
+    files::create_dirs(&cache)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
+    let dir = engine_dir(entry.id, version);
+    files::create_dirs(&dir)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
+    let venv = dir.join("venv");
+    bash::execute(
+        workspace.dir(),
+        "python3",
+        &["-m", "venv", text_path(&venv)?],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| {
+        format!(
+            "cannot create the virtualenv for {spec}: {}",
+            engines::tail(&err)
+        )
+    })?;
+    let pip = venv.join("bin").join("pip");
+    let pip = text_path(&pip)?;
+    // A stale copy of the file would make pip report nothing saved, so it is fetched afresh.
+    let downloaded = cache.join(file);
+    let _ = std::fs::remove_file(&downloaded);
+    let target = format!("{package}=={version}");
+    let fetched = bash::execute(
+        workspace.dir(),
+        pip,
+        &[
+            "download",
+            "--no-deps",
+            "--dest",
+            text_path(&cache)?,
+            target.as_str(),
+        ],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
+    let name = pip_saved_name(&fetched)
+        .ok_or_else(|| format!("cannot download {spec}: pip saved no file"))?;
+    if name != file {
+        let _ = std::fs::remove_file(cache.join(name));
+        return Err(format!(
+            "integrity mismatch for {} {version}: pip fetched {name}, not {file}",
+            entry.id
+        ));
+    }
+    let bytes = std::fs::read(&downloaded).map_err(|err| format!("cannot read {spec}: {err}"))?;
+    if !sha256_matches(&bytes, sha256) {
+        let _ = std::fs::remove_file(&downloaded);
+        return Err(format!("integrity mismatch for {} {version}", entry.id));
+    }
+    bash::execute(
+        workspace.dir(),
+        pip,
+        &["install", text_path(&downloaded)?],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot install {spec}: {}", engines::tail(&err)))?;
+    let found = venv.join("bin").join(entry.binary);
+    if !found.is_file() {
+        return Err(format!("{spec} has no {} in its virtualenv", entry.binary));
+    }
+    let binary = npm_binary(entry);
+    if let Some(bin_dir) = binary.parent() {
+        files::create_dirs(bin_dir)
+            .map_err(|err| format!("unavailable: cannot create {}: {err}", bin_dir.display()))?;
+    }
+    std::fs::copy(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
+    Ok(())
+}
+
+/// The minimum Python a PyPI install runs under: Mistral Vibe's package requires 3.12.
+const PIP_PYTHON: (u64, u64) = (3, 12);
+
+/// Checks that `python3 --version`'s output names Python [`PIP_PYTHON`] or later.
+fn check_python(id: &str, output: &str) -> Result<(), String> {
+    let found = python_version(output).ok_or_else(|| {
+        format!(
+            "cannot read the VM's Python version from {:?}",
+            output.trim()
+        )
+    })?;
+    if found < PIP_PYTHON {
+        return Err(format!(
+            "{id} needs Python {}.{} or later; the VM has {}.{}",
+            PIP_PYTHON.0, PIP_PYTHON.1, found.0, found.1
+        ));
+    }
+    Ok(())
+}
+
+/// The `(major, minor)` of a `Python 3.12.3` line, when it names one.
+fn python_version(output: &str) -> Option<(u64, u64)> {
+    let version = output.trim().strip_prefix("Python ")?;
+    let mut parts = version.split('.');
+    let major = leading_number(parts.next()?)?;
+    let minor = leading_number(parts.next()?)?;
+    Some((major, minor))
+}
+
+/// The number at the start of `text` (`13` in `13rc1`), when there is one.
+fn leading_number(text: &str) -> Option<u64> {
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// The file name `pip download` saved: the last `Saved <path>` line's file name.
+fn pip_saved_name(output: &str) -> Option<&str> {
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("Saved "))
+        .map(|path| path.trim().rsplit('/').next().unwrap_or(path))
+}
+
 /// The release archive for `arch` (`std::env::consts::ARCH`), if the engine ships one for it.
 fn asset_for<'a>(assets: &'a [Asset], arch: &str) -> Option<&'a Asset> {
     assets.iter().find(|asset| asset.arch == arch)
@@ -422,8 +575,8 @@ fn archive_name(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or("engine-release.tar.gz")
 }
 
-/// The folder a release is extracted into: `/workspace/.engines/<id>-<version>`.
-fn release_dir(id: &str, version: &str) -> PathBuf {
+/// The folder an engine's release or virtualenv lives in: `/workspace/.engines/<id>-<version>`.
+fn engine_dir(id: &str, version: &str) -> PathBuf {
     Path::new(ENGINES_DIR).join(format!("{id}-{version}"))
 }
 
@@ -858,13 +1011,50 @@ mod tests {
     #[test]
     fn a_release_extracts_into_its_own_folder_and_is_named_by_its_url_tail() {
         assert_eq!(
-            release_dir("goose", "1.52.0"),
+            engine_dir("goose", "1.52.0"),
             Path::new("/workspace/.engines/goose-1.52.0")
         );
         assert_eq!(
             archive_name("https://example.com/a/goose-x86_64.tar.gz"),
             "goose-x86_64.tar.gz"
         );
+    }
+
+    #[test]
+    fn a_pip_install_runs_in_a_virtualenv_under_its_engine_folder() {
+        assert_eq!(
+            engine_dir("vibe", "2.25.0").join("venv"),
+            Path::new("/workspace/.engines/vibe-2.25.0/venv")
+        );
+    }
+
+    #[test]
+    fn a_python_older_than_3_12_is_refused_with_the_version_the_vm_has() {
+        assert_eq!(python_version("Python 3.12.3\n"), Some((3, 12)));
+        assert_eq!(python_version("Python 3.13.0rc1"), Some((3, 13)));
+        assert_eq!(python_version("Python 4.0.0"), Some((4, 0)));
+        assert_eq!(python_version("python3: not found"), None);
+        assert!(check_python("vibe", "Python 3.12.0\n").is_ok());
+        assert!(check_python("vibe", "Python 3.14.1\n").is_ok());
+        assert_eq!(
+            check_python("vibe", "Python 3.11.9\n").expect_err("too old"),
+            "vibe needs Python 3.12 or later; the VM has 3.11"
+        );
+        assert!(check_python("vibe", "garbage").is_err());
+    }
+
+    #[test]
+    fn the_file_pip_saved_is_named_by_its_last_saved_line() {
+        let output = "Collecting mistral-vibe==2.25.0\n  Downloading mistral_vibe-2.25.0-py3-none-any.whl\n  Saved /workspace/.plaza/engine-cache/mistral_vibe-2.25.0-py3-none-any.whl\nSuccessfully downloaded mistral-vibe\n";
+        assert_eq!(
+            pip_saved_name(output),
+            Some("mistral_vibe-2.25.0-py3-none-any.whl")
+        );
+        assert_eq!(
+            pip_saved_name("  Saved ./mistral_vibe-2.25.0.tar.gz\n"),
+            Some("mistral_vibe-2.25.0.tar.gz")
+        );
+        assert_eq!(pip_saved_name("File was already downloaded x.whl"), None);
     }
 
     #[test]

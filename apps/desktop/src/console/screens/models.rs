@@ -301,9 +301,9 @@ fn keep_acp_switches(copy: &mut Settings, hub: &Settings) {
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
-const ENGINE_IDS: [&str; 11] = [
+const ENGINE_IDS: [&str; 12] = [
     "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose", "kimi",
-    "auggie",
+    "auggie", "vibe",
 ];
 
 /// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI, Qwen Code,
@@ -324,6 +324,7 @@ fn engine_label(id: &'static str) -> &'static str {
         "goose" => "Goose",
         "kimi" => "Kimi Code",
         "auggie" => "Auggie",
+        "vibe" => "Mistral Vibe",
         other => other,
     }
 }
@@ -2736,6 +2737,7 @@ mod tests {
             ("goose", "Goose"),
             ("kimi", "Kimi Code"),
             ("auggie", "Auggie"),
+            ("vibe", "Mistral Vibe"),
         ] {
             assert_eq!(
                 engines_after(&engines(&["claude"]), id, true),

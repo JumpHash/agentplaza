@@ -38,13 +38,29 @@ pub enum Install {
         /// under the same file name is used when the archive keeps it in a folder.
         binary_path: &'static str,
     },
+    /// A Python package from PyPI, installed into a virtualenv of its own under the engine's folder.
+    /// `pip download` fetches exactly `file` without its dependencies, and its sha256 must match before
+    /// anything is installed; then pip installs that file and resolves its dependencies, as npm does
+    /// for an npm package.
+    Pip {
+        /// The PyPI project name.
+        package: &'static str,
+        /// The pinned version of that project.
+        version: &'static str,
+        /// The distribution file pip must fetch, by name (a wheel for a pure-Python project).
+        file: &'static str,
+        /// That file's sha256 as lowercase hex.
+        sha256: &'static str,
+    },
 }
 
 impl Install {
     /// The pinned version, whichever way the engine is installed.
     pub fn version(&self) -> &'static str {
         match self {
-            Install::Npm { version, .. } | Install::Release { version, .. } => version,
+            Install::Npm { version, .. }
+            | Install::Release { version, .. }
+            | Install::Pip { version, .. } => version,
         }
     }
 }
@@ -80,9 +96,10 @@ pub struct Entry {
 }
 
 /// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code,
-/// Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code and Auggie are ACP only (`gemini --acp`,
-/// `qwen --acp`, `kilo acp`, `cline --acp`, `copilot --acp --stdio`, `goose acp`, `kimi acp`,
-/// `auggie --acp`): they have no headless run, and the owner enables them in `engines_enabled`.
+/// Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are ACP only
+/// (`gemini --acp`, `qwen --acp`, `kilo acp`, `cline --acp`, `copilot --acp --stdio`, `goose acp`,
+/// `kimi acp`, `auggie --acp`, `vibe-acp`): they have no headless run, and the owner enables them in
+/// `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -259,6 +276,23 @@ pub const ENGINES: &[Entry] = &[
         // Its launch-process allow rule runs every command the model asks for without a prompt.
         refused_modes: &["launch-process:allow"],
     },
+    Entry {
+        id: "vibe",
+        install: Install::Pip {
+            package: "mistral-vibe",
+            version: "2.25.0",
+            file: "mistral_vibe-2.25.0-py3-none-any.whl",
+            sha256: "cdedb722d5b8ae6770b56496f6b17677cc2d02705b6e6d5205c0c09167e652fa",
+        },
+        binary: "vibe-acp",
+        args: &[],
+        // Vibe reads its model from the config file the launch writes first (`engines::write_vibe_config`),
+        // so the session is given none.
+        model: ModelVia::ConfigOption,
+        // Its auto-approve mode runs every tool without asking, and bypass turns the approvals off.
+        refused_exact_modes: &[],
+        refused_modes: &["auto-approve", "bypass"],
+    },
 ];
 
 impl Entry {
@@ -322,6 +356,15 @@ mod tests {
                             engine.id
                         );
                     }
+                }
+                Install::Pip { file, sha256, .. } => {
+                    assert!(file.ends_with(".whl"), "{}", engine.id);
+                    assert_eq!(sha256.len(), 64, "{}", engine.id);
+                    assert!(
+                        sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                        "{}",
+                        engine.id
+                    );
                 }
             }
             assert_eq!(entry(engine.id), Some(engine));
@@ -422,6 +465,26 @@ mod tests {
         let claude = entry("claude").expect("claude");
         assert!(claude.refuses("bypassPermissions"));
         assert!(!claude.refuses("acceptEdits"));
+    }
+
+    #[test]
+    fn vibe_is_the_pypi_install_of_its_cli_in_acp_mode_with_auto_approve_and_bypass_refused() {
+        let vibe = entry("vibe").expect("vibe");
+        assert_eq!(
+            vibe.install,
+            Install::Pip {
+                package: "mistral-vibe",
+                version: "2.25.0",
+                file: "mistral_vibe-2.25.0-py3-none-any.whl",
+                sha256: "cdedb722d5b8ae6770b56496f6b17677cc2d02705b6e6d5205c0c09167e652fa",
+            }
+        );
+        assert_eq!(vibe.binary, "vibe-acp");
+        assert!(vibe.args.is_empty());
+        assert_eq!(vibe.refused_modes, ["auto-approve", "bypass"]);
+        assert!(vibe.refuses("auto-approve"));
+        assert!(vibe.refuses("Bypass_Tool_Permissions"));
+        assert!(!vibe.refuses("default"));
     }
 
     #[test]

@@ -342,6 +342,8 @@ pub(crate) fn acp_launch(
         // Auggie's session token is the placeholder the vendor relay answers for; its model is on the
         // command line (`acp_args`).
         "auggie" => return Ok((engine_env(home, &auggie_route()), None)),
+        // Vibe reads its model from the config file `write_vibe_config` wrote before this launch.
+        "vibe" => return Ok((engine_env(home, &vibe_route(workspace, model)?), None)),
         "opencode" => {
             let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
@@ -355,6 +357,87 @@ pub(crate) fn acp_launch(
     let engine = Engine::parse(engine_id)?;
     let route = model_route(engine, model)?;
     Ok((engine_env(home, &route), route.model.clone()))
+}
+
+/// The folder Mistral Vibe keeps its config in: `<workspace>/.plaza/engines/vibe`. It sits under the
+/// harness's own state folder, which the engine's file methods refuse to write to, so the engine cannot
+/// rewrite the config that names its gateway route.
+pub(crate) fn vibe_home(workspace: &Workspace) -> PathBuf {
+    workspace.plaza_dir().join("engines").join("vibe")
+}
+
+/// Writes Mistral Vibe's `config.toml` for the call's model, before the launch, so a new model takes
+/// effect on every call (the way Cline's saved settings do). Vibe reads it from `VIBE_HOME`.
+pub(crate) fn write_vibe_config(workspace: &Workspace, model: Option<&str>) -> Result<(), String> {
+    let config = vibe_config(model)?;
+    let home = vibe_home(workspace);
+    std::fs::create_dir_all(&home)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", home.display()))?;
+    std::fs::write(home.join("config.toml"), config)
+        .map_err(|err| format!("unavailable: cannot write {}: {err}", home.display()))
+}
+
+/// The route for Mistral Vibe, which runs over ACP only and reads its provider and model from the file
+/// [`write_vibe_config`] writes: `VIBE_HOME` names that file's folder, and the placeholder key comes from
+/// `PLAZA_API_KEY`, which the file names. The model is in the file, so the session is given none.
+fn vibe_route(workspace: &Workspace, model: Option<&str>) -> Result<Route, String> {
+    vibe_config(model)?;
+    Ok(Route {
+        env: vec![
+            (
+                "VIBE_HOME".to_string(),
+                vibe_home(workspace).display().to_string(),
+            ),
+            ("PLAZA_API_KEY".to_string(), "plaza".to_string()),
+        ],
+        model: None,
+    })
+}
+
+/// Mistral Vibe's `config.toml` for `model`: the gateway route of the model's provider as its one provider
+/// (`openai`, `openrouter` or `opencode`, all chat completions), the model without its provider, and
+/// `bypass_tool_permissions = false`, so the engine asks before its tools act. The gateway has no Mistral
+/// route, so a Mistral model goes through `openrouter/mistralai/<model>`.
+fn vibe_config(model: Option<&str>) -> Result<String, String> {
+    let Some(model) = model else {
+        return Err("invalid input: Vibe needs \"model\": its config names the model".to_string());
+    };
+    let (provider, rest) = split_model(model)?;
+    let route = match provider {
+        "openai" | "openrouter" | "opencode" => provider,
+        _ => {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Vibe takes openai/..., openrouter/... or opencode/... models (Mistral models go as openrouter/mistralai/<model>: the gateway has no Mistral route)"
+            ));
+        }
+    };
+    if rest.chars().any(char::is_control) {
+        return Err(format!(
+            "invalid input: \"model\" is {model:?}; a model name has no control characters"
+        ));
+    }
+    Ok(format!(
+        "active_model = \"plaza\"\n\
+         bypass_tool_permissions = false\n\
+         \n\
+         [[providers]]\n\
+         name = \"plaza\"\n\
+         api_base = \"{GATEWAY}/{route}/v1\"\n\
+         api_key_env_var = \"PLAZA_API_KEY\"\n\
+         api_style = \"openai\"\n\
+         backend = \"generic\"\n\
+         \n\
+         [[models]]\n\
+         name = \"{name}\"\n\
+         provider = \"plaza\"\n\
+         alias = \"plaza\"\n",
+        name = toml_escape(rest),
+    ))
+}
+
+/// `text` as the contents of a TOML basic string: a backslash and a double quote are escaped.
+fn toml_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// The command that writes an engine's saved configuration before each call, for the engines that
@@ -1164,6 +1247,65 @@ mod tests {
             err.contains("Gemini CLI runs over ACP only; switch engines_mode to acp"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn vibe_names_its_model_in_a_config_file_under_its_own_folder() {
+        let workspace = scratch("vibe-config");
+        let config = vibe_config(Some("openrouter/mistralai/mistral-large")).expect("a model");
+        assert_eq!(
+            config,
+            "active_model = \"plaza\"\n\
+             bypass_tool_permissions = false\n\
+             \n\
+             [[providers]]\n\
+             name = \"plaza\"\n\
+             api_base = \"http://plaza.gateway/openrouter/v1\"\n\
+             api_key_env_var = \"PLAZA_API_KEY\"\n\
+             api_style = \"openai\"\n\
+             backend = \"generic\"\n\
+             \n\
+             [[models]]\n\
+             name = \"mistralai/mistral-large\"\n\
+             provider = \"plaza\"\n\
+             alias = \"plaza\"\n"
+        );
+        assert!(config.contains("bypass_tool_permissions = false\n"));
+        assert_eq!(
+            vibe_home(&workspace),
+            workspace.plaza_dir().join("engines").join("vibe")
+        );
+
+        let (env, model) = acp_launch(&workspace, "vibe", Some("openai/gpt-x")).expect("vibe");
+        assert_eq!(model, None);
+        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert!(env.contains(&format!("VIBE_HOME={}", vibe_home(&workspace).display())));
+        assert!(env.contains(&"PLAZA_API_KEY=plaza".to_string()));
+    }
+
+    #[test]
+    fn vibe_routes_follow_its_provider_and_refuse_the_rest_with_the_mistral_hint() {
+        assert!(
+            vibe_config(Some("opencode/gpt-x"))
+                .unwrap()
+                .contains("http://plaza.gateway/opencode/v1")
+        );
+        assert!(
+            vibe_config(Some("openai/gpt-x"))
+                .unwrap()
+                .contains("name = \"gpt-x\"")
+        );
+        assert!(vibe_config(None).is_err());
+        let err = vibe_config(Some("anthropic/claude-x")).expect_err("refused");
+        assert!(err.contains("openrouter/mistralai/<model>"), "{err}");
+        assert!(vibe_config(Some("openai/a\nb")).is_err());
+        assert!(acp_launch(&scratch("vibe-refused"), "vibe", None).is_err());
+    }
+
+    #[test]
+    fn a_vibe_model_name_is_escaped_for_a_toml_basic_string() {
+        assert_eq!(toml_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+        assert_eq!(toml_escape("plain/name-1.0"), "plain/name-1.0");
     }
 
     #[test]
