@@ -181,8 +181,6 @@ export interface Settings {
   acp_v2?: boolean;
   /** The coding engines an agent may run (`claude`, `codex`, `opencode`); at least one stays on. */
   engines_enabled: string[];
-  /** How an engine runs: `acp` is the live stream the laws check at every action; `headless` is the earlier one-shot run. */
-  engines_mode: 'acp' | 'headless';
 }
 
 /** One editor session with a plaza agent (apid's `GET /v1/acp/sessions`). */

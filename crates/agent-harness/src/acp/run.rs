@@ -1174,7 +1174,6 @@ mod tests {
     fn the_v2_offer_is_made_only_to_the_acp2_transport() {
         assert_eq!(protocol_offer("acp2"), 2);
         assert_eq!(protocol_offer(""), 1);
-        assert_eq!(protocol_offer("headless"), 1);
     }
 
     #[test]

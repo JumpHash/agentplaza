@@ -195,9 +195,8 @@ and `mode` are session options. Bypass modes are refused whatever the engine off
 The owner's settings choose the engines. `engines_enabled` lists their ids (`claude`, `codex`,
 `opencode`, `gemini`, `qwen`, `kilo`, `cline`, `copilot`, `goose`, `kimi`, `auggie`), and the offer shows
 only the enabled ones. Claude, Codex and OpenCode are on by default (`DEFAULT_ENGINE_IDS`); the other
-eight are off until the owner adds them. `engines_mode` is `acp` (the default) or `headless`, the
-one-process-per-job runner that stays for one release. Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub
-Copilot CLI, Goose, Kimi Code and Auggie have no headless run: they run only over ACP.
+eight are off until the owner adds them. Every engine runs over ACP: there is no other transport, and no
+engine is started with a permission bypass.
 
 **Internet access goes through the hub.** The harness runs a proxy on the
 guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools

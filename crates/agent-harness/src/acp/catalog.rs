@@ -3,8 +3,8 @@
 //!
 //! Versions are pinned (never `latest`). An npm install is checked against the registry's sha512
 //! integrity; a release archive is checked against its sha256 per architecture. Installs happen in
-//! the VM on first use, like the headless engines. A version bump is a code change, re-checked for
-//! which of the adapter's tools ask permission before they act.
+//! the VM on first use. A version bump is a code change, re-checked for which of the adapter's tools
+//! ask permission before they act.
 
 /// How an engine learns the model the hub allowed for the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +99,7 @@ pub struct Entry {
 /// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code,
 /// Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are ACP only
 /// (`gemini --acp`, `qwen --acp`, `kilo acp`, `cline --acp`, `copilot --acp --stdio`, `goose acp`,
-/// `kimi acp`, `auggie --acp`, `vibe-acp`): they have no headless run, and the owner enables them in
-/// `engines_enabled`.
+/// `kimi acp`, `auggie --acp`, `vibe-acp`); the owner enables them in `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",

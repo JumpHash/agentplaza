@@ -1,16 +1,17 @@
-//! `code_engine`: a full coding agent (Claude Code, Codex or OpenCode) run headless
-//! inside the VM, pointed at the plaza's model gateway so no key ever enters the VM.
+//! The launch settings of the coding engines `code_engine` runs over ACP (see `acp`): how each
+//! one reaches the plaza's model gateway, what it is started with, and the shared folder and
+//! install helpers the ACP path uses. The gateway routes keep every key out of the VM: each
+//! engine gets a placeholder, and the gateway holds the real one.
 //!
-//! The engine is installed on first use: `nodejs` and `npm` through apk (as root), then
-//! the engine's npm package into the agent's global prefix (as the agent). Each run goes
-//! through `/usr/bin/env`, which sets the engine's environment on the process and starts
-//! the engine with the prompt as one argument, never through a shell string.
+//! The engines are installed on first use by the ACP path (see `acp::catalog`): `nodejs` and
+//! `npm` through apk (as root), then each engine's pinned package into the agent's global
+//! prefix (as the agent).
 
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::bash::{self, Privilege};
+use crate::bash;
 use crate::files::Workspace;
 
 const DEFAULT_TIMEOUT_S: u64 = 900;
@@ -20,7 +21,7 @@ const MAX_TIMEOUT_S: u64 = 3600;
 pub(crate) const NPM_PREFIX: &str = "/workspace/.npm-global";
 /// An npm install of an engine may take a while on a cold cache.
 pub(crate) const INSTALL_TIMEOUT_S: u64 = 600;
-/// The most output a run returns, and the tail kept from a failure.
+/// The most output a tool result returns, and the tail kept from a failure.
 const TAIL_BYTES: usize = 16 * 1024;
 pub(crate) const ENV_PROGRAM: &str = "/usr/bin/env";
 /// Set for the engine on top of the bash tool's environment. `plaza.gateway` is relayed
@@ -40,26 +41,8 @@ const GATEWAY: &str = "http://plaza.gateway";
 /// The models the gateway's `opencode` responses route serves (the Codex wire protocol).
 const RESPONSES_PREFIXES: [&str; 3] = ["gpt-", "grok-", "muse-spark-"];
 
-/// Runs one job through the chosen engine and returns its final report.
-pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
-    let job = Job::parse(workspace, input)?;
-    ensure_installed(workspace, job.engine)?;
-    let argv = command_args(job.engine, &job.prompt, workspace.dir(), &job.route);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let outcome = bash::execute(
-        &job.dir,
-        ENV_PROGRAM,
-        &refs,
-        job.timeout_s,
-        Privilege::Agent,
-    );
-    match (job.engine, outcome) {
-        (Engine::Claude, Ok(text)) => claude_report(strip_exit_line(&text)),
-        (_, Ok(text)) => Ok(tail(&text)),
-        (_, Err(text)) => Err(tail(&text)),
-    }
-}
-
+/// The engines whose model routes are built here (see [`model_route`]). The other ACP engines have
+/// their own arms in [`acp_launch`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Engine {
     Claude,
@@ -73,133 +56,10 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            // Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot, Goose, Kimi Code and Auggie have
-            // no headless run: their ACP adapters are the only way they run.
-            "gemini" => Err(
-                "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "qwen" => Err(
-                "invalid input: \"engine\" is qwen: Qwen Code runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "kilo" => Err(
-                "invalid input: \"engine\" is kilo: Kilo Code runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "cline" => Err(
-                "invalid input: \"engine\" is cline: Cline runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "copilot" => Err(
-                "invalid input: \"engine\" is copilot: GitHub Copilot runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "goose" => Err(
-                "invalid input: \"engine\" is goose: Goose runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "kimi" => Err(
-                "invalid input: \"engine\" is kimi: Kimi Code runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
-            "auggie" => Err(
-                "invalid input: \"engine\" is auggie: Auggie runs over ACP only; switch engines_mode to acp"
-                    .to_string(),
-            ),
             _ => Err(format!(
                 "invalid input: \"engine\" must be claude, codex or opencode, not {name:?}"
             )),
         }
-    }
-
-    /// The npm package that provides the engine.
-    fn package(self) -> &'static str {
-        match self {
-            Self::Claude => "@anthropic-ai/claude-code",
-            Self::Codex => "@openai/codex",
-            Self::OpenCode => "opencode-ai",
-        }
-    }
-
-    /// The command the package installs.
-    fn binary(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::OpenCode => "opencode",
-        }
-    }
-
-    /// The arguments of one headless run; the prompt is a single argument. `model` goes on
-    /// the engine's model flag; OpenCode takes its model from its config instead.
-    fn args(self, prompt: &str, model: Option<&str>) -> Vec<String> {
-        let mut words: Vec<&str> = match self {
-            // Inside its own VM an agent may do anything (the owner's choice), so the engines run
-            // without their own approval prompts or sandboxes. That never widens what the agent
-            // can reach: the engine runs inside the agent's microVM (no NIC, vsock only, internet
-            // only via the hub's audited egress, keys held by apid), where bash runs as root too.
-            Self::Claude => vec![
-                "-p",
-                prompt,
-                "--output-format",
-                "json",
-                "--permission-mode",
-                "bypassPermissions",
-            ],
-            Self::Codex => vec![
-                "exec",
-                "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox",
-            ],
-            Self::OpenCode => vec!["run", prompt],
-        };
-        if let (Self::Codex, Some(model)) = (self, model) {
-            words.extend(["-m", model]);
-        }
-        if self == Self::Codex {
-            words.push(prompt);
-        }
-        if let (Self::Claude, Some(model)) = (self, model) {
-            words.extend(["--model", model]);
-        }
-        words.into_iter().map(str::to_string).collect()
-    }
-}
-
-/// A validated job: the engine, its prompt, the folder it runs in, its timeout and the
-/// route to its model.
-struct Job {
-    engine: Engine,
-    prompt: String,
-    dir: PathBuf,
-    timeout_s: u64,
-    route: Route,
-}
-
-impl Job {
-    fn parse(workspace: &Workspace, input: &Value) -> Result<Self, String> {
-        let engine = Engine::parse(
-            input
-                .get("engine")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        )?;
-        let prompt = match input.get("prompt").and_then(Value::as_str) {
-            Some(prompt) if !prompt.trim().is_empty() => prompt.to_string(),
-            _ => return Err("invalid input: \"prompt\" must be a non-empty string".to_string()),
-        };
-        let timeout_s = timeout_arg(input)?;
-        let model = optional_text(input, "model")?;
-        let route = model_route(engine, model)?;
-        let dir = job_dir(workspace, input.get("path"))?;
-        Ok(Self {
-            engine,
-            prompt,
-            dir,
-            timeout_s,
-            route,
-        })
     }
 }
 
@@ -234,7 +94,7 @@ pub(crate) fn job_folder(workspace: &Workspace, path: Option<&Value>) -> Result<
     job_dir(workspace, path)
 }
 
-/// The folder a run starts in: the workspace, or `path` under it. A `path` that is
+/// The folder a session starts in: the workspace, or `path` under it. A `path` that is
 /// absolute, has a `..` part, is not a folder, or leads out of the workspace through a
 /// symlink is refused.
 fn job_dir(workspace: &Workspace, path: Option<&Value>) -> Result<PathBuf, String> {
@@ -268,38 +128,6 @@ pub(crate) fn ensure_node(workspace: &Workspace) -> Result<(), String> {
     bash::install_packages(workspace, &json!({ "packages": ["nodejs", "npm"] })).map(|_| ())
 }
 
-/// Installs the engine when its binary is missing: `nodejs` and `npm` through apk, then
-/// the engine's package into the agent's npm prefix. A failure says which step failed.
-fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String> {
-    let binary = Path::new(NPM_PREFIX).join("bin").join(engine.binary());
-    if binary.exists() {
-        return Ok(());
-    }
-    ensure_node(workspace).map_err(|err| {
-        format!(
-            "cannot install nodejs and npm for {}: {err}",
-            engine.binary()
-        )
-    })?;
-    bash::execute(
-        workspace.dir(),
-        "npm",
-        &["install", "-g", "--prefix", NPM_PREFIX, engine.package()],
-        INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| format!("cannot install {}: {}", engine.package(), tail(&err)))?;
-    if binary.exists() {
-        Ok(())
-    } else {
-        Err(format!(
-            "npm installed {} but {} is missing",
-            engine.package(),
-            binary.display()
-        ))
-    }
-}
-
 /// The `KEY=VALUE` pairs that start an engine: `HOME` is the workspace (the engine's own config
 /// lives there, not in a `path` subfolder), then the engine's environment, then the route's
 /// settings (`env` applies its pairs in order, so they override the defaults).
@@ -320,8 +148,7 @@ fn engine_env(home: &Path, route: &Route) -> Vec<String> {
 }
 
 /// What an ACP engine session starts with, for the catalogue's engine `engine_id`: its `KEY=VALUE`
-/// pairs (see [`engine_env`]) and the model id the engine is given, from the same routes as the
-/// headless runs. OpenCode's model id is its provider block's `<id>/<model>`, which its config
+/// pairs (see [`engine_env`]) and the model id the engine is given. OpenCode's model id is its provider block's `<id>/<model>`, which its config
 /// names as the default model.
 pub(crate) fn acp_launch(
     workspace: &Workspace,
@@ -711,16 +538,7 @@ pub(crate) fn acp_args(engine_id: &str, model: Option<&str>) -> Result<Vec<Strin
     }
 }
 
-/// The `env` arguments that start the headless engine: its pairs (see [`engine_env`]), then the
-/// binary and its arguments.
-fn command_args(engine: Engine, prompt: &str, home: &Path, route: &Route) -> Vec<String> {
-    let mut argv = engine_env(home, route);
-    argv.push(engine.binary().to_string());
-    argv.extend(engine.args(prompt, route.model.as_deref()));
-    argv
-}
-
-/// How a run reaches its model: the environment settings the engine needs, and the model
+/// How a session reaches its model: the environment settings the engine needs, and the model
 /// name the engine is given (the plaza id after its provider, as the gateway names it).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Route {
@@ -875,48 +693,6 @@ fn opencode_config_route(env_key: &str, provider: &str, rest: &str) -> Result<Ro
     })
 }
 
-/// Claude's `--output-format json` report: its `result`, then a footer with the turn
-/// count and cost when it has them. An error report is an `Err`; output that is not
-/// JSON (cut or unexpected) is returned as it is, tail-capped.
-fn claude_report(body: &str) -> Result<String, String> {
-    let Ok(report) = serde_json::from_str::<Value>(body.trim()) else {
-        return Ok(tail(body));
-    };
-    let result = report
-        .get("result")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if report.get("is_error").and_then(Value::as_bool) == Some(true) {
-        return Err(if result.is_empty() {
-            tail(body)
-        } else {
-            tail(result)
-        });
-    }
-    let mut text = tail(result);
-    let mut footer = Vec::new();
-    if let Some(turns) = report.get("num_turns").and_then(Value::as_u64) {
-        footer.push(format!("num_turns: {turns}"));
-    }
-    if let Some(cost) = report.get("total_cost_usd").and_then(Value::as_f64) {
-        footer.push(format!("total_cost_usd: {cost}"));
-    }
-    if !footer.is_empty() {
-        text.push_str(&format!("\n\n[{}]", footer.join(", ")));
-    }
-    Ok(text)
-}
-
-/// The output without the `exit <code>` line that the bash helper appends.
-fn strip_exit_line(text: &str) -> &str {
-    let last_line = text.rfind('\n').map_or(0, |at| at + 1);
-    if text[last_line..].starts_with("exit") {
-        &text[..last_line]
-    } else {
-        text
-    }
-}
-
 /// The last `TAIL_BYTES` of `text`, on a character boundary, with a note when cut.
 pub(crate) fn tail(text: &str) -> String {
     if text.len() <= TAIL_BYTES {
@@ -942,66 +718,8 @@ mod tests {
     }
 
     #[test]
-    fn each_engine_has_its_package_binary_and_run_arguments() {
-        assert_eq!(Engine::Claude.package(), "@anthropic-ai/claude-code");
-        assert_eq!(Engine::Codex.package(), "@openai/codex");
-        assert_eq!(Engine::OpenCode.package(), "opencode-ai");
-        assert_eq!(Engine::Claude.binary(), "claude");
-        assert_eq!(Engine::Codex.binary(), "codex");
-        assert_eq!(Engine::OpenCode.binary(), "opencode");
-        assert_eq!(
-            Engine::Claude.args("fix the bug", None),
-            [
-                "-p",
-                "fix the bug",
-                "--output-format",
-                "json",
-                "--permission-mode",
-                "bypassPermissions"
-            ]
-        );
-        assert_eq!(
-            Engine::Codex.args("fix the bug", None),
-            [
-                "exec",
-                "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "fix the bug"
-            ]
-        );
-        assert_eq!(
-            Engine::OpenCode.args("fix the bug", None),
-            ["run", "fix the bug"]
-        );
-        assert_eq!(
-            Engine::Claude.args("fix", Some("claude-x"))[6..],
-            ["--model", "claude-x"]
-        );
-        assert_eq!(
-            Engine::Codex.args("fix", Some("gpt-5")),
-            [
-                "exec",
-                "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "-m",
-                "gpt-5",
-                "fix"
-            ]
-        );
-        assert_eq!(
-            Engine::OpenCode.args("fix", Some("claude-x")),
-            ["run", "fix"]
-        );
-    }
-
-    #[test]
-    fn the_command_sets_the_gateway_environment_and_runs_the_binary_last() {
-        let argv = command_args(
-            Engine::Claude,
-            "hi",
-            Path::new("/workspace"),
-            &Route::default(),
-        );
+    fn the_launch_sets_the_home_and_the_gateway_environment() {
+        let pairs = engine_env(Path::new("/workspace"), &Route::default());
         for pair in [
             "HOME=/workspace",
             "ANTHROPIC_BASE_URL=http://plaza.gateway/anthropic",
@@ -1012,56 +730,8 @@ mod tests {
             "DISABLE_AUTOUPDATER=1",
             "CI=1",
         ] {
-            assert!(argv.iter().any(|arg| arg == pair), "{pair}");
+            assert!(pairs.iter().any(|arg| arg == pair), "{pair}");
         }
-        let at = argv
-            .iter()
-            .position(|arg| arg == "claude")
-            .expect("the binary");
-        assert_eq!(
-            argv[at + 1..],
-            [
-                "-p",
-                "hi",
-                "--output-format",
-                "json",
-                "--permission-mode",
-                "bypassPermissions"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_claude_report_returns_its_result_with_the_turns_and_cost() {
-        let body = r#"{"type":"result","subtype":"success","is_error":false,"result":"Fixed it.","num_turns":4,"total_cost_usd":0.0123}"#;
-        assert_eq!(
-            claude_report(body).expect("a report"),
-            "Fixed it.\n\n[num_turns: 4, total_cost_usd: 0.0123]"
-        );
-        assert_eq!(
-            claude_report(r#"{"result":"Done."}"#).expect("a report"),
-            "Done."
-        );
-    }
-
-    #[test]
-    fn a_claude_error_report_is_an_error_and_plain_output_is_kept() {
-        let body = r#"{"is_error":true,"result":"Context is full."}"#;
-        assert_eq!(
-            claude_report(body).expect_err("an error report"),
-            "Context is full."
-        );
-        assert_eq!(
-            claude_report("not json\n").expect("kept as it is"),
-            "not json\n"
-        );
-    }
-
-    #[test]
-    fn the_shell_helper_exit_line_is_stripped() {
-        assert_eq!(strip_exit_line("{\"a\":1}\nexit 0"), "{\"a\":1}\n");
-        assert_eq!(strip_exit_line("one\ntwo\nexit 0"), "one\ntwo\n");
-        assert_eq!(strip_exit_line("exit 0"), "");
     }
 
     #[test]
@@ -1077,36 +747,22 @@ mod tests {
     }
 
     #[test]
-    fn bad_input_is_refused_before_anything_is_installed() {
+    fn bad_input_is_refused_before_the_launch() {
         let workspace = scratch("input");
-        for (input, reason) in [
-            (json!({ "engine": "vim", "prompt": "x" }), "engine"),
-            (json!({ "prompt": "x" }), "engine"),
-            (json!({ "engine": "codex", "prompt": "  " }), "prompt"),
-            (
-                json!({ "engine": "codex", "prompt": "x", "timeout_s": 5 }),
-                "timeout_s",
-            ),
-            (
-                json!({ "engine": "codex", "prompt": "x", "timeout_s": 3601 }),
-                "timeout_s",
-            ),
-            (
-                json!({ "engine": "codex", "prompt": "x", "path": "../up" }),
-                "path",
-            ),
-            (
-                json!({ "engine": "codex", "prompt": "x", "model": "opencode/claude-x" }),
-                "model",
-            ),
-            (
-                json!({ "engine": "claude", "prompt": "x", "model": "opencode/deepseek-v4-pro" }),
-                "Claude Code",
-            ),
-        ] {
-            let err = run(&workspace, &input).expect_err("refused");
-            assert!(err.contains(reason), "{input}: {err}");
+        let err = acp_launch(&workspace, "vim", None).expect_err("refused");
+        assert!(err.contains("engine"), "{err}");
+        for timeout in [json!(5), json!(3601)] {
+            let input = json!({ "timeout_s": timeout });
+            let err = timeout_arg(&input).expect_err("refused");
+            assert!(err.contains("timeout_s"), "{err}");
         }
+        let err = job_folder(&workspace, Some(&json!("../up"))).expect_err("refused");
+        assert!(err.contains("path"), "{err}");
+        let err = acp_launch(&workspace, "codex", Some("opencode/claude-x")).expect_err("refused");
+        assert!(err.contains("model"), "{err}");
+        let err = acp_launch(&workspace, "claude", Some("opencode/deepseek-v4-pro"))
+            .expect_err("refused");
+        assert!(err.contains("Claude Code"), "{err}");
     }
 
     #[test]
@@ -1236,17 +892,6 @@ mod tests {
         assert_eq!(
             err,
             "invalid input: \"model\" is \"anthropic/claude-x\"; Gemini CLI takes gemini/<model> models"
-        );
-    }
-
-    #[test]
-    fn gemini_is_acp_only_under_the_headless_engines() {
-        let workspace = scratch("gemini-headless");
-        let input = json!({"engine": "gemini", "prompt": "p"});
-        let err = Job::parse(&workspace, &input).err().expect("refused");
-        assert!(
-            err.contains("Gemini CLI runs over ACP only; switch engines_mode to acp"),
-            "{err}"
         );
     }
 
@@ -1520,29 +1165,6 @@ mod tests {
     }
 
     #[test]
-    fn qwen_and_kilo_are_acp_only_under_the_headless_engines() {
-        let workspace = scratch("acp-only-headless");
-        for (engine, name) in [
-            ("qwen", "Qwen Code"),
-            ("kilo", "Kilo Code"),
-            ("cline", "Cline"),
-            ("copilot", "GitHub Copilot"),
-            ("goose", "Goose"),
-            ("kimi", "Kimi Code"),
-            ("auggie", "Auggie"),
-        ] {
-            let input = json!({"engine": engine, "prompt": "p"});
-            let err = Job::parse(&workspace, &input).err().expect("refused");
-            assert!(
-                err.contains(&format!(
-                    "{name} runs over ACP only; switch engines_mode to acp"
-                )),
-                "{err}"
-            );
-        }
-    }
-
-    #[test]
     fn cline_launch_is_given_no_model_and_its_home() {
         let workspace = scratch("cline-launch");
         let (env, model) = acp_launch(&workspace, "cline", None).expect("cline");
@@ -1614,10 +1236,10 @@ mod tests {
                 .get("anthropic/claude-x")
                 .is_some()
         );
-        let argv = command_args(Engine::OpenCode, "hi", Path::new("/workspace"), &route);
+        let pairs = engine_env(Path::new("/workspace"), &route);
         assert!(
-            argv.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)),
-            "{argv:?}"
+            pairs.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)),
+            "{pairs:?}"
         );
         assert!(model_route(Engine::OpenCode, Some("bad_name/x")).is_err());
     }

@@ -411,17 +411,12 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         keep_recent: limits
             .keep_recent
             .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
-        // ACP unless the owner's `engines_mode` setting keeps the headless engines. With the owner's
-        // `acp_v2` on, the engines are offered the ACP v2 draft first (`acp2`); v1 is the default.
-        engine_transport: {
-            let settings = app.settings.get();
-            if settings.engines_mode == "headless" {
-                "headless".into()
-            } else if settings.acp_v2 {
-                "acp2".into()
-            } else {
-                String::new()
-            }
+        // Every engine runs over ACP. With the owner's `acp_v2` on, the engines are offered the ACP v2
+        // draft first (`acp2`); v1 is the default.
+        engine_transport: if app.settings.get().acp_v2 {
+            "acp2".into()
+        } else {
+            String::new()
         },
     }
 }

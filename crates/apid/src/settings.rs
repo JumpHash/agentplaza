@@ -119,7 +119,8 @@ pub struct Settings {
     /// The coding engines the owner has enabled. A `code_engine` call names one of these, and the
     /// offer lists only these. Never empty, never repeated.
     pub engines_enabled: Vec<String>,
-    /// How the engines run: `acp` (the Agent Client Protocol) or `headless` (one process per job).
+    /// How the engines run: always `acp` (the Agent Client Protocol). The field stays so a saved value
+    /// still loads; see [`ENGINE_MODE`].
     pub engines_mode: String,
     /// Whether editors may connect to the hub's ACP server (`/v1/acp`). Off until the owner turns it on.
     pub acp_enabled: bool,
@@ -162,8 +163,9 @@ pub const ENGINE_IDS: [&str; 12] = [
 /// Kimi Code, Auggie and Mistral Vibe are named but off until the owner enables them.
 pub const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
-/// The transports `engines_mode` may name: the Agent Client Protocol, or the headless engines.
-pub const ENGINE_MODES: [&str; 2] = ["acp", "headless"];
+/// The one transport the engines run over, the Agent Client Protocol: the only `engines_mode`. The
+/// headless run is gone, so a saved `headless` loads as this (see `repair`).
+pub const ENGINE_MODE: &str = "acp";
 
 /// A workstation's recording settings, as the hub's defaults hold them (the same fields as `StationSettings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,7 +230,7 @@ impl Default for Settings {
             workstation_recordings: RecordingDefaults::default(),
             board_pauses: BoardPauses::default(),
             engines_enabled: DEFAULT_ENGINE_IDS.map(String::from).to_vec(),
-            engines_mode: ENGINE_MODES[0].into(),
+            engines_mode: ENGINE_MODE.into(),
             acp_enabled: false,
             acp_write_back: false,
             acp_v2: false,
@@ -574,11 +576,10 @@ fn check_engines(new: &Settings) -> Result<(), String> {
     if new.engines_enabled.iter().collect::<BTreeSet<_>>().len() != new.engines_enabled.len() {
         return Err("engines_enabled lists an engine twice".into());
     }
-    if !ENGINE_MODES.contains(&new.engines_mode.as_str()) {
+    if new.engines_mode != ENGINE_MODE {
         return Err(format!(
-            "unknown engines_mode {:?}; expected one of {}",
-            new.engines_mode,
-            ENGINE_MODES.join(", ")
+            "unknown engines_mode {:?}; expected {ENGINE_MODE}",
+            new.engines_mode
         ));
     }
     Ok(())
@@ -822,7 +823,7 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         kept = d.engines_enabled.clone();
     }
     s.engines_enabled = kept;
-    if !ENGINE_MODES.contains(&s.engines_mode.as_str()) {
+    if s.engines_mode != ENGINE_MODE {
         notes.push(format!(
             "engines_mode {:?} is not a mode; using {}",
             s.engines_mode, d.engines_mode
@@ -1445,6 +1446,8 @@ mod tests {
         s.engines_mode = "pipes".into();
         assert!(check_engines(&s).unwrap_err().contains("pipes"));
         s.engines_mode = "headless".into();
+        assert!(check_engines(&s).unwrap_err().contains("headless"));
+        s.engines_mode = ENGINE_MODE.into();
         assert!(check_engines(&s).is_ok());
     }
 
@@ -1478,6 +1481,12 @@ mod tests {
         assert_eq!(fixed.engines_mode, "acp");
         assert!(notes.iter().any(|n| n.contains("bash")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("pipes")), "{notes:?}");
+
+        // The headless run is gone: a file saved under it loads as ACP, with a note.
+        let saved: Settings = serde_json::from_str("{\"engines_mode\": \"headless\"}").unwrap();
+        let (fixed, notes) = repair(saved, false);
+        assert_eq!(fixed.engines_mode, "acp");
+        assert!(notes.iter().any(|n| n.contains("headless")), "{notes:?}");
 
         // A list with no engine left is the defaults.
         let mut none = Settings::default();

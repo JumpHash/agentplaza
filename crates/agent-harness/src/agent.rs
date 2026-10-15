@@ -36,7 +36,7 @@ use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tools;
-use crate::{checkpoints, engines, library, plan, search_tools, shells};
+use crate::{checkpoints, library, plan, search_tools, shells};
 
 /// A chat thread whose history serializes past this is closed: its next work
 /// starts a new conversation, opened with the thread's last summary.
@@ -768,18 +768,13 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         match decision {
             Decision::Allow => {
                 let workspace = self.workspace;
-                let headless = self
-                    .profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.engine_transport == "headless");
                 // A library tool comes with its program; built-in tools run from this harness.
                 let outcome = match program {
                     Some(program) => {
                         self.run_local(move || library::run(workspace, &program, input))?
                     }
-                    // An engine runs as an ACP session whose every action the hub checks, unless the
-                    // profile keeps the one-shot run of earlier releases.
-                    None if name == "code_engine" && !headless => {
+                    // An engine runs as an ACP session whose every action the hub checks.
+                    None if name == "code_engine" => {
                         let shared = self.shared;
                         let cancel = Arc::clone(&self.tool_cancel);
                         let call = id.to_string();
@@ -893,7 +888,6 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "bash_output" => shells::output(workspace, input),
         "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
-        "code_engine" => engines::run(workspace, input),
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
         "share_file" => library::share(workspace, input),

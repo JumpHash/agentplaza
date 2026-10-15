@@ -265,9 +265,8 @@ pub struct AgentProfile {
     /// when compressing; older ones are folded into a summary.
     #[serde(default)]
     pub keep_recent: u32,
-    /// v4: how `code_engine` runs its engines: empty (or `acp`) streams them as ACP sessions with
-    /// every action checked by the hub; `headless` is the one-shot run of earlier releases, kept
-    /// for one release behind the owner's `engines.mode` setting.
+    /// v4: which ACP version the engines are offered: empty (ACP v1) or `acp2` (the v2 draft). Every
+    /// engine streams as an ACP session with every action checked by the hub.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub engine_transport: String,
 }

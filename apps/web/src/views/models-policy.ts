@@ -252,7 +252,6 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   function enginesCard(): HTMLElement {
     // A hub from before the engine settings sends neither field: it runs the three engines over ACP.
     copy.engines_enabled ??= [...DEFAULT_ENGINES];
-    copy.engines_mode ??= 'acp';
     const enabled = copy.engines_enabled;
     const boxes = ENGINES.map((engine) => {
       const on = enabled.includes(engine.value);
@@ -272,25 +271,13 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         h('span.mono.faint', null, engine.value),
       );
     });
-    const mode = select(
-      [
-        { value: 'acp', label: 'ACP — live stream, every engine action checked by the laws (recommended)' },
-        { value: 'headless', label: 'Headless — one-shot run (earlier releases; kept for one release)' },
-      ],
-      copy.engines_mode,
-    );
-    mode.addEventListener('change', () => {
-      copy.engines_mode = mode.value === 'headless' ? 'headless' : 'acp';
-      sync();
-    });
     return card(
       'Engines',
       h(
         'div.stack',
         null,
-        h('p.faint', null, 'The coding engines an agent may run. At least one stays on.'),
+        h('p.faint', null, 'The coding engines an agent may run. At least one stays on. Every engine runs over ACP: a live stream, with every action checked by the laws.'),
         h('div.stack', null, ...boxes),
-        field('Run mode', mode),
       ),
     );
   }

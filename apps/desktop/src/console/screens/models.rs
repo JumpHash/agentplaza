@@ -277,9 +277,6 @@ pub struct Settings {
     /// The coding engines the owner has enabled. The hub never keeps none.
     #[serde(default = "default_engines")]
     pub engines_enabled: Vec<String>,
-    /// How the engines run: `acp` (live, every action checked by the laws) or `headless` (one run per job).
-    #[serde(default = "default_engines_mode")]
-    pub engines_mode: String,
     /// Whether editors may connect to the hub's ACP server. Off until the owner turns it on.
     #[serde(default)]
     pub acp_enabled: bool,
@@ -329,15 +326,8 @@ fn engine_label(id: &'static str) -> &'static str {
     }
 }
 
-/// The transports `engines_mode` may name. `acp` is the first, and the default.
-const ENGINE_MODES: [&str; 2] = ["acp", "headless"];
-
 fn default_engines() -> Vec<String> {
     DEFAULT_ENGINE_IDS.into_iter().map(String::from).collect()
-}
-
-fn default_engines_mode() -> String {
-    ENGINE_MODES[0].to_string()
 }
 
 /// The engine list after `id` is switched `on`, in the hub's order. None when that would leave no engine on:
@@ -586,7 +576,6 @@ pub enum Msg {
     PolicyEffort(String),
     PolicyAllowTraining(bool),
     PolicyEngine(String, bool),
-    PolicyEngineMode(String),
     PolicyNumber(Num, String),
     PolicyFetchBlock(text_editor::Action),
     TogglePrices,
@@ -1046,12 +1035,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 && let Some(next) = engines_after(&p.copy.engines_enabled, &id, on)
             {
                 p.copy.engines_enabled = next;
-            }
-            Task::none()
-        }
-        Msg::PolicyEngineMode(mode) => {
-            if let Some(p) = state.policy.as_mut() {
-                p.copy.engines_mode = mode;
             }
             Task::none()
         }
@@ -2629,7 +2612,7 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
 /// The coding engines a `code_engine` call may name, and how they run. At least one stays on.
 fn engines_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     let s = &p.copy;
-    let mut items: Vec<Element<'a, Msg>> = ENGINE_IDS
+    let items: Vec<Element<'a, Msg>> = ENGINE_IDS
         .into_iter()
         .map(|id| {
             iced::widget::checkbox(s.engines_enabled.iter().any(|e| e == id))
@@ -2638,17 +2621,6 @@ fn engines_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
                 .into()
         })
         .collect();
-    let modes: Vec<String> = ENGINE_MODES.iter().map(|m| m.to_string()).collect();
-    let mode: Element<'a, Msg> = pick_list(modes, Some(s.engines_mode.clone()), |v: String| {
-        Msg::PolicyEngineMode(v)
-    })
-    .width(Length::Fill)
-    .into();
-    items.push(labelled("Mode", mode));
-    items.push(
-        ui::faint("acp: a live stream, and every action is checked by the laws. headless: one run per job, as in earlier releases.")
-            .into(),
-    );
     ui::card("Engines", column(items).spacing(12).into())
 }
 
@@ -2773,7 +2745,6 @@ mod tests {
         let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
         let s: Settings = serde_json::from_value(bare).expect("settings parse");
         assert_eq!(s.engines_enabled, ["claude", "codex", "opencode"]);
-        assert_eq!(s.engines_mode, "acp");
         assert!(!s.acp_enabled);
     }
 
@@ -2821,14 +2792,12 @@ mod tests {
             "default_model": "a",
             "orchestrator_model": "b",
             "engines_enabled": ["opencode"],
-            "engines_mode": "headless",
             "acp_enabled": true,
             "some_future_field": 3
         });
         let s: Settings = serde_json::from_value(raw).expect("settings parse");
         let back = serde_json::to_value(&s).expect("settings serialize");
         assert_eq!(back["engines_enabled"], json!(["opencode"]));
-        assert_eq!(back["engines_mode"], "headless");
         assert_eq!(back["acp_enabled"], true);
         assert_eq!(back["some_future_field"], 3);
     }
