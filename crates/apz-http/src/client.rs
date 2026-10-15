@@ -409,7 +409,13 @@ impl<R: Read + Duplex> Read for Timed<R> {
         if left.is_zero() {
             return Err(timed_out());
         }
-        self.stream.set_read_timeout(Some(left))?;
+        // XNU refuses `SO_RCVTIMEO` with `EINVAL` once the peer has closed a Unix stream, though
+        // the reply may still be buffered. A closed peer cannot block the read, so read it.
+        match self.stream.set_read_timeout(Some(left)) {
+            Err(err)
+                if err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_some() => {}
+            other => other?,
+        }
         self.stream.read(buf).map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
             _ => err,
