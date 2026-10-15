@@ -356,6 +356,12 @@ impl VirtioBlock {
         self.disk.is_read_only()
     }
 
+    /// The device id a `GET_ID` request returns, which a snapshot records so a
+    /// restore can refuse another volume (see [`DiskProperties::image_id`]).
+    pub(super) fn image_id(&self) -> &[u8; VIRTIO_BLK_ID_BYTES as usize] {
+        self.disk.image_id()
+    }
+
     /// Builds the device over an opened volume, offering `avail_features`.
     fn from_disk(disk: DiskProperties, avail_features: u64) -> VirtioBlock {
         let config_space = ConfigSpace::new(disk.nsectors());
@@ -558,7 +564,7 @@ mod tests {
     /// Activates `device` against `mem` with `device`'s queue already over the
     /// [`VirtQueue`] at `mem`'s start.
     fn activate(device: &mut VirtioBlock, mem: &GuestMemoryMmap) {
-        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        let irq = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("an interrupt event fd");
         device
             .activate(mem.clone(), irq)
             .expect("the device activates against guest memory");

@@ -97,6 +97,36 @@ pub struct VirtioMmioFdtInfo {
     pub gsi: u32,
 }
 
+/// The virtio-mmio transports of a VM, one device tree node each, in the layout's slots: the vsock
+/// device, the workspace volume and `volumes` shared data volumes (at most
+/// [`crate::spawner::MAX_DATA_VOLUMES`]). The KVM and Hypervisor.framework backends both describe
+/// their devices with it, and put each transport on its bus at the same window.
+pub fn virtio_transports(vsock: bool, workspace: bool, volumes: usize) -> Vec<VirtioMmioFdtInfo> {
+    let mut transports = Vec::new();
+    if vsock {
+        transports.push(VirtioMmioFdtInfo {
+            addr: layout::VSOCK_MMIO_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::VSOCK_GSI,
+        });
+    }
+    if workspace {
+        transports.push(VirtioMmioFdtInfo {
+            addr: layout::WORKSPACE_MMIO_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::WORKSPACE_GSI,
+        });
+    }
+    for index in 0..volumes.min(crate::spawner::MAX_DATA_VOLUMES) {
+        transports.push(VirtioMmioFdtInfo {
+            addr: layout::DATA_MMIO_START + index as u64 * layout::MMIO_LEN,
+            len: layout::MMIO_LEN,
+            gsi: layout::DATA_GSI_START + index as u32,
+        });
+    }
+    transports
+}
+
 /// Errors thrown while configuring the Flattened Device Tree for aarch64.
 #[derive(Debug, thiserror::Error)]
 pub enum FdtError {
@@ -572,6 +602,74 @@ mod tests {
         // A VM without a vsock device declares no virtio-mmio transport: the
         // guest would otherwise probe an address nothing answers on.
         assert!(!text.contains("virtio_mmio@"));
+    }
+
+    /// The shared transport list is the layout's slots in order: the vsock
+    /// device, the workspace volume, then the data volumes (capped at
+    /// `MAX_DATA_VOLUMES`), each on its own window and GSI, none of them on the
+    /// console's GSI.
+    #[test]
+    fn virtio_transports_follow_the_layout() {
+        let max = crate::spawner::MAX_DATA_VOLUMES;
+        let transports = virtio_transports(true, true, 6);
+        assert_eq!(transports.len(), 1 + 1 + max);
+
+        let mut expected_addrs = vec![layout::VSOCK_MMIO_START, layout::WORKSPACE_MMIO_START];
+        expected_addrs
+            .extend((0..max).map(|i| layout::DATA_MMIO_START + i as u64 * layout::MMIO_LEN));
+        let addrs: Vec<u64> = transports.iter().map(|t| t.addr).collect();
+        assert_eq!(addrs, expected_addrs);
+        assert!(addrs.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(transports.iter().all(|t| t.len == layout::MMIO_LEN));
+
+        let mut expected_gsis = vec![layout::VSOCK_GSI, layout::WORKSPACE_GSI];
+        expected_gsis.extend((0..max).map(|i| layout::DATA_GSI_START + i as u32));
+        let gsis: Vec<u32> = transports.iter().map(|t| t.gsi).collect();
+        assert_eq!(gsis, expected_gsis);
+        let mut distinct = gsis.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), gsis.len());
+        assert!(!gsis.contains(&layout::GSI_LEGACY_START));
+
+        assert!(virtio_transports(false, false, 0).is_empty());
+    }
+
+    /// Every transport of the shared list gets its `virtio_mmio@` node in the
+    /// device tree, at the window it is registered on.
+    #[test]
+    fn every_transport_gets_a_device_tree_node() {
+        let mem = arch_mem(mib_to_bytes(128));
+        let gic = FakeGicv3 {
+            properties: [0x3fff_0000, 0x1_0000, 0x3ffd_0000, 0x2_0000],
+        };
+        let serial = SerialFdtInfo {
+            addr: layout::SERIAL_MEM_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::GSI_LEGACY_START,
+        };
+        let transports = virtio_transports(true, true, 4);
+        assert_eq!(transports.len(), 6);
+
+        let dtb = create_fdt(
+            &mem,
+            vec![0],
+            CString::new("console=ttyS0").unwrap(),
+            &serial,
+            &transports,
+            &gic,
+            &None,
+        )
+        .unwrap();
+
+        let text = String::from_utf8_lossy(&dtb);
+        for transport in &transports {
+            assert!(
+                text.contains(&format!("virtio_mmio@{:x}", transport.addr)),
+                "missing virtio-mmio node at {:#x}",
+                transport.addr
+            );
+        }
     }
 
     /// A VM with a vsock device gets a `virtio,mmio` node at the window its

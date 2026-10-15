@@ -500,7 +500,7 @@ impl Peripherals {
             }
             VcpuExit::IoOut(addr, data) => {
                 if let Some(pio_bus) = &self.pio_bus {
-                    if let Err(err) = pio_bus.write(u64::from(addr), data) {
+                    if let Err(err) = pio_bus.write_and_wait(u64::from(addr), data) {
                         eprintln!(
                             "warning: vcpu: IO write @ {addr:#x}:{:#x} failed: {err}",
                             data.len()

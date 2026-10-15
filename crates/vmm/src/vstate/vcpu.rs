@@ -521,7 +521,7 @@ fn handle_kvm_exit(
             }
             VcpuExit::MmioWrite(addr, data) => {
                 if let Some(mmio_bus) = &peripherals.mmio_bus {
-                    if let Err(err) = mmio_bus.write(addr, data) {
+                    if let Err(err) = mmio_bus.write_and_wait(addr, data) {
                         eprintln!(
                             "warning: invalid MMIO write @ {addr:#x}:{:#x}: {err}",
                             data.len()

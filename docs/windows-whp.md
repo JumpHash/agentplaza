@@ -140,13 +140,12 @@ connection to `vsockd` → interrupts back through the I/O APIC.
 | no console output at all | `console=ttyS0` missing from `--cmdline` |
 | boot stops around TSC or APIC timer calibration | the host clock rate was not readable: add `tsc_early_khz=<kHz of your CPU>` to `--cmdline` |
 | `MMIO … could not be emulated` | report it with the address: a device access the instruction emulator could not decode |
-| `this VM asked for a workspace volume` | workspace volumes are not available on Windows yet (below) |
 | `vsockd` exits with `another listener is already serving …` | a live listener already holds that socket path (another `vsockd`, or another process): stop it. A leftover socket file from a crashed run is removed by `vsockd` itself |
 
 ## Not done yet
 
-- **Workspace volumes** (virtio-blk) and the **memory balloon**: Linux-only devices. A spec with a
-  workspace is refused on Windows; a balloon is ignored with a warning.
+- **Memory balloon**: Linux-only. A balloon is ignored with a warning. (The workspace and the
+  shared data volumes are attached, in the KVM x86_64 slots.)
 - **Confinement**: on Linux every VMM thread runs under a seccomp allowlist, and the per-VM process
   mode adds the jailer (namespaces, `pivot_root`, dropped ids). On Windows the VMM runs as threads
   of `noded` with the user's rights; a Windows equivalent (an AppContainer or a restricted token per

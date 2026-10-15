@@ -36,6 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Read;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::pal::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
 
@@ -48,6 +49,39 @@ use super::{MuxerConnection, VsockUnixBackendError, defs};
 use crate::devices::virtio::vsock::metrics::IncMetric;
 use crate::devices::virtio::vsock::metrics::METRICS;
 use crate::devices::virtio::vsock::packet::{VsockPacketRx, VsockPacketTx};
+
+/// How long a paused host socket stays out of the poll set before `tick` puts it back.
+const HOST_SOCK_RETRY: Duration = Duration::from_secs(1);
+
+/// How many host streams may be accepted but not yet past their `connect <port>` line. A local
+/// process that holds more of them is refused, so it cannot exhaust the descriptors.
+const MAX_PENDING_LOCAL: usize = 64;
+
+/// How long an accepted host stream may take to send its `connect <port>` line before `tick`
+/// drops it.
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The longest connect line read. A line still without its newline at this length is parsed as it
+/// stands.
+const CONNECT_LINE_MAX: usize = 32;
+
+/// Whether an `accept` failure is resource exhaustion (no descriptors or buffers left). That can
+/// end without any vsock connection closing, so it pauses the host socket for a retry. Other
+/// failures, such as `ECONNABORTED` for a client that gave up before the accept, are transient
+/// and must not pause it.
+#[cfg(unix)]
+fn exhausted(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+/// Windows: `WSAEMFILE` and `WSAENOBUFS`.
+#[cfg(windows)]
+fn exhausted(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(10024 | 10055))
+}
 
 /// A unique identifier of a `MuxerConnection` object. Connections are stored in a hash map,
 /// keyed by a `ConnMapKey` object.
@@ -66,6 +100,27 @@ pub enum MuxerRx {
     RstPkt { local_port: u32, peer_port: u32 },
 }
 
+/// A host stream accepted on the host socket, not yet past its `connect <port>` line.
+#[derive(Debug)]
+struct PendingLocal {
+    /// The stream. Once its line is complete, it becomes the connection's stream.
+    stream: UnixStream,
+    /// The bytes of the connect line read so far, including its `\n` once that has arrived.
+    line: Vec<u8>,
+    /// When the stream was accepted. `tick` drops it after `LOCAL_CONNECT_TIMEOUT`.
+    since: Instant,
+}
+
+/// What reading a pending host stream's connect line found.
+enum LineRead {
+    /// The line is incomplete; the stream stays registered until more of it arrives.
+    Incomplete,
+    /// The line is complete: its `\n` has been read, or `CONNECT_LINE_MAX` bytes.
+    Complete,
+    /// The stream ended or failed before its line was complete.
+    Failed(VsockUnixBackendError),
+}
+
 /// An epoll listener, registered under the muxer's nested epoll FD.
 #[derive(Debug)]
 enum EpollListener {
@@ -75,9 +130,9 @@ enum EpollListener {
     Connection { key: ConnMapKey, evset: EventSet },
     /// A listener interested in new host-initiated connections.
     HostSock,
-    /// A listener interested in reading host `connect <port>` commands from a freshly
-    /// connected host socket.
-    LocalStream(UnixStream),
+    /// A host stream waiting for its `connect <port>` line, read from a freshly connected host
+    /// socket.
+    LocalStream(Box<PendingLocal>),
 }
 
 /// The vsock connection multiplexer.
@@ -115,6 +170,16 @@ pub struct VsockMuxer {
     /// This appears to have been a design decision dating back to the initial introduction of the
     /// vsock implementation.
     pub(crate) local_port_last: u32,
+    /// When the host socket's listener was taken out of the poll set after an `accept` failed
+    /// for lack of descriptors; `None` while it is polled. `tick` puts it back once
+    /// `HOST_SOCK_RETRY` has passed, and a connection closing does too.
+    host_sock_paused: Option<Instant>,
+    /// Whether the current exhaustion episode has been logged. The pause is logged once per
+    /// episode, and a successful accept ends the episode.
+    exhaustion_logged: bool,
+    /// How many `LocalStream` listeners are registered: host streams accepted but not yet past
+    /// their connect line. `add_listener` and `remove_listener` keep it in step.
+    pending_local: usize,
 }
 
 impl VsockChannel for VsockMuxer {
@@ -294,10 +359,16 @@ impl VsockBackend for VsockMuxer {
     fn activate(&mut self) -> Result<(), VsockError> {
         // Listen on the host-initiated socket, for incoming connections.
         self.add_listener(self.host_sock.as_raw_fd(), EpollListener::HostSock)
-            .map_err(VsockError::VsockUdsBackend)
+            .map_err(VsockError::VsockUdsBackend)?;
+        self.host_sock_paused = None;
+        Ok(())
     }
 
     fn reset(&mut self) {
+        // `reset` takes the host socket out of the poll set below, so it is no longer paused;
+        // clearing the flag first also stops the connection removals from re-adding it.
+        self.host_sock_paused = None;
+
         // Remove all connections and their epoll listeners.
         let keys: Vec<ConnMapKey> = self.conn_map.keys().copied().collect();
         for key in keys {
@@ -313,6 +384,40 @@ impl VsockBackend for VsockMuxer {
         self.killq = MuxerKillQ::new();
         self.local_port_set.clear();
         self.local_port_last = (1u32 << 30) - 1;
+    }
+
+    fn tick(&mut self) {
+        if self
+            .host_sock_paused
+            .is_some_and(|since| since.elapsed() >= HOST_SOCK_RETRY)
+        {
+            self.resume_host_sock();
+        }
+
+        if self.pending_local > 0 {
+            let expired: Vec<RawFd> = self
+                .listener_map
+                .iter()
+                .filter_map(|(fd, listener)| match listener {
+                    EpollListener::LocalStream(pending)
+                        if pending.since.elapsed() >= LOCAL_CONNECT_TIMEOUT =>
+                    {
+                        Some(*fd)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for fd in &expired {
+                self.remove_listener(*fd);
+            }
+            if !expired.is_empty() {
+                eprintln!(
+                    "vsock: dropped {} host connections that sent no connect line within {} s",
+                    expired.len(),
+                    LOCAL_CONNECT_TIMEOUT.as_secs()
+                );
+            }
+        }
     }
 }
 
@@ -371,6 +476,9 @@ impl VsockMuxer {
             killq: MuxerKillQ::new(),
             local_port_last: (1u32 << 30) - 1,
             local_port_set: HashSet::with_capacity(defs::MAX_CONNECTIONS),
+            host_sock_paused: None,
+            exhaustion_logged: false,
+            pending_local: 0,
         };
 
         Ok(muxer)
@@ -399,16 +507,35 @@ impl VsockMuxer {
 
             // A new host-initiated connection is ready to be accepted.
             Some(EpollListener::HostSock) => {
-                if self.conn_map.len() == defs::MAX_CONNECTIONS {
-                    // If we're already maxed-out on connections, we'll just accept and
-                    // immediately discard this potentially new one.
-                    eprintln!("vsock: connection limit reached; refusing new host connection");
-                    self.host_sock.accept().map(|_| 0).unwrap_or(0);
+                // Past either cap, accept and immediately discard the new stream, so the host
+                // socket's backlog keeps draining without holding a descriptor for it.
+                let refusal = if self.conn_map.len() == defs::MAX_CONNECTIONS {
+                    Some("vsock: connection limit reached; refusing new host connection")
+                } else if self.pending_local >= MAX_PENDING_LOCAL {
+                    Some(
+                        "vsock: too many host connections waiting for their connect line; refusing a new one",
+                    )
+                } else {
+                    None
+                };
+                if let Some(msg) = refusal {
+                    eprintln!("{msg}");
+                    if let Err(err) = self.host_sock.accept()
+                        && exhausted(&err)
+                    {
+                        self.pause_host_sock(&err);
+                    }
                     return;
                 }
                 self.host_sock
                     .accept()
-                    .map_err(VsockUnixBackendError::UnixAccept)
+                    .inspect(|_| self.exhaustion_logged = false)
+                    .map_err(|err| {
+                        if exhausted(&err) {
+                            self.pause_host_sock(&err);
+                        }
+                        VsockUnixBackendError::UnixAccept(err)
+                    })
                     .and_then(|(stream, _)| {
                         stream
                             .set_nonblocking(true)
@@ -420,39 +547,48 @@ impl VsockMuxer {
                         // the guest side, we need to know the destination port. We'll read
                         // that port from a "connect" command received on this socket, so the
                         // next step is to ask to be notified the moment we can read from it.
-                        self.add_listener(stream.as_raw_fd(), EpollListener::LocalStream(stream))
+                        self.add_pending_local(stream)
                     })
                     .unwrap_or_else(|err| {
                         eprintln!("vsock: unable to accept local connection: {:?}", err);
                     });
             }
 
-            // Data is ready to be read from a host-initiated connection. That would be the
-            // "connect" command that we're expecting.
-            Some(EpollListener::LocalStream(_)) => {
-                if let Some(EpollListener::LocalStream(mut stream)) = self.remove_listener(fd) {
-                    Self::read_local_stream_port(&mut stream)
-                        .map(|peer_port| (self.allocate_local_port(), peer_port))
-                        .and_then(|(local_port, peer_port)| {
-                            self.add_connection(
-                                ConnMapKey {
-                                    local_port,
-                                    peer_port,
-                                },
-                                MuxerConnection::new_local_init(
-                                    stream,
-                                    uapi::VSOCK_HOST_CID,
-                                    self.cid,
-                                    local_port,
-                                    peer_port,
-                                ),
-                            )
-                        })
-                        .unwrap_or_else(|err| {
-                            eprintln!("vsock: error adding local-init connection: {err:?}");
-                        })
+            // Data is ready to be read from a host-initiated connection: its "connect" line,
+            // which may arrive in pieces. The stream stays registered until the line is
+            // complete, or until it ends or fails.
+            Some(EpollListener::LocalStream(pending)) => match Self::read_connect_line(pending) {
+                LineRead::Incomplete => {}
+                LineRead::Failed(err) => {
+                    self.remove_listener(fd);
+                    eprintln!("vsock: dropped a host connection before its connect line: {err:?}");
                 }
-            }
+                LineRead::Complete => {
+                    if let Some(EpollListener::LocalStream(pending)) = self.remove_listener(fd) {
+                        let PendingLocal { stream, line, .. } = *pending;
+                        Self::parse_connect_line(&line)
+                            .map(|peer_port| (self.allocate_local_port(), peer_port))
+                            .and_then(|(local_port, peer_port)| {
+                                self.add_connection(
+                                    ConnMapKey {
+                                        local_port,
+                                        peer_port,
+                                    },
+                                    MuxerConnection::new_local_init(
+                                        stream,
+                                        uapi::VSOCK_HOST_CID,
+                                        self.cid,
+                                        local_port,
+                                        peer_port,
+                                    ),
+                                )
+                            })
+                            .unwrap_or_else(|err| {
+                                eprintln!("vsock: error adding local-init connection: {err:?}");
+                            })
+                    }
+                }
+            },
 
             _ => {
                 METRICS.muxer_event_fails.inc();
@@ -460,31 +596,10 @@ impl VsockMuxer {
         }
     }
 
-    /// Parse a host "connect" command, and extract the destination vsock port.
-    fn read_local_stream_port(stream: &mut UnixStream) -> Result<u32, VsockUnixBackendError> {
-        let mut buf = [0u8; 32];
-
-        // This is the minimum number of bytes that we should be able to read, when parsing a
-        // valid connection request. I.e. `b"connect 0\n".len()`.
-        const MIN_READ_LEN: usize = 10;
-
-        // Bring in the minimum number of bytes that we should be able to read.
-        stream
-            .read_exact(&mut buf[..MIN_READ_LEN])
-            .map_err(VsockUnixBackendError::UnixRead)?;
-
-        // Now, finish reading the destination port number, by bringing in one byte at a time,
-        // until we reach an EOL terminator (or our buffer space runs out).  Yeah, not
-        // particularly proud of this approach, but it will have to do for now.
-        let mut blen = MIN_READ_LEN;
-        while buf[blen - 1] != b'\n' && blen < buf.len() {
-            stream
-                .read_exact(&mut buf[blen..=blen])
-                .map_err(VsockUnixBackendError::UnixRead)?;
-            blen += 1;
-        }
-
-        let mut word_iter = std::str::from_utf8(&buf[..blen])
+    /// Parse a host `connect <port>` line, and extract the destination vsock port. The first
+    /// word, compared case-insensitively, must be `connect`, and the second the port.
+    fn parse_connect_line(line: &[u8]) -> Result<u32, VsockUnixBackendError> {
+        let mut word_iter = std::str::from_utf8(line)
             .map_err(|_| VsockUnixBackendError::InvalidPortRequest)?
             .split_whitespace();
 
@@ -508,6 +623,46 @@ impl VsockMuxer {
                     .map_err(|_| VsockUnixBackendError::InvalidPortRequest)
             })
             .map_err(|_| VsockUnixBackendError::InvalidPortRequest)
+    }
+
+    /// Read what has arrived of a pending host stream's connect line. One byte at a time, so
+    /// that anything the host sent after the line stays in the socket for the connection.
+    /// Reading stops at the line's `\n`, or at `CONNECT_LINE_MAX` bytes.
+    fn read_connect_line(pending: &mut PendingLocal) -> LineRead {
+        loop {
+            let mut byte = [0u8; 1];
+            match pending.stream.read(&mut byte) {
+                Ok(0) => {
+                    return LineRead::Failed(VsockUnixBackendError::UnixRead(
+                        std::io::ErrorKind::UnexpectedEof.into(),
+                    ));
+                }
+                Ok(_) => {
+                    pending.line.push(byte[0]);
+                    if byte[0] == b'\n' || pending.line.len() == CONNECT_LINE_MAX {
+                        return LineRead::Complete;
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    return LineRead::Incomplete;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(err) => return LineRead::Failed(VsockUnixBackendError::UnixRead(err)),
+            }
+        }
+    }
+
+    /// Register a host stream accepted on the host socket, to wait for its connect line.
+    fn add_pending_local(&mut self, stream: UnixStream) -> Result<(), VsockUnixBackendError> {
+        let fd = stream.as_raw_fd();
+        self.add_listener(
+            fd,
+            EpollListener::LocalStream(Box::new(PendingLocal {
+                stream,
+                line: Vec::with_capacity(CONNECT_LINE_MAX),
+                since: Instant::now(),
+            })),
+        )
     }
 
     /// Add a new connection to the active connection pool.
@@ -550,8 +705,42 @@ impl VsockMuxer {
         if let Some(conn) = self.conn_map.remove(&key) {
             self.remove_listener(conn.as_raw_fd());
             METRICS.conns_removed.inc();
+            // A connection is gone, so host connections can be accepted again.
+            self.resume_host_sock();
         }
         self.free_local_port(key.local_port);
+    }
+
+    /// Take the host socket's listener out of the poll set after an `accept` failed for lack of
+    /// descriptors. A level-triggered listener left in would be reported on every wait, spinning
+    /// the event thread while the pending connection stays in the backlog. `tick` retries it.
+    fn pause_host_sock(&mut self, err: &std::io::Error) {
+        if self.host_sock_paused.is_some() {
+            return;
+        }
+        self.remove_listener(self.host_sock.as_raw_fd());
+        self.host_sock_paused = Some(Instant::now());
+        if !self.exhaustion_logged {
+            self.exhaustion_logged = true;
+            eprintln!(
+                "vsock: cannot accept a host connection ({err}); retrying every {HOST_SOCK_RETRY:?}"
+            );
+        }
+    }
+
+    /// Put the host socket's listener back in the poll set once a paused state can end: a
+    /// connection closed, or the retry interval passed. A failure keeps it paused.
+    fn resume_host_sock(&mut self) {
+        if self.host_sock_paused.is_none() {
+            return;
+        }
+        match self.add_listener(self.host_sock.as_raw_fd(), EpollListener::HostSock) {
+            Ok(()) => self.host_sock_paused = None,
+            Err(err) => {
+                eprintln!("vsock: cannot resume accepting host connections: {err:?}");
+                self.host_sock_paused = Some(Instant::now());
+            }
+        }
     }
 
     /// Schedule a connection for immediate termination.
@@ -586,6 +775,7 @@ impl VsockMuxer {
             EpollListener::LocalStream(_) => EventSet::IN,
             EpollListener::HostSock => EventSet::IN,
         };
+        let is_local = matches!(listener, EpollListener::LocalStream(_));
 
         self.epoll
             .ctl(
@@ -595,6 +785,9 @@ impl VsockMuxer {
             )
             .map(|_| {
                 self.listener_map.insert(fd, listener);
+                if is_local {
+                    self.pending_local += 1;
+                }
             })
             .map_err(VsockUnixBackendError::EpollAdd)?;
 
@@ -604,6 +797,9 @@ impl VsockMuxer {
     /// Remove (and return) a previously registered epoll listener.
     fn remove_listener(&mut self, fd: RawFd) -> Option<EpollListener> {
         let maybe_listener = self.listener_map.remove(&fd);
+        if let Some(EpollListener::LocalStream(_)) = maybe_listener {
+            self.pending_local -= 1;
+        }
 
         if maybe_listener.is_some() {
             self.epoll
@@ -640,7 +836,8 @@ impl VsockMuxer {
     }
 
     /// Connect to the Unix socket at `path` without blocking; a full accept backlog
-    /// fails with `EAGAIN`.
+    /// fails at once (`EAGAIN` on Linux, `ECONNREFUSED` on macOS, `WSAENOBUFS` on
+    /// Windows).
     ///
     /// The `socket(2)`+`connect(2)` pair lives behind the crate's audited
     /// syscall boundary ([`crate::sys::connect_unix_nonblocking`]), because it
@@ -662,6 +859,13 @@ impl VsockMuxer {
     #[cfg(windows)]
     fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
         UnixStream::connect_nonblocking(path)
+    }
+
+    /// macOS has no `SOCK_CLOEXEC` and no `crate::sys`; the platform layer's
+    /// connect makes the descriptor non-blocking before `connect(2)` the same way.
+    #[cfg(target_os = "macos")]
+    fn connect_nonblocking(path: &str) -> std::io::Result<UnixStream> {
+        crate::pal::connect_unix_nonblocking(path)
     }
 
     /// Handle a new connection request comming from our peer (the guest vsock driver).
@@ -1012,12 +1216,16 @@ mod tests {
                 Ok(stream) => pending.push(stream),
                 Err(err) => {
                     // Windows refuses a connect into a full AF_UNIX queue at
-                    // once too, but with WSAENOBUFS rather than EAGAIN.
+                    // once too, but with WSAENOBUFS rather than EAGAIN, and
+                    // macOS with ECONNREFUSED (XNU's `unp_connect` finds no
+                    // room in the listener's queue).
                     let full_queue = err.kind() == std::io::ErrorKind::WouldBlock
-                        || (cfg!(windows) && err.raw_os_error() == Some(10055));
+                        || (cfg!(windows) && err.raw_os_error() == Some(10055))
+                        || (cfg!(target_os = "macos")
+                            && err.kind() == std::io::ErrorKind::ConnectionRefused);
                     assert!(
                         full_queue,
-                        "filling the accept queue must end in EAGAIN, not {err:?}"
+                        "filling the accept queue must end in a refusal, not {err:?}"
                     );
                     break;
                 }
@@ -1055,5 +1263,227 @@ mod tests {
         drop(muxer);
         drop(pending);
         let _ = std::fs::remove_file(&listener_path);
+    }
+
+    /// An `accept` that fails for lack of descriptors takes the host socket out of the
+    /// poll set, so the level-triggered listener is no longer reported on every wait. A
+    /// second failure while paused is absorbed: still paused, still out, no panic.
+    #[test]
+    fn an_accept_failure_takes_the_host_socket_out_of_the_poll_set() {
+        let path = test_socket_path("paused");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+
+        let host_fd = muxer.host_sock.as_raw_fd();
+        assert!(muxer.listener_map.contains_key(&host_fd));
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "the failed accept pauses the host socket"
+        );
+        assert!(
+            !muxer.listener_map.contains_key(&host_fd),
+            "a paused host socket is out of the poll set"
+        );
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "a second failure keeps it paused"
+        );
+        assert!(!muxer.listener_map.contains_key(&host_fd));
+
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Only exhaustion pauses the host socket: a client that gave up before the accept
+    /// (`ECONNABORTED`) is transient, and must not take the listener out of the poll set.
+    #[test]
+    fn a_transient_accept_error_does_not_pause() {
+        assert!(!exhausted(&std::io::Error::from_raw_os_error(
+            libc::ECONNABORTED
+        )));
+        assert!(exhausted(&std::io::Error::from_raw_os_error(libc::EMFILE)));
+    }
+
+    /// Exhaustion can end without any connection closing, so a paused host socket is put back by
+    /// `tick` once `HOST_SOCK_RETRY` has passed: right after the pause it stays out, and once the
+    /// interval has passed it is registered again.
+    #[test]
+    fn a_paused_host_socket_is_retried_after_a_second() {
+        let path = test_socket_path("retry");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+        let host_fd = muxer.host_sock.as_raw_fd();
+
+        muxer.pause_host_sock(&std::io::Error::from_raw_os_error(libc::EMFILE));
+        muxer.tick();
+        assert!(
+            muxer.host_sock_paused.is_some(),
+            "a tick within the retry interval keeps the host socket paused"
+        );
+        assert!(!muxer.listener_map.contains_key(&host_fd));
+
+        muxer.host_sock_paused = Some(Instant::now() - Duration::from_secs(2));
+        muxer.tick();
+        assert!(
+            muxer.host_sock_paused.is_none(),
+            "the retry resumes accepting"
+        );
+        assert!(
+            muxer.listener_map.contains_key(&host_fd),
+            "the host socket is back in the poll set"
+        );
+
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The connect line parses by the rules it always had: `connect` in any case, then a u32.
+    #[test]
+    fn connect_lines_parse() {
+        assert_eq!(
+            VsockMuxer::parse_connect_line(b"connect 1234\n").ok(),
+            Some(1234)
+        );
+        assert_eq!(VsockMuxer::parse_connect_line(b"CONNECT 7\n").ok(), Some(7));
+        assert!(VsockMuxer::parse_connect_line(b"connect\n").is_err());
+        assert!(VsockMuxer::parse_connect_line(b"open 5\n").is_err());
+        assert!(VsockMuxer::parse_connect_line(b"connect x\n").is_err());
+        assert!(VsockMuxer::parse_connect_line(&[0xff, b'\n']).is_err());
+    }
+
+    /// A connect line that arrives in two writes still connects, and the stream waits in the
+    /// poll set in between instead of being dropped.
+    #[test]
+    fn a_connect_line_split_across_writes_still_connects() {
+        use std::io::Write;
+
+        let path = test_socket_path("split");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+
+        let (mut host, ours) = UnixStream::pair().expect("a socket pair");
+        ours.set_nonblocking(true)
+            .expect("the stream is nonblocking");
+        let ours_fd = ours.as_raw_fd();
+        muxer
+            .add_pending_local(ours)
+            .expect("the stream is registered");
+
+        host.write_all(b"conn").expect("the first part is written");
+        muxer.handle_event(ours_fd, EventSet::IN);
+        assert!(
+            muxer.conn_map.is_empty(),
+            "an incomplete line connects nothing"
+        );
+        assert!(
+            matches!(
+                muxer.listener_map.get(&ours_fd),
+                Some(EpollListener::LocalStream(_))
+            ),
+            "the stream waits for the rest of its line"
+        );
+
+        host.write_all(b"ect 1234\n")
+            .expect("the second part is written");
+        muxer.handle_event(ours_fd, EventSet::IN);
+        assert_eq!(muxer.conn_map.len(), 1, "the completed line connects");
+        assert!(
+            !matches!(
+                muxer.listener_map.get(&ours_fd),
+                Some(EpollListener::LocalStream(_))
+            ),
+            "the stream is no longer a pending local stream"
+        );
+        assert_eq!(muxer.pending_local, 0);
+
+        drop(host);
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A host stream that sends no connect line is dropped once `LOCAL_CONNECT_TIMEOUT` passes.
+    #[test]
+    fn pending_local_streams_expire() {
+        let path = test_socket_path("expire");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+
+        let (_host, ours) = UnixStream::pair().expect("a socket pair");
+        let fd = ours.as_raw_fd();
+        muxer
+            .add_pending_local(ours)
+            .expect("the stream is registered");
+
+        muxer.tick();
+        assert!(
+            muxer.listener_map.contains_key(&fd),
+            "a fresh stream is kept"
+        );
+
+        if let Some(EpollListener::LocalStream(pending)) = muxer.listener_map.get_mut(&fd) {
+            pending.since = Instant::now() - Duration::from_secs(10);
+        }
+        muxer.tick();
+        assert!(
+            !muxer.listener_map.contains_key(&fd),
+            "an expired stream is dropped"
+        );
+        assert_eq!(muxer.pending_local, 0);
+
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// At `MAX_PENDING_LOCAL` pending streams the accept path refuses another; freeing one
+    /// brings the count back under the cap.
+    #[test]
+    fn pending_local_streams_are_capped() {
+        let path = test_socket_path("capped");
+        let _ = std::fs::remove_file(&path);
+        let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
+        assert!(muxer.activate().is_ok(), "the host socket is registered");
+
+        let mut keep_alive = Vec::new();
+        for _ in 0..MAX_PENDING_LOCAL {
+            let (host, ours) = UnixStream::pair().expect("a socket pair");
+            keep_alive.push(host);
+            muxer
+                .add_pending_local(ours)
+                .expect("under the cap, a stream is registered");
+        }
+        assert_eq!(muxer.pending_local, MAX_PENDING_LOCAL);
+        assert!(
+            muxer.pending_local >= MAX_PENDING_LOCAL,
+            "the accept path refuses a new stream at the cap"
+        );
+
+        let fd = muxer
+            .listener_map
+            .keys()
+            .copied()
+            .find(|fd| {
+                matches!(
+                    muxer.listener_map.get(fd),
+                    Some(EpollListener::LocalStream(_))
+                )
+            })
+            .expect("a pending stream is registered");
+        muxer.remove_listener(fd);
+        assert!(
+            muxer.pending_local < MAX_PENDING_LOCAL,
+            "with one freed, a new stream is accepted again"
+        );
+
+        drop(keep_alive);
+        drop(muxer);
+        let _ = std::fs::remove_file(&path);
     }
 }

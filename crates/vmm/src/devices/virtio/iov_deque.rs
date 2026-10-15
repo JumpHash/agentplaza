@@ -384,12 +384,12 @@ impl<const L: u16> Drop for IovDeque<L> {
     }
 }
 
-/// Windows has no `memfd_create`, and no way to map the same pages twice at adjacent addresses
-/// without a section object. The ring is therefore a `Vec` of `2 * L` iovecs in which the live
+/// Windows and macOS have no `memfd_create` (Windows has no way to map the same pages twice at
+/// adjacent addresses without a section object; macOS would need `mach_vm_remap`). The ring is therefore a `Vec` of `2 * L` iovecs in which the live
 /// elements are `buf[start..start + len]`. `start` is kept below `L`, so the live range always
 /// fits in `buf` and is contiguous; when `start` would reach `L`, the live elements are moved back
 /// to the front (at most `L` copies per wrap).
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug)]
 pub struct IovDeque<const L: u16> {
     buf: Vec<iovec>,
@@ -398,10 +398,10 @@ pub struct IovDeque<const L: u16> {
 }
 
 // SAFETY: This is `Send`. We hold sole ownership of the underlying buffer.
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 unsafe impl<const L: u16> Send for IovDeque<L> {}
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 impl<const L: u16> IovDeque<L> {
     /// Create a new [`IovDeque`] that can hold memory described by a single VirtIO queue.
     pub fn new() -> Result<Self, IovDequeError> {

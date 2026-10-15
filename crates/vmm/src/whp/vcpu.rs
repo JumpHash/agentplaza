@@ -413,7 +413,7 @@ unsafe extern "system" fn io_port_callback(
         access.Data = u32::from_le_bytes(bytes);
     } else {
         let bytes = access.Data.to_le_bytes();
-        let _ = ctx.vm.pio.write(port, &bytes[..size]);
+        let _ = ctx.vm.pio.write_and_wait(port, &bytes[..size]);
     }
     S_OK
 }
@@ -438,7 +438,7 @@ unsafe extern "system" fn memory_callback(
         }
     } else {
         let data = &access.Data[..size];
-        if vm.mmio.write(gpa, data).is_err() {
+        if vm.mmio.write_and_wait(gpa, data).is_err() {
             let _ = vm.memory.write_slice(data, GuestAddress(gpa));
         }
     }

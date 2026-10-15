@@ -150,7 +150,11 @@ space, which is what `vmctl`'s per-VM `VsockConfig` sets.
   GIC SPI numbering (`VSOCK_GSI = 1` → SPI 1) and the device tree node are
   reasoned from the port's own console node and upstream Firecracker, not
   measured.
-* **Apple Silicon.** Hypervisor.framework has no vhost-vsock, so this backend
-  refuses a spec with a vsock device outright (see `hvf::boot`).
+* **Apple Silicon.** Hypervisor.framework has no vhost-vsock either, and needs
+  none: the userspace device here runs on it too, over the POSIX event layer
+  (`pal::posix`: a pipe-backed `EventFd` and a `poll(2)` `Epoll`), with its
+  interrupt relayed to an SPI of the backend's userspace GICv3 (see
+  `hvf::boot`). Same caveat as aarch64 above, more so: compile-checked for
+  `aarch64-apple-darwin`, never run on a Mac.
 * **Zero-copy and multi-queue.** Neither is attempted: one virtqueue pair, the
   kernel's own copy in and out.
