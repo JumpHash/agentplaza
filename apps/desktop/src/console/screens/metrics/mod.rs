@@ -6,8 +6,9 @@
 //!
 //! * [`view`] — the screen's layout: head, tier line, scope tree, tabs, the grid of panels by span.
 //! * [`panels`] — a panel's card (title, sub, right text, freshness, pinned-from, the ⋯ menu) and every body.
-//! * [`charts`] — canvas programs: the line chart (stacked areas, band, overlays, markers, limit, annotations,
-//!   gaps, crosshair, drag-to-zoom, click), the heatmap, treemap, gauges, swimlanes and sparklines.
+//! * [`charts`] — the line chart (stacked areas, band, overlays, markers, limit, annotations, gaps, crosshair,
+//!   drag-to-zoom, click); [`figures`] — the heatmap, treemap, gauges, swimlanes and sparklines.
+//! * [`panels_ops`] — the alerts, rules, traces and events bodies.
 //! * [`overlays`] — the panel and sibling menus, the find palette, the keyboard help, the drawer, toasts.
 //! * [`dialogs`] — the alert rule dialog and the metrics settings dialog.
 
@@ -22,8 +23,10 @@ use crate::console::Ctx;
 
 pub mod charts;
 pub mod dialogs;
+pub mod figures;
 pub mod overlays;
 pub mod panels;
+pub mod panels_ops;
 pub mod view;
 
 /// The catalog entry the hub serves (`GET /v1/metrics/catalog`), for "About this metric".

@@ -1,5 +1,6 @@
 //! A Metrics panel: the card (title, sub, right text, freshness stamp, pinned-from line, the ⋯ button) and its
-//! body. Charts and figures are canvas programs in [`super::charts`]; everything else is built from widgets here.
+//! body. Charts are in [`super::charts`] and [`super::figures`]; the alerting, rules, traces and events bodies in
+//! [`super::panels_ops`]; everything else is built from widgets here.
 
 use apz_metrics_view::Panel;
 use iced::Element;
