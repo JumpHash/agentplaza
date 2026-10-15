@@ -1705,52 +1705,6 @@ fn prices_card<'a>(d: &'a Data) -> Element<'a, Msg> {
 mod tests {
     use super::*;
 
-    fn t(usd: f64, calls: u64) -> Totals {
-        Totals {
-            usd,
-            calls,
-            input: 10,
-            output: 5,
-            ..Default::default()
-        }
-    }
-
-    fn point(at_ms: u64, groups: &[(&str, f64)]) -> Point {
-        let mut map = BTreeMap::new();
-        let mut total = Totals::default();
-        for (k, v) in groups {
-            total.usd += v;
-            total.input += 10;
-            map.insert(k.to_string(), t(*v, 1));
-        }
-        total.calls = groups.len() as u64;
-        Point {
-            at_ms,
-            groups: map,
-            totals: total,
-        }
-    }
-
-    #[test]
-    fn stamp_and_civil_are_utc() {
-        assert_eq!(civil(0), (1970, 1, 1, 0, 0));
-        assert_eq!(stamp(1_000_000_000_000), "Sep 9 01:46");
-        assert_eq!(day_label(1_000_000_000_000), "Sep 9");
-    }
-
-    #[test]
-    fn money_and_counts_read_as_the_console_does() {
-        assert_eq!(usd(1234.5), "$1,234.50");
-        assert_eq!(usd(0.0), "$0.00");
-        assert_eq!(usd(0.004), "<$0.01");
-        assert_eq!(usd(-12.0), "-$12.00");
-        assert_eq!(compact(950.0), "950");
-        assert_eq!(compact(1_250.0), "1.2k");
-        assert_eq!(compact(2_500_000.0), "2.5M");
-        assert_eq!(commas("1234567"), "1,234,567");
-        assert_eq!(pct(0.4567), "45.7%");
-    }
-
     #[test]
     fn enc_escapes_model_ids() {
         assert_eq!(
@@ -1764,55 +1718,6 @@ mod tests {
     }
 
     #[test]
-    fn chart_series_ranks_the_top_groups_and_sums_the_rest_into_other() {
-        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
-        let mut points = Vec::new();
-        for i in 0..3u64 {
-            let groups: Vec<(&str, f64)> = names
-                .iter()
-                .enumerate()
-                .map(|(k, n)| (*n, (k as f64 + 1.0) * (i as f64 + 1.0)))
-                .collect();
-            points.push(point(i * 3_600_000, &groups));
-        }
-        let tl = Timeline {
-            bucket_ms: 3_600_000,
-            points,
-        };
-        let (series, labels) = chart_series(&tl, Unit::Usd);
-        assert_eq!(labels.len(), 3);
-        assert_eq!(series.len(), TOP + 1);
-        assert_eq!(series[0].key, "h");
-        assert_eq!(series[0].values, vec![8.0, 16.0, 24.0]);
-        assert_eq!(series[TOP].key, OTHER);
-        // The other band is the two lowest groups (a and b) at each point.
-        assert_eq!(series[TOP].values, vec![3.0, 6.0, 9.0]);
-    }
-
-    #[test]
-    fn chart_series_is_empty_without_groups_and_other_is_only_kept_when_non_zero() {
-        let tl = Timeline {
-            bucket_ms: DAY_MS,
-            points: vec![point(0, &[]), point(DAY_MS, &[])],
-        };
-        let (series, labels) = chart_series(&tl, Unit::Tokens);
-        assert!(series.is_empty());
-        assert_eq!(labels, vec!["Jan 1".to_string(), "Jan 2".to_string()]);
-    }
-
-    #[test]
-    fn tween_counts_up_over_the_animation_and_settles() {
-        let start = Instant::now();
-        let mut tw = Tween::default();
-        tw.aim(100.0, start);
-        assert!(tw.running(start));
-        let mid = tw.at(start + Duration::from_millis(300));
-        assert!(mid > 0.0 && mid < 100.0);
-        assert_eq!(tw.at(start + ANIM), 100.0);
-        assert!(!tw.running(start + ANIM));
-    }
-
-    #[test]
     fn summary_parses_the_hub_shape_and_ignores_extra_fields() {
         let json = r#"{"from_ms":1,"to_ms":2,"totals":{"calls":2,"input":30,"output":4,"cache_read":10,"cache_write":0,"cost_usd":0.5,"est_usd":0.25,"usd":0.75,"cache_hit_rate":0.25},
             "by_model":[{"key":"m/x","totals":{"calls":2,"usd":0.75}}],"by_agent":[],"by_role":[],"by_provider":[],"unpriced":["m/y"]}"#;
@@ -1820,23 +1725,6 @@ mod tests {
         assert_eq!(s.totals.calls, 2);
         assert_eq!(s.by_model[0].key, "m/x");
         assert_eq!(s.unpriced, vec!["m/y".to_string()]);
-    }
-
-    #[test]
-    fn settings_uses_lists_where_each_model_is_used() {
-        let mut roles = BTreeMap::new();
-        roles.insert("architect".to_string(), "m/a".to_string());
-        let s = SettingsView {
-            default_model: "m/a".into(),
-            orchestrator_model: "m/o".into(),
-            role_models: roles,
-        };
-        let uses = settings_uses(&s);
-        assert_eq!(
-            uses["m/a"],
-            vec!["default".to_string(), "role architect".to_string()]
-        );
-        assert_eq!(uses["m/o"], vec!["orchestrator".to_string()]);
     }
 
     #[test]

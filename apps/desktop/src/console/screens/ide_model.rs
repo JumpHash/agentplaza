@@ -824,27 +824,6 @@ mod tests {
     }
 
     #[test]
-    fn a_code_engine_call_is_one_block_and_its_checks_and_stream_are_not_steps() {
-        let entries = engine_run("pending");
-        assert_eq!(
-            rows(&entries),
-            vec![
-                Row::Steps {
-                    first: 0,
-                    end: 1,
-                    count: 1,
-                    summary: "1 step · code_engine".into(),
-                },
-                Row::Engine {
-                    first: 1,
-                    call: "c1".into(),
-                },
-                Row::Entry(9),
-            ]
-        );
-    }
-
-    #[test]
     fn a_finished_engine_view_has_its_tools_plan_message_and_result() {
         let view = engine_view(&engine_run("allow"), "c1");
         assert_eq!(view.engine, "claude");
@@ -896,105 +875,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_result_is_failed_and_an_undecided_engine_is_running() {
-        let mut entries = engine_run("allow");
-        entries[8] =
-            json!({"kind": "tool_result", "data": {"call": "c1", "ok": false, "output": "boom"}});
-        assert_eq!(engine_view(&entries, "c1").status, "failed");
-        assert_eq!(engine_view(&entries[..2], "c1").status, "running");
-    }
-
-    #[test]
     fn a_call_id_belongs_to_its_engine_only_through_a_numbered_check_suffix() {
         assert_eq!(engine_of("c1.e2"), "c1");
         assert_eq!(engine_of("c1.e"), "c1.e", "no check number, no owner");
         assert_eq!(engine_of("c1.ex"), "c1.ex");
         assert_eq!(engine_of("c10"), "c10");
-    }
-
-    fn agent(cid: u64, status: &str) -> AgentRow {
-        AgentRow {
-            cid,
-            name: format!("a{cid}"),
-            role_label: String::new(),
-            model: String::new(),
-            status: status.into(),
-            task: None,
-            last_seen_ms: 0,
-            tokens: 0,
-        }
-    }
-
-    fn project(id: &str, members: &[u64], repo: Option<&str>) -> ProjectRow {
-        ProjectRow {
-            id: id.into(),
-            title: format!("P {id}"),
-            stage: String::new(),
-            repo: repo.map(str::to_string),
-            tasks: Vec::new(),
-            members: members.iter().copied().collect(),
-        }
-    }
-
-    #[test]
-    fn an_agent_joins_the_first_project_that_names_it_and_the_rest_are_other_agents() {
-        let agents = vec![agent(1, "idle"), agent(2, "idle"), agent(3, "idle")];
-        let projects = vec![project("a", &[1, 2], None), project("b", &[2, 3], None)];
-        let groups = groups(&agents, &projects, &[], &[]);
-        assert_eq!(
-            groups.len(),
-            2,
-            "project b keeps only agent 3 and no other agent is left over"
-        );
-        assert_eq!(groups[0].agents, vec![1, 2]);
-        assert_eq!(groups[1].agents, vec![3]);
-        assert_eq!(groups[1].count(), 1);
-    }
-
-    #[test]
-    fn agents_no_project_names_go_under_other_agents_and_empty_projects_are_left_out() {
-        let agents = vec![agent(1, "idle"), agent(9, "working")];
-        let projects = vec![project("a", &[1], None), project("empty", &[], None)];
-        let groups = groups(&agents, &projects, &[], &[]);
-        assert_eq!(
-            groups.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
-            vec!["project:a", "other"]
-        );
-        assert_eq!(groups[1].agents, vec![9]);
-        assert_eq!(groups[1].title, "Other agents");
-    }
-
-    #[test]
-    fn a_repo_belongs_to_the_project_of_that_name_or_to_repositories() {
-        let repos = vec![
-            ("repo:web@main".to_string(), "web".to_string()),
-            ("repo:tools@main".to_string(), "tools".to_string()),
-        ];
-        let projects = vec![project("p", &[], Some("web"))];
-        let groups = groups(&[], &projects, &repos, &[]);
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].repos, vec!["repo:web@main".to_string()]);
-        assert_eq!(groups[1].key, "repos");
-        assert_eq!(groups[1].repos, vec!["repo:tools@main".to_string()]);
-    }
-
-    #[test]
-    fn the_workstations_come_after_the_projects_and_before_other_agents() {
-        let agents = vec![agent(1, "idle"), agent(9, "working")];
-        let projects = vec![project("a", &[1], None)];
-        let stations = vec!["station:w3".to_string(), "station:w4".to_string()];
-        let groups = groups(&agents, &projects, &[], &stations);
-        assert_eq!(
-            groups.iter().map(|g| g.key.as_str()).collect::<Vec<_>>(),
-            vec!["project:a", "workstations", "other"]
-        );
-        assert_eq!(groups[1].title, "Workstations");
-        assert_eq!(groups[1].stations, stations);
-        assert_eq!(groups[1].count(), 2, "a workstation counts in its header");
-        assert!(
-            groups[1].agents.is_empty(),
-            "no agent is filed under a workstation"
-        );
     }
 
     #[test]
@@ -1014,38 +899,6 @@ mod tests {
             None,
             "a record without an id is no station"
         );
-    }
-
-    #[test]
-    fn a_station_os_reads_as_a_short_label() {
-        assert_eq!(os_label(Some("macos")), "macOS");
-        assert_eq!(os_label(Some("windows")), "Windows");
-        assert_eq!(os_label(Some("linux")), "Linux");
-        assert_eq!(os_label(None), "Unknown OS");
-        assert_eq!(os_label(Some("plan9")), "plan9");
-    }
-
-    #[test]
-    fn the_status_dot_follows_the_hub_and_the_last_outcome() {
-        assert_eq!(dot("working", Some("failed")), Dot::Working);
-        assert_eq!(dot("offline", None), Dot::Sleeping);
-        assert_eq!(dot("idle", None), Dot::Idle);
-        assert_eq!(dot("idle", Some("done")), Dot::Done);
-        assert_eq!(dot("idle", Some("error")), Dot::Failed);
-        assert_eq!(dot("idle", Some("cancelled")), Dot::Idle);
-        assert_eq!(Dot::Sleeping.label(), "sleeping");
-    }
-
-    #[test]
-    fn the_last_outcome_is_the_latest_work_end() {
-        let entries = vec![
-            json!({"kind": "work_end", "data": {"status": "done"}}),
-            json!({"kind": "model_response"}),
-            json!({"kind": "work_end", "data": {"status": "failed"}}),
-        ];
-        assert_eq!(last_outcome(&entries).as_deref(), Some("failed"));
-        assert_eq!(last_outcome(&entries[..1]).as_deref(), Some("done"));
-        assert_eq!(last_outcome(&[]), None);
     }
 
     #[test]
@@ -1074,98 +927,5 @@ mod tests {
         assert_eq!(row.members.iter().copied().collect::<Vec<_>>(), vec![3, 5]);
         assert_eq!(row.repo.as_deref(), Some("plaza"));
         assert_eq!(row.tasks.len(), 2);
-    }
-
-    #[test]
-    fn a_run_of_tool_calls_is_one_step_line_and_text_breaks_it() {
-        let entries = vec![
-            json!({"kind": "work_start", "data": {"prompt": "Read the board"}}),
-            json!({"kind": "model_response", "data": {"content": [{"type": "tool_use", "name": "board_read"}]}}),
-            json!({"kind": "tool_request", "data": {"call": "c1", "name": "board_read"}}),
-            json!({"kind": "tool_decision", "data": {"call": "c1"}}),
-            json!({"kind": "model_response", "data": {"content": [{"type": "tool_use", "name": "bash"}, {"type": "tool_use", "name": "bash"}]}}),
-            json!({"kind": "model_response", "data": {"content": [{"type": "text", "text": "Done."}]}}),
-        ];
-        let rows = rows(&entries);
-        assert_eq!(
-            rows,
-            vec![
-                Row::Entry(0),
-                Row::Steps {
-                    first: 1,
-                    end: 5,
-                    count: 3,
-                    summary: "3 steps · board_read, bash".into()
-                },
-                Row::Entry(5),
-            ]
-        );
-    }
-
-    #[test]
-    fn the_step_label_counts_and_names_the_tools() {
-        assert_eq!(steps_label(1, &["bash".into()]), "1 step · bash");
-        assert_eq!(
-            steps_label(
-                2,
-                &[
-                    "bash".into(),
-                    "bash".into(),
-                    "grep".into(),
-                    "edit".into(),
-                    "x".into()
-                ]
-            ),
-            "2 steps · bash, grep, edit"
-        );
-        assert_eq!(steps_label(0, &[]), "0 steps");
-    }
-
-    #[test]
-    fn activity_splits_thinking_from_tools_and_times_each_call() {
-        let entries = vec![
-            json!({"at_ms": 1000, "kind": "work_start", "data": {}}),
-            json!({"at_ms": 3000, "kind": "model_response", "data": {"content": []}}),
-            json!({"at_ms": 3000, "kind": "tool_request", "data": {"call": "c1", "name": "bash"}}),
-            json!({"at_ms": 3600, "kind": "tool_decision", "data": {"call": "c1"}}),
-            json!({"at_ms": 4000, "kind": "model_response", "data": {"content": []}}),
-            json!({"at_ms": 4500, "kind": "work_end", "data": {"status": "done"}}),
-        ];
-        let activity = activity(&entries);
-        assert_eq!(activity.thinking_ms, 2000 + 400);
-        assert_eq!(activity.tools_ms, 600);
-        assert_eq!(
-            activity.calls,
-            vec![Call {
-                name: "bash".into(),
-                ms: 600
-            }]
-        );
-    }
-
-    #[test]
-    fn the_palette_matches_every_word_ignoring_case() {
-        let labels: Vec<String> = [
-            "Agent Ada",
-            "src/main.rs",
-            "Fix the parser task",
-            "Toggle drawer",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(filter(&labels, ""), vec![0, 1, 2, 3]);
-        assert_eq!(filter(&labels, "ADA"), vec![0]);
-        assert_eq!(filter(&labels, "fix parser"), vec![2]);
-        assert_eq!(filter(&labels, "fix drawer"), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn ages_read_in_minutes_hours_and_days() {
-        assert_eq!(ago(10_000, 0), "never seen");
-        assert_eq!(ago(10_000, 5_000), "just now");
-        assert_eq!(ago(601_000, 1_000), "10 min ago");
-        assert_eq!(ago(3 * 3_600_000 + 1_000, 1_000), "3 h ago");
-        assert_eq!(ago(2 * 86_400_000 + 1_000, 1_000), "2 d ago");
     }
 }

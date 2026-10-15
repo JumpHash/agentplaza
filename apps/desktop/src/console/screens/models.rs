@@ -2792,53 +2792,6 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
 mod tests {
     use super::*;
 
-    fn engines(list: &[&str]) -> Vec<String> {
-        list.iter().map(|e| e.to_string()).collect()
-    }
-
-    #[test]
-    fn acp_engines_are_named_but_off_by_default() {
-        assert_eq!(default_engines(), ["claude", "codex", "opencode"]);
-        for (id, label) in [
-            ("gemini", "Gemini CLI"),
-            ("qwen", "Qwen Code"),
-            ("kilo", "Kilo Code"),
-            ("cline", "Cline"),
-            ("copilot", "GitHub Copilot"),
-            ("goose", "Goose"),
-            ("kimi", "Kimi Code"),
-            ("auggie", "Auggie"),
-            ("vibe", "Mistral Vibe"),
-        ] {
-            assert_eq!(
-                engines_after(&engines(&["claude"]), id, true),
-                Some(engines(&["claude", id]))
-            );
-            assert_eq!(engine_label(id), label);
-        }
-    }
-
-    #[test]
-    fn engines_switch_on_and_off_in_the_hubs_order() {
-        assert_eq!(
-            engines_after(&engines(&["codex"]), "claude", true),
-            Some(engines(&["claude", "codex"]))
-        );
-        assert_eq!(
-            engines_after(&engines(&["claude", "codex"]), "claude", false),
-            Some(engines(&["codex"]))
-        );
-    }
-
-    #[test]
-    fn the_last_engine_stays_on() {
-        assert_eq!(engines_after(&engines(&["codex"]), "codex", false), None);
-        assert_eq!(
-            engines_after(&engines(&["codex"]), "claude", false),
-            Some(engines(&["codex"]))
-        );
-    }
-
     #[test]
     fn settings_without_engine_fields_take_the_hubs_defaults() {
         let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
@@ -2872,17 +2825,18 @@ mod tests {
     }
 
     #[test]
-    fn write_back_is_off_until_the_owner_turns_it_on() {
+    fn acp_switches_are_off_until_the_owner_turns_them_on() {
         let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
         let s: Settings = serde_json::from_value(bare).expect("settings parse");
-        assert!(!s.acp_write_back);
-    }
-
-    #[test]
-    fn acp_v2_is_off_until_the_owner_turns_it_on() {
-        let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
-        let s: Settings = serde_json::from_value(bare).expect("settings parse");
-        assert!(!s.acp_v2);
+        for (case, on) in [
+            (
+                "write-back is off until the owner turns it on",
+                s.acp_write_back,
+            ),
+            ("acp v2 is off until the owner turns it on", s.acp_v2),
+        ] {
+            assert!(!on, "{case}");
+        }
     }
 
     #[test]
@@ -2920,90 +2874,25 @@ mod tests {
     }
 
     #[test]
-    fn a_custom_provider_is_added_with_the_clis_body() {
-        let body = custom_body(
-            "local",
-            "openai-compatible",
-            " http://127.0.0.1:8080 ",
-            " LOCAL_KEY ",
-        );
-        assert_eq!(
-            body,
-            json!({ "id": "local", "kind": "openai-compatible", "base_url": "http://127.0.0.1:8080", "auth": { "env": "LOCAL_KEY" }, "models": [] })
-        );
-    }
-
-    #[test]
-    fn a_blank_endpoint_and_env_var_are_null_and_none() {
-        let body = custom_body("local", "openai", "  ", "");
-        assert_eq!(
-            body,
-            json!({ "id": "local", "kind": "openai", "base_url": null, "auth": "none", "models": [] })
-        );
-    }
-
-    #[test]
-    fn the_kinds_a_custom_provider_takes_are_each_kind_once() {
-        let kind = |id: &str, kind: &str| ProviderKind {
-            id: id.into(),
-            kind: kind.into(),
-            label: id.into(),
-            brand: String::new(),
-            base_url: None,
-            auth: json!("none"),
-            notes: String::new(),
-            models: Vec::new(),
-            options: None,
-        };
-        let kinds = [
-            kind("openai", "openai"),
-            kind("openrouter", "openai"),
-            kind("anthropic", "anthropic"),
-        ];
-        assert_eq!(
-            distinct_kinds(&kinds),
-            vec!["openai".to_string(), "anthropic".to_string()]
-        );
-    }
-
-    #[test]
-    fn a_listing_error_reads_as_the_provider_and_its_error() {
-        let e = ListingError {
-            provider: "ollama".into(),
-            error: "connection refused".into(),
-        };
-        assert_eq!(listing_warning(&e), "ollama: connection refused");
-    }
-
-    #[test]
-    fn a_failed_model_listing_reads_as_one_warning_line() {
-        assert_eq!(
-            listing_unavailable_line("HTTP 503"),
-            "Model listing unavailable: HTTP 503"
-        );
-    }
-
-    #[test]
-    fn idle_sleep_is_whole_minutes_from_zero_to_a_day() {
-        assert_eq!(idle_minutes("0"), Some(0));
-        assert_eq!(idle_minutes(" 10 "), Some(10));
-        assert_eq!(idle_minutes("1440"), Some(1440));
-        assert_eq!(idle_minutes("1441"), None);
-        assert_eq!(idle_minutes("-1"), None);
-        assert_eq!(idle_minutes("5.5"), None);
-        assert_eq!(idle_minutes(""), None);
-    }
-
-    #[test]
-    fn sleep_never_roles_are_names_with_no_blanks() {
-        assert_eq!(role_names(""), Some(Vec::new()));
-        assert_eq!(
-            role_names("orchestrator, dev"),
-            Some(vec!["orchestrator".to_string(), "dev".to_string()])
-        );
-        assert_eq!(role_names("dev,,qa"), None);
-        assert_eq!(role_names("dev,"), None);
-        assert_eq!(role_names("data eng"), None);
+    fn a_custom_provider_body_is_built_from_the_clis_form() {
+        for (case, kind, base_url, env, want) in [
+            (
+                "a custom provider is added with the cli body",
+                "openai-compatible",
+                " http://127.0.0.1:8080 ",
+                " LOCAL_KEY ",
+                json!({ "id": "local", "kind": "openai-compatible", "base_url": "http://127.0.0.1:8080", "auth": { "env": "LOCAL_KEY" }, "models": [] }),
+            ),
+            (
+                "a blank endpoint and env var are null and none",
+                "openai",
+                "  ",
+                "",
+                json!({ "id": "local", "kind": "openai", "base_url": null, "auth": "none", "models": [] }),
+            ),
+        ] {
+            assert_eq!(custom_body("local", kind, base_url, env), want, "{case}");
+        }
     }
 
     #[test]

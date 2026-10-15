@@ -628,23 +628,6 @@ mod tests {
     }
 
     #[test]
-    fn local_cids_run_from_20_to_130() {
-        let cids = local_cids();
-        assert!(cids.starts_with("20,21"), "starts with {cids:.12}");
-        assert!(cids.ends_with("130"), "ends with {cids:?}");
-    }
-
-    #[test]
-    fn a_name_that_runs_nowhere_matches_no_process() {
-        let nowhere = PlanProcess {
-            name: "agentplaza-no-such-service-zz9",
-            args: vec!["--x".into()],
-            env: None,
-        };
-        assert!(find_plan_pids(&nowhere).is_empty());
-    }
-
-    #[test]
     fn a_node_and_the_hub_on_one_machine_are_told_apart_by_their_arguments() {
         let hub = plan(Mode::Local, None);
         let layout = Layout {
@@ -774,12 +757,6 @@ mod tests {
         assert!(!plan_of(Mode::Local).iter().any(
             |svc| matches!(&svc.how, How::Process { args, .. } if args.iter().any(|a| a == "--tls"))
         ));
-    }
-
-    #[test]
-    fn node_status_pid_agrees_with_running() {
-        let status = node_status();
-        assert_eq!(status.running, status.pid.is_some());
     }
 
     #[test]

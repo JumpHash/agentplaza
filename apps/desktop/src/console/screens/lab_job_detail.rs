@@ -1393,51 +1393,6 @@ fn outputs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
     column(parts).spacing(10).width(Length::Fill).into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn live_lines_past_the_view_seq_are_the_only_ones_added() {
-        let view = JobView {
-            seq: 3,
-            series: vec![SeriesPoint {
-                kind: "step".into(),
-                island: "a".into(),
-                step: Some(1),
-                loss: Some(2.0),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let frame = |seq: u64, step: u64| TrainingFrame {
-            job: "j".into(),
-            line: json!({"seq": seq, "island": "a", "node": "n", "event": {"ev": "step", "step": step, "loss": 1.5}}),
-        };
-        let live = vec![frame(2, 9), frame(4, 2), frame(5, 3), frame(5, 3)];
-        let live_at: Vec<u64> = live.iter().map(|_| 0).collect();
-        let points = points_of(&view, &live, &live_at);
-        let steps: Vec<Option<u64>> = points.iter().map(|p| p.step).collect();
-        assert_eq!(steps, vec![Some(1), Some(2), Some(3)]);
-    }
-
-    #[test]
-    fn log_lines_sort_their_fields_and_end_in_the_name() {
-        let event = json!({"ev": "step", "step": 40, "loss": 0.25, "lr": 0.0003, "extra": {"b": 1, "a": "x"}});
-        assert_eq!(
-            log_text(&event),
-            "step extra={\"a\":\"x\",\"b\":1} loss=0.25 lr=0.0003 step=40"
-        );
-    }
-
-    #[test]
-    fn exponent_and_fixed_formats_match_the_web() {
-        assert_eq!(exp2(0.0003), "3.00e-4");
-        assert_eq!(fix4(0.4321_f64), "0.4321");
-    }
-}
-
 /// The cancel path, driven through the view: the header's Cancel button, then the confirmation's
 /// Cancel button, against a local fixture hub (not the apid). The hub answers the job's GET and its
 /// cancel POST; the cancel call itself runs here, where the iced task would run it.

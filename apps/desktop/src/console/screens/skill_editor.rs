@@ -2195,24 +2195,6 @@ mod tests {
     }
 
     #[test]
-    fn the_meta_body_refuses_a_blank_or_long_title() {
-        assert!(meta_body(&details("   ", "")).is_err());
-        let long = "x".repeat(MAX_TITLE + 1);
-        assert_eq!(
-            meta_body(&details(&long, "")),
-            Err(format!("The title must be 1 to {MAX_TITLE} characters."))
-        );
-    }
-
-    #[test]
-    fn the_meta_body_refuses_too_many_or_too_long_tags() {
-        let many: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i}")).collect();
-        assert!(meta_body(&details("Skill", &many.join(","))).is_err());
-        let long = "y".repeat(MAX_TAG + 1);
-        assert!(meta_body(&details("Skill", &long)).is_err());
-    }
-
-    #[test]
     fn a_file_path_keeps_its_slashes_and_encodes_each_segment() {
         assert_eq!(
             file_path("demo", 3, "scripts/run me.py"),

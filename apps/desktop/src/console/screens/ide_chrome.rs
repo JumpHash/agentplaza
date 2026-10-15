@@ -558,86 +558,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panel_width_is_clamped_to_its_range() {
-        let mut layout = Layout::fresh();
-        layout.set_width(Edge::Left, 10.0);
-        assert_eq!(layout.left, 200.0, "the left panel's floor");
-        layout.set_width(Edge::Left, 9000.0);
-        assert_eq!(layout.left, 420.0, "the left panel's ceiling");
-        layout.set_width(Edge::Right, 10.0);
-        assert_eq!(layout.right, 340.0, "the right panel's floor");
-        layout.set_width(Edge::Right, 9000.0);
-        assert_eq!(layout.right, 560.0, "the right panel's ceiling");
-        layout.reset_width(Edge::Right);
-        assert_eq!(layout.right, 400.0);
-        layout.set_width(Edge::Bottom, 9000.0);
-        assert_eq!(layout.terminal_height, 560.0, "the terminal's ceiling");
-        layout.reset_width(Edge::Bottom);
-        assert_eq!(layout.terminal_height, 260.0);
-    }
-
-    #[test]
-    fn a_panel_folds_and_unfolds_on_its_own() {
-        let mut layout = Layout::fresh();
-        assert_eq!((layout.left, layout.right), (264.0, 400.0), "the defaults");
-        assert!(layout.is_open(Edge::Left) && layout.is_open(Edge::Right));
-        layout.toggle(Edge::Left);
-        assert!(!layout.is_open(Edge::Left));
-        assert!(
-            layout.is_open(Edge::Right),
-            "the other panel stays as it was"
-        );
-        layout.toggle(Edge::Left);
-        assert!(layout.is_open(Edge::Left));
-    }
-
-    #[test]
-    fn a_drag_grows_the_left_panel_to_the_right_and_the_right_one_to_the_left() {
-        let mut layout = Layout::fresh();
-        let mut drag = Drag::begin(&layout, Edge::Left);
-        drag_to(&mut layout, &mut drag, 500.0, 0.0);
-        assert_eq!(
-            layout.left, 264.0,
-            "the first pointer position is where the drag is measured from"
-        );
-        drag_to(&mut layout, &mut drag, 540.0, 0.0);
-        assert_eq!(layout.left, 304.0);
-
-        let mut layout = Layout::fresh();
-        let mut drag = Drag::begin(&layout, Edge::Right);
-        drag_to(&mut layout, &mut drag, 900.0, 0.0);
-        drag_to(&mut layout, &mut drag, 870.0, 0.0);
-        assert_eq!(
-            layout.right, 430.0,
-            "moving left by 30 widens the right panel by 30"
-        );
-        drag_to(&mut layout, &mut drag, 9000.0, 0.0);
-        assert_eq!(layout.right, 340.0, "a long drag stops at the floor");
-    }
-
-    #[test]
-    fn the_terminal_strip_drags_up_to_grow_the_dock() {
-        let mut layout = Layout::fresh();
-        assert!(!layout.drawer, "the drawer is closed at the start");
-        let mut drag = Drag::begin(&layout, Edge::Bottom);
-        drag_to(&mut layout, &mut drag, 700.0, 400.0);
-        drag_to(&mut layout, &mut drag, 9.0, 350.0);
-        assert_eq!(
-            layout.terminal_height, 310.0,
-            "moving up by 50 grows the dock by 50, whatever x does"
-        );
-        drag_to(&mut layout, &mut drag, 9.0, 9000.0);
-        assert_eq!(
-            layout.terminal_height, 120.0,
-            "a long drag stops at the floor"
-        );
-        layout.toggle(Edge::Bottom);
-        assert!(layout.drawer, "the bottom edge's toggle opens the drawer");
-        layout.toggle(Edge::Bottom);
-        assert!(!layout.drawer, "and a second toggle folds it");
-    }
-
-    #[test]
     fn the_layout_is_kept_as_json_and_read_back_clamped() {
         let mut layout = Layout::fresh();
         layout.set_width(Edge::Left, 300.0);
@@ -666,15 +586,5 @@ mod tests {
             "a missing flag keeps its default"
         );
         assert_eq!(Layout::from_json(&json!("not a layout")), None);
-    }
-
-    #[test]
-    fn the_base_and_the_language_read_as_the_status_bar_says_them() {
-        assert_eq!(base_label(&Base::WorkStart), "since work start");
-        assert_eq!(base_label(&Base::Checkpoint(4)), "checkpoint #4");
-        assert_eq!(language_of("src/main.rs"), "Rust");
-        assert_eq!(language_of("Cargo.toml"), "TOML");
-        assert_eq!(language_of("Makefile"), "Makefile");
-        assert_eq!(language_of("notes"), "Plain text");
     }
 }

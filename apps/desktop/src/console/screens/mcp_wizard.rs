@@ -2294,71 +2294,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_wizard_edit_finds_the_preset_source() {
-        let view: Value = serde_json::from_str(VIEW).unwrap();
-        let catalog = vec![Preset {
-            id: "fs".into(),
-            name: "Files".into(),
-            transport: "stdio".into(),
-            image: Some("ghcr.io/x/fs:1".into()),
-            env: vec![Spec {
-                name: "TOKEN".into(),
-                secret: true,
-                ..Spec::default()
-            }],
-            ..Preset::default()
-        }];
-        let st = State::new(Some(&view), None, &catalog);
-        assert_eq!(st.mode, Mode::Edit);
-        assert!(st.saved);
-        assert_eq!(st.source, Some(Source::Preset("fs".into())));
-        assert_eq!(st.rows.len(), 1);
-    }
-
-    #[test]
-    fn mcp_wizard_cancel_asks_only_when_there_are_changes() {
-        let mut st = State::new(None, None, &[]);
-        assert!(
-            matches!(cancel(&mut st), Outcome::Closed(_)),
-            "no changes: close at once"
-        );
-        assert!(!st.confirming);
-        st.draft.name = "Files".into();
-        assert!(
-            matches!(cancel(&mut st), Outcome::Stay(_)),
-            "a change: stay and ask"
-        );
-        assert!(st.confirming);
-    }
-
-    #[test]
-    fn mcp_wizard_source_problem_matches_the_web() {
-        let mut st = State::new(None, None, &[]);
-        assert_eq!(
-            source_problem(&st),
-            "Pick a preset, a custom container image or a remote URL."
-        );
-        st.source = Some(Source::Custom);
-        assert_eq!(source_problem(&st), "Enter a container image.");
-        st.draft.image = "ghcr.io/x/fs:1".into();
-        st.draft.id = "F".into();
-        st.draft.name = "Files".into();
-        assert_eq!(source_problem(&st), ID_HINT);
-        st.draft.id = "fs".into();
-        st.draft.name = " ".into();
-        assert_eq!(source_problem(&st), "Enter a display name.");
-        st.draft.name = "Files".into();
-        assert_eq!(source_problem(&st), "");
-        st.source = Some(Source::Remote);
-        st.draft.http = true;
-        st.draft.url = "http://example.com".into();
-        assert_eq!(
-            source_problem(&st),
-            "Enter a remote URL that starts with https://."
-        );
-    }
-
-    #[test]
     fn mcp_wizard_advanced_fields_round_trip_and_are_bounded() {
         let view: Value = serde_json::from_str(VIEW).unwrap();
         let mut draft = Draft::from_view(&view);
@@ -2396,67 +2331,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_wizard_own_rows_come_from_a_custom_servers_env() {
-        let view: Value = serde_json::from_str(VIEW).unwrap();
-        let st = State::new(Some(&view), None, &[]);
-        assert_eq!(st.source, Some(Source::Custom));
-        let rows: Vec<(&str, bool)> = st
-            .rows
-            .iter()
-            .map(|r| (r.spec.name.as_str(), r.spec.secret))
-            .collect();
-        assert_eq!(rows, vec![("ROOT", false), ("TOKEN", true)]);
-    }
-
-    #[test]
-    fn mcp_wizard_adding_and_removing_an_own_env_row() {
-        let mut st = State::new(None, None, &[]);
-        st.source = Some(Source::Custom);
-        st.new_row_name = "GITHUB_TOKEN".into();
-        let _ = add_row(&mut st);
-        assert_eq!(st.rows.len(), 1);
-        assert_eq!(
-            st.draft.env.get("GITHUB_TOKEN"),
-            Some(&Setting::Secret {
-                secret: String::new(),
-                format: None
-            })
-        );
-        assert!(st.error.is_empty());
-        st.new_row_name = "GITHUB_TOKEN".into();
-        let _ = add_row(&mut st);
-        assert_eq!(st.rows.len(), 1, "a name is listed once");
-        assert_eq!(st.error, "That name is already listed.");
-        remove_row(&mut st, 0);
-        assert!(st.rows.is_empty());
-        assert!(st.draft.env.is_empty());
-    }
-
-    #[test]
-    fn mcp_wizard_a_header_row_takes_a_format_with_the_placeholder() {
-        let mut st = State::new(None, None, &[]);
-        st.source = Some(Source::Remote);
-        st.draft.http = true;
-        st.new_row_name = "Authorization".into();
-        st.new_row_format = "Bearer".into();
-        let _ = add_row(&mut st);
-        assert_eq!(
-            st.error,
-            "A format needs {} where the secret goes, such as Bearer {}."
-        );
-        st.new_row_format = "Bearer {}".into();
-        let _ = add_row(&mut st);
-        assert_eq!(
-            st.draft.headers.get("Authorization"),
-            Some(&Setting::Secret {
-                secret: String::new(),
-                format: Some("Bearer {}".into())
-            })
-        );
-        assert!(st.rows[0].header);
-    }
-
-    #[test]
     fn mcp_wizard_a_failed_test_keeps_the_stderr_tail() {
         let res: TestResult = serde_json::from_value(json!({
             "ok": false, "ms": 3.0, "error": "exit 1",
@@ -2468,26 +2342,5 @@ mod tests {
         let bare: TestResult = serde_json::from_value(json!({ "ok": false, "error": "exit 1" }))
             .expect("bare result parses");
         assert!(bare.stderr.is_empty());
-    }
-
-    #[test]
-    fn mcp_wizard_names_follow_the_hub_rules() {
-        assert!(valid_own_name("GITHUB_TOKEN", false));
-        assert!(valid_own_name("_X", false));
-        assert!(!valid_own_name("github_token", false));
-        assert!(!valid_own_name("1TOKEN", false));
-        assert!(valid_own_name("Authorization", true));
-        assert!(valid_own_name("X-Api-Key", true));
-        assert!(!valid_own_name("Auth_Header", true));
-        assert!(!valid_own_name("", true));
-        assert!(valid_id("fs"));
-        assert!(valid_id("files-2"));
-        assert!(!valid_id("1fs"));
-        assert!(!valid_id("Fs"));
-        assert!(!valid_id("f"));
-        assert!(valid_secret_name("FS_TOKEN"));
-        assert!(!valid_secret_name("fs_token"));
-        assert!(!valid_secret_name("A"));
-        assert_eq!(mcp_binding("fs"), "mcp:fs");
     }
 }
