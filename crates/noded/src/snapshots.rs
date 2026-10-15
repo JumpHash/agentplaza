@@ -461,6 +461,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_new_store_directory_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let root = scratch("private");

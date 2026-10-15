@@ -106,7 +106,7 @@ pub fn reflink_supported(dir: &Path) -> bool {
     supported
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{Seek, SeekFrom, Write};
