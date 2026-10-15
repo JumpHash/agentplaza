@@ -15,7 +15,7 @@ use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Id, agent_side, ide, lab_common, sanctions};
+use super::{Id, agent_side, ide, lab_common, nodes, sanctions};
 use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::rich;
 use crate::console::{Ctx, client, events, ui};
@@ -56,6 +56,8 @@ pub enum Dialog {
     Delete(String),
     /// Fork the agent into the count typed in the card (`State::fork_n`).
     Fork,
+    /// Move the agent to the node picked in the card (`State::move_to`).
+    Move,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +73,18 @@ pub enum Act {
     Stop,
     Sleep,
     Wake,
+}
+
+/// What a move did (`POST /v1/agents/{cid}/move`): the node it moved the agent from and to, the bytes it sent, and how
+/// long it took.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Moved {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub ms: u64,
 }
 
 /// One VM checkpoint, as `GET /v1/agents/{cid}/vm-checkpoints` lists it (apid's `SnapshotView`).
@@ -139,6 +153,10 @@ pub struct State {
     pub fork_error: Option<String>,
     /// The names of the agents the last fork made, listed under the checkpoints.
     pub forked: Vec<String>,
+    /// The nodes the Move card lists (loaded when it opens), the one picked, and the move's error.
+    pub move_nodes: Option<Vec<nodes::NodeView>>,
+    pub move_to: Option<String>,
+    pub move_error: Option<String>,
     /// The reply text the hub streams (`delta` events) before the transcript holds it.
     pub live: Vec<LiveTurn>,
     /// Set once the reader scrolls away from the bottom; until then the transcript follows new text.
@@ -196,6 +214,14 @@ pub enum Msg {
     ForkCount(String),
     /// A fork answered: the names of the agents it made.
     Forked(Result<Vec<String>, String>),
+    /// The nodes the Move card lists, loaded when it opens.
+    MoveNodes(Result<Vec<nodes::NodeView>, String>),
+    /// A node picked in the Move card.
+    PickNode(String),
+    /// Moves the agent to the node picked.
+    Move,
+    /// The move answered: where the agent went, or the hub's error.
+    Moved(Result<Moved, String>),
     /// One event from the hub's stream (only `delta` matters here).
     Event(events::Event),
     /// The transcript was scrolled.
@@ -546,6 +572,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.lift_reason.clear();
                 state.lift_error = None;
             }
+            if matches!(dialog, Dialog::Move) {
+                state.move_nodes = None;
+                state.move_to = None;
+                state.move_error = None;
+                state.dialog = Some(dialog);
+                return move_nodes_task(ctx);
+            }
             if matches!(dialog, Dialog::Fork) {
                 state.fork_n = "1".to_string();
                 state.fork_error = None;
@@ -654,8 +687,59 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         c.delete(&path).map(|_| ())
                     })
                 }
-                None | Some(Dialog::Lift(_)) | Some(Dialog::Fork) => Task::none(),
+                None | Some(Dialog::Lift(_)) | Some(Dialog::Fork) | Some(Dialog::Move) => {
+                    Task::none()
+                }
             }
+        }
+        Msg::MoveNodes(Ok(list)) => {
+            state.move_nodes = Some(list);
+            Task::none()
+        }
+        Msg::MoveNodes(Err(e)) => {
+            state.move_nodes = Some(Vec::new());
+            state.move_error = Some(e);
+            Task::none()
+        }
+        Msg::PickNode(id) => {
+            state.move_to = Some(id);
+            Task::none()
+        }
+        Msg::Move => {
+            let Some(to) = state.move_to.clone() else {
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            state.busy = true;
+            state.move_error = None;
+            let client = ctx.client.clone();
+            let path = format!("/v1/agents/{}/move", state.cid);
+            let body = json!({ "node": to });
+            client::task(move || client.post::<Moved>(&path, &body), Msg::Moved)
+        }
+        Msg::Moved(Ok(done)) => {
+            state.busy = false;
+            state.dialog = None;
+            state.move_to = None;
+            state.move_nodes = None;
+            state.error = None;
+            state.notice = Some(format!(
+                "Moved from {} to {} ({} in {} ms)",
+                done.from,
+                done.to,
+                size_text(done.bytes),
+                done.ms
+            ));
+            // The agent's node changed: read the page again now, not on the next tick.
+            state.extras_at = None;
+            load(state, ctx)
+        }
+        Msg::Moved(Err(e)) => {
+            state.busy = false;
+            state.move_error = Some(e);
+            Task::none()
         }
         Msg::CheckpointLabel(label) => {
             state.checkpoint_label = label;
@@ -867,6 +951,12 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             pick(Msg::Ask(Dialog::Restart)),
         ));
         actions.push(ui::btn(
+            "Move…",
+            None,
+            ui::Kind::Secondary,
+            pick(Msg::Ask(Dialog::Move)),
+        ));
+        actions.push(ui::btn(
             "Stop",
             Some("stop"),
             ui::Kind::Danger,
@@ -999,6 +1089,7 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             );
             ui::card(&format!("Lift {name}'s suspension?"), body.into())
         }
+        Dialog::Move => move_card(state, name),
         Dialog::Restart => ui::card(
             &format!("Restart {name}?"),
             column![
@@ -2117,9 +2208,126 @@ fn when(a: &Value, key: &str) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
+/// The Move card: the nodes the agent may move to, one picked, then Move. The list is read when the card opens.
+fn move_card<'a>(state: &'a State, name: &str) -> Element<'a, Msg> {
+    let current = state
+        .agent
+        .as_ref()
+        .map(|a| s(a, "node").to_string())
+        .unwrap_or_default();
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    match &state.move_nodes {
+        None => body.push(ui::loading()),
+        Some(list) => {
+            let targets = move_targets(list, &current);
+            if targets.is_empty() {
+                body.push(
+                    ui::faint(
+                        "No other node can take it: each one is draining, revoked, or the one it is on now.",
+                    )
+                    .into(),
+                );
+            }
+            for node in targets {
+                let kind = if state.move_to.as_deref() == Some(node.id.as_str()) {
+                    ui::Kind::Primary
+                } else {
+                    ui::Kind::Secondary
+                };
+                let pick = (!state.busy).then(|| Msg::PickNode(node.id.clone()));
+                body.push(ui::btn(&node_label(node), None, kind, pick));
+            }
+        }
+    }
+    if let Some(e) = &state.move_error {
+        body.push(ui::error_line(e));
+    }
+    let can_move = !state.busy && state.move_to.is_some();
+    body.push(
+        row![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+            ui::btn(
+                "Move",
+                None,
+                ui::Kind::Primary,
+                can_move.then_some(Msg::Move)
+            ),
+        ]
+        .spacing(8)
+        .into(),
+    );
+    ui::card(
+        &format!("Move {name}"),
+        column(body).spacing(10).width(Length::Fill).into(),
+    )
+}
+
+/// The nodes an agent on `current` may move to: not draining, not revoked, and not the node it is on.
+pub fn move_targets<'a>(all: &'a [nodes::NodeView], current: &str) -> Vec<&'a nodes::NodeView> {
+    all.iter()
+        .filter(|node| !node.draining && !node.revoked && node.id != current)
+        .collect()
+}
+
+/// A node as the Move card names it: its name and id, or the id alone when it has no name.
+fn node_label(node: &nodes::NodeView) -> String {
+    if node.name.is_empty() {
+        node.id.clone()
+    } else {
+        format!("{} ({})", node.name, node.id)
+    }
+}
+
+/// Reads the plaza's nodes for the Move card.
+fn move_nodes_task(ctx: &Ctx) -> Task<Msg> {
+    let client = ctx.client.clone();
+    client::task(
+        move || client.get::<Vec<nodes::NodeView>>("/v1/nodes"),
+        Msg::MoveNodes,
+    )
+}
+
+/// A byte count in the words the console uses: megabytes with one decimal, or kilobytes.
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_move_targets_skip_draining_revoked_and_the_current_node() {
+        let all: Vec<nodes::NodeView> = serde_json::from_value(json!([
+            {"id": "n0", "name": "hub"},
+            {"id": "n1", "name": "busy", "draining": true},
+            {"id": "n2", "name": "gone", "revoked": true},
+            {"id": "n3", "name": "free"},
+        ]))
+        .expect("the nodes parse");
+        let ids: Vec<&str> = move_targets(&all, "n0")
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["n3"]);
+        assert_eq!(node_label(&all[3]), "free (n3)");
+        assert_eq!(node_label(&all[0]), "hub (n0)");
+    }
+
+    #[test]
+    fn agent_move_result_parses_and_reads_in_words() {
+        let done: Moved =
+            serde_json::from_str(r#"{"ok":true,"from":"n0","to":"n3","bytes":2097152,"ms":412}"#)
+                .expect("the move answer parses");
+        assert_eq!((done.from.as_str(), done.to.as_str()), ("n0", "n3"));
+        assert_eq!(size_text(done.bytes), "2.0 MB");
+        assert_eq!(size_text(5 * 1024), "5 KB");
+        assert_eq!(done.ms, 412);
+    }
 
     #[test]
     fn conduct_bands_match_the_web() {
