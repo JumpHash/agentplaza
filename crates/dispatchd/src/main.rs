@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use apz_http::auth::InternalToken;
 use dispatchd::roles::Manifest;
 use dispatchd::{Dispatcher, Hub, Noded, StdoutLog};
 
@@ -39,12 +40,17 @@ const DEFAULT_INTERVAL_SECS: u64 = 5;
 
 const USAGE: &str = "\
 usage: dispatchd [--noded URL] [--hub URL] [--roles MANIFEST] [--once]
-                 [--interval-secs N]
+                 [--interval-secs N] [--internal-token-file PATH]
 
   --noded URL        the node daemon (the ledger and the fleet register)
                      (default http://127.0.0.1:8899)
   --hub URL          the hub's admin surface (POST /tell — the way into an
                      agent's session) (default http://127.0.0.1:19081)
+  --internal-token-file PATH
+                     the internal token the node's daemons guard their HTTP
+                     APIs with (their --internal-token-file): sent on every
+                     call to the node and the hub. Default: none, and no
+                     token is sent.
   --roles MANIFEST   the roles manifest the codex's tool grants are read from
                      (docs/agents/initial-roles.json): a task whose role cannot
                      be driven with the tools its family's script needs — a
@@ -78,6 +84,7 @@ struct Config {
     roles: Option<PathBuf>,
     once: bool,
     interval: Duration,
+    internal: InternalToken,
 }
 
 impl Default for Config {
@@ -88,12 +95,13 @@ impl Default for Config {
             roles: None,
             once: false,
             interval: Duration::from_secs(DEFAULT_INTERVAL_SECS),
+            internal: InternalToken::none(),
         }
     }
 }
 
-/// Reads `--noded`, `--hub`, `--roles`, `--once` and `--interval-secs`, leaving
-/// the rest at its default.
+/// Reads `--noded`, `--hub`, `--roles`, `--once`, `--interval-secs` and
+/// `--internal-token-file`, leaving the rest at its default.
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
@@ -107,6 +115,9 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--hub" => config.hub = value("--hub")?,
             "--roles" => config.roles = Some(PathBuf::from(value("--roles")?)),
             "--once" => config.once = true,
+            "--internal-token-file" => {
+                config.internal = InternalToken::file(value("--internal-token-file")?)
+            }
             "--interval-secs" => {
                 let seconds: u64 = value("--interval-secs")?
                     .parse()
@@ -137,14 +148,14 @@ fn main() -> ExitCode {
     };
     // Both URLs are checked to be the loopback before any socket is opened, so
     // a typo fails here with a message rather than at the first pass.
-    let ledger = match Noded::new(&config.noded) {
+    let ledger = match Noded::new(&config.noded, config.internal.clone()) {
         Ok(noded) => noded,
         Err(err) => {
             eprintln!("dispatchd: --noded: {err}");
             return ExitCode::FAILURE;
         }
     };
-    let hub = match Hub::new(&config.hub) {
+    let hub = match Hub::new(&config.hub, config.internal.clone()) {
         Ok(hub) => hub,
         Err(err) => {
             eprintln!("dispatchd: --hub: {err}");
@@ -223,6 +234,23 @@ mod tests {
         );
         assert!(config.once);
         assert_eq!(config.interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_internal_token_file_is_optional() {
+        assert_eq!(
+            parse_args(vec![]).expect("no arguments parse").internal,
+            InternalToken::none()
+        );
+        let config = parse_args(vec![
+            "--internal-token-file".to_string(),
+            "/state/internal.token".to_string(),
+        ])
+        .expect("the token file parses");
+        assert_eq!(
+            config.internal,
+            InternalToken::file("/state/internal.token")
+        );
     }
 
     #[test]

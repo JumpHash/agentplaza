@@ -49,6 +49,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "linux", windows))]
+use apz_http::auth::InternalToken;
+#[cfg(any(target_os = "linux", windows))]
 use apz_proto::line::Lines;
 #[cfg(any(target_os = "linux", windows))]
 use hub::Hub;
@@ -142,7 +144,9 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid U
                     http://127.0.0.1:7700)
   --internal-token-file PATH
                     the token apid's internal surface requires (re-read on every
-                    call); without it the v3 agent loop is not forwarded
+                    call), and the token the HTTP API requires but GET /healthz;
+                    without it the v3 agent loop is not forwarded and the HTTP API
+                    takes no token
   --e2b-port P      the E2B gateway on 127.0.0.1:P (default off): the SDKs' sandbox
                     requests, relayed to the sandbox's port 49983 through its VM's
                     muxer; needs --internal-token-file, since apid names the sandbox
@@ -342,11 +346,19 @@ fn run(config: Config) -> Result<(), String> {
         max_sessions: MAX_SESSIONS,
         keepalive_idle_s: KEEPALIVE_IDLE_SECS,
     };
+    let internal_token = match &config.internal_token_file {
+        Some(path) => InternalToken::file(path),
+        None => {
+            println!("vsockd: no --internal-token-file: the HTTP API takes no token");
+            InternalToken::none()
+        }
+    };
     let http = http::serve(
         config.http_port,
         Arc::clone(&hub),
         Arc::clone(&registry),
         facts,
+        internal_token,
     )
     .map_err(|err| {
         format!(

@@ -203,6 +203,9 @@ impl App {
         let vault_env = env.clone();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
+        // The same file the token was just written to: noded and vsockd are told it, and every call
+        // this app makes to them presents it.
+        let internal = apz_http::auth::InternalToken::file(config.state_dir.join("internal.token"));
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let hub_auth =
             crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
@@ -305,8 +308,8 @@ impl App {
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
             plaza: plaza::Plaza::new(snapshot.as_deref()),
-            noded: Upstream::new(config.noded_port),
-            hub: Upstream::new(config.hub_port),
+            noded: Upstream::with_token(config.noded_port, internal.clone()),
+            hub: Upstream::with_token(config.hub_port, internal),
             token,
             config,
         });

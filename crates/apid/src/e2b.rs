@@ -891,14 +891,10 @@ fn noded(
     timeout: Duration,
 ) -> Result<(u16, Value), String> {
     let bytes = body.map(Value::to_string);
-    let reply = apz_http::client::send(
-        app.noded.port,
-        method,
-        path,
-        bytes.as_deref().map(str::as_bytes),
-        timeout,
-    )
-    .map_err(|e| format!("noded unreachable: {e}"))?;
+    let reply = app
+        .noded
+        .send(method, path, bytes.as_deref().map(str::as_bytes), timeout)
+        .map_err(|e| format!("noded unreachable: {e}"))?;
     let value = if reply.body.is_empty() {
         Value::Null
     } else {
