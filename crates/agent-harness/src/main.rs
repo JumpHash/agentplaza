@@ -306,6 +306,8 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
     let mut failures = 0u32;
     // Set by the first welcome the hub accepts. A template retries quickly only until then.
     let mut welcomed = false;
+    // Quick attempts left after a vsock transport reset from a restore.
+    let mut fast_left = 0u32;
     loop {
         match keepalive_once(config, out) {
             Ok(calls) => {
@@ -317,7 +319,7 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                 let _ = out.flush();
                 return Ok(());
             }
-            Err((adopted, reason)) => {
+            Err((adopted, reset, reason)) => {
                 // A successful welcome resets the schedule: the counter counts
                 // consecutive failures since the hub last accepted this agent,
                 // so a drop after adoption is a 250 ms hop, not a 30 s wait.
@@ -327,17 +329,31 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                     failures.saturating_add(1)
                 };
                 welcomed |= adopted;
+                // A transport reset (a restore) opens a run of quick attempts; a hub hang-up does not.
+                if reset {
+                    fast_left = keepalive::RESTORE_FAST_TRIES;
+                }
+                let after_restore = fast_left > 0;
+                if after_restore {
+                    fast_left -= 1;
+                }
                 let delay = keepalive::reconnect_delay(
                     config.template && !welcomed,
+                    after_restore,
                     failures,
                     jitter_nanos(),
                 );
                 // A template waiting for its restore retries every 25 ms: only its first failure
                 // is printed, so the serial console (and the template's memory) is not flooded.
                 if !(config.template && !welcomed) || failures == 1 {
+                    let restored = if after_restore {
+                        " (after a restore)"
+                    } else {
+                        ""
+                    };
                     let _ = writeln!(
                         out,
-                        "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
+                        "agent-harness: keepalive: {reason}; reconnecting in {} ms{restored} (failure {failures})",
                         delay.as_millis()
                     );
                     let _ = out.flush();
@@ -350,14 +366,22 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
 
 /// One keepalive attempt: this VM's CID, the connection, and one session.
 ///
-/// Fails with whether the hub had adopted the agent, and a one-line reason (the
-/// setup steps' or the session's own) — the reconnect loop is the only caller,
-/// and what it needs from a failure is those two things.
+/// Fails with whether the hub had adopted the agent, whether the connection died to a vsock
+/// transport reset (a restore), and a one-line reason (the setup steps' or the session's own) —
+/// the reconnect loop is the only caller, and what it needs from a failure is those three things.
 #[cfg(target_os = "linux")]
-fn keepalive_once(config: &Config, out: &mut (impl Write + Send)) -> Result<u64, (bool, String)> {
-    let guest_cid = guest_cid(out).map_err(|err| (false, err.to_string()))?;
-    let stream = VsockStream::connect(HOST_CID, config.port)
-        .map_err(|err| (false, format!("cannot reach the orchestrator: {err}")))?;
+fn keepalive_once(
+    config: &Config,
+    out: &mut (impl Write + Send),
+) -> Result<u64, (bool, bool, String)> {
+    let guest_cid = guest_cid(out).map_err(|err| (false, false, err.to_string()))?;
+    let stream = VsockStream::connect(HOST_CID, config.port).map_err(|err| {
+        (
+            false,
+            false,
+            format!("cannot reach the orchestrator: {err}"),
+        )
+    })?;
     let identity = Identity {
         guest_cid,
         vm: config.vm,
@@ -377,7 +401,13 @@ fn keepalive_once(config: &Config, out: &mut (impl Write + Send)) -> Result<u64,
         config.role.as_deref(),
         keepalive::heartbeat_interval(),
     )
-    .map_err(|failure| (failure.adopted, failure.to_string()))
+    .map_err(|failure| {
+        (
+            failure.adopted,
+            failure.transport_reset(),
+            failure.to_string(),
+        )
+    })
 }
 
 /// Reads the guest CID the vsock device assigned this VM, logging it.
