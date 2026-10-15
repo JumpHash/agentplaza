@@ -13,6 +13,11 @@
 //! - [`store`]: the sessions, kept in Postgres with the rest of the plaza state.
 //! - [`agent`]: the ACP methods, over the [`agent::Hub`] the plaza gives them ([`app_hub`]).
 //! - [`feed`]: a session's work as ACP `session/update`s, live from the bus or replayed.
+//! - [`apz_acp::compat`]: the ACP v2 draft, next to v1. Off until the owner turns on `acp_v2`; an editor
+//!   that asks for protocol 2 then gets it, and every other editor keeps v1. On a v2 connection the
+//!   updates are translated to v2, a prompt answers with its message id and its turn runs after the
+//!   answer (`state_update`s carry the running and the end), `session/load` and `session/set_mode` are
+//!   not offered, and write-back is never offered (v2 has no `fs/write_text_file`).
 //!
 //! An agent never reaches the owner's machine: the editor's MCP servers are not connected, the
 //! hub never calls the editor's `fs/*` or `terminal/*`, and the agent works in its own VM.
@@ -23,7 +28,7 @@ pub mod feed;
 pub mod store;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -40,7 +45,7 @@ use crate::hub_auth::is_owner;
 use crate::hub_mcp::audit::CallRecord;
 use crate::hub_mcp::auth::{Scope, TokenRecord, bearer, sha256_hex};
 use crate::state::App;
-use agent::{Caller, Conn};
+use agent::{Caller, Conn, Detached};
 use app_hub::AppHub;
 
 /// The WebSocket subprotocol of `/v1/acp`.
@@ -52,13 +57,27 @@ const POLL: Duration = Duration::from_millis(250);
 /// The editors' sockets open now, under the same caps as the event sockets.
 static SOCKETS: Slots = Slots::new();
 
-/// What a connection's handlers share: the app, the agent the editor asked for, its client name, and who it acts for.
+/// What a connection's handlers share: the app, the agent the editor asked for, its client name, who it acts
+/// for, and the protocol version `initialize` negotiated (1 until then).
 struct ConnState {
     app: Arc<App>,
     agent: Option<String>,
     client: Mutex<String>,
     editor_writes: AtomicBool,
+    version: AtomicU16,
     caller: Caller,
+}
+
+/// Hands a v2 prompt's turn to a thread of its own, once the request is answered. The thread builds the hub
+/// from the connection's state, as the request does, and runs the turn with its own clone of the editor's peer.
+fn detacher(state: Arc<ConnState>, peer: Peer) -> impl Fn(Detached) {
+    move |turn| {
+        let (state, peer) = (Arc::clone(&state), peer.clone());
+        thread::spawn(move || {
+            let hub = AppHub { app: &state.app };
+            turn(&hub, &peer);
+        });
+    }
 }
 
 /// `GET /v1/acp` (the WebSocket) and `GET /v1/acp/sessions` (the console's list).
@@ -166,18 +185,23 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
         agent,
         client: Mutex::new(String::new()),
         editor_writes: AtomicBool::new(false),
+        version: AtomicU16::new(1),
         caller,
     });
     let on_request = {
         let state = Arc::clone(&state);
         move |peer: &Peer, method: &str, params: Value| {
             let hub = AppHub { app: &state.app };
+            let detach = detacher(Arc::clone(&state), peer.clone());
             let conn = Conn {
                 hub: &hub,
                 sessions: &state.app.acp_sessions,
                 agent: state.agent.clone(),
                 client: &state.client,
                 editor_writes: &state.editor_writes,
+                version: &state.version,
+                allow_v2: state.app.settings.get().acp_v2,
+                detach: &detach,
                 caller: state.caller.clone(),
             };
             metered(&state.app, &state.caller, method, params, |params| {
@@ -187,14 +211,18 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
     };
     let on_notification = {
         let state = Arc::clone(&state);
-        move |_peer: &Peer, method: &str, params: Value| {
+        move |peer: &Peer, method: &str, params: Value| {
             let hub = AppHub { app: &state.app };
+            let detach = detacher(Arc::clone(&state), peer.clone());
             let conn = Conn {
                 hub: &hub,
                 sessions: &state.app.acp_sessions,
                 agent: state.agent.clone(),
                 client: &state.client,
                 editor_writes: &state.editor_writes,
+                version: &state.version,
+                allow_v2: state.app.settings.get().acp_v2,
+                detach: &detach,
                 caller: state.caller.clone(),
             };
             // A notification has no answer, so a refused one is only audited.

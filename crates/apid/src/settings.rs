@@ -126,6 +126,9 @@ pub struct Settings {
     /// Whether an editor may apply a pull request its agent opened to the editor's project, when the
     /// owner says yes in the editor. Off until the owner turns it on; the agent never writes the project itself.
     pub acp_write_back: bool,
+    /// Whether editors may speak the ACP v2 draft to the hub, next to v1 (`/v1/acp`): an editor that asks
+    /// for protocol 2 gets it, and every other editor keeps v1. Off until the owner turns it on.
+    pub acp_v2: bool,
 }
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
@@ -227,6 +230,7 @@ impl Default for Settings {
             engines_mode: ENGINE_MODES[0].into(),
             acp_enabled: false,
             acp_write_back: false,
+            acp_v2: false,
         }
     }
 }
@@ -1441,6 +1445,20 @@ mod tests {
         assert!(check_engines(&s).unwrap_err().contains("pipes"));
         s.engines_mode = "headless".into();
         assert!(check_engines(&s).is_ok());
+    }
+
+    #[test]
+    fn acp_v2_is_off_by_default_and_old_settings_keep_v1() {
+        assert!(!Settings::default().acp_v2);
+        // Settings saved before the draft existed carry no key: editors keep speaking v1.
+        let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
+        assert!(!old.acp_v2);
+        let on: Settings = serde_json::from_str("{\"acp_v2\": true}").unwrap();
+        assert!(on.acp_v2);
+        assert!(
+            !on.acp_write_back,
+            "the other ACP switches keep their defaults"
+        );
     }
 
     #[test]

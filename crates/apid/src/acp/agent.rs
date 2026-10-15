@@ -10,16 +10,22 @@
 //! | `session/list`, `session/resume`, `session/close` | the sessions; resume without replay; close ends it |
 //! | `session/set_mode` | the agent's approval mode: `autonomous`, `ask`, `read_only` (`current_mode_update` follows) |
 //! | `session/set_config_option` | the agent's `model`, within its tier's list; the reply carries the options |
-//! | write-back | with the owner's `acp_write_back` on, the editor's `fs.writeTextFile`, and a caller that may govern: after the pull request's `tool_call`, `session/request_permission` asks to apply its files to the project (`apply-pr-<n>`, 10 minutes); on `apply` the editor gets one `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`; deleted files are left for the owner. The agent never writes the project itself |
+//! | write-back | with the owner's `acp_write_back` on, the editor's `fs.writeTextFile`, and a caller that may govern: after the pull request's `tool_call`, `session/request_permission` asks to apply its files to the project (`apply-pr-<n>`, 10 minutes); on `apply` the editor gets one `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`; deleted files are left for the owner. The agent never writes the project itself. Never on a v2 connection, which has no `fs/write_text_file` |
+//! | v2 draft | with the owner's `acp_v2` on, an editor that asks for protocol 2 gets it (see [`apz_acp::compat`]): the updates go out as v2 updates, a chunk takes the message id of its turn; `session/prompt` answers `{messageId}` at once and its turn follows as `state_update`s (running, then idle with the stop reason and the usage); `session/new` replies with the commands; `session/resume` replays nothing; `session/load` and `session/set_mode` are method not found |
 
 use std::collections::HashSet;
 use std::path::{Component, Path};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use apz_acp::compat::{
+    idle_update, initialize_request_to_v1, initialize_response_to_v2, negotiate,
+    new_session_response_to_v2, permission_request_to_v2, permission_response_to_v1,
+    running_update, update_to_v2,
+};
 use apz_acp::rpc::Peer;
 use apz_acp::types::{self, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
@@ -145,7 +151,41 @@ pub struct Conn<'h> {
     pub client: &'h Mutex<String>,
     /// Whether the editor's `initialize` advertised `fs.writeTextFile`: it can apply a pull request's files.
     pub editor_writes: &'h AtomicBool,
+    /// The protocol version `initialize` negotiated: 1, or 2 for an editor on the ACP v2 draft.
+    pub version: &'h AtomicU16,
+    /// Whether the owner has turned on the ACP v2 draft (`acp_v2`): only then may an editor ask for it.
+    pub allow_v2: bool,
+    /// Runs a v2 prompt's turn once its reply is out, on a thread of its own (see [`Detached`]).
+    pub detach: &'h dyn Fn(Detached),
     pub caller: Caller,
+}
+
+impl Conn<'_> {
+    /// Whether this connection speaks the ACP v2 draft.
+    fn is_v2(&self) -> bool {
+        self.version.load(Ordering::Relaxed) == 2
+    }
+
+    /// How the updates of `work` (or of no work) reach this connection's editor.
+    fn wire(&self, work: Option<u64>) -> Wire {
+        Wire {
+            v2: self.is_v2(),
+            work,
+        }
+    }
+}
+
+/// A v2 prompt's turn, handed to a thread of its own: it gets the hub and the editor's peer when it runs.
+/// The request is answered before the turn runs, so the turn's updates follow the reply.
+pub type Detached = Box<dyn FnOnce(&dyn Hub, &Peer) + Send>;
+
+/// How one update reaches the editor. v1 sends it as it is. v2 sends it as v2 updates (see
+/// [`apz_acp::compat::update_to_v2`]), and a chunk takes the message id of the work it belongs to; without a
+/// work (a command's reply, the commands) the chunk keeps the fixed id the translation gives it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Wire {
+    v2: bool,
+    work: Option<u64>,
 }
 
 /// How often the stream checks the editor and the approvals when no transcript frame came.
@@ -187,6 +227,10 @@ pub fn request(
     params: Value,
 ) -> Result<Value, types::Error> {
     let names = &AGENT_METHOD_NAMES;
+    // v2 has neither `session/load` nor `session/set_mode`: a v2 editor does not ask for them.
+    if conn.is_v2() && (method == names.session_load || method == names.session_set_mode) {
+        return Err(types::Error::method_not_found());
+    }
     if method == names.initialize {
         initialize(conn, &params)
     } else if method == names.session_new {
@@ -224,8 +268,25 @@ pub fn notification(conn: &Conn<'_>, method: &str, params: Value) {
     }
 }
 
+/// `initialize`: protocol 1, or protocol 2 when the owner allows the v2 draft and the editor asks for it. The
+/// version is kept on the connection, and a v2 request reaches the v1 code as its v1 request, whose reply is
+/// then translated back.
 fn initialize(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
-    // We answer protocol 1 whatever the editor asked for: it is the only one we speak.
+    let requested = params["protocolVersion"]
+        .as_u64()
+        .and_then(|version| u16::try_from(version).ok())
+        .unwrap_or(1);
+    let version = negotiate(requested, conn.allow_v2);
+    conn.version.store(version, Ordering::Relaxed);
+    if version != 2 {
+        return initialize_v1(conn, params);
+    }
+    let reply = initialize_v1(conn, &initialize_request_to_v1(params))?;
+    Ok(initialize_response_to_v2(&reply))
+}
+
+/// The v1 `initialize`: the editor's client name and file capability are kept, and the reply is v1.
+fn initialize_v1(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
     let name = params["clientInfo"]["name"].as_str().unwrap_or_default();
     let version = params["clientInfo"]["version"].as_str().unwrap_or_default();
     *lock(conn.client) = format!("{name} {version}").trim().to_string();
@@ -269,20 +330,26 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
         notify_update(
             peer,
             &session.id,
+            conn.wire(None),
             json!({
                 "sessionUpdate": "agent_message_chunk",
                 "content": {"type": "text", "text": MCP_NOTICE},
             }),
         );
     }
-    // Before the reply: the editor takes the commands as the session's, and a notification may come
-    // ahead of the reply to `session/new`.
-    notify_update(peer, &session.id, commands_update());
-    Ok(json!({
+    let reply = json!({
         "sessionId": session.id,
         "modes": modes(conn.hub, cid),
         "configOptions": config_options(conn.hub, cid),
-    }))
+    });
+    // v2 takes the commands in the reply itself, so no `available_commands_update` is sent for it.
+    if conn.is_v2() {
+        return Ok(new_session_response_to_v2(&reply, &commands()));
+    }
+    // Before the reply: the editor takes the commands as the session's, and a notification may come
+    // ahead of the reply to `session/new`.
+    notify_update(peer, &session.id, Wire::default(), commands_update());
+    Ok(reply)
 }
 
 fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
@@ -320,6 +387,7 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
             notify_update(
                 peer,
                 &session.id,
+                conn.wire(Some(work)),
                 json!({
                     "sessionUpdate": "session_info_update",
                     "title": titled.title,
@@ -328,6 +396,19 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
             );
         }
     }
+    if conn.is_v2() {
+        // The turn runs after the answer: its updates are the `state_update`s and the work's stream.
+        let turn = Turn {
+            session,
+            work,
+            frames,
+            govern: conn.caller.may_govern(),
+        };
+        (conn.detach)(Box::new(move |hub: &dyn Hub, peer: &Peer| {
+            turn.run(hub, peer)
+        }));
+        return Ok(json!({"messageId": format!("prompt-{work}")}));
+    }
     let result = stream(
         conn.hub,
         peer,
@@ -335,16 +416,84 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
         work,
         &frames,
         conn.caller.may_govern(),
+        Wire::default(),
     );
     // The turn's tokens are reported whatever its end: a failed work spent them too.
     report_usage(conn.hub, peer, &session.id, session.cid, work);
     // A pull request the work opened is reported whatever the end too: it is on the repository.
     if let Some(repo) = &session.repo {
-        if let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo) {
+        if let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo, Wire::default()) {
             offer_write_back(conn, peer, &session, &pull);
         }
     }
     result
+}
+
+/// A v2 prompt's turn: the work's stream as state and updates, once the editor has its answer. It ends with
+/// an idle `state_update` that says why the work stopped, and the usage. A failed work says why in the chat
+/// first and ends as `_failed`.
+struct Turn {
+    session: Session,
+    work: u64,
+    frames: Receiver<Frame>,
+    govern: bool,
+}
+
+impl Turn {
+    /// Runs the turn on `hub` for the editor at `peer`. Called on the turn's own thread (see [`Detached`]).
+    fn run(self, hub: &dyn Hub, peer: &Peer) {
+        let wire = Wire {
+            v2: true,
+            work: Some(self.work),
+        };
+        send_update(peer, &self.session.id, running_update());
+        let result = stream(
+            hub,
+            peer,
+            &self.session,
+            self.work,
+            &self.frames,
+            self.govern,
+            wire,
+        );
+        // A pull request the work opened is reported whatever the end, as on v1. v2 offers no write-back.
+        if let Some(repo) = &self.session.repo {
+            report_repo_pull(hub, peer, &self.session, repo, wire);
+        }
+        let stop = match &result {
+            Ok(reply) => reply["stopReason"]
+                .as_str()
+                .unwrap_or("end_turn")
+                .to_string(),
+            Err(err) => {
+                let said = err
+                    .data
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .unwrap_or(err.message.as_str());
+                notify_update(
+                    peer,
+                    &self.session.id,
+                    wire,
+                    json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": said},
+                    }),
+                );
+                "_failed".to_string()
+            }
+        };
+        let usage = hub.usage(self.session.cid, self.work).map(|usage| {
+            let input = usage["input_tokens"].as_u64().unwrap_or(0);
+            let output = usage["output_tokens"].as_u64().unwrap_or(0);
+            json!({
+                "totalTokens": input + output,
+                "inputTokens": input,
+                "outputTokens": output,
+            })
+        });
+        send_update(peer, &self.session.id, idle_update(&stop, usage.as_ref()));
+    }
 }
 
 /// The repository the editor linked in `_meta.agentplaza.repo`, when it names a repository and a branch.
@@ -386,6 +535,7 @@ fn report_repo_pull(
     peer: &Peer,
     session: &Session,
     repo: &RepoLink,
+    wire: Wire,
 ) -> Option<RepoPull> {
     let head = format!("acp/{}", session.id);
     let pull = hub.repo_pull(&repo.name, &head)?;
@@ -407,6 +557,7 @@ fn report_repo_pull(
     notify_update(
         peer,
         &session.id,
+        wire,
         json!({
             "sessionUpdate": "tool_call",
             "toolCallId": format!("pr-{}", pull.number),
@@ -420,6 +571,7 @@ fn report_repo_pull(
     notify_update(
         peer,
         &session.id,
+        wire,
         json!({
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": format!("Pull request #{}: {}", pull.number, pull.url)},
@@ -450,8 +602,10 @@ fn repo_relative(path: &str) -> bool {
 /// on the owner's yes. The editor does the writing (`fs/write_text_file`), file by file: the agent never
 /// touches the project. Nothing is asked unless write-back is on, the editor can write files, the caller
 /// may govern, and a changed file has new text. A deleted file is left for the owner to remove.
+/// Never on a v2 connection: v2 has no `fs/write_text_file`, so the editor cannot write the project.
 fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &RepoPull) {
-    if !conn.hub.write_back()
+    if conn.is_v2()
+        || !conn.hub.write_back()
         || !conn.editor_writes.load(Ordering::Relaxed)
         || !conn.caller.may_govern()
     {
@@ -540,6 +694,7 @@ fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &Repo
     notify_update(
         peer,
         &session.id,
+        Wire::default(),
         json!({
             "sessionUpdate": "tool_call_update",
             "toolCallId": id,
@@ -561,15 +716,33 @@ fn command_turn(
     let said = match conn.hub.control(session.cid, None, command, arg) {
         Ok(said) | Err(said) => said,
     };
+    if !conn.is_v2() {
+        notify_update(
+            peer,
+            &session.id,
+            Wire::default(),
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": said},
+            }),
+        );
+        return Ok(json!({"stopReason": "end_turn"}));
+    }
+    // A command queues no work, so there is no turn to run later: its states go out here, before the answer,
+    // which carries a message id as a prompt's answer does. Its text keeps the fixed id of its kind.
+    let now = conn.hub.now_ms();
+    send_update(peer, &session.id, running_update());
     notify_update(
         peer,
         &session.id,
+        conn.wire(None),
         json!({
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": said},
         }),
     );
-    Ok(json!({"stopReason": "end_turn"}))
+    send_update(peer, &session.id, idle_update("end_turn", None));
+    Ok(json!({"messageId": format!("prompt-command-{now}")}))
 }
 
 /// The command a prompt names: `/<name>` or `/<name> <argument>` for one of [`COMMANDS`], as
@@ -584,7 +757,7 @@ fn slash_command(text: &str) -> Option<(&str, &str)> {
 }
 
 /// Tells the editor the work's tokens, when it made any model call. `size` is 0: the plaza does
-/// not know the model's context window here.
+/// not know the model's context window here. v1 only: a v2 turn reports its usage on its idle state.
 fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u64) {
     let Some(usage) = hub.usage(cid, work) else {
         return;
@@ -595,6 +768,7 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
     notify_update(
         peer,
         session_id,
+        Wire::default(),
         json!({
             "sessionUpdate": "usage_update",
             "used": input + output,
@@ -619,6 +793,7 @@ fn stream(
     work: u64,
     frames: &Receiver<Frame>,
     govern: bool,
+    wire: Wire,
 ) -> Result<Value, types::Error> {
     let mut feed = Feed::new(session.cid, work);
     let mut asked = HashSet::new();
@@ -629,11 +804,19 @@ fn stream(
                 Ok(frame) => {
                     let data: Value = serde_json::from_str(&frame.data).unwrap_or(Value::Null);
                     for update in feed.frame(&frame.kind, &data) {
-                        notify_update(peer, &session.id, update);
+                        notify_update(peer, &session.id, wire, update);
                     }
                     if frame.kind == "transcript" {
                         if govern {
-                            ask_approvals(scope, peer, hub, session.cid, &session.id, &mut asked);
+                            ask_approvals(
+                                scope,
+                                peer,
+                                hub,
+                                session.cid,
+                                &session.id,
+                                &mut asked,
+                                wire.v2,
+                            );
                         }
                         checked = Instant::now();
                     }
@@ -651,7 +834,15 @@ fn stream(
                 return Err(internal("the editor disconnected"));
             }
             if govern && checked.elapsed() >= APPROVALS_EVERY {
-                ask_approvals(scope, peer, hub, session.cid, &session.id, &mut asked);
+                ask_approvals(
+                    scope,
+                    peer,
+                    hub,
+                    session.cid,
+                    &session.id,
+                    &mut asked,
+                    wire.v2,
+                );
                 checked = Instant::now();
             }
         }
@@ -667,6 +858,7 @@ fn ask_approvals<'scope, 'env>(
     cid: u64,
     session_id: &str,
     asked: &mut HashSet<String>,
+    v2: bool,
 ) where
     'env: 'scope,
 {
@@ -696,19 +888,29 @@ fn ask_approvals<'scope, 'env>(
                 {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
             ],
         });
-        scope.spawn(move || answer_approval(peer, hub, &approval_id, params));
+        scope.spawn(move || answer_approval(peer, hub, &approval_id, params, v2));
     }
 }
 
 /// Asks the editor one approval and decides it for the owner. A cancelled or failed ask leaves the
-/// approval pending, for the owner to decide in the console.
-fn answer_approval(peer: &Peer, hub: &dyn Hub, approval_id: &str, params: Value) {
+/// approval pending, for the owner to decide in the console. On v2 the ask and its answer are the v2 shapes.
+fn answer_approval(peer: &Peer, hub: &dyn Hub, approval_id: &str, params: Value, v2: bool) {
+    let asked = if v2 {
+        permission_request_to_v2(&params)
+    } else {
+        params
+    };
     let Ok(reply) = peer.call(
         CLIENT_METHOD_NAMES.session_request_permission,
-        params,
+        asked,
         PERMISSION_TIMEOUT,
     ) else {
         return;
+    };
+    let reply = if v2 {
+        permission_response_to_v1(&reply)
+    } else {
+        reply
     };
     let outcome = &reply["outcome"];
     if outcome["outcome"].as_str() != Some("selected") {
@@ -738,10 +940,10 @@ fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Er
     let entries = conn.hub.entries(session.cid, &session.works);
     for &work in &session.works {
         for update in feed::replay(work, &entries) {
-            notify_update(peer, &session.id, update);
+            notify_update(peer, &session.id, Wire::default(), update);
         }
     }
-    notify_update(peer, &session.id, commands_update());
+    notify_update(peer, &session.id, Wire::default(), commands_update());
     Ok(json!({
         "modes": modes(conn.hub, session.cid),
         "configOptions": config_options(conn.hub, session.cid),
@@ -792,6 +994,7 @@ fn set_mode(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types
     notify_update(
         peer,
         &session.id,
+        Wire::default(),
         json!({
             "sessionUpdate": "current_mode_update",
             "currentModeId": conn.hub.mode(session.cid),
@@ -812,7 +1015,13 @@ fn set_config_option(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Er
         .as_str()
         .ok_or_else(|| invalid("the model is a model id, as a string"))?;
     conn.hub.set_model(session.cid, model).map_err(invalid)?;
-    Ok(json!({"configOptions": config_options(conn.hub, session.cid)}))
+    let options = config_options(conn.hub, session.cid);
+    if conn.is_v2() {
+        // v2 names the option's id `configId`: the v1 options are translated the way `session/new` does.
+        let v2 = new_session_response_to_v2(&json!({"configOptions": options}), &[]);
+        return Ok(json!({"configOptions": v2["configOptions"]}));
+    }
+    Ok(json!({"configOptions": options}))
 }
 
 /// The session's config options: the agent's `model`, and the models its tier allows.
@@ -830,9 +1039,9 @@ fn config_options(hub: &dyn Hub, cid: u64) -> Value {
     }])
 }
 
-/// The plaza's commands, for the editor's command list.
-fn commands_update() -> Value {
-    let commands: Vec<Value> = COMMANDS
+/// The plaza's commands in v1 shape, for the editor's command list.
+fn commands() -> Vec<Value> {
+    COMMANDS
         .iter()
         .map(|(name, description, hint)| {
             let mut command = json!({"name": name, "description": description});
@@ -841,8 +1050,11 @@ fn commands_update() -> Value {
             }
             command
         })
-        .collect();
-    json!({"sessionUpdate": "available_commands_update", "availableCommands": commands})
+        .collect()
+}
+
+fn commands_update() -> Value {
+    json!({"sessionUpdate": "available_commands_update", "availableCommands": commands()})
 }
 
 /// The session `params` name, open or closed, when the caller may drive its agent.
@@ -892,11 +1104,40 @@ fn modes(hub: &dyn Hub, cid: u64) -> Value {
     })
 }
 
-fn notify_update(peer: &Peer, session_id: &str, update: Value) {
+/// Sends one update to the editor as it is. The v2 states (`state_update`) go out this way too.
+fn send_update(peer: &Peer, session_id: &str, update: Value) {
     let _ = peer.notify(
         CLIENT_METHOD_NAMES.session_update,
         json!({"sessionId": session_id, "update": update}),
     );
+}
+
+/// Sends a v1 update to the editor, in the shape `wire` names: as it is on v1, and on v2 as the v2 updates
+/// it becomes (none when v2 has no counterpart). Every update of a session goes through here.
+fn notify_update(peer: &Peer, session_id: &str, wire: Wire, update: Value) {
+    if !wire.v2 {
+        send_update(peer, session_id, update);
+        return;
+    }
+    for update in update_to_v2(&update) {
+        send_update(peer, session_id, with_message_id(update, wire.work));
+    }
+}
+
+/// A v2 chunk with the message id of its work: the agent's text and its thoughts, and the user's message, each
+/// its own message. Other updates, and a chunk with no work, are left as they are.
+fn with_message_id(mut update: Value, work: Option<u64>) -> Value {
+    let Some(work) = work else {
+        return update;
+    };
+    let id = match update["sessionUpdate"].as_str() {
+        Some("agent_message_chunk") => format!("work-{work}"),
+        Some("agent_thought_chunk") => format!("thought-{work}"),
+        Some("user_message_chunk") => format!("prompt-{work}"),
+        _ => return update,
+    };
+    update["messageId"] = json!(id);
+    update
 }
 
 /// The prompt as the agent reads it: the text blocks, then the editor's attached files and links,
@@ -997,6 +1238,8 @@ mod tests {
         sessions: Sessions,
         client: Mutex<String>,
         editor_writes: AtomicBool,
+        version: AtomicU16,
+        allow_v2: bool,
         agent: Option<String>,
         caller: Caller,
     }
@@ -1140,6 +1383,20 @@ mod tests {
 
     /// An editor connection as `caller`, whose client answers as `config` says.
     fn harness_with(agent: Option<&str>, caller: Caller, config: ClientConfig) -> Harness {
+        let (plaza, frames) = plaza(agent, caller, false);
+        let (server, client_in, client_out) = serve(&plaza);
+        let client = FakeClient::spawn(client_in, client_out, config);
+        Harness {
+            client,
+            plaza,
+            frames,
+            _server: server,
+        }
+    }
+
+    /// The plaza a connection serves: a fake hub with the bus's sender kept by the test, and whether the
+    /// owner allows the v2 draft.
+    fn plaza(agent: Option<&str>, caller: Caller, allow_v2: bool) -> (Arc<Plaza>, Sender<Frame>) {
         let (frames, rx) = mpsc::channel();
         let plaza = Arc::new(Plaza {
             hub: FakeHub {
@@ -1161,36 +1418,59 @@ mod tests {
             sessions: Sessions::default(),
             client: Mutex::default(),
             editor_writes: AtomicBool::new(false),
+            version: AtomicU16::new(1),
+            allow_v2,
             agent: agent.map(str::to_string),
             caller,
         });
-        // Pipes, not a socket pair: the hub builds and tests on Windows too.
+        (plaza, frames)
+    }
+
+    /// The agent's side of a connection to `plaza`: the server Peer, and the editor's ends of its two pipes
+    /// (what the editor reads, and what it writes). Pipes, not a socket pair: the hub builds and tests on
+    /// Windows too.
+    fn serve(plaza: &Arc<Plaza>) -> (Peer, std::io::PipeReader, std::io::PipeWriter) {
         let (server_in, client_out) = std::io::pipe().expect("a pipe");
         let (client_in, server_out) = std::io::pipe().expect("a pipe");
-        let for_requests = Arc::clone(&plaza);
-        let for_notes = Arc::clone(&plaza);
+        let for_requests = Arc::clone(plaza);
+        let for_notes = Arc::clone(plaza);
         let server = Peer::new(
             server_in,
             server_out,
-            move |peer, method, params| request(&conn_of(&for_requests), peer, method, params),
-            move |_peer, method, params| notification(&conn_of(&for_notes), method, params),
+            move |peer: &Peer, method: &str, params: Value| {
+                let detach = detacher_for(&for_requests, peer);
+                request(&conn_of(&for_requests, &detach), peer, method, params)
+            },
+            move |peer: &Peer, method: &str, params: Value| {
+                let detach = detacher_for(&for_notes, peer);
+                notification(&conn_of(&for_notes, &detach), method, params);
+            },
         );
-        let client = FakeClient::spawn(client_in, client_out, config);
-        Harness {
-            client,
-            plaza,
-            frames,
-            _server: server,
+        (server, client_in, client_out)
+    }
+
+    /// How the tests run a v2 turn: on a thread of its own, with the plaza's hub, as the socket does.
+    fn detacher_for(plaza: &Arc<Plaza>, peer: &Peer) -> impl Fn(Detached) {
+        let (plaza, peer) = (Arc::clone(plaza), peer.clone());
+        move |turn| {
+            let (plaza, peer) = (Arc::clone(&plaza), peer.clone());
+            thread::spawn(move || {
+                let hub: &dyn Hub = &plaza.hub;
+                turn(hub, &peer);
+            });
         }
     }
 
-    fn conn_of(plaza: &Plaza) -> Conn<'_> {
+    fn conn_of<'a>(plaza: &'a Plaza, detach: &'a dyn Fn(Detached)) -> Conn<'a> {
         Conn {
             hub: &plaza.hub,
             sessions: &plaza.sessions,
             agent: plaza.agent.clone(),
             client: &plaza.client,
             editor_writes: &plaza.editor_writes,
+            version: &plaza.version,
+            allow_v2: plaza.allow_v2,
+            detach,
             caller: plaza.caller.clone(),
         }
     }
@@ -1372,6 +1652,216 @@ mod tests {
         assert_eq!(*lock(&h.plaza.client), "zed 0.200");
     }
 
+    /// An editor on the ACP v2 draft's side of a connection: a Peer that records each session update as it
+    /// arrives, as the wire has it (v2 states included).
+    struct RawEditor {
+        peer: Peer,
+        updates: Arc<Mutex<Vec<Value>>>,
+    }
+
+    fn raw_editor(client_in: std::io::PipeReader, client_out: std::io::PipeWriter) -> RawEditor {
+        let updates: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let recorded = Arc::clone(&updates);
+        let peer = Peer::new(
+            client_in,
+            client_out,
+            |_peer: &Peer, _method: &str, _params: Value| Err(types::Error::method_not_found()),
+            move |_peer: &Peer, method: &str, params: Value| {
+                if method == CLIENT_METHOD_NAMES.session_update {
+                    lock(&recorded).push(params["update"].clone());
+                }
+            },
+        );
+        RawEditor { peer, updates }
+    }
+
+    /// A connection to a fake plaza whose owner allows the v2 draft or not, with the editor on its end.
+    fn v2_harness(allow_v2: bool) -> (Arc<Plaza>, RawEditor, Sender<Frame>, Peer) {
+        let (plaza, frames) = plaza(None, Caller::Owner, allow_v2);
+        let (server, client_in, client_out) = serve(&plaza);
+        (plaza, raw_editor(client_in, client_out), frames, server)
+    }
+
+    /// The `initialize` request an editor on the v2 draft sends.
+    fn initialize_v2() -> Value {
+        json!({
+            "protocolVersion": 2,
+            "info": {"name": "zed", "version": "0.300"},
+            "capabilities": {},
+        })
+    }
+
+    /// Waits until `done` holds of the updates the editor has, and returns them; the test fails after `WAIT`.
+    fn wait_for_updates(
+        updates: &Mutex<Vec<Value>>,
+        done: impl Fn(&[Value]) -> bool,
+    ) -> Vec<Value> {
+        let start = Instant::now();
+        loop {
+            let seen = lock(updates).clone();
+            if done(&seen) {
+                return seen;
+            }
+            assert!(start.elapsed() < WAIT, "the updates did not come: {seen:?}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn initialize_answers_protocol_two_when_the_owner_allows_it() {
+        let (plaza, editor, _frames, _server) = v2_harness(true);
+        let reply = editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        serde_json::from_value::<types::v2::InitializeResponse>(reply.clone()).expect("a v2 reply");
+        assert_eq!(reply["protocolVersion"], 2);
+        assert_eq!(reply["info"]["name"], "agentplaza");
+        assert_eq!(*lock(&plaza.client), "zed 0.300");
+        assert_eq!(plaza.version.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn initialize_answers_protocol_one_when_the_owner_has_not_allowed_v2() {
+        let (plaza, editor, _frames, _server) = v2_harness(false);
+        let reply = editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        assert_eq!(reply["protocolVersion"], 1);
+        serde_json::from_value::<types::InitializeResponse>(reply).expect("a v1 reply");
+        assert_eq!(plaza.version.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn v2_session_new_carries_the_commands_and_no_update_for_them() {
+        let (_plaza, editor, _frames, _server) = v2_harness(true);
+        editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        let reply = editor
+            .peer
+            .call(
+                "session/new",
+                json!({"cwd": "/work/app", "mcpServers": []}),
+                WAIT,
+            )
+            .expect("session/new");
+        assert!(reply["sessionId"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(
+            reply["availableCommands"]
+                .as_array()
+                .is_some_and(|commands| !commands.is_empty())
+        );
+        assert!(reply.get("modes").is_none(), "v2 has no modes");
+        assert!(
+            lock(&editor.updates)
+                .iter()
+                .all(|update| update["sessionUpdate"] != "available_commands_update"),
+            "the commands come in the reply"
+        );
+    }
+
+    #[test]
+    fn a_v2_prompt_is_answered_at_once_and_its_turn_follows_as_states() {
+        let (_plaza, editor, frames, _server) = v2_harness(true);
+        editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        let session = editor
+            .peer
+            .call(
+                "session/new",
+                json!({"cwd": "/work/app", "mcpServers": []}),
+                WAIT,
+            )
+            .expect("session/new")["sessionId"]
+            .as_str()
+            .expect("a session id")
+            .to_string();
+        // The answer comes before the work has any frame: the turn runs after it.
+        let answer = editor
+            .peer
+            .call(
+                "session/prompt",
+                json!({"sessionId": session, "prompt": [{"type": "text", "text": "hi"}]}),
+                WAIT,
+            )
+            .expect("session/prompt");
+        assert_eq!(answer, json!({"messageId": "prompt-42"}));
+        // The turn starts with `running` and waits for the work.
+        let before = wait_for_updates(&editor.updates, |seen| {
+            seen.iter().any(|u| u["state"] == "running")
+        });
+        assert!(
+            before.iter().all(|u| u["state"] != "idle"),
+            "the turn is not over before its work ends"
+        );
+        frames.send(work_end()).expect("the work ends");
+        let seen = wait_for_updates(&editor.updates, |seen| {
+            seen.iter().any(|u| u["state"] == "idle")
+        });
+        let states: Vec<&Value> = seen
+            .iter()
+            .filter(|u| u["sessionUpdate"] == "state_update")
+            .collect();
+        assert_eq!(
+            states.first().map(|u| u["state"].clone()),
+            Some(json!("running"))
+        );
+        let last = states.last().expect("a state");
+        assert_eq!(last["state"], "idle");
+        assert_eq!(last["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn v2_does_not_offer_load_or_set_mode() {
+        let (_plaza, editor, _frames, _server) = v2_harness(true);
+        editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        let load = editor
+            .peer
+            .call(
+                "session/load",
+                json!({"sessionId": "acp-none", "cwd": "/work/app", "mcpServers": []}),
+                WAIT,
+            )
+            .expect_err("no load on v2");
+        assert!(matches!(load, rpc::Error::Remote(_)), "{load:?}");
+        let mode = editor
+            .peer
+            .call(
+                "session/set_mode",
+                json!({"sessionId": "acp-none", "modeId": "ask"}),
+                WAIT,
+            )
+            .expect_err("no set_mode on v2");
+        assert!(matches!(mode, rpc::Error::Remote(_)), "{mode:?}");
+    }
+
+    #[test]
+    fn a_v2_chunk_takes_the_message_id_of_its_work() {
+        let text = json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}});
+        assert_eq!(
+            with_message_id(text.clone(), Some(42))["messageId"],
+            "work-42"
+        );
+        let thought = json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hm"}});
+        assert_eq!(
+            with_message_id(thought, Some(42))["messageId"],
+            "thought-42"
+        );
+        let user = json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "hi"}});
+        assert_eq!(with_message_id(user, Some(42))["messageId"], "prompt-42");
+        // Without a work the translation's fixed id stays.
+        let fixed = with_message_id(update_to_v2(&text).remove(0), None);
+        assert_eq!(fixed["messageId"], "agent");
+    }
+
     #[test]
     fn unknown_methods_are_method_not_found() {
         let h = harness(None);
@@ -1440,8 +1930,9 @@ mod tests {
         let h = harness(None);
         let session = h.plaza.sessions.open(7, "/work/app", "", 0);
         h.plaza.sessions.add_work(&session.id, 42, "fix it", 0);
+        let detach = detacher_for(&h.plaza, &h._server);
         notification(
-            &conn_of(&h.plaza),
+            &conn_of(&h.plaza, &detach),
             "session/cancel",
             json!({"sessionId": session.id}),
         );
