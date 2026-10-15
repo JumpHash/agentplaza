@@ -57,7 +57,7 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 
 | route | reply |
 |---|---|
-| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names a built template (its id, name or `name:tag`; see [Template builds](#template-builds)), a snapshot (see [Snapshots and templates](#snapshots-and-templates)), or else the base image (`base` by default; any other name is accepted for it). |
+| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names a built template (its id, name or `name:tag`; see [Template builds](#template-builds)), a snapshot (see [Snapshots and templates](#snapshots-and-templates)), or else the base image (`base` by default; any other name is accepted for it). A name two or more snapshots share is refused with `409`: use the snapshot's id. |
 | `POST /e2b/v2/sandboxes` | `201 Sandbox`. The create the current SDKs call. The same as v1, and always secured. |
 | `GET /e2b/sandboxes` | `[ListedSandbox]`: the running ones, filtered by `metadata`. |
 | `GET /e2b/v2/sandboxes?state=running,paused` | `[ListedSandbox]`, for the states asked, filtered by `metadata`. |
@@ -66,10 +66,10 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 | `POST /e2b/sandboxes/{id}/timeout` `{timeout}` | `204`: sets the end time. |
 | `POST /e2b/sandboxes/{id}/refreshes` `{duration}` | `204`: extends the end time. |
 | `GET /e2b/sandboxes/{id}/metrics` | `[SandboxMetric]`: one sample, now, from the daemon's `GET /metrics` (CPU busy since the last sample, memory, the home disk). `[]` while paused. |
-| `GET /e2b/sandboxes/metrics?sandbox_ids=a,b` | `{"sandboxes": {id: SandboxMetric}}` for the running ones (at most 100). |
+| `GET /e2b/sandboxes/metrics?sandbox_ids=a,b` | `{"sandboxes": {id: SandboxMetric}}` for the running ones (at most 100; each id once; daemons not reached within 15 s are left out). |
 | `GET /e2b/v2/sandboxes/{id}/logs` `?cursor&limit&direction&level&search` | `{"logs": [SandboxLogEntry]}`: the daemon's log (each process's start, with its command line, and end, with its exit code), filtered and paged as asked. The daemon keeps its last 1000 entries. |
 | `GET /e2b/sandboxes/{id}/logs` `?start&limit` | `{"logs": [{timestamp, line}], "logEntries": [...]}`, the same entries. |
-| `PUT /e2b/sandboxes/{id}/network` | `204`. Replaces the sandbox's `allowOut`, `denyOut` and `allow_internet_access` (an omitted list is cleared; omitted access is on). Applies to the next connection: vsockd forgets the decisions it kept for the sandbox. |
+| `PUT /e2b/sandboxes/{id}/network` | `204`. Replaces the sandbox's `allowOut`, `denyOut` and `allow_internet_access` (an omitted list is cleared; omitted access is on). Applies to the next connection: vsockd forgets the decisions it kept for the sandbox. When vsockd cannot be told (three tries), `502 sandbox_rules_pending`: the rules are saved, and its kept decisions expire within 60 s. |
 | `POST /e2b/sandboxes/{id}/pause` `{memory?}` | `204`. With `memory: false`, the VM stops with no memory image (a cold resume). |
 | `POST /e2b/sandboxes/{id}/resume` `{timeout?, memory?}` | `201 Sandbox`. With `memory: false`, the sandbox boots from its disk. |
 | `POST /e2b/sandboxes/{id}/connect` `{timeout}` | `201 Sandbox` when it was woken, `200` when it was already running. With `memory: false`, it boots from its disk. |
@@ -87,7 +87,11 @@ again.
 **Network rules.** `network.allowOut` and `network.denyOut` at create, and `PUT .../network` later, narrow or open a
 sandbox's egress. The proxy sees the host each connection names, so `allowOut` takes a name, a `*.` wildcard (any
 subdomain, not the apex), an IP or a CIDR block, and `denyOut` an IP or a CIDR block; `0.0.0.0/0` denies every host. An
-allowed entry wins over a denied one, as in E2B. Neither overrides the laws or the hub's blocklist of private ranges.
+allowed entry wins over a denied one, as in E2B, even when the sandbox has no internet access. `denyOut` blocks also apply
+to the addresses a name resolves to: the hub hands them to vsockd with its answer, and vsockd refuses a connection whose
+resolved address falls in one. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is matched as its IPv4 address. Neither
+list overrides the laws or the hub's blocklist of private ranges. `network.allow_internet_access` at create sets the
+internet access (it wins over the top-level field).
 
 **Refused, not ignored:** `volumeMounts` (the plaza's volumes are read-only and given by role), `network.rules`
 (credentials are added only by the owner's egress rules), `network.egressProxy` and `network.maskRequestHost`.
@@ -120,10 +124,10 @@ steps installed and what the start command left running.
 | route | reply |
 |---|---|
 | `POST /e2b/v3/templates` `{name, tags?, cpuCount?, memoryMB?}` | `202 {templateID, buildID, names, aliases, tags, public}`. A new build, waiting for its steps; a new template when no template has the name. `name:tag` names a tag; no tag is `default`. 1 to 8 vCPUs, 128 to 16384 MiB (1 and 512 by default). `minFreeDiskMb` is accepted and not applied. |
-| `GET /e2b/templates/{id}/files/{hash}` | `201 {present}`, or `{present: false, url, headers}`: a link to `PUT` the step's archive to, good for one upload within the hour. Its token travels in `headers`, which the SDK sends back. |
-| `PUT /e2b/templates/{id}/files/{hash}` | `200`: the archive (tar or tar.gz, at most 512 MiB), kept by its hash under `<state>/e2b-template-files`. |
+| `GET /e2b/templates/{id}/files/{hash}` | `201 {present, url, headers}`: whether the archive is here, and a link to `PUT` it to, good for one upload within the hour (the SDK uploads when it is not present, or when the step forces the upload). Its token travels in `headers`, which the SDK sends back. At most 1024 links are open at once (`429` beyond). The link names the hub's `--public-url` when one is set, else the `Host` the caller used. |
+| `PUT /e2b/templates/{id}/files/{hash}` | `200`: the archive (tar or tar.gz, at most 512 MiB, unpacking to at most 2 GiB), kept by its hash under `<state>/e2b-template-files`. It is written to a temporary file, synced and renamed. A link is spent only by an upload that matches it. |
 | `POST /e2b/v2/templates/{id}/builds/{build}` `TemplateBuildStartV2` | `202`: the steps are checked and the build starts. `429` while two builds run. |
-| `GET /e2b/templates/{id}/builds/{build}/status?logsOffset&limit` | `TemplateBuildInfo`: `waiting`, `building`, `ready` or `error`, the build's log from `logsOffset` (100 entries a page), and on error the `reason` with its step (`base`, the step's number, or `finalize`). |
+| `GET /e2b/templates/{id}/builds/{build}/status?logsOffset&limit` | `TemplateBuildInfo`: `waiting`, `building`, `ready` or `error`, the build's log from `logsOffset` (100 entries a page; a log keeps its first 2000 lines; a bad `logsOffset` or `limit` is `400`), and on error the `reason` with its step (`base`, the step's number, or `finalize`). |
 | `GET /e2b/templates/aliases/{name}` | `{templateID, public: false}`, or `404` (the SDK's `Template.exists`). |
 | `GET /e2b/templates/{id}/tags` | `[{tag, buildID, createdAt}]`. |
 | `POST /e2b/templates/tags` `{target, tags}` | `201 {buildID, tags}`: the tags move to the ready build `target` (`name:tag`) names. |
@@ -144,11 +148,19 @@ steps installed and what the start command left running.
   taken. The build sandbox is killed and kept, retired, for that snapshot.
 - **Picking a build.** `name:tag` is the ready build with that tag. A bare name (or the template id) is the `default`
   build, or the newest ready build when no build has that tag. When a build is ready the tags it asked for move to it,
-  and an older ready build that holds no tag any more is deleted with its snapshot. No layer cache: every build runs
-  every step.
+  and an older ready build that holds no tag any more is deleted with its snapshot, unless another build still holds
+  that snapshot.
+- **Unchanged builds.** A build whose plan (its base, steps with their file hashes, start and ready commands, size)
+  matches a ready build of the same template reuses that build's snapshot at once, and is ready without a sandbox
+  ("Build cached" in its log). `force` (the SDK's `skip_cache`, or a step's `force`) builds afresh. There is no
+  per-step cache: a changed build runs every step.
 - **Records.** Templates are kept in `<state>/e2b-templates.json`. Build logs are kept in memory; a build the hub was
   running when it stopped is marked failed at the next start, and its sandbox is ended.
+- **Failures.** A failed build ends its sandbox and deletes any snapshot it took; so does a build that panics, or one
+  whose result cannot be saved. A template is not deleted while one of its builds runs, or while a running build starts
+  from one of its snapshots (`409`).
 
+## The in-VM daemon
 
 The daemon serves E2B's `envd` on vsock port 49983 (`PORT` in `envd/mod.rs`). The gateway relays the SDK's HTTP/1.1
 requests to it over the VM's vsock device.
@@ -160,7 +172,9 @@ requests to it over the VM's vsock device.
   (stat, list, make directory, move, remove, watch).
 - **Input.** `StreamInput` takes stdin as a client stream. The body is buffered, so the input is delivered when the client
   finishes the stream. A command runs as the SDKs' `/bin/bash -l -c`, or under `/bin/sh` when the guest has no bash. The
-  user name `user` (E2B's default) means the sandbox user.
+  user name `user` (E2B's default) means the sandbox user, `root` root, and another name a user of the guest's
+  `passwd`; an unknown name is refused (`unauthenticated`, 401 for files), never run as the default user. Processes and
+  files read the name the same way: a `username=` query (percent-decoded) or a Basic `Authorization` user.
 - **Version.** Sandboxes report envd `0.5.7`. The SDK gates command stdin, the default user, `CloseStdin` and
   octet-stream uploads on that version. All four are served.
 - **REST.** `GET /health` (`204`), `GET` and `POST /files` (download and upload), and `POST /init`.
@@ -263,3 +277,8 @@ Template builds, with the same SDK (`Template`, `Template.build`, `Sandbox.creat
 The E2B API screen of the web console and the desktop app mints keys (shown once, with the three environment lines an
 SDK needs), revokes them, and lists the sandboxes with Pause, Resume and End; the CLI has `agentplaza e2b keys
 list|create|revoke`, `agentplaza e2b sandboxes` and `agentplaza e2b kill|pause|resume`.
+
+The same screens list the templates built through the API (`GET /v1/e2b/templates`): each one's name, id, newest build's
+status, the tags of its ready builds, size and last change, and the newest build's failure when it failed, with Delete
+(`DELETE /v1/e2b/templates/{id}`, after a confirmation); the CLI has `agentplaza e2b templates` and `agentplaza e2b
+delete-template <id>`.
