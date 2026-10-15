@@ -566,6 +566,8 @@ fn with_workspace(
                     &format!("no workspace {}", workspace_of(cid)),
                 ));
             }
+            // Every agent workspace route comes through here: a sleeping agent wakes before its workspace is read.
+            crate::sleep::awake_or_503(app, cid)?;
             on_agent(&host, cid)
         }
         WorkspaceId::Repo { name, git_ref } => {

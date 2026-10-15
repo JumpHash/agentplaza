@@ -601,18 +601,31 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
+    // Work queued while the agent was asleep (or offline) goes out now that it is idle.
+    app.work.dispatch_idle(app);
     Some(profile(app, &agent))
+}
+
+/// Whether a session ending takes an agent in `status` offline. An agent put to sleep ends its session
+/// on purpose: it is not offline, and its queued work waits for its wake.
+fn ends_offline(status: Status) -> bool {
+    status != Status::Asleep
 }
 
 /// A session ended: mark the agent offline and fail its work.
 pub fn gone(app: &App, cid: u64, reason: &str) {
     // contract
     let now = apz_plaza::now_ms();
+    let mut asleep = false;
     let changed = app.agents.update(cid, |agent| {
-        agent.status = Status::Offline;
-        agent.last_seen_ms = now;
+        if ends_offline(agent.status) {
+            agent.status = Status::Offline;
+            agent.last_seen_ms = now;
+        } else {
+            asleep = true;
+        }
     });
-    if !changed {
+    if !changed || asleep {
         return;
     }
     if let Some(agent) = app.agents.get(cid) {
@@ -646,16 +659,18 @@ fn reconcile_once(app: &App) {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
                 };
+                // A session on the gateway means the agent is awake: an asleep one is registered idle.
                 let known_online = app
                     .agents
                     .get(cid)
-                    .is_some_and(|agent| agent.status != Status::Offline);
+                    .is_some_and(|agent| !matches!(agent.status, Status::Offline | Status::Asleep));
                 if !known_online {
                     hello(app, cid, role, 0);
                 }
             }
             for agent in app.agents.list() {
-                if agent.status != Status::Offline
+                // An asleep agent has no session by design: it is not gone.
+                if !matches!(agent.status, Status::Offline | Status::Asleep)
                     && crate::fleet::node_of(app, agent.cid) == node
                     && !live.contains(&agent.cid)
                 {
@@ -1011,6 +1026,9 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
     if let Err(e) = check_chat_text(&b.text) {
         return Response::error(400, &e);
     }
+    if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
+        return resp;
+    }
     let thread = format!("op-{}", agent.cid);
     let work = app.work.enqueue(
         app,
@@ -1088,6 +1106,12 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    // A tell wakes a sleeping agent first: the gateway has no session to deliver it to otherwise.
+    if action == "tell" {
+        if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
+            return resp;
+        }
+    }
     let body: Option<Value> = serde_json::from_slice(&req.body).ok();
     crate::fleet::respond(crate::fleet::gateway(
         app,
@@ -1200,6 +1224,26 @@ mod tests {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn a_session_ending_keeps_an_asleep_agent_and_takes_the_others_offline() {
+        assert!(!ends_offline(Status::Asleep));
+        assert!(ends_offline(Status::Idle));
+        assert!(ends_offline(Status::Working));
+        assert!(ends_offline(Status::Offline));
+
+        // The roster applies the same rule `gone` applies: the asleep agent stays asleep.
+        let roster = Roster::with_db(None);
+        let mut asleep = agent("builder");
+        asleep.status = Status::Asleep;
+        roster.upsert(asleep);
+        roster.update(42, |slot| {
+            if ends_offline(slot.status) {
+                slot.status = Status::Offline;
+            }
+        });
+        assert_eq!(roster.get(42).map(|a| a.status), Some(Status::Asleep));
+    }
 
     fn agent(role: &str) -> Agent {
         Agent {

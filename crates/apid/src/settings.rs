@@ -116,6 +116,12 @@ pub struct Settings {
     /// The owner's pauses of the board's deliveries (`owner_board.rs`). The pause route sets them;
     /// a settings save keeps the ones in force.
     pub board_pauses: BoardPauses,
+    /// Minutes an agent must be idle before the sweeper puts it to sleep (its VM snapshotted and
+    /// stopped, `sleep.rs`). 0: agents never sleep on their own.
+    pub idle_sleep_min: u32,
+    /// Roles whose agents never sleep on their own. The orchestrator is awake so the owner can chat
+    /// with it at any time.
+    pub sleep_never_roles: Vec<String>,
 }
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
@@ -138,6 +144,12 @@ impl BoardPauses {
 
 /// The default for `review_timeout_minutes`: half an hour.
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
+
+/// The default for `idle_sleep_min`: ten minutes.
+pub const DEFAULT_IDLE_SLEEP_MIN: u32 = 10;
+
+/// The most `idle_sleep_min` may be: a day.
+pub const MAX_IDLE_SLEEP_MIN: u32 = 1440;
 
 /// A workstation's recording settings, as the hub's defaults hold them (the same fields as `StationSettings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +213,8 @@ impl Default for Settings {
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
             workstation_recordings: RecordingDefaults::default(),
             board_pauses: BoardPauses::default(),
+            idle_sleep_min: DEFAULT_IDLE_SLEEP_MIN,
+            sleep_never_roles: vec![ORCHESTRATOR_ROLE.into()],
         }
     }
 }
@@ -555,6 +569,17 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     if !(1..=200).contains(&new.max_turns) {
         return Err(format!("max_turns must be 1..=200, got {}", new.max_turns));
     }
+    if new.idle_sleep_min > MAX_IDLE_SLEEP_MIN {
+        return Err(format!(
+            "idle_sleep_min must be 0..={MAX_IDLE_SLEEP_MIN}, got {}",
+            new.idle_sleep_min
+        ));
+    }
+    if let Some(role) = new.sleep_never_roles.iter().find(|r| r.trim().is_empty()) {
+        return Err(format!(
+            "sleep_never_roles entry {role:?} is not a role name"
+        ));
+    }
     if let Some(effort) = &new.effort {
         if !EFFORT_LEVELS.contains(&effort.as_str()) {
             return Err(format!(
@@ -743,6 +768,20 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         d.max_turns,
         (1..=200).contains(&s.max_turns),
     );
+    s.idle_sleep_min = or_default(
+        &mut notes,
+        "idle_sleep_min",
+        s.idle_sleep_min,
+        d.idle_sleep_min,
+        s.idle_sleep_min <= MAX_IDLE_SLEEP_MIN,
+    );
+    s.sleep_never_roles.retain(|role| {
+        let ok = !role.trim().is_empty();
+        if !ok {
+            notes.push("dropped an empty sleep_never_roles entry".to_string());
+        }
+        ok
+    });
     s.effort = match s.effort.take() {
         Some(level) if !EFFORT_LEVELS.contains(&level.as_str()) => {
             notes.push(format!(
@@ -1332,6 +1371,54 @@ mod tests {
         let set: Settings =
             serde_json::from_value(serde_json::json!({"review_timeout_minutes": 5})).unwrap();
         assert_eq!(set.review_timeout_minutes, 5);
+    }
+
+    #[test]
+    fn idle_sleep_defaults_and_validation() {
+        let d = Settings::default();
+        assert_eq!(d.idle_sleep_min, 10);
+        assert_eq!(d.sleep_never_roles, vec!["orchestrator".to_string()]);
+
+        let dir = temp_dir("idle-sleep");
+        let store = Store::load(&dir, false).unwrap();
+        let mut too_long = Settings::default();
+        too_long.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 1;
+        assert!(store.put(too_long).is_err(), "above a day is refused");
+        let mut blank_role = Settings::default();
+        blank_role.sleep_never_roles = vec!["  ".into()];
+        assert!(store.put(blank_role).is_err(), "a blank role is refused");
+        let mut never = Settings::default();
+        never.idle_sleep_min = 0;
+        never.sleep_never_roles = vec![];
+        let saved = store.put(never.clone()).unwrap();
+        assert_eq!(
+            saved, never,
+            "0 (agents never sleep) and no never-roles are kept"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn idle_sleep_settings_saved_without_them_load_the_defaults_and_bad_ones_are_repaired() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let obj = old.as_object_mut().unwrap();
+        obj.remove("idle_sleep_min");
+        obj.remove("sleep_never_roles");
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
+        assert_eq!(loaded.sleep_never_roles, vec!["orchestrator".to_string()]);
+
+        let mut bad = Settings::default();
+        bad.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 5;
+        bad.sleep_never_roles = vec!["".into(), "builder".into()];
+        let (fixed, notes) = repair(bad, false);
+        assert_eq!(fixed.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
+        assert_eq!(fixed.sleep_never_roles, vec!["builder".to_string()]);
+        assert!(
+            notes.iter().any(|n| n.contains("idle_sleep_min")),
+            "{notes:?}"
+        );
+        assert!(check_settings(&fixed, false).is_ok());
     }
 
     #[test]

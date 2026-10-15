@@ -915,6 +915,8 @@ fn target_of(app: &App, id: &str) -> Result<Target, Response> {
                     &format!("no workspace {}", WorkspaceId::Agent(cid)),
                 ));
             }
+            // A terminal on a sleeping agent's workspace wakes the agent first.
+            crate::sleep::awake_or_503(app, cid)?;
             Ok(Target::Agent(cid))
         }
         Ok(WorkspaceId::Station(station)) => {
