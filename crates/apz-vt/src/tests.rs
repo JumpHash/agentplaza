@@ -21,25 +21,62 @@ fn line(e: &Emulator, y: usize) -> String {
 }
 
 #[test]
-fn ls_color_output_puts_each_name_in_its_colour_and_resets() {
-    // `ls --color` style: directories blue and bold, scripts green, each followed by a reset.
-    let e = emu(
-        40,
-        5,
-        "\x1b[0m\x1b[01;34mdir\x1b[0m  \x1b[01;32mrun.sh\x1b[0m\r\n",
-    );
-    let s = e.screen();
-    assert_eq!(line(&e, 0), "dir  run.sh");
-    assert_eq!(s.cursor(), (1, 0));
-    let d = s.line(0).unwrap().cells[0].style;
-    assert_eq!(d.fg, Color::Indexed(4));
-    assert!(d.bold);
-    let r = s.line(0).unwrap().cells[5].style;
-    assert_eq!(r.fg, Color::Indexed(2));
-    assert!(r.bold, "01 is bold too, as ls sends it");
-    let gap = s.line(0).unwrap().cells[3].style;
-    assert_eq!(gap.fg, Color::Default, "the reset clears the colour");
-    assert!(!gap.bold);
+fn sgr_colours_and_attributes_are_read_and_reset() {
+    // ls_color_output_puts_each_name_in_its_colour_and_resets: `ls --color` style output colours
+    // each name, and each reset clears the colour.
+    {
+        // `ls --color` style: directories blue and bold, scripts green, each followed by a reset.
+        let e = emu(
+            40,
+            5,
+            "\x1b[0m\x1b[01;34mdir\x1b[0m  \x1b[01;32mrun.sh\x1b[0m\r\n",
+        );
+        let s = e.screen();
+        assert_eq!(line(&e, 0), "dir  run.sh");
+        assert_eq!(s.cursor(), (1, 0));
+        let d = s.line(0).unwrap().cells[0].style;
+        assert_eq!(d.fg, Color::Indexed(4));
+        assert!(d.bold);
+        let r = s.line(0).unwrap().cells[5].style;
+        assert_eq!(r.fg, Color::Indexed(2));
+        assert!(r.bold, "01 is bold too, as ls sends it");
+        let gap = s.line(0).unwrap().cells[3].style;
+        assert_eq!(gap.fg, Color::Default, "the reset clears the colour");
+        assert!(!gap.bold);
+    }
+    // extended_colours_read_in_both_the_semicolon_and_colon_forms: 256-colour and truecolour
+    // SGR is read in both the `;` and the `:` forms.
+    {
+        let e = emu(
+            12,
+            2,
+            "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38;2;9;8;7mD\x1b[0mE",
+        );
+        let cells = &e.screen().line(0).unwrap().cells;
+        assert_eq!(cells[0].style.fg, Color::Indexed(196));
+        assert_eq!(cells[1].style.bg, Color::Rgb(1, 2, 3));
+        assert_eq!(cells[2].style.fg, Color::Rgb(10, 20, 30));
+        assert_eq!(cells[3].style.fg, Color::Rgb(9, 8, 7));
+        assert_eq!(cells[4].style.fg, Color::Default);
+    }
+    // sixteen_colours_attributes_and_their_resets: the 16 colours, inverse, italic and underline
+    // are set, and 22, 23, 24 and 27 clear them again.
+    {
+        let e = emu(
+            12,
+            2,
+            "\x1b[91;42mA\x1b[7;3;4mB\x1b[22;23;24;27mC\x1b[4:3mD",
+        );
+        let cells = &e.screen().line(0).unwrap().cells;
+        assert_eq!(cells[0].style.fg, Color::Indexed(9), "bright red");
+        assert_eq!(cells[0].style.bg, Color::Indexed(2), "green background");
+        assert!(cells[1].style.inverse && cells[1].style.italic && cells[1].style.underline);
+        assert!(!cells[2].style.inverse && !cells[2].style.italic && !cells[2].style.underline);
+        assert!(
+            cells[3].style.underline,
+            "4:3 is a curly underline, which still underlines"
+        );
+    }
 }
 
 #[test]
@@ -81,30 +118,33 @@ fn alternate_screen_hides_the_main_one_and_restores_it_with_the_cursor() {
 }
 
 #[test]
-fn scroll_region_scrolls_only_its_rows() {
-    let mut e = emu(10, 6, "\x1b[1;1HAAAA\x1b[6;1HBBBB");
-    e.feed(b"\x1b[2;4r"); // rows 2 to 4, one-based: the region is rows 1 to 3.
-    e.feed(b"\x1b[2;1Hr1\x1b[3;1Hr2\x1b[4;1Hr3");
-    e.feed(b"\x1b[4;1H\n");
-    assert_eq!(line(&e, 0), "AAAA", "above the region is untouched");
-    assert_eq!(line(&e, 1), "r2");
-    assert_eq!(line(&e, 2), "r3");
-    assert_eq!(line(&e, 3), "", "the region's new bottom row is blank");
-    assert_eq!(line(&e, 5), "BBBB", "below the region is untouched");
-    assert_eq!(
-        e.screen().history_len(),
-        0,
-        "a region below the top does not feed the scrollback"
-    );
-}
-
-#[test]
-fn reverse_index_at_the_top_margin_scrolls_the_region_down() {
-    let mut e = emu(10, 3, "top\r\nmid\r\nbot");
-    e.feed(b"\x1b[1;1H\x1bM");
-    assert_eq!(line(&e, 0), "");
-    assert_eq!(line(&e, 1), "top");
-    assert_eq!(line(&e, 2), "mid");
+fn scrolling_stays_inside_the_scroll_region() {
+    // scroll_region_scrolls_only_its_rows: a line feed at the region's bottom scrolls only the region.
+    {
+        let mut e = emu(10, 6, "\x1b[1;1HAAAA\x1b[6;1HBBBB");
+        e.feed(b"\x1b[2;4r"); // rows 2 to 4, one-based: the region is rows 1 to 3.
+        e.feed(b"\x1b[2;1Hr1\x1b[3;1Hr2\x1b[4;1Hr3");
+        e.feed(b"\x1b[4;1H\n");
+        assert_eq!(line(&e, 0), "AAAA", "above the region is untouched");
+        assert_eq!(line(&e, 1), "r2");
+        assert_eq!(line(&e, 2), "r3");
+        assert_eq!(line(&e, 3), "", "the region's new bottom row is blank");
+        assert_eq!(line(&e, 5), "BBBB", "below the region is untouched");
+        assert_eq!(
+            e.screen().history_len(),
+            0,
+            "a region below the top does not feed the scrollback"
+        );
+    }
+    // reverse_index_at_the_top_margin_scrolls_the_region_down: reverse index at the top margin
+    // scrolls the region down.
+    {
+        let mut e = emu(10, 3, "top\r\nmid\r\nbot");
+        e.feed(b"\x1b[1;1H\x1bM");
+        assert_eq!(line(&e, 0), "");
+        assert_eq!(line(&e, 1), "top");
+        assert_eq!(line(&e, 2), "mid");
+    }
 }
 
 #[test]
@@ -188,86 +228,59 @@ fn scrollback_is_capped_and_counts_what_it_dropped() {
 }
 
 #[test]
-fn resize_cuts_or_pads_the_columns_and_keeps_the_cursor_on_screen() {
-    let mut e = emu(10, 3, "abcdef");
-    e.resize(4, 3);
-    assert_eq!(line(&e, 0), "abcd");
-    assert_eq!(
-        e.screen().cursor().1,
-        3,
-        "the cursor is clamped to the new width"
-    );
-    e.resize(8, 3);
-    assert_eq!(line(&e, 0), "abcd", "text cut away is not brought back");
+fn resize_keeps_the_cursor_on_screen_and_moves_rows_to_history() {
+    // resize_cuts_or_pads_the_columns_and_keeps_the_cursor_on_screen: narrowing cuts the text and
+    // clamps the cursor, and the cut text does not come back when the screen widens.
+    {
+        let mut e = emu(10, 3, "abcdef");
+        e.resize(4, 3);
+        assert_eq!(line(&e, 0), "abcd");
+        assert_eq!(
+            e.screen().cursor().1,
+            3,
+            "the cursor is clamped to the new width"
+        );
+        e.resize(8, 3);
+        assert_eq!(line(&e, 0), "abcd", "text cut away is not brought back");
+    }
+    // shrinking_the_rows_pushes_the_top_lines_into_the_history: rows that no longer fit go to history.
+    {
+        let mut e = emu(5, 4, "1\r\n2\r\n3\r\n4");
+        assert_eq!(e.screen().cursor(), (3, 1));
+        e.resize(5, 2);
+        let s = e.screen();
+        assert_eq!(s.history_len(), 2);
+        assert_eq!(line(&e, 0), "3");
+        assert_eq!(line(&e, 1), "4");
+        assert_eq!(e.screen().cursor(), (1, 1));
+    }
 }
 
 #[test]
-fn shrinking_the_rows_pushes_the_top_lines_into_the_history() {
-    let mut e = emu(5, 4, "1\r\n2\r\n3\r\n4");
-    assert_eq!(e.screen().cursor(), (3, 1));
-    e.resize(5, 2);
-    let s = e.screen();
-    assert_eq!(s.history_len(), 2);
-    assert_eq!(line(&e, 0), "3");
-    assert_eq!(line(&e, 1), "4");
-    assert_eq!(e.screen().cursor(), (1, 1));
-}
-
-#[test]
-fn extended_colours_read_in_both_the_semicolon_and_colon_forms() {
-    let e = emu(
-        12,
-        2,
-        "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38;2;9;8;7mD\x1b[0mE",
-    );
-    let cells = &e.screen().line(0).unwrap().cells;
-    assert_eq!(cells[0].style.fg, Color::Indexed(196));
-    assert_eq!(cells[1].style.bg, Color::Rgb(1, 2, 3));
-    assert_eq!(cells[2].style.fg, Color::Rgb(10, 20, 30));
-    assert_eq!(cells[3].style.fg, Color::Rgb(9, 8, 7));
-    assert_eq!(cells[4].style.fg, Color::Default);
-}
-
-#[test]
-fn sixteen_colours_attributes_and_their_resets() {
-    let e = emu(
-        12,
-        2,
-        "\x1b[91;42mA\x1b[7;3;4mB\x1b[22;23;24;27mC\x1b[4:3mD",
-    );
-    let cells = &e.screen().line(0).unwrap().cells;
-    assert_eq!(cells[0].style.fg, Color::Indexed(9), "bright red");
-    assert_eq!(cells[0].style.bg, Color::Indexed(2), "green background");
-    assert!(cells[1].style.inverse && cells[1].style.italic && cells[1].style.underline);
-    assert!(!cells[2].style.inverse && !cells[2].style.italic && !cells[2].style.underline);
-    assert!(
-        cells[3].style.underline,
-        "4:3 is a curly underline, which still underlines"
-    );
-}
-
-#[test]
-fn application_cursor_keys_and_bracketed_paste_are_reported() {
-    let mut e = emu(10, 2, "");
-    assert!(!e.screen().app_cursor());
-    e.feed(b"\x1b[?1h");
-    assert!(e.screen().app_cursor());
-    e.feed(b"\x1b[?1l");
-    assert!(!e.screen().app_cursor());
-    e.feed(b"\x1b[?2004h");
-    assert!(e.screen().bracketed_paste());
-    e.feed(b"\x1b[?2004l");
-    assert!(!e.screen().bracketed_paste());
-}
-
-#[test]
-fn the_cursor_can_be_hidden_and_shown() {
-    let mut e = emu(10, 2, "");
-    e.feed(b"\x1b[?25l");
-    assert!(!e.screen().cursor_visible());
-    assert!(e.screen().cursor_on_view().is_none());
-    e.feed(b"\x1b[?25h");
-    assert_eq!(e.screen().cursor_on_view(), Some((0, 0)));
+fn private_modes_are_reported_and_toggled() {
+    // application_cursor_keys_and_bracketed_paste_are_reported: DECCKM and bracketed paste
+    // report their state, and each switches off again.
+    {
+        let mut e = emu(10, 2, "");
+        assert!(!e.screen().app_cursor());
+        e.feed(b"\x1b[?1h");
+        assert!(e.screen().app_cursor());
+        e.feed(b"\x1b[?1l");
+        assert!(!e.screen().app_cursor());
+        e.feed(b"\x1b[?2004h");
+        assert!(e.screen().bracketed_paste());
+        e.feed(b"\x1b[?2004l");
+        assert!(!e.screen().bracketed_paste());
+    }
+    // the_cursor_can_be_hidden_and_shown: DECTCEM hides the cursor from the view and shows it again.
+    {
+        let mut e = emu(10, 2, "");
+        e.feed(b"\x1b[?25l");
+        assert!(!e.screen().cursor_visible());
+        assert!(e.screen().cursor_on_view().is_none());
+        e.feed(b"\x1b[?25h");
+        assert_eq!(e.screen().cursor_on_view(), Some((0, 0)));
+    }
 }
 
 #[test]

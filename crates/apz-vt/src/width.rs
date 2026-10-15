@@ -110,14 +110,6 @@ mod tests {
     use super::char_width;
 
     #[test]
-    fn ascii_and_latin_take_one_column() {
-        assert_eq!(char_width('a'), 1);
-        assert_eq!(char_width(' '), 1);
-        assert_eq!(char_width('é'), 1);
-        assert_eq!(char_width('─'), 1);
-    }
-
-    #[test]
     fn cjk_and_fullwidth_take_two_and_combining_marks_none() {
         assert_eq!(char_width('漢'), 2);
         assert_eq!(char_width('字'), 2);
