@@ -313,12 +313,23 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
     };
     // Whether the proxy terminates this connection's TLS to add a credential (see egress_inject).
     let intercept = sandbox.is_none() && crate::egress_inject::intercepts(app, cid, host, port);
-    json!({
+    // The denyOut blocks vsockd checks the addresses a name resolves to against (see e2b_net).
+    let deny_cidrs = match &sandbox {
+        Some(sandbox) if verdict.allow => {
+            crate::e2b_net::deny_blocks(&sandbox.allow_out, &sandbox.deny_out, host)
+        }
+        _ => Vec::new(),
+    };
+    let mut reply = json!({
         "allow": verdict.allow,
         "law": verdict.law,
         "reason": verdict.reason,
         "intercept": intercept,
-    })
+    });
+    if !deny_cidrs.is_empty() {
+        reply["deny_cidrs"] = json!(deny_cidrs);
+    }
+    reply
 }
 
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.
