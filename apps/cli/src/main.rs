@@ -143,6 +143,9 @@ enum Command {
     /// The hub machine's warm templates: new agents and sandboxes restore one instead of booting.
     #[command(subcommand)]
     Templates(cmd::templates::Cmd),
+    /// The hub's shared read-only data volumes, which each role's agents mount when spawned.
+    #[command(subcommand)]
+    Volumes(cmd::volumes::Cmd),
 }
 
 fn main() {
@@ -217,6 +220,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Egress(c) => cmd::egress::run(&ctx, c),
         Command::E2b(c) => cmd::e2b::run(&ctx, c),
         Command::Templates(c) => cmd::templates::run(&ctx, c),
+        Command::Volumes(c) => cmd::volumes::run(&ctx, c),
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
         Command::Unfurl(a) => cmd::unfurl::run(&ctx, a),
         Command::Decide(a) => cmd::decide::run(&ctx, a),

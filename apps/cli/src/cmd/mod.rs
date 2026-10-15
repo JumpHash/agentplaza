@@ -36,4 +36,5 @@ pub mod treasury;
 pub mod unfurl;
 pub mod usage;
 pub mod vault;
+pub mod volumes;
 pub mod workstation;
