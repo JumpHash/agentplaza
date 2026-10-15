@@ -125,6 +125,9 @@ pub struct Settings {
     /// Roles whose agents never sleep on their own. The orchestrator is awake so the owner can chat
     /// with it at any time.
     pub sleep_never_roles: Vec<String>,
+    /// Shared data volumes (noded's `/v1/volumes`) by role: every agent of the role spawned from now
+    /// on mounts them read-only at `/data/<name>`. At most four per role.
+    pub role_volumes: BTreeMap<String, Vec<String>>,
 }
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
@@ -219,6 +222,7 @@ impl Default for Settings {
             board_pauses: BoardPauses::default(),
             idle_sleep_min: DEFAULT_IDLE_SLEEP_MIN,
             sleep_never_roles: vec![ORCHESTRATOR_ROLE.into()],
+            role_volumes: BTreeMap::new(),
         }
     }
 }
@@ -584,6 +588,9 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
             "sleep_never_roles entry {role:?} is not a role name"
         ));
     }
+    for (role, volumes) in &new.role_volumes {
+        check_role_volumes(role, volumes)?;
+    }
     if let Some(effort) = &new.effort {
         if !EFFORT_LEVELS.contains(&effort.as_str()) {
             return Err(format!(
@@ -786,6 +793,14 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         }
         ok
     });
+    s.role_volumes
+        .retain(|role, volumes| match check_role_volumes(role, volumes) {
+            Ok(()) => true,
+            Err(why) => {
+                notes.push(format!("dropped the volumes of role {role:?}: {why}"));
+                false
+            }
+        });
     s.effort = match s.effort.take() {
         Some(level) if !EFFORT_LEVELS.contains(&level.as_str()) => {
             notes.push(format!(
@@ -920,9 +935,76 @@ impl Store {
     }
 }
 
+/// The most shared data volumes one agent mounts (noded's limit, `vmm::spawner::MAX_DATA_VOLUMES`).
+pub const MAX_ROLE_VOLUMES: usize = 4;
+
+/// Checks one `role_volumes` entry: a role name, and at most [`MAX_ROLE_VOLUMES`] distinct volume
+/// names of 1 to 20 characters of `a-z`, `0-9` and `-` (not starting with `-`), as noded names them.
+pub fn check_role_volumes(role: &str, volumes: &[String]) -> Result<(), String> {
+    if role.trim().is_empty() {
+        return Err(format!("role_volumes key {role:?} is not a role name"));
+    }
+    if volumes.len() > MAX_ROLE_VOLUMES {
+        return Err(format!(
+            "role {role}: at most {MAX_ROLE_VOLUMES} volumes, not {}",
+            volumes.len()
+        ));
+    }
+    for (index, name) in volumes.iter().enumerate() {
+        let bytes = name.as_bytes();
+        let valid = (1..=20).contains(&bytes.len())
+            && bytes[0] != b'-'
+            && bytes
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-');
+        if !valid {
+            return Err(format!("role {role}: {name:?} is not a volume name"));
+        }
+        if volumes[..index].contains(name) {
+            return Err(format!("role {role}: volume {name:?} is given twice"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_volumes_are_checked_and_bad_entries_dropped_on_load() {
+        let ok = vec!["datasets".to_string(), "weights-7b".to_string()];
+        check_role_volumes("builder", &ok).expect("two good names");
+        assert!(check_role_volumes(" ", &ok).is_err(), "no role");
+        assert!(
+            check_role_volumes("builder", &["Data".into()]).is_err(),
+            "uppercase"
+        );
+        assert!(
+            check_role_volumes("builder", &["-x".into()]).is_err(),
+            "leading dash"
+        );
+        assert!(
+            check_role_volumes("builder", &["a".repeat(21)]).is_err(),
+            "too long"
+        );
+        assert!(
+            check_role_volumes("builder", &["a".into(), "a".into()]).is_err(),
+            "twice"
+        );
+        let five: Vec<String> = (0..5).map(|i| format!("v{i}")).collect();
+        assert!(
+            check_role_volumes("builder", &five).is_err(),
+            "more than four"
+        );
+        let mut settings = Settings::default();
+        settings.role_volumes.insert("builder".into(), ok.clone());
+        assert!(check_settings(&settings, false).is_ok());
+        settings
+            .role_volumes
+            .insert("reviewer".into(), vec!["Bad".into()]);
+        assert!(check_settings(&settings, false).is_err());
+    }
 
     /// A fresh, empty state directory under the system temp dir.
     fn temp_dir(name: &str) -> PathBuf {

@@ -1133,7 +1133,9 @@ fn parse_metadata_filter(text: &str) -> Result<Vec<(String, String)>, Refused> {
     let mut pairs = Vec::new();
     for part in text.split('&').filter(|part| !part.is_empty()) {
         let Some((key, value)) = part.split_once('=') else {
-            return Err(invalid(format!("metadata filter {part:?} is not key=value")));
+            return Err(invalid(format!(
+                "metadata filter {part:?} is not key=value"
+            )));
         };
         pairs.push((
             crate::plaza::percent_decode(key),
@@ -1557,10 +1559,19 @@ mod tests {
         assert!(parse_metadata_filter("purpose").is_err());
 
         let sandbox = sample(false);
-        assert!(matches(&sandbox, &[("purpose".to_string(), "test".to_string())]));
+        assert!(matches(
+            &sandbox,
+            &[("purpose".to_string(), "test".to_string())]
+        ));
         assert!(matches(&sandbox, &[]));
-        assert!(!matches(&sandbox, &[("purpose".to_string(), "other".to_string())]));
-        assert!(!matches(&sandbox, &[("missing".to_string(), "x".to_string())]));
+        assert!(!matches(
+            &sandbox,
+            &[("purpose".to_string(), "other".to_string())]
+        ));
+        assert!(!matches(
+            &sandbox,
+            &[("missing".to_string(), "x".to_string())]
+        ));
     }
 
     #[test]

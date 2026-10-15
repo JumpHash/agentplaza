@@ -44,6 +44,17 @@ pub fn router() -> Router<App> {
                 &req.body,
             )
         })
+        // The hub machine's shared data volumes: read-only images agents mount at /data/<name>.
+        .get("/v1/volumes", |app, _, _| {
+            app.noded.proxy("GET", "/v1/volumes", b"")
+        })
+        .post("/v1/volumes", |app, req, _| {
+            app.noded.proxy("POST", "/v1/volumes", &req.body)
+        })
+        .delete("/v1/volumes/{name}", |app, _, p| {
+            app.noded
+                .proxy("DELETE", &format!("/v1/volumes/{}", p.get("name")), b"")
+        })
         // The hub machine's warm templates (new agents and sandboxes restore one instead of booting).
         .get("/v1/templates", |app, _, _| {
             app.noded.proxy("GET", "/v1/templates", b"")

@@ -915,7 +915,17 @@ pub fn spawn_agents(
         app.settings.allowed(tier_of(role), model)?;
     }
     // The same shape as the starting fleet (noded --agents-memory-mib defaults to 1024).
-    let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
+    let mut payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
+    // The role's shared data volumes (settings `role_volumes`), mounted read-only by every agent.
+    if let Some(volumes) = app
+        .settings
+        .get()
+        .role_volumes
+        .get(role)
+        .filter(|v| !v.is_empty())
+    {
+        payload["volumes"] = json!(volumes);
+    }
     match crate::fleet::noded(app, node, "POST", "/v1/runs", Some(&payload)) {
         Ok((status, value)) => {
             if status >= 300 {
