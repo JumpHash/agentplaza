@@ -59,7 +59,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             if !app.settings.get().acp_enabled {
                 return Response::error(
                     409,
-                    "the hub's ACP server is off; turn it on in Settings › Editors",
+                    "the hub's ACP server is off; turn on Editors (ACP) in Setup › MCP › This hub as a server",
                 );
             }
             let Some(slot) = SOCKETS.take(req.peer) else {

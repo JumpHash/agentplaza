@@ -7,7 +7,9 @@ hub on your machine.
 
 ## Turn it on
 
-1. Set `acp_enabled` to `true` in the hub's settings (`/v1/settings`). It is off by default.
+1. In the console, open Setup › MCP › This hub as a server and turn on **Editors (ACP)** (the
+   desktop app has the same switch on its hub MCP screen). It is off by default; the setting is
+   `acp_enabled` in `/v1/settings`.
 2. Make sure `agentplaza` is on your PATH and the hub is running on this machine. If the
    hub is elsewhere, pass `--hub` (or set `APZ_HUB`) and `--token` (or `APZ_TOKEN`).
 3. Run `agentplaza acp sessions`. It lists the editor sessions the hub holds, and is

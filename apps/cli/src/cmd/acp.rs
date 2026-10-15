@@ -28,7 +28,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(50);
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// Appended to why the hub cannot be reached, in the error the editor's first request gets.
-const HINT: &str = "(turn on Editors in the hub's settings, or run `agentplaza hub login`)";
+const HINT: &str = "(turn on Editors (ACP) in the console: Setup › MCP › This hub as a server; or run `agentplaza hub login`)";
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(value["error"]["code"], -32000);
         assert_eq!(
             value["error"]["message"],
-            "no saved hub (turn on Editors in the hub's settings, or run `agentplaza hub login`)"
+            "no saved hub (turn on Editors (ACP) in the console: Setup › MCP › This hub as a server; or run `agentplaza hub login`)"
         );
     }
 
