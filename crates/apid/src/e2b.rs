@@ -817,10 +817,11 @@ fn gateway(
 }
 
 /// Polls the daemon's `/health` through the gateway until it answers, or `wait` runs out.
-fn wait_healthy(id: &str, wait: Duration) -> Result<(), String> {
+fn wait_healthy(id: &str, token: Option<&str>, wait: Duration) -> Result<(), String> {
     let started = Instant::now();
     loop {
-        if let Ok(reply) = gateway(id, None, "GET", "/health", None, Duration::from_secs(2)) {
+        // The gateway asks for the sandbox's token on every request, the hub's own included.
+        if let Ok(reply) = gateway(id, token, "GET", "/health", None, Duration::from_secs(2)) {
             if (200..300).contains(&reply.status) {
                 return Ok(());
             }
@@ -850,7 +851,7 @@ fn init_body(env: &BTreeMap<String, String>, token: Option<&str>) -> Value {
 
 /// Waits for the daemon, then hands it the environment, the envd token, the clock and entropy.
 fn boot(id: &str, env: &BTreeMap<String, String>, token: Option<&str>) -> Result<(), String> {
-    wait_healthy(id, HEALTH_WAIT)?;
+    wait_healthy(id, token, HEALTH_WAIT)?;
     init(id, &init_body(env, token), token)
 }
 
@@ -1048,7 +1049,7 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str) -> Result<Sandbox, Ref
     )?;
     // A wake is a restore too: the daemon gets a fresh clock and entropy before the sandbox is handed
     // out. Its environment was set at boot and is not sent again (an empty map leaves it as it is).
-    let reseeded = wait_healthy(id, HEALTH_WAIT).and_then(|()| {
+    let reseeded = wait_healthy(id, sandbox.access_token.as_deref(), HEALTH_WAIT).and_then(|()| {
         init(
             id,
             &init_body(&BTreeMap::new(), sandbox.access_token.as_deref()),

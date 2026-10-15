@@ -130,7 +130,7 @@ fn hex_value(digit: u8) -> Option<u8> {
 }
 
 /// Sets `CLOCK_REALTIME` to `host_ms`. Needs `CAP_SYS_TIME`.
-fn set_realtime_clock(host_ms: u64) -> io::Result<()> {
+pub fn set_realtime_clock(host_ms: u64) -> io::Result<()> {
     let seconds = libc::time_t::try_from(host_ms / 1_000)
         .map_err(|_| io::Error::other("the host's clock is out of range"))?;
     let timespec = libc::timespec {

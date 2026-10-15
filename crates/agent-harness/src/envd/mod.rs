@@ -303,31 +303,84 @@ fn init(request: &Request, shared: &Shared) -> Reply {
 /// Sets the system clock to `timestamp` with `date -u -s`. The text is checked to be a plain
 /// timestamp first, so nothing but digits and the RFC 3339 punctuation reaches the command.
 fn set_clock(timestamp: &str) -> Result<(), RpcError> {
-    let plain = !timestamp.is_empty()
-        && timestamp.len() <= 40
-        && timestamp
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || b"-:.T+Z".contains(&byte));
-    if !plain {
-        return Err(RpcError::new(
-            "invalid_argument",
-            "timestamp must be an RFC 3339 time",
-        ));
+    let ms = rfc3339_ms(timestamp)
+        .ok_or_else(|| RpcError::new("invalid_argument", "timestamp must be an RFC 3339 time"))?;
+    // Only a clock that is off is set (as for an agent's welcome): a sandbox that booted cold is
+    // already right, and a restored one is off by however long its template or snapshot waited.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    if now.abs_diff(ms) <= 1_000 {
+        return Ok(());
     }
-    let status = std::process::Command::new("date")
-        .args(["-u", "-s", timestamp])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|err| RpcError::new("internal", format!("cannot set the clock: {err}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(RpcError::new(
-            "internal",
-            format!("date refused the timestamp {timestamp:?}"),
-        ))
+    crate::restore::set_realtime_clock(ms)
+        .map_err(|err| RpcError::new("internal", format!("cannot set the clock: {err}")))
+}
+
+/// Milliseconds since the Unix epoch of an RFC 3339 time (`2026-10-15T03:30:00.123Z`, an offset such
+/// as `+02:00` instead of `Z`, fractional seconds optional), `None` when it is not one.
+fn rfc3339_ms(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    let num = |from: usize, len: usize| -> Option<i64> {
+        let part = text.get(from..from + len)?;
+        part.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b't' | b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
     }
+    let (year, month, day) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
+    let (hour, minute, second) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut at = 19;
+    let mut millis = 0i64;
+    if bytes.get(at) == Some(&b'.') {
+        at += 1;
+        let digits = bytes[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        let frac = &text[at..at + digits.min(3)];
+        millis = frac.parse::<i64>().ok()? * 10i64.pow(3 - frac.len() as u32);
+        at += digits;
+    }
+    let offset_min = match bytes.get(at)? {
+        b'Z' | b'z' if at + 1 == bytes.len() => 0,
+        sign @ (b'+' | b'-') if at + 6 == bytes.len() && bytes[at + 3] == b':' => {
+            let minutes = num(at + 1, 2)? * 60 + num(at + 4, 2)?;
+            if *sign == b'+' { minutes } else { -minutes }
+        }
+        _ => return None,
+    };
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset_min * 60;
+    u64::try_from(seconds * 1_000 + millis).ok()
 }
 
 /// The `service` and `method` of a Connect RPC path (`/process.Process/Start`, possibly behind a
@@ -903,6 +956,34 @@ pub(crate) mod test_support {
                 "no process tagged {tag} was listed"
             );
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+mod rfc3339_tests {
+    use super::rfc3339_ms;
+
+    #[test]
+    fn rfc3339_times_parse_to_epoch_milliseconds() {
+        assert_eq!(rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            rfc3339_ms("2026-10-15T03:30:00.123Z"),
+            Some(1_792_035_000_123)
+        );
+        assert_eq!(
+            rfc3339_ms("2026-10-15T05:30:00.5+02:00"),
+            Some(1_792_035_000_500)
+        );
+        assert_eq!(rfc3339_ms("2000-02-29T12:00:00Z"), Some(951_825_600_000));
+        for bad in [
+            "",
+            "2026-10-15",
+            "2026-13-01T00:00:00Z",
+            "2026-10-15T03:30:00",
+            "x026-10-15T03:30:00Z",
+        ] {
+            assert_eq!(rfc3339_ms(bad), None, "{bad}");
         }
     }
 }
