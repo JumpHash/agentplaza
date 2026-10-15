@@ -64,17 +64,17 @@ const DEFAULT_REFRESH_S: u32 = 300;
 /// The envd version sandboxes report. The SDKs turn features on by it: 0.3.0 command stdin, 0.4.0 the
 /// daemon's default user (no `username` sent), 0.5.2 `CloseStdin`, 0.5.7 raw octet-stream uploads.
 /// The daemon serves all of them; 0.6.2 (file metadata in entries) and later it does not.
-const ENVD_VERSION: &str = "0.5.7";
+pub(crate) const ENVD_VERSION: &str = "0.5.7";
 const CLIENT_ID: &str = "agentplaza";
-const SANDBOX_VCPUS: u32 = 1;
-const SANDBOX_MEMORY_MIB: u32 = 512;
+pub(crate) const SANDBOX_VCPUS: u32 = 1;
+pub(crate) const SANDBOX_MEMORY_MIB: u32 = 512;
 /// Starting a run boots a VM, so it gets more time than a plain noded call.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 const NODED_TIMEOUT: Duration = Duration::from_secs(60);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a new sandbox's daemon has to answer `/health` through the gateway.
-const HEALTH_WAIT: Duration = Duration::from_secs(15);
-const GATEWAY_CALL: Duration = Duration::from_secs(10);
+pub(crate) const HEALTH_WAIT: Duration = Duration::from_secs(15);
+pub(crate) const GATEWAY_CALL: Duration = Duration::from_secs(10);
 
 static GATEWAY_PORT: OnceLock<u16> = OnceLock::new();
 static KEYS: OnceLock<Keys> = OnceLock::new();
@@ -111,7 +111,7 @@ fn split_gateway_port(args: Vec<String>) -> Result<(Option<u16>, Vec<String>), S
     Ok((port, rest))
 }
 
-fn gateway_port() -> u16 {
+pub(crate) fn gateway_port() -> u16 {
     GATEWAY_PORT.get().copied().unwrap_or(DEFAULT_GATEWAY_PORT)
 }
 
@@ -124,20 +124,24 @@ pub(crate) struct Refused {
 }
 
 impl Refused {
-    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
             message: message.into(),
         }
     }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
 }
 
-fn invalid(message: impl Into<String>) -> Refused {
+pub(crate) fn invalid(message: impl Into<String>) -> Refused {
     Refused::new(400, "invalid_request", message)
 }
 
-fn held() -> Refused {
+pub(crate) fn held() -> Refused {
     Refused::new(
         409,
         "sandbox_held",
@@ -146,7 +150,7 @@ fn held() -> Refused {
 }
 
 /// E2B's error body: `{code, message, error_code}`.
-fn refuse(refused: Refused) -> Response {
+pub(crate) fn refuse(refused: Refused) -> Response {
     Response::json(
         refused.status,
         &json!({
@@ -157,17 +161,21 @@ fn refuse(refused: Refused) -> Response {
     )
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn hex_of(bytes: &[u8]) -> String {
+pub(crate) fn hex_of(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Writes a store's list to its file (0600). A store whose file could not be read writes nothing, so a
 /// damaged file is never replaced by a shorter list.
-fn persist<T: Serialize>(path: &Path, unreadable: Option<&str>, list: &[T]) -> Result<(), Refused> {
+pub(crate) fn persist<T: Serialize>(
+    path: &Path,
+    unreadable: Option<&str>,
+    list: &[T],
+) -> Result<(), Refused> {
     if let Some(why) = unreadable {
         return Err(Refused::new(
             409,
@@ -194,7 +202,7 @@ fn persist<T: Serialize>(path: &Path, unreadable: Option<&str>, list: &[T]) -> R
 
 /// Reads a store's JSON list. A missing file is an empty list; a damaged one is reported and kept
 /// unwritten (see [`persist`]).
-fn read_list<T: DeserializeOwned>(path: &Path) -> (Vec<T>, Option<String>) {
+pub(crate) fn read_list<T: DeserializeOwned>(path: &Path) -> (Vec<T>, Option<String>) {
     match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(list) => (list, None),
@@ -457,7 +465,7 @@ impl Sandboxes {
     }
 }
 
-fn not_found(id: &str) -> Refused {
+pub(crate) fn not_found(id: &str) -> Refused {
     Refused::new(404, "sandbox_not_found", format!("no sandbox {id}"))
 }
 
@@ -468,7 +476,7 @@ fn keys(app: &App) -> &'static Keys {
 
 /// The hub's sandboxes, loaded on first use. The first use also starts the reaper, which holds the app
 /// weakly and ends when the app is gone.
-fn sandboxes(app: &App) -> &'static Sandboxes {
+pub(crate) fn sandboxes(app: &App) -> &'static Sandboxes {
     SANDBOXES.get_or_init(|| {
         let store = Sandboxes::load(&app.config.state_dir);
         spawn_reaper(app.handle());
@@ -644,7 +652,11 @@ fn bearer(req: &Request) -> Option<String> {
 }
 
 /// Runs `f` with the key's id when the request carries a valid E2B key; a refusal otherwise.
-fn guard(app: &App, req: &Request, f: impl FnOnce(&str) -> Result<Response, Refused>) -> Response {
+pub(crate) fn guard(
+    app: &App,
+    req: &Request,
+    f: impl FnOnce(&str) -> Result<Response, Refused>,
+) -> Response {
     match authorize(app, req).and_then(|key| f(&key)) {
         Ok(response) => response,
         Err(refused) => refuse(refused),
@@ -652,7 +664,7 @@ fn guard(app: &App, req: &Request, f: impl FnOnce(&str) -> Result<Response, Refu
 }
 
 /// The body as JSON; an empty body is an error here.
-fn json_body<T: DeserializeOwned>(req: &Request) -> Result<T, Refused> {
+pub(crate) fn json_body<T: DeserializeOwned>(req: &Request) -> Result<T, Refused> {
     serde_json::from_slice(&req.body).map_err(|e| invalid(format!("bad body: {e}")))
 }
 
@@ -909,7 +921,7 @@ fn noded_ok(
 }
 
 /// One call through vsockd's E2B gateway to the sandbox's daemon, by the sandbox's id.
-fn gateway(
+pub(crate) fn gateway(
     id: &str,
     token: Option<&str>,
     method: &str,
@@ -1012,7 +1024,7 @@ fn audit(app: &App, sandbox: &Sandbox, kind: &'static str, event: &str, actor: &
     app.bus.publish("e2b", &record);
 }
 
-fn find(app: &App, id: &str) -> Result<Sandbox, Refused> {
+pub(crate) fn find(app: &App, id: &str) -> Result<Sandbox, Refused> {
     sandboxes(app)
         .get(id)
         .filter(|s| !s.retired)
@@ -1030,7 +1042,7 @@ fn live(app: &App) -> Vec<Sandbox> {
 
 /// The snapshot `template` names, with the sandbox it was taken of (retired ones too): a snapshot id
 /// (`<sandbox>:<checkpoint>`), or a snapshot name when exactly one snapshot has it.
-fn snapshot_source(app: &App, template: &str) -> Option<(Sandbox, Snapshot)> {
+pub(crate) fn snapshot_source(app: &App, template: &str) -> Option<(Sandbox, Snapshot)> {
     pick_snapshot(&sandboxes(app).list(), template)
 }
 
@@ -1064,29 +1076,46 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         return Err(held());
     }
     let mut spec = Spec::from_body(json_body::<NewSandbox>(req)?)?;
+    // A built template (by id, name or `name:tag`; see `crate::e2b_tpl`) starts from its build's
+    // snapshot and keeps the template's id as the sandbox's template.
+    let built = crate::e2b_tpl::resolve(app, &spec.template);
+    let source = match &built {
+        Some((_, snapshot)) => snapshot_source(app, snapshot),
+        None => snapshot_source(app, &spec.template),
+    };
     // A snapshot's id (or its unique name) as the template: the new sandbox is a fork of that
     // checkpoint, with the source's environment under the request's.
-    let (run, cid) = match snapshot_source(app, &spec.template) {
+    let (run, cid) = match source {
         Some((source, snap)) => {
             let mut env = source.env_vars.clone();
             env.extend(std::mem::take(&mut spec.env_vars));
             spec.env_vars = env;
-            spec.template = snap.id.clone();
+            spec.template = match built {
+                Some((template, _)) => template,
+                None => snap.id.clone(),
+            };
             fork_runs(app, &source, Some(&snap.checkpoint), 1)?.remove(0)
         }
-        None => new_run(app)?,
+        None if built.is_some() => {
+            return Err(Refused::new(
+                500,
+                "template_snapshot_missing",
+                format!("template {}: its build's snapshot is gone", spec.template),
+            ));
+        }
+        None => new_run(app, SANDBOX_VCPUS, SANDBOX_MEMORY_MIB)?,
     };
     let sandbox = admit(app, &spec, run, cid, actor)?;
     Ok(Response::json(201, &created_view(&sandbox)))
 }
 
-/// A new sandbox run on this node: its run id and its VM's CID.
-fn new_run(app: &App) -> Result<(String, u64), Refused> {
+/// A new sandbox run on this node, of `vcpus` and `memory_mib`: its run id and its VM's CID.
+pub(crate) fn new_run(app: &App, vcpus: u32, memory_mib: u32) -> Result<(String, u64), Refused> {
     let (status, view) = noded(
         app,
         "POST",
         "/v1/runs",
-        Some(&json!({"n": 1, "vcpus": SANDBOX_VCPUS, "memory_mib": SANDBOX_MEMORY_MIB, "sandbox": true})),
+        Some(&json!({"n": 1, "vcpus": vcpus, "memory_mib": memory_mib, "sandbox": true})),
         RUN_TIMEOUT,
     )
     .map_err(|why| Refused::new(503, "sandbox_node_unreachable", why))?;
@@ -1120,7 +1149,7 @@ fn new_run(app: &App) -> Result<(String, u64), Refused> {
 
 /// `n` forks of `source`'s VM, each a new single-VM run: of checkpoint `checkpoint`, or of a
 /// checkpoint taken now when `None`. Returns each fork's run and CID.
-fn fork_runs(
+pub(crate) fn fork_runs(
     app: &App,
     source: &Sandbox,
     checkpoint: Option<&str>,
@@ -1164,7 +1193,13 @@ fn fork_runs(
 
 /// Makes run `run` (VM `cid`) a sandbox: the record, the daemon's health, its environment and
 /// token. The record is kept only when the daemon answers; a failed start ends the run.
-fn admit(app: &App, spec: &Spec, run: String, cid: u64, actor: &str) -> Result<Sandbox, Refused> {
+pub(crate) fn admit(
+    app: &App,
+    spec: &Spec,
+    run: String,
+    cid: u64,
+    actor: &str,
+) -> Result<Sandbox, Refused> {
     let now = apz_plaza::now_ms();
     let access_token = spec.secure.then(|| hex_of(&apz_trust::random::<32>()));
     let sandbox = Sandbox {
@@ -1216,7 +1251,12 @@ fn admit(app: &App, spec: &Spec, run: String, cid: u64, actor: &str) -> Result<S
 /// Ends a sandbox: its run goes, then its record. A kill that noded refuses keeps the record. A
 /// sandbox with snapshots is retired instead: its VM stops (no memory image is written) and the run
 /// stays for the snapshots, which new sandboxes can still start from.
-fn destroy(app: &App, sandbox: &Sandbox, reason: &str, actor: &str) -> Result<(), Refused> {
+pub(crate) fn destroy(
+    app: &App,
+    sandbox: &Sandbox,
+    reason: &str,
+    actor: &str,
+) -> Result<(), Refused> {
     if !sandbox.snapshots.is_empty() {
         if sandbox.phase == Phase::Running {
             noded_ok(
@@ -1556,9 +1596,21 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
         None => "snapshot".to_string(),
     };
     let sandbox = find(app, id)?;
+    let snap = take_snapshot(app, &sandbox, label, memory, key)?;
+    Ok(Response::json(201, &snapshot_view(&snap)))
+}
+
+/// Takes a snapshot of `sandbox` named `label` (with its memory, or of its disk only) and records it.
+pub(crate) fn take_snapshot(
+    app: &App,
+    sandbox: &Sandbox,
+    label: String,
+    memory: bool,
+    key: &str,
+) -> Result<Snapshot, Refused> {
     // A disk-only snapshot is of what the guest has written back: flush it first.
     if !memory && sandbox.phase == Phase::Running {
-        flush(&sandbox);
+        flush(sandbox);
     }
     let view = noded_ok(
         app,
@@ -1579,13 +1631,13 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
     sandboxes(app).update(&sandbox.id, |s| s.snapshots.push(stored))?;
     audit(
         app,
-        &sandbox,
+        sandbox,
         "sandbox_snapshot",
         "snapshot",
         key,
         json!({"snapshot": snap.id}),
     );
-    Ok(Response::json(201, &snapshot_view(&snap)))
+    Ok(snap)
 }
 
 /// A running sandbox's daemon answers `path` (a GET) with JSON; `None` for a paused one.
@@ -1787,7 +1839,7 @@ fn fork(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refus
 
 /// Deletes a snapshot named by its id or its unique name: noded's checkpoint goes, then the record's
 /// entry; a retired sandbox whose last snapshot this was ends with it.
-fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Response, Refused> {
+pub(crate) fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Response, Refused> {
     let template = crate::plaza::percent_decode(template);
     let Some((owner, snap)) = snapshot_source(app, &template) else {
         return Err(not_found(&template));
@@ -1891,7 +1943,7 @@ fn snapshot_view(snap: &Snapshot) -> Value {
 }
 
 /// An epoch-millisecond instant as RFC 3339 in UTC, with milliseconds.
-fn rfc3339(ms: u64) -> String {
+pub(crate) fn rfc3339(ms: u64) -> String {
     let secs = ms / 1000;
     let rem = secs % 86_400;
     let (year, month, day) = civil((secs / 86_400) as i64);
@@ -1923,7 +1975,7 @@ const OWNER: &str = "owner";
 
 /// The owner's key routes and the E2B routes (listed in the module docs).
 pub fn routes(router: Router<App>) -> Router<App> {
-    router
+    crate::e2b_tpl::routes(router)
         .get("/v1/e2b/keys", |app, _, _| {
             Response::json(200, &json!({"keys": keys(app).list()}))
         })
@@ -2032,9 +2084,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/e2b/sandboxes/{id}/fork", |app, req, p| {
             guard(app, req, |key| fork(app, req, p.get("id"), key))
         })
-        // E2B deletes a snapshot as the template it is.
+        // E2B deletes a snapshot as the template it is; a built template is deleted with its builds.
         .delete("/e2b/templates/{id}", |app, req, p| {
-            guard(app, req, |key| delete_snapshot(app, p.get("id"), key))
+            guard(app, req, |key| match crate::e2b_tpl::delete(app, p.get("id"), key) {
+                Some(result) => result,
+                None => delete_snapshot(app, p.get("id"), key),
+            })
         })
 }
 

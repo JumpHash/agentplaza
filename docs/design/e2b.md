@@ -57,7 +57,7 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 
 | route | reply |
 |---|---|
-| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names the base image (`base` by default; any template name is accepted), or a snapshot (see [Snapshots and templates](#snapshots-and-templates)). |
+| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names a built template (its id, name or `name:tag`; see [Template builds](#template-builds)), a snapshot (see [Snapshots and templates](#snapshots-and-templates)), or else the base image (`base` by default; any other name is accepted for it). |
 | `POST /e2b/v2/sandboxes` | `201 Sandbox`. The create the current SDKs call. The same as v1, and always secured. |
 | `GET /e2b/sandboxes` | `[ListedSandbox]`: the running ones, filtered by `metadata`. |
 | `GET /e2b/v2/sandboxes?state=running,paused` | `[ListedSandbox]`, for the states asked, filtered by `metadata`. |
@@ -77,7 +77,7 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 | `POST /e2b/sandboxes/{id}/fork` `{timeout, count}` | Takes a checkpoint now, and starts `count` sandboxes (1 to 8) from it, each with its own access token. The reply has one entry per fork: `{"sandbox"}` or `{"error"}`. |
 | `POST /e2b/sandboxes/{id}/snapshots` `{name?, memory?}` | `201 SnapshotInfo`. With `memory: false`, the disk only (see below). |
 | `GET /e2b/snapshots` | `[SnapshotInfo]`. |
-| `DELETE /e2b/templates/{id}` | `204`: deletes a snapshot. `404` when unknown. `{id}` is the snapshot's id (`<sandbox>:<checkpoint>`) or its unique name. |
+| `DELETE /e2b/templates/{id}` | `204`: deletes a built template (by id or name) with its builds' snapshots, or else a snapshot (its id, `<sandbox>:<checkpoint>`, or its unique name). `404` when unknown; `409` while a build of the template runs. |
 
 Errors are E2B's `{code, message}`, with apid's machine-readable `error_code` beside them.
 
@@ -91,7 +91,6 @@ allowed entry wins over a denied one, as in E2B. Neither overrides the laws or t
 
 **Refused, not ignored:** `volumeMounts` (the plaza's volumes are read-only and given by role), `network.rules`
 (credentials are added only by the owner's egress rules), `network.egressProxy` and `network.maskRequestHost`.
-**Not served:** template builds.
 
 The owner's console routes for the same records: `GET /v1/e2b/sandboxes` lists every sandbox, with its CID and run, and
 `DELETE /v1/e2b/sandboxes/{id}`, `POST .../{id}/pause` and `POST .../{id}/resume` end, pause or resume one.
@@ -112,7 +111,44 @@ daemon, a plaza extension) and stops the VM with no memory image. The sandbox re
 `memory: false` boot it from its disk. The daemon starts fresh, so the hub sends the sandbox's environment again. The
 record keeps `env_vars`, and the file is mode 0600.
 
-## The in-VM daemon
+## Template builds
+
+The SDKs' `Template.build` (the v2 build API) is served. A build runs its steps in a sandbox of its own and keeps the
+result as a memory snapshot; a sandbox created from the template forks that snapshot, so it starts warm, with what the
+steps installed and what the start command left running.
+
+| route | reply |
+|---|---|
+| `POST /e2b/v3/templates` `{name, tags?, cpuCount?, memoryMB?}` | `202 {templateID, buildID, names, aliases, tags, public}`. A new build, waiting for its steps; a new template when no template has the name. `name:tag` names a tag; no tag is `default`. 1 to 8 vCPUs, 128 to 16384 MiB (1 and 512 by default). `minFreeDiskMb` is accepted and not applied. |
+| `GET /e2b/templates/{id}/files/{hash}` | `201 {present}`, or `{present: false, url, headers}`: a link to `PUT` the step's archive to, good for one upload within the hour. Its token travels in `headers`, which the SDK sends back. |
+| `PUT /e2b/templates/{id}/files/{hash}` | `200`: the archive (tar or tar.gz, at most 512 MiB), kept by its hash under `<state>/e2b-template-files`. |
+| `POST /e2b/v2/templates/{id}/builds/{build}` `TemplateBuildStartV2` | `202`: the steps are checked and the build starts. `429` while two builds run. |
+| `GET /e2b/templates/{id}/builds/{build}/status?logsOffset&limit` | `TemplateBuildInfo`: `waiting`, `building`, `ready` or `error`, the build's log from `logsOffset` (100 entries a page), and on error the `reason` with its step (`base`, the step's number, or `finalize`). |
+| `GET /e2b/templates/aliases/{name}` | `{templateID, public: false}`, or `404` (the SDK's `Template.exists`). |
+| `GET /e2b/templates/{id}/tags` | `[{tag, buildID, createdAt}]`. |
+| `POST /e2b/templates/tags` `{target, tags}` | `201 {buildID, tags}`: the tags move to the ready build `target` (`name:tag`) names. |
+| `DELETE /e2b/templates/tags` `{name, tags}` | `204`: the tags leave the template's builds. |
+
+- **Base.** `fromImage` `e2bdev/base` (the SDKs' default) is the plaza's base image. No other image is pulled: another
+  `fromImage`, or a `fromImageRegistry`, is refused with `400`. `fromTemplate` builds on a built template's snapshot,
+  with its environment, user and working directory.
+- **Steps**, in order: `RUN` (`/bin/bash -l -c`, or `/bin/sh` without bash, as the step's user or the current one, with
+  the build's environment, in its working directory); `COPY` (the uploaded archive is unpacked in the sandbox and copied
+  by Docker's rules: a directory's contents into the destination; a file to it, or into it when it ends in `/`, is a
+  directory, or the source is a pattern; owned by the step's user or the current one, files given the step's mode);
+  `ENV`; `WORKDIR` (made when missing, owned by the current user); `USER` (`user` or `root`, the guest's two users). A
+  step's output lines are the build's log; a step that exits non-zero fails the build. Each step may run 30 minutes.
+- **Start and ready.** The start command runs in the background, its output appended to `/tmp/e2b-start-cmd.log`. The
+  ready command is retried every second until it exits 0, for at most 10 minutes. Then the daemon is given the build's
+  environment, user and working directory (`/init`'s `envVars`, `defaultUser`, `defaultWorkdir`), and the snapshot is
+  taken. The build sandbox is killed and kept, retired, for that snapshot.
+- **Picking a build.** `name:tag` is the ready build with that tag. A bare name (or the template id) is the `default`
+  build, or the newest ready build when no build has that tag. When a build is ready the tags it asked for move to it,
+  and an older ready build that holds no tag any more is deleted with its snapshot. No layer cache: every build runs
+  every step.
+- **Records.** Templates are kept in `<state>/e2b-templates.json`. Build logs are kept in memory; a build the hub was
+  running when it stopped is marked failed at the next start, and its sandbox is ended.
+
 
 The daemon serves E2B's `envd` on vsock port 49983 (`PORT` in `envd/mod.rs`). The gateway relays the SDK's HTTP/1.1
 requests to it over the VM's vsock device.
@@ -131,8 +167,11 @@ requests to it over the VM's vsock device.
 - **`/init`** merges `envVars` into the context every later process gets, sets the clock when `timestamp` (RFC 3339) is
   given, and mixes `entropy` (64 hex digits, a plaza extension) into the kernel pool. The hub sends fresh entropy on
   every `/init`, so no two sandboxes restored from one template share the template's random state (see
-  [`vm-snapshots.md`](vm-snapshots.md), "Clock and entropy"). `accessToken`, `defaultUser` and `defaultWorkdir` are
-  accepted and not applied: the sandbox's user and home are fixed.
+  [`vm-snapshots.md`](vm-snapshots.md), "Clock and entropy"). `defaultUser` (`user` or `root`) and `defaultWorkdir`
+  (an absolute directory) set who a request that names no user runs as, and where a process that names no `cwd` starts;
+  a template build sets them. `accessToken` is accepted and not applied (the gateway checks the token).
+- **`PWD`.** A process gets `PWD` set to the directory it starts in, so a shell's `pwd` shows `/home/user/...`, not the
+  volume `/home/user` links to.
 
 ## The gateway
 
@@ -201,6 +240,23 @@ at vsockd's gateway.
 | logs (v2, backward, search) | the probe's command lines |
 
 47 of 47 steps pass.
+
+Template builds, with the same SDK (`Template`, `Template.build`, `Sandbox.create` from the template):
+
+| step | result |
+|---|---|
+| build: `COPY` a file, a directory, a pattern (as root, mode 0600); `RUN`; `ENV`; `WORKDIR`; `RUN` as root; `USER`; a start command with a ready command | ready in ~2.5 s; the `RUN` output is in the build's log |
+| `Template.exists` for the name, and for an unknown name | `true`, `false` |
+| a sandbox from `name:v1` | ~270 ms. Its commands start in the `WORKDIR`, as `user`, with the `ENV`; the copied tree, owners and modes are as asked; the start command's loop is still running. |
+| a sandbox from the bare name | the newest ready build |
+| `assign_tags`, `get_tags`, create by the new tag, `remove_tags` | pass |
+| `from_template` of it, then a sandbox of that | starts in the base's working directory, with its files and environment |
+| a step that exits 3 | `BuildException`: the command exited with 3 |
+| `from_image("python:3.12")` | `BuildException`: no other image is pulled |
+| two builds of one name | the template id stays; the first build's snapshot is deleted; the name picks the second |
+| `DELETE /templates/{name}` for each | `204`; no snapshot is left |
+
+26 of 26 checks pass.
 
 ## In the consoles
 
