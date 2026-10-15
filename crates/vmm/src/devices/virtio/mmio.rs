@@ -165,6 +165,12 @@ pub trait VirtioDevice: Send {
     /// The device's own snapshot state beyond the transport's: its queues' positions
     /// (`next_avail`/`next_used`) once activated, and anything device-specific in `extra`. Called
     /// with the VM paused. The default is for a device with no state of its own.
+    /// The features the driver acknowledged (both pages), for the snapshot: a restored transport
+    /// acknowledges them again through [`VirtioDevice::ack_features_by_page`].
+    fn acked_features(&self) -> u64 {
+        0
+    }
+
     fn save_device_state(&self) -> DeviceSnapshot {
         DeviceSnapshot::default()
     }
