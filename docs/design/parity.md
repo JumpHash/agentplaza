@@ -125,6 +125,9 @@ feature, in the file or command named.
 | Egress credential rules: list, create, enable, delete | `apps/web/src/views/egress-credentials.ts` | `apps/desktop/src/console/screens/egress.rs` | `agentplaza egress list`, `add`, `enable`, `disable`, `rm` | Done in all three |
 | E2B keys and sandboxes | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume` | Done in all three |
 | Warm templates: list and remove | none | none | `agentplaza templates list`, `rm` | CLI and API (`GET/DELETE /v1/templates`): templates build and rebuild themselves; listing them is a diagnostic |
+| Data volumes: list, create, remove | open: no Volumes view yet | open: no Volumes screen yet | open: `agentplaza volumes ls`, `create`, `rm` not built | Open. The hub routes are in (`GET/POST /v1/volumes`, `DELETE /v1/volumes/{name}`, apid and noded) |
+| Per-role volumes (`role_volumes`) | open | open | open: `agentplaza volumes roles` not built | Open. The apid setting is in; no surface sets it yet |
+| Mount and unmount a volume | open | open | open: `agentplaza volumes mount`, `unmount` not built | Open |
 
 ## Out of scope
 

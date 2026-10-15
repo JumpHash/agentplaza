@@ -409,6 +409,7 @@ An unserved CID is 404, a served one with no session 409.
   `POST /v1/imports/{import}/finish`, `DELETE /v1/imports/{import}`. The routes are in
   [`design/vm-snapshots.md`](design/vm-snapshots.md). `noded --vm-processes` runs each VM in its own `apz-vmm`
   process with cgroup v2 limits.
+- Data volumes (read-only disks shared by VMs): `GET/POST /v1/volumes` (`POST {name, source}`), `DELETE /v1/volumes/{name}` (409 while mounted); `POST /v1/runs` takes `volumes: [names]`. See [`design/volumes.md`](design/volumes.md).
 - Workstations (VMs): `GET/POST /v1/workstations`, `GET/DELETE /v1/workstations/{id}`,
   `POST /v1/workstations/{id}/{start,stop,snapshot,revert}`.
 - Training: `GET/POST /v1/train`, `GET /v1/train/{job_id}/events?after=`, `POST /v1/train/{job_id}/stop`, `DELETE /v1/train/{job_id}`.
