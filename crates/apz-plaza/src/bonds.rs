@@ -736,29 +736,30 @@ mod tests {
     }
 
     #[test]
-    fn verified_job_gives_positive_evidence() {
-        let b = Bonds::load(None);
-        let o = b.evidence(1, 2, 1.0, 400.0, T0).unwrap();
-        assert!((o.r - 2.609).abs() < 1e-3, "r = {}", o.r);
-        assert_eq!(o.s, 0.0);
-        assert_eq!(b.opinion(1, 2, T0), o);
-    }
-
-    #[test]
-    fn no_history_is_neutral_and_uncertain() {
-        let b = Bonds::load(None);
-        let o = b.opinion(1, 2, T0);
-        assert!((o.e - 0.5).abs() < 1e-12);
-        assert!((o.u - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn old_failure_has_decayed_to_a_quarter() {
-        let b = Bonds::load(None);
-        b.evidence(1, 2, -1.0, 0.0, T0).unwrap();
-        let o = b.opinion(1, 2, T0 + days(180));
-        assert!((o.s - 0.25).abs() < 1e-9, "s = {}", o.s);
-        assert!((o.e - 0.44).abs() < 0.01, "e = {}", o.e);
+    fn opinion_math_follows_evidence_and_decay() {
+        // Was verified_job_gives_positive_evidence: a verified job gives positive evidence.
+        {
+            let b = Bonds::load(None);
+            let o = b.evidence(1, 2, 1.0, 400.0, T0).unwrap();
+            assert!((o.r - 2.609).abs() < 1e-3, "r = {}", o.r);
+            assert_eq!(o.s, 0.0);
+            assert_eq!(b.opinion(1, 2, T0), o);
+        }
+        // Was no_history_is_neutral_and_uncertain: with no history the opinion is neutral and uncertain.
+        {
+            let b = Bonds::load(None);
+            let o = b.opinion(1, 2, T0);
+            assert!((o.e - 0.5).abs() < 1e-12);
+            assert!((o.u - 1.0).abs() < 1e-12);
+        }
+        // Was old_failure_has_decayed_to_a_quarter: an old failure has decayed to a quarter.
+        {
+            let b = Bonds::load(None);
+            b.evidence(1, 2, -1.0, 0.0, T0).unwrap();
+            let o = b.opinion(1, 2, T0 + days(180));
+            assert!((o.s - 0.25).abs() < 1e-9, "s = {}", o.s);
+            assert!((o.e - 0.44).abs() < 0.01, "e = {}", o.e);
+        }
     }
 
     #[test]

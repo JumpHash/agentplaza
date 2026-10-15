@@ -491,59 +491,60 @@ mod tests {
     }
 
     #[test]
-    fn a_board_frame_escapes_the_role_it_names() {
-        // The role and the cursor are the store's strings, but a frame is built
-        // from whatever they carry: nothing here may break out of the frame.
-        let frame = Event::Board {
-            kind: "read",
-            post: None,
-            agent_cid: 100,
-            role: "a\"b\\c\nd".to_string(),
-            read_up_to: Some("p\"1".to_string()),
+    fn a_frame_escapes_every_string_it_carries_into_the_json() {
+        // Was a_board_frame_escapes_the_role_it_names: a board frame escapes the role it names.
+        {
+            // The role and the cursor are the store's strings, but a frame is built
+            // from whatever they carry: nothing here may break out of the frame.
+            let frame = Event::Board {
+                kind: "read",
+                post: None,
+                agent_cid: 100,
+                role: "a\"b\\c\nd".to_string(),
+                read_up_to: Some("p\"1".to_string()),
+            }
+            .frame();
+            assert!(
+                frame.contains("\"role\":\"a\\\"b\\\\c\\nd\""),
+                "the frame escapes the role: {frame}"
+            );
+            assert!(frame.contains("\"read_up_to\":\"p\\\"1\""), "{frame}");
+            assert_eq!(frame.matches("data: ").count(), 1);
         }
-        .frame();
-        assert!(
-            frame.contains("\"role\":\"a\\\"b\\\\c\\nd\""),
-            "the frame escapes the role: {frame}"
-        );
-        assert!(frame.contains("\"read_up_to\":\"p\\\"1\""), "{frame}");
-        assert_eq!(frame.matches("data: ").count(), 1);
-    }
-
-    #[test]
-    fn a_role_name_is_escaped_into_the_json_string() {
-        // A role is the manifest's, but a frame is built from whatever string
-        // the identity carries: nothing here may break out of the frame.
-        let frame = Event::Task {
-            id: "t1".to_string(),
-            state: "claimed",
-            assignee: Some("a\"b\\c\nd".to_string()),
+        // Was a_role_name_is_escaped_into_the_json_string: a task frame escapes its assignee.
+        {
+            // A role is the manifest's, but a frame is built from whatever string
+            // the identity carries: nothing here may break out of the frame.
+            let frame = Event::Task {
+                id: "t1".to_string(),
+                state: "claimed",
+                assignee: Some("a\"b\\c\nd".to_string()),
+            }
+            .frame();
+            assert!(
+                frame.contains("\"assignee\":\"a\\\"b\\\\c\\nd\""),
+                "the frame escapes the assignee: {frame}"
+            );
+            assert_eq!(frame.matches("data: ").count(), 1);
         }
-        .frame();
-        assert!(
-            frame.contains("\"assignee\":\"a\\\"b\\\\c\\nd\""),
-            "the frame escapes the assignee: {frame}"
-        );
-        assert_eq!(frame.matches("data: ").count(), 1);
-    }
-
-    #[test]
-    fn guest_text_is_escaped_into_the_json_string() {
-        // A quote, a backslash, a newline and a control byte: none of these
-        // may break out of the string or the frame.
-        let frame = Event::Serial {
-            run: "r1".to_string(),
-            vm: 0,
-            offset: 0,
-            text: "a\"b\\c\nd\u{1}e".to_string(),
+        // Was guest_text_is_escaped_into_the_json_string: serial guest text is escaped.
+        {
+            // A quote, a backslash, a newline and a control byte: none of these
+            // may break out of the string or the frame.
+            let frame = Event::Serial {
+                run: "r1".to_string(),
+                vm: 0,
+                offset: 0,
+                text: "a\"b\\c\nd\u{1}e".to_string(),
+            }
+            .frame();
+            assert!(
+                frame.contains("\"text\":\"a\\\"b\\\\c\\nd\\u0001e\""),
+                "the frame escapes the guest text: {frame}"
+            );
+            // Exactly one data line: no raw newline ever breaks the frame.
+            assert_eq!(frame.matches("data: ").count(), 1);
         }
-        .frame();
-        assert!(
-            frame.contains("\"text\":\"a\\\"b\\\\c\\nd\\u0001e\""),
-            "the frame escapes the guest text: {frame}"
-        );
-        // Exactly one data line: no raw newline ever breaks the frame.
-        assert_eq!(frame.matches("data: ").count(), 1);
     }
 
     #[test]
