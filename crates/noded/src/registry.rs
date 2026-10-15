@@ -1842,8 +1842,15 @@ impl Registry {
     /// Puts VM `vm` of run `run` to sleep: its state goes to the sleep snapshot, its process stops,
     /// and it waits as `asleep` until [`Registry::wake_vm`]. A paused VM is snapshotted as it is; a
     /// running one is paused for the snapshot. The sleep snapshot is written beside the old one and
-    /// renamed over it once the VM is stopped (see [`crate::snapshots`]).
-    pub fn sleep_vm(&self, run: &str, vm: u32) -> Result<(Arc<Run>, SnapshotView), VmOpError> {
+    /// renamed over it once the VM is stopped (see [`crate::snapshots`]). With `keep_memory` false
+    /// the VM is stopped without a memory image, any sleep snapshot is removed, and it returns no
+    /// snapshot: it wakes cold.
+    pub fn sleep_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        keep_memory: bool,
+    ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
@@ -1854,6 +1861,23 @@ impl Registry {
             state,
             ..
         } = held;
+        if !keep_memory {
+            if let Err(err) = handle.kill() {
+                let state = thaw(state, &handle);
+                run.return_vm_in(vm, handle, state);
+                return Err(VmOpError::Refused(err.to_string()));
+            }
+            if store.view(cid, snapshots::SLEEP).is_some() {
+                if let Err(err) = store.remove(cid, snapshots::SLEEP) {
+                    run.set_vm_killed(vm, handle);
+                    return Err(VmOpError::Failed(format!(
+                        "VM {vm} stopped, but its stale sleep snapshot could not be removed: {err}"
+                    )));
+                }
+            }
+            run.return_vm_in(vm, handle, VmState::Asleep);
+            return Ok((run, None));
+        }
         let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
         let _ = fs::remove_dir_all(&partial);
         let info = match write_snapshot(&handle, restored_from.as_deref(), &partial) {
@@ -1884,26 +1908,29 @@ impl Registry {
             )));
         };
         view.paused_ms = info.paused_ms;
-        Ok((run, view))
+        Ok((run, Some(view)))
     }
 
     /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
     /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
     /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
-    pub fn wake_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<Arc<Run>, VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
         let sleep = store.dir(cid, snapshots::SLEEP);
+        // A cold wake, or a VM with no sleep snapshot, boots from its spec; the sleep snapshot itself
+        // is left as it is.
+        let warm = (!cold && store.view(cid, snapshots::SLEEP).is_some()).then(|| sleep.clone());
         // A VM that arrived asleep from another node has never run here: there is no old handle to
         // swap out, only its spec.
         if let Some(spec) = run.take_unbooted(vm)? {
             return match spawner::spawn(VmSpec {
-                restore: Some(sleep.clone()),
+                restore: warm.clone(),
                 ..spec.clone()
             }) {
                 Ok(fresh) => {
-                    run.seat_first(vm, spec, fresh, Some(sleep));
+                    run.seat_first(vm, spec, fresh, warm);
                     Ok(run)
                 }
                 Err(err) => {
@@ -1919,23 +1946,31 @@ impl Registry {
             spec,
             ..
         } = run.take_vm(vm, &[VmState::Asleep])?;
-        let woken = match spawner::spawn(VmSpec {
-            restore: Some(sleep.clone()),
-            ..spec.clone()
+        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawner::spawn(VmSpec {
+            restore: None,
+            ..spec
         }) {
-            Ok(fresh) => Ok((fresh, Some(sleep))),
-            Err(err) => {
-                eprintln!(
-                    "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
-                    run.id
-                );
-                match spawner::spawn(spec) {
-                    Ok(fresh) => Ok((fresh, None)),
-                    Err(cold) => Err(VmOpError::Failed(format!(
-                        "VM {vm} did not wake ({err}) and did not boot ({cold})"
-                    ))),
+            Ok(fresh) => Ok((fresh, None)),
+            Err(cold) => Err(VmOpError::Failed(match warm_err {
+                Some(err) => format!("VM {vm} did not wake ({err}) and did not boot ({cold})"),
+                None => format!("VM {vm} did not boot ({cold})"),
+            })),
+        };
+        let woken = match warm {
+            Some(base) => match spawner::spawn(VmSpec {
+                restore: Some(base.clone()),
+                ..spec.clone()
+            }) {
+                Ok(fresh) => Ok((fresh, Some(base))),
+                Err(err) => {
+                    eprintln!(
+                        "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
+                        run.id
+                    );
+                    boot_cold(spec, Some(err.to_string()))
                 }
-            }
+            },
+            None => boot_cold(spec, None),
         };
         match woken {
             Ok((fresh, base)) => {
@@ -2070,6 +2105,7 @@ impl Registry {
         run: &str,
         vm: u32,
         n: u32,
+        from: Option<&str>,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
         if !(1..=MAX_FORKS).contains(&n) {
             return Err(VmOpError::Invalid(format!(
@@ -2079,14 +2115,31 @@ impl Registry {
         let store = self.snapshot_store()?;
         let source = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = source.vm_cid(vm)?;
-        let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
-        let meta = source.meta(held.spec.balloon);
-        let has_workspace = held.spec.workspace.is_some();
-        let taken = Self::checkpoint_held(store, cid, &held, "fork");
-        let state = thaw(held.state, &held.handle);
-        source.return_vm_in(vm, held.handle, state);
-        let checkpoint = taken?;
-        store.prune(cid);
+        let (checkpoint, meta, has_workspace) = match from {
+            // A named checkpoint is forked as it is: the source VM is not taken, so it may be running,
+            // paused or asleep.
+            Some(name) => {
+                if !snapshots::is_checkpoint_name(name) {
+                    return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+                }
+                let view = store
+                    .view(cid, name)
+                    .ok_or_else(|| VmOpError::UnknownCheckpoint(name.to_string()))?;
+                let (meta, has_workspace) = source.fork_shape(vm)?;
+                (view, meta, has_workspace)
+            }
+            None => {
+                let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+                let meta = source.meta(held.spec.balloon);
+                let has_workspace = held.spec.workspace.is_some();
+                let taken = Self::checkpoint_held(store, cid, &held, "fork");
+                let state = thaw(held.state, &held.handle);
+                source.return_vm_in(vm, held.handle, state);
+                let checkpoint = taken?;
+                store.prune(cid);
+                (checkpoint, meta, has_workspace)
+            }
+        };
         let snapshot = store.dir(cid, &checkpoint.name);
         let mut forks = Vec::with_capacity(n as usize);
         for _ in 0..n {
@@ -3113,6 +3166,23 @@ impl Run {
         slot.guest_cid.ok_or_else(|| {
             VmOpError::Unsupported(format!("VM {vm} has no vsock CID, so it has no snapshots"))
         })
+    }
+
+    /// The meta and workspace flag a fork of VM `vm` takes, read from its spec without taking the VM.
+    fn fork_shape(&self, vm: u32) -> Result<(RunMeta, bool), VmOpError> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        let spec = slot.spec.as_ref().ok_or_else(|| {
+            VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from"))
+        })?;
+        Ok((self.meta(spec.balloon), spec.workspace.is_some()))
     }
 
     /// The run's shape as a run booted from it would be: what a fork of one of its VMs shares.
@@ -4600,11 +4670,11 @@ mod tests {
         let none = Some(VmOpError::NoSnapshots);
         assert_eq!(registry.checkpoints("r1", 0).err(), none);
         assert_eq!(registry.checkpoint_vm("r1", 0, "x").err(), none);
-        assert_eq!(registry.sleep_vm("r1", 0).err(), none);
-        assert_eq!(registry.wake_vm("r1", 0).err(), none);
+        assert_eq!(registry.sleep_vm("r1", 0, true).err(), none);
+        assert_eq!(registry.wake_vm("r1", 0, false).err(), none);
         assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
         assert_eq!(registry.delete_checkpoint("r1", 0, "cp-1").err(), none);
-        assert_eq!(registry.fork_vm("r1", 0, 2).err(), none);
+        assert_eq!(registry.fork_vm("r1", 0, 2, None).err(), none);
     }
 
     #[test]
@@ -4617,7 +4687,7 @@ mod tests {
             Some(VmOpError::UnknownRun)
         );
         assert_eq!(
-            registry.sleep_vm("r1", 3).err(),
+            registry.sleep_vm("r1", 3, true).err(),
             Some(VmOpError::UnknownVm(3))
         );
         let missing = VmOpError::UnknownCheckpoint("cp-1-nope".into());
@@ -4644,7 +4714,7 @@ mod tests {
         let (registry, _run) =
             registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
         for n in [0, MAX_FORKS + 1] {
-            let refused = registry.fork_vm("r1", 0, n).err().expect("out of range");
+            let refused = registry.fork_vm("r1", 0, n, None).err().expect("out of range");
             assert_eq!(refused.status(), 400);
         }
         assert!(
@@ -4666,14 +4736,14 @@ mod tests {
         let wrong = Some(VmOpError::WrongState { vm: 0, state });
         assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
-        assert_eq!(asleep.sleep_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.sleep_vm("r1", 0, true).err(), wrong);
         assert_eq!(asleep.checkpoint_vm("r1", 0, "x").err(), wrong);
 
         let (running, _run) =
             registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
         let state = VmState::Running;
         assert_eq!(
-            running.wake_vm("r1", 0).err(),
+            running.wake_vm("r1", 0, false).err(),
             Some(VmOpError::WrongState { vm: 0, state })
         );
         assert_eq!(

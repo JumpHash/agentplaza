@@ -1812,16 +1812,11 @@ fn router() -> Router<Node> {
                 Registry::resume_vm,
             )
         })
-        .post("/v1/runs/{id}/vms/{index}/sleep", |node, _, params| {
-            sleep_vm(node, params.get("id"), params.get("index"))
+        .post("/v1/runs/{id}/vms/{index}/sleep", |node, request, params| {
+            sleep_vm(node, params.get("id"), params.get("index"), &request.body)
         })
-        .post("/v1/runs/{id}/vms/{index}/wake", |node, _, params| {
-            vm_op(
-                node,
-                params.get("id"),
-                params.get("index"),
-                Registry::wake_vm,
-            )
+        .post("/v1/runs/{id}/vms/{index}/wake", |node, request, params| {
+            wake_vm(node, params.get("id"), params.get("index"), &request.body)
         })
         // A sleeping VM moves between nodes (migrate.rs): export it here and read its files in
         // chunks; import them on the target, which makes the VM asleep there. A finish is registered
@@ -1937,17 +1932,61 @@ fn vm_index(id: &str, index: &str) -> Result<u32, Response> {
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/sleep` → 200 with `{"run": <summary>, "snapshot": <view>}`: the
-/// VM is snapshotted to its sleep snapshot and stopped, and waits there until it is woken.
-fn sleep_vm(node: &Node, id: &str, index: &str) -> Response {
+/// VM is snapshotted to its sleep snapshot and stopped, and waits there until it is woken. The
+/// optional body `{"memory": false}` stops it without a memory image instead: `snapshot` is `null`
+/// and the VM wakes cold.
+fn sleep_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
     let vm = match vm_index(id, index) {
         Ok(vm) => vm,
         Err(response) => return response,
     };
-    match node.registry().sleep_vm(id, vm) {
+    let keep_memory = match memory_flag(body) {
+        Ok(keep) => keep,
+        Err(err) => return Response::error(400, &format!("invalid sleep request: {err}")),
+    };
+    match node.registry().sleep_vm(id, vm, keep_memory) {
         Ok((run, snapshot)) => Response::json(
             200,
             &serde_json::json!({"run": run.view(Detail::Summary), "snapshot": snapshot}),
         ),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The optional `{"memory": bool}` body of a sleep or wake; a missing field means true.
+#[derive(Debug, Deserialize)]
+struct SleepWakeRequest {
+    #[serde(default = "keeps_memory")]
+    memory: bool,
+}
+
+fn keeps_memory() -> bool {
+    true
+}
+
+/// Reads the optional memory flag of a sleep or wake body: true for an empty body.
+fn memory_flag(body: &[u8]) -> Result<bool, String> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(true);
+    }
+    serde_json::from_slice::<SleepWakeRequest>(body)
+        .map(|request| request.memory)
+        .map_err(|err| err.to_string())
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/wake` → 200 with the run view. The optional body
+/// `{"memory": false}` boots the VM cold from its spec instead of restoring its sleep snapshot.
+fn wake_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let cold = match memory_flag(body) {
+        Ok(keep) => !keep,
+        Err(err) => return Response::error(400, &format!("invalid wake request: {err}")),
+    };
+    match node.registry().wake_vm(id, vm, cold) {
+        Ok(run) => Response::json(200, &run.view(Detail::Summary)),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
@@ -2096,10 +2135,12 @@ fn checkpoint_delete(node: &Node, id: &str, index: &str, name: &str) -> Response
     }
 }
 
-/// The `POST .../fork` body: how many forks to make (1 to 8).
+/// The `POST .../fork` body: how many forks to make (1 to 8), and optionally the name of an existing
+/// checkpoint to fork from instead of taking a new one.
 #[derive(Debug, Deserialize)]
 struct ForkRequest {
     n: u32,
+    checkpoint: Option<String>,
 }
 
 /// `GET /v1/volumes` → 200 with every data volume and the guest CIDs of the live VMs that mount it.
@@ -2181,7 +2222,8 @@ fn fork_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
         Ok(request) => request,
         Err(err) => return Response::error(400, &format!("invalid fork request: {err}")),
     };
-    match node.registry().fork_vm(id, vm, request.n) {
+    let from = request.checkpoint.as_deref();
+    match node.registry().fork_vm(id, vm, request.n, from) {
         Ok((checkpoint, forks)) => {
             let forks: Vec<serde_json::Value> = forks
                 .iter()
@@ -2375,7 +2417,7 @@ mod snapshot_route_tests {
     #[test]
     fn a_node_with_no_snapshot_dir_refuses_every_snapshot_route_with_409() {
         let node = node(None);
-        assert_eq!(sleep_vm(&node, "r1", "0").status, 409);
+        assert_eq!(sleep_vm(&node, "r1", "0", b"").status, 409);
         assert_eq!(checkpoint_list(&node, "r1", "0").status, 409);
         assert_eq!(checkpoint_create(&node, "r1", "0", b"").status, 409);
         assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
@@ -2434,7 +2476,7 @@ mod snapshot_route_tests {
     #[test]
     fn a_vm_index_that_is_not_a_number_is_a_404() {
         let node = node(None);
-        assert_eq!(sleep_vm(&node, "r1", "x").status, 404);
+        assert_eq!(sleep_vm(&node, "r1", "x", b"").status, 404);
         assert_eq!(checkpoint_list(&node, "r1", "x").status, 404);
         assert_eq!(checkpoint_create(&node, "r1", "x", b"").status, 404);
         assert_eq!(fork_vm(&node, "r1", "x", br#"{"n": 1}"#).status, 404);
@@ -2451,10 +2493,25 @@ mod snapshot_route_tests {
     }
 
     #[test]
+    fn the_sleep_wake_and_fork_bodies_default_to_memory_and_no_checkpoint() {
+        assert!(memory_flag(b"").unwrap());
+        assert!(memory_flag(b" \n").unwrap());
+        assert!(memory_flag(b"{}").unwrap());
+        assert!(!memory_flag(br#"{"memory": false}"#).unwrap());
+        assert!(memory_flag(b"not json").is_err());
+        let plain: ForkRequest = serde_json::from_slice(br#"{"n": 2}"#).unwrap();
+        assert_eq!(plain.n, 2);
+        assert!(plain.checkpoint.is_none());
+        let named: ForkRequest =
+            serde_json::from_slice(br#"{"n": 1, "checkpoint": "cp-1-x"}"#).unwrap();
+        assert_eq!(named.checkpoint.as_deref(), Some("cp-1-x"));
+    }
+
+    #[test]
     fn a_snapshot_route_on_an_unknown_run_is_a_404() {
         let dir = std::env::temp_dir().join(format!("apz-noded-unknown-{}", std::process::id()));
         let node = node(Some(dir));
-        assert_eq!(sleep_vm(&node, "r9", "0").status, 404);
+        assert_eq!(sleep_vm(&node, "r9", "0", b"").status, 404);
         assert_eq!(checkpoint_list(&node, "r9", "0").status, 404);
         assert_eq!(checkpoint_restore(&node, "r9", "0", "cp-1-x").status, 404);
         assert_eq!(checkpoint_delete(&node, "r9", "0", "cp-1-x").status, 404);
