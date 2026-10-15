@@ -89,8 +89,9 @@ pub struct Config {
     /// Where keepalive agents' workspace images persist across restarts
     /// (`DIR/workspaces/cid-<guest_cid>.ext4`); `None` keeps per-run copies.
     pub persist_dir: Option<PathBuf>,
-    /// Where VM snapshots are kept (`--snapshot-dir`, by default `DIR/snapshots` under the persist
-    /// directory); `None` keeps none, and every snapshot operation is refused.
+    /// Where VM snapshots are kept (`--snapshot-dir`; by default `snapshots` under the persist
+    /// directory, else under the daemon's state directory); `None` (`--no-snapshots`) keeps none, and
+    /// every snapshot operation is refused.
     pub snapshot_dir: Option<PathBuf>,
     /// Start new keepalive agent VMs from warm templates kept under `<snapshot_dir>/templates`
     /// (`--no-warm-templates` turns it off). Needs a snapshot dir.
