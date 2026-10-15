@@ -50,6 +50,7 @@ import type { Unit } from '../src/metrics/model';
 import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
+import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1679,6 +1680,10 @@ sectionEnd('metrics format, nice and time labels: ok');
   eq([share('a'), share('b'), share('c'), share('d')], [50, 30, 15, 5], 'treemap: each cell is its value share of the box');
   sectionEnd('treemap split tests: ok');
 }
+// ---- Metrics charts: the thinning of long series and the x-axis label placement (src/metrics/charts.ts) ----
+eq([thin([1, 5, 2, null, 3, 4], bucketStarts(6, 3)), thin([null, null, 1], bucketStarts(3, 2)), thin([3, 1, 2], [0], 'min')], [[5, 2, 4], [null, 1], [1]], 'metrics charts: a long series keeps the largest value of each pixel bucket, and a bucket with no value stays null');
+eq([xLabelIndexes(10, 400), xLabelIndexes(10, 600), xLabelIndexes(1, 600)], [[0, 5, 9], [0, 2, 5, 7, 9], [0]], 'metrics charts: three x labels under 460 px and five above, the first and last always labelled, one point labelled once');
+sectionEnd('metrics charts tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
