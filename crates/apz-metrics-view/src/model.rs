@@ -799,3 +799,19 @@ pub struct LiveLease {
     /// `15m` or `1h`.
     pub range: String,
 }
+
+/// A catalog entry as `GET /v1/metrics/catalog` serves it (the owned form of `apz_metrics::MetricDef`), for
+/// "About this metric".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MetricInfo {
+    pub id: String,
+    pub title: String,
+    pub unit: Unit,
+    pub kind: String,
+    pub level: String,
+    pub entity: String,
+    pub labels: Vec<String>,
+    pub source: String,
+    pub cost: String,
+    pub description: String,
+}

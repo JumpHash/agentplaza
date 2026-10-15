@@ -108,6 +108,8 @@ dependencies = [
  "apz-engine",
  "apz-http",
  "apz-ide",
+ "apz-metrics",
+ "apz-metrics-view",
  "apz-os",
  "apz-plaza",
  "apz-prompt",
