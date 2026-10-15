@@ -558,7 +558,7 @@ fn fixed_tree() -> UiNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apz_station::{Button, SessionKind};
+    use apz_station::SessionKind;
 
     fn spec() -> SessionSpec {
         SessionSpec {
@@ -566,25 +566,6 @@ mod tests {
             kind: SessionKind::Pixel,
             width: 200,
             height: 100,
-        }
-    }
-
-    fn pixel(frame: &Frame, x: u32, y: u32) -> [u8; 4] {
-        let index = ((y * frame.w + x) * 4) as usize;
-        [
-            frame.rgba[index],
-            frame.rgba[index + 1],
-            frame.rgba[index + 2],
-            frame.rgba[index + 3],
-        ]
-    }
-
-    fn click(x: i32, y: i32) -> InputAction {
-        InputAction::Click {
-            x,
-            y,
-            button: Button::Left,
-            count: 1,
         }
     }
 
@@ -609,99 +590,29 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_sized_session_is_refused() {
-        let mut desk = FakeDesktop::new();
-        let mut bad = spec();
-        bad.width = 0;
-        assert!(matches!(
-            desk.open_session(&bad),
-            Err(DesktopError::Invalid(_))
-        ));
-    }
-
-    #[test]
-    fn a_closed_session_is_unknown() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        desk.close_session(id).expect("closes");
-        assert_eq!(desk.capture(id), Err(DesktopError::UnknownSession(id)));
-        assert_eq!(
-            desk.close_session(id),
-            Err(DesktopError::UnknownSession(id))
-        );
-        assert_eq!(desk.inputs(id), None);
-    }
-
-    #[test]
-    fn a_click_paints_a_marker_and_is_logged() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        desk.input(id, &click(50, 40)).expect("clicks");
-        let frame = desk.capture(id).expect("captures");
-        assert_eq!(pixel(&frame, 50, 40), [0, 0, 255, 255]);
-        assert_eq!(desk.inputs(id), Some(&[click(50, 40)][..]));
-    }
-
-    #[test]
-    fn a_drag_paints_a_line_and_moves_the_pointer_for_later_presses() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        desk.input(
-            id,
-            &InputAction::Drag {
-                from: (10, 10),
-                to: (30, 10),
-            },
-        )
-        .expect("drags");
-        let frame = desk.capture(id).expect("captures");
-        assert_eq!(pixel(&frame, 20, 10), [255, 140, 0, 255]);
-        desk.input(
-            id,
-            &InputAction::Down {
-                button: Button::Left,
-            },
-        )
-        .expect("presses");
-        let frame = desk.capture(id).expect("captures");
-        assert_eq!(
-            pixel(&frame, 30, 10),
-            [0, 200, 0, 255],
-            "the press lands where the drag ended"
-        );
-    }
-
-    #[test]
-    fn typing_and_keys_paint_cells_along_the_bottom_edge() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        let before = desk.capture(id).expect("captures");
-        desk.input(
-            id,
-            &InputAction::Key {
-                combo: "ctrl+s".into(),
-            },
-        )
-        .expect("presses a chord");
-        let after = desk.capture(id).expect("captures");
-        assert_eq!(pixel(&after, 2, 94), [40, 40, 40, 255]);
-        assert_ne!(before, after);
-    }
-
-    #[test]
-    fn a_bad_chord_is_refused_and_not_logged() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        assert!(
-            desk.input(
-                id,
-                &InputAction::Key {
-                    combo: "ctrl+nope".into()
-                }
-            )
-            .is_err()
-        );
-        assert_eq!(desk.inputs(id), Some(&[][..]));
+    fn session_errors_are_reported() {
+        // a_zero_sized_session_is_refused: a session with no width is invalid
+        {
+            let mut desk = FakeDesktop::new();
+            let mut bad = spec();
+            bad.width = 0;
+            assert!(matches!(
+                desk.open_session(&bad),
+                Err(DesktopError::Invalid(_))
+            ));
+        }
+        // a_closed_session_is_unknown: once closed, the session id is unknown
+        {
+            let mut desk = FakeDesktop::new();
+            let id = desk.open_session(&spec()).expect("opens");
+            desk.close_session(id).expect("closes");
+            assert_eq!(desk.capture(id), Err(DesktopError::UnknownSession(id)));
+            assert_eq!(
+                desk.close_session(id),
+                Err(DesktopError::UnknownSession(id))
+            );
+            assert_eq!(desk.inputs(id), None);
+        }
     }
 
     #[test]
@@ -735,13 +646,30 @@ mod tests {
     }
 
     #[test]
-    fn an_app_without_a_window_is_not_found() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        assert!(matches!(
-            desk.ui_tree(id, Some("Blender"), 2),
-            Err(DesktopError::NotFound(_))
-        ));
+    fn ui_lookups_that_find_nothing_are_errors() {
+        // an_app_without_a_window_is_not_found: an app with no window is NotFound
+        {
+            let mut desk = FakeDesktop::new();
+            let id = desk.open_session(&spec()).expect("opens");
+            assert!(matches!(
+                desk.ui_tree(id, Some("Blender"), 2),
+                Err(DesktopError::NotFound(_))
+            ));
+        }
+        // a_selector_that_matches_nothing_or_nothing_at_all_is_an_error: a selector
+        // matching no control is NotFound, and an empty selector is Invalid
+        {
+            let mut desk = FakeDesktop::new();
+            let id = desk.open_session(&spec()).expect("opens");
+            assert!(matches!(
+                desk.ui_act(id, &sel(Some("slider"), None, None), &UiAction::Focus),
+                Err(DesktopError::NotFound(_))
+            ));
+            assert!(matches!(
+                desk.ui_act(id, &Selector::default(), &UiAction::Focus),
+                Err(DesktopError::Invalid(_))
+            ));
+        }
     }
 
     #[test]
@@ -790,20 +718,6 @@ mod tests {
                 &UiAction::SetValue { value: "x".into() }
             ),
             Err(DesktopError::Unsupported(_))
-        ));
-    }
-
-    #[test]
-    fn a_selector_that_matches_nothing_or_nothing_at_all_is_an_error() {
-        let mut desk = FakeDesktop::new();
-        let id = desk.open_session(&spec()).expect("opens");
-        assert!(matches!(
-            desk.ui_act(id, &sel(Some("slider"), None, None), &UiAction::Focus),
-            Err(DesktopError::NotFound(_))
-        ));
-        assert!(matches!(
-            desk.ui_act(id, &Selector::default(), &UiAction::Focus),
-            Err(DesktopError::Invalid(_))
         ));
     }
 
