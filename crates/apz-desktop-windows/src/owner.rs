@@ -27,40 +27,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recent_input_with_no_injection_is_the_owners() {
-        assert!(owner_is_active(1_000, None, 1_500));
-    }
-
-    #[test]
-    fn old_input_is_not_the_owners_any_more() {
-        assert!(!owner_is_active(1_000, None, 1_000 + OWNER_QUIET_MS + 1));
-        assert!(owner_is_active(1_000, None, 1_000 + OWNER_QUIET_MS));
-    }
-
-    #[test]
-    fn our_own_injection_is_not_the_owner() {
-        assert!(!owner_is_active(5_000, Some(5_000), 5_100));
-    }
-
-    #[test]
-    fn owner_input_after_our_injection_is_the_owner() {
-        assert!(owner_is_active(5_200, Some(5_000), 5_300));
-    }
-
-    #[test]
-    fn owner_input_after_our_injection_goes_quiet_after_the_window() {
-        assert!(!owner_is_active(
-            5_100,
-            Some(5_000),
-            5_100 + OWNER_QUIET_MS + 1
-        ));
-    }
-
-    #[test]
-    fn ticks_wrap_around() {
-        let injected = u32::MAX - 5;
-        let input = 3;
-        assert!(owner_is_active(input, Some(injected), 10));
-        assert!(!owner_is_active(injected, Some(injected), 10));
+    fn owner_activity_follows_input_age_and_our_injections() {
+        // (case, last input tick, tick of our last injection, now, whether the owner is active)
+        for (case, last_input, last_injected, now, want) in [
+            (
+                "recent input with no injection is the owner's",
+                1_000,
+                None,
+                1_500,
+                true,
+            ),
+            (
+                "input past the quiet window is not the owner's any more",
+                1_000,
+                None,
+                1_000 + OWNER_QUIET_MS + 1,
+                false,
+            ),
+            (
+                "input exactly at the quiet window's edge is still the owner's",
+                1_000,
+                None,
+                1_000 + OWNER_QUIET_MS,
+                true,
+            ),
+            (
+                "our own injection is not the owner",
+                5_000,
+                Some(5_000),
+                5_100,
+                false,
+            ),
+            (
+                "owner input after our injection is the owner",
+                5_200,
+                Some(5_000),
+                5_300,
+                true,
+            ),
+            (
+                "owner input after our injection goes quiet after the window",
+                5_100,
+                Some(5_000),
+                5_100 + OWNER_QUIET_MS + 1,
+                false,
+            ),
+            (
+                "ticks wrap around: owner input after our injection is the owner",
+                3,
+                Some(u32::MAX - 5),
+                10,
+                true,
+            ),
+            (
+                "ticks wrap around: our own injection is not the owner",
+                u32::MAX - 5,
+                Some(u32::MAX - 5),
+                10,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                owner_is_active(last_input, last_injected, now),
+                want,
+                "{case}"
+            );
+        }
     }
 }

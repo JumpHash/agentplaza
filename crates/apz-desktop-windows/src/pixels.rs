@@ -13,16 +13,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blue_and_red_swap_and_alpha_is_opaque() {
-        let mut out = Vec::new();
-        bgra_row_to_rgba(&[1, 2, 3, 0, 4, 5, 6, 9], &mut out);
-        assert_eq!(out, vec![3, 2, 1, 255, 6, 5, 4, 255]);
-    }
-
-    #[test]
-    fn a_partial_pixel_is_ignored() {
-        let mut out = Vec::new();
-        bgra_row_to_rgba(&[1, 2, 3], &mut out);
-        assert!(out.is_empty());
+    fn bgra_rows_become_rgba_with_opaque_alpha() {
+        for (case, row, want) in [
+            (
+                "blue and red swap and alpha is opaque",
+                vec![1, 2, 3, 0, 4, 5, 6, 9],
+                vec![3, 2, 1, 255, 6, 5, 4, 255],
+            ),
+            ("a partial pixel is ignored", vec![1, 2, 3], vec![]),
+        ] {
+            let mut out = Vec::new();
+            bgra_row_to_rgba(&row, &mut out);
+            assert_eq!(out, want, "{case}");
+        }
     }
 }

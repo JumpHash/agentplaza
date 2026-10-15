@@ -156,46 +156,52 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_control_takes_no_actions() {
-        assert!(actions_for(Capabilities::default()).is_empty());
-    }
-
-    #[test]
-    fn every_pattern_offers_its_action_in_order() {
-        let caps = Capabilities {
-            focusable: true,
-            invoke: true,
-            value_writable: true,
-            selectable: true,
-            toggle: true,
-            expand: ExpandState::PartiallyExpanded,
-        };
-        assert_eq!(
-            actions_for(caps),
-            vec![
-                "invoke",
-                "set_value",
-                "focus",
-                "select",
-                "toggle",
-                "expand",
-                "collapse"
-            ]
-        );
-    }
-
-    #[test]
-    fn expand_offers_only_the_direction_it_can_go() {
-        let collapsed = Capabilities {
-            expand: ExpandState::Collapsed,
-            ..Capabilities::default()
-        };
-        let expanded = Capabilities {
-            expand: ExpandState::Expanded,
-            ..Capabilities::default()
-        };
-        assert_eq!(actions_for(collapsed), vec!["expand"]);
-        assert_eq!(actions_for(expanded), vec!["collapse"]);
+    fn actions_follow_the_capabilities_and_expand_direction() {
+        for (case, caps, want) in [
+            (
+                "a plain control takes no actions",
+                Capabilities::default(),
+                vec![],
+            ),
+            (
+                "every pattern offers its action, in order",
+                Capabilities {
+                    focusable: true,
+                    invoke: true,
+                    value_writable: true,
+                    selectable: true,
+                    toggle: true,
+                    expand: ExpandState::PartiallyExpanded,
+                },
+                vec![
+                    "invoke",
+                    "set_value",
+                    "focus",
+                    "select",
+                    "toggle",
+                    "expand",
+                    "collapse",
+                ],
+            ),
+            (
+                "a collapsed control offers only expand",
+                Capabilities {
+                    expand: ExpandState::Collapsed,
+                    ..Capabilities::default()
+                },
+                vec!["expand"],
+            ),
+            (
+                "an expanded control offers only collapse",
+                Capabilities {
+                    expand: ExpandState::Expanded,
+                    ..Capabilities::default()
+                },
+                vec!["collapse"],
+            ),
+        ] {
+            assert_eq!(actions_for(caps), want, "{case}");
+        }
     }
 
     #[test]

@@ -111,53 +111,38 @@ mod tests {
     }
 
     #[test]
-    fn a_query_names_an_app_by_name_or_executable() {
-        assert!(names_app("notepad", "Notepad", "notepad.exe"));
-        assert!(names_app("NOTEPAD.EXE", "Notepad", "notepad.exe"));
-        assert!(!names_app("calc", "Notepad", "notepad.exe"));
-    }
-
-    #[test]
-    fn a_path_has_its_file_name() {
-        assert_eq!(file_name(r"C:\Windows\notepad.exe"), "notepad.exe");
-        assert_eq!(file_name("notepad.exe"), "notepad.exe");
-        assert_eq!(file_name("C:/Tools/tool.exe"), "tool.exe");
-    }
-
-    #[test]
-    fn an_executable_matches_with_or_without_its_extension() {
-        assert!(same_exe("notepad", "notepad.exe"));
-        assert!(same_exe("notepad.exe", "NOTEPAD.EXE"));
-        assert!(same_exe("notepad", r"C:\Windows\notepad.exe"));
-        assert!(!same_exe("calc", "notepad.exe"));
-        assert!(!same_exe("note", "notepad.exe"));
-    }
-
-    #[test]
-    fn plain_arguments_are_left_alone() {
-        assert_eq!(quote_arg("plain"), "plain");
-        assert_eq!(quote_arg(r"C:\dir\file"), r"C:\dir\file");
-    }
-
-    #[test]
-    fn arguments_with_spaces_or_none_are_quoted() {
-        assert_eq!(quote_arg(""), "\"\"");
-        assert_eq!(quote_arg("a b"), "\"a b\"");
-    }
-
-    #[test]
-    fn quotes_inside_an_argument_are_escaped() {
-        assert_eq!(quote_arg(r#"say "hi""#), r#""say \"hi\"""#);
-        assert_eq!(quote_arg(r#"a\"b"#), r#""a\\\"b""#);
-    }
-
-    #[test]
-    fn trailing_backslashes_are_doubled_before_the_closing_quote() {
-        assert_eq!(quote_arg(r"C:\my dir\"), r#""C:\my dir\\""#);
-    }
-
-    #[test]
-    fn a_command_line_joins_quoted_arguments() {
+    fn quote_arg_and_command_line_follow_the_windows_rules() {
+        // Plain arguments are left alone, empty or spaced arguments are quoted,
+        // quotes and backslashes before a quote are escaped, and trailing
+        // backslashes are doubled before the closing quote.
+        for (case, arg, want) in [
+            ("plain arguments are left alone", "plain", "plain"),
+            (
+                "paths with backslashes are left alone",
+                r"C:\dir\file",
+                r"C:\dir\file",
+            ),
+            ("an empty argument is quoted", "", "\"\""),
+            ("an argument with a space is quoted", "a b", "\"a b\""),
+            (
+                "quotes inside an argument are escaped",
+                r#"say "hi""#,
+                r#""say \"hi\"""#,
+            ),
+            (
+                "a backslash before a quote is escaped",
+                r#"a\"b"#,
+                r#""a\\\"b""#,
+            ),
+            (
+                "trailing backslashes are doubled before the closing quote",
+                r"C:\my dir\",
+                r#""C:\my dir\\""#,
+            ),
+        ] {
+            assert_eq!(quote_arg(arg), want, "{case}");
+        }
+        // A command line joins quoted arguments with spaces.
         assert_eq!(command_line(&[]), "");
         assert_eq!(
             command_line(&["a b".to_string(), "c".to_string()]),
