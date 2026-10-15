@@ -410,6 +410,7 @@ cat > "$out_dir/init.c" <<'EOF'
 // volumes. init mounts the workspace (ext4) at /workspace and each data volume
 // at /data/<name>. `wspace <text>` proves the workspace is writable from the
 // guest's side.
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <net/if.h>
@@ -607,11 +608,12 @@ static void do_cpu(void)
 // is above it because it is the guest's console protocol.
 static void workspace_show(void);
 static void workspace_append(const char *text);
+static void data_show(void);
 
 static void do_command(const char *cmd)
 {
     if (!strcmp(cmd, "help")) {
-        put("commands: help, echo <text>, uname, uptime, mem, cpu, interrupts, wspace [text], sync, poweroff, reboot, halt\n");
+        put("commands: help, echo <text>, uname, uptime, mem, cpu, interrupts, wspace [text], data, sync, poweroff, reboot, halt\n");
     } else if (!strcmp(cmd, "interrupts")) {
         do_interrupts();
     } else if (!strcmp(cmd, "sync")) {
@@ -620,6 +622,8 @@ static void do_command(const char *cmd)
         workspace_append(cmd + 7);
     } else if (!strcmp(cmd, "wspace")) {
         workspace_show();
+    } else if (!strcmp(cmd, "data")) {
+        data_show();
     } else if (!strncmp(cmd, "echo ", 5)) {
         put(cmd + 5);
         put("\n");
@@ -946,6 +950,55 @@ static void mount_volumes(void)
         int len = snprintf(msg, sizeof msg, "plaza guest: %s mounted (read-only)\n", target);
         write_all(1, msg, (size_t)len);
     }
+}
+
+// `data`: every shared volume under /data with the names at its root, and whether a write there
+// is refused (it must be: the device is read-only and the mount is too).
+static void data_show(void)
+{
+    DIR *data = opendir("/data");
+    if (!data) {
+        put("data: no /data\n");
+        return;
+    }
+    int volumes = 0;
+    struct dirent *entry;
+    while ((entry = readdir(data))) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char path[96];
+        snprintf(path, sizeof path, "/data/%s", entry->d_name);
+        put("data ");
+        put(entry->d_name);
+        put(":");
+        DIR *volume = opendir(path);
+        if (volume) {
+            struct dirent *file;
+            while ((file = readdir(volume))) {
+                if (file->d_name[0] == '.' || !strcmp(file->d_name, "lost+found"))
+                    continue;
+                put(" ");
+                put(file->d_name);
+            }
+            closedir(volume);
+        }
+        char probe[128];
+        snprintf(probe, sizeof probe, "%s/.plaza-write-probe", path);
+        int fd = open(probe, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        if (fd >= 0) {
+            close(fd);
+            unlink(probe);
+            put(" (WRITABLE)\n");
+        } else {
+            put(" (write refused: ");
+            put(strerror(errno));
+            put(")\n");
+        }
+        volumes++;
+    }
+    closedir(data);
+    if (!volumes)
+        put("data: no volumes\n");
 }
 
 // The agent's shell runs as uid 1000 in /workspace, so that directory must
