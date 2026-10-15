@@ -411,6 +411,8 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         keep_recent: limits
             .keep_recent
             .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
+        // ACP unless the owner's `engines.mode` setting keeps the headless engines.
+        engine_transport: String::new(),
     }
 }
 

@@ -2,4 +2,7 @@
 //! adapter the ACP agent on a child process's stdio. See [`link`] for how an engine session reaches
 //! the hub.
 
+pub mod fs;
 pub mod link;
+pub mod run;
+pub mod terminal;
