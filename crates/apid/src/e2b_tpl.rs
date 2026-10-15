@@ -267,6 +267,13 @@ static TEMPLATES: OnceLock<Templates> = OnceLock::new();
 static LOGS: Mutex<BTreeMap<String, Vec<LogLine>>> = Mutex::new(BTreeMap::new());
 /// The upload links handed out and not used yet, by token.
 static UPLOADS: Mutex<BTreeMap<String, Upload>> = Mutex::new(BTreeMap::new());
+/// The snapshots running builds start from, by snapshot id, with how many builds start from each.
+static PINNED: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
+
+/// Whether a running build starts from this snapshot, so the snapshot must stay.
+pub(crate) fn pinned(snapshot: &str) -> bool {
+    e2b::lock(&PINNED).contains_key(snapshot)
+}
 
 struct Upload {
     template: String,
@@ -971,17 +978,42 @@ fn trigger(
     })?;
     let weak = app.handle();
     let (build_id, key) = (build_id.to_string(), key.to_string());
+    // A build that starts from a snapshot pins it until the build ends, so no orphan sweep deletes it.
+    fn unpin(snapshot: &str) {
+        let mut pins = e2b::lock(&PINNED);
+        let left = pins.get_mut(snapshot).map(|count| {
+            *count -= 1;
+            *count
+        });
+        if left == Some(0) {
+            pins.remove(snapshot);
+        }
+    }
+    let pin = match &plan.base {
+        Base::Template { snapshot, .. } => Some(snapshot.clone()),
+        Base::Image(_) => None,
+    };
+    if let Some(snapshot) = &pin {
+        *e2b::lock(&PINNED).entry(snapshot.clone()).or_insert(0) += 1;
+    }
     let spawned = std::thread::Builder::new()
         .name("e2b-template-build".into())
         .spawn({
             let (template_id, build_id) = (template_id.clone(), build_id.clone());
+            let pin = pin.clone();
             move || {
                 if let Some(app) = weak.upgrade() {
                     run_build(&app, &template_id, &build_id, &plan, &key);
                 }
+                if let Some(snapshot) = &pin {
+                    unpin(snapshot);
+                }
             }
         });
     if let Err(err) = spawned {
+        if let Some(snapshot) = &pin {
+            unpin(snapshot);
+        }
         let message = format!("the build did not start: {err}");
         let _ = templates(app).edit_build(&template_id, &build_id, |b| {
             b.status = Status::Error;
@@ -1018,7 +1050,12 @@ struct Cursor {
 /// Runs a build and records how it ended.
 fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &str) {
     let mut sandbox: Option<Sandbox> = None;
-    let result = steps(app, build_id, plan, key, &mut sandbox);
+    let mut snapshot_taken: Option<String> = None;
+    // A panic in the steps ends the build as failed, like any other failure.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        steps(app, build_id, plan, key, &mut sandbox, &mut snapshot_taken)
+    }))
+    .unwrap_or_else(|_| Err(fail("finalize", "the build panicked")));
     let now = apz_plaza::now_ms();
     match result {
         Ok((snapshot, cursor)) => {
@@ -1063,6 +1100,7 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
                     .iter()
                     .filter(|b| b.id != build_id && b.status == Status::Ready && b.tags.is_empty())
                     .filter_map(|b| Some((b.id.clone(), b.snapshot.clone()?)))
+                    .filter(|(_, snapshot)| !pinned(snapshot))
                     .collect();
                 template
                     .builds
@@ -1082,10 +1120,25 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
                     }
                 }
                 Err(refused) => {
-                    eprintln!(
-                        "apid: template build {build_id} finished but was not recorded: {}",
+                    let message = format!(
+                        "the finished build could not be recorded: {}",
                         refused.message()
                     );
+                    eprintln!("apid: template build {build_id}: {message}");
+                    let _ = templates(app).edit_build(template_id, build_id, |b| {
+                        b.status = Status::Error;
+                        b.finished_ms = Some(now);
+                        b.reason = Some(Reason {
+                            message: message.clone(),
+                            step: "finalize".into(),
+                        });
+                    });
+                    if let Err(refused) = e2b::delete_snapshot(app, &snapshot, key) {
+                        eprintln!(
+                            "apid: template build {build_id}: its snapshot {snapshot} was not deleted: {}",
+                            refused.message()
+                        );
+                    }
                 }
             }
         }
@@ -1104,6 +1157,14 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
                     refused.message()
                 );
             }
+            if let Some(snapshot) = snapshot_taken
+                && let Err(refused) = e2b::delete_snapshot(app, &snapshot, key)
+            {
+                eprintln!(
+                    "apid: template build {build_id}: its snapshot {snapshot} was not deleted: {}",
+                    refused.message()
+                );
+            }
             let _ = templates(app).edit_build(template_id, build_id, |b| {
                 b.status = Status::Error;
                 b.finished_ms = Some(now);
@@ -1117,13 +1178,15 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
 }
 
 /// The build's sandbox, its steps, the start and ready commands, and the snapshot: the snapshot's id
-/// and where the build ended. The sandbox started is left in `sandbox` for the caller to end on failure.
+/// and where the build ended. The sandbox started is left in `sandbox` for the caller to end on failure,
+/// and the snapshot taken is left in `snapshot` for the caller to delete when the build fails after it.
 fn steps(
     app: &App,
     build_id: &str,
     plan: &Plan,
     key: &str,
     sandbox: &mut Option<Sandbox>,
+    snapshot: &mut Option<String>,
 ) -> Result<(String, Cursor), Failure> {
     let mut spec = Spec {
         template: "base".into(),
@@ -1344,6 +1407,7 @@ fn steps(
     log(build_id, "info", "Taking the snapshot");
     let snap = e2b::take_snapshot(app, &recorded, "template".into(), true, key)
         .map_err(|r| fail("finalize", r.message()))?;
+    *snapshot = Some(snap.id.clone());
     // Killed with a snapshot, the sandbox is retired: its VM stops and its run stays for the snapshot.
     let current = e2b::sandboxes(app)
         .get(&started.id)
