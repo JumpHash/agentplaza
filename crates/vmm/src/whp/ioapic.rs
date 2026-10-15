@@ -125,8 +125,9 @@ fn redirection_slot(index: u32) -> Option<(usize, bool)> {
     }
 }
 
-/// Software model of one Intel 82093AA I/O APIC.
-#[derive(Debug, Clone)]
+/// Software model of one Intel 82093AA I/O APIC. It is its own snapshot state: every field is
+/// guest-visible register or line state.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IoApic {
     id: u8,
     regsel: u32,

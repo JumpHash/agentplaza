@@ -217,6 +217,67 @@ impl Partition {
         }
     }
 
+    /// Reads processor `index`'s state of type `kind` (its local APIC, its XSAVE area), as WHP
+    /// returns it.
+    pub fn get_state(
+        &self,
+        index: u32,
+        kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+    ) -> Result<Vec<u8>, WhpError> {
+        let get = self
+            .api
+            .WHvGetVirtualProcessorState
+            .ok_or(WhpError::NoStateCalls)?;
+        // Large enough for the local APIC page and an XSAVE area with AVX-512; a larger state is
+        // read again at the size WHP names.
+        let mut buffer = vec![0u8; 16 * 1024];
+        loop {
+            let mut written = 0u32;
+            // SAFETY: `buffer` is writable for the length passed, and `written` is an out-parameter.
+            let result = unsafe {
+                get(
+                    self.handle,
+                    index,
+                    kind,
+                    buffer.as_mut_ptr().cast::<c_void>(),
+                    buffer.len() as u32,
+                    &mut written,
+                )
+            };
+            if result == ERROR_INSUFFICIENT_BUFFER_HRESULT && written as usize > buffer.len() {
+                buffer.resize(written as usize, 0);
+                continue;
+            }
+            super::sys::check("WHvGetVirtualProcessorState", result)?;
+            buffer.truncate(written as usize);
+            return Ok(buffer);
+        }
+    }
+
+    /// Writes processor `index`'s state of type `kind`, as [`Partition::get_state`] read it.
+    pub fn set_state(
+        &self,
+        index: u32,
+        kind: WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+        state: &[u8],
+    ) -> Result<(), WhpError> {
+        let set = self
+            .api
+            .WHvSetVirtualProcessorState
+            .ok_or(WhpError::NoStateCalls)?;
+        // SAFETY: `state` is readable for the length passed.
+        let result = unsafe {
+            set(
+                self.handle,
+                index,
+                kind,
+                state.as_ptr().cast::<c_void>(),
+                state.len() as u32,
+            )
+        };
+        super::sys::check("WHvSetVirtualProcessorState", result)
+    }
+
     /// Translates a guest virtual address of processor `index` (for the
     /// instruction emulator).
     pub fn translate_gva(
@@ -258,6 +319,10 @@ impl Partition {
         self.api
     }
 }
+
+/// `HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)`: the buffer was too small, and the written count
+/// names the size needed.
+const ERROR_INSUFFICIENT_BUFFER_HRESULT: windows_sys::core::HRESULT = 0x8007_007A_u32 as i32;
 
 impl Drop for Partition {
     fn drop(&mut self) {

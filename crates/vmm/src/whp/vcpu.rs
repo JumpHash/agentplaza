@@ -109,6 +109,19 @@ impl Interrupts {
         self.deliver(redeliver);
     }
 
+    /// The I/O APIC's registers and lines (a snapshot's copy).
+    pub fn ioapic(&self) -> IoApic {
+        self.ioapic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Puts back the I/O APIC a snapshot kept.
+    pub fn set_ioapic(&self, ioapic: IoApic) {
+        *self.ioapic.lock().unwrap_or_else(PoisonError::into_inner) = ioapic;
+    }
+
     /// Sleeps a halted vCPU until an interrupt is requested or [`HALT_POLL`]
     /// passes.
     fn wait_for_interrupt(&self) {
@@ -206,6 +219,17 @@ pub struct WhpVm {
     pub exit: ExitSignals,
     /// The vCPU loops stop at their next exit (set by [`WhpVm::stop`]).
     stopping: AtomicBool,
+    /// A pause the snapshot control asked for, and how many vCPUs are parked in it.
+    pause: Mutex<Pause>,
+    /// Signalled when a vCPU parks and when the pause is lifted.
+    parked: Condvar,
+}
+
+/// The vCPUs' pause: requested by the snapshot control, honoured by each vCPU loop at its next exit.
+#[derive(Debug, Default)]
+struct Pause {
+    requested: bool,
+    parked: u32,
 }
 
 impl WhpVm {
@@ -226,7 +250,72 @@ impl WhpVm {
             vcpu_count,
             exit,
             stopping: AtomicBool::new(false),
+            pause: Mutex::new(Pause::default()),
+            parked: Condvar::new(),
         }
+    }
+
+    /// Pauses every vCPU: each parks at its next exit, and running ones are cancelled out of
+    /// `WHvRunVirtualProcessor` (halted ones woken). Waits up to `limit` for all of them; a VM that
+    /// stops meanwhile, or a vCPU that does not park, lifts the pause and is an error.
+    pub fn pause_vcpus(&self, limit: Duration) -> Result<(), String> {
+        self.pause
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .requested = true;
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            self.interrupts.wake_all();
+            for index in 0..self.vcpu_count {
+                // A processor that is not in its run returns at once from the next one.
+                let _ = self.partition.cancel_vcpu(index);
+            }
+            let pause = self.pause.lock().unwrap_or_else(PoisonError::into_inner);
+            if pause.parked == self.vcpu_count {
+                return Ok(());
+            }
+            let parked = pause.parked;
+            if self.should_stop() || std::time::Instant::now() >= deadline {
+                drop(pause);
+                self.resume_vcpus();
+                return Err(if self.should_stop() {
+                    "the VM has stopped".to_string()
+                } else {
+                    format!("{parked} of {} vCPUs paused", self.vcpu_count)
+                });
+            }
+            let _ = self
+                .parked
+                .wait_timeout(pause, Duration::from_millis(10))
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Lifts a pause: the parked vCPUs run again.
+    pub fn resume_vcpus(&self) {
+        self.pause
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .requested = false;
+        self.parked.notify_all();
+    }
+
+    /// Parks the calling vCPU while a pause is requested and the VM is not stopping.
+    fn park_if_paused(&self) {
+        let mut pause = self.pause.lock().unwrap_or_else(PoisonError::into_inner);
+        if !pause.requested {
+            return;
+        }
+        pause.parked += 1;
+        self.parked.notify_all();
+        while pause.requested && !self.should_stop() {
+            pause = self
+                .parked
+                .wait_timeout(pause, Duration::from_millis(50))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        pause.parked -= 1;
     }
 
     /// Stops every vCPU: each loop ends at its next exit, and running ones are
@@ -234,6 +323,7 @@ impl WhpVm {
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.interrupts.wake_all();
+        self.parked.notify_all();
         for index in 0..self.vcpu_count {
             // A processor that is not running returns at once from its next
             // run; an error here (a vCPU that never started) changes nothing.
@@ -443,6 +533,10 @@ fn vcpu_loop(vm: &WhpVm, index: u32) -> Result<(), WhpError> {
     let api = vm.partition.api();
 
     while !vm.should_stop() {
+        vm.park_if_paused();
+        if vm.should_stop() {
+            break;
+        }
         vm.partition.run_vcpu(index, &mut exit)?;
         match exit.ExitReason {
             WHvRunVpExitReasonMemoryAccess => {

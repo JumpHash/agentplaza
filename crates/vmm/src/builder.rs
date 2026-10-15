@@ -529,32 +529,7 @@ fn open_memory(dir: &Path) -> Result<File, SnapshotError> {
 /// `Serial::from_state`). The interrupt trigger and the buffer-ready event are
 /// fresh: they are the VM's to register, not part of the snapshot.
 fn restore_serial(state: &SerialRegisters, out: SerialOut) -> Result<SerialDevice, SnapshotError> {
-    use crate::devices::legacy::EventFdTrigger;
-    use crate::devices::legacy::serial::SerialEventsWrapper;
-
-    let fresh_fd = || {
-        crate::pal::eventfd::EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)
-            .map_err(|err| SnapshotError::State(format!("the serial console: {err}")))
-    };
-    let state = vm_superio::serial::SerialState {
-        baud_divisor_low: state.baud_divisor_low,
-        baud_divisor_high: state.baud_divisor_high,
-        interrupt_enable: state.interrupt_enable,
-        interrupt_identification: state.interrupt_identification,
-        line_control: state.line_control,
-        line_status: state.line_status,
-        modem_control: state.modem_control,
-        modem_status: state.modem_status,
-        scratch: state.scratch,
-        in_buffer: state.in_buffer.clone(),
-    };
-    let events = SerialEventsWrapper {
-        buffer_ready_event_fd: Some(EventFdTrigger::new(fresh_fd()?)),
-    };
-    let serial =
-        vm_superio::Serial::from_state(&state, EventFdTrigger::new(fresh_fd()?), events, out)
-            .map_err(|err| SnapshotError::State(format!("the serial console: {err:?}")))?;
-    Ok(SerialDevice { serial })
+    SerialDevice::from_registers(state, out).map_err(SnapshotError::State)
 }
 
 /// A virtio-mmio transport for `device`: a new one for a boot, or one rebuilt

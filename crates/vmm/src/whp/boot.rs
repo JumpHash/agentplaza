@@ -137,11 +137,19 @@ pub enum BootError {
     /// A VM thread could not be started.
     #[error("failed to start a VM thread: {0}")]
     Thread(io::Error),
+    /// The snapshot could not be read or does not fit the spec.
+    #[error("cannot restore the snapshot: {0}")]
+    Snapshot(String),
 }
 
-/// Boots the VM described by `spec` and returns once its vCPUs are running.
+/// Boots the VM described by `spec` and returns once its vCPUs are running; or, with `spec.restore`,
+/// restores it from that snapshot (see `whp::snapshot`) and leaves it running.
 pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-    boot_inner(spec, &runtime).map_err(SpawnError::backend)
+    match &spec.restore {
+        Some(dir) => restore_inner(spec, dir, &runtime),
+        None => boot_inner(spec, &runtime),
+    }
+    .map_err(SpawnError::backend)
 }
 
 /// Guest RAM as the kernel loader writes it.
@@ -160,7 +168,8 @@ fn read(path: &PathBuf) -> Result<Vec<u8>, BootError> {
     })
 }
 
-fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+/// Refuses what this backend cannot build, before anything is.
+fn check_spec(spec: &VmSpec, runtime: &VmRuntime) -> Result<u32, BootError> {
     // A workspace volume is a writable virtio-block device; booting without it
     // would leave the guest waiting for a disk that never appears.
     if spec.workspace.is_some() {
@@ -178,8 +187,14 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
     if spec.vcpus == 0 || spec.vcpus > MAX_VCPUS {
         return Err(BootError::VcpuCount(spec.vcpus));
     }
-    let vcpu_count = u32::from(spec.vcpus);
+    Ok(u32::from(spec.vcpus))
+}
 
+/// The guest memory and the partition with it mapped in.
+fn memory_and_partition(
+    spec: &VmSpec,
+    vcpu_count: u32,
+) -> Result<(GuestMemoryMmap, Arc<Partition>), BootError> {
     // Guest memory, laid out like the KVM backend's (RAM below the 32-bit MMIO
     // hole, the rest above 4 GiB), and the partition with it mapped in. A
     // device access is a load or store to an unmapped address: that is what
@@ -209,6 +224,12 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
             )?;
         }
     }
+    Ok((memory, partition))
+}
+
+fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+    let vcpu_count = check_spec(spec, runtime)?;
+    let (memory, partition) = memory_and_partition(spec, vcpu_count)?;
 
     // The kernel, the optional initrd at the top of low memory, and the
     // command line.
@@ -300,9 +321,58 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
         }
     }
 
+    run(spec, runtime, partition, memory, None)
+}
+
+/// Restores the VM from the snapshot in `dir`: the guest memory read back, each vCPU's registers,
+/// local APIC and XSAVE area written before it first runs, and the devices rebuilt from their state.
+fn restore_inner(
+    spec: &VmSpec,
+    dir: &std::path::Path,
+    runtime: &Arc<VmRuntime>,
+) -> Result<(), BootError> {
+    let vcpu_count = check_spec(spec, runtime)?;
+    let snapshot = super::snapshot_state::read_state(dir)
+        .map_err(|err| BootError::Snapshot(err.to_string()))?;
+    if snapshot.vcpus.len() != usize::from(spec.vcpus)
+        || snapshot.meta.memory_mib != spec.memory_mib
+        || snapshot.vsock.is_some() != spec.vsock.is_some()
+    {
+        return Err(BootError::Snapshot(format!(
+            "the spec ({} vCPUs, {} MiB, vsock {}) is not the snapshot's machine ({} vCPUs, {} MiB, vsock {})",
+            spec.vcpus,
+            spec.memory_mib,
+            spec.vsock.is_some(),
+            snapshot.vcpus.len(),
+            snapshot.meta.memory_mib,
+            snapshot.vsock.is_some()
+        )));
+    }
+    let (memory, partition) = memory_and_partition(spec, vcpu_count)?;
+    super::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
+    for (index, state) in (0..vcpu_count).zip(&snapshot.vcpus) {
+        partition.create_vcpu(index)?;
+        super::snapshot::restore_vcpu(&partition, index, state).map_err(BootError::Snapshot)?;
+    }
+    run(spec, runtime, partition, memory, Some(&snapshot))
+}
+
+/// The rest of a boot or a restore, once the vCPUs are set up: the interrupt path and the VM state,
+/// the devices (new, or rebuilt from `restored`), the snapshot control, and the VM's threads.
+fn run(
+    spec: &VmSpec,
+    runtime: &Arc<VmRuntime>,
+    partition: Arc<Partition>,
+    memory: GuestMemoryMmap,
+    restored: Option<&super::snapshot_state::WhpSnapshot>,
+) -> Result<(), BootError> {
+    let vcpu_count = u32::from(spec.vcpus);
     // The interrupt path and the shared VM state. The MPTable names the I/O
     // APIC `vcpus + 1`.
     let interrupts = Arc::new(Interrupts::new(Arc::clone(&partition), spec.vcpus + 1));
+    if let Some(snapshot) = restored {
+        interrupts.set_ioapic(snapshot.ioapic.clone());
+    }
     let exit = ExitSignals::new().map_err(BootError::Device)?;
     let vm = Arc::new(WhpVm::new(
         Arc::clone(&partition),
@@ -316,10 +386,15 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
     // The devices: COM1, the i8042 (its reset line), the PM1 control and reset
     // ports, the I/O APIC, and the vsock transport. The buses hold weak
     // references; the strong ones go to the exit watcher, the VM's last thread.
-    let serial = Arc::new(Mutex::new(
-        SerialDevice::new(SerialOut::shared(Arc::clone(&runtime.serial)))
-            .map_err(BootError::Device)?,
-    ));
+    let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+    let serial = Arc::new(Mutex::new(match restored {
+        Some(snapshot) => SerialDevice::from_registers(&snapshot.serial, serial_out)
+            .map_err(BootError::Snapshot)?,
+        None => SerialDevice::new(serial_out).map_err(BootError::Device)?,
+    }));
+    // The vsock event thread takes this gate for reading around its work; a snapshot holds it for
+    // writing, so no packet lands between the device state and the memory dump.
+    let gate: event_thread::DeviceGate = Arc::new(std::sync::RwLock::new(()));
     let i8042 = Arc::new(Mutex::new(
         I8042Device::new(
             vm.exit.evt.try_clone().map_err(BootError::Device)?,
@@ -390,17 +465,23 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
                 Arc::clone(&device),
                 vm.exit.evt.try_clone().map_err(BootError::Device)?,
                 Arc::clone(&vm.exit.signalled),
-                // No snapshots on this backend yet: the gate is never taken for writing.
-                event_thread::DeviceGate::default(),
+                Arc::clone(&gate),
                 runtime.id,
             )
             .map_err(BootError::Thread)?;
             runtime.add_thread(handle);
-            let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
-                Box::new(VsockMmioDevice::new(device)),
-                vm.memory.clone(),
-                irq,
-            )));
+            let device = Box::new(VsockMmioDevice::new(device));
+            let transport = Arc::new(Mutex::new(match restored.and_then(|s| s.vsock.as_ref()) {
+                Some(state) => {
+                    let mut transport =
+                        VirtioMmioTransport::restore(device, vm.memory.clone(), irq, state)?;
+                    // The muxer's connections did not survive: the guest is told so, and re-reads
+                    // its CID (a restore may give the VM another).
+                    transport.on_restored()?;
+                    transport
+                }
+                None => VirtioMmioTransport::new(device, vm.memory.clone(), irq),
+            }));
             vm.mmio
                 .insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
             Some(transport)
@@ -427,6 +508,18 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
             vm.stop();
         }
     });
+
+    // The snapshot control: weak handles, so a stopped VM is released.
+    runtime.set_vm_control(Arc::new(super::snapshot::WhpControl {
+        vm: Arc::downgrade(&vm),
+        serial: Arc::downgrade(&serial),
+        vsock: vsock.as_ref().map(Arc::downgrade),
+        gate: Arc::clone(&gate),
+        vcpus: spec.vcpus,
+        memory_mib: spec.memory_mib,
+        busy: Mutex::new(()),
+        paused: std::sync::atomic::AtomicBool::new(false),
+    }));
 
     // The interrupt relay.
     let relay_vm = Arc::clone(&vm);

@@ -86,11 +86,29 @@ pub struct RegionMeta {
     pub offset: u64,
 }
 
+/// The hypervisor this VMM's snapshots are taken on: each keeps its own vCPU and interrupt
+/// controller state, so a snapshot restores only on the backend that wrote it.
+#[cfg(target_os = "linux")]
+pub const BACKEND: &str = "kvm";
+#[cfg(windows)]
+pub const BACKEND: &str = "whp";
+#[cfg(target_os = "macos")]
+pub const BACKEND: &str = "hvf";
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+pub const BACKEND: &str = "unsupported";
+
+fn kvm() -> String {
+    "kvm".to_string()
+}
+
 /// What a snapshot is and what it was taken from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotMeta {
     /// [`FORMAT`] when written.
     pub format: u32,
+    /// [`BACKEND`] when written. Snapshots from before backends other than KVM took them are KVM's.
+    #[serde(default = "kvm")]
+    pub backend: String,
     /// The `vmm` crate version that wrote it.
     pub vmm_version: String,
     /// [`ARCH`] when written.
@@ -206,6 +224,7 @@ pub fn meta_now(
         });
     SnapshotMeta {
         format: FORMAT,
+        backend: BACKEND.to_string(),
         vmm_version: env!("CARGO_PKG_VERSION").to_string(),
         arch: ARCH.to_string(),
         kind,
@@ -269,6 +288,12 @@ pub fn check_compatible(meta: &SnapshotMeta) -> Result<(), SnapshotError> {
             "taken by vmm {} (this is {})",
             meta.vmm_version,
             env!("CARGO_PKG_VERSION")
+        )));
+    }
+    if meta.backend != BACKEND {
+        return Err(SnapshotError::Incompatible(format!(
+            "taken on {} (this VMM runs on {BACKEND})",
+            meta.backend
         )));
     }
     if meta.arch != ARCH {

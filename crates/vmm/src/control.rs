@@ -124,20 +124,8 @@ impl InProcessControl {
     /// The state of the serial console, field for field from the UART's state.
     fn save_serial(&self) -> Result<SerialRegisters, SpawnError> {
         let serial = alive(&self.devices.serial, "serial")?;
-        let guard = lock(&serial);
-        let state = guard.serial.state();
-        Ok(SerialRegisters {
-            baud_divisor_low: state.baud_divisor_low,
-            baud_divisor_high: state.baud_divisor_high,
-            interrupt_enable: state.interrupt_enable,
-            interrupt_identification: state.interrupt_identification,
-            line_control: state.line_control,
-            line_status: state.line_status,
-            modem_control: state.modem_control,
-            modem_status: state.modem_status,
-            scratch: state.scratch,
-            in_buffer: state.in_buffer,
-        })
+        let registers = lock(&serial).registers();
+        Ok(registers)
     }
 
     /// The state of the device set: the serial console always, each virtio transport the VM has.

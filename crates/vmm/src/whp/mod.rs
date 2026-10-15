@@ -50,6 +50,7 @@
 pub mod boot_state;
 pub mod ioapic;
 pub mod kernel;
+pub mod snapshot_state;
 pub mod zero_page;
 
 // The platform layer (`sys`, `vm`) builds for both Windows architectures; only
@@ -59,6 +60,8 @@ pub mod zero_page;
 // caller there.
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod boot;
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod snapshot;
 #[cfg(windows)]
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub(crate) mod sys;

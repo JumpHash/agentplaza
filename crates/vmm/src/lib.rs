@@ -58,8 +58,9 @@
 //   * `devices::virtio::vsock::packet` — the `ByteValued` packet header and the
 //     descriptor-chain loads into it.
 //   * `devices::virtio::vhost` — the `/dev/vhost-vsock` ioctl family.
-//   * `whp::{sys,vm,vcpu}` and `pal::windows` (Windows only) — the WHP and
-//     WinSock FFI, the guest memory allocation and the exit-context reads.
+//   * `whp::{sys,vm,vcpu,snapshot}` and `pal::windows` (Windows only) — the WHP and
+//     WinSock FFI, the guest memory allocation, the exit-context reads, and a
+//     snapshot's register unions and guest-memory slices.
 //   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
 //     declarations, the framework calls, and the exit-structure reads.
 //   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
