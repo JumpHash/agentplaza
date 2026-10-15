@@ -295,6 +295,7 @@ fn run(config: Config) -> ExitCode {
         // Filled in per VM below, from the run's image copies.
         workspace: None,
         balloon: None,
+        restore: None,
     };
     // Every VM's vsock device carries its own CID and its own host Unix socket
     // path: VM `id` gets the base CID plus its id, and the muxer binds

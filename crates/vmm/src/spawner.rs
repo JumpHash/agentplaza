@@ -162,6 +162,13 @@ pub struct VmSpec {
     /// balloon; the guest has all of `memory_mib`. `x86_64` only for now: on
     /// other backends the VM boots without one, with a warning.
     pub balloon: Option<u32>,
+    /// Restore the VM from this snapshot directory (see [`crate::vstate::snapshot`]) instead of
+    /// booting `kernel`: the guest continues where the snapshot left it. The spec must describe the
+    /// same machine (vCPUs, memory, devices); `vsock` may name another CID and socket (the guest is
+    /// told through a transport reset and re-reads its CID), and `workspace` is the caller's copy of
+    /// the volume as it was when the snapshot was taken. `kernel`, `initrd` and `cmdline` are not used.
+    /// Linux/KVM only: other backends refuse it.
+    pub restore: Option<PathBuf>,
 }
 
 impl Default for VmSpec {
@@ -176,8 +183,45 @@ impl Default for VmSpec {
             vsock: None,
             workspace: None,
             balloon: None,
+            restore: None,
         }
     }
+}
+
+/// What a snapshot holds of the guest memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotKind {
+    /// Every page the guest has touched.
+    Full,
+    /// Only the pages the guest changed since it was restored, written over a reflinked copy of the
+    /// memory it was restored from (the caller places that copy; see
+    /// [`crate::vstate::snapshot_memory`]). For a VM that was booted, not restored, the same as `Full`.
+    Diff,
+}
+
+/// A snapshot [`VmHandle::snapshot`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotInfo {
+    /// The snapshot directory.
+    pub dir: PathBuf,
+    pub kind: SnapshotKind,
+    /// Guest memory bytes written.
+    pub memory_written: u64,
+    /// How long the VM was paused for the snapshot, in milliseconds.
+    pub paused_ms: u64,
+}
+
+/// How the host pauses, resumes and snapshots a running VM: in-process, the VM's own vCPUs and
+/// devices; for a VM in its own process, a request over that process's control socket.
+pub trait VmControl: Send + Sync {
+    /// Stops the vCPUs (out of `KVM_RUN`, parked) and the devices' own threads. Idempotent.
+    fn pause(&self) -> Result<(), SpawnError>;
+    /// Lets a paused VM run again. Idempotent.
+    fn resume(&self) -> Result<(), SpawnError>;
+    /// Pauses the VM (if it is running), writes a snapshot into `dir`, and leaves it **paused**: the
+    /// caller resumes it, or stops it (to sleep or move it).
+    fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError>;
 }
 
 /// How a VM stopped.
@@ -236,6 +280,15 @@ pub enum SpawnError {
     /// The VM has no balloon, so its memory cannot be resized
     #[error("this VM has no balloon")]
     NoBalloon,
+    /// The VM cannot be paused or snapshotted (its backend has no snapshot support)
+    #[error("this VM cannot be paused or snapshotted on this backend")]
+    NoSnapshots,
+    /// Pausing, resuming, snapshotting or restoring the VM failed: {reason}
+    #[error("VM snapshot control failed: {reason}")]
+    Snapshot {
+        /// What failed.
+        reason: String,
+    },
     /// The VM's memory control refused a resize or could not be reached: {reason}
     #[error("the VM's memory control failed: {reason}")]
     MemoryControl {
@@ -559,6 +612,9 @@ pub struct VmRuntime {
     /// Memory control installed by the backend in `boot` when the VM has a
     /// balloon (see [`VmHandle::set_usable_memory_mib`]).
     memory: Mutex<Option<Arc<dyn MemoryControl>>>,
+    /// Pause/resume/snapshot control installed by a backend that supports snapshots (see
+    /// [`VmHandle::snapshot`]).
+    vm_control: Mutex<Option<Arc<dyn VmControl>>>,
     /// Whether the stop control has been invoked.
     stop_requested: AtomicBool,
     /// Whether the guest ended the VM itself.
@@ -600,6 +656,7 @@ impl VmRuntime {
             stop: Mutex::new(None),
             input: Mutex::new(None),
             memory: Mutex::new(None),
+            vm_control: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
             guest_exited: AtomicBool::new(false),
             guest_reset: AtomicBool::new(false),
@@ -628,6 +685,22 @@ impl VmRuntime {
     /// The VM's memory control, `None` when it has no balloon.
     pub fn memory_control(&self) -> Option<Arc<dyn MemoryControl>> {
         self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Installs the VM's pause/resume/snapshot control (a backend with snapshot support, in `boot`).
+    pub fn set_vm_control(&self, control: Arc<dyn VmControl>) {
+        *self
+            .vm_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+    }
+
+    /// The VM's pause/resume/snapshot control, when its backend installed one.
+    pub fn vm_control(&self) -> Option<Arc<dyn VmControl>> {
+        self.vm_control
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -917,6 +990,30 @@ impl VmHandle {
     /// has no balloon.
     pub fn memory_stats(&self) -> Option<MemoryStats> {
         self.runtime.memory_control().map(|control| control.stats())
+    }
+
+    /// Pauses the VM (see [`VmControl::pause`]).
+    pub fn pause(&self) -> Result<(), SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .pause()
+    }
+
+    /// Resumes a paused VM (see [`VmControl::resume`]).
+    pub fn resume(&self) -> Result<(), SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .resume()
+    }
+
+    /// Writes a snapshot of the VM into `dir` and leaves it paused (see [`VmControl::snapshot`]).
+    pub fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .snapshot(dir, kind)
     }
 }
 

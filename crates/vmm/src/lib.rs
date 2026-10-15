@@ -78,6 +78,8 @@ pub mod builder;
 #[cfg(target_os = "linux")]
 mod sys;
 
+/// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`).
+pub mod clonefile;
 pub mod devices;
 /// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
 /// serves. See the allowlist above.

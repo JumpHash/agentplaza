@@ -89,3 +89,22 @@ impl KvmVm {
         self.irqchip_handle.as_ref().expect("IRQ chip not set")
     }
 }
+
+/// The state of an aarch64 VM in a snapshot (Firecracker's `VmState`): the GIC's state (the
+/// existing `gic::GicState`), keyed by the vCPUs' MPIDRs.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VmState {}
+
+impl KvmVm {
+    /// Saves the VM's state. Its vCPUs must be paused; `mpidrs` are theirs, in index order.
+    pub fn save_state(&self, mpidrs: &[u64]) -> Result<VmState, KvmVmError> {
+        let _ = mpidrs;
+        todo!("aarch64 VM save")
+    }
+
+    /// Restores a state [`KvmVm::save_state`] produced, after the vCPUs and the GIC exist.
+    pub fn restore_state(&mut self, mpidrs: &[u64], state: &VmState) -> Result<(), KvmVmError> {
+        let _ = (mpidrs, state);
+        todo!("aarch64 VM restore")
+    }
+}

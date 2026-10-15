@@ -81,3 +81,22 @@ impl KvmVm {
             .map_err(KvmVmError::VmSetIrqChip)
     }
 }
+
+/// The state of an x86_64 VM in a snapshot (Firecracker's `VmState`): the PIT, the KVM clock and the
+/// in-kernel irqchip (both PICs and the IOAPIC).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VmState {}
+
+impl KvmVm {
+    /// Saves the VM's state. Its vCPUs must be paused.
+    pub fn save_state(&self) -> Result<VmState, KvmVmError> {
+        todo!("x86_64 VM save")
+    }
+
+    /// Restores a state [`KvmVm::save_state`] produced, after the irqchip exists and before any
+    /// vCPU runs.
+    pub fn restore_state(&mut self, state: &VmState) -> Result<(), KvmVmError> {
+        let _ = state;
+        todo!("x86_64 VM restore")
+    }
+}

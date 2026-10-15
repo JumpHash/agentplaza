@@ -10,6 +10,9 @@ apz-os = { path = "../apz-os" }
 # Host-side Unix-domain sockets of the vsock muxer (std on Unix, AF_UNIX on Windows).
 apz-uds.workspace = true
 libc.workspace = true
+# VM snapshots: the saved vCPU, VM and device state (`vstate::snapshot`).
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 vm-memory.workspace = true
 acpi_tables.workspace = true
@@ -40,7 +43,8 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-kvm-bindings.workspace = true
+# `serde` derives the snapshot state of the KVM structures the vCPU and VM state carry.
+kvm-bindings = { workspace = true, features = ["serde"] }
 kvm-ioctls.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]

@@ -322,6 +322,7 @@ fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
         vsock,
         workspace,
         balloon,
+        restore: None,
     };
     Ok((spec, control))
 }
@@ -602,6 +603,7 @@ mod tests {
             }),
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
             balloon: Some(32),
+            restore: None,
         };
         let args = vmm::spawner::process::child_args(&spec);
         let (parsed, control) = parse(&args).expect("the parent's command line parses");

@@ -115,6 +115,7 @@ fn spec(dir: &Path, cid: u64, cmdline: &str) -> VmSpec {
         }),
         workspace: None,
         balloon: None,
+        restore: None,
     }
 }
 

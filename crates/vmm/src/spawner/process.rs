@@ -731,6 +731,7 @@ mod tests {
             }),
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
             balloon: Some(32),
+            restore: None,
         };
         let args = child_args(&spec);
         let pairs: Vec<(&str, &str)> = args

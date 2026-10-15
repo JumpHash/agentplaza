@@ -1070,6 +1070,7 @@ impl Registry {
                         .and_then(|images| images.get(i))
                         .cloned(),
                     balloon,
+                    restore: None,
                 }
             })
             .collect();

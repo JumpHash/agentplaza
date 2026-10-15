@@ -161,6 +161,78 @@ pub trait VirtioDevice: Send {
 
     /// The driver reset the device: return to the state before activation.
     fn reset(&mut self);
+
+    /// The device's own snapshot state beyond the transport's: its queues' positions
+    /// (`next_avail`/`next_used`) once activated, and anything device-specific in `extra`. Called
+    /// with the VM paused. The default is for a device with no state of its own.
+    fn save_device_state(&self) -> DeviceSnapshot {
+        DeviceSnapshot::default()
+    }
+
+    /// Restores [`VirtioDevice::save_device_state`]'s state. Called by
+    /// [`VirtioMmioTransport::restore`] after the transport state is back and, for a device the driver
+    /// had activated, after [`VirtioDevice::activate`], so the queues exist to be repositioned.
+    fn restore_device_state(&mut self, _state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        Ok(())
+    }
+
+    /// Called once a restored VM is about to run again: a device whose host side did not survive
+    /// the snapshot (the vsock muxer's connections) tells the guest so here.
+    fn on_restored(&mut self) -> Result<(), VirtioError> {
+        Ok(())
+    }
+}
+
+/// One virtqueue's position, as a device's snapshot carries it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueuePosition {
+    /// The next available-ring index the device will read.
+    pub next_avail: u16,
+    /// The next used-ring index the device will write.
+    pub next_used: u16,
+}
+
+/// A device's own snapshot state (see [`VirtioDevice::save_device_state`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceSnapshot {
+    /// Each activated queue's position, in queue order; empty before activation.
+    pub queues: Vec<QueuePosition>,
+    /// Device-specific state (the balloon's target and actual sizes, …).
+    #[serde(default)]
+    pub extra: serde_json::Value,
+}
+
+/// One queue's transport registers, as a snapshot carries them (see [`QueueConfig`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueueConfigState {
+    pub max_size: u32,
+    pub size: u32,
+    pub ready: bool,
+    pub desc: u64,
+    pub avail: u64,
+    pub used: u64,
+}
+
+/// The transport's registers, as a snapshot carries them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MmioTransportState {
+    pub device_type: u32,
+    pub features_select: u32,
+    pub acked_features_select: u32,
+    pub queue_select: u32,
+    pub device_status: u32,
+    pub config_generation: u32,
+    pub interrupt_status: u32,
+    /// The features the driver acknowledged, as the device recorded them.
+    pub acked_features: u64,
+    pub queues: Vec<QueueConfigState>,
+}
+
+/// A virtio-mmio device in a snapshot: its transport and its own state.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MmioDeviceState {
+    pub transport: MmioTransportState,
+    pub device: DeviceSnapshot,
 }
 
 /// The virtio-mmio transport of one device.
@@ -197,6 +269,29 @@ pub struct VirtioMmioTransport {
 }
 
 impl VirtioMmioTransport {
+    /// The transport's and its device's snapshot state. Called with the VM paused.
+    pub fn save_state(&self) -> MmioDeviceState {
+        todo!("virtio-mmio snapshot state")
+    }
+
+    /// Rebuilds the transport of `device` from `state`: the registers, the queue configuration and,
+    /// when the driver had brought the device up (`DRIVER_OK`), the device's activation and its own
+    /// state ([`VirtioDevice::restore_device_state`]). Refuses a state of another device type.
+    pub fn restore(
+        device: Box<dyn VirtioDevice>,
+        mem: GuestMemoryMmap,
+        irq: EventFd,
+        state: &MmioDeviceState,
+    ) -> Result<Self, VirtioError> {
+        let _ = (device, mem, irq, state);
+        todo!("virtio-mmio restore")
+    }
+
+    /// Tells the device its VM is about to run again (see [`VirtioDevice::on_restored`]).
+    pub fn on_restored(&mut self) -> Result<(), VirtioError> {
+        self.device.on_restored()
+    }
+
     /// Builds the transport of `device`. `mem` is the guest memory its rings
     /// live in and `irq` its interrupt — already registered with the
     /// hypervisor for the device's GSI.

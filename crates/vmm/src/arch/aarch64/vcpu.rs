@@ -254,3 +254,22 @@ impl Peripherals {
         Err(VcpuError::UnhandledKvmExit(format!("{exit:?}")))
     }
 }
+
+/// The state of one aarch64 vCPU in a snapshot (Firecracker's `VcpuState`): the MP state, every
+/// register KVM lists for the vCPU (`KVM_GET_REG_LIST`), its MPIDR and the KVM vCPU init features.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VcpuState {}
+
+impl KvmVcpu {
+    /// Saves this vCPU's state. The vCPU must be paused (out of `KVM_RUN`).
+    pub fn save_state(&self) -> Result<VcpuState, KvmVcpuError> {
+        todo!("aarch64 vCPU save")
+    }
+
+    /// Restores a state [`KvmVcpu::save_state`] produced, before the vCPU first runs (after
+    /// `KVM_ARM_VCPU_INIT` with the saved features).
+    pub fn restore_state(&mut self, state: &VcpuState) -> Result<(), KvmVcpuError> {
+        let _ = state;
+        todo!("aarch64 vCPU restore")
+    }
+}

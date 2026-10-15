@@ -4039,7 +4039,9 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3819cba3d5b448587dbed4b186fb61b0a8d02c5eb88846c9463aa514afe61a8"
 dependencies = [
+ "serde",
  "vmm-sys-util",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8162,6 +8164,8 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "linux-loader",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "vm-fdt",
  "vm-memory",

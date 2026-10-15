@@ -323,6 +323,25 @@ impl Peripherals {
     }
 }
 
+/// The state of one x86_64 vCPU in a snapshot (Firecracker's `VcpuState`): CPUID, the saved MSRs,
+/// general and special registers, debug registers, LAPIC, MP state, XCRs, XSAVE area, vCPU events
+/// and the TSC frequency.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VcpuState {}
+
+impl KvmVcpu {
+    /// Saves this vCPU's state. The vCPU must be paused (out of `KVM_RUN`).
+    pub fn save_state(&self) -> Result<VcpuState, KvmVcpuError> {
+        todo!("x86_64 vCPU save")
+    }
+
+    /// Restores a state [`KvmVcpu::save_state`] produced, before the vCPU first runs.
+    pub fn restore_state(&self, state: &VcpuState) -> Result<(), KvmVcpuError> {
+        let _ = state;
+        todo!("x86_64 vCPU restore")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

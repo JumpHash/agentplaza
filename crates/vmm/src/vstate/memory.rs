@@ -533,6 +533,19 @@ pub fn guest_memory_from_ranges(
     .map_err(|_| MemoryError::VmMemoryError)
 }
 
+/// Maps `file` as guest memory laid out by `regions` (a snapshot's memory file): each region a
+/// private (`MAP_PRIVATE | MAP_NORESERVE`) mapping of the file at its offset, so the guest reads the
+/// file's pages lazily and its writes stay in its own anonymous memory. Refuses a file shorter than
+/// the layout. (Restore; see `crate::vstate::snapshot`.)
+#[cfg(target_os = "linux")]
+pub fn map_private(
+    file: &std::fs::File,
+    regions: &[crate::vstate::snapshot::RegionMeta],
+) -> Result<Vec<GuestRegionMmap>, MemoryError> {
+    let _ = (file, regions);
+    todo!("private file-backed guest memory")
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
