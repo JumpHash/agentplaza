@@ -134,7 +134,7 @@ impl Glyph {
 pub fn glyph(status: &str, outcome: Option<&str>) -> Glyph {
     match status {
         "working" => Glyph::Working,
-        "offline" => Glyph::Sleeping,
+        "offline" | "asleep" => Glyph::Sleeping,
         _ => match outcome {
             Some("done") => Glyph::Done,
             Some("failed" | "error") => Glyph::Failed,
