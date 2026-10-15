@@ -2047,8 +2047,7 @@ impl Registry {
         let kept = snapshots::private_dir(&dir)
             .and_then(|()| clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)).map(|_| ()))
             .and_then(|()| {
-                fs::File::open(dir.join(snapshots::WORKSPACE_FILE))
-                    .and_then(|copy| copy.sync_all())
+                fs::File::open(dir.join(snapshots::WORKSPACE_FILE)).and_then(|copy| copy.sync_all())
             })
             .and_then(|()| snapshots::write_disk_marker(&dir, taken_at_ms));
         if let Err(err) = kept {

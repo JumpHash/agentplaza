@@ -85,9 +85,11 @@ const MAX_DECISIONS: usize = 4096;
 /// asked of apid and not kept, and the other CIDs' decisions are unaffected.
 const MAX_DECISIONS_PER_CID: usize = 512;
 
-/// Apid's decisions by (CID, host, port), kept for their TTL and shared by every connection thread.
-static DECISIONS: Mutex<BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>> =
-    Mutex::new(BTreeMap::new());
+/// Kept decisions: (CID, host, port) to when the decision expires and the decision.
+type Kept = BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>;
+
+/// Apid's decisions, kept for their TTL and shared by every connection thread.
+static DECISIONS: Mutex<Kept> = Mutex::new(BTreeMap::new());
 /// Each CID's generation, moved by [`forget`]. A decision asked of apid before a `forget` is not kept
 /// after it (see [`keep_decision`]).
 static GENERATIONS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
@@ -1579,9 +1581,10 @@ mod tests {
     #[test]
     fn a_deny_block_refuses_the_address_a_name_resolves_to_without_dialling() {
         let (echo, port) = quiet_listener();
-        let (apid, _checks, token) = fake_apid("deny-block", |_| {
-            json!({ "allow": true, "deny_cidrs": ["127.0.0.0/8"] })
-        });
+        let (apid, _checks, token) = fake_apid(
+            "deny-block",
+            |_| json!({ "allow": true, "deny_cidrs": ["127.0.0.0/8"] }),
+        );
         let (answer, audit) = serve_one(
             7_005,
             loopback_policy(port),
@@ -1590,7 +1593,10 @@ mod tests {
         );
         let _ = std::fs::remove_file(&token);
         let answer = String::from_utf8(answer).unwrap();
-        assert!(answer.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{answer:?}");
+        assert!(
+            answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{answer:?}"
+        );
         assert!(!audit.allowed, "{audit:?}");
         assert_eq!(
             echo.accept().unwrap_err().kind(),
@@ -1606,11 +1612,17 @@ mod tests {
         let v4 = block("8.8.8.0", 24);
         let v6 = block("2001:db8::", 32);
         assert!(in_cidr(ip("8.8.8.8"), v4));
-        assert!(in_cidr(ip("::ffff:8.8.8.8"), v4), "a mapped address is its IPv4 address");
+        assert!(
+            in_cidr(ip("::ffff:8.8.8.8"), v4),
+            "a mapped address is its IPv4 address"
+        );
         assert!(!in_cidr(ip("8.8.9.8"), v4));
         assert!(in_cidr(ip("2001:db8::1"), v6));
         assert!(!in_cidr(ip("2001:db9::1"), v6));
-        assert!(!in_cidr(ip("8.8.8.8"), v6), "an IPv4 address never matches an IPv6 block");
+        assert!(
+            !in_cidr(ip("8.8.8.8"), v6),
+            "an IPv4 address never matches an IPv6 block"
+        );
         assert!(!in_cidr(ip("2001:db8::1"), v4));
         assert!(
             !in_cidr(ip("::ffff:8.8.8.8"), block("::", 0)),

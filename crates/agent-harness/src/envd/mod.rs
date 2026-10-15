@@ -354,10 +354,10 @@ fn init(request: &Request, shared: &Shared) -> Reply {
             ctx.workdir = workdir;
         }
     }
-    if let Some(ms) = clock {
-        if let Err(err) = set_clock(ms) {
-            return error_reply(&err);
-        }
+    if let Some(ms) = clock
+        && let Err(err) = set_clock(ms)
+    {
+        return error_reply(&err);
     }
     // The plaza's own field: a sandbox starts as a restore of a warm template (and wakes as a
     // restore of its snapshot), so the hub sends fresh entropy with every `/init` and no two
@@ -1429,7 +1429,12 @@ mod tests {
         );
         assert!(reply.starts_with(b"HTTP/1.1 400"));
         assert_eq!(read_lock(&shared).uid, uid);
-        assert!(read_lock(&shared).env.iter().all(|(key, _)| key != "REFUSED"));
+        assert!(
+            read_lock(&shared)
+                .env
+                .iter()
+                .all(|(key, _)| key != "REFUSED")
+        );
     }
 
     #[test]

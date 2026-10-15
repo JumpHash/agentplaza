@@ -198,7 +198,7 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
     // volume the home links to; the sandbox's or the request's own `PWD` still wins.
     let mut env = bash::agent_env(&ctx.home)
         .map_err(|reason| RpcError::new("internal", reason))?
-        .with_var("PWD", &dir.display().to_string());
+        .with_var("PWD", dir.display().to_string());
     for (key, value) in ctx.env.iter().chain(envs.iter()) {
         env = env.with_var(key, value);
     }

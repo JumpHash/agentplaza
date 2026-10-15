@@ -1123,7 +1123,10 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
             return Err(Refused::new(
                 409,
                 "sandbox_template_ambiguous",
-                format!("{} names {named} snapshots; use a snapshot id", spec.template),
+                format!(
+                    "{} names {named} snapshots; use a snapshot id",
+                    spec.template
+                ),
             ));
         }
         None => new_run(app, SANDBOX_VCPUS, SANDBOX_MEMORY_MIB)?,

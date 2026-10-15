@@ -670,8 +670,8 @@ fn upload(app: &App, req: &Request, id: &str, hash: &str) -> Result<Response, Re
         "{hash}.{}.part",
         e2b::hex_of(&apz_trust::random::<8>())
     ));
-    let stored = write_archive(&part, &req.body)
-        .and_then(|()| std::fs::rename(&part, dir.join(&hash)));
+    let stored =
+        write_archive(&part, &req.body).and_then(|()| std::fs::rename(&part, dir.join(&hash)));
     if let Err(e) = stored {
         let _ = std::fs::remove_file(&part);
         return Err(io_error(e));
@@ -1919,7 +1919,8 @@ impl Output {
         if buffer.len() > MAX_LOG_LINE {
             // The cut stops before a character it would split; with no whole character to cut at,
             // everything goes (the bytes are invalid UTF-8).
-            let cut = std::str::from_utf8(buffer).map_or_else(|e| e.valid_up_to(), |_| buffer.len());
+            let cut =
+                std::str::from_utf8(buffer).map_or_else(|e| e.valid_up_to(), |_| buffer.len());
             let text: Vec<u8> = if cut > 0 {
                 buffer.drain(..cut).collect()
             } else {
@@ -2257,7 +2258,16 @@ mod tests {
     fn names_tags_and_hashes_are_checked() {
         assert!(check_name("my-env").is_ok());
         assert!(check_name("team/my_env.2").is_ok());
-        for bad in ["", "base", "aliases", "tags", "-x", "a b", "x:y", &"a".repeat(129)] {
+        for bad in [
+            "",
+            "base",
+            "aliases",
+            "tags",
+            "-x",
+            "a b",
+            "x:y",
+            &"a".repeat(129),
+        ] {
             assert!(check_name(bad).is_err(), "{bad}");
         }
         assert!(check_tag("v1.0-rc_1").is_ok());
