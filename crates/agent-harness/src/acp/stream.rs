@@ -123,11 +123,11 @@ impl<'a> Stream<'a> {
     /// Appends a text chunk to the buffer when it continues the buffered stream (same kind and
     /// message); otherwise the buffer goes out and this chunk starts a new one.
     fn buffer_text(&mut self, update: Value, text: String) {
-        if let Some(buffer) = self.buffer.as_mut() {
-            if same_stream(&buffer.update, &update) {
-                buffer.text.push_str(&text);
-                return;
-            }
+        if let Some(buffer) = self.buffer.as_mut()
+            && same_stream(&buffer.update, &update)
+        {
+            buffer.text.push_str(&text);
+            return;
         }
         self.flush();
         self.buffer = Some(Buffer {

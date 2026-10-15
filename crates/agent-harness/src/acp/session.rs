@@ -264,10 +264,10 @@ fn drive(
                 .unwrap_or_else(|_| Err(failed("the turn is over".to_string())))
         },
         move |_peer, method, mut params| {
-            if method == CLIENT_METHOD_NAMES.session_update {
-                if let Some(update) = params.get_mut("update").map(Value::take) {
-                    let _ = lock(&notes).send(Event::Update(update));
-                }
+            if method == CLIENT_METHOD_NAMES.session_update
+                && let Some(update) = params.get_mut("update").map(Value::take)
+            {
+                let _ = lock(&notes).send(Event::Update(update));
             }
         },
     );
@@ -359,7 +359,7 @@ fn run_turn(
 
     let modes = offered_modes(&reply);
     if let Some(mode) = options.mode.as_deref() {
-        let refused = entry.refused_modes.iter().any(|refused| *refused == mode);
+        let refused = entry.refused_modes.contains(&mode);
         if refused || !modes.iter().any(|offered| offered.as_str() == mode) {
             return Err(format!(
                 "the {} engine does not offer the mode {mode}",
@@ -389,10 +389,8 @@ fn run_turn(
     discard_pending(events);
 
     let mut blocks = Vec::new();
-    if !continued {
-        if let Some(context) = options.context.as_deref() {
-            blocks.push(json!({"type": "text", "text": context}));
-        }
+    if !continued && let Some(context) = options.context.as_deref() {
+        blocks.push(json!({"type": "text", "text": context}));
     }
     blocks.push(json!({"type": "text", "text": prompt}));
 

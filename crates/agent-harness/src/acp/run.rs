@@ -150,12 +150,9 @@ struct Session {
 }
 
 /// The program the ACP session starts: `/usr/bin/env` with the engine's pairs, the installed
-/// binary and its arguments. A model the engine takes as an environment variable or a flag goes
+/// binary and its arguments. A model the engine takes as a flag goes
 /// there; a model the engine takes as a config option goes in the session instead.
 fn argv(entry: &Entry, mut env: Vec<String>, model: Option<&str>) -> Vec<String> {
-    if let (ModelVia::Env(key), Some(model)) = (entry.model, model) {
-        env.push(format!("{key}={model}"));
-    }
     let mut argv = vec![engines::ENV_PROGRAM.to_string()];
     argv.append(&mut env);
     argv.push(npm_binary(entry).display().to_string());

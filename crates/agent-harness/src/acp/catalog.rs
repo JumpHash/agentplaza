@@ -8,8 +8,6 @@
 /// How an engine learns the model the hub allowed for the call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelVia {
-    /// An environment variable the adapter reads at start.
-    Env(&'static str),
     /// A command-line flag followed by the model id.
     Flag(&'static str),
     /// The ACP session config option `model` (`session/set_config_option`), after `session/new`.
