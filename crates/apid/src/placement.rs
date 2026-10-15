@@ -26,10 +26,6 @@ use crate::nodes::{Node, OFFLINE_AFTER_MS};
 use crate::sleep;
 use crate::state::App;
 
-/// Memory an agent's VM is spawned with (the payload `agents::spawn_agents` sends noded).
-// No caller in this crate reads it now that placement admits on measured memory; kept for the VM size.
-#[allow(dead_code)]
-pub const AGENT_MIB: u64 = 1024;
 /// A node needs at least this much free memory (less what is reserved) to take a new agent: VMs boot
 /// with a small usable memory and grow through their balloon.
 pub const ADMIT_MIB: u64 = 256;
