@@ -85,11 +85,13 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
-/// How often a keepalive session wakes to take the relay's commands and apid's
-/// settled answers. Both wait at most one slice, so it is kept short: a hub
-/// command or a settled answer otherwise adds up to a full slice of latency.
+/// The read timeout on a keepalive session's guest socket, a safety net only: a keepalive session sleeps in
+/// `wait_ready` until its guest, a hub command or an apid answer wakes it.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(20);
+/// The longest a keepalive session sleeps before it rechecks its deadlines.
+#[cfg(any(target_os = "linux", windows))]
+const KEEPALIVE_MAX_WAIT: Duration = Duration::from_secs(1);
 #[cfg(any(target_os = "linux", windows))]
 const MAX_TOOL_CALLS: u64 = 1024;
 
@@ -718,9 +720,22 @@ fn accept_loop(
     }
 }
 
+/// Counts a guest session in the open-sessions gauge until it ends, however it ends.
+#[cfg(any(target_os = "linux", windows))]
+struct OpenSession;
+
+#[cfg(any(target_os = "linux", windows))]
+impl Drop for OpenSession {
+    fn drop(&mut self) {
+        crate::metrics::SESSIONS.add(-1);
+    }
+}
+
 /// Serves one guest session and logs how it ended.
 #[cfg(any(target_os = "linux", windows))]
 fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
+    crate::metrics::SESSIONS.add(1);
+    let _open = OpenSession;
     if let Err(err) = stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_read_timeout(Some(RECV_TIMEOUT)))
@@ -733,6 +748,7 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
         deadline: Instant::now().checked_add(SESSION_TIMEOUT),
         keepalive_idle: Some(Duration::from_secs(KEEPALIVE_IDLE_SECS)),
         keepalive_read_slice: KEEPALIVE_READ_SLICE,
+        keepalive_max_wait: KEEPALIVE_MAX_WAIT,
     };
     match handle_session(
         &mut Lines::new(stream),
