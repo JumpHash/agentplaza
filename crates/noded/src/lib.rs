@@ -94,6 +94,8 @@ pub struct Config {
     /// Start new keepalive agent VMs from warm templates kept under `<snapshot_dir>/templates`
     /// (`--no-warm-templates` turns it off). Needs a snapshot dir.
     pub warm_templates: bool,
+    /// Run each VM in its own `apz-vmm` process with cgroup limits (`--vm-processes`).
+    pub vm_processes: bool,
     /// The roles manifest whose fleet boots at start.
     pub agents: Option<PathBuf>,
     pub agents_cid_base: u64,
@@ -120,6 +122,7 @@ impl Default for Config {
             persist_dir: None,
             snapshot_dir: None,
             warm_templates: true,
+            vm_processes: false,
             agents: None,
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,

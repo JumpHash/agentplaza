@@ -35,6 +35,21 @@ use crate::vstate::snapshot::{RegionMeta, SnapshotError};
 
 /// The kernel's per-page state, one 8-byte entry per host page of this process's address space.
 const PAGEMAP: &str = "/proc/self/pagemap";
+
+/// This process's pagemap, opened before the process entered its jail (a jailed VMM's new root has no
+/// `/proc`). The descriptor keeps naming this process after `pivot_root`.
+static EARLY_PAGEMAP: std::sync::OnceLock<File> = std::sync::OnceLock::new();
+
+/// Opens this process's pagemap now, for snapshots taken after the process is jailed (see
+/// [`EARLY_PAGEMAP`]). The builder calls it before it enters the jail; a failure is left for the
+/// snapshot to report.
+pub fn open_pagemap_early() {
+    if EARLY_PAGEMAP.get().is_none() {
+        if let Ok(file) = File::open(PAGEMAP) {
+            let _ = EARLY_PAGEMAP.set(file);
+        }
+    }
+}
 /// Bytes in one pagemap entry.
 const PAGEMAP_ENTRY_SIZE: u64 = 8;
 /// Bit 63: the page is present in RAM.
@@ -93,7 +108,14 @@ pub fn write_memory(
             regions.len()
         )));
     }
-    let pagemap = File::open(PAGEMAP).map_err(|source| io_error(PAGEMAP, source))?;
+    let opened;
+    let pagemap = match EARLY_PAGEMAP.get() {
+        Some(file) => file,
+        None => {
+            opened = File::open(PAGEMAP).map_err(|source| io_error(PAGEMAP, source))?;
+            &opened
+        }
+    };
     // A full snapshot's file holds the touched pages and holes everywhere else, so content left in
     // a reused file from an earlier snapshot must not survive. A diff keeps its base copy.
     if matches!(kind, SnapshotKind::Full) {

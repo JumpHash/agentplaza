@@ -34,6 +34,9 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    vsock on Windows; VM i's muxer binds DIR/vm{cid})
   --snapshot-dir DIR keep VM snapshots in DIR (default: DIR/snapshots of --persist-dir; none without either)
   --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
+  --vm-processes   run each VM in its own apz-vmm process (jailed), with its own cgroup v2
+                   limits (memory, CPU, pids) under agentplaza.slice when the user's cgroup
+                   tree is delegated
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
@@ -96,6 +99,24 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let config = parse_args(args)?;
+    // One process per VM: the shape the jailer applies to, and the one cgroup limits need.
+    if config.vm_processes {
+        vmm::spawner::set_spawn_mode(vmm::spawner::SpawnMode::Process);
+        let root = vmm::cgroup::CgroupRoot::detect();
+        match &root {
+            Some(root) => eprintln!(
+                "noded: per-VM processes, cgroup limits under {}",
+                root.path().display()
+            ),
+            None => {
+                eprintln!("noded: per-VM processes; no delegated cgroup tree, so no cgroup limits")
+            }
+        }
+        vmm::spawner::set_cgroup_root(root);
+        // The VMs' snapshots and the warm templates live under the snapshot dir: each VM's jail
+        // binds it, so its process can write snapshots there and restore from them.
+        vmm::spawner::set_snapshot_root(config.snapshot_dir.clone());
+    }
     // F4: the per-VM muxer binds `{uds_dir}/vm{cid}` with a deterministic
     // name, and the default is under world-writable `/tmp`. Create the
     // directory 0700 first, so another local user cannot squat a VM's path
@@ -218,6 +239,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--no-warm-templates" => config.warm_templates = false,
+            "--vm-processes" => config.vm_processes = true,
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
             "--agents-cid-base" => {
                 config.agents_cid_base = value("--agents-cid-base")?

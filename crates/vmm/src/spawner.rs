@@ -472,6 +472,25 @@ pub fn set_cgroup_root(root: Option<crate::cgroup::CgroupRoot>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = root;
 }
 
+/// The directory per-VM processes write their snapshots under (bound read-write into each VM's
+/// jail): a daemon that keeps snapshots elsewhere than beside the VMs' sockets names it once here.
+/// `None` keeps the default, the VM's socket directory.
+pub fn set_snapshot_root(root: Option<PathBuf>) {
+    *SNAPSHOT_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = root;
+}
+
+/// The snapshot root set by [`set_snapshot_root`], if any.
+pub fn snapshot_root() -> Option<PathBuf> {
+    SNAPSHOT_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+static SNAPSHOT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// The cgroup root set by [`set_cgroup_root`], if any.
 pub fn cgroup_root() -> Option<crate::cgroup::CgroupRoot> {
     CGROUP_ROOT
@@ -1216,9 +1235,15 @@ const ZERO_BLOCK: usize = 64 << 10;
 #[cfg(unix)]
 pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
     let src = std::fs::File::open(from)?;
+    let dst = std::fs::File::create(to)?;
+    copy_sparse_open(&src, &dst)
+}
+
+/// [`copy_sparse`] between two files already open (`dst` writable and empty): the copy a jailed VMM
+/// makes from a descriptor it holds, where no path names the source any more.
+pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Result<u64> {
     let meta = src.metadata()?;
     let len = meta.len();
-    let dst = std::fs::File::create(to)?;
     dst.set_len(len)?;
     dst.set_permissions(meta.permissions())?;
     let mut buf = vec![0u8; COPY_CHUNK];

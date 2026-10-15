@@ -70,6 +70,26 @@ fn try_reflink(from: &Path, to: &Path) -> io::Result<bool> {
     }
 }
 
+/// [`clone_file`] from a file already open: `to` is created (or truncated) and gets `from`'s
+/// contents by reflink where the filesystem allows, else by a sparse copy. A jailed VMM copies the
+/// memory file it was restored from this way, through the descriptor it holds.
+pub fn clone_open_file(from: &fs::File, to: &Path) -> io::Result<CopyMode> {
+    let dst = fs::File::create(to)?;
+    #[cfg(target_os = "linux")]
+    {
+        dst.set_permissions(from.metadata()?.permissions())?;
+        match crate::sys::ficlone(&dst, from) {
+            Ok(()) => return Ok(CopyMode::Reflink),
+            Err(err)
+                if err
+                    .raw_os_error()
+                    .is_some_and(|code| NOT_REFLINKABLE.contains(&code)) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    crate::spawner::copy_sparse_open(from, &dst).map(|_| CopyMode::Copy)
+}
+
 /// Whether files in `dir` can be reflinked (probed with two scratch files that are removed again).
 ///
 /// A probe that cannot run (the directory is missing, or not writable) answers `false`: the copies

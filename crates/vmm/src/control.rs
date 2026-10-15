@@ -29,14 +29,12 @@
 
 use std::fmt::Display;
 use std::fs::{self, File, OpenOptions, Permissions};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Instant;
 
-use crate::clonefile::clone_file;
 use crate::devices::legacy::SerialDevice;
 use crate::devices::virtio::mmio::{MmioDeviceState, VirtioMmioTransport};
 use crate::spawner::{SnapshotInfo, SnapshotKind, SpawnError, VmControl};
@@ -178,9 +176,9 @@ impl InProcessControl {
                         path.display()
                     )));
                 }
-                // The copy goes through the open descriptor, so it works after the base was unlinked.
-                let source = PathBuf::from(format!("/proc/self/fd/{}", base.as_raw_fd()));
-                clone_file(&source, &path)
+                // The copy goes through the open descriptor, so it works after the base was unlinked
+                // and inside a jail with no `/proc`.
+                crate::clonefile::clone_open_file(base, &path)
                     .map_err(|err| step("copy the restored memory file", err))?;
                 fs::set_permissions(&path, Permissions::from_mode(0o600))
                     .map_err(|err| step("set the memory file's mode", err))?;
@@ -363,7 +361,7 @@ mod tests {
 
     /// A scratch directory unique to this test run, removed by the caller.
     #[cfg(target_arch = "x86_64")]
-    fn scratch(name: &str) -> PathBuf {
+    fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("apz-control-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir

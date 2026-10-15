@@ -84,6 +84,9 @@ pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
 fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::JailerError> {
     use crate::jail::jailer::{self, Access, Jailer};
 
+    // Snapshots read this process's pagemap, which the jail's root has no `/proc` for.
+    crate::vstate::snapshot_memory::open_pagemap_early();
+
     // The VM's socket directory is the base when there is one, so a run's jails
     // live beside its sockets (a sibling, never a child: the muxer's UDS
     // directory is itself mirrored into the jail).

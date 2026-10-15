@@ -626,10 +626,14 @@ fn control_path(spec: &VmSpec) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
-/// The directory a process-mode VM's snapshots are written under: the VM's
-/// socket directory, which the jail binds read-write already. A relative socket
-/// path has no absolute directory to bind, so such a VM takes no snapshots.
+/// The directory a process-mode VM's snapshots are written under: the daemon's snapshot root
+/// ([`super::set_snapshot_root`]) when it named one, else the VM's socket directory, which the jail
+/// binds read-write already. A relative path has no absolute directory to bind, so such a VM takes
+/// no snapshots.
 fn snapshot_root(spec: &VmSpec) -> Option<PathBuf> {
+    if let Some(root) = super::snapshot_root().filter(|root| root.is_absolute()) {
+        return Some(root);
+    }
     let dir = spec.vsock.as_ref()?.uds_path.parent()?;
     dir.is_absolute().then(|| dir.to_path_buf())
 }
