@@ -5,13 +5,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 //
-// Derived from Firecracker src/vmm/src/vstate/vcpu.rs (trimmed: pause/resume,
-// save-state and cpu-config-dump events, gdb support, seccomp filters and
-// the response channel are dropped — the run loop only handles `Finish`;
-// the per-VM exit watcher that upstream runs on the main thread's event
-// loop lives in `builder`); the arch re-export is cfg-selected because this
-// tree's `arch/mod.rs` declares the per-arch modules rather than re-exporting
-// their items.
+// Derived from Firecracker src/vmm/src/vstate/vcpu.rs (trimmed: the
+// cpu-config-dump event, gdb support and seccomp filters are dropped; the
+// per-VM exit watcher that upstream runs on the main thread's event loop lives
+// in `builder`); the arch re-export is cfg-selected because this tree's
+// `arch/mod.rs` declares the per-arch modules rather than re-exporting their
+// items.
 
 // Syscall boundary (see the allowlist in `lib.rs`): `dup(2)` of the KVM vCPU
 // fd plus `create_vcpu_from_rawfd`, whose contract (sole ownership of the
@@ -192,6 +191,11 @@ pub struct Vcpu {
     event_receiver: Receiver<VcpuEvent>,
     /// The transmitting end of the events channel which will be given to the handler.
     event_sender: Option<Sender<VcpuEvent>>,
+    /// The receiving end of the response channel; the handle takes it at start.
+    response_receiver: Option<Receiver<VcpuResponse>>,
+    /// Answers to events, sent by the vCPU thread. When the thread exits the
+    /// channel disconnects, which is how a waiter learns the vCPU is gone.
+    response_sender: Sender<VcpuResponse>,
     /// Whether this vCPU's exit was a reset rather than a shutdown, published
     /// for the VM's exit watcher (which reports it to the spawner).
     guest_reset: Arc<AtomicBool>,
@@ -208,14 +212,13 @@ pub struct Vcpu {
 }
 
 /// States of the vCPU thread's run loop.
-///
-/// Upstream also has a `Paused` state entered on `VcpuEvent::Pause` from the
-/// main thread's control loop; this port has no pause/resume events, so the
-/// loop runs until the vCPU exits or a `Finish` event arrives.
 #[derive(Debug)]
 enum VcpuRunState {
     /// The vCPU is executing guest code via `KVM_RUN`.
     Running,
+    /// The vCPU is out of `KVM_RUN` and blocked on its event channel until a
+    /// `Resume` or `Finish` arrives (see `paused`).
+    Paused,
     /// The vCPU thread's run loop has finished; the thread will exit.
     Finished,
 }
@@ -230,12 +233,15 @@ impl Vcpu {
     /// * `exit_evt` - An `EventFd` that will be written into when this vcpu exits.
     pub fn new(index: u8, vm: &KvmVm, exit_evt: EventFd) -> Result<Self, VcpuError> {
         let (event_sender, event_receiver) = channel();
+        let (response_sender, response_receiver) = channel();
         let kvm_vcpu = KvmVcpu::new(index, vm)?;
 
         Ok(Vcpu {
             exit_evt,
             event_receiver,
             event_sender: Some(event_sender),
+            response_receiver: Some(response_receiver),
+            response_sender,
             kvm_vcpu,
             guest_reset: Arc::clone(&vm.common.guest_reset),
             exit_signalled: Arc::clone(&vm.common.exit_signalled),
@@ -271,6 +277,7 @@ impl Vcpu {
         // failure is reported to the caller rather than left to a thread.
         install_kick_signal_handler()?;
         let event_sender = self.event_sender.take().expect("vCPU already started");
+        let response_receiver = self.response_receiver.take().expect("vCPU already started");
         let finish_requested = Arc::clone(&self.finish_requested);
         let vcpu_fd = self
             .copy_kvm_vcpu_fd(vm)
@@ -302,6 +309,7 @@ impl Vcpu {
 
         Ok(VcpuHandle::new(
             event_sender,
+            response_receiver,
             vcpu_fd,
             vcpu_thread,
             finish_requested,
@@ -323,12 +331,14 @@ impl Vcpu {
             self.signal_exit();
             return;
         }
-        // Start running the machine state in the `Running` state. (Upstream
-        // starts `Paused` and waits for a resume event from the main thread.)
+        // Start in the `Running` state: `start_vcpus` releases the vCPUs to run
+        // as soon as they are all up. (Upstream starts `Paused` and waits for a
+        // resume event from the main thread.)
         let mut state = VcpuRunState::Running;
         loop {
             state = match state {
                 VcpuRunState::Running => self.running(),
+                VcpuRunState::Paused => self.paused(),
                 VcpuRunState::Finished => break,
             };
         }
@@ -374,6 +384,24 @@ impl Vcpu {
         // Break this emulation loop on any transition request/external event.
         match self.event_receiver.try_recv() {
             Ok(VcpuEvent::Finish) => VcpuRunState::Finished,
+            // Running ---- Pause ----> Paused
+            Ok(VcpuEvent::Pause) => {
+                self.respond(VcpuResponse::Paused);
+                VcpuRunState::Paused
+            }
+            // Already running: nothing to change.
+            Ok(VcpuEvent::Resume) => {
+                self.respond(VcpuResponse::Resumed);
+                VcpuRunState::Running
+            }
+            // A running vCPU's state is still moving, so it is not saved: the
+            // caller pauses the vCPUs first.
+            Ok(VcpuEvent::SaveState) => {
+                self.respond(VcpuResponse::NotAllowed(String::from(
+                    "save/restore unavailable while running",
+                )));
+                VcpuRunState::Running
+            }
             // Unhandled exit of the other end: the handle was dropped
             // without a Finish event; the thread cannot be controlled
             // anymore, so stop running the vCPU.
@@ -381,6 +409,49 @@ impl Vcpu {
             // No external event: continue running.
             Err(TryRecvError::Empty) => VcpuRunState::Running,
         }
+    }
+
+    // This is the main loop of the `Paused` state. The thread blocks on its
+    // event channel rather than spinning. Each event's kick only interrupts a
+    // syscall, which `recv` retries through, so a paused vCPU is woken by its
+    // events and by nothing else. The vCPU is out of `KVM_RUN` here, so its
+    // registers are stable for `SaveState`.
+    fn paused(&mut self) -> VcpuRunState {
+        match self.event_receiver.recv() {
+            // Paused ---- Resume ----> Running
+            Ok(VcpuEvent::Resume) => {
+                // The kick that announced this request left `immediate_exit`
+                // set. Clear it before entering the guest, so the first
+                // `KVM_RUN` after the resume is not cut short by a stale kick.
+                self.kvm_vcpu.fd.set_kvm_immediate_exit(0);
+                self.respond(VcpuResponse::Resumed);
+                VcpuRunState::Running
+            }
+            Ok(VcpuEvent::Pause) => {
+                self.respond(VcpuResponse::Paused);
+                VcpuRunState::Paused
+            }
+            Ok(VcpuEvent::SaveState) => {
+                self.respond(save_response(self.kvm_vcpu.save_state()));
+                VcpuRunState::Paused
+            }
+            // Finish is honoured while paused too. The finish flag was
+            // published before this message was sent, so a vCPU that was not
+            // yet paused when the flag was set still stops here.
+            Ok(VcpuEvent::Finish) => VcpuRunState::Finished,
+            // Unhandled exit of the other end, as in `running`: the handle is
+            // gone without a Finish, so stop.
+            Err(_) => {
+                self.signal_exit();
+                VcpuRunState::Finished
+            }
+        }
+    }
+
+    /// Sends an answer to the handle. A closed channel means the handle was
+    /// dropped; the event channel reports that, so the failed send is ignored.
+    fn respond(&self, response: VcpuResponse) {
+        let _ = self.response_sender.send(response);
     }
 
     // Transition to the exited state.
@@ -518,18 +589,55 @@ fn handle_kvm_exit(
 
 /// List of events that the Vcpu can receive.
 ///
-/// Upstream also has `Pause`, `Resume`, `SaveState` and `DumpCpuConfig`
-/// events for the main thread's control loop; this port only needs `Finish`.
+/// Upstream also has a `DumpCpuConfig` event; this port does not need it.
+/// Every event except `Finish` is answered with a [`VcpuResponse`] on the
+/// handle's response channel.
 #[derive(Debug, Clone)]
 pub enum VcpuEvent {
     /// The vCPU thread will end when receiving this message.
     Finish,
+    /// Leave the guest and block until resumed or finished. Answered with
+    /// [`VcpuResponse::Paused`].
+    Pause,
+    /// Continue running the guest. Answered with [`VcpuResponse::Resumed`].
+    Resume,
+    /// Save the vCPU's state. Only a paused vCPU can answer with
+    /// [`VcpuResponse::SavedState`]; a running one answers `NotAllowed`.
+    SaveState,
+}
+
+/// A vCPU thread's answer to a [`VcpuEvent`].
+#[derive(Debug)]
+pub enum VcpuResponse {
+    /// The vCPU is paused: out of `KVM_RUN`, until it is resumed or finished.
+    Paused,
+    /// The vCPU is running again.
+    Resumed,
+    /// The vCPU's state, answering [`VcpuEvent::SaveState`].
+    SavedState(Box<crate::vstate::snapshot::VcpuState>),
+    /// The event was accepted but failed, with the reason.
+    Error(String),
+    /// The event does not apply in the vCPU's current state, with the reason.
+    NotAllowed(String),
+}
+
+/// Turns the result of [`KvmVcpu::save_state`] into the answer to a
+/// `SaveState` event: a failure is reported to the waiter rather than lost
+/// with the thread.
+fn save_response<E: std::fmt::Display>(
+    result: Result<crate::vstate::snapshot::VcpuState, E>,
+) -> VcpuResponse {
+    match result {
+        Ok(state) => VcpuResponse::SavedState(Box::new(state)),
+        Err(err) => VcpuResponse::Error(err.to_string()),
+    }
 }
 
 /// Wrapper over Vcpu that hides the underlying interactions with the Vcpu thread.
 #[derive(Debug)]
 pub struct VcpuHandle {
     event_sender: Sender<VcpuEvent>,
+    response_receiver: Receiver<VcpuResponse>,
     /// VcpuFd
     pub vcpu_fd: kvm_ioctls::VcpuFd,
     // Rust JoinHandles have to be wrapped in Option if you ever plan on 'join()'ing them.
@@ -550,18 +658,21 @@ impl VcpuHandle {
     ///
     /// # Arguments
     /// + `event_sender`: [`Sender`] to communicate [`VcpuEvent`] to control the vcpu.
+    /// + `response_receiver`: the vCPU's answers to those events.
     /// + `vcpu_fd`: duplicated vCPU fd, used to set `immediate_exit` from this side.
     /// + `vcpu_thread`: A [`JoinHandle`] for the vcpu thread.
     /// + `finish_requested`: the VM's finish flag, published by
     ///   [`VcpuHandle::send_event`] before the vCPU is kicked.
     pub fn new(
         event_sender: Sender<VcpuEvent>,
+        response_receiver: Receiver<VcpuResponse>,
         vcpu_fd: kvm_ioctls::VcpuFd,
         vcpu_thread: thread::JoinHandle<()>,
         finish_requested: Arc<AtomicBool>,
     ) -> Self {
         Self {
             event_sender,
+            response_receiver,
             vcpu_fd,
             vcpu_thread: Some(vcpu_thread),
             finish_requested,
@@ -569,6 +680,11 @@ impl VcpuHandle {
     }
 
     /// Sends event to vCPU.
+    ///
+    /// Pause, Resume and SaveState are delivered and kicked the same way, but
+    /// only `Finish` sets the finish flag: they must leave the vCPU running or
+    /// paused, not stop it. Their answers arrive on
+    /// [`VcpuHandle::response_receiver`].
     ///
     /// A `Finish` is published in the VM's finish flag *before* the channel is
     /// written and the vCPU is kicked: the vCPU's run loop checks that flag on
@@ -580,10 +696,9 @@ impl VcpuHandle {
     /// exited is not an error for this port's watchers (they finish every
     /// vCPU, including ones that already stopped on their own).
     pub fn send_event(&mut self, event: VcpuEvent) -> Result<(), VcpuSendEventError> {
-        // `VcpuEvent` carries a single variant in this port, so the request
-        // always means "finish"; an event that must *not* stop the vCPU would
-        // have to move this into a match arm.
-        self.finish_requested.store(true, Ordering::SeqCst);
+        if matches!(event, VcpuEvent::Finish) {
+            self.finish_requested.store(true, Ordering::SeqCst);
+        }
         // The vCPU thread may already have exited; then the channel is closed
         // and there is nothing left to kick.
         if self.event_sender.send(event).is_err() {
@@ -605,6 +720,12 @@ impl VcpuHandle {
             Err(err) if err.errno() == libc::ESRCH => Ok(()),
             result => result.map_err(VcpuSendEventError),
         }
+    }
+
+    /// The vCPU's answers to events (see [`VcpuResponse`]). A disconnected
+    /// channel means the vCPU thread has exited.
+    pub fn response_receiver(&self) -> &Receiver<VcpuResponse> {
+        &self.response_receiver
     }
 }
 
@@ -665,6 +786,18 @@ mod tests {
         }
         // A thread that arrives after the release is not held back either.
         assert!(gate.wait());
+    }
+
+    #[test]
+    fn a_failed_save_is_answered_as_an_error_with_its_reason() {
+        // The save result is turned into the answer here, on the vCPU thread;
+        // a failure must reach the waiter as an `Error`, not disappear with
+        // the thread.
+        let response = super::save_response::<&str>(Err("save failed"));
+        assert!(
+            matches!(&response, super::VcpuResponse::Error(reason) if reason == "save failed"),
+            "got {response:?}"
+        );
     }
 
     #[test]
