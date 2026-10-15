@@ -99,24 +99,30 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let config = parse_args(args)?;
-    // One process per VM: the shape the jailer applies to, and the one cgroup limits need.
+    // One process per VM (the flag, or `APZ_VMM_SPAWN=process` as the service plans set it): the
+    // shape the jailer applies to, and the one cgroup limits need.
     if config.vm_processes {
         vmm::spawner::set_spawn_mode(vmm::spawner::SpawnMode::Process);
+    }
+    if matches!(
+        vmm::spawner::spawn_mode(),
+        Ok(vmm::spawner::SpawnMode::Process)
+    ) {
         let root = vmm::cgroup::CgroupRoot::detect();
         match &root {
             Some(root) => eprintln!(
                 "noded: per-VM processes, cgroup limits under {}",
                 root.path().display()
             ),
-            None => {
-                eprintln!("noded: per-VM processes; no delegated cgroup tree, so no cgroup limits")
-            }
+            None => eprintln!(
+                "noded: per-VM processes; no delegated cgroup tree, so no cgroup limits"
+            ),
         }
         vmm::spawner::set_cgroup_root(root);
-        // The VMs' snapshots and the warm templates live under the snapshot dir: each VM's jail
-        // binds it, so its process can write snapshots there and restore from them.
-        vmm::spawner::set_snapshot_root(config.snapshot_dir.clone());
     }
+    // The VMs' snapshots and the warm templates live under the snapshot dir: a per-VM process's jail
+    // binds it, so the process can write snapshots there and restore from them.
+    vmm::spawner::set_snapshot_root(config.snapshot_dir.clone());
     // F4: the per-VM muxer binds `{uds_dir}/vm{cid}` with a deterministic
     // name, and the default is under world-writable `/tmp`. Create the
     // directory 0700 first, so another local user cannot squat a VM's path
