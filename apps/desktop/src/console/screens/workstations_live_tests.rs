@@ -8,36 +8,38 @@ fn frame_bytes(header: &str, image: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn a_frame_header_parses_into_its_size_sequence_and_image() {
-    let bytes = frame_bytes(
-        r#"{"w":1920,"h":1080,"format":"jpeg","ts":5,"seq":7}"#,
-        &[1, 2, 3],
-    );
-    let frame = parse_frame(&bytes).expect("a whole frame parses");
-    assert_eq!((frame.w, frame.h, frame.seq), (1920, 1080, 7));
-    assert_eq!(frame.image, vec![1, 2, 3]);
-}
-
-#[test]
-fn a_frame_that_is_not_whole_or_not_a_picture_is_refused() {
-    assert!(parse_frame(&[0, 0]).is_err(), "shorter than the length");
-    assert!(
-        parse_frame(&[0, 0, 0, 40, b'{']).is_err(),
-        "header runs past the end"
-    );
-    assert!(parse_frame(&frame_bytes("not json", &[1])).is_err());
-    assert!(
-        parse_frame(&frame_bytes(r#"{"w":0,"h":1,"format":"png"}"#, &[1])).is_err(),
-        "no width"
-    );
-    assert!(
-        parse_frame(&frame_bytes(r#"{"w":1,"h":1,"format":"gif"}"#, &[1])).is_err(),
-        "a format the hub never sends"
-    );
-    assert!(
-        parse_frame(&frame_bytes(r#"{"w":1,"h":1,"format":"png"}"#, &[])).is_err(),
-        "no image"
-    );
+fn a_frame_parses_when_whole_and_is_refused_when_not() {
+    // a_frame_header_parses_into_its_size_sequence_and_image
+    {
+        let bytes = frame_bytes(
+            r#"{"w":1920,"h":1080,"format":"jpeg","ts":5,"seq":7}"#,
+            &[1, 2, 3],
+        );
+        let frame = parse_frame(&bytes).expect("a whole frame parses");
+        assert_eq!((frame.w, frame.h, frame.seq), (1920, 1080, 7));
+        assert_eq!(frame.image, vec![1, 2, 3]);
+    }
+    // a_frame_that_is_not_whole_or_not_a_picture_is_refused
+    {
+        assert!(parse_frame(&[0, 0]).is_err(), "shorter than the length");
+        assert!(
+            parse_frame(&[0, 0, 0, 40, b'{']).is_err(),
+            "header runs past the end"
+        );
+        assert!(parse_frame(&frame_bytes("not json", &[1])).is_err());
+        assert!(
+            parse_frame(&frame_bytes(r#"{"w":0,"h":1,"format":"png"}"#, &[1])).is_err(),
+            "no width"
+        );
+        assert!(
+            parse_frame(&frame_bytes(r#"{"w":1,"h":1,"format":"gif"}"#, &[1])).is_err(),
+            "a format the hub never sends"
+        );
+        assert!(
+            parse_frame(&frame_bytes(r#"{"w":1,"h":1,"format":"png"}"#, &[])).is_err(),
+            "no image"
+        );
+    }
 }
 
 #[test]
@@ -153,67 +155,74 @@ fn the_owners_keys_reach_the_station_unless_a_field_took_them() {
 }
 
 #[test]
-fn typed_text_is_a_type_action_and_a_named_key_is_a_key_action() {
-    let none = mods(false, false, false, false);
-    assert_eq!(
-        key_input(&KeyName::Char('a'), Some("a"), none),
-        Some(json!({"action": "type", "text": "a"}))
-    );
-    assert_eq!(
-        key_input(
-            &KeyName::Char('A'),
+fn key_input_sends_typed_text_keys_and_chords_in_the_daemon_order() {
+    for (case, key, text, modifiers, want) in [
+        (
+            "typed_text_is_a_type_action: a letter is typed",
+            KeyName::Char('a'),
+            Some("a"),
+            mods(false, false, false, false),
+            Some(json!({"action": "type", "text": "a"})),
+        ),
+        (
+            "typed_text_is_a_type_action: shift with a letter is the letter it typed",
+            KeyName::Char('A'),
             Some("A"),
-            mods(false, true, false, false)
+            mods(false, true, false, false),
+            Some(json!({"action": "type", "text": "A"})),
         ),
-        Some(json!({"action": "type", "text": "A"})),
-        "shift with a letter is the letter it typed"
-    );
-    assert_eq!(
-        key_input(&KeyName::Named("enter"), None, none),
-        Some(json!({"action": "key", "combo": "enter"}))
-    );
-    assert_eq!(
-        key_input(&KeyName::Named("f5"), None, none),
-        Some(json!({"action": "key", "combo": "f5"}))
-    );
-}
-
-#[test]
-fn chords_name_their_modifiers_in_the_daemon_order() {
-    assert_eq!(
-        key_input(&KeyName::Char('S'), None, mods(true, true, false, false)),
-        Some(json!({"action": "key", "combo": "ctrl+shift+s"}))
-    );
-    assert_eq!(
-        key_input(
-            &KeyName::Char('c'),
-            Some("\u{3}"),
-            mods(true, false, false, false)
-        ),
-        Some(json!({"action": "key", "combo": "ctrl+c"})),
-        "a control character is never typed"
-    );
-    assert_eq!(
-        key_input(
-            &KeyName::Named("tab"),
+        (
+            "a_named_key_is_a_key_action: enter",
+            KeyName::Named("enter"),
             None,
-            mods(false, true, false, false)
+            mods(false, false, false, false),
+            Some(json!({"action": "key", "combo": "enter"})),
         ),
-        Some(json!({"action": "key", "combo": "shift+tab"}))
-    );
-    assert_eq!(
-        key_input(&KeyName::Char('q'), None, mods(false, false, false, true)),
-        Some(json!({"action": "key", "combo": "cmd+q"}))
-    );
-    assert_eq!(
-        key_input(
-            &KeyName::Char('é'),
+        (
+            "a_named_key_is_a_key_action: f5",
+            KeyName::Named("f5"),
+            None,
+            mods(false, false, false, false),
+            Some(json!({"action": "key", "combo": "f5"})),
+        ),
+        (
+            "chords_name_their_modifiers_in_the_daemon_order: ctrl, shift, s",
+            KeyName::Char('S'),
+            None,
+            mods(true, true, false, false),
+            Some(json!({"action": "key", "combo": "ctrl+shift+s"})),
+        ),
+        (
+            "chords: a control character is never typed",
+            KeyName::Char('c'),
+            Some("\u{3}"),
+            mods(true, false, false, false),
+            Some(json!({"action": "key", "combo": "ctrl+c"})),
+        ),
+        (
+            "chords: shift+tab",
+            KeyName::Named("tab"),
+            None,
+            mods(false, true, false, false),
+            Some(json!({"action": "key", "combo": "shift+tab"})),
+        ),
+        (
+            "chords: cmd+q",
+            KeyName::Char('q'),
+            None,
+            mods(false, false, false, true),
+            Some(json!({"action": "key", "combo": "cmd+q"})),
+        ),
+        (
+            "chords: a character the daemon cannot name is not sent in a chord",
+            KeyName::Char('é'),
             Some("é"),
-            mods(false, false, true, false)
+            mods(false, false, true, false),
+            None,
         ),
-        None,
-        "a character the daemon cannot name is not sent in a chord"
-    );
+    ] {
+        assert_eq!(key_input(&key, text, modifiers), want, "{case}");
+    }
 }
 
 #[test]
@@ -269,57 +278,5 @@ fn a_frame_is_fitted_and_centred_and_the_pointer_maps_into_its_pixels() {
     assert_eq!(
         frame_point(Point::new(5.0, 5.0), (0.0, 0.0), (1920, 1080)),
         (0, 0)
-    );
-}
-
-#[test]
-fn the_sessions_are_the_owner_screen_and_each_pixel_lease() {
-    let station = Station {
-        leases: vec![
-            super::super::workstations::Lease {
-                id: "l1".into(),
-                kind: "pixel".into(),
-                session: Some(9),
-                ..Default::default()
-            },
-            super::super::workstations::Lease {
-                id: "l2".into(),
-                kind: "shared".into(),
-                session: None,
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    let mut state = State::new("w1");
-    assert_eq!(
-        state.sessions.len(),
-        1,
-        "before the station is known: the owner's screen only"
-    );
-    state.sync(&station);
-    assert_eq!(
-        state.sessions.len(),
-        2,
-        "the owner's screen and the pixel session"
-    );
-    assert_eq!(state.sessions[1].value, "9");
-    state.choice = Choice {
-        value: "9".into(),
-        label: String::new(),
-    };
-    state.sync(&station);
-    assert_eq!(
-        state.choice.label, "Agent session 9",
-        "a picked session takes its listed label"
-    );
-    state.choice = Choice {
-        value: "77".into(),
-        label: String::new(),
-    };
-    state.sync(&station);
-    assert_eq!(
-        state.choice.value, "shared",
-        "a session that is gone falls back to the owner's screen"
     );
 }

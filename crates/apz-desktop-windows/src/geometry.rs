@@ -53,55 +53,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_screen_edges_map_to_the_range_ends() {
-        assert_eq!(absolute_axis(0, 0, 1920), 0);
-        assert_eq!(absolute_axis(1919, 0, 1920), 65_535);
-        assert_eq!(absolute_axis(960, 0, 1920), 32_784);
+    fn absolute_axis_maps_the_screen_onto_the_full_range() {
+        // The screen edges map to the range ends; a virtual screen left of the
+        // primary starts at its own origin; points off the screen clamp to its
+        // edges; a one-point screen has no range.
+        for (case, value, origin, size, want) in [
+            ("the left edge maps to 0", 0, 0, 1920, 0),
+            ("the right edge maps to 65535", 1919, 0, 1920, 65_535),
+            ("the middle maps to the middle", 960, 0, 1920, 32_784),
+            (
+                "a virtual screen's left edge maps to 0",
+                -1920,
+                -1920,
+                3840,
+                0,
+            ),
+            (
+                "a virtual screen's right edge maps to 65535",
+                1919,
+                -1920,
+                3840,
+                65_535,
+            ),
+            (
+                "a virtual screen's middle maps to its middle",
+                0,
+                -1920,
+                3840,
+                32_776,
+            ),
+            ("a point left of the screen clamps to 0", -5000, 0, 1920, 0),
+            (
+                "a point right of the screen clamps to 65535",
+                5000,
+                0,
+                1920,
+                65_535,
+            ),
+            ("a one-point screen at 0 maps to 0", 0, 0, 1, 0),
+            ("a zero-size screen maps to 0", 0, 0, 0, 0),
+        ] {
+            assert_eq!(absolute_axis(value, origin, size), want, "{case}");
+        }
     }
 
     #[test]
-    fn a_virtual_screen_left_of_the_primary_starts_at_its_own_origin() {
-        assert_eq!(absolute_axis(-1920, -1920, 3840), 0);
-        assert_eq!(absolute_axis(1919, -1920, 3840), 65_535);
-        assert_eq!(absolute_axis(0, -1920, 3840), 32_776);
-    }
-
-    #[test]
-    fn points_off_the_screen_clamp_to_its_edges() {
-        assert_eq!(absolute_axis(-5000, 0, 1920), 0);
-        assert_eq!(absolute_axis(5000, 0, 1920), 65_535);
-    }
-
-    #[test]
-    fn a_one_point_screen_has_no_range() {
-        assert_eq!(absolute_axis(0, 0, 1), 0);
-        assert_eq!(absolute_axis(0, 0, 0), 0);
-    }
-
-    #[test]
-    fn rectangles_become_bounds_and_inverted_ones_have_no_size() {
-        assert_eq!(rect_bounds(10, 20, 110, 70), (10, 20, 100, 50));
-        assert_eq!(rect_bounds(10, 20, 5, 5), (10, 20, 0, 0));
-        assert_eq!(rect_bounds(-30, -40, 30, 40), (-30, -40, 60, 80));
-    }
-
-    #[test]
-    fn positive_vertical_notches_scroll_down() {
-        assert_eq!(vertical_wheel(1), (-120i32) as u32);
-        assert_eq!(vertical_wheel(-3), 360);
-        assert_eq!(vertical_wheel(0), 0);
-    }
-
-    #[test]
-    fn positive_horizontal_notches_scroll_right() {
-        assert_eq!(horizontal_wheel(2), 240);
-        assert_eq!(horizontal_wheel(-1), (-120i32) as u32);
-    }
-
-    #[test]
-    fn between_walks_a_straight_line() {
-        assert_eq!(between((0, 0), (80, 40), 4, 8), (40, 20));
-        assert_eq!(between((0, 0), (10, 10), 8, 8), (10, 10));
-        assert_eq!(between((5, 5), (5, 5), 3, 8), (5, 5));
+    fn wheel_deltas_follow_the_notch_direction() {
+        // Positive vertical notches scroll down.
+        for (case, notches, want) in [
+            ("a positive vertical notch", 1, (-120i32) as u32),
+            ("negative vertical notches", -3, 360),
+            ("no vertical notches", 0, 0),
+        ] {
+            assert_eq!(vertical_wheel(notches), want, "{case}");
+        }
+        // Positive horizontal notches scroll right.
+        for (case, notches, want) in [
+            ("positive horizontal notches", 2, 240),
+            ("a negative horizontal notch", -1, (-120i32) as u32),
+        ] {
+            assert_eq!(horizontal_wheel(notches), want, "{case}");
+        }
     }
 }

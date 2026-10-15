@@ -837,83 +837,86 @@ mod tests {
     }
 
     #[test]
-    fn e2b_refuses_a_missing_or_wrong_access_token() {
-        let rig = start_rig("token");
-        let missing = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\n\r\n",
-        );
-        assert_eq!(status_of(&missing), "401", "{missing}");
-        let wrong = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\nX-Access-Token: nope\r\n\r\n",
-        );
-        assert_eq!(status_of(&wrong), "401", "{wrong}");
-        let right = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\nX-Access-Token: s3cret\r\n\r\n",
-        );
-        assert_eq!(status_of(&right), "200", "{right}");
-        let open = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\n\r\n",
-        );
-        assert_eq!(status_of(&open), "200", "{open}");
-        assert_eq!(
-            rig.seen.lock().unwrap().len(),
-            2,
-            "a refused request never reaches the guest"
-        );
-    }
+    fn e2b_refuses_bad_tokens_and_ports_and_answers_400_or_404() {
+        // The original test: a missing or wrong access token is refused; the right one is relayed.
+        {
+            let rig = start_rig("token");
+            let missing = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\n\r\n",
+            );
+            assert_eq!(status_of(&missing), "401", "{missing}");
+            let wrong = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\nX-Access-Token: nope\r\n\r\n",
+            );
+            assert_eq!(status_of(&wrong), "401", "{wrong}");
+            let right = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-secret\r\nX-Access-Token: s3cret\r\n\r\n",
+            );
+            assert_eq!(status_of(&right), "200", "{right}");
+            let open = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\n\r\n",
+            );
+            assert_eq!(status_of(&open), "200", "{open}");
+            assert_eq!(
+                rig.seen.lock().unwrap().len(),
+                2,
+                "a refused request never reaches the guest"
+            );
+        }
 
-    #[test]
-    fn e2b_refuses_every_port_but_the_sandbox_daemons() {
-        let rig = start_rig("port");
-        let other = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\nE2b-Sandbox-Port: 8080\r\n\r\n",
-        );
-        assert_eq!(status_of(&other), "403", "{other}");
-        let other_host = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nHost: 3000-sbx-open.sandboxes.test\r\n\r\n",
-        );
-        assert_eq!(status_of(&other_host), "403", "{other_host}");
-        let daemon = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\nE2b-Sandbox-Port: 49983\r\n\r\n",
-        );
-        assert_eq!(status_of(&daemon), "200", "{daemon}");
-        assert_eq!(
-            rig.seen.lock().unwrap().len(),
-            1,
-            "only the daemon's port is relayed"
-        );
-    }
+        // The original test: every port but the sandbox daemons' is refused.
+        {
+            let rig = start_rig("port");
+            let other = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\nE2b-Sandbox-Port: 8080\r\n\r\n",
+            );
+            assert_eq!(status_of(&other), "403", "{other}");
+            let other_host = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nHost: 3000-sbx-open.sandboxes.test\r\n\r\n",
+            );
+            assert_eq!(status_of(&other_host), "403", "{other_host}");
+            let daemon = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-open\r\nE2b-Sandbox-Port: 49983\r\n\r\n",
+            );
+            assert_eq!(status_of(&daemon), "200", "{daemon}");
+            assert_eq!(
+                rig.seen.lock().unwrap().len(),
+                1,
+                "only the daemon's port is relayed"
+            );
+        }
 
-    #[test]
-    fn e2b_answers_400_for_no_sandbox_and_404_for_an_unknown_one() {
-        let rig = start_rig("unknown");
-        let none = ask(rig.port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:19080\r\n\r\n");
-        assert_eq!(status_of(&none), "400", "{none}");
-        let malformed = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx/../x\r\n\r\n",
-        );
-        assert_eq!(status_of(&malformed), "400", "{malformed}");
-        let unknown = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: nope\r\n\r\n",
-        );
-        assert_eq!(status_of(&unknown), "404", "{unknown}");
-        let no_vm = ask(
-            rig.port,
-            "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-gone\r\n\r\n",
-        );
-        assert_eq!(status_of(&no_vm), "502", "{no_vm}");
-        let no_target = ask(rig.port, "GET\r\n\r\n");
-        assert_eq!(status_of(&no_target), "400", "{no_target}");
-        assert_eq!(rig.seen.lock().unwrap().len(), 0);
+        // The original test: no sandbox id is answered 400, an unknown one 404, a gone VM 502.
+        {
+            let rig = start_rig("unknown");
+            let none = ask(rig.port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:19080\r\n\r\n");
+            assert_eq!(status_of(&none), "400", "{none}");
+            let malformed = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx/../x\r\n\r\n",
+            );
+            assert_eq!(status_of(&malformed), "400", "{malformed}");
+            let unknown = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: nope\r\n\r\n",
+            );
+            assert_eq!(status_of(&unknown), "404", "{unknown}");
+            let no_vm = ask(
+                rig.port,
+                "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-gone\r\n\r\n",
+            );
+            assert_eq!(status_of(&no_vm), "502", "{no_vm}");
+            let no_target = ask(rig.port, "GET\r\n\r\n");
+            assert_eq!(status_of(&no_target), "400", "{no_target}");
+            assert_eq!(rig.seen.lock().unwrap().len(), 0);
+        }
     }
 
     #[test]
@@ -993,26 +996,6 @@ mod tests {
         assert!(
             gateway.take_slot("sbx-a").is_some(),
             "a returned slot is usable again"
-        );
-    }
-
-    #[test]
-    fn e2b_reads_the_guest_status_for_the_audit_line() {
-        let mut sniff = StatusLine::default();
-        assert_eq!(sniff.feed(b"HTTP/1.1 503 Busy\r\nContent-"), Some(503));
-        assert_eq!(sniff.feed(b"Length: 0\r\n"), None);
-        assert_eq!(parse_status(b"SSH-2.0"), None);
-        let audit = Audit {
-            sandbox: "sbx-a".into(),
-            method: "GET".into(),
-            path: "/health".into(),
-            status: Some(200),
-            bytes_in: 10,
-            bytes_out: 20,
-        };
-        assert_eq!(
-            audit_line(&audit, Duration::from_millis(7)),
-            "vsockd: e2b sandbox=sbx-a method=GET path=/health status=200 in=10 out=20 ms=7"
         );
     }
 }

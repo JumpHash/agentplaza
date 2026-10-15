@@ -231,12 +231,22 @@ mod machine_tests {
     use super::*;
 
     #[test]
-    fn live_stats_are_the_cpu_percent_and_memory_used() {
-        let sample = json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3], "history": [] });
-        assert_eq!(
-            stats_report(&sample),
-            json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 })
-        );
+    fn stats_report_is_the_cpu_and_memory_or_null() {
+        for (case, input, want) in [
+            (
+                "a live sample is the cpu percent and memory used",
+                json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3], "history": [] }),
+                json!({ "cpu_pct": 7.5, "mem_used_mib": 18000 }),
+            ),
+            ("no sample at all is null", Value::Null, Value::Null),
+            (
+                "an error with no host sample yet is null fields",
+                json!({"error": "no host sample yet"}),
+                json!({ "cpu_pct": null, "mem_used_mib": null }),
+            ),
+        ] {
+            assert_eq!(stats_report(&input), want, "{case}");
+        }
     }
 
     #[test]
@@ -247,15 +257,6 @@ mod machine_tests {
                 "{field} is in the heartbeat"
             );
         }
-    }
-
-    #[test]
-    fn stats_are_null_without_a_sample() {
-        assert_eq!(stats_report(&Value::Null), Value::Null);
-        assert_eq!(
-            stats_report(&json!({"error": "no host sample yet"})),
-            json!({ "cpu_pct": null, "mem_used_mib": null })
-        );
     }
 }
 

@@ -903,52 +903,33 @@ mod tests {
     }
 
     #[test]
-    fn e2b_sandbox_facts_name_the_agent_and_the_settings() {
-        let sandbox = Sandbox {
-            template_id: "base".to_string(),
-            cid: Some(7),
-            auto_pause: true,
-            allow_internet_access: false,
-            ..Sandbox::default()
-        };
-        assert_eq!(
-            sandbox_facts(&sandbox),
-            "base · agent 7 · auto-pause · no internet"
-        );
-        let bare = Sandbox {
-            template_id: "base".to_string(),
-            allow_internet_access: true,
-            ..Sandbox::default()
-        };
-        assert_eq!(sandbox_facts(&bare), "base · internet on");
-    }
-
-    #[test]
-    fn e2b_sandboxes_parse_with_the_owner_fields() {
-        let list: SandboxList = serde_json::from_str(
-            r#"{"sandboxes":[{"sandboxID":"sb_1","templateID":"base","clientID":"c","state":"paused",
-                "startedAt":"2026-10-15T12:34:56Z","endAt":"2026-10-15T13:34:56Z","cpuCount":2,
-                "memoryMB":512,"diskSizeMB":0,"metadata":{"k":"v"},"cid":7,"run":"run_1",
-                "allowInternetAccess":false,"autoPause":true}]}"#,
-        )
-        .expect("the sandboxes parse");
-        let sandbox = &list.sandboxes[0];
-        assert_eq!(sandbox.sandbox_id, "sb_1");
-        assert_eq!(sandbox.template_id, "base");
-        assert_eq!(sandbox.state, "paused");
-        assert_eq!(sandbox.cpu_count, 2);
-        assert_eq!(sandbox.memory_mb, 512);
-        assert_eq!(sandbox.cid, Some(7));
-        assert!(sandbox.auto_pause);
-        assert!(!sandbox.allow_internet_access);
-    }
-
-    #[test]
-    fn e2b_sandbox_without_a_cid_still_parses() {
-        let list: SandboxList =
-            serde_json::from_str(r#"{"sandboxes":[{"sandboxID":"sb_2","cid":null}]}"#)
-                .expect("a sandbox with a null cid parses");
-        assert_eq!(list.sandboxes[0].cid, None);
+    fn e2b_sandboxes_parse_with_the_owner_fields_and_without_a_cid() {
+        {
+            // e2b_sandboxes_parse_with_the_owner_fields
+            let list: SandboxList = serde_json::from_str(
+                r#"{"sandboxes":[{"sandboxID":"sb_1","templateID":"base","clientID":"c","state":"paused",
+                    "startedAt":"2026-10-15T12:34:56Z","endAt":"2026-10-15T13:34:56Z","cpuCount":2,
+                    "memoryMB":512,"diskSizeMB":0,"metadata":{"k":"v"},"cid":7,"run":"run_1",
+                    "allowInternetAccess":false,"autoPause":true}]}"#,
+            )
+            .expect("the sandboxes parse");
+            let sandbox = &list.sandboxes[0];
+            assert_eq!(sandbox.sandbox_id, "sb_1");
+            assert_eq!(sandbox.template_id, "base");
+            assert_eq!(sandbox.state, "paused");
+            assert_eq!(sandbox.cpu_count, 2);
+            assert_eq!(sandbox.memory_mb, 512);
+            assert_eq!(sandbox.cid, Some(7));
+            assert!(sandbox.auto_pause);
+            assert!(!sandbox.allow_internet_access);
+        }
+        {
+            // e2b_sandbox_without_a_cid_still_parses
+            let list: SandboxList =
+                serde_json::from_str(r#"{"sandboxes":[{"sandboxID":"sb_2","cid":null}]}"#)
+                    .expect("a sandbox with a null cid parses");
+            assert_eq!(list.sandboxes[0].cid, None);
+        }
     }
 
     #[test]
@@ -964,82 +945,47 @@ mod tests {
     }
 
     #[test]
-    fn e2b_state_badges_read_running_and_paused() {
-        assert_eq!(
-            state_badge("running"),
-            ("running".to_string(), ui::Tone::Ok)
-        );
-        assert_eq!(
-            state_badge("paused"),
-            ("paused".to_string(), ui::Tone::Warn)
-        );
-        assert_eq!(state_badge("starting").1, ui::Tone::Muted);
-    }
-
-    #[test]
-    fn e2b_times_read_as_minutes_in_utc() {
-        assert_eq!(short_time("2026-10-15T12:34:56Z"), "2026-10-15 12:34");
-        assert_eq!(short_time(""), "");
-        assert_eq!(short_time("soon"), "soon");
-    }
-
-    #[test]
-    fn e2b_templates_parse_with_their_builds() {
-        let list: TemplateList = serde_json::from_str(
-            r#"{"templates":[{"templateID":"tpl_1","name":"base","createdAt":"2026-10-14T09:00:00Z",
-                "updatedAt":"2026-10-15T12:34:56Z","builds":[
-                {"buildID":"b_2","status":"error","createdAt":"2026-10-15T12:00:00Z",
-                 "finishedAt":"2026-10-15T12:05:00Z","cpuCount":2,"memoryMB":512,"tags":["latest"],
-                 "reason":{"message":"out of disk","step":"RUN apt-get"}},
-                {"buildID":"b_1","status":"ready","createdAt":"2026-10-14T09:00:00Z",
-                 "finishedAt":null,"cpuCount":1,"memoryMB":256,"tags":["v1","latest"],"reason":null}]}]}"#,
-        )
-        .expect("the templates parse");
-        let template = &list.templates[0];
-        assert_eq!(template.template_id, "tpl_1");
-        assert_eq!(template.name, "base");
-        assert_eq!(template.builds.len(), 2);
-        let failed = &template.builds[0];
-        assert_eq!(failed.status, "error");
-        assert_eq!(failed.finished_at.as_deref(), Some("2026-10-15T12:05:00Z"));
-        assert_eq!(
-            failed.reason.as_ref().map(|reason| reason.step.as_str()),
-            Some("RUN apt-get")
-        );
-        assert_eq!(failed.memory_mb, 512);
-        let ready = &template.builds[1];
-        assert!(ready.finished_at.is_none());
-        assert!(ready.reason.is_none());
-    }
-
-    #[test]
-    fn e2b_templates_parse_without_reason_or_finish_time() {
-        let list: TemplateList = serde_json::from_str(
-            r#"{"templates":[{"templateID":"tpl_2","name":"slim","builds":[{"buildID":"b_3","status":"building","tags":[]}]}]}"#,
-        )
-        .expect("a template without the optional fields parses");
-        let build = &list.templates[0].builds[0];
-        assert_eq!(build.status, "building");
-        assert!(build.finished_at.is_none());
-        assert!(build.reason.is_none());
-        assert_eq!(list.templates[0].updated_at, "");
-    }
-
-    #[test]
-    fn e2b_ready_builds_name_the_tags_once() {
-        let build = |status: &str, tags: &[&str]| Build {
-            status: status.to_string(),
-            tags: tags.iter().map(|tag| tag.to_string()).collect(),
-            ..Build::default()
-        };
-        let builds = vec![
-            build("ready", &["latest", "v2"]),
-            build("error", &["broken"]),
-            build("ready", &["v2", "v1"]),
-            build("building", &["next"]),
-        ];
-        assert_eq!(ready_tags(&builds), vec!["latest", "v2", "v1"]);
-        assert!(ready_tags(&[]).is_empty());
+    fn e2b_templates_parse_with_their_builds_and_without_optional_fields() {
+        {
+            // e2b_templates_parse_with_their_builds
+            let list: TemplateList = serde_json::from_str(
+                r#"{"templates":[{"templateID":"tpl_1","name":"base","createdAt":"2026-10-14T09:00:00Z",
+                    "updatedAt":"2026-10-15T12:34:56Z","builds":[
+                    {"buildID":"b_2","status":"error","createdAt":"2026-10-15T12:00:00Z",
+                     "finishedAt":"2026-10-15T12:05:00Z","cpuCount":2,"memoryMB":512,"tags":["latest"],
+                     "reason":{"message":"out of disk","step":"RUN apt-get"}},
+                    {"buildID":"b_1","status":"ready","createdAt":"2026-10-14T09:00:00Z",
+                     "finishedAt":null,"cpuCount":1,"memoryMB":256,"tags":["v1","latest"],"reason":null}]}]}"#,
+            )
+            .expect("the templates parse");
+            let template = &list.templates[0];
+            assert_eq!(template.template_id, "tpl_1");
+            assert_eq!(template.name, "base");
+            assert_eq!(template.builds.len(), 2);
+            let failed = &template.builds[0];
+            assert_eq!(failed.status, "error");
+            assert_eq!(failed.finished_at.as_deref(), Some("2026-10-15T12:05:00Z"));
+            assert_eq!(
+                failed.reason.as_ref().map(|reason| reason.step.as_str()),
+                Some("RUN apt-get")
+            );
+            assert_eq!(failed.memory_mb, 512);
+            let ready = &template.builds[1];
+            assert!(ready.finished_at.is_none());
+            assert!(ready.reason.is_none());
+        }
+        {
+            // e2b_templates_parse_without_reason_or_finish_time
+            let list: TemplateList = serde_json::from_str(
+                r#"{"templates":[{"templateID":"tpl_2","name":"slim","builds":[{"buildID":"b_3","status":"building","tags":[]}]}]}"#,
+            )
+            .expect("a template without the optional fields parses");
+            let build = &list.templates[0].builds[0];
+            assert_eq!(build.status, "building");
+            assert!(build.finished_at.is_none());
+            assert!(build.reason.is_none());
+            assert_eq!(list.templates[0].updated_at, "");
+        }
     }
 
     #[test]

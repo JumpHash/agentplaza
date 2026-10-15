@@ -799,43 +799,98 @@ mod tests {
         assert_eq!(snapshot_root, Some(PathBuf::from("/tmp/plaza-vsock")));
     }
 
-    /// `--restore` becomes the spec's restore, and `--snapshot-root` must be an
-    /// absolute path (a relative root could never match a snapshot request).
+    /// `parse` reads the command line: `--restore` becomes the spec's restore and
+    /// `--snapshot-root` must be absolute; a command line that does not describe one
+    /// VM is refused with the flag named; the optional fields take the spec's defaults.
     #[test]
-    fn restore_and_the_snapshot_root_are_parsed() {
-        let args: Vec<String> = [
-            "--kernel",
-            "/k",
-            "--cmdline",
-            "c",
-            "--restore",
-            "/var/snap/vm42",
-            "--snapshot-root",
-            "/tmp/plaza-vsock",
-        ]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
-        let launch = parse(&args).expect("a restoring command line");
-        assert_eq!(launch.spec.restore, Some(PathBuf::from("/var/snap/vm42")));
-        assert_eq!(
-            launch.snapshot_root,
-            Some(PathBuf::from("/tmp/plaza-vsock"))
-        );
+    fn parse_reads_the_command_line() {
+        // Original restore_and_the_snapshot_root_are_parsed: `--restore` becomes the
+        // spec's restore, and `--snapshot-root` must be an absolute path.
+        {
+            let args: Vec<String> = [
+                "--kernel",
+                "/k",
+                "--cmdline",
+                "c",
+                "--restore",
+                "/var/snap/vm42",
+                "--snapshot-root",
+                "/tmp/plaza-vsock",
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+            let launch = parse(&args).expect("a restoring command line");
+            assert_eq!(launch.spec.restore, Some(PathBuf::from("/var/snap/vm42")));
+            assert_eq!(
+                launch.snapshot_root,
+                Some(PathBuf::from("/tmp/plaza-vsock"))
+            );
 
-        let relative: Vec<String> = [
-            "--kernel",
-            "/k",
-            "--cmdline",
-            "c",
-            "--snapshot-root",
-            "snaps",
-        ]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
-        let err = parse(&relative).expect_err("a relative snapshot root is refused");
-        assert!(err.contains("--snapshot-root"), "{err}");
+            let relative: Vec<String> = [
+                "--kernel",
+                "/k",
+                "--cmdline",
+                "c",
+                "--snapshot-root",
+                "snaps",
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+            let err = parse(&relative).expect_err("a relative snapshot root is refused");
+            assert!(err.contains("--snapshot-root"), "{err}");
+        }
+
+        // Original a_command_line_that_names_no_vm_is_refused: never a VM booted with a
+        // field missing; the flag is named.
+        {
+            for (args, wanted) in [
+                (vec!["--cmdline", "x"], "--kernel"),
+                (vec!["--kernel", "/k"], "--cmdline"),
+                (
+                    vec!["--kernel", "/k", "--cmdline", "x", "--cid", "9"],
+                    "--uds",
+                ),
+                (
+                    vec!["--kernel", "/k", "--cmdline", "x", "--uds", "/u"],
+                    "--cid",
+                ),
+                (
+                    vec!["--kernel", "/k", "--cmdline", "x", "--memory-mib", "lots"],
+                    "--memory-mib",
+                ),
+                (vec!["--kernel"], "needs a value"),
+                (vec!["--nonsense"], "not a flag"),
+            ] {
+                let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+                let err = parse(&args).expect_err("must be refused");
+                assert!(err.contains(wanted), "{args:?}: {err}");
+            }
+        }
+
+        // Original the_defaults_are_the_specs_defaults: both optional numbers default to
+        // the spec's own, and every optional field is absent where the parent omitted it.
+        {
+            let args: Vec<String> = ["--kernel", "/k", "--cmdline", "c"]
+                .iter()
+                .map(|arg| arg.to_string())
+                .collect();
+            let Launch {
+                spec,
+                control,
+                snapshot_root,
+            } = parse(&args).expect("a minimal command line");
+            assert_eq!(spec.vcpus, VmSpec::default().vcpus);
+            assert_eq!(spec.memory_mib, VmSpec::default().memory_mib);
+            assert!(spec.vsock.is_none());
+            assert!(spec.workspace.is_none());
+            assert!(spec.initrd.is_none());
+            assert!(spec.gic.is_none());
+            assert!(spec.restore.is_none());
+            assert!(control.is_none());
+            assert!(snapshot_root.is_none());
+        }
     }
 
     /// A balloon whose counters and resizes are fixed, for the control tests.
@@ -881,129 +936,78 @@ mod tests {
         }
     }
 
-    /// A VM with every control: each request gets its own reply, in the shape the
-    /// parent parses (`ok`, `ok <kind> <bytes> <ms>`, `stats …`).
+    /// The control answers each request in the shape the parent parses, refuses a
+    /// snapshot outside its root and a request the VM has nothing for, and refuses
+    /// pause, resume and snapshot when the VM has no snapshot control.
     #[test]
-    fn the_control_answers_every_request_it_has_a_thing_for() {
-        let controls = Controls {
-            memory: Some(Arc::new(FakeMemory)),
-            vm: Some(Arc::new(FakeVm)),
-            snapshot_root: Some(PathBuf::from("/srv/snaps")),
-        };
-        assert_eq!(answer("usable 128", &controls), "ok");
-        assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
-        assert_eq!(answer("pause", &controls), "ok");
-        assert_eq!(answer("resume", &controls), "ok");
-        assert_eq!(
-            answer("snapshot full /srv/snaps/a", &controls),
-            "ok full 4096 3"
-        );
-        assert_eq!(
-            answer("snapshot diff /srv/snaps/with space", &controls),
-            "ok diff 4096 3"
-        );
-    }
-
-    /// A snapshot is refused, before any write, unless its directory is absolute
-    /// and under the root component-wise, with no `..`; a request the VM has
-    /// nothing for is refused by name.
-    #[test]
-    fn a_snapshot_outside_the_root_is_refused() {
-        let controls = Controls {
-            memory: None,
-            vm: Some(Arc::new(FakeVm)),
-            snapshot_root: Some(PathBuf::from("/srv/snaps")),
-        };
-        for bad in [
-            "snapshot full /etc/passwd",
-            "snapshot full /srv/snapsx/a",
-            "snapshot full /srv/snaps/../etc",
-            "snapshot full relative/dir",
-            "snapshot sparse /srv/snaps/a",
-            "snapshot full",
-        ] {
-            assert!(answer(bad, &controls).starts_with("err "), "{bad}");
+    fn control_answers_and_refuses_requests() {
+        // Original the_control_answers_every_request_it_has_a_thing_for: every control
+        // present; each reply is `ok`, `ok <kind> <bytes> <ms>` or `stats …`.
+        {
+            let controls = Controls {
+                memory: Some(Arc::new(FakeMemory)),
+                vm: Some(Arc::new(FakeVm)),
+                snapshot_root: Some(PathBuf::from("/srv/snaps")),
+            };
+            assert_eq!(answer("usable 128", &controls), "ok");
+            assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
+            assert_eq!(answer("pause", &controls), "ok");
+            assert_eq!(answer("resume", &controls), "ok");
+            assert_eq!(
+                answer("snapshot full /srv/snaps/a", &controls),
+                "ok full 4096 3"
+            );
+            assert_eq!(
+                answer("snapshot diff /srv/snaps/with space", &controls),
+                "ok diff 4096 3"
+            );
         }
-        // No balloon: a resize and stats are refused, not served from nothing.
-        assert_eq!(answer("usable 5", &controls), NO_BALLOON);
-        assert_eq!(answer("stats", &controls), NO_BALLOON);
 
-        let rootless = Controls {
-            memory: None,
-            vm: Some(Arc::new(FakeVm)),
-            snapshot_root: None,
-        };
-        assert!(answer("snapshot full /srv/snaps/a", &rootless).starts_with("err "));
-    }
+        // Original a_snapshot_outside_the_root_is_refused: refused before any write unless
+        // the directory is absolute and under the root component-wise, with no `..`.
+        {
+            let controls = Controls {
+                memory: None,
+                vm: Some(Arc::new(FakeVm)),
+                snapshot_root: Some(PathBuf::from("/srv/snaps")),
+            };
+            for bad in [
+                "snapshot full /etc/passwd",
+                "snapshot full /srv/snapsx/a",
+                "snapshot full /srv/snaps/../etc",
+                "snapshot full relative/dir",
+                "snapshot sparse /srv/snaps/a",
+                "snapshot full",
+            ] {
+                assert!(answer(bad, &controls).starts_with("err "), "{bad}");
+            }
+            // No balloon: a resize and stats are refused, not served from nothing.
+            assert_eq!(answer("usable 5", &controls), NO_BALLOON);
+            assert_eq!(answer("stats", &controls), NO_BALLOON);
 
-    /// A VM without a pause and snapshot control (a backend with no snapshot
-    /// support) refuses those requests, and keeps `usable` and `stats` working
-    /// when it has a balloon.
-    #[test]
-    fn a_vm_without_the_control_refuses_it() {
-        let controls = Controls {
-            memory: Some(Arc::new(FakeMemory)),
-            vm: None,
-            snapshot_root: Some(PathBuf::from("/srv/snaps")),
-        };
-        assert_eq!(answer("pause", &controls), NO_SNAPSHOTS);
-        assert_eq!(answer("resume", &controls), NO_SNAPSHOTS);
-        assert_eq!(
-            answer("snapshot full /srv/snaps/a", &controls),
-            NO_SNAPSHOTS
-        );
-        assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
-    }
-
-    /// A command line that does not describe one VM is refused, with the flag
-    /// named — never a VM booted with a field missing.
-    #[test]
-    fn a_command_line_that_names_no_vm_is_refused() {
-        for (args, wanted) in [
-            (vec!["--cmdline", "x"], "--kernel"),
-            (vec!["--kernel", "/k"], "--cmdline"),
-            (
-                vec!["--kernel", "/k", "--cmdline", "x", "--cid", "9"],
-                "--uds",
-            ),
-            (
-                vec!["--kernel", "/k", "--cmdline", "x", "--uds", "/u"],
-                "--cid",
-            ),
-            (
-                vec!["--kernel", "/k", "--cmdline", "x", "--memory-mib", "lots"],
-                "--memory-mib",
-            ),
-            (vec!["--kernel"], "needs a value"),
-            (vec!["--nonsense"], "not a flag"),
-        ] {
-            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-            let err = parse(&args).expect_err("must be refused");
-            assert!(err.contains(wanted), "{args:?}: {err}");
+            let rootless = Controls {
+                memory: None,
+                vm: Some(Arc::new(FakeVm)),
+                snapshot_root: None,
+            };
+            assert!(answer("snapshot full /srv/snaps/a", &rootless).starts_with("err "));
         }
-    }
 
-    /// Both optional numbers default to the spec's own, and every optional
-    /// field is absent where the parent omitted it.
-    #[test]
-    fn the_defaults_are_the_specs_defaults() {
-        let args: Vec<String> = ["--kernel", "/k", "--cmdline", "c"]
-            .iter()
-            .map(|arg| arg.to_string())
-            .collect();
-        let Launch {
-            spec,
-            control,
-            snapshot_root,
-        } = parse(&args).expect("a minimal command line");
-        assert_eq!(spec.vcpus, VmSpec::default().vcpus);
-        assert_eq!(spec.memory_mib, VmSpec::default().memory_mib);
-        assert!(spec.vsock.is_none());
-        assert!(spec.workspace.is_none());
-        assert!(spec.initrd.is_none());
-        assert!(spec.gic.is_none());
-        assert!(spec.restore.is_none());
-        assert!(control.is_none());
-        assert!(snapshot_root.is_none());
+        // Original a_vm_without_the_control_refuses_it: with no pause and snapshot control
+        // those requests are refused, and `stats` still works with a balloon.
+        {
+            let controls = Controls {
+                memory: Some(Arc::new(FakeMemory)),
+                vm: None,
+                snapshot_root: Some(PathBuf::from("/srv/snaps")),
+            };
+            assert_eq!(answer("pause", &controls), NO_SNAPSHOTS);
+            assert_eq!(answer("resume", &controls), NO_SNAPSHOTS);
+            assert_eq!(
+                answer("snapshot full /srv/snaps/a", &controls),
+                NO_SNAPSHOTS
+            );
+            assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
+        }
     }
 }

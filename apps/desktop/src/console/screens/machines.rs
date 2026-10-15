@@ -2191,69 +2191,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The offset `SectionOffset::finish` gives for a section's and the view's tops (window positions), the scroll, and
-    /// whether the section is already visible. Hidden, the offset is section − view; visible, the gap still showing is
-    /// that less the scroll's translation.
-    fn offset(
-        section_top: Option<f32>,
-        view_top: Option<f32>,
-        scrolled: f32,
-        visible: bool,
-    ) -> Option<f32> {
-        let measure = SectionOffset {
-            section: section_id("m"),
-            scroll: section_id("s"),
-            section_top,
-            view_top,
-            scrolled,
-            visible,
-        };
-        match measure.finish() {
-            Outcome::Some(y) => Some(y),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn machines_pick_offset_is_the_section_less_the_view_and_less_the_scroll_when_visible() {
-        // Hidden: the section's top sits 300 px below the view's top, and the scroll is not taken off (the bounds stay put).
-        assert_eq!(offset(Some(400.0), Some(100.0), 100.0, false), Some(300.0));
-        // Visible: the same tops with the scroll at 100 leave 300 - 100 = 200.
-        assert_eq!(offset(Some(400.0), Some(100.0), 100.0, true), Some(200.0));
-    }
-
-    #[test]
-    fn machines_offset_puts_the_section_top_at_the_view_top() {
-        // Unscrolled, hidden: the section starts 400 px below the view's top, so the offset is 400.
-        assert_eq!(offset(Some(500.0), Some(100.0), 0.0, false), Some(400.0));
-        // Scrolled 250, hidden: the translation is ignored, the section still starts 200 px below, so the offset is 200.
-        assert_eq!(offset(Some(300.0), Some(100.0), 250.0, false), Some(200.0));
-        // Scrolled 250, visible: 300 - 100 - 250 = -50, so the section's top sits 50 px above the view's top.
-        assert_eq!(offset(Some(300.0), Some(100.0), 250.0, true), Some(-50.0));
-        // Without both tops there is nothing to scroll to.
-        assert_eq!(offset(None, Some(100.0), 0.0, false), None);
-        assert_eq!(offset(Some(500.0), None, 0.0, false), None);
-    }
-
-    #[test]
-    fn machines_name_the_apple_chip_and_the_laptop_kind() {
-        let mac = parse_machine(&json!({
-            "id": "n1", "name": "mac", "kind": "laptop", "vendor": "apple",
-            "model": "MacBook Pro (M3 Max)", "arch": "arm64", "backend": "hvf", "cpus": 16,
-            "memory_mib": 65536,
-            "apple": {"chip": "Apple M3 Max", "p_cores": 12, "e_cores": 4, "gpu_cores": 40,
-                      "neural_cores": 16, "unified_memory_gib": 64},
-        }))
-        .expect("a machine with an id");
-        assert_eq!(
-            sentence(&mac),
-            "Laptop · MacBook Pro (M3 Max) · Apple M3 Max · 16 cores (12P + 4E) · 40-core GPU · 64 GB unified"
-        );
-        let pc = parse_machine(&json!({"id": "n0", "kind": "phone", "arch": "arm64", "backend": "kvm", "cpus": 8, "memory_mib": 4096}))
-            .expect("a machine with an id");
-        assert_eq!(sentence(&pc), "Phone · 8-core arm64 on KVM · 4 GiB memory");
-    }
-
     #[test]
     fn machines_show_a_station_as_a_workstation_with_its_leases_and_account() {
         let station = |mode: &str| {

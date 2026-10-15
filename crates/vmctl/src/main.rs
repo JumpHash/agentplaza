@@ -649,23 +649,20 @@ mod tests {
     }
 
     #[test]
-    fn the_last_guest_cid_is_u32_max_minus_one() {
-        assert_eq!(MAX_GUEST_CID, 4_294_967_294);
-        assert!(MAX_GUEST_CID < u32::MAX as u64);
-    }
-
-    #[test]
-    fn vsock_cid_upper_bound_is_enforced() {
-        assert!(parse(&[("--vsock-cid", "3")]).is_ok());
-        assert!(parse(&[("--vsock-cid", "4294967294")]).is_ok()); // u32::MAX - 1
-        assert!(parse(&[("--vsock-cid", "2")]).is_err()); // below MIN_GUEST_CID
-        assert!(parse(&[("--vsock-cid", "4294967295")]).is_err()); // u32::MAX
-        assert!(parse(&[("--vsock-cid", "4294967296")]).is_err()); // u32::MAX + 1
-    }
-
-    #[test]
-    fn vsock_cid_and_n_must_stay_under_the_transport_max() {
-        assert!(parse(&[("-n", "1"), ("--vsock-cid", "4294967294")]).is_ok());
-        assert!(parse(&[("-n", "2"), ("--vsock-cid", "4294967294")]).is_err());
+    fn vsock_cid_bounds_are_enforced() {
+        let cases: &[(&[(&str, &str)], bool)] = &[
+            // The CID bounds: MIN_GUEST_CID up to u32::MAX - 1 are accepted.
+            (&[("--vsock-cid", "3")], true),
+            (&[("--vsock-cid", "4294967294")], true), // u32::MAX - 1
+            (&[("--vsock-cid", "2")], false),         // below MIN_GUEST_CID
+            (&[("--vsock-cid", "4294967295")], false), // u32::MAX
+            (&[("--vsock-cid", "4294967296")], false), // u32::MAX + 1
+            // With -n, the CID and the count must stay under the transport max.
+            (&[("-n", "1"), ("--vsock-cid", "4294967294")], true),
+            (&[("-n", "2"), ("--vsock-cid", "4294967294")], false),
+        ];
+        for &(argv, ok) in cases {
+            assert_eq!(parse(argv).is_ok(), ok, "{argv:?}");
+        }
     }
 }

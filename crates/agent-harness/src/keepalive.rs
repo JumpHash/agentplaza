@@ -328,34 +328,37 @@ mod tests {
     }
 
     #[test]
-    fn the_backoff_is_the_contracts_schedule() {
-        let ms = |failures, jitter| backoff_delay(failures, jitter).as_millis() as u64;
-        assert_eq!(
-            [ms(1, 0), ms(2, 0), ms(3, 0), ms(8, 0), ms(u32::MAX, 0)],
-            [250, 500, 1_000, 30_000, 30_000]
-        );
-        for failures in [1u32, 3, 40] {
-            for jitter in [0u64, 7, u64::MAX] {
-                let (nominal, delay) = (ms(failures, 0), ms(failures, jitter));
-                assert!(
-                    delay <= nominal && delay >= nominal - nominal / 8 - 1,
-                    "{failures}/{jitter}: {delay}"
+    fn reconnect_delay_follows_the_backoff_contract() {
+        // The backoff schedule: 250 ms doubling to a 30 s cap, and jitter that only shortens
+        // the delay, by at most an eighth.
+        {
+            let ms = |failures, jitter| backoff_delay(failures, jitter).as_millis() as u64;
+            assert_eq!(
+                [ms(1, 0), ms(2, 0), ms(3, 0), ms(8, 0), ms(u32::MAX, 0)],
+                [250, 500, 1_000, 30_000, 30_000]
+            );
+            for failures in [1u32, 3, 40] {
+                for jitter in [0u64, 7, u64::MAX] {
+                    let (nominal, delay) = (ms(failures, 0), ms(failures, jitter));
+                    assert!(
+                        delay <= nominal && delay >= nominal - nominal / 8 - 1,
+                        "{failures}/{jitter}: {delay}"
+                    );
+                }
+            }
+            assert_ne!(backoff_delay(1, 5), backoff_delay(1, 9));
+        }
+        // A template retries every 25 ms until its first welcome, then backs off.
+        {
+            for failures in [1u32, 2, 40] {
+                assert_eq!(
+                    reconnect_delay(true, failures, 7),
+                    Duration::from_millis(25)
                 );
             }
+            assert_eq!(reconnect_delay(false, 2, 0), backoff_delay(2, 0));
+            assert_eq!(reconnect_delay(false, 40, 3), backoff_delay(40, 3));
         }
-        assert_ne!(backoff_delay(1, 5), backoff_delay(1, 9));
-    }
-
-    #[test]
-    fn a_template_retries_every_25_ms_until_its_first_welcome_then_backs_off() {
-        for failures in [1u32, 2, 40] {
-            assert_eq!(
-                reconnect_delay(true, failures, 7),
-                Duration::from_millis(25)
-            );
-        }
-        assert_eq!(reconnect_delay(false, 2, 0), backoff_delay(2, 0));
-        assert_eq!(reconnect_delay(false, 40, 3), backoff_delay(40, 3));
     }
 
     #[test]

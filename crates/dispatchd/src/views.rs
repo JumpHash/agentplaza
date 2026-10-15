@@ -191,42 +191,46 @@ mod tests {
         assert!(serde_json::from_str::<Task>(r#"{"id":"t1"}"#).is_err());
     }
 
-    /// The role rule: exact equality, and an empty role is no role.
+    /// The role and state rules, read off tasks parsed from the hub's shape: a
+    /// role is matched exactly and an empty one is no role; the three states the
+    /// ledger ends a task in are not dispatchable, and every state it can hold
+    /// dispatches exactly one way.
     #[test]
-    fn a_role_is_matched_exactly_and_a_blank_one_is_no_role() {
-        let roled = |role: &str| {
-            serde_json::from_str::<Task>(&format!(
-                r#"{{"id":"t1","state":"open","role":"{role}"}}"#
-            ))
-            .expect("a task")
-            .roled()
-            .map(str::to_string)
-        };
-        assert_eq!(roled("builder"), Some("builder".to_string()));
-        assert_eq!(roled("builder "), Some("builder ".to_string()));
-        assert_eq!(roled("Builder"), Some("Builder".to_string()));
-        assert_eq!(roled(""), None);
-    }
-
-    /// The terminal rule: the three states the ledger ends a task in are not
-    /// dispatchable, and every state it can hold dispatches exactly one way.
-    #[test]
-    fn the_states_are_the_ledgers_and_the_terminals_are_terminal() {
-        let state = |state: &str| {
-            serde_json::from_str::<Task>(&format!(r#"{{"id":"t1","state":"{state}"}}"#))
+    fn task_role_and_state_rules_hold() {
+        // The role rule: exact equality, and an empty role is no role.
+        {
+            let roled = |role: &str| {
+                serde_json::from_str::<Task>(&format!(
+                    r#"{{"id":"t1","state":"open","role":"{role}"}}"#
+                ))
                 .expect("a task")
-        };
-        for terminal in ["done", "failed", "withdrawn"] {
-            let task = state(terminal);
-            assert!(task.is_terminal(), "{terminal} is terminal");
-            assert!(!task.is_open() && !task.is_claimed());
+                .roled()
+                .map(str::to_string)
+            };
+            assert_eq!(roled("builder"), Some("builder".to_string()));
+            assert_eq!(roled("builder "), Some("builder ".to_string()));
+            assert_eq!(roled("Builder"), Some("Builder".to_string()));
+            assert_eq!(roled(""), None);
         }
-        assert!(state("open").is_open());
-        assert!(state("claimed").is_claimed());
-        // A state the daemon has not taught the dispatcher about is neither
-        // claimable nor a retry: it is left alone.
-        let unknown = state("verifying");
-        assert!(!unknown.is_open() && !unknown.is_claimed() && !unknown.is_terminal());
+        // The terminal rule: the three states the ledger ends a task in are not
+        // dispatchable, and every state it can hold dispatches exactly one way.
+        {
+            let state = |state: &str| {
+                serde_json::from_str::<Task>(&format!(r#"{{"id":"t1","state":"{state}"}}"#))
+                    .expect("a task")
+            };
+            for terminal in ["done", "failed", "withdrawn"] {
+                let task = state(terminal);
+                assert!(task.is_terminal(), "{terminal} is terminal");
+                assert!(!task.is_open() && !task.is_claimed());
+            }
+            assert!(state("open").is_open());
+            assert!(state("claimed").is_claimed());
+            // A state the daemon has not taught the dispatcher about is neither
+            // claimable nor a retry: it is left alone.
+            let unknown = state("verifying");
+            assert!(!unknown.is_open() && !unknown.is_claimed() && !unknown.is_terminal());
+        }
     }
 
     /// An agent row is read from the hub's own shape, and its presence is the

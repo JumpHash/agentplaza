@@ -555,36 +555,56 @@ mod tests {
     }
 
     #[test]
-    fn a_path_outside_the_repository_is_refused_and_never_forwarded() {
-        let hub = |_: &Forward| -> io::Result<Reply> { panic!("a refused path reached the hub") };
-        for path in [
-            "/v1/git/smart/other/info/refs",
-            "/v1/git/smart/acme-2/info/refs",
-            "/v1/git/smart/acme/../other/info/refs",
-            "/v1/git/smart/acme/%2e%2e/x",
-            "/v1/git/smart/acme",
-            "/v1/git/smart/acme/",
-            "/v1/hub/tokens",
-        ] {
-            let request = format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n");
-            assert!(
-                run(request.as_bytes(), &hub).starts_with("HTTP/1.1 404 Not Found\r\n"),
-                "{path}"
-            );
+    fn a_refused_request_is_never_forwarded() {
+        // A path outside the repository is refused with 404 and never forwarded.
+        {
+            let hub =
+                |_: &Forward| -> io::Result<Reply> { panic!("a refused path reached the hub") };
+            for path in [
+                "/v1/git/smart/other/info/refs",
+                "/v1/git/smart/acme-2/info/refs",
+                "/v1/git/smart/acme/../other/info/refs",
+                "/v1/git/smart/acme/%2e%2e/x",
+                "/v1/git/smart/acme",
+                "/v1/git/smart/acme/",
+                "/v1/hub/tokens",
+            ] {
+                let request = format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n");
+                assert!(
+                    run(request.as_bytes(), &hub).starts_with("HTTP/1.1 404 Not Found\r\n"),
+                    "{path}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn a_body_over_the_limit_is_refused_before_its_data_is_read() {
-        let hub =
-            |_: &Forward| -> io::Result<Reply> { panic!("an oversized body reached the hub") };
-        let declared = format!(
-            "POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-            MAX_BODY + 1
-        );
-        assert!(run(declared.as_bytes(), &hub).starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
-        let chunked = b"POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n10000001\r\n";
-        assert!(run(chunked, &hub).starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+        // A body over the limit is refused with 413 before its data is read.
+        {
+            let hub =
+                |_: &Forward| -> io::Result<Reply> { panic!("an oversized body reached the hub") };
+            let declared = format!(
+                "POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+                MAX_BODY + 1
+            );
+            assert!(
+                run(declared.as_bytes(), &hub).starts_with("HTTP/1.1 413 Payload Too Large\r\n")
+            );
+            let chunked = b"POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n10000001\r\n";
+            assert!(run(chunked, &hub).starts_with("HTTP/1.1 413 Payload Too Large\r\n"));
+        }
+        // A chunked body with too many trailers is refused with 400.
+        {
+            let hub = |_: &Forward| -> io::Result<Reply> {
+                panic!("a refused request is never forwarded")
+            };
+            let mut request = String::from(
+                "POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n",
+            );
+            for i in 0..=MAX_HEADERS {
+                request.push_str(&format!("X-Trailer-{i}: 1\r\n"));
+            }
+            request.push_str("\r\n");
+            let out = run(request.as_bytes(), &hub);
+            assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+        }
     }
 
     #[test]
@@ -597,21 +617,6 @@ mod tests {
         assert_eq!(unprefixed("/abcd/v1/x", "abc"), None);
         assert_ne!(secret(), secret());
         assert_eq!(secret().len(), 32);
-    }
-
-    #[test]
-    fn a_chunked_body_with_too_many_trailers_is_refused() {
-        let hub =
-            |_: &Forward| -> io::Result<Reply> { panic!("a refused request is never forwarded") };
-        let mut request = String::from(
-            "POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n",
-        );
-        for i in 0..=MAX_HEADERS {
-            request.push_str(&format!("X-Trailer-{i}: 1\r\n"));
-        }
-        request.push_str("\r\n");
-        let out = run(request.as_bytes(), &hub);
-        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
     }
 
     #[test]

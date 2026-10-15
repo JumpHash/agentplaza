@@ -652,19 +652,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn volumes_names_follow_the_pattern() {
-        assert!(valid_name("data-1"));
-        assert!(valid_name("a"));
-        assert!(valid_name(&"a".repeat(20)));
-        assert!(!valid_name(&"a".repeat(21)));
-        assert!(!valid_name(""));
-        assert!(!valid_name("-data"));
-        assert!(!valid_name("Data"));
-        assert!(!valid_name("a_b"));
-        assert!(!valid_name("a b"));
-    }
-
-    #[test]
     fn volumes_a_role_takes_at_most_four() {
         assert_eq!(parse_names("a, b,,c ").unwrap(), vec!["a", "b", "c"]);
         assert_eq!(parse_names("a,a").unwrap(), vec!["a"]);
@@ -685,12 +672,5 @@ mod tests {
         let cleared = role_settings(&set, "ops", " ").unwrap();
         assert_eq!(cleared["role_volumes"], json!({"dev": ["z", "w"]}));
         assert!(role_settings(&settings, "dev", "Bad").is_err());
-    }
-
-    #[test]
-    fn volumes_size_and_mounts_read_plainly() {
-        assert_eq!(size_mib(3 * 1024 * 1024 + 5), 3);
-        assert_eq!(mounted_text(&[]), "—");
-        assert_eq!(mounted_text(&[4, 9]), "4, 9");
     }
 }

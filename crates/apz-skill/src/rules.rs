@@ -497,186 +497,237 @@ mod tests {
     }
 
     #[test]
-    fn name_format_fires_on_unusable_names() {
-        let long = "a".repeat(65);
-        for name in [
-            "PDF_forms",
-            "-pdf",
-            "pdf-",
-            "pdf--forms",
-            "my-claude-tool",
-            "anthropic-x",
-            "",
-            long.as_str(),
-        ] {
-            assert_eq!(
+    fn frontmatter_rules_check_names_and_descriptions() {
+        // name-format fires once per unusable name; a valid name does not fire.
+        {
+            let long = "a".repeat(65);
+            for name in [
+                "PDF_forms",
+                "-pdf",
+                "pdf-",
+                "pdf--forms",
+                "my-claude-tool",
+                "anthropic-x",
+                "",
+                long.as_str(),
+            ] {
+                assert_eq!(
+                    fired(
+                        &check(&skill(name, "Use when x.", BODY), &[]),
+                        "name-format"
+                    )
+                    .len(),
+                    1,
+                    "{name}"
+                );
+            }
+            assert!(
                 fired(
-                    &check(&skill(name, "Use when x.", BODY), &[]),
+                    &check(&skill("pdf-forms-2", "Use when x.", BODY), &[]),
                     "name-format"
                 )
-                .len(),
-                1,
-                "{name}"
+                .is_empty()
             );
         }
-        assert!(
-            fired(
-                &check(&skill("pdf-forms-2", "Use when x.", BODY), &[]),
-                "name-format"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn description_missing_fires_when_empty() {
-        assert_eq!(
-            fired(&check(&skill("pdf", "", BODY), &[]), "description-missing").len(),
-            1
-        );
-        assert!(
-            fired(
-                &check(&skill("pdf", "Use when x.", BODY), &[]),
-                "description-missing"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn description_length_fires_over_1024() {
-        let at_limit = format!("Use when {}", "a".repeat(1015));
-        let over = format!("Use when {}", "a".repeat(1016));
-        assert_eq!(at_limit.len(), 1024);
-        assert!(
-            fired(
-                &check(&skill("pdf", &at_limit, BODY), &[]),
-                "description-length"
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            fired(
-                &check(&skill("pdf", &over, BODY), &[]),
-                "description-length"
-            )
-            .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn description_when_warns_without_a_trigger() {
-        let f = fired(
-            &check(&skill("pdf", "Fills PDF forms.", BODY), &[]),
-            "description-when",
-        );
-        assert_eq!((f.len(), f[0].severity), (1, Severity::Warning));
-        for ok in [
-            "Fills PDF forms. Use when a PDF has fields.",
-            "Fills forms. Use this for PDFs.",
-            "Fills PDF forms, when a PDF has fields.",
-        ] {
+        // description-missing fires only when the description is empty.
+        {
+            assert_eq!(
+                fired(&check(&skill("pdf", "", BODY), &[]), "description-missing").len(),
+                1
+            );
             assert!(
-                fired(&check(&skill("pdf", ok, BODY), &[]), "description-when").is_empty(),
-                "{ok}"
+                fired(
+                    &check(&skill("pdf", "Use when x.", BODY), &[]),
+                    "description-missing"
+                )
+                .is_empty()
+            );
+        }
+        // description-length fires only above 1024 characters.
+        {
+            let at_limit = format!("Use when {}", "a".repeat(1015));
+            let over = format!("Use when {}", "a".repeat(1016));
+            assert_eq!(at_limit.len(), 1024);
+            assert!(
+                fired(
+                    &check(&skill("pdf", &at_limit, BODY), &[]),
+                    "description-length"
+                )
+                .is_empty()
+            );
+            assert_eq!(
+                fired(
+                    &check(&skill("pdf", &over, BODY), &[]),
+                    "description-length"
+                )
+                .len(),
+                1
+            );
+        }
+        // description-when warns without a trigger; any trigger phrase satisfies it.
+        {
+            let f = fired(
+                &check(&skill("pdf", "Fills PDF forms.", BODY), &[]),
+                "description-when",
+            );
+            assert_eq!((f.len(), f[0].severity), (1, Severity::Warning));
+            for ok in [
+                "Fills PDF forms. Use when a PDF has fields.",
+                "Fills forms. Use this for PDFs.",
+                "Fills PDF forms, when a PDF has fields.",
+            ] {
+                assert!(
+                    fired(&check(&skill("pdf", ok, BODY), &[]), "description-when").is_empty(),
+                    "{ok}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn size_rules_warn_on_long_bodies_big_files_and_big_skills() {
+        // body-long warns over 500 lines; exactly 500 lines do not warn.
+        {
+            let long = "Step.\n".repeat(501);
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", &long), &[]),
+                "body-long",
+            );
+            assert_eq!((f.len(), f[0].severity), (1, Severity::Warning));
+            let ok = "Step.\n".repeat(500);
+            assert!(fired(&check(&skill("pdf", "Use when x.", &ok), &[]), "body-long").is_empty());
+        }
+        // large-file warns on a big text file; binary-file is info for a binary file.
+        {
+            let big = [file("data.csv", 1_500_000, None)];
+            let r = check(&skill("pdf", "Use when x.", BODY), &big);
+            assert_eq!(fired(&r, "large-file").len(), 1);
+            assert!(fired(&r, "binary-file").is_empty());
+            let bin = [file("logo.png", 10, None), file("a.txt", 10, Some("x"))];
+            let r = check(&skill("pdf", "Use when x.", BODY), &bin);
+            assert_eq!(fired(&r, "binary-file").len(), 1);
+            assert!(fired(&r, "large-file").is_empty());
+        }
+        // size-limit fires on one file over 5 MB, on more than 200 files, and on 25 MB in all.
+        {
+            let huge = [file("model.bin", 5 * 1024 * 1024 + 1, None)];
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", BODY), &huge),
+                "size-limit",
+            );
+            assert_eq!((f.len(), f[0].path.as_str()), (1, "model.bin"));
+            let many: Vec<FileInfo> = (0..201)
+                .map(|i| file(&format!("f{i}.txt"), 1, Some("x")))
+                .collect();
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", BODY), &many),
+                "size-limit",
+            );
+            assert_eq!((f.len(), f[0].path.as_str()), (1, "SKILL.md"));
+            let chunky: Vec<FileInfo> = (0..5)
+                .map(|i| file(&format!("c{i}.bin"), 5 * 1024 * 1024, None))
+                .collect();
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", BODY), &chunky),
+                "size-limit",
+            );
+            assert_eq!(
+                (f.len(), f[0].path.as_str()),
+                (1, "SKILL.md"),
+                "25 MB in all"
+            );
+            let small = [file("a.txt", 1, Some("x"))];
+            assert!(
+                fired(
+                    &check(&skill("pdf", "Use when x.", BODY), &small),
+                    "size-limit"
+                )
+                .is_empty()
             );
         }
     }
 
     #[test]
-    fn body_long_warns_over_500_lines() {
-        let long = "Step.\n".repeat(501);
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", &long), &[]),
-            "body-long",
-        );
-        assert_eq!((f.len(), f[0].severity), (1, Severity::Warning));
-        let ok = "Step.\n".repeat(500);
-        assert!(fired(&check(&skill("pdf", "Use when x.", &ok), &[]), "body-long").is_empty());
-    }
-
-    #[test]
-    fn missing_file_fires_on_dead_links() {
-        let body = "See [the form](forms/fill.md) and `scripts/run.py`.\n";
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", body), &[]),
-            "missing-file",
-        );
-        assert_eq!(f.len(), 2);
-        assert!(
-            f.iter()
-                .all(|x| x.path == "SKILL.md" && x.severity == Severity::Error)
-        );
-        assert_eq!(
-            f[0].line, 5,
-            "the body starts after the four frontmatter lines"
-        );
-        let files = [
-            file("forms/fill.md", 3, Some("x")),
-            file("scripts/run.py", 3, Some("x")),
-        ];
-        assert!(
-            fired(
-                &check(&skill("pdf", "Use when x.", body), &files),
-                "missing-file"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn missing_file_ignores_urls_anchors_and_mail() {
-        let body = "[a](https://example.com) [b](#top) [c](mailto:me@example.com)\n";
-        assert!(
-            fired(
+    fn missing_file_flags_dead_links_and_unused_files() {
+        // A dead link in the body is an error on SKILL.md, counted from the body's first line.
+        {
+            let body = "See [the form](forms/fill.md) and `scripts/run.py`.\n";
+            let f = fired(
                 &check(&skill("pdf", "Use when x.", body), &[]),
-                "missing-file"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn missing_file_checks_text_files_relative_to_their_folder() {
-        let text = [file("reference.md", 20, Some("see [x](gone.md)\n"))];
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", BODY), &text),
-            "missing-file",
-        );
-        assert_eq!(
-            (f.len(), f[0].path.as_str(), f[0].line),
-            (1, "reference.md", 1)
-        );
-        let nested = [
-            file("docs/a.md", 9, Some("[b](b.md)")),
-            file("docs/b.md", 1, Some("")),
-        ];
-        assert!(
-            fired(
-                &check(&skill("pdf", "Use when x.", BODY), &nested),
-                "missing-file"
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn unused_file_is_info_when_nothing_mentions_it() {
-        let files = [file("assets/logo.png", 10, None)];
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", BODY), &files),
-            "unused-file",
-        );
-        assert_eq!((f.len(), f[0].severity), (1, Severity::Info));
-        let body = "Use `assets/logo.png` for the header.\n";
-        assert!(
-            fired(
-                &check(&skill("pdf", "Use when x.", body), &files),
-                "unused-file"
-            )
-            .is_empty()
-        );
+                "missing-file",
+            );
+            assert_eq!(f.len(), 2);
+            assert!(
+                f.iter()
+                    .all(|x| x.path == "SKILL.md" && x.severity == Severity::Error)
+            );
+            assert_eq!(
+                f[0].line, 5,
+                "the body starts after the four frontmatter lines"
+            );
+            let files = [
+                file("forms/fill.md", 3, Some("x")),
+                file("scripts/run.py", 3, Some("x")),
+            ];
+            assert!(
+                fired(
+                    &check(&skill("pdf", "Use when x.", body), &files),
+                    "missing-file"
+                )
+                .is_empty()
+            );
+        }
+        // URLs, in-page anchors and mail links are never checked as files.
+        {
+            let body = "[a](https://example.com) [b](#top) [c](mailto:me@example.com)\n";
+            assert!(
+                fired(
+                    &check(&skill("pdf", "Use when x.", body), &[]),
+                    "missing-file"
+                )
+                .is_empty()
+            );
+        }
+        // Text files are checked relative to their own folder.
+        {
+            let text = [file("reference.md", 20, Some("see [x](gone.md)\n"))];
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", BODY), &text),
+                "missing-file",
+            );
+            assert_eq!(
+                (f.len(), f[0].path.as_str(), f[0].line),
+                (1, "reference.md", 1)
+            );
+            let nested = [
+                file("docs/a.md", 9, Some("[b](b.md)")),
+                file("docs/b.md", 1, Some("")),
+            ];
+            assert!(
+                fired(
+                    &check(&skill("pdf", "Use when x.", BODY), &nested),
+                    "missing-file"
+                )
+                .is_empty()
+            );
+        }
+        // unused-file is info when nothing mentions the file.
+        {
+            let files = [file("assets/logo.png", 10, None)];
+            let f = fired(
+                &check(&skill("pdf", "Use when x.", BODY), &files),
+                "unused-file",
+            );
+            assert_eq!((f.len(), f[0].severity), (1, Severity::Info));
+            let body = "Use `assets/logo.png` for the header.\n";
+            assert!(
+                fired(
+                    &check(&skill("pdf", "Use when x.", body), &files),
+                    "unused-file"
+                )
+                .is_empty()
+            );
+        }
     }
 
     #[test]
@@ -693,56 +744,6 @@ mod tests {
         let paths: Vec<String> = fired(&r, "script").into_iter().map(|f| f.path).collect();
         assert_eq!(paths, ["scripts/fill", "tool", "tool.py"]);
         assert_eq!(r.stats.scripts, 3);
-    }
-
-    #[test]
-    fn large_file_warns_and_binary_is_info() {
-        let big = [file("data.csv", 1_500_000, None)];
-        let r = check(&skill("pdf", "Use when x.", BODY), &big);
-        assert_eq!(fired(&r, "large-file").len(), 1);
-        assert!(fired(&r, "binary-file").is_empty());
-        let bin = [file("logo.png", 10, None), file("a.txt", 10, Some("x"))];
-        let r = check(&skill("pdf", "Use when x.", BODY), &bin);
-        assert_eq!(fired(&r, "binary-file").len(), 1);
-        assert!(fired(&r, "large-file").is_empty());
-    }
-
-    #[test]
-    fn size_limit_fires_on_big_skills() {
-        let huge = [file("model.bin", 5 * 1024 * 1024 + 1, None)];
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", BODY), &huge),
-            "size-limit",
-        );
-        assert_eq!((f.len(), f[0].path.as_str()), (1, "model.bin"));
-        let many: Vec<FileInfo> = (0..201)
-            .map(|i| file(&format!("f{i}.txt"), 1, Some("x")))
-            .collect();
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", BODY), &many),
-            "size-limit",
-        );
-        assert_eq!((f.len(), f[0].path.as_str()), (1, "SKILL.md"));
-        let chunky: Vec<FileInfo> = (0..5)
-            .map(|i| file(&format!("c{i}.bin"), 5 * 1024 * 1024, None))
-            .collect();
-        let f = fired(
-            &check(&skill("pdf", "Use when x.", BODY), &chunky),
-            "size-limit",
-        );
-        assert_eq!(
-            (f.len(), f[0].path.as_str()),
-            (1, "SKILL.md"),
-            "25 MB in all"
-        );
-        let small = [file("a.txt", 1, Some("x"))];
-        assert!(
-            fired(
-                &check(&skill("pdf", "Use when x.", BODY), &small),
-                "size-limit"
-            )
-            .is_empty()
-        );
     }
 
     #[test]

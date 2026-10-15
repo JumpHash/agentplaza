@@ -2111,72 +2111,64 @@ mod tests {
     }
 
     #[test]
-    fn precedence_follows_the_table() {
-        assert_eq!(shape(&e("a or b => c")), "((a or b) => c)");
-        assert_eq!(shape(&e("a => b => c")), "(a => (b => c))");
-        assert_eq!(shape(&e("not a == b and c")), "((Not (a == b)) and c)");
-        assert_eq!(shape(&e("a + b * c ^ d ^ e")), "(a + (b * (c ^ (d ^ e))))");
-        assert_eq!(shape(&e("-a.b")), "(Neg a.b)");
-        assert_eq!(shape(&e("-x ^ 2")), "((Neg x) ^ 2)");
-        assert_eq!(shape(&e("x ?? y or z")), "(x ?? (y or z))");
-        assert_eq!(shape(&e("not open'")), "(Not open')");
-        assert_eq!(shape(&e("chain[pos] == a")), "(chain[pos] == a)");
-        assert_eq!(
-            shape(&e("always (p leads_to q)")),
-            "(Always (p leads_to q))"
-        );
-    }
-
-    #[test]
-    fn and_or_need_parentheses_and_comparisons_do_not_chain() {
-        assert!(parse_expr_at(0, "a and b or c", 0).is_err());
-        assert!(parse_expr_at(0, "a or b and c", 0).is_err());
-        assert!(parse_expr_at(0, "(a and b) or c", 0).is_ok());
-        assert!(parse_expr_at(0, "a < b < c", 0).is_err());
-    }
-
-    #[test]
-    fn literals_and_comprehensions() {
-        assert!(matches!(e("{a: 1, b: 2}").kind, ExprKind::Record(_)));
-        assert!(matches!(e("{\"a\": 1}").kind, ExprKind::Map(_)));
-        assert!(matches!(e("{a, b}").kind, ExprKind::Set(_)));
-        assert!(matches!(e("{}").kind, ExprKind::Set(_)));
-        assert!(matches!(e("(a, b)").kind, ExprKind::Tuple(_)));
-        assert!(matches!(
-            e("[for x in xs where x > 0 yield x]").kind,
-            ExprKind::Comp {
-                kind: CompKind::List,
-                ..
-            }
-        ));
-        assert!(matches!(
-            e("{for x in xs yield x: 1}").kind,
-            ExprKind::Comp {
-                kind: CompKind::Map,
-                ..
-            }
-        ));
-        assert!(
-            matches!(e("all x in S, y in T: x == y").kind, ExprKind::Quant(Quant::All, ref g, _) if g.len() == 2)
-        );
-        assert!(matches!(e("any(xs)").kind, ExprKind::Call(..)));
-        assert!(matches!(
-            e("m with [k] = v with .f = 2").kind,
-            ExprKind::With(..)
-        ));
-        assert!(
-            matches!(e("f(x, restart: 15 %)").kind, ExprKind::Call(_, ref a) if a[1].name.as_deref() == Some("restart"))
-        );
-        assert!(matches!(e("x is Agent").kind, ExprKind::Is(..)));
-        assert!(matches!(e("if a then 1 else 2").kind, ExprKind::If(..)));
-    }
-
-    #[test]
-    fn errors_have_positions() {
-        let d = parse_module(0, "fn f(x: Int) -> Int =\n  x +").unwrap_err();
-        assert!(d.msg.contains("expected an expression"), "{}", d.msg);
-        let d = parse_module(0, "machine M {\n  action A { x = 1 }\n}").unwrap_err();
-        assert!(d.msg.contains("x' ="), "{}", d.msg);
+    fn expression_parsing_follows_the_grammar() {
+        // precedence_follows_the_table: each operator binds as the table says.
+        for (src, want) in [
+            ("a or b => c", "((a or b) => c)"),
+            ("a => b => c", "(a => (b => c))"),
+            ("not a == b and c", "((Not (a == b)) and c)"),
+            ("a + b * c ^ d ^ e", "(a + (b * (c ^ (d ^ e))))"),
+            ("-a.b", "(Neg a.b)"),
+            ("-x ^ 2", "((Neg x) ^ 2)"),
+            ("x ?? y or z", "(x ?? (y or z))"),
+            ("not open'", "(Not open')"),
+            ("chain[pos] == a", "(chain[pos] == a)"),
+            ("always (p leads_to q)", "(Always (p leads_to q))"),
+        ] {
+            assert_eq!(shape(&e(src)), want, "{src}");
+        }
+        // and_or_need_parentheses_and_comparisons_do_not_chain: and/or need parentheses, comparisons do not chain.
+        {
+            assert!(parse_expr_at(0, "a and b or c", 0).is_err());
+            assert!(parse_expr_at(0, "a or b and c", 0).is_err());
+            assert!(parse_expr_at(0, "(a and b) or c", 0).is_ok());
+            assert!(parse_expr_at(0, "a < b < c", 0).is_err());
+        }
+        // literals_and_comprehensions: literals, comprehensions, quantifiers, calls, with and is.
+        {
+            assert!(matches!(e("{a: 1, b: 2}").kind, ExprKind::Record(_)));
+            assert!(matches!(e("{\"a\": 1}").kind, ExprKind::Map(_)));
+            assert!(matches!(e("{a, b}").kind, ExprKind::Set(_)));
+            assert!(matches!(e("{}").kind, ExprKind::Set(_)));
+            assert!(matches!(e("(a, b)").kind, ExprKind::Tuple(_)));
+            assert!(matches!(
+                e("[for x in xs where x > 0 yield x]").kind,
+                ExprKind::Comp {
+                    kind: CompKind::List,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                e("{for x in xs yield x: 1}").kind,
+                ExprKind::Comp {
+                    kind: CompKind::Map,
+                    ..
+                }
+            ));
+            assert!(
+                matches!(e("all x in S, y in T: x == y").kind, ExprKind::Quant(Quant::All, ref g, _) if g.len() == 2)
+            );
+            assert!(matches!(e("any(xs)").kind, ExprKind::Call(..)));
+            assert!(matches!(
+                e("m with [k] = v with .f = 2").kind,
+                ExprKind::With(..)
+            ));
+            assert!(
+                matches!(e("f(x, restart: 15 %)").kind, ExprKind::Call(_, ref a) if a[1].name.as_deref() == Some("restart"))
+            );
+            assert!(matches!(e("x is Agent").kind, ExprKind::Is(..)));
+            assert!(matches!(e("if a then 1 else 2").kind, ExprKind::If(..)));
+        }
     }
 
     #[test]

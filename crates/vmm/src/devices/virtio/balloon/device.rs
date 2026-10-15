@@ -827,47 +827,52 @@ mod tests {
     }
 
     #[test]
-    fn balloon_inflate_discards_the_pfn_runs_coalesced() {
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let mut queue = vq.create_queue();
+    fn balloon_serve_inflates_and_deflates_the_queues() {
+        // Inflate: adjacent frames are coalesced into one discarded run
+        // (balloon_inflate_discards_the_pfn_runs_coalesced).
+        {
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let mut queue = vq.create_queue();
 
-        // Frames 4..=7 are adjacent in host memory; frame 9 is not.
-        let pfns: [u32; 5] = [4, 5, 6, 7, 9];
-        let bytes: Vec<u8> = pfns.iter().flat_map(|pfn| pfn.to_le_bytes()).collect();
-        publish_buffer(&mem, &vq, 0, &bytes);
+            // Frames 4..=7 are adjacent in host memory; frame 9 is not.
+            let pfns: [u32; 5] = [4, 5, 6, 7, 9];
+            let bytes: Vec<u8> = pfns.iter().flat_map(|pfn| pfn.to_le_bytes()).collect();
+            publish_buffer(&mem, &vq, 0, &bytes);
 
-        let mut recorder = Recorder::default();
-        serve(&mut queue, INFLATE_QUEUE, &mem, &mut recorder).unwrap();
+            let mut recorder = Recorder::default();
+            serve(&mut queue, INFLATE_QUEUE, &mem, &mut recorder).unwrap();
 
-        let host = |pfn: u64| {
-            mem.get_host_address(GuestAddress(pfn << PAGE_SHIFT))
-                .unwrap() as usize
-        };
-        assert_eq!(
-            recorder.calls,
-            vec![(host(4), 4 * PAGE_SIZE), (host(9), PAGE_SIZE)]
-        );
-        assert_eq!(vq.used_idx(), 1);
-        assert_eq!(vq.used_elem(0), (0, 0));
-    }
+            let host = |pfn: u64| {
+                mem.get_host_address(GuestAddress(pfn << PAGE_SHIFT))
+                    .unwrap() as usize
+            };
+            assert_eq!(
+                recorder.calls,
+                vec![(host(4), 4 * PAGE_SIZE), (host(9), PAGE_SIZE)]
+            );
+            assert_eq!(vq.used_idx(), 1);
+            assert_eq!(vq.used_elem(0), (0, 0));
+        }
 
-    #[test]
-    fn balloon_deflate_returns_the_buffers_without_discarding_anything() {
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let mut queue = vq.create_queue();
+        // Deflate: the buffers are returned without discarding anything
+        // (balloon_deflate_returns_the_buffers_without_discarding_anything).
+        {
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let mut queue = vq.create_queue();
 
-        publish_buffer(&mem, &vq, 0, &[0u8; 8]);
-        publish_buffer(&mem, &vq, 1, &[0u8; 4]);
+            publish_buffer(&mem, &vq, 0, &[0u8; 8]);
+            publish_buffer(&mem, &vq, 1, &[0u8; 4]);
 
-        let mut recorder = Recorder::default();
-        serve(&mut queue, DEFLATE_QUEUE, &mem, &mut recorder).unwrap();
+            let mut recorder = Recorder::default();
+            serve(&mut queue, DEFLATE_QUEUE, &mem, &mut recorder).unwrap();
 
-        assert!(recorder.calls.is_empty());
-        assert_eq!(vq.used_idx(), 2);
-        assert_eq!(vq.used_elem(0), (0, 0));
-        assert_eq!(vq.used_elem(1), (1, 0));
+            assert!(recorder.calls.is_empty());
+            assert_eq!(vq.used_idx(), 2);
+            assert_eq!(vq.used_elem(0), (0, 0));
+            assert_eq!(vq.used_elem(1), (1, 0));
+        }
     }
 
     #[test]

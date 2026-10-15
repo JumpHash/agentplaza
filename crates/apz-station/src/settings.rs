@@ -94,24 +94,26 @@ mod tests {
     }
 
     #[test]
-    fn a_station_without_a_rate_is_free_and_an_object_from_before_rates_decodes() {
-        let old: StationSettings =
-            serde_json::from_str(r#"{"record":true,"snapshot_reset":false}"#)
-                .expect("an object from before rates");
-        assert_eq!(old.rate_per_hour, 0);
-        assert_eq!(StationSettings::default().rate_per_hour, 0);
-    }
-
-    #[test]
-    fn a_partial_object_takes_the_defaults_for_the_rest() {
-        let decoded: StationSettings =
-            serde_json::from_str(r#"{"record":false}"#).expect("a partial object decodes");
-        assert_eq!(
-            decoded,
-            StationSettings {
-                record: false,
-                ..StationSettings::default()
-            }
-        );
+    fn station_settings_decode_missing_fields_as_defaults() {
+        // A station without a rate is free, and an object from before rates decodes (was a_station_without_a_rate_is_free_and_an_object_from_before_rates_decodes).
+        {
+            let old: StationSettings =
+                serde_json::from_str(r#"{"record":true,"snapshot_reset":false}"#)
+                    .expect("an object from before rates");
+            assert_eq!(old.rate_per_hour, 0);
+            assert_eq!(StationSettings::default().rate_per_hour, 0);
+        }
+        // A partial object takes the defaults for the rest (was a_partial_object_takes_the_defaults_for_the_rest).
+        {
+            let decoded: StationSettings =
+                serde_json::from_str(r#"{"record":false}"#).expect("a partial object decodes");
+            assert_eq!(
+                decoded,
+                StationSettings {
+                    record: false,
+                    ..StationSettings::default()
+                }
+            );
+        }
     }
 }

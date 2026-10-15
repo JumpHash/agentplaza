@@ -1577,45 +1577,47 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_task_can_be_withdrawn_and_then_refunds() {
-        let ledger = TaskLedger::new(EventBus::new());
-        let task = budgeted(&ledger, "given up", 25);
-        task.claim(&agent(100, "builder")).expect("claim");
-        task.await_review(None).expect("claimed -> awaiting_review");
-        task.withdraw().expect("awaiting_review -> withdrawn");
-        assert_eq!(task.state(), "withdrawn");
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
-    }
+    fn withdrawn_and_terminal_tasks_refund_the_whole_escrow() {
+        // Was a_waiting_task_can_be_withdrawn_and_then_refunds.
+        {
+            let ledger = TaskLedger::new(EventBus::new());
+            let task = budgeted(&ledger, "given up", 25);
+            task.claim(&agent(100, "builder")).expect("claim");
+            task.await_review(None).expect("claimed -> awaiting_review");
+            task.withdraw().expect("awaiting_review -> withdrawn");
+            assert_eq!(task.state(), "withdrawn");
+            assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+        }
+        // Was every_terminal_state_refunds_the_whole_escrow.
+        {
+            let ledger = TaskLedger::new(EventBus::new());
 
-    #[test]
-    fn every_terminal_state_refunds_the_whole_escrow() {
-        let ledger = TaskLedger::new(EventBus::new());
+            let failed = budgeted(&ledger, "failed", 7);
+            failed.claim(&agent(100, "builder")).expect("claim");
+            failed
+                .finish(FinishOutcome::Failed, None)
+                .expect("claimed -> failed");
+            assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
 
-        let failed = budgeted(&ledger, "failed", 7);
-        failed.claim(&agent(100, "builder")).expect("claim");
-        failed
-            .finish(FinishOutcome::Failed, None)
-            .expect("claimed -> failed");
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+            let withdrawn = budgeted(&ledger, "withdrawn", 9);
+            assert_eq!(ledger.treasury().escrow_balance("t2"), 9);
+            withdrawn.withdraw().expect("open -> withdrawn");
+            assert_eq!(ledger.treasury().escrow_balance("t2"), 0);
 
-        let withdrawn = budgeted(&ledger, "withdrawn", 9);
-        assert_eq!(ledger.treasury().escrow_balance("t2"), 9);
-        withdrawn.withdraw().expect("open -> withdrawn");
-        assert_eq!(ledger.treasury().escrow_balance("t2"), 0);
+            let claimed = budgeted(&ledger, "withdrawn mid-flight", 3);
+            claimed.claim(&agent(100, "builder")).expect("claim");
+            claimed.withdraw().expect("claimed -> withdrawn");
+            assert_eq!(ledger.treasury().escrow_balance("t3"), 0);
 
-        let claimed = budgeted(&ledger, "withdrawn mid-flight", 3);
-        claimed.claim(&agent(100, "builder")).expect("claim");
-        claimed.withdraw().expect("claimed -> withdrawn");
-        assert_eq!(ledger.treasury().escrow_balance("t3"), 0);
-
-        // The plaza's mint, three fundings and three refunds, and nothing left in any escrow.
-        assert_eq!(ledger.treasury().view().totals.entries, 7);
-        assert_eq!(
-            ledger.treasury().plaza_budget_balance(),
-            i128::from(crate::treasury::PLAZA_BUDGET)
-        );
-        for task in ledger.list() {
-            assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
+            // The plaza's mint, three fundings and three refunds, and nothing left in any escrow.
+            assert_eq!(ledger.treasury().view().totals.entries, 7);
+            assert_eq!(
+                ledger.treasury().plaza_budget_balance(),
+                i128::from(crate::treasury::PLAZA_BUDGET)
+            );
+            for task in ledger.list() {
+                assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
+            }
         }
     }
 

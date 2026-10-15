@@ -437,74 +437,74 @@ mod tests {
         }
     }
 
-    /// A well-formed answer is read whole: status, headers, and a body taken
-    /// as its `Content-Length` says (or read to the close when it does not
-    /// say).
+    /// The answer reader reads a well-formed answer whole, and refuses every malformed one with an
+    /// error, never a panic.
     #[test]
-    fn an_answer_is_read_as_its_headers_say() {
-        let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}";
-        let answer = read_response(
-            &mut BufReader::new(Cursor::new(raw.as_bytes())),
-            roomy(),
-            TIMEOUT,
-        )
-        .expect("a well-formed answer");
-        assert_eq!(answer.status(), 200);
-        assert_eq!(answer.body(), b"{\"ok\":true}");
-        assert_eq!(answer.text(), "{\"ok\":true}");
-
-        let raw = "HTTP/1.0 409 Conflict\r\n\r\n{\"error\":\"no\"}";
-        let answer = read_response(
-            &mut BufReader::new(Cursor::new(raw.as_bytes())),
-            roomy(),
-            TIMEOUT,
-        )
-        .expect("a bodyless-length answer reads to the close");
-        assert_eq!(answer.status(), 409);
-        assert_eq!(answer.refusal(), "no");
-    }
-
-    /// A malformed answer is an error, never a panic: every shape the parser
-    /// refuses is refused here.
-    #[test]
-    fn a_malformed_answer_is_refused() {
-        for bad in [
-            "",
-            "HTTP/1.1\r\n\r\n",
-            "HTTP/2 200 OK\r\n\r\n",
-            "HTTP/1.1 20 OK\r\n\r\n",
-            "HTTP/1.1 2xx OK\r\n\r\n",
-            "HTTP/1.1 200 OK\r\nno-colon\r\n\r\n",
-            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhi",
-            "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n",
-            "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",
-            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
-        ] {
-            let read = read_response(
-                &mut BufReader::new(Cursor::new(bad.as_bytes())),
+    fn read_response_reads_an_answer_or_refuses_it() {
+        // A well-formed answer is read whole: status, headers, and a body taken as its Content-Length says, or read to the close when it does not say.
+        {
+            let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}";
+            let answer = read_response(
+                &mut BufReader::new(Cursor::new(raw.as_bytes())),
                 roomy(),
                 TIMEOUT,
-            );
-            assert!(read.is_err(), "should have been refused: {bad:?}");
+            )
+            .expect("a well-formed answer");
+            assert_eq!(answer.status(), 200);
+            assert_eq!(answer.body(), b"{\"ok\":true}");
+            assert_eq!(answer.text(), "{\"ok\":true}");
+
+            let raw = "HTTP/1.0 409 Conflict\r\n\r\n{\"error\":\"no\"}";
+            let answer = read_response(
+                &mut BufReader::new(Cursor::new(raw.as_bytes())),
+                roomy(),
+                TIMEOUT,
+            )
+            .expect("a bodyless-length answer reads to the close");
+            assert_eq!(answer.status(), 409);
+            assert_eq!(answer.refusal(), "no");
         }
 
-        // A refusal that is not the daemon's error shape still says something.
-        let answer = Answer {
-            status: 500,
-            body: b"boom".to_vec(),
-        };
-        assert_eq!(answer.refusal(), "boom");
+        // A malformed answer is an error, never a panic: every shape the parser refuses is refused here.
+        {
+            for bad in [
+                "",
+                "HTTP/1.1\r\n\r\n",
+                "HTTP/2 200 OK\r\n\r\n",
+                "HTTP/1.1 20 OK\r\n\r\n",
+                "HTTP/1.1 2xx OK\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nno-colon\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhi",
+                "HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx",
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            ] {
+                let read = read_response(
+                    &mut BufReader::new(Cursor::new(bad.as_bytes())),
+                    roomy(),
+                    TIMEOUT,
+                );
+                assert!(read.is_err(), "should have been refused: {bad:?}");
+            }
 
-        // And a refusal's words are bounded, whatever the daemon sent.
-        let answer = Answer {
-            status: 400,
-            body: format!(r#"{{"error":"{}"}}"#, "x".repeat(10_000)).into_bytes(),
-        };
-        assert!(
-            answer.refusal().chars().count() <= crate::workflow::MAX_NOTE_DETAIL + 1,
-            "the refusal is bounded: {} chars",
-            answer.refusal().chars().count()
-        );
+            // A refusal that is not the daemon's error shape still says something.
+            let answer = Answer {
+                status: 500,
+                body: b"boom".to_vec(),
+            };
+            assert_eq!(answer.refusal(), "boom");
+
+            // And a refusal's words are bounded, whatever the daemon sent.
+            let answer = Answer {
+                status: 400,
+                body: format!(r#"{{"error":"{}"}}"#, "x".repeat(10_000)).into_bytes(),
+            };
+            assert!(
+                answer.refusal().chars().count() <= crate::workflow::MAX_NOTE_DETAIL + 1,
+                "the refusal is bounded: {} chars",
+                answer.refusal().chars().count()
+            );
+        }
     }
 
     /// The socket path end to end: a real loopback connection carries a real

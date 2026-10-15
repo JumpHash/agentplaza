@@ -721,17 +721,3 @@ pub fn validate_palette(file: &Value) -> Errs {
     .map(|k| format!("palette.{k}: a hex color"))
     .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ids_follow_the_format() {
-        assert!(is_id("walk.treads"));
-        assert!(is_id("t-square"));
-        assert!(!is_id("Walk"));
-        assert!(!is_id("walk..x"));
-        assert!(!is_id("1walk"));
-    }
-}

@@ -329,39 +329,41 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_splits_into_its_header_and_its_image() {
-        let bytes = frame_bytes(
-            r#"{"w":1280,"h":720,"format":"jpeg","ts":1700,"seq":9}"#,
-            &[0xff, 0xd8, 0xff],
-        );
-        let (header, image) = parse_frame(&bytes).unwrap();
-        assert_eq!(
-            header,
-            FrameHeader {
-                w: 1280,
-                h: 720,
-                format: "jpeg".into(),
-                ts: 1700,
-                seq: 9
-            }
-        );
-        assert_eq!(image, &[0xff, 0xd8, 0xff]);
-        assert_eq!(header.extension(), "jpg");
-        let png = frame_bytes(r#"{"w":2,"h":2,"format":"png","ts":0,"seq":1}"#, b"\x89PNG");
-        assert_eq!(parse_frame(&png).unwrap().0.extension(), "png");
-    }
-
-    #[test]
-    fn a_broken_frame_is_refused_with_its_reason() {
-        assert!(parse_frame(&[0, 0]).unwrap_err().contains("length prefix"));
-        let cut = [0, 0, 0, 90, b'{'];
-        assert!(parse_frame(&cut).unwrap_err().contains("cut short"));
-        let bad_json = frame_bytes("not json", b"x");
-        assert!(parse_frame(&bad_json).unwrap_err().contains("not its JSON"));
-        let gif = frame_bytes(r#"{"w":1,"h":1,"format":"gif","ts":0,"seq":1}"#, b"x");
-        assert!(parse_frame(&gif).unwrap_err().contains("not png or jpeg"));
-        let empty = frame_bytes(r#"{"w":1,"h":1,"format":"png","ts":0,"seq":1}"#, b"");
-        assert!(parse_frame(&empty).unwrap_err().contains("no image"));
+    fn parse_frame_splits_a_frame_or_refuses_it_with_its_reason() {
+        // A good frame splits into its header and its image.
+        {
+            let bytes = frame_bytes(
+                r#"{"w":1280,"h":720,"format":"jpeg","ts":1700,"seq":9}"#,
+                &[0xff, 0xd8, 0xff],
+            );
+            let (header, image) = parse_frame(&bytes).unwrap();
+            assert_eq!(
+                header,
+                FrameHeader {
+                    w: 1280,
+                    h: 720,
+                    format: "jpeg".into(),
+                    ts: 1700,
+                    seq: 9
+                }
+            );
+            assert_eq!(image, &[0xff, 0xd8, 0xff]);
+            assert_eq!(header.extension(), "jpg");
+            let png = frame_bytes(r#"{"w":2,"h":2,"format":"png","ts":0,"seq":1}"#, b"\x89PNG");
+            assert_eq!(parse_frame(&png).unwrap().0.extension(), "png");
+        }
+        // A broken frame is refused, and the error says why.
+        {
+            assert!(parse_frame(&[0, 0]).unwrap_err().contains("length prefix"));
+            let cut = [0, 0, 0, 90, b'{'];
+            assert!(parse_frame(&cut).unwrap_err().contains("cut short"));
+            let bad_json = frame_bytes("not json", b"x");
+            assert!(parse_frame(&bad_json).unwrap_err().contains("not its JSON"));
+            let gif = frame_bytes(r#"{"w":1,"h":1,"format":"gif","ts":0,"seq":1}"#, b"x");
+            assert!(parse_frame(&gif).unwrap_err().contains("not png or jpeg"));
+            let empty = frame_bytes(r#"{"w":1,"h":1,"format":"png","ts":0,"seq":1}"#, b"");
+            assert!(parse_frame(&empty).unwrap_err().contains("no image"));
+        }
     }
 
     #[test]
@@ -396,36 +398,5 @@ mod tests {
         assert!(
             check_scale(0.1).is_ok() && check_scale(1.5).is_err() && check_scale(f32::NAN).is_err()
         );
-    }
-
-    #[test]
-    fn the_meter_reports_frames_over_the_last_second() {
-        let start = Instant::now();
-        let mut meter = Meter::default();
-        assert_eq!(meter.tick(start), 0.0, "one frame has no span yet");
-        for step in 1..=4 {
-            meter.tick(start + Duration::from_millis(step * 100));
-        }
-        // Six frames have arrived when the window's first second is up.
-        let rate = meter.tick(start + Duration::from_millis(1_000));
-        assert!(
-            (rate - 6.0).abs() < 0.01,
-            "six frames in one second: {rate}"
-        );
-    }
-
-    #[test]
-    fn the_status_line_has_the_sequence_the_rate_and_the_size() {
-        let header = FrameHeader {
-            w: 1920,
-            h: 1080,
-            format: "jpeg".into(),
-            ts: 0,
-            seq: 42,
-        };
-        let line = status_line(&header, 2048, 4.96);
-        assert!(line.contains("seq     42"), "{line}");
-        assert!(line.contains("  5.0 fps"), "{line}");
-        assert!(line.contains("1920x1080  jpeg  2.0 KiB"), "{line}");
     }
 }

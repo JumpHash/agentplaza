@@ -2298,105 +2298,135 @@ mod tests {
     }
 
     #[test]
-    fn a_posting_outside_the_rules_is_refused_naming_the_rule() {
-        let treasury = new_treasury();
-        // One forbidden (entry kind, account kind, side) per entry kind: a pair
-        // the schema's `posting_rules` table does not list.
-        let forbidden = [
-            (
-                EntryKind::Mint,
-                AccountKind::Mint,
-                Side::Credit,
-                "mint entry may not credit a mint account",
-            ),
-            (
-                EntryKind::Spend,
-                AccountKind::TaskEscrow,
-                Side::Credit,
-                "spend entry may not credit a task_escrow account",
-            ),
-            (
-                EntryKind::Subcontract,
-                AccountKind::Mint,
-                Side::Debit,
-                "subcontract entry may not debit a mint account",
-            ),
-            (
-                EntryKind::Payment,
-                AccountKind::ExternalSpend,
-                Side::Credit,
-                "payment entry may not credit a external_spend account",
-            ),
-            (
-                EntryKind::Refund,
-                AccountKind::Treasury,
-                Side::Credit,
-                "refund entry may not credit a treasury account",
-            ),
-            (
-                EntryKind::Clawback,
-                AccountKind::TownBudget,
-                Side::Credit,
-                "clawback entry may not credit a town_budget account",
-            ),
-            (
-                EntryKind::Fine,
-                AccountKind::TaskEscrow,
-                Side::Debit,
-                "fine entry may not debit a task_escrow account",
-            ),
-            (
-                EntryKind::Fee,
-                AccountKind::Mint,
-                Side::Credit,
-                "fee entry may not credit a mint account",
-            ),
-            (
-                EntryKind::BudgetMove,
-                AccountKind::AgentEarnings,
-                Side::Credit,
-                "budget_move entry may not credit a agent_earnings account",
-            ),
-            (
-                EntryKind::Transfer,
-                AccountKind::TaskEscrow,
-                Side::Debit,
-                "transfer entry may not debit a task_escrow account",
-            ),
-        ];
-        for (entry_kind, account_kind, side, message) in forbidden {
-            // The offending posting is first, so it is the one the rules
-            // refuse; the counter-posting is a different account entirely (so
-            // nothing before the rule check objects) and the entry is
-            // deliberately left unbalanced — the rule must fire before the
-            // balance check.
-            let amount = if side == Side::Debit { -10 } else { 10 };
-            let spec = spec(
-                entry_kind,
-                &[
-                    (account_kind, "subject", amount),
-                    (AccountKind::Mint, "counter", -amount),
-                ],
-            )
-            .root("t1");
-            let refused = treasury
-                .post(&spec)
-                .expect_err(&format!("{entry_kind:?} {account_kind:?} {side:?}"));
-            assert!(
-                matches!(
-                    refused,
-                    PostError::Rule {
-                        entry_kind: got_kind,
-                        account_kind: got_account,
-                        side: got_side,
-                    } if got_kind == entry_kind && got_account == account_kind && got_side == side
+    fn postings_outside_the_rules_are_refused() {
+        // Each forbidden (entry kind, account kind, side) is refused by the posting rules,
+        // naming the rule, and none of them touches the journal.
+        {
+            let treasury = new_treasury();
+            // One forbidden (entry kind, account kind, side) per entry kind: a pair
+            // the schema's `posting_rules` table does not list.
+            let forbidden = [
+                (
+                    EntryKind::Mint,
+                    AccountKind::Mint,
+                    Side::Credit,
+                    "mint entry may not credit a mint account",
                 ),
-                "{entry_kind:?} {account_kind:?} {side:?}: {refused:?}"
-            );
-            assert_eq!(refused.to_string(), message);
+                (
+                    EntryKind::Spend,
+                    AccountKind::TaskEscrow,
+                    Side::Credit,
+                    "spend entry may not credit a task_escrow account",
+                ),
+                (
+                    EntryKind::Subcontract,
+                    AccountKind::Mint,
+                    Side::Debit,
+                    "subcontract entry may not debit a mint account",
+                ),
+                (
+                    EntryKind::Payment,
+                    AccountKind::ExternalSpend,
+                    Side::Credit,
+                    "payment entry may not credit a external_spend account",
+                ),
+                (
+                    EntryKind::Refund,
+                    AccountKind::Treasury,
+                    Side::Credit,
+                    "refund entry may not credit a treasury account",
+                ),
+                (
+                    EntryKind::Clawback,
+                    AccountKind::TownBudget,
+                    Side::Credit,
+                    "clawback entry may not credit a town_budget account",
+                ),
+                (
+                    EntryKind::Fine,
+                    AccountKind::TaskEscrow,
+                    Side::Debit,
+                    "fine entry may not debit a task_escrow account",
+                ),
+                (
+                    EntryKind::Fee,
+                    AccountKind::Mint,
+                    Side::Credit,
+                    "fee entry may not credit a mint account",
+                ),
+                (
+                    EntryKind::BudgetMove,
+                    AccountKind::AgentEarnings,
+                    Side::Credit,
+                    "budget_move entry may not credit a agent_earnings account",
+                ),
+                (
+                    EntryKind::Transfer,
+                    AccountKind::TaskEscrow,
+                    Side::Debit,
+                    "transfer entry may not debit a task_escrow account",
+                ),
+            ];
+            for (entry_kind, account_kind, side, message) in forbidden {
+                // The offending posting is first, so it is the one the rules
+                // refuse; the counter-posting is a different account entirely (so
+                // nothing before the rule check objects) and the entry is
+                // deliberately left unbalanced — the rule must fire before the
+                // balance check.
+                let amount = if side == Side::Debit { -10 } else { 10 };
+                let spec = spec(
+                    entry_kind,
+                    &[
+                        (account_kind, "subject", amount),
+                        (AccountKind::Mint, "counter", -amount),
+                    ],
+                )
+                .root("t1");
+                let refused = treasury
+                    .post(&spec)
+                    .expect_err(&format!("{entry_kind:?} {account_kind:?} {side:?}"));
+                assert!(
+                    matches!(
+                        refused,
+                        PostError::Rule {
+                            entry_kind: got_kind,
+                            account_kind: got_account,
+                            side: got_side,
+                        } if got_kind == entry_kind && got_account == account_kind && got_side == side
+                    ),
+                    "{entry_kind:?} {account_kind:?} {side:?}: {refused:?}"
+                );
+                assert_eq!(refused.to_string(), message);
+            }
+            // None of these touched the journal.
+            assert_eq!(treasury.view().totals.entries, 1);
         }
-        // None of these touched the journal.
-        assert_eq!(treasury.view().totals.entries, 1);
+
+        // A fine may never debit escrow: the rule refuses it even in an otherwise balanced entry.
+        {
+            // The schema's own example: a `fine` posting on a `task_escrow` account
+            // is refused by the rule, even in an otherwise balanced entry.
+            let treasury = new_treasury();
+            fund(&treasury, "t1", 100);
+            let refused = treasury
+                .post(
+                    &spec(
+                        EntryKind::Fine,
+                        &[
+                            (AccountKind::TaskEscrow, "t1", -10),
+                            (AccountKind::Treasury, "treasury", 10),
+                        ],
+                    )
+                    .task("t1")
+                    .root("t1"),
+                )
+                .expect_err("a fine may not come from escrow");
+            assert_eq!(
+                refused.to_string(),
+                "fine entry may not debit a task_escrow account"
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 100);
+        }
     }
 
     #[test]
@@ -2455,40 +2485,77 @@ mod tests {
     }
 
     #[test]
-    fn the_mint_and_refund_cycle_returns_the_escrow_to_the_mint() {
-        let treasury = new_treasury();
-        let mint = treasury.fund_task("t1", 500).expect("a funding");
-        assert_eq!(treasury.escrow_balance("t1"), 500);
-        assert_eq!(
-            treasury.plaza_budget_balance(),
-            i128::from(PLAZA_BUDGET) - 500
-        );
-        assert_eq!(treasury.view().totals.entries, 2);
+    fn funding_and_refund_cycles_keep_every_balance_consistent() {
+        // A mint funds a task, and refunding the escrow returns what is left to the mint.
+        {
+            let treasury = new_treasury();
+            let mint = treasury.fund_task("t1", 500).expect("a funding");
+            assert_eq!(treasury.escrow_balance("t1"), 500);
+            assert_eq!(
+                treasury.plaza_budget_balance(),
+                i128::from(PLAZA_BUDGET) - 500
+            );
+            assert_eq!(treasury.view().totals.entries, 2);
 
-        let refund = treasury
-            .refund_task_to_budget("t1")
-            .expect("a refund")
-            .expect("there was an escrow to refund");
-        assert_eq!(refund, mint + 1);
-        assert_eq!(treasury.escrow_balance("t1"), 0);
+            let refund = treasury
+                .refund_task_to_budget("t1")
+                .expect("a refund")
+                .expect("there was an escrow to refund");
+            assert_eq!(refund, mint + 1);
+            assert_eq!(treasury.escrow_balance("t1"), 0);
 
-        let view = treasury.view();
-        assert_eq!(view.totals.entries, 3);
-        assert_eq!(view.spent, 0, "a funding and a refund are not spend");
-        // Every entry balances, and the refund brought the budget home.
-        assert_eq!(view.totals.balance, 0);
-        let budget = view
-            .accounts
-            .iter()
-            .find(|account| account.kind == "town_budget")
-            .expect("the plaza's budget account");
-        assert_eq!(budget.balance, i128::from(PLAZA_BUDGET));
-        // A second refund has nothing to refund and posts nothing.
-        assert_eq!(treasury.refund_task_to_budget("t1").expect("no-op"), None);
-        assert_eq!(treasury.view().totals.entries, 3);
-        // A task that never had a budget has no escrow to refund.
-        assert_eq!(treasury.refund_task_to_budget("t9").expect("no-op"), None);
-        assert!(treasury.verify_journal().is_ok());
+            let view = treasury.view();
+            assert_eq!(view.totals.entries, 3);
+            assert_eq!(view.spent, 0, "a funding and a refund are not spend");
+            // Every entry balances, and the refund brought the budget home.
+            assert_eq!(view.totals.balance, 0);
+            let budget = view
+                .accounts
+                .iter()
+                .find(|account| account.kind == "town_budget")
+                .expect("the plaza's budget account");
+            assert_eq!(budget.balance, i128::from(PLAZA_BUDGET));
+            // A second refund has nothing to refund and posts nothing.
+            assert_eq!(treasury.refund_task_to_budget("t1").expect("no-op"), None);
+            assert_eq!(treasury.view().totals.entries, 3);
+            // A task that never had a budget has no escrow to refund.
+            assert_eq!(treasury.refund_task_to_budget("t9").expect("no-op"), None);
+            assert!(treasury.verify_journal().is_ok());
+        }
+
+        // Funding, spending and refunding keep every balance consistent with the journal.
+        {
+            let treasury = Treasury::new(EventBus::new());
+            assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET));
+            treasury.fund_task("t1", 300).expect("fund");
+            assert_eq!(
+                treasury.plaza_budget_balance(),
+                i128::from(PLAZA_BUDGET) - 300
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 300);
+            treasury
+                .charge_spend(Some("t1"), 120, "model call")
+                .expect("spend");
+            assert_eq!(treasury.escrow_balance("t1"), 180);
+            assert!(
+                treasury
+                    .refund_task_to_budget("t1")
+                    .expect("refund")
+                    .is_some()
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 0);
+            // The 120 credits spent are gone; the rest came home to the plaza.
+            assert_eq!(
+                treasury.plaza_budget_balance(),
+                i128::from(PLAZA_BUDGET) - 120
+            );
+            assert_eq!(
+                treasury.refund_task_to_budget("t1").expect("nothing left"),
+                None
+            );
+            assert!(treasury.verify_journal().is_ok());
+            assert_eq!(treasury.view().totals.balance, 0);
+        }
     }
     #[test]
     fn the_minted_total_counts_what_the_mint_issued_not_what_came_back() {
@@ -2508,57 +2575,96 @@ mod tests {
         assert_eq!(treasury.minted_total(), i128::from(PLAZA_BUDGET) + 250);
     }
     #[test]
-    fn an_escrow_cannot_overdraw() {
-        let treasury = new_treasury();
-        fund(&treasury, "t1", 100);
-        assert_eq!(treasury.escrow_balance("t1"), 100);
+    fn spends_cannot_overdraw_an_escrow_or_the_budget() {
+        // An escrow may not go negative: an overdraw is refused and changes nothing,
+        // but draining it to zero is allowed.
+        {
+            let treasury = new_treasury();
+            fund(&treasury, "t1", 100);
+            assert_eq!(treasury.escrow_balance("t1"), 100);
 
-        // 101 out of an escrow of 100 is refused, naming the limit.
-        let refused = treasury
-            .post(
-                &spec(
-                    EntryKind::Spend,
-                    &[
-                        (AccountKind::TaskEscrow, "t1", -101),
-                        (AccountKind::ExternalSpend, "providers", 101),
-                    ],
+            // 101 out of an escrow of 100 is refused, naming the limit.
+            let refused = treasury
+                .post(
+                    &spec(
+                        EntryKind::Spend,
+                        &[
+                            (AccountKind::TaskEscrow, "t1", -101),
+                            (AccountKind::ExternalSpend, "providers", 101),
+                        ],
+                    )
+                    .task("t1")
+                    .root("t1"),
                 )
-                .task("t1")
-                .root("t1"),
-            )
-            .expect_err("an escrow may not go negative");
-        assert!(
-            matches!(
-                refused,
-                PostError::Overdrawn {
-                    account: AccountKind::TaskEscrow,
-                    ref owner_ref,
-                    balance: -1,
-                    credit_limit: 0,
-                } if owner_ref == "t1"
-            ),
-            "{refused:?}"
-        );
-        assert!(refused.to_string().contains("below its limit"), "{refused}");
-        // The refusal changed nothing.
-        assert_eq!(treasury.escrow_balance("t1"), 100);
-        assert_eq!(treasury.view().totals.entries, 2);
+                .expect_err("an escrow may not go negative");
+            assert!(
+                matches!(
+                    refused,
+                    PostError::Overdrawn {
+                        account: AccountKind::TaskEscrow,
+                        ref owner_ref,
+                        balance: -1,
+                        credit_limit: 0,
+                    } if owner_ref == "t1"
+                ),
+                "{refused:?}"
+            );
+            assert!(refused.to_string().contains("below its limit"), "{refused}");
+            // The refusal changed nothing.
+            assert_eq!(treasury.escrow_balance("t1"), 100);
+            assert_eq!(treasury.view().totals.entries, 2);
 
-        // Draining it exactly is allowed.
-        treasury
-            .post(
-                &spec(
-                    EntryKind::Spend,
-                    &[
-                        (AccountKind::TaskEscrow, "t1", -100),
-                        (AccountKind::ExternalSpend, "providers", 100),
-                    ],
+            // Draining it exactly is allowed.
+            treasury
+                .post(
+                    &spec(
+                        EntryKind::Spend,
+                        &[
+                            (AccountKind::TaskEscrow, "t1", -100),
+                            (AccountKind::ExternalSpend, "providers", 100),
+                        ],
+                    )
+                    .task("t1")
+                    .root("t1"),
                 )
-                .task("t1")
-                .root("t1"),
-            )
-            .expect("an escrow may be drained to zero");
-        assert_eq!(treasury.escrow_balance("t1"), 0);
+                .expect("an escrow may be drained to zero");
+            assert_eq!(treasury.escrow_balance("t1"), 0);
+        }
+
+        // A spend past the escrow or the plaza budget, and a funding past the budget, are refused.
+        {
+            let treasury = Treasury::new(EventBus::new());
+            treasury.fund_task("t1", 50).expect("fund");
+            let refused = treasury
+                .charge_spend(Some("t1"), 51, "too much")
+                .expect_err("past the escrow");
+            assert!(
+                matches!(refused, PostError::Overdrawn { .. }),
+                "{refused:?}"
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 50);
+            // A spend from the plaza budget cannot overdraw it either, and funding
+            // past the budget is refused the same way.
+            let refused = treasury
+                .charge_spend(None, PLAZA_BUDGET + 1, "plaza")
+                .expect_err("past the budget");
+            assert!(
+                matches!(refused, PostError::Overdrawn { .. }),
+                "{refused:?}"
+            );
+            let refused = treasury
+                .fund_task("t2", PLAZA_BUDGET)
+                .expect_err("past the budget");
+            assert!(
+                matches!(refused, PostError::Overdrawn { .. }),
+                "{refused:?}"
+            );
+            assert_eq!(
+                treasury.plaza_budget_balance(),
+                i128::from(PLAZA_BUDGET) - 50
+            );
+            assert!(treasury.verify_journal().is_ok());
+        }
     }
 
     #[test]
@@ -2611,171 +2717,200 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_respects_the_chain_margin_cap() {
-        let treasury = new_treasury();
-        fund(&treasury, "root", 1000);
-        let post = |kind, postings: &[(AccountKind, &str, i64)]| {
-            let entry = spec(kind, postings).task("sub1").root("root");
-            treasury.post(&entry)
-        };
-        post(
-            EntryKind::Subcontract,
-            &[
-                (AccountKind::TaskEscrow, "root", -400),
-                (AccountKind::TaskEscrow, "sub1", 400),
-            ],
-        )
-        .expect("a subcontract");
-        post(
-            EntryKind::Spend,
-            &[
-                (AccountKind::TaskEscrow, "sub1", -100),
-                (AccountKind::ExternalSpend, "providers", 100),
-            ],
-        )
-        .expect("a spend");
-        // 20% of the chain's 100 real cost is 20: one more is refused...
-        let refused = post(
-            EntryKind::Payment,
-            &[
-                (AccountKind::TaskEscrow, "sub1", -21),
-                (AccountKind::AgentEarnings, "alice", 21),
-            ],
-        )
-        .expect_err("a payment past the cap");
-        assert!(
-            matches!(
-                refused,
-                PostError::MarginCap {
-                    ref root_task,
-                    paid_to_agents: 21,
-                    real_cost: 100,
-                } if root_task == "root"
-            ),
-            "{refused:?}"
-        );
-        assert!(refused.to_string().contains("margin cap"), "{refused}");
-        // ...and 20 exactly is paid.
-        post(
-            EntryKind::Payment,
-            &[
-                (AccountKind::TaskEscrow, "sub1", -20),
-                (AccountKind::AgentEarnings, "alice", 20),
-            ],
-        )
-        .expect("a payment at the cap");
-        // Clawbacks net against the cap, so the room does not come back: a
-        // clawback lowers what the chain has paid, and the next payment's net
-        // margin (1) is still within the cap.
-        post(
-            EntryKind::Clawback,
-            &[
-                (AccountKind::AgentEarnings, "alice", -20),
-                (AccountKind::TaskEscrow, "sub1", 20),
-            ],
-        )
-        .expect("a clawback");
-        post(
-            EntryKind::Payment,
-            &[
-                (AccountKind::TaskEscrow, "sub1", -1),
-                (AccountKind::AgentEarnings, "bob", 1),
-            ],
-        )
-        .expect("a payment after a clawback still fits (net margin 1)");
-    }
-
-    #[test]
-    fn an_entry_must_balance_and_name_a_chain() {
-        let treasury = new_treasury();
-        let unbalanced = treasury
-            .post(
-                &spec(
-                    EntryKind::Mint,
-                    &[
-                        (AccountKind::Mint, MINT_OWNER, -1000),
-                        (AccountKind::TaskEscrow, "t1", 999),
-                    ],
-                )
-                .task("t1")
-                .root("t1"),
+    fn payments_respect_the_chain_margin_cap() {
+        // A payment may not exceed 20 % of the chain's real cost, and a clawback does not
+        // give the room back.
+        {
+            let treasury = new_treasury();
+            fund(&treasury, "root", 1000);
+            let post = |kind, postings: &[(AccountKind, &str, i64)]| {
+                let entry = spec(kind, postings).task("sub1").root("root");
+                treasury.post(&entry)
+            };
+            post(
+                EntryKind::Subcontract,
+                &[
+                    (AccountKind::TaskEscrow, "root", -400),
+                    (AccountKind::TaskEscrow, "sub1", 400),
+                ],
             )
-            .expect_err("999 is not 1000");
-        assert_eq!(unbalanced, PostError::Unbalanced { sum: -1 });
-        assert!(unbalanced.to_string().contains("does not balance"));
-        assert_eq!(treasury.view().totals.entries, 1);
+            .expect("a subcontract");
+            post(
+                EntryKind::Spend,
+                &[
+                    (AccountKind::TaskEscrow, "sub1", -100),
+                    (AccountKind::ExternalSpend, "providers", 100),
+                ],
+            )
+            .expect("a spend");
+            // 20% of the chain's 100 real cost is 20: one more is refused...
+            let refused = post(
+                EntryKind::Payment,
+                &[
+                    (AccountKind::TaskEscrow, "sub1", -21),
+                    (AccountKind::AgentEarnings, "alice", 21),
+                ],
+            )
+            .expect_err("a payment past the cap");
+            assert!(
+                matches!(
+                    refused,
+                    PostError::MarginCap {
+                        ref root_task,
+                        paid_to_agents: 21,
+                        real_cost: 100,
+                    } if root_task == "root"
+                ),
+                "{refused:?}"
+            );
+            assert!(refused.to_string().contains("margin cap"), "{refused}");
+            // ...and 20 exactly is paid.
+            post(
+                EntryKind::Payment,
+                &[
+                    (AccountKind::TaskEscrow, "sub1", -20),
+                    (AccountKind::AgentEarnings, "alice", 20),
+                ],
+            )
+            .expect("a payment at the cap");
+            // Clawbacks net against the cap, so the room does not come back: a
+            // clawback lowers what the chain has paid, and the next payment's net
+            // margin (1) is still within the cap.
+            post(
+                EntryKind::Clawback,
+                &[
+                    (AccountKind::AgentEarnings, "alice", -20),
+                    (AccountKind::TaskEscrow, "sub1", 20),
+                ],
+            )
+            .expect("a clawback");
+            post(
+                EntryKind::Payment,
+                &[
+                    (AccountKind::TaskEscrow, "sub1", -1),
+                    (AccountKind::AgentEarnings, "bob", 1),
+                ],
+            )
+            .expect("a payment after a clawback still fits (net margin 1)");
+        }
 
-        // Money that moves for a task must name its chain...
-        let no_chain = treasury
-            .post(&spec(
-                EntryKind::Refund,
-                &[
-                    (AccountKind::TaskEscrow, "t1", -10),
-                    (AccountKind::Mint, MINT_OWNER, 10),
-                ],
-            ))
-            .expect_err("a refund must name its chain");
-        assert_eq!(
-            no_chain,
-            PostError::RootTaskRequired {
-                entry_kind: EntryKind::Refund
-            }
-        );
-        // ...while a fine, which moves no task's money, need not.
-        treasury
-            .open_account(AccountKind::AgentEarnings, "alice", 1)
-            .expect("open alice's earnings with a credit line");
-        treasury
-            .post(&spec(
-                EntryKind::Fine,
-                &[
-                    (AccountKind::AgentEarnings, "alice", -1),
-                    (AccountKind::Treasury, "treasury", 1),
-                ],
-            ))
-            .expect("a fine needs no chain");
+        // A payment lands in the wallet, and none lands before the work has cost anything.
+        {
+            let treasury = Treasury::new(EventBus::new());
+            treasury.fund_task("t1", 200).expect("fund");
+            // A payment is capped at 20 % of the chain's real cost, so none lands
+            // before the work has cost anything.
+            assert!(matches!(
+                treasury.pay_agent("t1", 7, 5),
+                Err(PostError::MarginCap { .. })
+            ));
+            treasury
+                .charge_spend(Some("t1"), 100, "real cost")
+                .expect("spend");
+            treasury.pay_agent("t1", 7, 20).expect("pay");
+            assert_eq!(treasury.wallet(7), 20);
+            assert_eq!(treasury.wallet(8), 0);
+            assert_eq!(treasury.escrow_balance("t1"), 80);
+            assert_eq!(treasury.wallets(), vec![(7, 20)]);
+            assert!(treasury.verify_journal().is_ok());
+        }
     }
 
     #[test]
-    fn an_empty_or_degenerate_entry_is_refused() {
-        let treasury = new_treasury();
-        assert_eq!(
-            treasury.post(&EntrySpec::new(EntryKind::Mint, vec![])),
-            Err(PostError::Empty)
-        );
-        assert_eq!(
-            treasury.post(
-                &spec(
-                    EntryKind::Mint,
-                    &[
-                        (AccountKind::Mint, MINT_OWNER, 0),
-                        (AccountKind::TaskEscrow, "t1", 0)
-                    ]
+    fn an_entry_must_be_balanced_and_well_formed() {
+        // An entry must balance, and money that moves for a task must name its chain;
+        // a fine moves no task's money and need not.
+        {
+            let treasury = new_treasury();
+            let unbalanced = treasury
+                .post(
+                    &spec(
+                        EntryKind::Mint,
+                        &[
+                            (AccountKind::Mint, MINT_OWNER, -1000),
+                            (AccountKind::TaskEscrow, "t1", 999),
+                        ],
+                    )
+                    .task("t1")
+                    .root("t1"),
                 )
-                .root("t1")
-            ),
-            Err(PostError::ZeroPosting {
-                account: AccountKind::Mint,
-                owner_ref: MINT_OWNER.to_string()
-            })
-        );
-        assert_eq!(
-            treasury.post(
-                &spec(
-                    EntryKind::Mint,
+                .expect_err("999 is not 1000");
+            assert_eq!(unbalanced, PostError::Unbalanced { sum: -1 });
+            assert!(unbalanced.to_string().contains("does not balance"));
+            assert_eq!(treasury.view().totals.entries, 1);
+
+            // Money that moves for a task must name its chain...
+            let no_chain = treasury
+                .post(&spec(
+                    EntryKind::Refund,
                     &[
-                        (AccountKind::TaskEscrow, "t1", -5),
-                        (AccountKind::TaskEscrow, "t1", 5)
-                    ]
-                )
-                .root("t1")
-            ),
-            Err(PostError::DuplicatePosting {
-                account: AccountKind::TaskEscrow,
-                owner_ref: "t1".to_string()
-            })
-        );
-        assert_eq!(treasury.view().totals.entries, 1);
+                        (AccountKind::TaskEscrow, "t1", -10),
+                        (AccountKind::Mint, MINT_OWNER, 10),
+                    ],
+                ))
+                .expect_err("a refund must name its chain");
+            assert_eq!(
+                no_chain,
+                PostError::RootTaskRequired {
+                    entry_kind: EntryKind::Refund
+                }
+            );
+            // ...while a fine, which moves no task's money, need not.
+            treasury
+                .open_account(AccountKind::AgentEarnings, "alice", 1)
+                .expect("open alice's earnings with a credit line");
+            treasury
+                .post(&spec(
+                    EntryKind::Fine,
+                    &[
+                        (AccountKind::AgentEarnings, "alice", -1),
+                        (AccountKind::Treasury, "treasury", 1),
+                    ],
+                ))
+                .expect("a fine needs no chain");
+        }
+
+        // An empty, zero-amount, or duplicated-posting entry is refused, and changes nothing.
+        {
+            let treasury = new_treasury();
+            assert_eq!(
+                treasury.post(&EntrySpec::new(EntryKind::Mint, vec![])),
+                Err(PostError::Empty)
+            );
+            assert_eq!(
+                treasury.post(
+                    &spec(
+                        EntryKind::Mint,
+                        &[
+                            (AccountKind::Mint, MINT_OWNER, 0),
+                            (AccountKind::TaskEscrow, "t1", 0)
+                        ]
+                    )
+                    .root("t1")
+                ),
+                Err(PostError::ZeroPosting {
+                    account: AccountKind::Mint,
+                    owner_ref: MINT_OWNER.to_string()
+                })
+            );
+            assert_eq!(
+                treasury.post(
+                    &spec(
+                        EntryKind::Mint,
+                        &[
+                            (AccountKind::TaskEscrow, "t1", -5),
+                            (AccountKind::TaskEscrow, "t1", 5)
+                        ]
+                    )
+                    .root("t1")
+                ),
+                Err(PostError::DuplicatePosting {
+                    account: AccountKind::TaskEscrow,
+                    owner_ref: "t1".to_string()
+                })
+            );
+            assert_eq!(treasury.view().totals.entries, 1);
+        }
     }
 
     #[test]
@@ -3074,32 +3209,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fine_never_reaches_escrow() {
-        // The schema's own example: a `fine` posting on a `task_escrow` account
-        // is refused by the rule, even in an otherwise balanced entry.
-        let treasury = new_treasury();
-        fund(&treasury, "t1", 100);
-        let refused = treasury
-            .post(
-                &spec(
-                    EntryKind::Fine,
-                    &[
-                        (AccountKind::TaskEscrow, "t1", -10),
-                        (AccountKind::Treasury, "treasury", 10),
-                    ],
-                )
-                .task("t1")
-                .root("t1"),
-            )
-            .expect_err("a fine may not come from escrow");
-        assert_eq!(
-            refused.to_string(),
-            "fine entry may not debit a task_escrow account"
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 100);
-    }
-
-    #[test]
     fn a_budget_move_between_towns_is_balanced_and_bounded() {
         let treasury = new_treasury();
         treasury
@@ -3265,40 +3374,6 @@ mod economy_tests {
     }
 
     #[test]
-    fn funding_and_refund_round_trip_keeps_every_balance_consistent() {
-        let treasury = treasury();
-        assert_eq!(treasury.plaza_budget_balance(), i128::from(PLAZA_BUDGET));
-        treasury.fund_task("t1", 300).expect("fund");
-        assert_eq!(
-            treasury.plaza_budget_balance(),
-            i128::from(PLAZA_BUDGET) - 300
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 300);
-        treasury
-            .charge_spend(Some("t1"), 120, "model call")
-            .expect("spend");
-        assert_eq!(treasury.escrow_balance("t1"), 180);
-        assert!(
-            treasury
-                .refund_task_to_budget("t1")
-                .expect("refund")
-                .is_some()
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 0);
-        // The 120 credits spent are gone; the rest came home to the plaza.
-        assert_eq!(
-            treasury.plaza_budget_balance(),
-            i128::from(PLAZA_BUDGET) - 120
-        );
-        assert_eq!(
-            treasury.refund_task_to_budget("t1").expect("nothing left"),
-            None
-        );
-        assert!(treasury.verify_journal().is_ok());
-        assert_eq!(treasury.view().totals.balance, 0);
-    }
-
-    #[test]
     fn a_model_charge_debits_its_payer_and_credits_external_spend() {
         let treasury = treasury();
         treasury.fund_task("t1", 200).expect("fund");
@@ -3347,62 +3422,6 @@ mod economy_tests {
                 .id;
             assert_eq!(inner.balance(external), 140);
         }
-        assert!(treasury.verify_journal().is_ok());
-    }
-
-    #[test]
-    fn a_spend_is_refused_past_the_escrow() {
-        let treasury = treasury();
-        treasury.fund_task("t1", 50).expect("fund");
-        let refused = treasury
-            .charge_spend(Some("t1"), 51, "too much")
-            .expect_err("past the escrow");
-        assert!(
-            matches!(refused, PostError::Overdrawn { .. }),
-            "{refused:?}"
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 50);
-        // A spend from the plaza budget cannot overdraw it either, and funding
-        // past the budget is refused the same way.
-        let refused = treasury
-            .charge_spend(None, PLAZA_BUDGET + 1, "plaza")
-            .expect_err("past the budget");
-        assert!(
-            matches!(refused, PostError::Overdrawn { .. }),
-            "{refused:?}"
-        );
-        let refused = treasury
-            .fund_task("t2", PLAZA_BUDGET)
-            .expect_err("past the budget");
-        assert!(
-            matches!(refused, PostError::Overdrawn { .. }),
-            "{refused:?}"
-        );
-        assert_eq!(
-            treasury.plaza_budget_balance(),
-            i128::from(PLAZA_BUDGET) - 50
-        );
-        assert!(treasury.verify_journal().is_ok());
-    }
-
-    #[test]
-    fn a_payment_lands_in_the_wallet() {
-        let treasury = treasury();
-        treasury.fund_task("t1", 200).expect("fund");
-        // A payment is capped at 20 % of the chain's real cost, so none lands
-        // before the work has cost anything.
-        assert!(matches!(
-            treasury.pay_agent("t1", 7, 5),
-            Err(PostError::MarginCap { .. })
-        ));
-        treasury
-            .charge_spend(Some("t1"), 100, "real cost")
-            .expect("spend");
-        treasury.pay_agent("t1", 7, 20).expect("pay");
-        assert_eq!(treasury.wallet(7), 20);
-        assert_eq!(treasury.wallet(8), 0);
-        assert_eq!(treasury.escrow_balance("t1"), 80);
-        assert_eq!(treasury.wallets(), vec![(7, 20)]);
         assert!(treasury.verify_journal().is_ok());
     }
 
@@ -3720,94 +3739,98 @@ mod paging_tests {
     }
 
     #[test]
-    fn series_buckets_every_bucket_and_carries_the_balances() {
-        let treasury = treasury();
-        dated(&treasury);
-        let series = treasury.series(10_000, 14_000, 1_000).expect("a series");
-        let spans: Vec<(u64, u64)> = series
-            .points
-            .iter()
-            .map(|point| (point.at_ms, point.end_ms))
-            .collect();
-        assert_eq!(
-            spans,
-            vec![
-                (10_000, 11_000),
-                (11_000, 12_000),
-                (12_000, 13_000),
-                (13_000, 14_000)
-            ]
-        );
+    fn series_buckets_the_range_and_carries_the_balances() {
+        // Every bucket is listed in order, and each carries the balances it closed with.
+        {
+            let treasury = treasury();
+            dated(&treasury);
+            let series = treasury.series(10_000, 14_000, 1_000).expect("a series");
+            let spans: Vec<(u64, u64)> = series
+                .points
+                .iter()
+                .map(|point| (point.at_ms, point.end_ms))
+                .collect();
+            assert_eq!(
+                spans,
+                vec![
+                    (10_000, 11_000),
+                    (11_000, 12_000),
+                    (12_000, 13_000),
+                    (13_000, 14_000)
+                ]
+            );
 
-        // The fund and the spend.
-        let first = &series.points[0];
-        assert_eq!((first.entries, first.escrowed, first.spent), (2, 40, 10));
-        assert_eq!(
-            (
-                first.plaza_budget_end,
-                first.circulating_end,
-                first.treasury_end
-            ),
-            (60, 30, 0)
-        );
-        assert_eq!(first.by_kind["subcontract"], 40);
-        assert_eq!(first.by_kind["fine"], 0);
-        assert_eq!(first.by_kind.len(), EntryKind::ALL.len());
+            // The fund and the spend.
+            let first = &series.points[0];
+            assert_eq!((first.entries, first.escrowed, first.spent), (2, 40, 10));
+            assert_eq!(
+                (
+                    first.plaza_budget_end,
+                    first.circulating_end,
+                    first.treasury_end
+                ),
+                (60, 30, 0)
+            );
+            assert_eq!(first.by_kind["subcontract"], 40);
+            assert_eq!(first.by_kind["fine"], 0);
+            assert_eq!(first.by_kind.len(), EntryKind::ALL.len());
 
-        // An empty bucket, its balances carried from the one before.
-        let empty = &series.points[1];
-        assert_eq!(
-            (empty.entries, empty.spent, empty.escrowed, empty.paid),
-            (0, 0, 0, 0)
-        );
-        assert_eq!((empty.plaza_budget_end, empty.circulating_end), (60, 30));
+            // An empty bucket, its balances carried from the one before.
+            let empty = &series.points[1];
+            assert_eq!(
+                (empty.entries, empty.spent, empty.escrowed, empty.paid),
+                (0, 0, 0, 0)
+            );
+            assert_eq!((empty.plaza_budget_end, empty.circulating_end), (60, 30));
 
-        // The payment.
-        let paid = &series.points[2];
-        assert_eq!((paid.entries, paid.paid), (1, 2));
-        assert_eq!((paid.plaza_budget_end, paid.circulating_end), (60, 30));
+            // The payment.
+            let paid = &series.points[2];
+            assert_eq!((paid.entries, paid.paid), (1, 2));
+            assert_eq!((paid.plaza_budget_end, paid.circulating_end), (60, 30));
 
-        // The refund and the fine.
-        let last = &series.points[3];
-        assert_eq!((last.entries, last.refunded, last.fined), (2, 28, 1));
-        assert_eq!(
-            (
-                last.plaza_budget_end,
+            // The refund and the fine.
+            let last = &series.points[3];
+            assert_eq!((last.entries, last.refunded, last.fined), (2, 28, 1));
+            assert_eq!(
+                (
+                    last.plaza_budget_end,
+                    last.circulating_end,
+                    last.treasury_end
+                ),
+                (88, 1, 1)
+            );
+            // The last bucket's balances are the live ones, since every entry is in the range.
+            assert_eq!(last.plaza_budget_end, treasury.plaza_budget_balance());
+            assert_eq!(
                 last.circulating_end,
-                last.treasury_end
-            ),
-            (88, 1, 1)
-        );
-        // The last bucket's balances are the live ones, since every entry is in the range.
-        assert_eq!(last.plaza_budget_end, treasury.plaza_budget_balance());
-        assert_eq!(
-            last.circulating_end,
-            treasury.wallet(2) + treasury.escrow_balance("t1")
-        );
-    }
+                treasury.wallet(2) + treasury.escrow_balance("t1")
+            );
+        }
 
-    #[test]
-    fn series_clips_the_ends_and_counts_what_came_before_the_range() {
-        let treasury = treasury();
-        dated(&treasury);
-        // Buckets [10 500, 11 000) and [11 000, 12 000): the first starts at `from`,
-        // so the fund at 10 500 counts, and the mint at 9 000 is in the opening balance.
-        let series = treasury.series(10_500, 12_000, 1_000).expect("a series");
-        let spans: Vec<(u64, u64)> = series
-            .points
-            .iter()
-            .map(|point| (point.at_ms, point.end_ms))
-            .collect();
-        assert_eq!(spans, vec![(10_500, 11_000), (11_000, 12_000)]);
-        assert_eq!(series.points[0].escrowed, 40);
-        assert_eq!(series.points[0].spent, 10);
-        assert_eq!(series.points[0].plaza_budget_end, 60);
-        assert_eq!(series.points[1].circulating_end, 30);
-        // The payment (12 100) is past `to`, so it is in no bucket.
-        assert_eq!(
-            series.points.iter().map(|point| point.paid).sum::<i128>(),
-            0
-        );
+        // The range clips the ends: what came before it counts toward the opening balance,
+        // and a payment past the end lands in no bucket.
+        {
+            let treasury = treasury();
+            dated(&treasury);
+            // Buckets [10 500, 11 000) and [11 000, 12 000): the first starts at `from`,
+            // so the fund at 10 500 counts, and the mint at 9 000 is in the opening balance.
+            let series = treasury.series(10_500, 12_000, 1_000).expect("a series");
+            let spans: Vec<(u64, u64)> = series
+                .points
+                .iter()
+                .map(|point| (point.at_ms, point.end_ms))
+                .collect();
+            assert_eq!(spans, vec![(10_500, 11_000), (11_000, 12_000)]);
+            assert_eq!(series.points[0].escrowed, 40);
+            assert_eq!(series.points[0].spent, 10);
+            assert_eq!(series.points[0].plaza_budget_end, 60);
+            assert_eq!(series.points[1].circulating_end, 30);
+            // The payment (12 100) is past `to`, so it is in no bucket.
+            assert_eq!(
+                series.points.iter().map(|point| point.paid).sum::<i128>(),
+                0
+            );
+        }
     }
 
     #[test]

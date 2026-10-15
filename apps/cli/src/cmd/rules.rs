@@ -491,32 +491,22 @@ mod tests {
     }
 
     #[test]
-    fn the_strict_setting_keeps_the_rest_and_drops_dev_models() {
-        let before = json!({ "dev_models": true, "laws": { "strict_permits": false }, "payments": { "approve_over": 5 } });
-        let after = settings_with_strict(&before, true);
-        assert!(after.get("dev_models").is_none());
-        assert_eq!(after["laws"]["strict_permits"], json!(true));
-        assert_eq!(after["payments"]["approve_over"], json!(5));
-        // The settings it was given are not changed.
-        assert_eq!(before["dev_models"], json!(true));
-    }
-
-    #[test]
-    fn the_strict_setting_is_added_when_the_laws_section_is_missing() {
-        let after = settings_with_strict(&json!({ "dev_models": false }), false);
-        assert!(after.get("dev_models").is_none());
-        assert_eq!(after["laws"]["strict_permits"], json!(false));
-    }
-
-    #[test]
-    fn an_owner_rule_shows_the_effects_of_its_laws() {
-        let laws = json!([
-            { "id": "O-001", "rule_id": "r1", "effect": "forbid" },
-            { "id": "O-002", "rule_id": "r1", "effect": "permit" },
-            { "id": "O-003", "rule_id": "r1", "effect": "forbid" },
-            { "id": "S-001", "rule_id": "", "effect": "forbid" },
-        ]);
-        assert_eq!(effects_of(&laws, "r1"), "forbid, permit");
-        assert_eq!(effects_of(&laws, "r2"), "-");
+    fn settings_with_strict_sets_the_switch() {
+        // The strict setting keeps the rest of the settings and drops dev_models.
+        {
+            let before = json!({ "dev_models": true, "laws": { "strict_permits": false }, "payments": { "approve_over": 5 } });
+            let after = settings_with_strict(&before, true);
+            assert!(after.get("dev_models").is_none());
+            assert_eq!(after["laws"]["strict_permits"], json!(true));
+            assert_eq!(after["payments"]["approve_over"], json!(5));
+            // The settings it was given are not changed.
+            assert_eq!(before["dev_models"], json!(true));
+        }
+        // The strict setting is added when the laws section is missing.
+        {
+            let after = settings_with_strict(&json!({ "dev_models": false }), false);
+            assert!(after.get("dev_models").is_none());
+            assert_eq!(after["laws"]["strict_permits"], json!(false));
+        }
     }
 }

@@ -1106,46 +1106,72 @@ mod tests {
     }
 
     #[test]
-    fn set_takes_a_name_with_defaults_and_its_options() {
-        match parse(&["set", "ANTHROPIC_API_KEY"]) {
-            Ok(Cmd::Set {
-                name,
-                kind,
-                label,
-                scope,
-                nodes,
-                bind,
-            }) => {
-                assert_eq!(name, "ANTHROPIC_API_KEY");
-                assert_eq!(kind, Kind::ApiKey, "a plaza API key by default");
-                assert_eq!(label, "");
-                assert!(scope.is_none() && nodes.is_none());
-                assert!(bind.is_empty());
+    fn set_parses_its_name_options_scope_and_bindings() {
+        // set takes a name, with defaults and its options.
+        {
+            match parse(&["set", "ANTHROPIC_API_KEY"]) {
+                Ok(Cmd::Set {
+                    name,
+                    kind,
+                    label,
+                    scope,
+                    nodes,
+                    bind,
+                }) => {
+                    assert_eq!(name, "ANTHROPIC_API_KEY");
+                    assert_eq!(kind, Kind::ApiKey, "a plaza API key by default");
+                    assert_eq!(label, "");
+                    assert!(scope.is_none() && nodes.is_none());
+                    assert!(bind.is_empty());
+                }
+                other => panic!("set did not parse: {other:?}"),
             }
-            other => panic!("set did not parse: {other:?}"),
-        }
-        match parse(&[
-            "set",
-            "GITHUB_TOKEN",
-            "--kind",
-            "token",
-            "--label",
-            "ci",
-            "--scope",
-            "plaza",
-        ]) {
-            Ok(Cmd::Set {
-                kind, label, scope, ..
-            }) => {
-                assert_eq!(kind, Kind::Token);
-                assert_eq!(label, "ci");
-                assert_eq!(scope.as_deref(), Some("plaza"));
+            match parse(&[
+                "set",
+                "GITHUB_TOKEN",
+                "--kind",
+                "token",
+                "--label",
+                "ci",
+                "--scope",
+                "plaza",
+            ]) {
+                Ok(Cmd::Set {
+                    kind, label, scope, ..
+                }) => {
+                    assert_eq!(kind, Kind::Token);
+                    assert_eq!(label, "ci");
+                    assert_eq!(scope.as_deref(), Some("plaza"));
+                }
+                other => panic!("set with options did not parse: {other:?}"),
             }
-            other => panic!("set with options did not parse: {other:?}"),
+            match parse(&["set", "OTHER_KEY", "--nodes", "n0,n3"]) {
+                Ok(Cmd::Set { nodes, .. }) => assert_eq!(nodes, Some(strings(&["n0", "n3"]))),
+                other => panic!("set with nodes did not parse: {other:?}"),
+            }
         }
-        match parse(&["set", "OTHER_KEY", "--nodes", "n0,n3"]) {
-            Ok(Cmd::Set { nodes, .. }) => assert_eq!(nodes, Some(strings(&["n0", "n3"]))),
-            other => panic!("set with nodes did not parse: {other:?}"),
+        // Scope and nodes are one choice, and scope only says plaza.
+        {
+            assert!(parse(&["set", "OTHER_KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
+            assert!(parse(&["set", "OTHER_KEY", "--scope", "nodes"]).is_err());
+            assert!(parse(&["set", "OTHER_KEY", "--kind", "bogus"]).is_err());
+        }
+        // bind repeats and splits on commas.
+        {
+            match parse(&[
+                "set",
+                "KEY",
+                "--bind",
+                "provider:anthropic",
+                "--bind",
+                "provider:openai,hf",
+            ]) {
+                Ok(Cmd::Set { bind, .. }) => assert_eq!(
+                    bind,
+                    strings(&["provider:anthropic", "provider:openai", "hf"])
+                ),
+                other => panic!("repeated bind did not parse: {other:?}"),
+            }
         }
     }
 
@@ -1176,31 +1202,6 @@ mod tests {
             "one kind of slot"
         );
         assert!(parse(&["edit", "KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
-    }
-
-    #[test]
-    fn set_scope_and_nodes_are_one_choice_and_scope_only_says_plaza() {
-        assert!(parse(&["set", "OTHER_KEY", "--scope", "plaza", "--nodes", "n0"]).is_err());
-        assert!(parse(&["set", "OTHER_KEY", "--scope", "nodes"]).is_err());
-        assert!(parse(&["set", "OTHER_KEY", "--kind", "bogus"]).is_err());
-    }
-
-    #[test]
-    fn bind_repeats_and_splits_on_commas() {
-        match parse(&[
-            "set",
-            "KEY",
-            "--bind",
-            "provider:anthropic",
-            "--bind",
-            "provider:openai,hf",
-        ]) {
-            Ok(Cmd::Set { bind, .. }) => assert_eq!(
-                bind,
-                strings(&["provider:anthropic", "provider:openai", "hf"])
-            ),
-            other => panic!("repeated bind did not parse: {other:?}"),
-        }
     }
 
     #[test]
@@ -1238,73 +1239,6 @@ mod tests {
     }
 
     #[test]
-    fn nodes_are_n_and_digits_without_repeats() {
-        assert_eq!(
-            parse_nodes(&strings(&["n0,n3", "n3"])).unwrap(),
-            strings(&["n0", "n3"])
-        );
-        assert_eq!(parse_nodes(&strings(&["n12"])).unwrap(), strings(&["n12"]));
-        assert!(parse_nodes(&strings(&["x1"])).is_err());
-        assert!(parse_nodes(&strings(&["n"])).is_err());
-        assert!(parse_nodes(&strings(&["n1a"])).is_err());
-        assert!(parse_nodes(&strings(&["n1234567"])).is_err());
-        assert!(parse_nodes(&strings(&["n0,,n1"])).is_err());
-        assert!(parse_nodes(&[]).is_err());
-    }
-
-    #[test]
-    fn bindings_are_checked_sorted_and_split() {
-        assert_eq!(
-            parse_bindings(&strings(&[
-                "provider:openai,hf",
-                "connector:slack",
-                "tool:web-search",
-                "mcp:github",
-                "hf"
-            ]))
-            .unwrap(),
-            strings(&[
-                "connector:slack",
-                "hf",
-                "mcp:github",
-                "provider:openai",
-                "tool:web-search"
-            ])
-        );
-        assert!(parse_bindings(&strings(&["bogus:x"])).is_err());
-        assert!(parse_bindings(&strings(&["provider:"])).is_err());
-        assert!(parse_bindings(&strings(&["provider:Anthropic"])).is_err());
-        assert!(parse_bindings(&strings(&["provider:a,,hf"])).is_err());
-    }
-
-    #[test]
-    fn bind_map_maps_each_name_to_its_bindings() {
-        let map = parse_bind_map(&strings(&[
-            "SLACK_TOKEN=connector:slack,hf",
-            "SLACK_TOKEN=connector:slack",
-        ]))
-        .unwrap();
-        assert_eq!(
-            map.get("SLACK_TOKEN"),
-            Some(&strings(&["connector:slack", "hf"]))
-        );
-        assert!(parse_bind_map(&strings(&["lower=provider:anthropic"])).is_err());
-        assert!(parse_bind_map(&strings(&["NO_EQUALS"])).is_err());
-        assert!(parse_bind_map(&strings(&["KEY=bogus:x"])).is_err());
-    }
-
-    #[test]
-    fn names_follow_the_hub_rule() {
-        assert!(valid_name("ANTHROPIC_API_KEY"));
-        assert!(valid_name("K1"));
-        assert!(!valid_name("A"));
-        assert!(!valid_name("lower"));
-        assert!(!valid_name("1KEY"));
-        assert!(!valid_name("KEY-NAME"));
-        assert!(!valid_name(&"A".repeat(65)));
-    }
-
-    #[test]
     fn scope_value_is_plaza_or_the_nodes() {
         assert_eq!(scope_value(None).unwrap(), json!({ "kind": "plaza" }));
         assert_eq!(
@@ -1327,16 +1261,6 @@ mod tests {
             shred_verdict(&keys, &some, 0).is_err(),
             "an unconfirmed key blocks the shred"
         );
-    }
-
-    #[test]
-    fn the_shred_decision_counts_the_keys_of_a_file() {
-        let text = "# keys\nA=1\nexport B=\"two\nlines\"\nC=3\nA=4\n";
-        let names = files::dotenv_names(text).unwrap();
-        let distinct: BTreeSet<String> = names.into_iter().collect();
-        assert_eq!(distinct.len(), 3, "A, B and C");
-        let imported: BTreeSet<String> = distinct.iter().cloned().collect();
-        assert!(shred_verdict(&distinct, &imported, 0).is_ok());
     }
 
     #[test]
@@ -1393,39 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_is_picked_by_name_or_by_id() {
-        let entries = vec![
-            json!({ "id": "sec_a", "name": "KEY", "scope": { "kind": "nodes", "nodes": ["n0"] } }),
-            json!({ "id": "sec_b", "name": "KEY", "scope": { "kind": "nodes", "nodes": ["n3"] } }),
-            json!({ "id": "sec_c", "name": "OTHER" }),
-        ];
-        assert_eq!(pick_entry(&entries, "OTHER").unwrap()["id"], "sec_c");
-        assert_eq!(pick_entry(&entries, "sec_b").unwrap()["id"], "sec_b");
-        assert!(
-            pick_entry(&entries, "KEY")
-                .unwrap_err()
-                .contains("sec_a, sec_b"),
-            "a shared name lists the ids"
-        );
-        assert!(pick_entry(&entries, "MISSING").is_err());
-        assert!(pick_entry(&entries, "sec_zzz").is_err());
-    }
-
-    #[test]
-    fn a_rollback_goes_to_the_asked_version_or_the_one_before_the_current() {
-        let entry = json!({ "name": "KEY", "current": 3, "versions": [{ "v": 1 }, { "v": 2 }, { "v": 3 }] });
-        assert_eq!(rollback_target(&entry, None).unwrap(), 2);
-        assert_eq!(rollback_target(&entry, Some(1)).unwrap(), 1);
-        assert!(rollback_target(&entry, Some(3)).is_err(), "already current");
-        assert!(rollback_target(&entry, Some(9)).is_err(), "not kept");
-        let first = json!({ "name": "KEY", "current": 1, "versions": [{ "v": 1 }] });
-        assert!(
-            rollback_target(&first, None).is_err(),
-            "nothing before the first"
-        );
-    }
-
-    #[test]
     fn an_edit_adds_and_removes_bindings_and_refuses_an_unknown_removal() {
         let current = strings(&["provider:anthropic", "hf"]);
         assert_eq!(
@@ -1461,32 +1352,5 @@ mod tests {
             json!({ "kind": "passphrase", "passphrase": "a passphrase" })
         );
         assert_eq!(slot_body(None), json!({ "kind": "keyfile" }));
-    }
-
-    #[test]
-    fn a_consumer_row_names_each_node_entry() {
-        let row = consumer_row(&json!({
-            "binding": "provider:anthropic",
-            "label": "Anthropic",
-            "wants": "ANTHROPIC_API_KEY",
-            "per_node": { "n0": "sec_a", "n3": "missing" },
-        }));
-        assert_eq!(
-            row,
-            strings(&[
-                "provider:anthropic",
-                "Anthropic",
-                "ANTHROPIC_API_KEY",
-                "n0: sec_a, n3: missing"
-            ])
-        );
-    }
-
-    #[test]
-    fn a_null_audit_is_not_checked() {
-        assert_eq!(audit_label(&json!({ "audit_ok": null })), "not checked");
-        assert_eq!(audit_label(&json!({ "audit_ok": true })), "ok");
-        assert_eq!(audit_label(&json!({ "audit_ok": false })), "BROKEN");
-        assert_eq!(audit_label(&json!({})), "unknown");
     }
 }

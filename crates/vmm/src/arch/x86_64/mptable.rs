@@ -348,22 +348,37 @@ mod tests {
         }
     }
 
+    /// `setup_mptable` refuses a table that does not fit its region and a CPU count
+    /// past the maximum, and accepts a table that fits.
     #[test]
-    fn bounds_check() {
-        let num_cpus = 4;
-        let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(num_cpus));
-        let mut resource_allocator = ResourceAllocator::new();
+    fn setup_mptable_checks_its_bounds_and_cpu_count() {
+        // Original bounds_check: the table for four CPUs fits its region.
+        {
+            let num_cpus = 4;
+            let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(num_cpus));
+            let mut resource_allocator = ResourceAllocator::new();
 
-        setup_mptable(&mem, &mut resource_allocator, num_cpus).unwrap();
-    }
+            setup_mptable(&mem, &mut resource_allocator, num_cpus).unwrap();
+        }
 
-    #[test]
-    fn bounds_check_fails() {
-        let num_cpus = 4;
-        let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(num_cpus) - 1);
-        let mut resource_allocator = ResourceAllocator::new();
+        // Original bounds_check_fails: one byte short of the table's size is refused.
+        {
+            let num_cpus = 4;
+            let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(num_cpus) - 1);
+            let mut resource_allocator = ResourceAllocator::new();
 
-        setup_mptable(&mem, &mut resource_allocator, num_cpus).unwrap_err();
+            setup_mptable(&mem, &mut resource_allocator, num_cpus).unwrap_err();
+        }
+
+        // Original cpu_entry_count_max: one CPU past the maximum is refused as too many CPUs.
+        {
+            let cpus = MAX_SUPPORTED_CPUS + 1;
+            let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(cpus));
+            let mut resource_allocator = ResourceAllocator::new();
+
+            let result = setup_mptable(&mem, &mut resource_allocator, cpus).unwrap_err();
+            assert_eq!(result, MptableError::TooManyCpus);
+        }
     }
 
     #[test]
@@ -463,15 +478,5 @@ mod tests {
             }
             assert_eq!(cpu_count, i);
         }
-    }
-
-    #[test]
-    fn cpu_entry_count_max() {
-        let cpus = MAX_SUPPORTED_CPUS + 1;
-        let mem = single_region_mem_at(SYSTEM_MEM_START, compute_mp_size(cpus));
-        let mut resource_allocator = ResourceAllocator::new();
-
-        let result = setup_mptable(&mem, &mut resource_allocator, cpus).unwrap_err();
-        assert_eq!(result, MptableError::TooManyCpus);
     }
 }

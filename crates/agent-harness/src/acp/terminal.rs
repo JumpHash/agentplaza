@@ -501,36 +501,28 @@ mod tests {
     }
 
     #[test]
-    fn output_limit_keeps_the_tail() {
-        let (ws, dir) = workspace("limit");
-        let terms = Terminals::new(ws, std::env::temp_dir());
-        let id = new_id(
-            &terms,
-            &json!({"command": "/bin/sh", "args": ["-c", "printf 0123456789abcdef"], "outputByteLimit": 10}),
-        );
+    fn output_limit_keeps_the_tail_on_a_character_boundary() {
+        // Each row: workspace name, printf argument, outputByteLimit, and the output kept.
+        // "limit" keeps the last ten bytes of ASCII output.
+        // "utf8" holds six bytes of "é" (two bytes each); a 3-byte cut would open on half a
+        // character, so the cut moves to a character boundary.
+        for (case, printf, limit, want) in [
+            ("limit", "printf 0123456789abcdef", 10, "6789abcdef"),
+            ("utf8", "printf 'ééé'", 3, "é"),
+        ] {
+            let (ws, dir) = workspace(case);
+            let terms = Terminals::new(ws, std::env::temp_dir());
+            let id = new_id(
+                &terms,
+                &json!({"command": "/bin/sh", "args": ["-c", printf], "outputByteLimit": limit}),
+            );
 
-        wait(&terms, &id).unwrap();
-        let out = terms.output(&json!({"terminalId": id})).unwrap();
-        assert_eq!(out["output"], "6789abcdef");
-        assert_eq!(out["truncated"], true);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn cut_output_starts_on_a_character_boundary() {
-        let (ws, dir) = workspace("utf8");
-        let terms = Terminals::new(ws, std::env::temp_dir());
-        // Six bytes of "é" (two bytes each); a 3-byte cut would open on half a character.
-        let id = new_id(
-            &terms,
-            &json!({"command": "/bin/sh", "args": ["-c", "printf 'ééé'"], "outputByteLimit": 3}),
-        );
-
-        wait(&terms, &id).unwrap();
-        let out = terms.output(&json!({"terminalId": id})).unwrap();
-        assert_eq!(out["output"], "é");
-        assert_eq!(out["truncated"], true);
-        let _ = std::fs::remove_dir_all(&dir);
+            wait(&terms, &id).unwrap();
+            let out = terms.output(&json!({"terminalId": id})).unwrap();
+            assert_eq!(out["output"], want, "{case}");
+            assert_eq!(out["truncated"], true, "{case}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

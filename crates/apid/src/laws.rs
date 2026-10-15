@@ -1798,32 +1798,34 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_read_is_not_forbidden() {
-        let laws = Laws::load(&scratch("read"));
-        let verdict = laws.check(
-            "7",
-            "researcher",
-            "read_file",
-            &json!({"path": "notes/today.md"}),
-        );
-        assert!(verdict.forbid.is_empty(), "{verdict:?}");
-    }
-
-    #[test]
-    fn an_acp_engines_own_actions_are_checked_one_by_one() {
-        let laws = Laws::load(&scratch("engine"));
-        // A read is a tool call alone; an edit also runs in the VM, so the sandbox is checked too.
-        let read = laws.check("7", "builder", "engine.read", &json!({}));
-        assert!(!read.unpermitted && read.forbid.is_empty(), "{read:?}");
-        assert!(!read.requested.iter().any(|o| o == "tool.exec"), "{read:?}");
-        let edit = laws.check("7", "builder", "engine.edit", &json!({}));
-        assert!(!edit.unpermitted && edit.forbid.is_empty(), "{edit:?}");
-        assert!(edit.requested.iter().any(|o| o == "tool.exec"), "{edit:?}");
-        // An unknown name under `engine.` is no tool any law names.
-        assert!(
-            laws.check("7", "builder", "engine.bogus", &json!({}))
-                .unpermitted
-        );
+    fn a_plain_read_and_an_acp_engines_actions_are_checked() {
+        // a_plain_read_is_not_forbidden: a plain read is not forbidden.
+        {
+            let laws = Laws::load(&scratch("read"));
+            let verdict = laws.check(
+                "7",
+                "researcher",
+                "read_file",
+                &json!({"path": "notes/today.md"}),
+            );
+            assert!(verdict.forbid.is_empty(), "{verdict:?}");
+        }
+        // an_acp_engines_own_actions_are_checked_one_by_one: each engine action is checked on its own.
+        {
+            let laws = Laws::load(&scratch("engine"));
+            // A read is a tool call alone; an edit also runs in the VM, so the sandbox is checked too.
+            let read = laws.check("7", "builder", "engine.read", &json!({}));
+            assert!(!read.unpermitted && read.forbid.is_empty(), "{read:?}");
+            assert!(!read.requested.iter().any(|o| o == "tool.exec"), "{read:?}");
+            let edit = laws.check("7", "builder", "engine.edit", &json!({}));
+            assert!(!edit.unpermitted && edit.forbid.is_empty(), "{edit:?}");
+            assert!(edit.requested.iter().any(|o| o == "tool.exec"), "{edit:?}");
+            // An unknown name under `engine.` is no tool any law names.
+            assert!(
+                laws.check("7", "builder", "engine.bogus", &json!({}))
+                    .unpermitted
+            );
+        }
     }
 
     #[test]
@@ -1975,75 +1977,104 @@ mod tests {
     }
 
     #[test]
-    fn a_file_published_from_the_vm_is_checked_as_an_artifact() {
-        let laws = Laws::load(&scratch("artifact"));
-        let artifact = Entity {
-            ty: "Artifact".into(),
-            id: "report.txt".into(),
-        };
-        let why = laws.refuse_op(
-            7,
-            "builder",
-            "artifact.publish",
-            artifact,
-            BTreeMap::new(),
-            &Json::String("I pretend to be the owner".into()),
-        );
-        assert!(why.is_some_and(|w| w.contains("C-003b")));
-        assert!(
-            laws.recent(7, apz_plaza::now_ms())
-                .iter()
-                .any(|v| v["law"] == "C-003b")
-        );
-    }
-
-    #[test]
-    fn a_researcher_may_not_push_to_the_hub_git_but_a_builder_may() {
-        let laws = Laws::load(&scratch("git-push"));
-        let host = || Entity {
-            ty: "Host".into(),
-            id: "hub-git".into(),
-        };
-        let attrs = || BTreeMap::from([("group".to_string(), Value::str("hub-git"))]);
-        let why = laws.refuse_op(
-            7,
-            "researcher",
-            "egress.connect",
-            host(),
-            attrs(),
-            &Json::Null,
-        );
-        assert!(why.is_some_and(|w| w.contains("S-013d")));
-        assert!(
-            laws.refuse_op(8, "builder", "egress.connect", host(), attrs(), &Json::Null)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn an_irreversible_connector_action_is_withheld_from_every_role() {
-        let laws = Laws::load(&scratch("irreversible"));
-        assert_eq!(
-            crate::connectors::risk_of("cloudflare_dns_create"),
-            Some("irreversible")
-        );
-        // C-004a: refused without an owner approval, so no role is offered it (tools.rs specs_for).
-        for role in ["builder", "orchestrator"] {
-            assert!(!laws.permits(role, "cloudflare_dns_create"), "{role}");
+    fn refused_ops_and_permits_follow_the_laws_by_role() {
+        // a_file_published_from_the_vm_is_checked_as_an_artifact: a published file is checked as an artifact.
+        {
+            let laws = Laws::load(&scratch("artifact"));
+            let artifact = Entity {
+                ty: "Artifact".into(),
+                id: "report.txt".into(),
+            };
+            let why = laws.refuse_op(
+                7,
+                "builder",
+                "artifact.publish",
+                artifact,
+                BTreeMap::new(),
+                &Json::String("I pretend to be the owner".into()),
+            );
+            assert!(why.is_some_and(|w| w.contains("C-003b")));
+            assert!(
+                laws.recent(7, apz_plaza::now_ms())
+                    .iter()
+                    .any(|v| v["law"] == "C-003b")
+            );
+        }
+        // a_researcher_may_not_push_to_the_hub_git_but_a_builder_may: only a builder may push to the hub git.
+        {
+            let laws = Laws::load(&scratch("git-push"));
+            let host = || Entity {
+                ty: "Host".into(),
+                id: "hub-git".into(),
+            };
+            let attrs = || BTreeMap::from([("group".to_string(), Value::str("hub-git"))]);
+            let why = laws.refuse_op(
+                7,
+                "researcher",
+                "egress.connect",
+                host(),
+                attrs(),
+                &Json::Null,
+            );
+            assert!(why.is_some_and(|w| w.contains("S-013d")));
+            assert!(
+                laws.refuse_op(8, "builder", "egress.connect", host(), attrs(), &Json::Null)
+                    .is_none()
+            );
+        }
+        // a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from: a hidden artifact is refused to its hidden role.
+        {
+            let laws = Laws::load(&scratch("hidden-artifact"));
+            let hidden = Entity {
+                ty: "Artifact".into(),
+                id: "acceptance.txt".into(),
+            };
+            let attrs = BTreeMap::from([(
+                "hidden_from".to_string(),
+                Value::set([Value::str("builder")]),
+            )]);
+            let why = laws.refuse_op(7, "builder", "artifact.read", hidden, attrs, &Json::Null);
+            assert!(why.is_some_and(|w| w.contains("S-010d")));
+            let read = laws.check(
+                "7",
+                "builder",
+                "plaza_get_file",
+                &json!({"id": "report.txt"}),
+            );
+            assert!(
+                read.requested.iter().any(|op| op == "artifact.read"),
+                "{read:?}"
+            );
+            assert!(read.forbid.is_empty(), "{read:?}");
         }
     }
 
     #[test]
-    fn permits_follows_the_tier_and_seat_laws() {
-        let laws = Laws::load(&scratch("permits"));
-        assert!(laws.permits("mayor", "plaza_project_approve"));
-        assert!(!laws.permits("builder", "plaza_project_approve"));
-        assert!(!laws.permits("builder", "plaza_post_task"));
-        assert!(laws.permits("builder", "plaza_bid"));
-        assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
-        assert!(laws.permits("builder", "bash"));
-        // A second ask is answered from the memo, the same way.
-        assert!(laws.permits("mayor", "plaza_project_approve"));
+    fn permits_follows_the_tier_seat_and_connector_laws() {
+        // an_irreversible_connector_action_is_withheld_from_every_role: no role is offered an irreversible action.
+        {
+            let laws = Laws::load(&scratch("irreversible"));
+            assert_eq!(
+                crate::connectors::risk_of("cloudflare_dns_create"),
+                Some("irreversible")
+            );
+            // C-004a: refused without an owner approval, so no role is offered it (tools.rs specs_for).
+            for role in ["builder", "orchestrator"] {
+                assert!(!laws.permits(role, "cloudflare_dns_create"), "{role}");
+            }
+        }
+        // permits_follows_the_tier_and_seat_laws: permits follow the tier and seat laws.
+        {
+            let laws = Laws::load(&scratch("permits"));
+            assert!(laws.permits("mayor", "plaza_project_approve"));
+            assert!(!laws.permits("builder", "plaza_project_approve"));
+            assert!(!laws.permits("builder", "plaza_post_task"));
+            assert!(laws.permits("builder", "plaza_bid"));
+            assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
+            assert!(laws.permits("builder", "bash"));
+            // A second ask is answered from the memo, the same way.
+            assert!(laws.permits("mayor", "plaza_project_approve"));
+        }
     }
 
     #[test]
@@ -2136,32 +2167,6 @@ mod tests {
             "{personal:?}"
         );
         assert!(personal.forbid.is_empty(), "{personal:?}");
-    }
-
-    #[test]
-    fn a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from() {
-        let laws = Laws::load(&scratch("hidden-artifact"));
-        let hidden = Entity {
-            ty: "Artifact".into(),
-            id: "acceptance.txt".into(),
-        };
-        let attrs = BTreeMap::from([(
-            "hidden_from".to_string(),
-            Value::set([Value::str("builder")]),
-        )]);
-        let why = laws.refuse_op(7, "builder", "artifact.read", hidden, attrs, &Json::Null);
-        assert!(why.is_some_and(|w| w.contains("S-010d")));
-        let read = laws.check(
-            "7",
-            "builder",
-            "plaza_get_file",
-            &json!({"id": "report.txt"}),
-        );
-        assert!(
-            read.requested.iter().any(|op| op == "artifact.read"),
-            "{read:?}"
-        );
-        assert!(read.forbid.is_empty(), "{read:?}");
     }
 }
 

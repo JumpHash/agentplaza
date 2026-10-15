@@ -94,98 +94,97 @@ mod tests {
     const FACTS_JSON: &str = r#"{"os":"macos","os_version":"15.2","arch":"arm64","hostname":"studio-mini","form":"mini","cpus":10,"ram_mb":32768,"gpus":[{"vendor":"apple","name":"M4 Pro","vram_mb":0}],"displays":[{"id":1,"w":3024,"h":1964,"scale":2.0}],"account":{"mode":"agent_user","name":"agentws"},"apps":142,"virtual_displays":true,"ui_tree":true}"#;
 
     #[test]
-    fn hello_carries_the_machine_facts() {
-        assert_wire(
-            &StationFrame::Hello {
-                station: "ws-7".into(),
-                version: "0.0.8".into(),
-                facts: facts(),
-            },
-            &format!(
-                r#"{{"frame":"hello","station":"ws-7","version":"0.0.8","facts":{FACTS_JSON}}}"#
-            ),
-        );
-    }
-
-    #[test]
-    fn a_request_carries_its_operation() {
-        assert_wire(
-            &HubFrame::Request {
-                id: 41,
-                op: Op::Facts,
-            },
-            r#"{"frame":"request","id":41,"op":{"op":"facts"}}"#,
-        );
-        assert_wire(
-            &HubFrame::Request {
-                id: 42,
-                op: Op::SessionOpen {
-                    agent: 3,
-                    kind: SessionKind::Pixel,
+    fn link_frames_encode_to_their_wire_json() {
+        // The hello frame carries the machine facts (was hello_carries_the_machine_facts).
+        {
+            assert_wire(
+                &StationFrame::Hello {
+                    station: "ws-7".into(),
+                    version: "0.0.8".into(),
+                    facts: facts(),
                 },
-            },
-            r#"{"frame":"request","id":42,"op":{"op":"session_open","agent":3,"kind":"pixel"}}"#,
-        );
-        assert_wire(
-            &HubFrame::Request {
-                id: 43,
-                op: Op::Input {
-                    session: 9,
-                    action: InputAction::Click {
-                        x: 640,
-                        y: 360,
-                        button: Button::Left,
-                        count: 2,
+                &format!(
+                    r#"{{"frame":"hello","station":"ws-7","version":"0.0.8","facts":{FACTS_JSON}}}"#
+                ),
+            );
+        }
+        // A request carries its operation (was a_request_carries_its_operation).
+        {
+            assert_wire(
+                &HubFrame::Request {
+                    id: 41,
+                    op: Op::Facts,
+                },
+                r#"{"frame":"request","id":41,"op":{"op":"facts"}}"#,
+            );
+            assert_wire(
+                &HubFrame::Request {
+                    id: 42,
+                    op: Op::SessionOpen {
+                        agent: 3,
+                        kind: SessionKind::Pixel,
                     },
                 },
-            },
-            r#"{"frame":"request","id":43,"op":{"op":"input","session":9,"action":{"action":"click","x":640,"y":360,"button":"left","count":2}}}"#,
-        );
-    }
-
-    #[test]
-    fn a_response_is_ok_with_a_result_or_not_ok_with_an_error() {
-        assert_wire(
-            &StationFrame::Response {
-                id: 41,
-                ok: true,
-                result: Some(serde_json::json!({"ok": true})),
-                error: None,
-            },
-            r#"{"frame":"response","id":41,"ok":true,"result":{"ok":true}}"#,
-        );
-        assert_wire(
-            &StationFrame::Response {
-                id: 42,
-                ok: false,
-                result: None,
-                error: Some("no session 9".into()),
-            },
-            r#"{"frame":"response","id":42,"ok":false,"error":"no session 9"}"#,
-        );
-    }
-
-    #[test]
-    fn an_event_frame_wraps_the_event() {
-        assert_wire(
-            &StationFrame::Event {
-                event: Event::OwnerInput { session: 9 },
-            },
-            r#"{"frame":"event","event":{"event":"owner_input","session":9}}"#,
-        );
-    }
-
-    #[test]
-    fn every_notice_encodes_as_a_plain_string() {
-        for (notice, json) in [
-            (Notice::Revoked, "revoked"),
-            (Notice::Drain, "drain"),
-            (Notice::SettingsChanged, "settings_changed"),
-        ] {
-            assert_wire(
-                &HubFrame::Notify { notice },
-                &format!(r#"{{"frame":"notify","notice":"{json}"}}"#),
+                r#"{"frame":"request","id":42,"op":{"op":"session_open","agent":3,"kind":"pixel"}}"#,
             );
+            assert_wire(
+                &HubFrame::Request {
+                    id: 43,
+                    op: Op::Input {
+                        session: 9,
+                        action: InputAction::Click {
+                            x: 640,
+                            y: 360,
+                            button: Button::Left,
+                            count: 2,
+                        },
+                    },
+                },
+                r#"{"frame":"request","id":43,"op":{"op":"input","session":9,"action":{"action":"click","x":640,"y":360,"button":"left","count":2}}}"#,
+            );
+        }
+        // A response is ok with a result, or not ok with an error (was a_response_is_ok_with_a_result_or_not_ok_with_an_error).
+        {
+            assert_wire(
+                &StationFrame::Response {
+                    id: 41,
+                    ok: true,
+                    result: Some(serde_json::json!({"ok": true})),
+                    error: None,
+                },
+                r#"{"frame":"response","id":41,"ok":true,"result":{"ok":true}}"#,
+            );
+            assert_wire(
+                &StationFrame::Response {
+                    id: 42,
+                    ok: false,
+                    result: None,
+                    error: Some("no session 9".into()),
+                },
+                r#"{"frame":"response","id":42,"ok":false,"error":"no session 9"}"#,
+            );
+        }
+        // An event frame wraps the event (was an_event_frame_wraps_the_event).
+        {
+            assert_wire(
+                &StationFrame::Event {
+                    event: Event::OwnerInput { session: 9 },
+                },
+                r#"{"frame":"event","event":{"event":"owner_input","session":9}}"#,
+            );
+        }
+        // Every notice encodes as a plain string (was every_notice_encodes_as_a_plain_string).
+        {
+            for (notice, json) in [
+                (Notice::Revoked, "revoked"),
+                (Notice::Drain, "drain"),
+                (Notice::SettingsChanged, "settings_changed"),
+            ] {
+                assert_wire(
+                    &HubFrame::Notify { notice },
+                    &format!(r#"{{"frame":"notify","notice":"{json}"}}"#),
+                );
+            }
         }
     }
 }

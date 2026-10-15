@@ -70,50 +70,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bgrx_becomes_rgba_with_full_alpha() {
-        // One pixel: blue 1, green 2, red 3, padding 9.
-        let rgba = to_rgba(PixelFormat::Bgrx, 1, 1, 4, &[1, 2, 3, 9]).expect("converts");
-        assert_eq!(rgba, vec![3, 2, 1, 255]);
-    }
+    fn to_rgba_converts_pixels_and_refuses_bad_frames() {
+        // Each case: the pixel format, the size and stride, the bytes, and the RGBA they become.
+        // Alpha is forced to 255 for formats without one.
+        for (case, format, width, height, stride, data, want) in [
+            // One pixel: blue 1, green 2, red 3, padding 9.
+            (
+                "bgrx becomes rgba with full alpha",
+                PixelFormat::Bgrx,
+                1,
+                1,
+                4,
+                &[1u8, 2, 3, 9][..],
+                vec![3u8, 2, 1, 255],
+            ),
+            (
+                "rgba keeps its channels and forces alpha",
+                PixelFormat::Rgba,
+                1,
+                1,
+                4,
+                &[10u8, 20, 30, 0][..],
+                vec![10u8, 20, 30, 255],
+            ),
+            (
+                "bgra swaps the same way",
+                PixelFormat::Bgra,
+                1,
+                1,
+                4,
+                &[1u8, 2, 3, 4][..],
+                vec![3u8, 2, 1, 255],
+            ),
+            (
+                "rgbx swaps the same way",
+                PixelFormat::Rgbx,
+                1,
+                1,
+                4,
+                &[1u8, 2, 3, 4][..],
+                vec![1u8, 2, 3, 255],
+            ),
+            // Two rows of one pixel, with a stride of 8: four padding bytes after each pixel.
+            (
+                "row padding is skipped",
+                PixelFormat::Rgbx,
+                1,
+                2,
+                8,
+                &[1u8, 2, 3, 0, 9, 9, 9, 9, 4, 5, 6, 0][..],
+                vec![1u8, 2, 3, 255, 4, 5, 6, 255],
+            ),
+        ] {
+            let rgba = to_rgba(format, width, height, stride, data).expect("converts");
+            assert_eq!(rgba, want, "{case}");
+        }
 
-    #[test]
-    fn rgba_keeps_its_channels_and_forces_alpha() {
-        let rgba = to_rgba(PixelFormat::Rgba, 1, 1, 4, &[10, 20, 30, 0]).expect("converts");
-        assert_eq!(rgba, vec![10, 20, 30, 255]);
-    }
+        // A short buffer and a bad stride are refused.
+        {
+            assert!(to_rgba(PixelFormat::Bgrx, 2, 2, 8, &[0; 15]).is_err());
+            assert!(to_rgba(PixelFormat::Bgrx, 2, 1, 4, &[0; 8]).is_err());
+            assert!(to_rgba(PixelFormat::Bgrx, 0, 1, 0, &[]).is_err());
+            assert!(to_rgba(PixelFormat::Bgrx, 1, 0, 4, &[]).is_err());
+        }
 
-    #[test]
-    fn bgra_and_rgbx_swap_the_same_way() {
-        assert_eq!(
-            to_rgba(PixelFormat::Bgra, 1, 1, 4, &[1, 2, 3, 4]).expect("converts"),
-            vec![3, 2, 1, 255]
-        );
-        assert_eq!(
-            to_rgba(PixelFormat::Rgbx, 1, 1, 4, &[1, 2, 3, 4]).expect("converts"),
-            vec![1, 2, 3, 255]
-        );
-    }
-
-    #[test]
-    fn row_padding_is_skipped() {
-        // Two rows of one pixel, with a stride of 8: four padding bytes after each pixel.
-        let data = [1, 2, 3, 0, 9, 9, 9, 9, 4, 5, 6, 0];
-        let rgba = to_rgba(PixelFormat::Rgbx, 1, 2, 8, &data).expect("converts");
-        assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
-    }
-
-    #[test]
-    fn a_short_buffer_and_a_bad_stride_are_refused() {
-        assert!(to_rgba(PixelFormat::Bgrx, 2, 2, 8, &[0; 15]).is_err());
-        assert!(to_rgba(PixelFormat::Bgrx, 2, 1, 4, &[0; 8]).is_err());
-        assert!(to_rgba(PixelFormat::Bgrx, 0, 1, 0, &[]).is_err());
-        assert!(to_rgba(PixelFormat::Bgrx, 1, 0, 4, &[]).is_err());
-    }
-
-    #[test]
-    fn a_frame_of_the_right_size_is_exactly_the_pixels_times_four() {
-        let data = vec![0u8; 3 * 2 * 4];
-        let rgba = to_rgba(PixelFormat::Bgrx, 3, 2, 12, &data).expect("converts");
-        assert_eq!(rgba.len(), 3 * 2 * 4);
+        // A frame of the right size is exactly the pixels times four.
+        {
+            let data = vec![0u8; 3 * 2 * 4];
+            let rgba = to_rgba(PixelFormat::Bgrx, 3, 2, 12, &data).expect("converts");
+            assert_eq!(rgba.len(), 3 * 2 * 4);
+        }
     }
 }

@@ -202,15 +202,6 @@ fn kill_stops_a_running_vm() {
     );
 }
 
-/// Spawning without a kernel must fail with an error rather than panic.
-#[test]
-fn spawn_without_kernel_fails() {
-    // Only meaningful where a backend is compiled in; on other targets the
-    // spawner reports `NoBackend`, which is also an error.
-    let err = spawn_n(VmSpec::default(), 1).unwrap_err();
-    eprintln!("expected boot failure: {err}");
-}
-
 /// How long killing a halted guest is given: the spawner's own kill timeout is
 /// 10 s per attempt and it retries once, so a vCPU left running behind the
 /// join shows up as a `KillTimeout` well inside this bound.

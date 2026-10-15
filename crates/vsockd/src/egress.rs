@@ -1123,7 +1123,9 @@ mod tests {
     }
 
     #[test]
-    fn connect_to_the_gateway_is_refused_and_so_is_any_other_gateway_port() {
+    fn the_gateway_refuses_connect_other_ports_and_foreign_upgrades() {
+        // The original test: CONNECT to the gateway and plain requests to another gateway port
+        // are refused with 403, and the audit records the gateway host as refused.
         for request in [
             "CONNECT plaza.gateway:443 HTTP/1.1\r\n\r\n",
             "CONNECT Plaza.Gateway:80 HTTP/1.1\r\n\r\n",
@@ -1145,6 +1147,29 @@ mod tests {
                 !audit.allowed && audit.host.eq_ignore_ascii_case(GATEWAY_HOST),
                 "{audit:?}"
             );
+        }
+
+        // The original test: an upgrade to another path is refused without contacting apid.
+        {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let policy = Policy::new(vec![]);
+            // Apid is off: were the request sent on, the answer would be 502, not 403.
+            let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
+            client
+                .write_all(
+                    b"GET http://plaza.gateway/v1/messages HTTP/1.1\r\nHost: plaza.gateway\r\nUpgrade: websocket\r\n\
+                      Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                )
+                .unwrap();
+            let answer =
+                String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20)))
+                    .unwrap();
+            assert!(
+                answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+                "{answer:?}"
+            );
+            let audit = proxy.join().unwrap();
+            assert!(!audit.allowed, "{audit:?}");
         }
     }
 
@@ -1303,28 +1328,6 @@ mod tests {
             audit.allowed && audit.host == GATEWAY_HOST && audit.port == 80,
             "{audit:?}"
         );
-    }
-
-    #[test]
-    fn an_upgrade_to_another_path_is_refused_without_contacting_apid() {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let policy = Policy::new(vec![]);
-        // Apid is off: were the request sent on, the answer would be 502, not 403.
-        let proxy = thread::spawn(move || serve_conn(server, 7, &policy, &Apid::off()));
-        client
-            .write_all(
-                b"GET http://plaza.gateway/v1/messages HTTP/1.1\r\nHost: plaza.gateway\r\nUpgrade: websocket\r\n\
-                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
-            )
-            .unwrap();
-        let answer =
-            String::from_utf8(crate::read_until_closed(&client, Duration::from_secs(20))).unwrap();
-        assert!(
-            answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
-            "{answer:?}"
-        );
-        let audit = proxy.join().unwrap();
-        assert!(!audit.allowed, "{audit:?}");
     }
 
     #[test]

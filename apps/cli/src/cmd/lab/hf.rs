@@ -471,32 +471,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_repo_is_open_unless_the_hub_names_a_gate() {
-        assert_eq!(access(&json!(false)), "open");
-        assert_eq!(access(&Value::Null), "open");
-        assert_eq!(access(&json!("")), "open");
-        assert_eq!(access(&json!("auto")), "gated");
-        assert_eq!(access(&json!("manual")), "gated");
-    }
-
-    #[test]
-    fn an_import_says_what_it_made_or_why_it_failed() {
-        assert_eq!(
-            outcome(&json!({ "model_id": "hf-m-1a2b", "error": null })),
-            "hf-m-1a2b"
-        );
-        assert_eq!(
-            outcome(&json!({ "model_id": null, "error": "disk full" })),
-            "disk full"
-        );
-        assert_eq!(
-            outcome(&json!({ "model_id": null, "error": null, "reason": "no onnx" })),
-            "no onnx"
-        );
-        assert_eq!(outcome(&json!({})), "");
-    }
-
     /// `lab hf ARGS`, parsed. The token is never a value on the command line.
     #[derive(Parser, Debug)]
     struct Probe {

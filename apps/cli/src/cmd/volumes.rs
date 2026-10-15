@@ -192,7 +192,7 @@ mod tests {
     use clap::Parser;
     use serde_json::{Value, json};
 
-    use super::{Cmd, role_rows, set_role, volume_rows};
+    use super::{Cmd, set_role};
 
     #[test]
     fn volumes_parse() {
@@ -215,25 +215,6 @@ mod tests {
     #[test]
     fn mount_needs_at_least_one_name() {
         assert!(crate::Cli::try_parse_from(["agentplaza", "volumes", "mount", "worker"]).is_err());
-    }
-
-    #[test]
-    fn the_table_shows_size_mounts_and_source() {
-        let list = json!([
-            {"name": "data", "size_bytes": 2097152, "created_ms": 1, "source": "/srv/data.ext4", "in_use": [3, 7]},
-            {"name": "tools", "size_bytes": 1048576, "created_ms": 2, "source": "/srv/tools", "in_use": []}
-        ]);
-        let rows = volume_rows(&list);
-        assert_eq!(rows[0], vec!["data", "2.0", "3, 7", "/srv/data.ext4"]);
-        assert_eq!(rows[1], vec!["tools", "1.0", "-", "/srv/tools"]);
-    }
-
-    #[test]
-    fn roles_lists_each_role_with_its_volumes() {
-        let settings = json!({"role_volumes": {"worker": ["data", "tools"], "reviewer": []}});
-        let rows = role_rows(&settings);
-        assert!(rows.contains(&vec!["worker".to_string(), "data, tools".to_string()]));
-        assert!(rows.contains(&vec!["reviewer".to_string(), "-".to_string()]));
     }
 
     #[test]

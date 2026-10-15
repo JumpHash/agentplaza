@@ -428,24 +428,74 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_zai_and_moonshot_presets() {
-        let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
-        let ds = by_id("deepseek");
-        assert_eq!(ds.base_url, Some("https://api.deepseek.com"));
-        assert_eq!(ds.models, vec!["deepseek-flash", "deepseek-v4-pro"]);
-        assert_eq!(
-            ds.options,
-            json!({"replay_reasoning": true, "reasoning_effort": true})
-        );
-        assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
-        let kimi = by_id("moonshot");
-        assert_eq!(
-            (kimi.base_url, kimi.auth),
-            (
-                Some("https://api.moonshot.ai/v1"),
-                Auth::Env("MOONSHOT_API_KEY".into())
-            )
-        );
+    fn preset_endpoints_headers_and_models_are_pinned() {
+        // The DeepSeek, Z.ai and Moonshot presets pin their endpoints, options and key variable.
+        {
+            let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
+            let ds = by_id("deepseek");
+            assert_eq!(ds.base_url, Some("https://api.deepseek.com"));
+            assert_eq!(ds.models, vec!["deepseek-flash", "deepseek-v4-pro"]);
+            assert_eq!(
+                ds.options,
+                json!({"replay_reasoning": true, "reasoning_effort": true})
+            );
+            assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
+            let kimi = by_id("moonshot");
+            assert_eq!(
+                (kimi.base_url, kimi.auth),
+                (
+                    Some("https://api.moonshot.ai/v1"),
+                    Auth::Env("MOONSHOT_API_KEY".into())
+                )
+            );
+        }
+
+        // The OpenRouter and OpenCode presets pin their endpoints, headers, models and training flags.
+        {
+            let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
+            let or = by_id("openrouter");
+            assert_eq!(
+                (or.kind, or.base_url, or.brand),
+                (
+                    ProviderKind::OpenAiCompatible,
+                    Some("https://openrouter.ai/api/v1"),
+                    "openrouter"
+                )
+            );
+            assert_eq!(or.auth, Auth::Env("OPENROUTER_API_KEY".into()));
+            assert!(or.models.is_empty());
+            assert_eq!(or.options, json!({"models_cache_secs": 3600}));
+            let or_cfg = or.config();
+            assert_eq!(or_cfg.extra_headers.len(), 2);
+            assert_eq!(
+                or_cfg.extra_headers.get("HTTP-Referer").map(String::as_str),
+                Some("https://agentplaza.io")
+            );
+            assert_eq!(
+                or_cfg
+                    .extra_headers
+                    .get("X-OpenRouter-Title")
+                    .map(String::as_str),
+                Some("AgentPlaza")
+            );
+            let oc = by_id("opencode");
+            assert_eq!(
+                (oc.kind, oc.base_url, oc.brand),
+                (
+                    ProviderKind::OpenAiCompatible,
+                    Some("https://opencode.ai/inference/v1"),
+                    "opencode"
+                )
+            );
+            assert_eq!(oc.auth, Auth::Env("OPENCODE_API_KEY".into()));
+            assert_eq!(oc.models.len(), 10);
+            assert!(oc.models.contains(&"claude-opus-5-5") && oc.models.contains(&"minimax-m3"));
+            assert!(lists_training_model(&oc.options, "big-pickle"));
+            assert!(!lists_training_model(&oc.options, "gpt-5.6-sol"));
+            assert!(oc.config().extra_headers.is_empty());
+            let oc_json = serde_json::to_value(&oc).unwrap();
+            assert!(oc_json.get("extra_headers").is_none(), "{oc_json}");
+        }
     }
 
     #[test]
@@ -478,52 +528,5 @@ mod tests {
             &Value::Null,
             "muse-spark-1.3-contributor"
         ));
-    }
-
-    #[test]
-    fn openrouter_and_opencode_presets() {
-        let by_id = |id: &str| presets().into_iter().find(|p| p.id == id).unwrap();
-        let or = by_id("openrouter");
-        assert_eq!(
-            (or.kind, or.base_url, or.brand),
-            (
-                ProviderKind::OpenAiCompatible,
-                Some("https://openrouter.ai/api/v1"),
-                "openrouter"
-            )
-        );
-        assert_eq!(or.auth, Auth::Env("OPENROUTER_API_KEY".into()));
-        assert!(or.models.is_empty());
-        assert_eq!(or.options, json!({"models_cache_secs": 3600}));
-        let or_cfg = or.config();
-        assert_eq!(or_cfg.extra_headers.len(), 2);
-        assert_eq!(
-            or_cfg.extra_headers.get("HTTP-Referer").map(String::as_str),
-            Some("https://agentplaza.io")
-        );
-        assert_eq!(
-            or_cfg
-                .extra_headers
-                .get("X-OpenRouter-Title")
-                .map(String::as_str),
-            Some("AgentPlaza")
-        );
-        let oc = by_id("opencode");
-        assert_eq!(
-            (oc.kind, oc.base_url, oc.brand),
-            (
-                ProviderKind::OpenAiCompatible,
-                Some("https://opencode.ai/inference/v1"),
-                "opencode"
-            )
-        );
-        assert_eq!(oc.auth, Auth::Env("OPENCODE_API_KEY".into()));
-        assert_eq!(oc.models.len(), 10);
-        assert!(oc.models.contains(&"claude-opus-5-5") && oc.models.contains(&"minimax-m3"));
-        assert!(lists_training_model(&oc.options, "big-pickle"));
-        assert!(!lists_training_model(&oc.options, "gpt-5.6-sol"));
-        assert!(oc.config().extra_headers.is_empty());
-        let oc_json = serde_json::to_value(&oc).unwrap();
-        assert!(oc_json.get("extra_headers").is_none(), "{oc_json}");
     }
 }

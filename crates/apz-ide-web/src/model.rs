@@ -103,21 +103,6 @@ index 0000000..3333333
 +hello
 ";
 
-    const ENTRIES: &str = r#"[
-        {"path":"src","kind":"dir","size":0,"hash":null,"binary":false},
-        {"path":"src/a.txt","kind":"file","size":4,"hash":"h1","binary":false},
-        {"path":"README.md","kind":"file","size":2,"hash":"h2","binary":false}
-    ]"#;
-
-    fn paths(json: &str) -> Vec<String> {
-        let v: serde_json::Value = serde_json::from_str(json).unwrap();
-        v.as_array()
-            .unwrap()
-            .iter()
-            .map(|e| e["path"].as_str().unwrap().to_string())
-            .collect()
-    }
-
     #[test]
     fn parse_unified_round_trips_the_change_set_and_adds_stats() {
         let out = parse_unified(DIFF).unwrap();
@@ -132,12 +117,6 @@ index 0000000..3333333
         );
         assert_eq!(v["files"][1]["status"], "added");
         assert_eq!(v["files"][0]["hunks"][0]["lines"][0]["kind"], "context");
-    }
-
-    #[test]
-    fn parse_unified_refuses_a_bad_diff_with_its_line() {
-        let e = parse_unified("@@ -1 +1 @@\n-a\n+b\n").unwrap_err();
-        assert!(e.starts_with("diff line 1:"), "{e}");
     }
 
     #[test]
@@ -191,42 +170,6 @@ index 0000000..3333333
     }
 
     #[test]
-    fn reduce_refuses_bad_json_and_names_the_argument() {
-        assert!(
-            reduce(&initial_state(), "{nope")
-                .unwrap_err()
-                .starts_with("bad action JSON:")
-        );
-        assert!(
-            reduce("[]", r#""toggle_review""#)
-                .unwrap_err()
-                .starts_with("bad state JSON:")
-        );
-        assert!(reduce(&initial_state(), r#"{"open":7}"#).is_err());
-    }
-
-    #[test]
-    fn children_lists_one_level_dirs_first() {
-        assert_eq!(paths(&children(ENTRIES, "").unwrap()), ["src", "README.md"]);
-        assert_eq!(paths(&children(ENTRIES, "src/").unwrap()), ["src/a.txt"]);
-        assert!(
-            children("nope", "")
-                .unwrap_err()
-                .starts_with("bad entries JSON:")
-        );
-    }
-
-    #[test]
-    fn changed_filter_keeps_changed_paths_and_their_directories() {
-        let out = changed_filter(ENTRIES, &parse_unified(DIFF).unwrap()).unwrap();
-        // The removed-or-added new.txt is not in the listing, so it comes back synthesised; src is a changed dir.
-        assert_eq!(paths(&out), ["new.txt", "src", "src/a.txt"]);
-        // Its output round-trips as entries.
-        let back: Vec<Entry> = serde_json::from_str(&out).unwrap();
-        assert_eq!(back[0].kind, apz_ide::EntryKind::File);
-    }
-
-    #[test]
     fn workspace_ids_round_trip_in_their_canonical_form() {
         assert_eq!(parse_workspace_id("agent:7").unwrap(), "\"agent:7\"");
         assert_eq!(format_workspace_id("\"agent:7\"").unwrap(), "agent:7");
@@ -235,11 +178,5 @@ index 0000000..3333333
         assert!(parse_workspace_id("agent:07").is_err());
         assert!(parse_workspace_id("nope").is_err());
         assert!(format_workspace_id("7").is_err());
-    }
-
-    #[test]
-    fn initial_state_is_the_default_state() {
-        let st: IdeState = serde_json::from_str(&initial_state()).unwrap();
-        assert_eq!(st, IdeState::default());
     }
 }

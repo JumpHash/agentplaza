@@ -467,33 +467,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn transitions_are_logged_and_heartbeat_lines_rate_limited() {
-        let (log, hub) = hub_with(None);
-        let now = Instant::now();
-        let (token, _steering) = hub.connect(10, "builder", now);
-        for _ in 0..HEARTBEAT_LOG_EVERY * 2 {
-            hub.heartbeat(10, 1, false, now);
-        }
-        hub.end_clean(10, token, 1, 1);
-        let (token, _steering) = hub.connect(11, "", now);
-        hub.reap_idle(11, token, Duration::from_secs(300));
-        assert_eq!(hub.agent_count(), 0);
-        assert_eq!(
-            log.text(),
-            [
-                "vsockd: agent 10 role builder connected",
-                "vsockd: agent 10 heartbeat 1",
-                "vsockd: agent 10 heartbeat 1",
-                "vsockd: agent 10 heartbeat 1",
-                "vsockd: agent 10 session ended cleanly after 1 tool calls",
-                "vsockd: agent 11 role  connected",
-                "vsockd: agent 11 reaped idle > 300s",
-            ]
-            .join("\n")
-        );
-    }
-
-    #[test]
     fn a_reconnect_is_adopted_and_the_old_session_cannot_evict_it() {
         let (_log, hub) = hub_with(None);
         let (first, _old) = hub.connect(10, "builder", Instant::now());

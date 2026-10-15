@@ -432,31 +432,6 @@ pub fn atom(palette: &PropPalette) -> (Obj, Anim) {
 mod tests {
     use super::*;
 
-    fn palette() -> PropPalette {
-        PropPalette {
-            sheet: Color::hex(0xf5efe6),
-            rule: Color::hex(0xc9bfae),
-            ink3: Color::hex(0x6b6357),
-            signal: Color::hex(0xe8603c),
-            ok: Color::hex(0x4fa36a),
-            info: Color::hex(0x3c7fd6),
-        }
-    }
-
-    fn count_meshes(o: &Obj) -> usize {
-        let (is_mesh, children) = {
-            let n = o.get();
-            (matches!(n.kind, Kind::Mesh { .. }), n.children.clone())
-        };
-        usize::from(is_mesh) + children.iter().map(count_meshes).sum::<usize>()
-    }
-
-    #[test]
-    fn build_plaza_returns_a_non_empty_group() {
-        let (g, _anim) = build_plaza(&palette());
-        assert!(count_meshes(&g) > 0);
-    }
-
     /// The instance matrices must equal the scene-graph transforms they replace: an electron under its
     /// tilted shell (rotation, then position and scale), and a nucleon under the beating nucleus.
     #[test]

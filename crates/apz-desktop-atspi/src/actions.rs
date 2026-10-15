@@ -107,80 +107,123 @@ mod tests {
     }
 
     #[test]
-    fn a_button_with_a_click_advertises_invoke_only() {
-        let actions = names(&["click"]);
-        assert_eq!(advertised(&facts("button", &actions)), vec!["invoke"]);
+    fn advertised_actions_follow_the_control_facts() {
+        let cases: &[(&str, &str, &[&str], bool, bool, bool, &[&str])] = &[
+            (
+                "a button with a click advertises invoke only",
+                "button",
+                &["click"],
+                false,
+                false,
+                false,
+                &["invoke"],
+            ),
+            (
+                "a check box with a click also toggles",
+                "check_box",
+                &["click"],
+                false,
+                false,
+                false,
+                &["invoke", "toggle"],
+            ),
+            (
+                "one expand or contract action serves expand and collapse",
+                "tree_item",
+                &["expand or contract"],
+                false,
+                false,
+                false,
+                &["expand", "collapse"],
+            ),
+            (
+                "editable and component controls take set value and focus",
+                "text_field",
+                &[],
+                true,
+                true,
+                false,
+                &["set_value", "focus"],
+            ),
+            (
+                "a selectable child advertises select without a select action",
+                "list_item",
+                &[],
+                false,
+                false,
+                true,
+                &["select"],
+            ),
+            (
+                "a control with no actions advertises none",
+                "text",
+                &[],
+                false,
+                false,
+                false,
+                &[],
+            ),
+        ];
+        for &(case, role, actions, editable, component, selectable, want) in cases {
+            let actions = names(actions);
+            let entry = Facts {
+                editable,
+                component,
+                selectable,
+                ..facts(role, &actions)
+            };
+            assert_eq!(advertised(&entry), want, "{case}");
+        }
     }
 
     #[test]
-    fn a_check_box_with_a_click_also_toggles() {
-        let actions = names(&["click"]);
-        assert_eq!(
-            advertised(&facts("check_box", &actions)),
-            vec!["invoke", "toggle"]
-        );
-    }
-
-    #[test]
-    fn one_expand_or_contract_action_serves_expand_and_collapse() {
-        let actions = names(&["expand or contract"]);
-        assert_eq!(
-            advertised(&facts("tree_item", &actions)),
-            vec!["expand", "collapse"]
-        );
-    }
-
-    #[test]
-    fn editable_and_component_controls_take_set_value_and_focus() {
-        let actions = Vec::new();
-        let entry = Facts {
-            editable: true,
-            component: true,
-            ..facts("text_field", &actions)
-        };
-        assert_eq!(advertised(&entry), vec!["set_value", "focus"]);
-    }
-
-    #[test]
-    fn a_selectable_child_advertises_select_without_a_select_action() {
-        let actions = Vec::new();
-        let item = Facts {
-            selectable: true,
-            ..facts("list_item", &actions)
-        };
-        assert_eq!(advertised(&item), vec!["select"]);
-    }
-
-    #[test]
-    fn a_control_with_no_actions_advertises_none() {
-        let actions = Vec::new();
-        assert!(advertised(&facts("text", &actions)).is_empty());
-    }
-
-    #[test]
-    fn invoke_prefers_the_named_actions_over_the_first_index() {
-        let actions = names(&["show menu", "press", "click"]);
-        assert_eq!(action_index(&actions, "invoke"), Some(2));
-    }
-
-    #[test]
-    fn toggle_takes_a_toggle_action_before_a_click() {
-        let actions = names(&["click", "toggle"]);
-        assert_eq!(action_index(&actions, "toggle"), Some(1));
-        assert_eq!(action_index(&names(&["click"]), "toggle"), Some(0));
-    }
-
-    #[test]
-    fn expand_and_collapse_find_the_expand_or_contract_action() {
-        let actions = names(&["expand or contract"]);
-        assert_eq!(action_index(&actions, "expand"), Some(0));
-        assert_eq!(action_index(&actions, "collapse"), Some(0));
-    }
-
-    #[test]
-    fn an_action_the_control_does_not_list_has_no_index() {
-        let actions = names(&["click"]);
-        assert_eq!(action_index(&actions, "select"), None);
-        assert_eq!(action_index(&actions, "set_value"), None);
+    fn action_index_finds_the_named_action_for_each_wanted_action() {
+        let cases: &[(&str, &[&str], &str, Option<usize>)] = &[
+            (
+                "invoke prefers the named actions over the first index",
+                &["show menu", "press", "click"],
+                "invoke",
+                Some(2),
+            ),
+            (
+                "toggle takes a toggle action before a click",
+                &["click", "toggle"],
+                "toggle",
+                Some(1),
+            ),
+            (
+                "toggle falls back to a click",
+                &["click"],
+                "toggle",
+                Some(0),
+            ),
+            (
+                "expand finds the expand or contract action",
+                &["expand or contract"],
+                "expand",
+                Some(0),
+            ),
+            (
+                "collapse finds the expand or contract action",
+                &["expand or contract"],
+                "collapse",
+                Some(0),
+            ),
+            (
+                "an unlisted select has no index",
+                &["click"],
+                "select",
+                None,
+            ),
+            (
+                "an unlisted set_value has no index",
+                &["click"],
+                "set_value",
+                None,
+            ),
+        ];
+        for &(case, actions, wanted, want) in cases {
+            assert_eq!(action_index(&names(actions), wanted), want, "{case}");
+        }
     }
 }

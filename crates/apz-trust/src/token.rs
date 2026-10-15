@@ -117,34 +117,35 @@ mod tests {
     }
 
     #[test]
-    fn decode_refuses_bad_prefix() {
-        let text = sample().encode().replacen(PREFIX, "apzj2.", 1);
-        assert!(JoinToken::decode(&text).unwrap_err().contains("prefix"));
-    }
-
-    #[test]
-    fn decode_refuses_http_unless_loopback() {
-        let mut token = sample();
-        token.hub_url = "http://hub.example:7443".into();
-        assert!(JoinToken::decode(&token.encode()).is_err());
-        token.hub_url = "http://127.0.0.1:7443".into();
-        assert!(JoinToken::decode(&token.encode()).is_ok());
-        token.hub_url = "http://[::1]:7443/x".into();
-        assert!(JoinToken::decode(&token.encode()).is_ok());
-    }
-
-    #[test]
-    fn decode_refuses_short_secret() {
-        let wire = Wire {
-            u: "https://hub.example".into(),
-            f: crate::b64(&[1u8; 32]),
-            s: crate::b64(&[1u8; 8]),
-            x: 1,
-        };
-        let text = format!(
-            "{PREFIX}{}",
-            crate::b64(&serde_json::to_vec(&wire).unwrap())
-        );
-        assert!(JoinToken::decode(&text).unwrap_err().contains("16 bytes"));
+    fn decode_refuses_malformed_tokens() {
+        // The original decode_refuses_bad_prefix: a wrong prefix is refused.
+        {
+            let text = sample().encode().replacen(PREFIX, "apzj2.", 1);
+            assert!(JoinToken::decode(&text).unwrap_err().contains("prefix"));
+        }
+        // The original decode_refuses_http_unless_loopback: plain http only for loopback hubs.
+        {
+            let mut token = sample();
+            token.hub_url = "http://hub.example:7443".into();
+            assert!(JoinToken::decode(&token.encode()).is_err());
+            token.hub_url = "http://127.0.0.1:7443".into();
+            assert!(JoinToken::decode(&token.encode()).is_ok());
+            token.hub_url = "http://[::1]:7443/x".into();
+            assert!(JoinToken::decode(&token.encode()).is_ok());
+        }
+        // The original decode_refuses_short_secret: a secret under 16 bytes is refused.
+        {
+            let wire = Wire {
+                u: "https://hub.example".into(),
+                f: crate::b64(&[1u8; 32]),
+                s: crate::b64(&[1u8; 8]),
+                x: 1,
+            };
+            let text = format!(
+                "{PREFIX}{}",
+                crate::b64(&serde_json::to_vec(&wire).unwrap())
+            );
+            assert!(JoinToken::decode(&text).unwrap_err().contains("16 bytes"));
+        }
     }
 }

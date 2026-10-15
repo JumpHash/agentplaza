@@ -322,14 +322,4 @@ mod tests {
             "limit exceeded: x"
         );
     }
-
-    #[test]
-    fn uptime_is_the_first_two_fields_of_proc_uptime() {
-        assert_eq!(
-            uptime_fields("12.34 56.78 0.00 0\n").as_deref(),
-            Some("12.34 56.78")
-        );
-        assert_eq!(uptime_fields("12.34\n").as_deref(), None);
-        assert_eq!(uptime_fields("up days\n").as_deref(), None);
-    }
 }

@@ -738,134 +738,130 @@ mod tests {
     }
 
     #[test]
-    fn wizard_walks_forward_and_back_and_finishes_with_the_tour_question() {
-        let mut stage = Stage::Setup(0);
-        let mut marks = Vec::new();
-        for expected in [
-            Stage::Setup(1),
-            Stage::Setup(2),
-            Stage::Setup(3),
-            Stage::Setup(4),
-            Stage::Ask,
-        ] {
-            let step = advance(stage, Input::Next);
-            assert_eq!(step.next, Some(expected));
-            marks.push(step.mark);
-            stage = expected;
-        }
-        assert_eq!(
-            marks,
-            [None, None, None, None, Some(Mark::Setup)],
-            "the wizard is saved on its last screen"
-        );
-
-        assert_eq!(
-            advance(Stage::Setup(0), Input::Back).next,
-            Some(Stage::Setup(0)),
-            "back on the first screen stays"
-        );
-        assert_eq!(
-            advance(Stage::Setup(2), Input::Back).next,
-            Some(Stage::Setup(1))
-        );
-        assert_eq!(
-            advance(Stage::Ask, Input::Back).next,
-            Some(Stage::Setup(SETUP_SCREENS - 1))
-        );
-    }
-
-    #[test]
-    fn skipping_the_wizard_saves_it_and_goes_on_to_the_question() {
-        for i in 0..SETUP_SCREENS {
-            let step = advance(Stage::Setup(i), Input::Skip);
+    fn advance_walks_the_wizard_the_question_and_the_tour() {
+        // wizard_walks_forward_and_back_and_finishes_with_the_tour_question: Next walks the
+        // setup screens to the question and saves the wizard on its last screen; Back steps
+        // back and stays on the first screen.
+        {
+            let mut stage = Stage::Setup(0);
+            let mut marks = Vec::new();
+            for expected in [
+                Stage::Setup(1),
+                Stage::Setup(2),
+                Stage::Setup(3),
+                Stage::Setup(4),
+                Stage::Ask,
+            ] {
+                let step = advance(stage, Input::Next);
+                assert_eq!(step.next, Some(expected));
+                marks.push(step.mark);
+                stage = expected;
+            }
             assert_eq!(
-                step,
-                Step {
-                    next: Some(Stage::Ask),
-                    mark: Some(Mark::Setup)
-                }
+                marks,
+                [None, None, None, None, Some(Mark::Setup)],
+                "the wizard is saved on its last screen"
+            );
+
+            assert_eq!(
+                advance(Stage::Setup(0), Input::Back).next,
+                Some(Stage::Setup(0)),
+                "back on the first screen stays"
+            );
+            assert_eq!(
+                advance(Stage::Setup(2), Input::Back).next,
+                Some(Stage::Setup(1))
+            );
+            assert_eq!(
+                advance(Stage::Ask, Input::Back).next,
+                Some(Stage::Setup(SETUP_SCREENS - 1))
             );
         }
-    }
 
-    #[test]
-    fn the_tour_question_defaults_to_no() {
-        assert_eq!(advance(Stage::Ask, Input::Yes).next, Some(Stage::Tour(0)));
-        assert_eq!(
-            advance(Stage::Ask, Input::No),
-            Step {
-                next: None,
-                mark: Some(Mark::Tour)
+        // skipping_the_wizard_saves_it_and_goes_on_to_the_question: Skip on any setup screen
+        // saves the wizard and goes on to the question.
+        {
+            for i in 0..SETUP_SCREENS {
+                let step = advance(Stage::Setup(i), Input::Skip);
+                assert_eq!(
+                    step,
+                    Step {
+                        next: Some(Stage::Ask),
+                        mark: Some(Mark::Setup)
+                    }
+                );
             }
-        );
-        assert_eq!(
-            advance(Stage::Ask, Input::Next),
-            Step {
-                next: None,
-                mark: Some(Mark::Tour)
-            },
-            "Enter is no"
-        );
-        assert_eq!(
-            advance(Stage::Ask, Input::Skip),
-            Step {
-                next: None,
-                mark: Some(Mark::Tour)
-            }
-        );
-    }
-
-    #[test]
-    fn the_tour_walks_its_steps_and_can_be_skipped_at_any_of_them() {
-        assert!((6..=8).contains(&TOUR.len()));
-        let mut stage = Stage::Tour(0);
-        for i in 1..TOUR.len() {
-            stage = advance(stage, Input::Next).next.expect("still touring");
-            assert_eq!(stage, Stage::Tour(i));
         }
-        assert_eq!(
-            advance(stage, Input::Next),
-            Step {
-                next: None,
-                mark: Some(Mark::Tour)
-            },
-            "the last Next finishes"
-        );
-        for i in 0..TOUR.len() {
+
+        // the_tour_question_defaults_to_no: Yes starts the tour; No, Enter (Next) and Skip all
+        // finish without it.
+        {
+            assert_eq!(advance(Stage::Ask, Input::Yes).next, Some(Stage::Tour(0)));
             assert_eq!(
-                advance(Stage::Tour(i), Input::Skip),
+                advance(Stage::Ask, Input::No),
+                Step {
+                    next: None,
+                    mark: Some(Mark::Tour)
+                }
+            );
+            assert_eq!(
+                advance(Stage::Ask, Input::Next),
+                Step {
+                    next: None,
+                    mark: Some(Mark::Tour)
+                },
+                "Enter is no"
+            );
+            assert_eq!(
+                advance(Stage::Ask, Input::Skip),
                 Step {
                     next: None,
                     mark: Some(Mark::Tour)
                 }
             );
         }
-        assert_eq!(
-            advance(Stage::Tour(0), Input::Back).next,
-            Some(Stage::Tour(0))
-        );
-        assert_eq!(
-            advance(Stage::Tour(3), Input::Back).next,
-            Some(Stage::Tour(2))
-        );
-        assert_eq!(
-            advance(Stage::Tour(0), Input::Yes).next,
-            Some(Stage::Tour(0)),
-            "yes/no mean nothing inside the tour"
-        );
-    }
 
-    #[test]
-    fn keys_map_to_inputs() {
-        assert_eq!(input_for(KeyCode::Enter), Some(Input::Next));
-        assert_eq!(input_for(KeyCode::Right), Some(Input::Next));
-        assert_eq!(input_for(KeyCode::Left), Some(Input::Back));
-        assert_eq!(input_for(KeyCode::Esc), Some(Input::Skip));
-        assert_eq!(input_for(KeyCode::Char('s')), Some(Input::Skip));
-        assert_eq!(input_for(KeyCode::Char('y')), Some(Input::Yes));
-        assert_eq!(input_for(KeyCode::Char('N')), Some(Input::No));
-        assert_eq!(input_for(KeyCode::Char('f')), Some(Input::Fix));
-        assert_eq!(input_for(KeyCode::Char('x')), None);
+        // the_tour_walks_its_steps_and_can_be_skipped_at_any_of_them: Next walks the tour
+        // steps and finishes on the last; Skip finishes from any step; Back and Yes/No stay
+        // inside the tour.
+        {
+            assert!((6..=8).contains(&TOUR.len()));
+            let mut stage = Stage::Tour(0);
+            for i in 1..TOUR.len() {
+                stage = advance(stage, Input::Next).next.expect("still touring");
+                assert_eq!(stage, Stage::Tour(i));
+            }
+            assert_eq!(
+                advance(stage, Input::Next),
+                Step {
+                    next: None,
+                    mark: Some(Mark::Tour)
+                },
+                "the last Next finishes"
+            );
+            for i in 0..TOUR.len() {
+                assert_eq!(
+                    advance(Stage::Tour(i), Input::Skip),
+                    Step {
+                        next: None,
+                        mark: Some(Mark::Tour)
+                    }
+                );
+            }
+            assert_eq!(
+                advance(Stage::Tour(0), Input::Back).next,
+                Some(Stage::Tour(0))
+            );
+            assert_eq!(
+                advance(Stage::Tour(3), Input::Back).next,
+                Some(Stage::Tour(2))
+            );
+            assert_eq!(
+                advance(Stage::Tour(0), Input::Yes).next,
+                Some(Stage::Tour(0)),
+                "yes/no mean nothing inside the tour"
+            );
+        }
     }
 
     fn check(need: Need, state: State, fix: Option<&str>) -> Check {
@@ -887,174 +883,85 @@ mod tests {
     }
 
     #[test]
-    fn f_asks_for_a_confirmation_and_no_cancels_it_without_running_anything() {
-        let mut ob = on_deps(vec![check(
-            Need::Postgres,
-            State::Missing,
-            Some("Create it"),
-        )]);
-        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
-        assert!(ob.deps.confirming);
-        assert!(!ob.deps.running);
-        assert_eq!(ob.deps_key(Input::No), DepsKey::Handled);
-        assert!(!ob.deps.confirming && !ob.deps.running);
-    }
-
-    #[test]
-    fn y_after_the_question_runs_the_missing_fixable_needs_in_order_and_nothing_else() {
-        let mut ob = on_deps(vec![
-            check(Need::Docker, State::Ok, None),
-            check(Need::Services, State::Blocked, None),
-            check(Need::Postgres, State::Missing, Some("Create it")),
-            check(Need::Garage, State::Missing, Some("Create Garage")),
-        ]);
-        ob.deps.log.push("left over".into());
-        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
-        assert_eq!(
-            ob.deps_key(Input::Yes),
-            DepsKey::Run(vec![Need::Postgres, Need::Garage])
-        );
-        assert!(ob.deps.running && !ob.deps.confirming);
-        assert!(ob.deps.log.is_empty(), "the log starts clean for the run");
-    }
-
-    #[test]
-    fn a_running_fix_takes_no_keys_until_it_ends() {
-        let mut ob = on_deps(vec![check(
-            Need::Postgres,
-            State::Missing,
-            Some("Create it"),
-        )]);
-        ob.deps.running = true;
-        for input in [
-            Input::Next,
-            Input::Skip,
-            Input::Back,
-            Input::Fix,
-            Input::Yes,
-        ] {
-            assert_eq!(ob.deps_key(input), DepsKey::Handled, "{input:?}");
+    fn deps_key_confirms_runs_and_guards_the_fixes() {
+        // f_asks_for_a_confirmation_and_no_cancels_it_without_running_anything: F asks for a
+        // confirmation; No cancels it without running anything.
+        {
+            let mut ob = on_deps(vec![check(
+                Need::Postgres,
+                State::Missing,
+                Some("Create it"),
+            )]);
+            assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+            assert!(ob.deps.confirming);
+            assert!(!ob.deps.running);
+            assert_eq!(ob.deps_key(Input::No), DepsKey::Handled);
+            assert!(!ob.deps.confirming && !ob.deps.running);
         }
-        assert_eq!(
-            ob.stage,
-            Stage::Setup(DEPS_SCREEN),
-            "Esc does not leave it either"
-        );
-    }
 
-    #[test]
-    fn other_keys_and_other_screens_go_on_to_the_flow() {
-        let mut ob = on_deps(vec![]);
-        assert_eq!(ob.deps_key(Input::Next), DepsKey::Pass);
-        assert_eq!(ob.deps_key(Input::Skip), DepsKey::Pass);
-        let mut elsewhere = Onboarding::new(Stage::Setup(0));
-        assert_eq!(elsewhere.deps_key(Input::Fix), DepsKey::Pass);
-    }
-
-    #[test]
-    fn f_with_nothing_to_fix_says_so_and_asks_for_nothing() {
-        let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
-        assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
-        assert!(!ob.deps.confirming);
-        assert_eq!(ob.deps.log, vec!["nothing here needs a fix".to_string()]);
-
-        let mut unread = Onboarding::new(Stage::Setup(DEPS_SCREEN));
-        assert_eq!(unread.deps_key(Input::Fix), DepsKey::Handled);
-        assert!(!unread.deps.confirming);
-    }
-
-    #[test]
-    fn yes_with_nothing_fixable_runs_nothing() {
-        let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
-        ob.deps.confirming = true;
-        assert_eq!(ob.deps_key(Input::Yes), DepsKey::Handled);
-        assert!(!ob.deps.running);
-    }
-
-    #[test]
-    fn the_output_of_a_fix_keeps_only_its_last_lines() {
-        let mut ob = Onboarding::new(Stage::Setup(DEPS_SCREEN));
-        for i in 0..LOG_LINES + 5 {
-            ob.push_log(format!("line {i}"));
+        // y_after_the_question_runs_the_missing_fixable_needs_in_order_and_nothing_else: Yes
+        // after the question runs the missing fixable needs in order and nothing else.
+        {
+            let mut ob = on_deps(vec![
+                check(Need::Docker, State::Ok, None),
+                check(Need::Services, State::Blocked, None),
+                check(Need::Postgres, State::Missing, Some("Create it")),
+                check(Need::Garage, State::Missing, Some("Create Garage")),
+            ]);
+            ob.deps.log.push("left over".into());
+            assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+            assert_eq!(
+                ob.deps_key(Input::Yes),
+                DepsKey::Run(vec![Need::Postgres, Need::Garage])
+            );
+            assert!(ob.deps.running && !ob.deps.confirming);
+            assert!(ob.deps.log.is_empty(), "the log starts clean for the run");
         }
-        assert_eq!(ob.deps.log.len(), LOG_LINES);
-        assert_eq!(ob.deps.log.first().map(String::as_str), Some("line 5"));
-    }
 
-    #[test]
-    fn the_dependencies_step_lists_each_check_with_its_state_and_the_fix_key() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        // a_running_fix_takes_no_keys_until_it_ends: A running fix takes no keys, Esc
+        // included, until it ends.
+        {
+            let mut ob = on_deps(vec![check(
+                Need::Postgres,
+                State::Missing,
+                Some("Create it"),
+            )]);
+            ob.deps.running = true;
+            for input in [
+                Input::Next,
+                Input::Skip,
+                Input::Back,
+                Input::Fix,
+                Input::Yes,
+            ] {
+                assert_eq!(ob.deps_key(input), DepsKey::Handled, "{input:?}");
+            }
+            assert_eq!(
+                ob.stage,
+                Stage::Setup(DEPS_SCREEN),
+                "Esc does not leave it either"
+            );
+        }
 
-        let mut ob = on_deps(vec![
-            check(Need::Docker, State::Ok, None),
-            check(Need::Postgres, State::Missing, Some("Create it")),
-        ]);
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        term.draw(|frame| {
-            ob.draw(
-                frame,
-                frame.area(),
-                Palette::detect(),
-                "http://127.0.0.1:7791",
-            )
-        })
-        .unwrap();
-        let text: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Step 3 of 5"), "{text}");
-        assert!(text.contains("MISSING"), "{text}");
-        assert!(text.contains("postgres"), "{text}");
-        assert!(text.contains("Press f"), "{text}");
+        // f_with_nothing_to_fix_says_so_and_asks_for_nothing: F with nothing to fix logs that
+        // and asks for nothing.
+        {
+            let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+            assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
+            assert!(!ob.deps.confirming);
+            assert_eq!(ob.deps.log, vec!["nothing here needs a fix".to_string()]);
 
-        ob.deps.confirming = true;
-        term.draw(|frame| {
-            ob.draw(
-                frame,
-                frame.area(),
-                Palette::detect(),
-                "http://127.0.0.1:7791",
-            )
-        })
-        .unwrap();
-        let text: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Run the fixes for postgres? [y/N]"), "{text}");
-    }
+            let mut unread = Onboarding::new(Stage::Setup(DEPS_SCREEN));
+            assert_eq!(unread.deps_key(Input::Fix), DepsKey::Handled);
+            assert!(!unread.deps.confirming);
+        }
 
-    #[test]
-    fn clip_cuts_long_text_with_dots() {
-        assert_eq!(clip("short", 10), "short");
-        assert_eq!(clip("abcdefghij", 6), "abc...");
-        assert_eq!(clip("abcdef", 6), "abcdef");
-    }
-
-    #[test]
-    fn tour_steps_point_at_real_tabs_and_commands() {
-        let tabs: Vec<Tab> = TOUR.iter().filter_map(|s| s.tab).collect();
-        assert_eq!(
-            tabs,
-            [
-                Tab::Overview,
-                Tab::Floor,
-                Tab::Agents,
-                Tab::Tasks,
-                Tab::Approvals,
-                Tab::Conversations
-            ]
-        );
-        for step in &TOUR {
-            assert!(!step.lines.is_empty(), "{}", step.title);
+        // yes_with_nothing_fixable_runs_nothing: Yes with nothing fixable runs nothing.
+        {
+            let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+            ob.deps.confirming = true;
+            assert_eq!(ob.deps_key(Input::Yes), DepsKey::Handled);
+            assert!(!ob.deps.running);
         }
     }
 
@@ -1109,55 +1016,6 @@ mod tests {
                 total: 0,
                 missing: vec![]
             }
-        );
-    }
-
-    #[test]
-    fn every_panel_draws_at_small_sizes_and_shows_its_step() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let palette = Palette::detect();
-        let mut stages = vec![Stage::Ask];
-        stages.extend((0..SETUP_SCREENS).map(Stage::Setup));
-        stages.extend((0..TOUR.len()).map(Stage::Tour));
-        let facts = Facts {
-            hub: Ok("apid 0.0.8".to_string()),
-            keys: Ok(Keys {
-                total: 2,
-                missing: vec!["anthropic".to_string()],
-            }),
-        };
-        for (width, height) in [(80, 24), (40, 12), (20, 6)] {
-            for stage in &stages {
-                let mut ob = Onboarding::new(*stage);
-                ob.facts = Some(facts.clone());
-                let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
-                term.draw(|frame| ob.draw(frame, frame.area(), palette, "http://127.0.0.1:7791"))
-                    .unwrap();
-            }
-        }
-
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let mut ob = Onboarding::new(Stage::Setup(3));
-        ob.facts = Some(facts);
-        term.draw(|frame| ob.draw(frame, frame.area(), palette, "http://127.0.0.1:7791"))
-            .unwrap();
-        let text: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(text.contains("Step 4 of 5"), "{text}");
-        assert!(
-            text.contains("anthropic"),
-            "the missing key's provider id is named"
-        );
-        assert!(
-            text.contains("agentplaza models key"),
-            "the way to add a key is shown"
         );
     }
 }

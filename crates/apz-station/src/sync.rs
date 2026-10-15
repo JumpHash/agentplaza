@@ -100,18 +100,61 @@ mod tests {
     use crate::assert_wire;
 
     #[test]
-    fn the_manifest_and_its_entries_are_wire_objects() {
-        assert_wire(
-            &SyncManifest {
-                entries: vec![SyncEntry {
-                    path: "reports/q3.csv".into(),
-                    hash: "ab".into(),
-                    size: 12,
-                }],
-                state: FolderState::Present,
-            },
-            r#"{"entries":[{"path":"reports/q3.csv","hash":"ab","size":12}],"state":"present"}"#,
-        );
+    fn sync_messages_are_wire_objects() {
+        // The manifest and its entries are wire objects.
+        {
+            assert_wire(
+                &SyncManifest {
+                    entries: vec![SyncEntry {
+                        path: "reports/q3.csv".into(),
+                        hash: "ab".into(),
+                        size: 12,
+                    }],
+                    state: FolderState::Present,
+                },
+                r#"{"entries":[{"path":"reports/q3.csv","hash":"ab","size":12}],"state":"present"}"#,
+            );
+        }
+        // A pull chunk and a push reply are wire objects.
+        {
+            assert_wire(
+                &SyncPull {
+                    path: "a.txt".into(),
+                    hash: "cc".into(),
+                    size: 4,
+                    offset: 2,
+                    data_b64: "eHk=".into(),
+                    eof: true,
+                },
+                r#"{"path":"a.txt","hash":"cc","size":4,"offset":2,"data_b64":"eHk=","eof":true}"#,
+            );
+            assert_wire(
+                &SyncPushed {
+                    path: "a.txt".into(),
+                    received: 2,
+                    hash: None,
+                },
+                r#"{"path":"a.txt","received":2}"#,
+            );
+            assert_wire(
+                &SyncPushed {
+                    path: "a.txt".into(),
+                    received: 4,
+                    hash: Some("cc".into()),
+                },
+                r#"{"path":"a.txt","received":4,"hash":"cc"}"#,
+            );
+        }
+        // The status counts files and pending changes.
+        {
+            assert_wire(
+                &SyncStatus {
+                    files: 3,
+                    pending: 1,
+                },
+                r#"{"files":3,"pending":1}"#,
+            );
+        }
     }
 
     #[test]
@@ -128,48 +171,6 @@ mod tests {
             older.state,
             FolderState::Present,
             "a daemon without the field reads as present"
-        );
-    }
-
-    #[test]
-    fn a_pull_chunk_and_a_push_reply_are_wire_objects() {
-        assert_wire(
-            &SyncPull {
-                path: "a.txt".into(),
-                hash: "cc".into(),
-                size: 4,
-                offset: 2,
-                data_b64: "eHk=".into(),
-                eof: true,
-            },
-            r#"{"path":"a.txt","hash":"cc","size":4,"offset":2,"data_b64":"eHk=","eof":true}"#,
-        );
-        assert_wire(
-            &SyncPushed {
-                path: "a.txt".into(),
-                received: 2,
-                hash: None,
-            },
-            r#"{"path":"a.txt","received":2}"#,
-        );
-        assert_wire(
-            &SyncPushed {
-                path: "a.txt".into(),
-                received: 4,
-                hash: Some("cc".into()),
-            },
-            r#"{"path":"a.txt","received":4,"hash":"cc"}"#,
-        );
-    }
-
-    #[test]
-    fn the_status_counts_files_and_pending_changes() {
-        assert_wire(
-            &SyncStatus {
-                files: 3,
-                pending: 1,
-            },
-            r#"{"files":3,"pending":1}"#,
         );
     }
 

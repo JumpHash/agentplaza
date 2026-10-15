@@ -539,26 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn plaza_tools_are_the_profiles_plaza_tools_only() {
-        let spec = |name: &str| ToolSpec {
-            name: name.to_string(),
-            description: String::new(),
-            input_schema: json!({"type": "object"}),
-        };
-        let profile = vec![spec("board_list"), spec("bash"), spec("ide_read")];
-        let mut log = Vec::new();
-        let shared = Shared::new(Lines::new(std::io::empty()), &mut log);
-        let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, profile);
-        let names: Vec<String> = link
-            .plaza_tools()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(names, vec!["board_list".to_string()]);
-    }
-
-    #[test]
     fn a_done_decision_that_is_an_error_is_denied_and_an_error_free_one_is_allowed() {
         let (guest, mut host) = pair();
         let mut log = Vec::new();

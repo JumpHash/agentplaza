@@ -330,99 +330,121 @@ mod tests {
     }
 
     #[test]
-    fn a_checkbox_number_reads_as_on_off_or_mixed() {
-        assert_eq!(
-            decode_value("check_box", &Raw::Number(1.0)),
-            Some("on".into())
-        );
-        assert_eq!(
-            decode_value("check_box", &Raw::Number(0.0)),
-            Some("off".into())
-        );
-        assert_eq!(
-            decode_value("check_box", &Raw::Number(2.0)),
-            Some("mixed".into())
-        );
-        assert_eq!(
-            decode_value("check_box", &Raw::Boolean(true)),
-            Some("on".into())
-        );
+    fn decode_value_reads_each_raw_value_as_text_or_on_off() {
+        let cases = [
+            (
+                "a checkbox number 1 reads as on",
+                "check_box",
+                Raw::Number(1.0),
+                Some("on"),
+            ),
+            (
+                "a checkbox number 0 reads as off",
+                "check_box",
+                Raw::Number(0.0),
+                Some("off"),
+            ),
+            (
+                "a checkbox number 2 reads as mixed",
+                "check_box",
+                Raw::Number(2.0),
+                Some("mixed"),
+            ),
+            (
+                "a checkbox boolean true reads as on",
+                "check_box",
+                Raw::Boolean(true),
+                Some("on"),
+            ),
+            (
+                "text reads as its text",
+                "text_field",
+                Raw::Text("Draft".into()),
+                Some("Draft"),
+            ),
+            (
+                "a whole number reads as its digits",
+                "slider",
+                Raw::Number(42.0),
+                Some("42"),
+            ),
+            (
+                "a fraction reads as its decimal",
+                "slider",
+                Raw::Number(0.5),
+                Some("0.5"),
+            ),
+            (
+                "a boolean false reads as false",
+                "text_field",
+                Raw::Boolean(false),
+                Some("false"),
+            ),
+            (
+                "an absent value reads as nothing",
+                "text_field",
+                Raw::Absent,
+                None,
+            ),
+        ];
+        for (case, role, raw, want) in cases {
+            assert_eq!(decode_value(role, &raw).as_deref(), want, "{case}");
+        }
     }
 
     #[test]
-    fn other_values_read_as_their_text_or_number() {
-        assert_eq!(
-            decode_value("text_field", &Raw::Text("Draft".into())),
-            Some("Draft".into())
-        );
-        assert_eq!(
-            decode_value("slider", &Raw::Number(42.0)),
-            Some("42".into())
-        );
-        assert_eq!(
-            decode_value("slider", &Raw::Number(0.5)),
-            Some("0.5".into())
-        );
-        assert_eq!(
-            decode_value("text_field", &Raw::Boolean(false)),
-            Some("false".into())
-        );
-        assert_eq!(decode_value("text_field", &Raw::Absent), None);
-    }
+    fn offered_actions_follow_the_control_role_and_settable_state() {
+        // A button offers invoke, and a checkbox offers toggle, set_value and focus.
+        {
+            let button = RawElement {
+                actions: vec!["AXPress".into(), "AXShowMenu".into()],
+                ..element("AXButton", Some("Save"))
+            };
+            assert_eq!(offered_actions(&button, "button"), vec!["invoke"]);
 
-    #[test]
-    fn a_button_offers_invoke_and_a_checkbox_offers_toggle() {
-        let button = RawElement {
-            actions: vec!["AXPress".into(), "AXShowMenu".into()],
-            ..element("AXButton", Some("Save"))
-        };
-        assert_eq!(offered_actions(&button, "button"), vec!["invoke"]);
-
-        let checkbox = RawElement {
-            actions: vec!["AXPress".into()],
-            value_settable: true,
-            focus_settable: true,
-            ..element("AXCheckBox", Some("Wrap"))
-        };
-        assert_eq!(
-            offered_actions(&checkbox, "check_box"),
-            vec!["toggle", "set_value", "focus"]
-        );
-    }
-
-    #[test]
-    fn a_text_field_offers_set_value_and_focus_when_they_are_settable() {
-        let field = RawElement {
-            value_settable: true,
-            focus_settable: true,
-            ..element("AXTextField", Some("Title"))
-        };
-        assert_eq!(
-            offered_actions(&field, "text_field"),
-            vec!["set_value", "focus"]
-        );
-        assert!(offered_actions(&element("AXStaticText", None), "static_text").is_empty());
-    }
-
-    #[test]
-    fn a_disclosure_triangle_offers_expand_and_collapse() {
-        let triangle = RawElement {
-            actions: vec!["AXPress".into()],
-            ..element("AXDisclosureTriangle", None)
-        };
-        assert_eq!(
-            offered_actions(&triangle, "disclosure_triangle"),
-            vec!["expand", "collapse"]
-        );
-    }
-
-    #[test]
-    fn a_window_that_can_be_raised_offers_focus() {
-        let window = RawElement {
-            actions: vec!["AXRaise".into()],
-            ..element("AXWindow", Some("Notes"))
-        };
-        assert_eq!(offered_actions(&window, "window"), vec!["focus"]);
+            let checkbox = RawElement {
+                actions: vec!["AXPress".into()],
+                value_settable: true,
+                focus_settable: true,
+                ..element("AXCheckBox", Some("Wrap"))
+            };
+            assert_eq!(
+                offered_actions(&checkbox, "check_box"),
+                vec!["toggle", "set_value", "focus"]
+            );
+        }
+        // A text field offers set_value and focus when they are settable, and a static text offers nothing.
+        {
+            let field = RawElement {
+                value_settable: true,
+                focus_settable: true,
+                ..element("AXTextField", Some("Title"))
+            };
+            assert_eq!(
+                offered_actions(&field, "text_field"),
+                vec!["set_value", "focus"]
+            );
+            assert!(offered_actions(&element("AXStaticText", None), "static_text").is_empty());
+        }
+        // A disclosure triangle offers expand and collapse.
+        {
+            let triangle = RawElement {
+                actions: vec!["AXPress".into()],
+                ..element("AXDisclosureTriangle", None)
+            };
+            assert_eq!(
+                offered_actions(&triangle, "disclosure_triangle"),
+                vec!["expand", "collapse"]
+            );
+        }
+        // A window that can be raised offers focus.
+        {
+            let window = RawElement {
+                actions: vec!["AXRaise".into()],
+                ..element("AXWindow", Some("Notes"))
+            };
+            assert_eq!(offered_actions(&window, "window"), vec!["focus"]);
+        }
     }
 
     #[test]
@@ -529,66 +551,58 @@ mod tests {
     }
 
     #[test]
-    fn a_selector_finds_the_first_match_in_document_order() {
+    fn locate_finds_matches_by_selector_or_path_and_errors_otherwise() {
         let root = tree();
-        assert_eq!(
-            locate(&root, &selector(Some("button"), Some("Save"))).expect("found"),
-            vec![0, 0]
-        );
-        assert_eq!(
-            locate(&root, &selector(None, Some("Draft 1"))).expect("found"),
-            vec![0, 2, 0]
-        );
-        assert_eq!(
-            locate(&root, &selector(Some("text_field"), None)).expect("found"),
-            vec![0, 1]
-        );
-    }
-
-    #[test]
-    fn a_path_picks_its_control_and_must_match_the_given_role_and_name() {
-        let root = tree();
-        let by_path = Selector {
-            path: Some(vec![0, 1]),
-            ..Selector::default()
-        };
-        assert_eq!(locate(&root, &by_path).expect("found"), vec![0, 1]);
-        let wrong_name = Selector {
-            path: Some(vec![0, 1]),
-            name: Some("Save".into()),
-            ..Selector::default()
-        };
-        assert!(matches!(
-            locate(&root, &wrong_name),
-            Err(DesktopError::NotFound(_))
-        ));
-        let off_the_tree = Selector {
-            path: Some(vec![9]),
-            ..Selector::default()
-        };
-        assert!(matches!(
-            locate(&root, &off_the_tree),
-            Err(DesktopError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn a_selector_with_nothing_to_match_or_no_match_is_an_error() {
-        let root = tree();
-        assert!(matches!(
-            locate(&root, &Selector::default()),
-            Err(DesktopError::Invalid(_))
-        ));
-        assert!(matches!(
-            locate(&root, &selector(Some("slider"), None)),
-            Err(DesktopError::NotFound(_))
-        ));
-    }
-
-    #[test]
-    fn node_at_follows_a_path() {
-        let root = tree();
-        assert_eq!(node_at(&root, &[0, 2, 0]).map(|n| n.id), Some(7));
-        assert!(node_at(&root, &[5]).is_none());
+        // A selector finds the first match in document order.
+        {
+            assert_eq!(
+                locate(&root, &selector(Some("button"), Some("Save"))).expect("found"),
+                vec![0, 0]
+            );
+            assert_eq!(
+                locate(&root, &selector(None, Some("Draft 1"))).expect("found"),
+                vec![0, 2, 0]
+            );
+            assert_eq!(
+                locate(&root, &selector(Some("text_field"), None)).expect("found"),
+                vec![0, 1]
+            );
+        }
+        // A path picks its control and must match the given role and name.
+        {
+            let by_path = Selector {
+                path: Some(vec![0, 1]),
+                ..Selector::default()
+            };
+            assert_eq!(locate(&root, &by_path).expect("found"), vec![0, 1]);
+            let wrong_name = Selector {
+                path: Some(vec![0, 1]),
+                name: Some("Save".into()),
+                ..Selector::default()
+            };
+            assert!(matches!(
+                locate(&root, &wrong_name),
+                Err(DesktopError::NotFound(_))
+            ));
+            let off_the_tree = Selector {
+                path: Some(vec![9]),
+                ..Selector::default()
+            };
+            assert!(matches!(
+                locate(&root, &off_the_tree),
+                Err(DesktopError::NotFound(_))
+            ));
+        }
+        // A selector with nothing to match, or with no match, is an error.
+        {
+            assert!(matches!(
+                locate(&root, &Selector::default()),
+                Err(DesktopError::Invalid(_))
+            ));
+            assert!(matches!(
+                locate(&root, &selector(Some("slider"), None)),
+                Err(DesktopError::NotFound(_))
+            ));
+        }
     }
 }

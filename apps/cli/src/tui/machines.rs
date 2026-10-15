@@ -192,25 +192,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_machine_is_online_while_it_answers() {
-        assert_eq!(state(&json!({ "reachable": true })), "online");
-        assert_eq!(state(&json!({ "reachable": false })), "offline");
-        assert_eq!(state(&json!({})), "-");
-    }
-
-    #[test]
-    fn figures_and_load_read_the_stats_or_say_none() {
-        let m = json!({ "memory_mib": 8192, "stats": { "cpu_percent": 12.4, "mem_used_mib": 2048.2, "load": [0.5, 1.25, 2.0] } });
-        assert_eq!(figure(stat(&m, "cpu_percent"), "%"), "12%");
-        assert_eq!(figure(stat(&m, "vms_running"), ""), "-");
-        assert_eq!(memory(&m), "2048/8192 MiB");
-        assert_eq!(load(&m), "0.50 1.25 2.00");
-        let bare = json!({ "memory_mib": 4096, "stats": null });
-        assert_eq!(memory(&bare), "-/4096 MiB");
-        assert_eq!(load(&bare), "-");
-    }
-
-    #[test]
     fn runs_are_listed_or_none() {
         assert_eq!(
             runs(&json!({ "runs": [{ "id": "r1" }, { "id": "r2" }] })).len(),

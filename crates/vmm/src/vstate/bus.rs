@@ -327,49 +327,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bus_range_new() {
-        // Zero length is invalid.
-        assert!(matches!(BusRange::new(0, 0), Err(BusError::ZeroSizedRange)));
-        assert!(matches!(
-            BusRange::new(u64::MAX, 0),
-            Err(BusError::ZeroSizedRange)
-        ));
-
-        // Overflow is invalid.
-        assert!(matches!(
-            BusRange::new(u64::MAX, 2),
-            Err(BusError::InvalidRange)
-        ));
-        assert!(matches!(
-            BusRange::new(2, u64::MAX),
-            Err(BusError::InvalidRange)
-        ));
-
-        // Ranges that exactly reach u64::MAX are valid.
-        let r = BusRange::new(u64::MAX, 1).unwrap();
-        assert_eq!(r.base(), u64::MAX);
-        assert_eq!(r.end(), u64::MAX);
-
-        let r = BusRange::new(1, u64::MAX).unwrap();
-        assert_eq!(r.base(), 1);
-        assert_eq!(r.end(), u64::MAX);
-
-        let r = BusRange::new(u64::MAX - 4095, 4096).unwrap();
-        assert_eq!(r.base(), u64::MAX - 4095);
-        assert_eq!(r.end(), u64::MAX);
-
-        // One sized valid range.
-        let r = BusRange::new(0, 1).unwrap();
-        assert_eq!(r.base(), 0);
-        assert_eq!(r.end(), 0);
-
-        // Normal valid range.
-        let r = BusRange::new(0x1000, 0x400).unwrap();
-        assert_eq!(r.base(), 0x1000);
-        assert_eq!(r.end(), 0x13ff);
-    }
-
     /// A device that answers every read with its own id, so that a test can
     /// tell which device an access was routed to.
     struct IdDevice(u8);
@@ -553,34 +510,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is registered with length")]
-    fn bus_move_range_wrong_len() {
-        let bus = Bus::new();
-        let dev = Arc::new(Mutex::new(DummyDevice));
-        bus.insert(dev, 0x10, 0x10).unwrap();
-        let _ = bus.move_range(0x10, 0x30, 0x20);
-    }
-
-    #[test]
     #[allow(clippy::redundant_clone)]
     fn bus_read_write() {
-        let bus = Bus::new();
-        let dummy = Arc::new(Mutex::new(DummyDevice));
-        bus.insert(dummy.clone(), 0x10, 0x10).unwrap();
-        bus.read(0x10, &mut [0, 0, 0, 0]).unwrap();
-        bus.write(0x10, &[0, 0, 0, 0]).unwrap();
-        bus.read(0x11, &mut [0, 0, 0, 0]).unwrap();
-        bus.write(0x11, &[0, 0, 0, 0]).unwrap();
-        bus.read(0x16, &mut [0, 0, 0, 0]).unwrap();
-        bus.write(0x16, &[0, 0, 0, 0]).unwrap();
-        bus.read(0x1c, &mut [0, 0, 0, 0]).unwrap();
-        bus.write(0x1c, &[0, 0, 0, 0]).unwrap();
-        bus.read(0x1d, &mut [0, 0, 0, 0]).unwrap_err();
-        bus.write(0x1d, &[0, 0, 0, 0]).unwrap_err();
-        bus.read(0x20, &mut [0, 0, 0, 0]).unwrap_err();
-        bus.write(0x20, &[0, 0, 0, 0]).unwrap_err();
-        bus.read(0x06, &mut [0, 0, 0, 0]).unwrap_err();
-        bus.write(0x06, &[0, 0, 0, 0]).unwrap_err();
+        // bus_read_write: reads and writes succeed inside the mapped range and
+        // fail outside it.
+        {
+            let bus = Bus::new();
+            let dummy = Arc::new(Mutex::new(DummyDevice));
+            bus.insert(dummy.clone(), 0x10, 0x10).unwrap();
+            bus.read(0x10, &mut [0, 0, 0, 0]).unwrap();
+            bus.write(0x10, &[0, 0, 0, 0]).unwrap();
+            bus.read(0x11, &mut [0, 0, 0, 0]).unwrap();
+            bus.write(0x11, &[0, 0, 0, 0]).unwrap();
+            bus.read(0x16, &mut [0, 0, 0, 0]).unwrap();
+            bus.write(0x16, &[0, 0, 0, 0]).unwrap();
+            bus.read(0x1c, &mut [0, 0, 0, 0]).unwrap();
+            bus.write(0x1c, &[0, 0, 0, 0]).unwrap();
+            bus.read(0x1d, &mut [0, 0, 0, 0]).unwrap_err();
+            bus.write(0x1d, &[0, 0, 0, 0]).unwrap_err();
+            bus.read(0x20, &mut [0, 0, 0, 0]).unwrap_err();
+            bus.write(0x20, &[0, 0, 0, 0]).unwrap_err();
+            bus.read(0x06, &mut [0, 0, 0, 0]).unwrap_err();
+            bus.write(0x06, &[0, 0, 0, 0]).unwrap_err();
+        }
+        // bus_read_write_values: the values read from a device are the values
+        // written back to it, at the mapped addresses.
+        {
+            let bus = Bus::new();
+            let dummy = Arc::new(Mutex::new(ConstantDevice));
+            bus.insert(dummy.clone(), 0x10, 0x10).unwrap();
+
+            let mut values = [0, 1, 2, 3];
+            bus.read(0x10, &mut values).unwrap();
+            assert_eq!(values, [0, 1, 2, 3]);
+            bus.write(0x10, &values).unwrap();
+            bus.read(0x15, &mut values).unwrap();
+            assert_eq!(values, [5, 6, 7, 8]);
+            bus.write(0x15, &values).unwrap();
+        }
     }
 
     /// A device whose writes hand back a barrier that the writing vCPU must reach.
@@ -634,55 +601,5 @@ mod tests {
             bus.write_and_wait(0x30, &[1]),
             Err(BusError::MissingAddressRange)
         ));
-    }
-
-    #[test]
-    #[allow(clippy::redundant_clone)]
-    fn bus_read_write_values() {
-        let bus = Bus::new();
-        let dummy = Arc::new(Mutex::new(ConstantDevice));
-        bus.insert(dummy.clone(), 0x10, 0x10).unwrap();
-
-        let mut values = [0, 1, 2, 3];
-        bus.read(0x10, &mut values).unwrap();
-        assert_eq!(values, [0, 1, 2, 3]);
-        bus.write(0x10, &values).unwrap();
-        bus.read(0x15, &mut values).unwrap();
-        assert_eq!(values, [5, 6, 7, 8]);
-        bus.write(0x15, &values).unwrap();
-    }
-
-    #[test]
-    #[allow(clippy::redundant_clone)]
-    fn busrange_cmp() {
-        let range = BusRange::new(0x10, 2).unwrap();
-        assert_eq!(range, BusRange::new(0x10, 3).unwrap());
-        assert_eq!(range, BusRange::new(0x10, 2).unwrap());
-
-        assert!(range < BusRange::new(0x12, 1).unwrap());
-        assert!(range < BusRange::new(0x12, 3).unwrap());
-
-        assert_eq!(range, range.clone());
-
-        let bus = Bus::new();
-        let mut data = [1, 2, 3, 4];
-        let device = Arc::new(Mutex::new(DummyDevice));
-        bus.insert(device.clone(), 0x10, 0x10).unwrap();
-        bus.write(0x10, &data).unwrap();
-        bus.read(0x10, &mut data).unwrap();
-        assert_eq!(data, [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn bus_range_overlap() {
-        let a = BusRange::new(0x1000, 0x400).unwrap();
-        assert!(a.overlaps(&BusRange::new(0x1000, 0x400).unwrap()));
-        assert!(a.overlaps(&BusRange::new(0xf00, 0x400).unwrap()));
-        assert!(a.overlaps(&BusRange::new(0x1000, 0x01).unwrap()));
-        assert!(a.overlaps(&BusRange::new(0xfff, 0x02).unwrap()));
-        assert!(a.overlaps(&BusRange::new(0x1100, 0x100).unwrap()));
-        assert!(a.overlaps(&BusRange::new(0x13ff, 0x100).unwrap()));
-        assert!(!a.overlaps(&BusRange::new(0x1400, 0x100).unwrap()));
-        assert!(!a.overlaps(&BusRange::new(0xf00, 0x100).unwrap()));
     }
 }

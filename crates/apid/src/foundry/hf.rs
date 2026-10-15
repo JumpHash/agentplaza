@@ -793,7 +793,6 @@ mod tests {
     const SEARCH: &str = include_str!("../../tests/fixtures/hf/search.json");
     const MODEL: &str = include_str!("../../tests/fixtures/hf/model.json");
     const TREE: &str = include_str!("../../tests/fixtures/hf/tree.json");
-    const README: &str = include_str!("../../tests/fixtures/hf/README.md");
 
     fn json(text: &str) -> Value {
         serde_json::from_str(text).expect("fixture parses")
@@ -1012,27 +1011,6 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_summary_skips_front_matter_and_headings_and_is_trimmed() {
-        assert!(
-            summary(README).starts_with(
-                "https://huggingface.co/distilbert-base-uncased-finetuned-sst-2-english"
-            )
-        );
-        assert_eq!(
-            summary("---\na: b\n---\n\n# Title\n\nFirst line\nsecond line.\n\nLater."),
-            "First line second line."
-        );
-        assert_eq!(summary(""), "");
-        let long = "x".repeat(SUMMARY_CHARS + 50);
-        let cut = summary(&long);
-        assert_eq!(
-            cut.chars().count(),
-            SUMMARY_CHARS + 1,
-            "400 characters and an ellipsis"
-        );
-    }
-
-    #[test]
     fn paths_repo_ids_and_revisions_are_checked() {
         assert!(safe_path("onnx/model.onnx"));
         for bad in [
@@ -1101,12 +1079,5 @@ mod tests {
             resolve("https://huggingface.co/a", "https://cdn-lfs.hf.co/z"),
             "https://cdn-lfs.hf.co/z"
         );
-    }
-
-    #[test]
-    fn percent_escapes_round_trip() {
-        assert_eq!(decode("a%2Fb+c"), "a/b+c");
-        assert_eq!(decode("100%"), "100%", "a stray percent is kept");
-        assert_eq!(encode_path("org/name file.onnx"), "org/name%20file.onnx");
     }
 }

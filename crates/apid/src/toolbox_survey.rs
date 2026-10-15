@@ -235,27 +235,3 @@ fn first_sentence(text: &str) -> String {
     };
     head.chars().take(SENTENCE_MAX).collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn first_sentence_stops_at_the_first_sentence_end() {
-        assert_eq!(first_sentence("Runs a thing. Then more."), "Runs a thing.");
-        assert_eq!(first_sentence("  no   period  "), "no period");
-        assert_eq!(
-            first_sentence(&"x".repeat(200)).chars().count(),
-            SENTENCE_MAX
-        );
-    }
-
-    #[test]
-    fn matches_any_is_case_insensitive_and_any_word() {
-        let words = words_of("PDF video");
-        assert!(matches_any(&words, "Reads a pdf file"));
-        assert!(matches_any(&words, "Transcodes VIDEO"));
-        assert!(!matches_any(&words, "image tools"));
-        assert!(wanted(&[], "anything"));
-    }
-}

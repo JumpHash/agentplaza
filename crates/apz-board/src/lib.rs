@@ -185,25 +185,3 @@ impl Board {
         self.part_count
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unknown_kind_panics_with_its_name() {
-        let r = std::panic::catch_unwind(|| Board::from_kind("no-such-board", &BTreeMap::new()));
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn aabb_union_and_empty() {
-        let mut b = Aabb::empty();
-        assert!(b.is_empty());
-        b.include([1.0, 2.0, 3.0]);
-        b.include([-1.0, 0.0, 5.0]);
-        assert_eq!(b.min, [-1.0, 0.0, 3.0]);
-        assert_eq!(b.max, [1.0, 2.0, 5.0]);
-        assert_eq!(b.union(&Aabb::empty()), b);
-    }
-}

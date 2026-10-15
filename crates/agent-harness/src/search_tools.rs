@@ -505,30 +505,42 @@ mod tests {
     }
 
     #[test]
-    fn glob_lists_recursive_matches_newest_first() {
-        let ws = scratch("glob-order");
-        file(&ws, "a.rs", b"", 1_000);
-        file(&ws, "src/b.rs", b"", 3_000);
-        file(&ws, "src/deep/c.rs", b"", 2_000);
-        file(&ws, "readme.md", b"", 9_000);
-        assert_eq!(
-            glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(),
-            "src/b.rs\nsrc/deep/c.rs\na.rs"
-        );
-        // A single `*` does not cross a directory separator.
-        assert_eq!(glob(&ws, &json!({ "pattern": "*.rs" })).unwrap(), "a.rs");
-    }
-
-    #[test]
-    fn glob_matches_relative_to_its_path() {
-        let ws = scratch("glob-path");
-        file(&ws, "a.rs", b"", 1_000);
-        file(&ws, "src/b.rs", b"", 3_000);
-        file(&ws, "src/deep/c.rs", b"", 2_000);
-        assert_eq!(
-            glob(&ws, &json!({ "pattern": "**/*.rs", "path": "src" })).unwrap(),
-            "src/b.rs\nsrc/deep/c.rs"
-        );
+    fn glob_lists_matches_newest_first_and_says_when_none_match() {
+        // The original glob_lists_recursive_matches_newest_first: recursive matches
+        // list newest first, and a single `*` does not cross a directory separator.
+        {
+            let ws = scratch("glob-order");
+            file(&ws, "a.rs", b"", 1_000);
+            file(&ws, "src/b.rs", b"", 3_000);
+            file(&ws, "src/deep/c.rs", b"", 2_000);
+            file(&ws, "readme.md", b"", 9_000);
+            assert_eq!(
+                glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(),
+                "src/b.rs\nsrc/deep/c.rs\na.rs"
+            );
+            // A single `*` does not cross a directory separator.
+            assert_eq!(glob(&ws, &json!({ "pattern": "*.rs" })).unwrap(), "a.rs");
+        }
+        // The original glob_matches_relative_to_its_path: matches are relative to `path`.
+        {
+            let ws = scratch("glob-path");
+            file(&ws, "a.rs", b"", 1_000);
+            file(&ws, "src/b.rs", b"", 3_000);
+            file(&ws, "src/deep/c.rs", b"", 2_000);
+            assert_eq!(
+                glob(&ws, &json!({ "pattern": "**/*.rs", "path": "src" })).unwrap(),
+                "src/b.rs\nsrc/deep/c.rs"
+            );
+        }
+        // The original glob_with_no_match_says_so: no match reads "no files match".
+        {
+            let ws = scratch("glob-none");
+            file(&ws, "a.txt", b"", 1_000);
+            assert_eq!(
+                glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(),
+                "no files match"
+            );
+        }
     }
 
     #[test]
@@ -545,16 +557,6 @@ mod tests {
         );
         let err = glob(&ws, &json!({ "pattern": "*", "path": ".plaza" })).unwrap_err();
         assert!(err.contains("harness's own state"), "{err}");
-    }
-
-    #[test]
-    fn glob_with_no_match_says_so() {
-        let ws = scratch("glob-none");
-        file(&ws, "a.txt", b"", 1_000);
-        assert_eq!(
-            glob(&ws, &json!({ "pattern": "**/*.rs" })).unwrap(),
-            "no files match"
-        );
     }
 
     #[test]
@@ -581,80 +583,99 @@ mod tests {
     }
 
     #[test]
-    fn grep_files_with_matches_lists_newest_first() {
-        let ws = scratch("grep-files");
-        file(&ws, "a.txt", b"needle\n", 1_000);
-        file(&ws, "sub/b.txt", b"x needle\n", 5_000);
-        file(&ws, "c.txt", b"nothing\n", 9_000);
-        assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle" })).unwrap(),
-            "sub/b.txt\na.txt"
-        );
-    }
-
-    #[test]
-    fn grep_content_prints_path_line_and_text_and_marks_context_lines() {
-        let ws = scratch("grep-content");
-        file(&ws, "f.txt", b"alpha\nneedle here\nbeta\n", 1_000);
-        assert_eq!(
-            grep(
+    fn grep_reports_matches_in_each_output_mode_with_its_filters() {
+        // The original grep_files_with_matches_lists_newest_first: files list newest first.
+        {
+            let ws = scratch("grep-files");
+            file(&ws, "a.txt", b"needle\n", 1_000);
+            file(&ws, "sub/b.txt", b"x needle\n", 5_000);
+            file(&ws, "c.txt", b"nothing\n", 9_000);
+            assert_eq!(
+                grep(&ws, &json!({ "pattern": "needle" })).unwrap(),
+                "sub/b.txt\na.txt"
+            );
+        }
+        // The original grep_content_prints_path_line_and_text_and_marks_context_lines:
+        // content prints path, line and text, and marks context lines.
+        {
+            let ws = scratch("grep-content");
+            file(&ws, "f.txt", b"alpha\nneedle here\nbeta\n", 1_000);
+            assert_eq!(
+                grep(
+                    &ws,
+                    &json!({ "pattern": "needle", "output_mode": "content" })
+                )
+                .unwrap(),
+                "f.txt:2:needle here"
+            );
+            file(&ws, "f.txt", b"needle\na\nb\nc\nneedle\n", 1_000);
+            let out = grep(
                 &ws,
-                &json!({ "pattern": "needle", "output_mode": "content" })
+                &json!({ "pattern": "needle", "output_mode": "content", "context": 1 }),
             )
-            .unwrap(),
-            "f.txt:2:needle here"
-        );
-        file(&ws, "f.txt", b"needle\na\nb\nc\nneedle\n", 1_000);
-        let out = grep(
-            &ws,
-            &json!({ "pattern": "needle", "output_mode": "content", "context": 1 }),
-        )
-        .unwrap();
-        assert_eq!(
-            out,
-            "f.txt:1:needle\nf.txt-2-a\n--\nf.txt-4-c\nf.txt:5:needle"
-        );
-    }
-
-    #[test]
-    fn grep_count_reports_matching_lines_per_file() {
-        let ws = scratch("grep-count");
-        file(&ws, "f.txt", b"needle\nneedle\nx\n", 1_000);
-        file(&ws, "g.txt", b"needle\n", 2_000);
-        assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle", "output_mode": "count" })).unwrap(),
-            "f.txt:2\ng.txt:1"
-        );
-    }
-
-    #[test]
-    fn grep_case_insensitive_matches_any_case() {
-        let ws = scratch("grep-case");
-        file(&ws, "f.txt", b"NEEDLE\n", 1_000);
-        assert_eq!(
-            grep(
-                &ws,
-                &json!({ "pattern": "needle", "case_insensitive": true })
-            )
-            .unwrap(),
-            "f.txt"
-        );
-        assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle" })).unwrap(),
-            "no matches"
-        );
-    }
-
-    #[test]
-    fn grep_glob_filters_the_files_searched() {
-        let ws = scratch("grep-glob");
-        file(&ws, "a.rs", b"needle\n", 2_000);
-        file(&ws, "a.txt", b"needle\n", 3_000);
-        file(&ws, "sub/b.rs", b"needle\n", 1_000);
-        assert_eq!(
-            grep(&ws, &json!({ "pattern": "needle", "glob": "*.rs" })).unwrap(),
-            "a.rs\nsub/b.rs"
-        );
+            .unwrap();
+            assert_eq!(
+                out,
+                "f.txt:1:needle\nf.txt-2-a\n--\nf.txt-4-c\nf.txt:5:needle"
+            );
+        }
+        // The original grep_count_reports_matching_lines_per_file: count gives lines per file.
+        {
+            let ws = scratch("grep-count");
+            file(&ws, "f.txt", b"needle\nneedle\nx\n", 1_000);
+            file(&ws, "g.txt", b"needle\n", 2_000);
+            assert_eq!(
+                grep(&ws, &json!({ "pattern": "needle", "output_mode": "count" })).unwrap(),
+                "f.txt:2\ng.txt:1"
+            );
+        }
+        // The original grep_case_insensitive_matches_any_case: the flag matches any case.
+        {
+            let ws = scratch("grep-case");
+            file(&ws, "f.txt", b"NEEDLE\n", 1_000);
+            assert_eq!(
+                grep(
+                    &ws,
+                    &json!({ "pattern": "needle", "case_insensitive": true })
+                )
+                .unwrap(),
+                "f.txt"
+            );
+            assert_eq!(
+                grep(&ws, &json!({ "pattern": "needle" })).unwrap(),
+                "no matches"
+            );
+        }
+        // The original grep_glob_filters_the_files_searched: `glob` limits the files searched.
+        {
+            let ws = scratch("grep-glob");
+            file(&ws, "a.rs", b"needle\n", 2_000);
+            file(&ws, "a.txt", b"needle\n", 3_000);
+            file(&ws, "sub/b.rs", b"needle\n", 1_000);
+            assert_eq!(
+                grep(&ws, &json!({ "pattern": "needle", "glob": "*.rs" })).unwrap(),
+                "a.rs\nsub/b.rs"
+            );
+        }
+        // The original grep_refuses_an_invalid_regex_with_the_regex_error.
+        {
+            let ws = scratch("grep-regex");
+            file(&ws, "f.txt", b"needle\n", 1_000);
+            let err = grep(&ws, &json!({ "pattern": "(" })).unwrap_err();
+            assert!(err.contains("invalid regex"), "{err}");
+        }
+        // The original grep_head_limit_cuts_the_list_and_says_so: the cut is announced.
+        {
+            let ws = scratch("grep-head");
+            file(&ws, "a.txt", b"needle\n", 1_000);
+            file(&ws, "b.txt", b"needle\n", 2_000);
+            file(&ws, "c.txt", b"needle\n", 3_000);
+            let out = grep(&ws, &json!({ "pattern": "needle", "head_limit": 2 })).unwrap();
+            let lines: Vec<&str> = out.lines().collect();
+            assert_eq!(lines.len(), 3, "{out}");
+            assert_eq!(&lines[..2], ["c.txt", "b.txt"]);
+            assert!(lines[2].contains("truncated"), "{out}");
+        }
     }
 
     #[test]
@@ -669,26 +690,5 @@ mod tests {
         );
         let err = grep(&ws, &json!({ "pattern": "needle", "path": ".plaza" })).unwrap_err();
         assert!(err.contains("harness's own state"), "{err}");
-    }
-
-    #[test]
-    fn grep_refuses_an_invalid_regex_with_the_regex_error() {
-        let ws = scratch("grep-regex");
-        file(&ws, "f.txt", b"needle\n", 1_000);
-        let err = grep(&ws, &json!({ "pattern": "(" })).unwrap_err();
-        assert!(err.contains("invalid regex"), "{err}");
-    }
-
-    #[test]
-    fn grep_head_limit_cuts_the_list_and_says_so() {
-        let ws = scratch("grep-head");
-        file(&ws, "a.txt", b"needle\n", 1_000);
-        file(&ws, "b.txt", b"needle\n", 2_000);
-        file(&ws, "c.txt", b"needle\n", 3_000);
-        let out = grep(&ws, &json!({ "pattern": "needle", "head_limit": 2 })).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 3, "{out}");
-        assert_eq!(&lines[..2], ["c.txt", "b.txt"]);
-        assert!(lines[2].contains("truncated"), "{out}");
     }
 }

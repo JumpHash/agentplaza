@@ -219,244 +219,250 @@ mod tests {
     }
 
     #[test]
-    fn a_move_sets_the_pointer() {
-        let (steps, pointer) = plan(&InputAction::Move { x: 4, y: 9 }, (0, 0)).expect("plans");
-        assert_eq!(steps, vec![Step::Move { x: 4, y: 9 }]);
-        assert_eq!(pointer, (4, 9));
-    }
+    fn plan_turns_each_input_action_into_steps() {
+        // Was a_move_sets_the_pointer: a move plans one move step and sets the pointer.
+        {
+            let (steps, pointer) = plan(&InputAction::Move { x: 4, y: 9 }, (0, 0)).expect("plans");
+            assert_eq!(steps, vec![Step::Move { x: 4, y: 9 }]);
+            assert_eq!(pointer, (4, 9));
+        }
 
-    #[test]
-    fn a_click_moves_then_presses_and_releases() {
-        let (steps, pointer) = plan(&click(10, 20, 1), (0, 0)).expect("plans");
-        assert_eq!(
-            steps,
-            vec![
-                Step::Move { x: 10, y: 20 },
-                Step::Press {
-                    button: Button::Left,
-                    x: 10,
-                    y: 20,
-                    count: 1,
+        // Was a_click_moves_then_presses_and_releases: a click moves, presses and releases at its point.
+        {
+            let (steps, pointer) = plan(&click(10, 20, 1), (0, 0)).expect("plans");
+            assert_eq!(
+                steps,
+                vec![
+                    Step::Move { x: 10, y: 20 },
+                    Step::Press {
+                        button: Button::Left,
+                        x: 10,
+                        y: 20,
+                        count: 1,
+                    },
+                    Step::Release {
+                        button: Button::Left,
+                        x: 10,
+                        y: 20,
+                        count: 1,
+                    },
+                ]
+            );
+            assert_eq!(pointer, (10, 20));
+        }
+
+        // Was a_double_click_numbers_its_presses: a double click numbers its presses 1, 1, 2, 2.
+        {
+            let (steps, _) = plan(&click(1, 1, 2), (0, 0)).expect("plans");
+            let counts: Vec<u8> = steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::Press { count, .. } | Step::Release { count, .. } => Some(*count),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(counts, vec![1, 1, 2, 2]);
+        }
+
+        // Was a_zero_count_click_is_refused: a zero-count click is refused.
+        {
+            assert!(matches!(
+                plan(&click(1, 1, 0), (0, 0)),
+                Err(DesktopError::Invalid(_))
+            ));
+        }
+
+        // Was down_and_up_happen_at_the_pointer: button down and up happen at the pointer.
+        {
+            let (steps, pointer) = plan(
+                &InputAction::Down {
+                    button: Button::Right,
                 },
-                Step::Release {
-                    button: Button::Left,
-                    x: 10,
-                    y: 20,
+                (7, 8),
+            )
+            .expect("plans");
+            assert_eq!(
+                steps,
+                vec![Step::Press {
+                    button: Button::Right,
+                    x: 7,
+                    y: 8,
                     count: 1,
+                }]
+            );
+            assert_eq!(pointer, (7, 8));
+            let (steps, _) = plan(
+                &InputAction::Up {
+                    button: Button::Right,
                 },
-            ]
-        );
-        assert_eq!(pointer, (10, 20));
-    }
+                (7, 8),
+            )
+            .expect("plans");
+            assert!(matches!(
+                steps.as_slice(),
+                [Step::Release { x: 7, y: 8, .. }]
+            ));
+        }
 
-    #[test]
-    fn a_double_click_numbers_its_presses() {
-        let (steps, _) = plan(&click(1, 1, 2), (0, 0)).expect("plans");
-        let counts: Vec<u8> = steps
-            .iter()
-            .filter_map(|step| match step {
-                Step::Press { count, .. } | Step::Release { count, .. } => Some(*count),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(counts, vec![1, 1, 2, 2]);
-    }
-
-    #[test]
-    fn a_zero_count_click_is_refused() {
-        assert!(matches!(
-            plan(&click(1, 1, 0), (0, 0)),
-            Err(DesktopError::Invalid(_))
-        ));
-    }
-
-    #[test]
-    fn down_and_up_happen_at_the_pointer() {
-        let (steps, pointer) = plan(
-            &InputAction::Down {
-                button: Button::Right,
-            },
-            (7, 8),
-        )
-        .expect("plans");
-        assert_eq!(
-            steps,
-            vec![Step::Press {
-                button: Button::Right,
-                x: 7,
-                y: 8,
-                count: 1,
-            }]
-        );
-        assert_eq!(pointer, (7, 8));
-        let (steps, _) = plan(
-            &InputAction::Up {
-                button: Button::Right,
-            },
-            (7, 8),
-        )
-        .expect("plans");
-        assert!(matches!(
-            steps.as_slice(),
-            [Step::Release { x: 7, y: 8, .. }]
-        ));
-    }
-
-    #[test]
-    fn a_scroll_moves_to_its_point_first() {
-        let (steps, pointer) = plan(
-            &InputAction::Scroll {
-                x: 100,
-                y: 200,
-                dx: 0,
-                dy: -3,
-            },
-            (0, 0),
-        )
-        .expect("plans");
-        assert_eq!(
-            steps,
-            vec![
-                Step::Move { x: 100, y: 200 },
-                Step::Scroll {
+        // Was a_scroll_moves_to_its_point_first: a scroll moves to its point first.
+        {
+            let (steps, pointer) = plan(
+                &InputAction::Scroll {
                     x: 100,
                     y: 200,
                     dx: 0,
-                    dy: 3,
+                    dy: -3,
                 },
-            ]
-        );
-        assert_eq!(pointer, (100, 200));
-    }
-
-    #[test]
-    fn a_scroll_down_and_right_is_a_negative_wheel() {
-        let (steps, _) = plan(
-            &InputAction::Scroll {
-                x: 1,
-                y: 2,
-                dx: 4,
-                dy: 5,
-            },
-            (0, 0),
-        )
-        .expect("plans");
-        assert!(matches!(
-            steps.last(),
-            Some(Step::Scroll { dx: -4, dy: -5, .. })
-        ));
-    }
-
-    #[test]
-    fn a_drag_presses_at_the_start_and_releases_at_the_end() {
-        let (steps, pointer) = plan(
-            &InputAction::Drag {
-                from: (0, 0),
-                to: (120, 60),
-            },
-            (5, 5),
-        )
-        .expect("plans");
-        assert_eq!(steps.first(), Some(&Step::Move { x: 0, y: 0 }));
-        assert!(matches!(
-            steps.get(1),
-            Some(Step::Press {
-                x: 0,
-                y: 0,
-                count: 1,
-                ..
-            })
-        ));
-        assert_eq!(
-            steps.last(),
-            Some(&Step::Release {
-                button: Button::Left,
-                x: 120,
-                y: 60,
-                count: 1,
-            })
-        );
-        let dragged: Vec<(i32, i32)> = steps
-            .iter()
-            .filter_map(|step| match step {
-                Step::Dragged { x, y, .. } => Some((*x, *y)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(dragged.len(), DRAG_STEPS as usize);
-        assert_eq!(dragged.last(), Some(&(120, 60)));
-        assert_eq!(pointer, (120, 60));
-    }
-
-    #[test]
-    fn a_key_chord_is_pressed_and_released_with_its_flags() {
-        let (steps, pointer) = plan(
-            &InputAction::Key {
-                combo: "ctrl+shift+s".into(),
-            },
-            (1, 1),
-        )
-        .expect("plans");
-        let flags = keys::FLAG_CONTROL | keys::FLAG_SHIFT;
-        assert_eq!(
-            steps,
-            vec![
-                Step::Key {
-                    code: 0x01,
-                    flags,
-                    down: true,
-                },
-                Step::Key {
-                    code: 0x01,
-                    flags,
-                    down: false,
-                },
-            ]
-        );
-        assert_eq!(pointer, (1, 1));
-    }
-
-    #[test]
-    fn a_bad_chord_is_refused_before_anything_is_posted() {
-        assert!(
-            plan(
-                &InputAction::Key {
-                    combo: "hyper+a".into()
-                },
-                (0, 0)
+                (0, 0),
             )
-            .is_err()
-        );
+            .expect("plans");
+            assert_eq!(
+                steps,
+                vec![
+                    Step::Move { x: 100, y: 200 },
+                    Step::Scroll {
+                        x: 100,
+                        y: 200,
+                        dx: 0,
+                        dy: 3,
+                    },
+                ]
+            );
+            assert_eq!(pointer, (100, 200));
+        }
+
+        // Was a_scroll_down_and_right_is_a_negative_wheel: scrolling down and right is a negative wheel.
+        {
+            let (steps, _) = plan(
+                &InputAction::Scroll {
+                    x: 1,
+                    y: 2,
+                    dx: 4,
+                    dy: 5,
+                },
+                (0, 0),
+            )
+            .expect("plans");
+            assert!(matches!(
+                steps.last(),
+                Some(Step::Scroll { dx: -4, dy: -5, .. })
+            ));
+        }
+
+        // Was a_drag_presses_at_the_start_and_releases_at_the_end: a drag presses at its start and releases at its end.
+        {
+            let (steps, pointer) = plan(
+                &InputAction::Drag {
+                    from: (0, 0),
+                    to: (120, 60),
+                },
+                (5, 5),
+            )
+            .expect("plans");
+            assert_eq!(steps.first(), Some(&Step::Move { x: 0, y: 0 }));
+            assert!(matches!(
+                steps.get(1),
+                Some(Step::Press {
+                    x: 0,
+                    y: 0,
+                    count: 1,
+                    ..
+                })
+            ));
+            assert_eq!(
+                steps.last(),
+                Some(&Step::Release {
+                    button: Button::Left,
+                    x: 120,
+                    y: 60,
+                    count: 1,
+                })
+            );
+            let dragged: Vec<(i32, i32)> = steps
+                .iter()
+                .filter_map(|step| match step {
+                    Step::Dragged { x, y, .. } => Some((*x, *y)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(dragged.len(), DRAG_STEPS as usize);
+            assert_eq!(dragged.last(), Some(&(120, 60)));
+            assert_eq!(pointer, (120, 60));
+        }
+
+        // Was a_key_chord_is_pressed_and_released_with_its_flags: a key chord is pressed and released with its flags.
+        {
+            let (steps, pointer) = plan(
+                &InputAction::Key {
+                    combo: "ctrl+shift+s".into(),
+                },
+                (1, 1),
+            )
+            .expect("plans");
+            let flags = keys::FLAG_CONTROL | keys::FLAG_SHIFT;
+            assert_eq!(
+                steps,
+                vec![
+                    Step::Key {
+                        code: 0x01,
+                        flags,
+                        down: true,
+                    },
+                    Step::Key {
+                        code: 0x01,
+                        flags,
+                        down: false,
+                    },
+                ]
+            );
+            assert_eq!(pointer, (1, 1));
+        }
+
+        // Was a_bad_chord_is_refused_before_anything_is_posted: a bad chord is refused before anything is posted.
+        {
+            assert!(
+                plan(
+                    &InputAction::Key {
+                        combo: "hyper+a".into()
+                    },
+                    (0, 0)
+                )
+                .is_err()
+            );
+        }
+
+        // Was empty_text_posts_nothing: empty text posts nothing.
+        {
+            let (steps, _) = plan(
+                &InputAction::Type {
+                    text: String::new(),
+                },
+                (0, 0),
+            )
+            .expect("plans");
+            assert!(steps.is_empty());
+        }
     }
 
     #[test]
-    fn typed_text_is_split_into_chunks_of_twenty_units() {
-        let text = "a".repeat(45);
-        let chunks = type_chunks(&text);
-        let lengths: Vec<usize> = chunks.iter().map(Vec::len).collect();
-        assert_eq!(lengths, vec![20, 20, 5]);
-    }
+    fn type_chunks_cap_each_chunk_at_twenty_units() {
+        // Was typed_text_is_split_into_chunks_of_twenty_units: typed text is split into chunks of twenty units.
+        {
+            let text = "a".repeat(45);
+            let chunks = type_chunks(&text);
+            let lengths: Vec<usize> = chunks.iter().map(Vec::len).collect();
+            assert_eq!(lengths, vec![20, 20, 5]);
+        }
 
-    #[test]
-    fn a_character_is_never_split_across_chunks() {
-        // 19 units, then a character of two UTF-16 units: it starts a new chunk rather than overflowing.
-        let text = format!("{}{}", "a".repeat(19), "\u{1F600}");
-        let chunks = type_chunks(&text);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].len(), 19);
-        assert_eq!(chunks[1], "\u{1F600}".encode_utf16().collect::<Vec<u16>>());
-    }
-
-    #[test]
-    fn empty_text_posts_nothing() {
-        let (steps, _) = plan(
-            &InputAction::Type {
-                text: String::new(),
-            },
-            (0, 0),
-        )
-        .expect("plans");
-        assert!(steps.is_empty());
+        // Was a_character_is_never_split_across_chunks: a character is never split across chunks.
+        {
+            // 19 units, then a character of two UTF-16 units: it starts a new chunk rather than overflowing.
+            let text = format!("{}{}", "a".repeat(19), "\u{1F600}");
+            let chunks = type_chunks(&text);
+            assert_eq!(chunks.len(), 2);
+            assert_eq!(chunks[0].len(), 19);
+            assert_eq!(chunks[1], "\u{1F600}".encode_utf16().collect::<Vec<u16>>());
+        }
     }
 
     #[test]

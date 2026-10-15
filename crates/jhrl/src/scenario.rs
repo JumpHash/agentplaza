@@ -290,45 +290,47 @@ mod tests {
         action Draw(n in {1 cr, 2 cr, 150 cr}) { when used + n <= Cap\n used' = used + n }\n}\n";
 
     #[test]
-    fn machine_scenarios() {
-        let out = run_all(&format!(
-            "{M}scenario AP-000.R1 \"ok\" of L {{\n given Cap = 300 cr\n when Draw(150 cr)\n then used == 150 cr\n}}\n\
-             scenario AP-000.R1 \"rejected\" of L {{\n when Draw(150 cr)\n then rejected\n}}\n\
-             scenario AP-000.R1 \"not enabled\" of L {{\n when Draw(150 cr)\n then used == 150 cr\n}}\n\
-             scenario AP-000.R1 \"wrong then\" of L {{\n when Draw(1 cr)\n then used == 2 cr\n}}\n\
-             scenario AP-000.R1 \"given var\" of L {{\n given used = 4 cr\n when Draw(1 cr)\n then used == Cap\n}}\n\
-             scenario AP-000.R1 \"outside domain\" of L {{\n when Draw(3 cr)\n then used == 3 cr\n}}\n"
-        ));
-        assert!(matches!(out[0], Outcome::Pass(_)), "{:?}", out[0]);
-        assert!(matches!(out[1], Outcome::Pass(_)), "{:?}", out[1]);
-        assert!(
-            matches!(&out[2], Outcome::Fail(m) if m.contains("not enabled")),
-            "{:?}",
-            out[2]
-        );
-        assert!(
-            matches!(&out[3], Outcome::Fail(m) if m.contains("is false")),
-            "{:?}",
-            out[3]
-        );
-        assert!(matches!(out[4], Outcome::Pass(_)), "{:?}", out[4]);
-        assert!(
-            matches!(&out[5], Outcome::Fail(m) if m.contains("not in the domain")),
-            "{:?}",
-            out[5]
-        );
-    }
-
-    #[test]
-    fn pure_and_fixture_scenarios() {
-        let out = run_all(
-            "fn half(x: Number) -> Number = x / 2\n\
-             scenario AP-000.R1 \"pure\" {\n then half(3) == 1.5 and half(0) == 0\n}\n\
-             scenario AP-000.R1 \"pure fails\" {\n then half(3) == 1\n}\n\
-             scenario AP-000.R1 \"fixture\" {\n given fixture \"x.json\"\n then true\n}\n",
-        );
-        assert!(matches!(out[0], Outcome::Pass(_)));
-        assert!(matches!(out[1], Outcome::Fail(_)));
-        assert!(matches!(out[2], Outcome::Skip(_)));
+    fn scenario_runs_report_pass_fail_skip_and_domain_errors() {
+        // machine_scenarios: a passing run, rejected and not-enabled actions, a wrong then, a given var, an out-of-domain argument.
+        {
+            let out = run_all(&format!(
+                "{M}scenario AP-000.R1 \"ok\" of L {{\n given Cap = 300 cr\n when Draw(150 cr)\n then used == 150 cr\n}}\n\
+                 scenario AP-000.R1 \"rejected\" of L {{\n when Draw(150 cr)\n then rejected\n}}\n\
+                 scenario AP-000.R1 \"not enabled\" of L {{\n when Draw(150 cr)\n then used == 150 cr\n}}\n\
+                 scenario AP-000.R1 \"wrong then\" of L {{\n when Draw(1 cr)\n then used == 2 cr\n}}\n\
+                 scenario AP-000.R1 \"given var\" of L {{\n given used = 4 cr\n when Draw(1 cr)\n then used == Cap\n}}\n\
+                 scenario AP-000.R1 \"outside domain\" of L {{\n when Draw(3 cr)\n then used == 3 cr\n}}\n"
+            ));
+            assert!(matches!(out[0], Outcome::Pass(_)), "{:?}", out[0]);
+            assert!(matches!(out[1], Outcome::Pass(_)), "{:?}", out[1]);
+            assert!(
+                matches!(&out[2], Outcome::Fail(m) if m.contains("not enabled")),
+                "{:?}",
+                out[2]
+            );
+            assert!(
+                matches!(&out[3], Outcome::Fail(m) if m.contains("is false")),
+                "{:?}",
+                out[3]
+            );
+            assert!(matches!(out[4], Outcome::Pass(_)), "{:?}", out[4]);
+            assert!(
+                matches!(&out[5], Outcome::Fail(m) if m.contains("not in the domain")),
+                "{:?}",
+                out[5]
+            );
+        }
+        // pure_and_fixture_scenarios: pure scenarios pass or fail, fixture scenarios are skipped.
+        {
+            let out = run_all(
+                "fn half(x: Number) -> Number = x / 2\n\
+                 scenario AP-000.R1 \"pure\" {\n then half(3) == 1.5 and half(0) == 0\n}\n\
+                 scenario AP-000.R1 \"pure fails\" {\n then half(3) == 1\n}\n\
+                 scenario AP-000.R1 \"fixture\" {\n given fixture \"x.json\"\n then true\n}\n",
+            );
+            assert!(matches!(out[0], Outcome::Pass(_)));
+            assert!(matches!(out[1], Outcome::Fail(_)));
+            assert!(matches!(out[2], Outcome::Skip(_)));
+        }
     }
 }

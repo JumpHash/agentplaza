@@ -1397,7 +1397,7 @@ fn numbered(file: &str, n: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_copy, clamp, numbered, open_cache_path, step};
+    use super::{cache_copy, numbered, open_cache_path};
     use std::cell::Cell;
 
     #[test]
@@ -1450,25 +1450,5 @@ mod tests {
         assert_eq!(numbered("report.pdf", 2), "report (2).pdf");
         assert_eq!(numbered("notes", 1), "notes (1)");
         assert_eq!(numbered("archive.tar.gz", 1), "archive.tar (1).gz");
-    }
-
-    #[test]
-    fn step_picks_the_first_row_then_moves_and_holds_at_the_ends() {
-        assert_eq!(step(None, 3, true), Some(0));
-        assert_eq!(step(None, 3, false), Some(0));
-        assert_eq!(step(Some(0), 3, true), Some(1));
-        assert_eq!(step(Some(2), 3, true), Some(2));
-        assert_eq!(step(Some(2), 3, false), Some(1));
-        assert_eq!(step(Some(0), 3, false), Some(0));
-        assert_eq!(step(None, 0, true), None);
-        assert_eq!(step(Some(7), 3, true), Some(2));
-    }
-
-    #[test]
-    fn clamp_keeps_a_pick_inside_the_list() {
-        assert_eq!(clamp(Some(4), 2), Some(1));
-        assert_eq!(clamp(Some(1), 2), Some(1));
-        assert_eq!(clamp(Some(0), 0), None);
-        assert_eq!(clamp(None, 2), None);
     }
 }

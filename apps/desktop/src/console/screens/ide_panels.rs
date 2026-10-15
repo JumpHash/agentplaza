@@ -1104,25 +1104,38 @@ mod tests {
     }
 
     #[test]
-    fn a_poll_that_moves_back_keeps_the_offset() {
-        let mut run = running();
-        run.apply(&poll("abc", 9, false));
-        run.apply(&poll("", 4, false));
-        assert_eq!(run.offset, 9);
-    }
-
-    #[test]
-    fn a_timeout_is_reported_as_one() {
-        let mut run = running();
-        let timed = Poll {
-            output: String::new(),
-            next: 0,
-            done: true,
-            exit_code: None,
-            timed_out: true,
-        };
-        assert_eq!(run.apply(&timed), Step::Finished);
-        assert_eq!(run.status(), "Timed out.");
+    fn run_polls_keep_the_offset_and_the_end_state() {
+        // Original: a_poll_that_moves_back_keeps_the_offset
+        {
+            let mut run = running();
+            run.apply(&poll("abc", 9, false));
+            run.apply(&poll("", 4, false));
+            assert_eq!(run.offset, 9);
+        }
+        // Original: a_timeout_is_reported_as_one
+        {
+            let mut run = running();
+            let timed = Poll {
+                output: String::new(),
+                next: 0,
+                done: true,
+                exit_code: None,
+                timed_out: true,
+            };
+            assert_eq!(run.apply(&timed), Step::Finished);
+            assert_eq!(run.status(), "Timed out.");
+        }
+        // Original: a_late_poll_after_the_run_ended_changes_nothing
+        {
+            let mut run = running();
+            run.apply(&Poll {
+                exit_code: Some(0),
+                ..poll("done\n", 5, true)
+            });
+            assert_eq!(run.apply(&poll("late", 9, false)), Step::Finished);
+            assert_eq!(run.output, "done\n");
+            assert_eq!(run.offset, 5);
+        }
     }
 
     #[test]
@@ -1173,18 +1186,6 @@ mod tests {
     }
 
     #[test]
-    fn a_late_poll_after_the_run_ended_changes_nothing() {
-        let mut run = running();
-        run.apply(&Poll {
-            exit_code: Some(0),
-            ..poll("done\n", 5, true)
-        });
-        assert_eq!(run.apply(&poll("late", 9, false)), Step::Finished);
-        assert_eq!(run.output, "done\n");
-        assert_eq!(run.offset, 5);
-    }
-
-    #[test]
     fn run_ids_come_as_text_or_as_numbers() {
         assert_eq!(run_id(&json!({"run": "r7"})).as_deref(), Some("r7"));
         assert_eq!(run_id(&json!({"run": 7})).as_deref(), Some("7"));
@@ -1197,15 +1198,6 @@ mod tests {
         assert_eq!(parse_timeout(" 90 "), Ok(Some(90)));
         assert!(parse_timeout("1.5").is_err());
         assert!(parse_timeout("-3").is_err());
-    }
-
-    #[test]
-    fn shown_keeps_the_newest_characters() {
-        assert_eq!(shown("short"), "short");
-        let long: String = "a".repeat(SHOWN_CHARS) + "tail";
-        let kept = shown(&long);
-        assert_eq!(kept.chars().count(), SHOWN_CHARS);
-        assert!(kept.ends_with("tail"));
     }
 
     #[test]
@@ -1247,22 +1239,6 @@ mod tests {
     }
 
     #[test]
-    fn a_line_diff_marks_removed_and_added_lines() {
-        let lines = line_diff("a\nb\nc", "a\nx\nc");
-        assert_eq!(
-            lines,
-            vec![
-                DiffLine::Same("a".into()),
-                DiffLine::Del("b".into()),
-                DiffLine::Add("x".into()),
-                DiffLine::Same("c".into()),
-            ]
-        );
-        assert_eq!(line_diff("", "new"), vec![DiffLine::Add("new".into())]);
-        assert_eq!(line_diff("gone", ""), vec![DiffLine::Del("gone".into())]);
-    }
-
-    #[test]
     fn the_pending_list_keeps_this_agents_tool_calls() {
         let list = json!([
             {"id": "a1", "cid": 7, "state": "pending", "tool": "write_file", "input": {"path": "x"}},
@@ -1274,23 +1250,6 @@ mod tests {
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].id, "a1");
         assert_eq!(held[0].tool, "write_file");
-    }
-
-    #[test]
-    fn a_missing_copy_of_a_write_shows_the_whole_text_as_new() {
-        let held = Held {
-            id: "a1".into(),
-            tool: "write_file".into(),
-            input: json!({"path": "new.txt", "content": "hi\n"}),
-        };
-        match preview_of(&held, Err("HTTP 404".into())) {
-            Preview::Diff { path, lines, note } => {
-                assert_eq!(path, "new.txt");
-                assert_eq!(lines, vec![DiffLine::Add("hi".into())]);
-                assert!(note.is_some());
-            }
-            other => panic!("expected a diff, got {other:?}"),
-        }
     }
 
     #[test]

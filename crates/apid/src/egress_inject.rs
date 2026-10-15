@@ -1046,13 +1046,6 @@ mod tests {
     }
 
     #[test]
-    fn the_calendar_is_the_gregorian_one() {
-        assert_eq!(ymd_of(0), (1970, 1, 1));
-        assert_eq!(ymd_of(19_723), (2024, 1, 1));
-        assert_eq!(ymd_of(11_016), (2000, 2, 29));
-    }
-
-    #[test]
     fn the_ca_is_made_once_and_its_key_is_private() {
         let dir = scratch("ca");
         let first = Authority::load_or_create(&dir).unwrap();

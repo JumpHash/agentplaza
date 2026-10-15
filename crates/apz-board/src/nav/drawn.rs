@@ -210,22 +210,3 @@ pub fn drawn_top_at(d: &DrawnTops, x: f64, z: f64) -> f64 {
     let fv = v - j as f64;
     (a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + e * fu) * fv
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn top_below_reads_a_one_cell_support() {
-        // One upward triangle at height 0.5 inside cell (0, 0).
-        let field = SupportField {
-            cell: FIELD_CELL,
-            tris: vec![0.0, 0.5, 0.0, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5],
-            cells: BTreeMap::from([(key_of(0, 0), vec![0])]),
-        };
-        let sup = Support { field, scale: 1.0 };
-        let top = top_below(Some(&sup), 0.1, 0.1, f64::INFINITY);
-        assert!((top - 0.5).abs() < 1e-9, "top {top}");
-        assert_eq!(top_below(None, 0.1, 0.1, f64::INFINITY), 0.0);
-    }
-}

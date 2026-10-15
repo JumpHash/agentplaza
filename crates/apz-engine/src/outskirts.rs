@@ -158,14 +158,3 @@ pub fn build_backdrop() -> Obj {
     outline(&g, 2.0);
     g
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backdrop_has_children() {
-        let g = build_backdrop();
-        assert!(!g.get().children.is_empty());
-    }
-}

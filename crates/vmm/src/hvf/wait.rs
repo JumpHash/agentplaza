@@ -336,93 +336,101 @@ mod tests {
     }
 
     #[test]
-    fn a_powered_off_vcpu_wakes_when_it_is_started() {
-        let slot = Arc::new(WaitSlot::new(false));
-        let (finished, started) = {
-            let slot = Arc::clone(&slot);
-            background(move || {
-                assert_eq!(
-                    slot.wait_for_start(|| false),
-                    Start::At {
-                        entry: 0x4000_0000,
-                        context_id: 0x1234,
-                    }
-                );
-            })
-        };
+    fn a_powered_off_vcpu_waits_for_its_start_or_a_stop() {
+        // a_powered_off_vcpu_wakes_when_it_is_started: starting the vCPU wakes it at the
+        // given entry, and a second start reports that it did not start the vCPU.
+        {
+            let slot = Arc::new(WaitSlot::new(false));
+            let (finished, started) = {
+                let slot = Arc::clone(&slot);
+                background(move || {
+                    assert_eq!(
+                        slot.wait_for_start(|| false),
+                        Start::At {
+                            entry: 0x4000_0000,
+                            context_id: 0x1234,
+                        }
+                    );
+                })
+            };
 
-        assert!(slot.start(0x4000_0000, 0x1234), "the vCPU was off");
-        expect_wake(&finished, "starting the vCPU");
-        started.join().unwrap();
+            assert!(slot.start(0x4000_0000, 0x1234), "the vCPU was off");
+            expect_wake(&finished, "starting the vCPU");
+            started.join().unwrap();
 
-        // A second start reports that it did not start the vCPU, so PSCI can
-        // answer `ALREADY_ON`; a parked vCPU waits again.
-        assert!(!slot.start(0x8000_0000, 0), "the vCPU was already on");
-        slot.park();
-        assert!(!slot.is_running());
-        assert!(slot.start(0x8000_0000, 7));
-        assert_eq!(
-            slot.wait_for_start(|| false),
-            Start::At {
-                entry: 0x8000_0000,
-                context_id: 7,
-            }
-        );
+            // A second start reports that it did not start the vCPU, so PSCI can
+            // answer `ALREADY_ON`; a parked vCPU waits again.
+            assert!(!slot.start(0x8000_0000, 0), "the vCPU was already on");
+            slot.park();
+            assert!(!slot.is_running());
+            assert!(slot.start(0x8000_0000, 7));
+            assert_eq!(
+                slot.wait_for_start(|| false),
+                Start::At {
+                    entry: 0x8000_0000,
+                    context_id: 7,
+                }
+            );
+        }
+        // a_powered_off_vcpu_that_is_never_started_observes_the_stop: a stop reaches a
+        // waiter that was never started.
+        {
+            let slot = Arc::new(WaitSlot::new(false));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (finished, waiter) = {
+                let slot = Arc::clone(&slot);
+                let stop = Arc::clone(&stop);
+                background(move || {
+                    assert_eq!(
+                        slot.wait_for_start(|| stop.load(Ordering::SeqCst)),
+                        Start::Stopped
+                    );
+                })
+            };
+
+            // The stop arrives after the waiter has parked, and only a wake ends
+            // the wait.
+            assert!(finished.recv_timeout(NOT_YET).is_err());
+            stop.store(true, Ordering::SeqCst);
+            slot.wake();
+            expect_wake(&finished, "stopping the VM");
+            waiter.join().unwrap();
+        }
     }
 
     #[test]
-    fn a_powered_off_vcpu_that_is_never_started_observes_the_stop() {
-        let slot = Arc::new(WaitSlot::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (finished, waiter) = {
-            let slot = Arc::clone(&slot);
-            let stop = Arc::clone(&stop);
-            background(move || {
-                assert_eq!(
-                    slot.wait_for_start(|| stop.load(Ordering::SeqCst)),
-                    Start::Stopped
-                );
-            })
-        };
+    fn a_halted_vcpu_wakes_on_a_pending_interrupt_or_a_deadline() {
+        // a_halted_vcpu_wakes_when_the_reason_for_halting_is_gone: a halted vCPU wakes
+        // once the interrupt it waits for is pending.
+        {
+            let slot = Arc::new(WaitSlot::new(true));
+            let pending = Arc::new(AtomicBool::new(false));
+            let (finished, halted) = {
+                let slot = Arc::clone(&slot);
+                let pending = Arc::clone(&pending);
+                background(move || slot.halt(None, || pending.load(Ordering::SeqCst)))
+            };
 
-        // The stop arrives after the waiter has parked, and only a wake ends
-        // the wait.
-        assert!(finished.recv_timeout(NOT_YET).is_err());
-        stop.store(true, Ordering::SeqCst);
-        slot.wake();
-        expect_wake(&finished, "stopping the VM");
-        waiter.join().unwrap();
-    }
-
-    #[test]
-    fn a_halted_vcpu_wakes_when_the_reason_for_halting_is_gone() {
-        let slot = Arc::new(WaitSlot::new(true));
-        let pending = Arc::new(AtomicBool::new(false));
-        let (finished, halted) = {
-            let slot = Arc::clone(&slot);
-            let pending = Arc::clone(&pending);
-            background(move || slot.halt(None, || pending.load(Ordering::SeqCst)))
-        };
-
-        assert!(
-            finished.recv_timeout(NOT_YET).is_err(),
-            "nothing is pending"
-        );
-        pending.store(true, Ordering::SeqCst);
-        slot.wake();
-        expect_wake(&finished, "an interrupt the vCPU waits for");
-        halted.join().unwrap();
-    }
-
-    #[test]
-    fn a_halted_vcpu_wakes_when_its_deadline_elapses() {
-        let slot = Arc::new(WaitSlot::new(true));
-        let (finished, halted) = {
-            let slot = Arc::clone(&slot);
-            background(move || slot.halt(Some(Duration::from_millis(20)), || false))
-        };
-        expect_wake(&finished, "the deadline");
-        halted.join().unwrap();
+            assert!(
+                finished.recv_timeout(NOT_YET).is_err(),
+                "nothing is pending"
+            );
+            pending.store(true, Ordering::SeqCst);
+            slot.wake();
+            expect_wake(&finished, "an interrupt the vCPU waits for");
+            halted.join().unwrap();
+        }
+        // a_halted_vcpu_wakes_when_its_deadline_elapses: a halted vCPU wakes when its
+        // deadline elapses.
+        {
+            let slot = Arc::new(WaitSlot::new(true));
+            let (finished, halted) = {
+                let slot = Arc::clone(&slot);
+                background(move || slot.halt(Some(Duration::from_millis(20)), || false))
+            };
+            expect_wake(&finished, "the deadline");
+            halted.join().unwrap();
+        }
     }
 
     #[test]

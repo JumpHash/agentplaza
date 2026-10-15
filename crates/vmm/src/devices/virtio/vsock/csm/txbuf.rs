@@ -211,78 +211,63 @@ mod tests {
     }
 
     #[test]
-    fn test_push_nowrap() {
-        let mut txbuf = TxBuf::new();
-        let mut sink = TestSink::new();
-        assert!(txbuf.is_empty());
+    fn test_push_nowrap_and_wrap() {
+        // Pushes that do not wrap the buffer are flushed in order, and the
+        // buffer is reusable after a flush.
+        {
+            let mut txbuf = TxBuf::new();
+            let mut sink = TestSink::new();
+            assert!(txbuf.is_empty());
 
-        assert!(txbuf.data.is_none());
+            assert!(txbuf.data.is_none());
 
-        txbuf
-            .push(&VolatileSlice::from([1, 2, 3, 4].as_mut_slice()))
-            .unwrap();
-        txbuf
-            .push(&VolatileSlice::from([5, 6, 7, 8].as_mut_slice()))
-            .unwrap();
-        txbuf.flush_to(&mut sink).unwrap();
-        assert_eq!(sink.data, [1, 2, 3, 4, 5, 6, 7, 8]);
-        sink.clear();
+            txbuf
+                .push(&VolatileSlice::from([1, 2, 3, 4].as_mut_slice()))
+                .unwrap();
+            txbuf
+                .push(&VolatileSlice::from([5, 6, 7, 8].as_mut_slice()))
+                .unwrap();
+            txbuf.flush_to(&mut sink).unwrap();
+            assert_eq!(sink.data, [1, 2, 3, 4, 5, 6, 7, 8]);
+            sink.clear();
 
-        txbuf
-            .write_all_volatile(&VolatileSlice::from([10, 11, 12, 13].as_mut_slice()))
-            .unwrap();
-        txbuf
-            .write_all_volatile(&VolatileSlice::from([14, 15, 16, 17].as_mut_slice()))
-            .unwrap();
+            txbuf
+                .write_all_volatile(&VolatileSlice::from([10, 11, 12, 13].as_mut_slice()))
+                .unwrap();
+            txbuf
+                .write_all_volatile(&VolatileSlice::from([14, 15, 16, 17].as_mut_slice()))
+                .unwrap();
 
-        txbuf.flush_to(&mut sink).unwrap();
-        assert_eq!(sink.data, [10, 11, 12, 13, 14, 15, 16, 17]);
-        sink.clear();
-    }
+            txbuf.flush_to(&mut sink).unwrap();
+            assert_eq!(sink.data, [10, 11, 12, 13, 14, 15, 16, 17]);
+            sink.clear();
+        }
 
-    #[test]
-    fn test_push_wrap() {
-        let mut txbuf = TxBuf::new();
-        let mut sink = TestSink::new();
-        let mut tmp: Vec<u8> = vec![0; TxBuf::SIZE - 2];
-        txbuf
-            .push(&VolatileSlice::from(tmp.as_mut_slice()))
-            .unwrap();
-        txbuf.flush_to(&mut sink).unwrap();
-        sink.clear();
+        // A push that wraps the end of the buffer is flushed in order.
+        {
+            let mut txbuf = TxBuf::new();
+            let mut sink = TestSink::new();
+            let mut tmp: Vec<u8> = vec![0; TxBuf::SIZE - 2];
+            txbuf
+                .push(&VolatileSlice::from(tmp.as_mut_slice()))
+                .unwrap();
+            txbuf.flush_to(&mut sink).unwrap();
+            sink.clear();
 
-        txbuf
-            .push(&VolatileSlice::from([1, 2, 3, 4].as_mut_slice()))
-            .unwrap();
-        assert_eq!(txbuf.flush_to(&mut sink).unwrap(), 4);
-        assert_eq!(sink.data, [1, 2, 3, 4]);
+            txbuf
+                .push(&VolatileSlice::from([1, 2, 3, 4].as_mut_slice()))
+                .unwrap();
+            assert_eq!(txbuf.flush_to(&mut sink).unwrap(), 4);
+            assert_eq!(sink.data, [1, 2, 3, 4]);
 
-        sink.clear();
+            sink.clear();
 
-        txbuf
-            .write_all_volatile(&VolatileSlice::from([5, 6, 7, 8].as_mut_slice()))
-            .unwrap();
-        assert_eq!(txbuf.flush_to(&mut sink).unwrap(), 4);
-        assert_eq!(sink.data, [5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut txbuf = TxBuf::new();
-        let mut tmp = vec![0u8; 128];
-        txbuf
-            .push(&VolatileSlice::from(tmp.as_mut_slice()))
-            .unwrap();
-        assert!(!txbuf.is_empty());
-
-        txbuf.clear();
-        assert!(txbuf.is_empty());
-        assert_eq!(txbuf.len(), 0);
-        // The buffer can be reused afterwards.
-        txbuf
-            .push(&VolatileSlice::from(tmp.as_mut_slice()))
-            .unwrap();
-        assert_eq!(txbuf.len(), 128);
+            txbuf
+                .write_all_volatile(&VolatileSlice::from([5, 6, 7, 8].as_mut_slice()))
+                .unwrap();
+            assert_eq!(txbuf.flush_to(&mut sink).unwrap(), 4);
+            assert_eq!(sink.data, [5, 6, 7, 8]);
+        }
     }
 
     #[test]

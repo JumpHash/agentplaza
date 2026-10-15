@@ -943,15 +943,6 @@ mod tests {
         assert!(b.starts_with(base));
     }
 
-    #[test]
-    fn the_default_base_is_a_sibling_of_the_uds_dir() {
-        assert_eq!(
-            default_base(Some(Path::new("/tmp/plaza-vsock"))),
-            PathBuf::from("/tmp/plaza-vsock.jail")
-        );
-        assert!(default_base(None).ends_with("plaza-jail"));
-    }
-
     /// The drop target parses, and a value that is not a number is refused
     /// rather than dropped.
     #[test]

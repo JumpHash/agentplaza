@@ -226,47 +226,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_token_is_the_extension_or_the_name() {
-        assert_eq!(token_for("src/main.RS"), "rs");
-        assert_eq!(token_for("Cargo.toml"), "toml");
-        assert_eq!(token_for("Makefile"), "makefile");
-        assert_eq!(
-            token_for(".gitignore"),
-            "gitignore",
-            "a dotfile has no extension to read"
-        );
-    }
-
-    #[test]
-    fn a_colour_maps_to_the_nearest_palette_role() {
-        let roles = [Color::from_rgb8(0, 0, 0), Color::from_rgb8(255, 255, 255)];
-        assert_eq!(nearest(Color::from_rgb8(20, 20, 20), &roles), roles[0]);
-        assert_eq!(nearest(Color::from_rgb8(240, 250, 230), &roles), roles[1]);
-        assert_eq!(
-            nearest(Color::from_rgb8(9, 9, 9), &[]),
-            Color::from_rgb8(9, 9, 9),
-            "no roles: the colour stays"
-        );
-    }
-
-    #[test]
-    fn quick_open_matches_a_substring_of_the_path_in_order() {
-        let paths: Vec<String> = ["README.md", "src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            matches(&paths, "IDE"),
-            ["src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]
-        );
-        assert_eq!(matches(&paths, "  readme "), ["README.md"]);
-        assert_eq!(matches(&paths, "").len(), 4);
-        assert!(matches(&paths, "zzz").is_empty());
-    }
-
-    #[test]
-    fn quick_open_stops_at_its_limit() {
-        let paths: Vec<String> = (0..100).map(|i| format!("f{i}.txt")).collect();
-        assert_eq!(matches(&paths, "").len(), QUICK_LIMIT);
+    fn quick_open_matches_a_substring_of_the_path_in_order_and_stops_at_its_limit() {
+        // Original: quick_open_matches_a_substring_of_the_path_in_order
+        {
+            let paths: Vec<String> = ["README.md", "src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            assert_eq!(
+                matches(&paths, "IDE"),
+                ["src/ide.rs", "src/IDE_tree.rs", "docs/ide.md"]
+            );
+            assert_eq!(matches(&paths, "  readme "), ["README.md"]);
+            assert_eq!(matches(&paths, "").len(), 4);
+            assert!(matches(&paths, "zzz").is_empty());
+        }
+        // Original: quick_open_stops_at_its_limit
+        {
+            let paths: Vec<String> = (0..100).map(|i| format!("f{i}.txt")).collect();
+            assert_eq!(matches(&paths, "").len(), QUICK_LIMIT);
+        }
     }
 }

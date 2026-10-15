@@ -189,60 +189,78 @@ mod tests {
         )
     }
 
-    /// The canonical S5 write: SLP_EN (bit 5) with SLP_TYP=5 (bits 4:2). It
-    /// fires the exit event and is a shutdown, so guest_reset stays false.
+    /// Each write is checked against the exit event and the reset flag: only
+    /// the S5 shutdown and the reset value fire, and only the reset value sets
+    /// guest_reset (so the exit watcher reports reset=true).
     #[test]
-    fn slp_en_with_s5_type_fires_shutdown() {
-        let (mut dev, evt, reset) = device();
-        dev.write(0, OFS_SLEEP_CONTROL, &[0x34]); // (5 << 2) | (1 << 5)
-        assert_eq!(evt.read().unwrap(), 1);
-        assert!(!reset.load(Ordering::SeqCst));
-    }
-
-    /// SLP_EN without SLP_TYP=5 (here SLP_TYP=0) is not a shutdown: the VM
-    /// does not support the other sleep states, so it must not stop.
-    #[test]
-    fn slp_en_without_s5_type_is_ignored() {
-        let (mut dev, evt, _) = device();
-        dev.write(0, OFS_SLEEP_CONTROL, &[0x20]); // SLP_EN set, SLP_TYP=0
-        // The eventfd is non-blocking: an empty counter reads as `WouldBlock`,
-        // not `0`, so a "did not fire" check asserts the read errors.
-        assert!(evt.read().is_err());
-    }
-
-    /// A write to the sleep status register (offset 1) never shuts the VM down.
-    #[test]
-    fn sleep_status_write_is_ignored() {
-        let (mut dev, evt, _) = device();
-        dev.write(0, OFS_SLEEP_STATUS, &[0x80]); // WAK_STS
-        assert!(evt.read().is_err());
-    }
-
-    /// A write of RESET_VALUE to the reset register is a reset: the event fires
-    /// and guest_reset is set so the exit watcher reports reset=true.
-    #[test]
-    fn reset_register_write_fires_reset() {
-        let (mut dev, evt, reset) = device();
-        dev.write(0, OFS_RESET, &[RESET_VALUE]);
-        assert_eq!(evt.read().unwrap(), 1);
-        assert!(reset.load(Ordering::SeqCst));
-    }
-
-    /// A write of any other value to the reset register is not a reset.
-    #[test]
-    fn reset_register_other_value_is_ignored() {
-        let (mut dev, evt, reset) = device();
-        dev.write(0, OFS_RESET, &[0]);
-        assert!(evt.read().is_err());
-        assert!(!reset.load(Ordering::SeqCst));
-    }
-
-    /// Wrong-sized writes are ignored (all registers are byte-wide).
-    #[test]
-    fn wrong_sized_write_is_ignored() {
-        let (mut dev, evt, _) = device();
-        dev.write(0, OFS_SLEEP_CONTROL, &[0x34, 0x00]);
-        assert!(evt.read().is_err());
+    fn pm1_writes_fire_only_for_s5_shutdown_and_reset() {
+        // Each row: the case, the register offset, the written bytes, whether
+        // the exit event must fire, and whether guest_reset must be set.
+        let cases: [(&str, _, &[u8], bool, bool); 6] = [
+            // The canonical S5 write: SLP_EN (bit 5) with SLP_TYP=5 (bits 4:2).
+            // It fires the exit event and is a shutdown, so guest_reset stays false.
+            (
+                "slp_en_with_s5_type_fires_shutdown",
+                OFS_SLEEP_CONTROL,
+                &[0x34], // (5 << 2) | (1 << 5)
+                true,
+                false,
+            ),
+            // SLP_EN without SLP_TYP=5 (here SLP_TYP=0) is not a shutdown: the VM
+            // does not support the other sleep states, so it must not stop.
+            (
+                "slp_en_without_s5_type_is_ignored",
+                OFS_SLEEP_CONTROL,
+                &[0x20], // SLP_EN set, SLP_TYP=0
+                false,
+                false,
+            ),
+            // A write to the sleep status register (offset 1) never shuts the VM down.
+            (
+                "sleep_status_write_is_ignored",
+                OFS_SLEEP_STATUS,
+                &[0x80], // WAK_STS
+                false,
+                false,
+            ),
+            // A write of RESET_VALUE to the reset register is a reset: the event
+            // fires and guest_reset is set.
+            (
+                "reset_register_write_fires_reset",
+                OFS_RESET,
+                &[RESET_VALUE],
+                true,
+                true,
+            ),
+            // A write of any other value to the reset register is not a reset.
+            (
+                "reset_register_other_value_is_ignored",
+                OFS_RESET,
+                &[0],
+                false,
+                false,
+            ),
+            // Wrong-sized writes are ignored (all registers are byte-wide).
+            (
+                "wrong_sized_write_is_ignored",
+                OFS_SLEEP_CONTROL,
+                &[0x34, 0x00],
+                false,
+                false,
+            ),
+        ];
+        for (case, offset, data, fires, reset_set) in cases {
+            let (mut dev, evt, reset) = device();
+            dev.write(0, offset, data);
+            if fires {
+                assert_eq!(evt.read().unwrap(), 1, "{case}");
+            } else {
+                // The eventfd is non-blocking: an empty counter reads as `WouldBlock`,
+                // not `0`, so a "did not fire" check asserts the read errors.
+                assert!(evt.read().is_err(), "{case}");
+            }
+            assert_eq!(reset.load(Ordering::SeqCst), reset_set, "{case}");
+        }
     }
 
     /// Reads return zero.

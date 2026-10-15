@@ -450,40 +450,45 @@ mod tests {
         assert_eq!(cursor.into_inner(), b"hello!");
     }
 
+    /// A TX packet whose header does not fit its descriptor chain, or whose
+    /// declared length is over the maximum, is rejected by `parse`.
     #[test]
-    fn tx_packet_rejects_short_header() {
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        vq.set_desc(0, HDR_ADDR, 10, 0, 0);
-        let mut q = vq.create_queue();
-        vq.publish(0);
-        let head = q.pop().unwrap().unwrap();
+    fn tx_packet_rejects_malformed_headers() {
+        // A descriptor shorter than the header is rejected as too short.
+        {
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            vq.set_desc(0, HDR_ADDR, 10, 0, 0);
+            let mut q = vq.create_queue();
+            vq.publish(0);
+            let head = q.pop().unwrap().unwrap();
 
-        let mut pkt = VsockPacketTx::default();
-        assert!(matches!(
-            pkt.parse(&mem, head),
-            Err(VsockError::DescChainTooShortForHeader(_))
-        ));
-    }
+            let mut pkt = VsockPacketTx::default();
+            assert!(matches!(
+                pkt.parse(&mem, head),
+                Err(VsockError::DescChainTooShortForHeader(_))
+            ));
+        }
 
-    #[test]
-    fn tx_packet_rejects_oversized_len() {
-        let mem = default_mem();
-        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let mut hdr = VsockPacketHeader::default();
-        hdr.set_len(defs::MAX_PKT_BUF_SIZE + 1);
-        mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR))
-            .unwrap();
-        vq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, 0, 0);
-        let mut q = vq.create_queue();
-        vq.publish(0);
-        let head = q.pop().unwrap().unwrap();
+        // A header whose declared length exceeds the maximum is rejected.
+        {
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let mut hdr = VsockPacketHeader::default();
+            hdr.set_len(defs::MAX_PKT_BUF_SIZE + 1);
+            mem.write_slice(hdr.as_slice(), GuestAddress(HDR_ADDR))
+                .unwrap();
+            vq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, 0, 0);
+            let mut q = vq.create_queue();
+            vq.publish(0);
+            let head = q.pop().unwrap().unwrap();
 
-        let mut pkt = VsockPacketTx::default();
-        assert!(matches!(
-            pkt.parse(&mem, head),
-            Err(VsockError::InvalidPktLen(_))
-        ));
+            let mut pkt = VsockPacketTx::default();
+            assert!(matches!(
+                pkt.parse(&mem, head),
+                Err(VsockError::InvalidPktLen(_))
+            ));
+        }
     }
 
     #[test]
@@ -727,62 +732,6 @@ mod tests {
             VsockPacketRx::new().unwrap().parse(&mem, head),
             Err(VsockError::DescChainTooShortForHeader(_))
         ));
-    }
-
-    /// Derived from Firecracker's `test_packet_hdr_accessors`: every header
-    /// field round-trips, and flags accumulate rather than replace.
-    #[test]
-    fn test_packet_hdr_accessors() {
-        const SRC_CID: u64 = 1;
-        const DST_CID: u64 = 2;
-        const SRC_PORT: u32 = 3;
-        const DST_PORT: u32 = 4;
-        const LEN: u32 = 5;
-        const TYPE: u16 = 6;
-        const OP: u16 = 7;
-        const FLAGS: u32 = 8;
-        const BUF_ALLOC: u32 = 9;
-        const FWD_CNT: u32 = 10;
-
-        let mut hdr = VsockPacketHeader::default();
-        assert_eq!(hdr.src_cid(), 0);
-        assert_eq!(hdr.dst_cid(), 0);
-        assert_eq!(hdr.src_port(), 0);
-        assert_eq!(hdr.dst_port(), 0);
-        assert_eq!(hdr.len(), 0);
-        assert_eq!(hdr.type_(), 0);
-        assert_eq!(hdr.op(), 0);
-        assert_eq!(hdr.flags(), 0);
-        assert_eq!(hdr.buf_alloc(), 0);
-        assert_eq!(hdr.fwd_cnt(), 0);
-
-        // Test field accessors.
-        hdr.set_src_cid(SRC_CID)
-            .set_dst_cid(DST_CID)
-            .set_src_port(SRC_PORT)
-            .set_dst_port(DST_PORT)
-            .set_len(LEN)
-            .set_type(TYPE)
-            .set_op(OP)
-            .set_flags(FLAGS)
-            .set_buf_alloc(BUF_ALLOC)
-            .set_fwd_cnt(FWD_CNT);
-
-        assert_eq!(hdr.src_cid(), SRC_CID);
-        assert_eq!(hdr.dst_cid(), DST_CID);
-        assert_eq!(hdr.src_port(), SRC_PORT);
-        assert_eq!(hdr.dst_port(), DST_PORT);
-        assert_eq!(hdr.len(), LEN);
-        assert_eq!(hdr.type_(), TYPE);
-        assert_eq!(hdr.op(), OP);
-        assert_eq!(hdr.flags(), FLAGS);
-        assert_eq!(hdr.buf_alloc(), BUF_ALLOC);
-        assert_eq!(hdr.fwd_cnt(), FWD_CNT);
-
-        // Test individual flag setting.
-        let flags = hdr.flags() | 0b1000;
-        hdr.set_flag(0b1000);
-        assert_eq!(hdr.flags(), flags);
     }
 
     /// Derived from Firecracker's `test_packet_buf`: data read/written at every

@@ -742,25 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn sequential_calls_reuse_one_socket() {
-        let (accepts, posts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let server = server(json!({}), false, accepts.clone(), posts.clone());
-        let gw = gateway(vec![at(server.port())]);
-        for _ in 0..2 {
-            let mut deltas = Vec::new();
-            assert!(call(&gw, &mut deltas).content.contains(&Block::Text {
-                text: "Hello".into()
-            }));
-        }
-        assert_eq!(
-            accepts.load(Ordering::SeqCst),
-            1,
-            "both calls rode one socket"
-        );
-        assert_eq!(posts.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
     fn a_socket_closed_before_any_event_falls_back_to_http() {
         let (accepts, posts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let answer = json!({

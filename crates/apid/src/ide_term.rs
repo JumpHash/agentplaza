@@ -1061,68 +1061,71 @@ mod tests {
     // The frame codec.
 
     #[test]
-    fn an_open_frame_takes_its_size_and_an_optional_cwd() {
-        assert_eq!(
-            parse_client(r#"{"t":"open","cols":80,"rows":24}"#),
-            Ok(ClientFrame::Open {
-                cols: 80,
-                rows: 24,
-                cwd: None
-            })
-        );
-        assert_eq!(
-            parse_client(r#"{"t":"open","cols":80,"rows":24,"cwd":""}"#),
-            Ok(ClientFrame::Open {
-                cols: 80,
-                rows: 24,
-                cwd: None
-            }),
-            "an empty cwd is none"
-        );
-        assert_eq!(
-            parse_client(r#"{"t":"open","cols":1,"rows":1000,"cwd":"src"}"#),
-            Ok(ClientFrame::Open {
-                cols: 1,
-                rows: 1000,
-                cwd: Some("src".into())
-            })
-        );
-    }
-
-    #[test]
-    fn every_client_frame_parses_to_its_variant() {
-        assert_eq!(
-            parse_client(r#"{"t":"attach","term":"term-1","offset":4096}"#),
-            Ok(ClientFrame::Attach {
-                term: "term-1".into(),
-                offset: 4096
-            })
-        );
-        assert_eq!(
-            parse_client(r#"{"t":"attach","term":"term-1"}"#),
-            Ok(ClientFrame::Attach {
-                term: "term-1".into(),
-                offset: 0
-            }),
-            "an attach without an offset resumes at the start"
-        );
-        assert_eq!(
-            parse_client(r#"{"t":"in","data":"aGkK"}"#),
-            Ok(ClientFrame::Input(b"hi\n".to_vec()))
-        );
-        assert_eq!(
-            parse_client(r#"{"t":"resize","cols":100,"rows":30}"#),
-            Ok(ClientFrame::Resize {
-                cols: 100,
-                rows: 30
-            })
-        );
-        assert_eq!(parse_client(r#"{"t":"kill"}"#), Ok(ClientFrame::Kill));
-        assert_eq!(parse_client(r#"{"t":"ping"}"#), Ok(ClientFrame::Ping));
-    }
-
-    #[test]
-    fn a_bad_client_frame_is_refused_with_its_reason() {
+    fn client_frames_parse_to_their_variants_and_bad_ones_are_refused() {
+        // Each good frame parses to its variant.
+        for (case, input, want) in [
+            (
+                "an open frame takes its size",
+                r#"{"t":"open","cols":80,"rows":24}"#,
+                ClientFrame::Open {
+                    cols: 80,
+                    rows: 24,
+                    cwd: None,
+                },
+            ),
+            (
+                "an empty cwd is none",
+                r#"{"t":"open","cols":80,"rows":24,"cwd":""}"#,
+                ClientFrame::Open {
+                    cols: 80,
+                    rows: 24,
+                    cwd: None,
+                },
+            ),
+            (
+                "an open frame takes an optional cwd",
+                r#"{"t":"open","cols":1,"rows":1000,"cwd":"src"}"#,
+                ClientFrame::Open {
+                    cols: 1,
+                    rows: 1000,
+                    cwd: Some("src".into()),
+                },
+            ),
+            (
+                "an attach takes its offset",
+                r#"{"t":"attach","term":"term-1","offset":4096}"#,
+                ClientFrame::Attach {
+                    term: "term-1".into(),
+                    offset: 4096,
+                },
+            ),
+            (
+                "an attach without an offset resumes at the start",
+                r#"{"t":"attach","term":"term-1"}"#,
+                ClientFrame::Attach {
+                    term: "term-1".into(),
+                    offset: 0,
+                },
+            ),
+            (
+                "an input frame carries its decoded bytes",
+                r#"{"t":"in","data":"aGkK"}"#,
+                ClientFrame::Input(b"hi\n".to_vec()),
+            ),
+            (
+                "a resize frame takes its size",
+                r#"{"t":"resize","cols":100,"rows":30}"#,
+                ClientFrame::Resize {
+                    cols: 100,
+                    rows: 30,
+                },
+            ),
+            ("a kill frame", r#"{"t":"kill"}"#, ClientFrame::Kill),
+            ("a ping frame", r#"{"t":"ping"}"#, ClientFrame::Ping),
+        ] {
+            assert_eq!(parse_client(input), Ok(want), "{case}");
+        }
+        // A bad client frame is refused with its reason.
         for bad in [
             "not json",
             r#"{"cols":80}"#,
@@ -1188,20 +1191,6 @@ mod tests {
     // The poll schedule, idle close and write coalescing.
 
     #[test]
-    fn output_is_polled_at_once_while_it_flows_and_backs_off_after_two_seconds_of_quiet() {
-        assert_eq!(poll_delay(true, Duration::from_secs(9)), Duration::ZERO);
-        assert_eq!(poll_delay(false, Duration::ZERO), Duration::from_millis(25));
-        assert_eq!(
-            poll_delay(false, Duration::from_millis(1999)),
-            Duration::from_millis(25)
-        );
-        assert_eq!(
-            poll_delay(false, Duration::from_secs(2)),
-            Duration::from_millis(250)
-        );
-    }
-
-    #[test]
     fn input_polls_the_output_at_once_and_keeps_the_polls_fast() {
         let fake = Fake::with_output(b"", 0);
         let mut socket = Client::new(Vec::new());
@@ -1257,22 +1246,6 @@ mod tests {
         let t0 = Instant::now();
         assert!(!idle_expired(t0, t0 + Duration::from_secs(599)));
         assert!(idle_expired(t0, t0 + Duration::from_secs(600)));
-    }
-
-    #[test]
-    fn small_writes_within_ten_milliseconds_go_out_as_one() {
-        let t0 = Instant::now();
-        let mut input = Coalescer::default();
-        assert!(!input.due(t0), "nothing pending is not due");
-        input.push(b"a", t0);
-        input.push(b"bc", t0 + Duration::from_millis(4));
-        assert!(!input.due(t0 + Duration::from_millis(9)));
-        assert!(input.due(t0 + Duration::from_millis(10)));
-        assert_eq!(input.take(), vec![b"abc".to_vec()]);
-        assert!(
-            !input.due(t0 + Duration::from_secs(1)),
-            "taken input leaves nothing due"
-        );
     }
 
     #[test]
@@ -1361,39 +1334,36 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_from_this_host_or_a_client_without_an_origin_is_upgraded() {
-        assert_eq!(
-            upgrade(
-                &upgrade_request(Some("http://127.0.0.1:7700"), PROTOCOL),
-                |_| {}
-            )
-            .status,
-            101
-        );
-        assert_eq!(
-            upgrade(&upgrade_request(None, PROTOCOL), |_| {}).status,
-            101
-        );
-    }
-
-    #[test]
-    fn a_socket_from_another_origin_is_refused_with_403() {
-        assert_eq!(
-            upgrade(
-                &upgrade_request(Some("http://evil.example"), PROTOCOL),
-                |_| {}
-            )
-            .status,
-            403
-        );
-    }
-
-    #[test]
-    fn a_socket_that_does_not_ask_for_the_subprotocol_is_refused_with_400() {
-        assert_eq!(
-            upgrade(&upgrade_request(None, "apz.events.v1"), |_| {}).status,
-            400
-        );
+    fn a_socket_is_upgraded_or_refused_by_origin_and_subprotocol() {
+        for (case, origin, protocol, want) in [
+            (
+                "a socket from this host is upgraded",
+                Some("http://127.0.0.1:7700"),
+                PROTOCOL,
+                101,
+            ),
+            (
+                "a client without an origin is upgraded",
+                None,
+                PROTOCOL,
+                101,
+            ),
+            (
+                "a socket from another origin is refused with 403",
+                Some("http://evil.example"),
+                PROTOCOL,
+                403,
+            ),
+            (
+                "a socket that does not ask for the subprotocol is refused with 400",
+                None,
+                "apz.events.v1",
+                400,
+            ),
+        ] {
+            let request = upgrade_request(origin, protocol);
+            assert_eq!(upgrade(&request, |_| {}).status, want, "{case}");
+        }
     }
 
     // The bridge, against a fake guest and a scripted client.

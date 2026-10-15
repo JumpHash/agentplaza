@@ -489,32 +489,34 @@ mod tests {
     }
 
     #[test]
-    fn the_named_hub_wins_then_the_flag_then_the_default() {
-        let config = config_with(&["home", "work"], Some("home"));
-        assert_eq!(
-            saved_name(&config, Some("work".into()), Some("home".into())).unwrap(),
-            "work"
-        );
-        assert_eq!(
-            saved_name(&config, None, Some("work".into())).unwrap(),
-            "work"
-        );
-        assert_eq!(saved_name(&config, None, None).unwrap(), "home");
-    }
-
-    #[test]
-    fn an_unsaved_hub_or_no_hub_at_all_is_refused() {
-        let config = config_with(&["home"], None);
-        assert!(
-            saved_name(&config, None, None)
-                .unwrap_err()
-                .contains("hub login")
-        );
-        assert!(
-            saved_name(&config, None, Some("https://elsewhere.example:7700".into()))
-                .unwrap_err()
-                .contains("no saved hub")
-        );
+    fn the_saved_hub_name_is_resolved_or_refused() {
+        // The named hub wins, then the flag, then the default.
+        {
+            let config = config_with(&["home", "work"], Some("home"));
+            assert_eq!(
+                saved_name(&config, Some("work".into()), Some("home".into())).unwrap(),
+                "work"
+            );
+            assert_eq!(
+                saved_name(&config, None, Some("work".into())).unwrap(),
+                "work"
+            );
+            assert_eq!(saved_name(&config, None, None).unwrap(), "home");
+        }
+        // An unsaved hub, or no hub at all, is refused.
+        {
+            let config = config_with(&["home"], None);
+            assert!(
+                saved_name(&config, None, None)
+                    .unwrap_err()
+                    .contains("hub login")
+            );
+            assert!(
+                saved_name(&config, None, Some("https://elsewhere.example:7700".into()))
+                    .unwrap_err()
+                    .contains("no saved hub")
+            );
+        }
     }
 
     #[test]
@@ -525,69 +527,68 @@ mod tests {
     }
 
     #[test]
-    fn a_hex_pin_skips_the_identity_call() {
-        let trust = check_identity("home", true, Some("fp-a"), || -> Result<Value, String> {
-            panic!("the identity is not asked for")
-        });
-        assert_eq!(trust, Ok(Trust::Pin));
-    }
-
-    #[test]
-    fn a_pinned_identity_must_be_the_one_presented() {
-        assert_eq!(
-            check_identity("home", false, Some("fp-a"), || Ok(
-                json!({ "fingerprint": "fp-a" })
-            )),
-            Ok(Trust::Pinned)
-        );
-        let other = check_identity("home", false, Some("fp-a"), || {
-            Ok(json!({ "fingerprint": "fp-b" }))
-        })
-        .unwrap_err();
-        assert_eq!(
-            other,
-            "the hub's identity changed: pinned fp-a, presented fp-b; run `agentplaza hub forget-pin home` if you expect this"
-        );
-        let none = check_identity("home", false, Some("fp-a"), || {
-            Ok(json!({ "name": "home" }))
-        })
-        .unwrap_err();
-        assert!(none.contains("presented no certificate"), "{none}");
-    }
-
-    #[test]
-    fn a_first_sign_in_asks_about_the_presented_identity() {
-        let identity = json!({ "fingerprint": "fp-a", "name": "home", "version": "0.0.8" });
-        let trust = check_identity("home", false, None, || Ok(identity.clone())).unwrap();
-        assert_eq!(
-            trust,
-            Trust::FirstUse {
-                fingerprint: "fp-a".into(),
-                identity
-            }
-        );
-    }
-
-    #[test]
-    fn a_hub_without_a_certificate_has_nothing_to_pin() {
-        assert_eq!(
-            check_identity("local", false, None, || Ok(json!({ "name": "local" }))),
-            Ok(Trust::Plain)
-        );
-    }
-
-    #[test]
-    fn an_identity_that_cannot_be_read_refuses_the_sign_in() {
-        assert_eq!(
-            check_identity("home", false, Some("fp-a"), || Err(
-                "connection refused".into()
-            )),
-            Err("connection refused".to_string())
-        );
-        assert_eq!(
-            check_identity("home", false, None, || Err("connection refused".into())),
-            Err("connection refused".to_string())
-        );
+    fn the_hub_identity_is_checked_against_the_pin() {
+        // A hex pin skips the identity call.
+        {
+            let trust = check_identity("home", true, Some("fp-a"), || -> Result<Value, String> {
+                panic!("the identity is not asked for")
+            });
+            assert_eq!(trust, Ok(Trust::Pin));
+        }
+        // A pinned identity must be the one presented.
+        {
+            assert_eq!(
+                check_identity("home", false, Some("fp-a"), || Ok(
+                    json!({ "fingerprint": "fp-a" })
+                )),
+                Ok(Trust::Pinned)
+            );
+            let other = check_identity("home", false, Some("fp-a"), || {
+                Ok(json!({ "fingerprint": "fp-b" }))
+            })
+            .unwrap_err();
+            assert_eq!(
+                other,
+                "the hub's identity changed: pinned fp-a, presented fp-b; run `agentplaza hub forget-pin home` if you expect this"
+            );
+            let none = check_identity("home", false, Some("fp-a"), || {
+                Ok(json!({ "name": "home" }))
+            })
+            .unwrap_err();
+            assert!(none.contains("presented no certificate"), "{none}");
+        }
+        // A first sign-in asks about the presented identity.
+        {
+            let identity = json!({ "fingerprint": "fp-a", "name": "home", "version": "0.0.8" });
+            let trust = check_identity("home", false, None, || Ok(identity.clone())).unwrap();
+            assert_eq!(
+                trust,
+                Trust::FirstUse {
+                    fingerprint: "fp-a".into(),
+                    identity
+                }
+            );
+        }
+        // A hub without a certificate has nothing to pin.
+        {
+            assert_eq!(
+                check_identity("local", false, None, || Ok(json!({ "name": "local" }))),
+                Ok(Trust::Plain)
+            );
+        }
+        // An identity that cannot be read refuses the sign-in.
+        {
+            assert_eq!(
+                check_identity("home", false, Some("fp-a"), || Err(
+                    "connection refused".into()
+                )),
+                Err("connection refused".to_string())
+            );
+            assert_eq!(
+                check_identity("home", false, None, || Err("connection refused".into())),
+                Err("connection refused".to_string())
+            );
+        }
     }
 
     #[test]

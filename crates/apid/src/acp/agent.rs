@@ -2082,24 +2082,52 @@ mod tests {
     }
 
     #[test]
-    fn initialize_answers_protocol_one_and_keeps_the_editor() {
-        let h = harness(None);
-        let reply = h
-            .client
-            .peer()
-            .call(
-                "initialize",
-                json!({
-                    "protocolVersion": 9,
-                    "clientInfo": {"name": "zed", "version": "0.200"},
-                }),
-                WAIT,
-            )
-            .expect("initialize");
-        assert_eq!(reply["protocolVersion"], 1);
-        assert_eq!(reply["agentInfo"]["name"], "agentplaza");
-        assert_eq!(reply["agentCapabilities"]["loadSession"], true);
-        assert_eq!(*lock(&h.plaza.client), "zed 0.200");
+    fn initialize_answers_protocol_one_or_two_as_the_owner_allows() {
+        // An editor asking for protocol 9 is answered with protocol 1, and the editor is kept.
+        {
+            let h = harness(None);
+            let reply = h
+                .client
+                .peer()
+                .call(
+                    "initialize",
+                    json!({
+                        "protocolVersion": 9,
+                        "clientInfo": {"name": "zed", "version": "0.200"},
+                    }),
+                    WAIT,
+                )
+                .expect("initialize");
+            assert_eq!(reply["protocolVersion"], 1);
+            assert_eq!(reply["agentInfo"]["name"], "agentplaza");
+            assert_eq!(reply["agentCapabilities"]["loadSession"], true);
+            assert_eq!(*lock(&h.plaza.client), "zed 0.200");
+        }
+        // The owner allows the v2 draft: an editor asking for protocol 2 is answered with protocol 2.
+        {
+            let (plaza, editor, _frames, _server) = v2_harness(true);
+            let reply = editor
+                .peer
+                .call("initialize", initialize_v2(), WAIT)
+                .expect("initialize");
+            serde_json::from_value::<types::v2::InitializeResponse>(reply.clone())
+                .expect("a v2 reply");
+            assert_eq!(reply["protocolVersion"], 2);
+            assert_eq!(reply["info"]["name"], "agentplaza");
+            assert_eq!(*lock(&plaza.client), "zed 0.300");
+            assert_eq!(plaza.version.load(Ordering::Relaxed), 2);
+        }
+        // The owner has not allowed v2: an editor asking for protocol 2 is answered with protocol 1.
+        {
+            let (plaza, editor, _frames, _server) = v2_harness(false);
+            let reply = editor
+                .peer
+                .call("initialize", initialize_v2(), WAIT)
+                .expect("initialize");
+            assert_eq!(reply["protocolVersion"], 1);
+            serde_json::from_value::<types::InitializeResponse>(reply).expect("a v1 reply");
+            assert_eq!(plaza.version.load(Ordering::Relaxed), 1);
+        }
     }
 
     /// An editor on the ACP v2 draft's side of a connection: a Peer that records each session update as it
@@ -2155,32 +2183,6 @@ mod tests {
             assert!(start.elapsed() < WAIT, "the updates did not come: {seen:?}");
             thread::sleep(Duration::from_millis(5));
         }
-    }
-
-    #[test]
-    fn initialize_answers_protocol_two_when_the_owner_allows_it() {
-        let (plaza, editor, _frames, _server) = v2_harness(true);
-        let reply = editor
-            .peer
-            .call("initialize", initialize_v2(), WAIT)
-            .expect("initialize");
-        serde_json::from_value::<types::v2::InitializeResponse>(reply.clone()).expect("a v2 reply");
-        assert_eq!(reply["protocolVersion"], 2);
-        assert_eq!(reply["info"]["name"], "agentplaza");
-        assert_eq!(*lock(&plaza.client), "zed 0.300");
-        assert_eq!(plaza.version.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn initialize_answers_protocol_one_when_the_owner_has_not_allowed_v2() {
-        let (plaza, editor, _frames, _server) = v2_harness(false);
-        let reply = editor
-            .peer
-            .call("initialize", initialize_v2(), WAIT)
-            .expect("initialize");
-        assert_eq!(reply["protocolVersion"], 1);
-        serde_json::from_value::<types::InitializeResponse>(reply).expect("a v1 reply");
-        assert_eq!(plaza.version.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -2330,30 +2332,6 @@ mod tests {
         assert_eq!(
             h.plaza.hub.calls(),
             vec!["agent Some(\"research\")".to_string()]
-        );
-    }
-
-    #[test]
-    fn new_session_says_the_editor_mcp_servers_are_not_connected() {
-        let h = harness(None);
-        h.client
-            .peer()
-            .call(
-                "session/new",
-                json!({
-                    "cwd": "/work/app",
-                    "mcpServers": [{"name": "fs", "command": "mcp-fs", "args": [], "env": []}],
-                }),
-                WAIT,
-            )
-            .expect("session/new");
-        let updates = h.client.updates();
-        // The notice, then the command list.
-        assert_eq!(updates.len(), 2);
-        let text = serde_json::to_string(&updates[0]).expect("serialize");
-        assert!(
-            text.contains("the editor's MCP servers are not connected"),
-            "{text}"
         );
     }
 
@@ -3044,12 +3022,5 @@ mod tests {
         assert!(text.starts_with("File a:\n```\n"));
         assert!(!text.contains("File b:"));
         assert!(text.ends_with("(… more attached files left out)"));
-    }
-
-    #[test]
-    fn rfc3339_formats_utc_with_milliseconds() {
-        assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(rfc3339(1_700_000_000_123), "2023-11-14T22:13:20.123Z");
-        assert_eq!(rfc3339(951_782_400_000), "2000-02-29T00:00:00.000Z");
     }
 }

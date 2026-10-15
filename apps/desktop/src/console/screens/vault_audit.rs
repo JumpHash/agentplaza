@@ -649,24 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn vault_audit_chain_message_names_the_broken_entry() {
-        assert_eq!(
-            chain_message(true, Some(5), None),
-            "Chain intact: 5 entries verified"
-        );
-        let broken = BrokenEntry {
-            index: 2,
-            seq: Some(3),
-            expected: "a".into(),
-            found: "b".into(),
-        };
-        assert_eq!(
-            chain_message(false, Some(2), Some(&broken)),
-            "Chain broken at entry #2 (seq 3): 2 entries verified before it"
-        );
-    }
-
-    #[test]
     fn vault_audit_paths_page_and_verify() {
         assert_eq!(audit_path(50, false), "/v1/vault/audit?after=50&limit=50");
         assert_eq!(

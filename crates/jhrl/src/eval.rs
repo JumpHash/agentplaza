@@ -1444,108 +1444,107 @@ mod tests {
     }
 
     #[test]
-    fn arithmetic_and_dimensions() {
+    fn expressions_evaluate_to_expected_values() {
         let p = prog("");
-        assert_eq!(ok(&p, "1000 cr/d * 1 d == 1000 cr"), Value::Bool(true));
-        assert_eq!(ok(&p, "16 KiB == 16384 B"), Value::Bool(true));
-        assert_eq!(ok(&p, "30 /min * 2 min"), Value::int(60));
-        assert_eq!(
-            ok(&p, "2 ^ -2"),
-            Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE)
-        );
-        assert_eq!(
-            ok(&p, "(3 s) ^ 2"),
-            Value::Num(Num::int(9), Dim::TIME.pow(2))
-        );
-        assert!(ev(&p, "1 cr + 1 s")
-            .unwrap_err()
-            .msg
-            .contains("dimension mismatch: Credits + Duration"));
-        assert!(ev(&p, "1 cr <= 1000")
-            .unwrap_err()
-            .msg
-            .contains("dimension mismatch"));
-        assert!(ev(&p, "ln(2 cr)").is_err());
-        assert!(ev(&p, "1 / 0").is_err());
-        assert_eq!(
-            ok(&p, "round_to(2 / 3, 0.01)"),
-            Value::Num(Num::rat(67, 100).unwrap(), Dim::NONE)
-        );
-        assert_eq!(ok(&p, "floor(7 / 2)"), Value::int(3));
-        assert_eq!(
-            ok(&p, "max(1 cr, 3 cr, 2 cr)"),
-            Value::Num(Num::int(3), Dim::CREDITS)
-        );
-        assert_eq!(ok(&p, "min([4, 2, 9])"), Value::int(2));
-        assert_eq!(ok(&p, "abs(-3 s)"), Value::Num(Num::int(3), Dim::TIME));
-        assert_eq!(
-            ok(&p, "sum([1 cr, 2 cr])"),
-            Value::Num(Num::int(3), Dim::CREDITS)
-        );
-        assert_eq!(ok(&p, "clamp(12, 0, 10)"), Value::int(10));
-    }
-
-    #[test]
-    fn collections_comprehensions_quantifiers() {
-        let p = prog("");
-        assert_eq!(ok(&p, "len([1, 2, 3])"), Value::int(3));
-        assert_eq!(ok(&p, "count({1, 1, 2})"), Value::int(2));
-        assert_eq!(
-            ok(&p, "[for x in [1, 2, 3] where x > 1 yield x * 10]").to_string(),
-            "[20, 30]"
-        );
-        assert_eq!(
-            ok(&p, "{for x in [1, 2] yield x: x * x}").to_string(),
-            "{1: 1, 2: 4}"
-        );
-        assert_eq!(ok(&p, "all x in {1, 2}: x > 0"), Value::Bool(true));
-        assert_eq!(ok(&p, "any x in {1, 2}: x > 1"), Value::Bool(true));
-        assert_eq!(ok(&p, "one x in {1, 2}: x > 0"), Value::Bool(false));
-        assert_eq!(ok(&p, "2 in {1, 2}"), Value::Bool(true));
-        assert_eq!(ok(&p, "({1, 2} + {3}) - {1}").to_string(), "{2, 3}");
-        assert_eq!(ok(&p, "{1, 2} inter {2, 3}").to_string(), "{2}");
-        assert_eq!(
-            ok(&p, "({\"a\": 1} with [\"b\"] = 2)[\"b\"]"),
-            Value::int(2)
-        );
-        assert_eq!(
-            ok(&p, "({used: 1 cr} with .used = 2 cr).used"),
-            Value::Num(Num::int(2), Dim::CREDITS)
-        );
-        assert_eq!(ok(&p, "[\"mayor\", \"owner\"][1]"), Value::str("owner"));
-        assert!(ev(&p, "[1][1]").unwrap_err().msg.contains("out of range"));
-        assert_eq!(
-            ok(&p, "[for (a, b) in [(1, 2), (3, 4)] yield a + b]").to_string(),
-            "[3, 7]"
-        );
-        assert_eq!(ok(&p, "if 1 < 2 then \"y\" else \"n\""), Value::str("y"));
-        assert_eq!(
-            ok(&p, "matches(\"agent-7\", \"agent-*\")"),
-            Value::Bool(true)
-        );
-    }
-
-    #[test]
-    fn kleene_logic_and_missing_values() {
-        let p = prog("");
-        // A missing record field is unknown and names its path.
-        match ok(&p, "{a: 1}.b") {
-            Value::Unknown(r) => assert_eq!(r, "{a: 1}.b"),
-            v => panic!("{v}"),
+        // arithmetic_and_dimensions: arithmetic, dimension checks, and the numeric builtins.
+        {
+            assert_eq!(ok(&p, "1000 cr/d * 1 d == 1000 cr"), Value::Bool(true));
+            assert_eq!(ok(&p, "16 KiB == 16384 B"), Value::Bool(true));
+            assert_eq!(ok(&p, "30 /min * 2 min"), Value::int(60));
+            assert_eq!(
+                ok(&p, "2 ^ -2"),
+                Value::Num(Num::rat(1, 4).unwrap(), Dim::NONE)
+            );
+            assert_eq!(
+                ok(&p, "(3 s) ^ 2"),
+                Value::Num(Num::int(9), Dim::TIME.pow(2))
+            );
+            assert!(ev(&p, "1 cr + 1 s")
+                .unwrap_err()
+                .msg
+                .contains("dimension mismatch: Credits + Duration"));
+            assert!(ev(&p, "1 cr <= 1000")
+                .unwrap_err()
+                .msg
+                .contains("dimension mismatch"));
+            assert!(ev(&p, "ln(2 cr)").is_err());
+            assert!(ev(&p, "1 / 0").is_err());
+            assert_eq!(
+                ok(&p, "round_to(2 / 3, 0.01)"),
+                Value::Num(Num::rat(67, 100).unwrap(), Dim::NONE)
+            );
+            assert_eq!(ok(&p, "floor(7 / 2)"), Value::int(3));
+            assert_eq!(
+                ok(&p, "max(1 cr, 3 cr, 2 cr)"),
+                Value::Num(Num::int(3), Dim::CREDITS)
+            );
+            assert_eq!(ok(&p, "min([4, 2, 9])"), Value::int(2));
+            assert_eq!(ok(&p, "abs(-3 s)"), Value::Num(Num::int(3), Dim::TIME));
+            assert_eq!(
+                ok(&p, "sum([1 cr, 2 cr])"),
+                Value::Num(Num::int(3), Dim::CREDITS)
+            );
+            assert_eq!(ok(&p, "clamp(12, 0, 10)"), Value::int(10));
         }
-        assert_eq!(ok(&p, "{a: 1}.b > 0 and false"), Value::Bool(false));
-        assert_eq!(ok(&p, "{a: 1}.b > 0 or true"), Value::Bool(true));
-        assert!(matches!(ok(&p, "{a: 1}.b > 0 and true"), Value::Unknown(_)));
-        assert!(matches!(ok(&p, "not ({a: 1}.b > 0)"), Value::Unknown(_)));
-        assert_eq!(ok(&p, "certainly({a: 1}.b > 0)"), Value::Bool(false));
-        assert_eq!(ok(&p, "possibly({a: 1}.b > 0)"), Value::Bool(true));
-        assert_eq!(ok(&p, "{a: 1}.b ?? 7"), Value::int(7));
-        assert_eq!(ok(&p, "false => {a: 1}.b > 0"), Value::Bool(true));
-        assert_eq!(
-            ok(&p, "[for x in [1, 2] where {a: 1}.b > x yield x]").to_string(),
-            "[]"
-        );
-        assert!(matches!(ok(&p, "now - 1 s"), Value::Unknown(_)));
+        // collections_comprehensions_quantifiers: collections, comprehensions, and quantifiers.
+        {
+            assert_eq!(ok(&p, "len([1, 2, 3])"), Value::int(3));
+            assert_eq!(ok(&p, "count({1, 1, 2})"), Value::int(2));
+            assert_eq!(
+                ok(&p, "[for x in [1, 2, 3] where x > 1 yield x * 10]").to_string(),
+                "[20, 30]"
+            );
+            assert_eq!(
+                ok(&p, "{for x in [1, 2] yield x: x * x}").to_string(),
+                "{1: 1, 2: 4}"
+            );
+            assert_eq!(ok(&p, "all x in {1, 2}: x > 0"), Value::Bool(true));
+            assert_eq!(ok(&p, "any x in {1, 2}: x > 1"), Value::Bool(true));
+            assert_eq!(ok(&p, "one x in {1, 2}: x > 0"), Value::Bool(false));
+            assert_eq!(ok(&p, "2 in {1, 2}"), Value::Bool(true));
+            assert_eq!(ok(&p, "({1, 2} + {3}) - {1}").to_string(), "{2, 3}");
+            assert_eq!(ok(&p, "{1, 2} inter {2, 3}").to_string(), "{2}");
+            assert_eq!(
+                ok(&p, "({\"a\": 1} with [\"b\"] = 2)[\"b\"]"),
+                Value::int(2)
+            );
+            assert_eq!(
+                ok(&p, "({used: 1 cr} with .used = 2 cr).used"),
+                Value::Num(Num::int(2), Dim::CREDITS)
+            );
+            assert_eq!(ok(&p, "[\"mayor\", \"owner\"][1]"), Value::str("owner"));
+            assert!(ev(&p, "[1][1]").unwrap_err().msg.contains("out of range"));
+            assert_eq!(
+                ok(&p, "[for (a, b) in [(1, 2), (3, 4)] yield a + b]").to_string(),
+                "[3, 7]"
+            );
+            assert_eq!(ok(&p, "if 1 < 2 then \"y\" else \"n\""), Value::str("y"));
+            assert_eq!(
+                ok(&p, "matches(\"agent-7\", \"agent-*\")"),
+                Value::Bool(true)
+            );
+        }
+        // kleene_logic_and_missing_values: three-valued logic and missing record fields.
+        {
+            // A missing record field is unknown and names its path.
+            match ok(&p, "{a: 1}.b") {
+                Value::Unknown(r) => assert_eq!(r, "{a: 1}.b"),
+                v => panic!("{v}"),
+            }
+            assert_eq!(ok(&p, "{a: 1}.b > 0 and false"), Value::Bool(false));
+            assert_eq!(ok(&p, "{a: 1}.b > 0 or true"), Value::Bool(true));
+            assert!(matches!(ok(&p, "{a: 1}.b > 0 and true"), Value::Unknown(_)));
+            assert!(matches!(ok(&p, "not ({a: 1}.b > 0)"), Value::Unknown(_)));
+            assert_eq!(ok(&p, "certainly({a: 1}.b > 0)"), Value::Bool(false));
+            assert_eq!(ok(&p, "possibly({a: 1}.b > 0)"), Value::Bool(true));
+            assert_eq!(ok(&p, "{a: 1}.b ?? 7"), Value::int(7));
+            assert_eq!(ok(&p, "false => {a: 1}.b > 0"), Value::Bool(true));
+            assert_eq!(
+                ok(&p, "[for x in [1, 2] where {a: 1}.b > x yield x]").to_string(),
+                "[]"
+            );
+            assert!(matches!(ok(&p, "now - 1 s"), Value::Unknown(_)));
+        }
     }
 
     #[test]

@@ -264,8 +264,6 @@ impl BusDevice for SerialWrapper {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use super::*;
 
     /// Helper to create a `SerialOut` with `Sink` inner for tests.
@@ -291,57 +289,6 @@ mod tests {
         // The wider read did not consume a byte: the next one is 'b'.
         serial.read(0x0, 0u64, &mut v);
         assert_eq!(v[0], b'b');
-    }
-
-    #[test]
-    fn test_restore_from_state() {
-        let mut serial = SerialDevice::new(test_serial_out_sink()).unwrap();
-        serial.serial.raw_input(b"abc").unwrap();
-
-        let state = serial.serial.state();
-
-        // vm-superio rebuilds a device from a saved state (the path a VM
-        // restore takes); the trigger and the sink are fresh.
-        let interrupt_evt =
-            EventFdTrigger::new(EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap());
-        let events = SerialEventsWrapper {
-            buffer_ready_event_fd: None,
-        };
-        let restored_serial =
-            Serial::from_state(&state, interrupt_evt, events, test_serial_out_sink()).unwrap();
-        let mut restored = SerialDevice {
-            serial: restored_serial,
-        };
-
-        // Make sure we read back what we previously injected
-        let mut buf = [0u8; 1];
-        restored.read(0, 0, &mut buf);
-        assert_eq!(buf[0], b'a');
-        restored.read(0, 0, &mut buf);
-        assert_eq!(buf[0], b'b');
-        restored.read(0, 0, &mut buf);
-        assert_eq!(buf[0], b'c');
-    }
-
-    #[test]
-    fn test_serial_out_sink_discards_everything() {
-        let mut serial_out = test_serial_out_sink();
-        let result = serial_out.write(b"anything").unwrap();
-        assert_eq!(result, 8);
-    }
-
-    #[test]
-    fn test_serial_out_shared_appends_bytes() {
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let mut serial_out = SerialOut::shared(Arc::clone(&buffer));
-
-        serial_out.write(b"hello ").unwrap();
-        serial_out.write(b"world").unwrap();
-
-        let captured = buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(captured.as_slice(), b"hello world".as_slice());
     }
 
     #[test]

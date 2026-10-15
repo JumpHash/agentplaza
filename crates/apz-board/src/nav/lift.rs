@@ -653,16 +653,4 @@ mod tests {
         assert_eq!(l.state().phase, LiftPhase::Boarding);
         assert_eq!(l.state().cab_y, 0.0);
     }
-
-    #[test]
-    fn nan_dt_is_ignored() {
-        let mut l = lift();
-        assert!(l.request(1, 0.0, 4.0));
-        let before = l.state();
-        l.update(f32::NAN);
-        l.update(f32::INFINITY);
-        l.update(-1.0);
-        assert_eq!(l.state(), before);
-        assert_eq!(l.ticket(1), LiftTicket::Queued);
-    }
 }

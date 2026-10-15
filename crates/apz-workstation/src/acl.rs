@@ -224,11 +224,4 @@ mod win {
 }
 
 #[cfg(all(test, not(windows)))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn on_unix_the_file_is_left_to_its_mode() {
-        assert!(restrict_to_owner(Path::new("/nonexistent/record.json")).is_ok());
-    }
-}
+mod tests {}

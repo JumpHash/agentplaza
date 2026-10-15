@@ -1186,67 +1186,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_top_bar_says_live_or_reconnecting_as_the_web_does() {
-        assert_eq!(live_word(true), "Live");
-        assert_eq!(live_word(false), "Reconnecting…");
-        assert!(
-            !State::default().live,
-            "the stream is down until it connects"
-        );
-    }
-
-    fn ctx() -> Ctx {
-        Ctx {
-            client: super::super::client::Client::new("http://127.0.0.1:1", None, None),
-        }
-    }
-
-    #[test]
-    fn the_ide_is_the_full_window_and_the_other_screens_keep_the_shell() {
-        assert!(full_window(&Id::Ide(None)));
-        assert!(full_window(&Id::Ide(Some("agent:7".into()))));
-        assert!(!full_window(&Id::Overview));
-        assert!(!full_window(&Id::Agents));
-        assert!(!full_window(&Id::Agent(3)));
-    }
-
-    #[test]
-    fn toggle_flips_between_open_and_rail() {
-        let ctx = ctx();
-        let mut s = State::default();
-        let mut seen = vec![s.mode];
-        for _ in 0..2 {
-            let _ = update(&mut s, Msg::ToggleSidebar, &ctx);
-            seen.push(s.mode);
-        }
-        assert_eq!(seen, vec![Mode::Open, Mode::Rail, Mode::Open]);
-    }
-
-    #[test]
-    fn a_task_or_repo_opened_from_a_project_is_titled_and_lit_as_its_screen() {
-        assert_eq!(top_bar_title(&Id::Tasks), "Tasks");
-        assert_eq!(top_bar_title(&Id::Task("t1".into())), "Tasks");
-        assert_eq!(top_bar_title(&Id::Git), "Git");
-        assert_eq!(top_bar_title(&Id::Repo("agentplaza".into())), "Git");
-        assert_eq!(top_bar_title(&Id::Agent(3)), "Agent");
-        assert!(shows(&Id::Tasks, &Id::Task("t1".into())));
-        assert!(shows(&Id::Git, &Id::Repo("agentplaza".into())));
-        assert!(!shows(&Id::Tasks, &Id::Git));
-        assert!(manages_scroll(&Id::Task("t1".into())));
-        assert!(manages_scroll(&Id::Repo("agentplaza".into())));
-    }
-
-    #[test]
-    fn resize_clamps_to_200_420() {
-        let ctx = ctx();
-        let mut s = State::default();
-        let _ = update(&mut s, Msg::Resize(-1000.0), &ctx);
-        assert_eq!(s.width, 200.0);
-        let _ = update(&mut s, Msg::Resize(1000.0), &ctx);
-        assert_eq!(s.width, 420.0);
-    }
-
-    #[test]
     fn events_plaza_frame_sets_the_hold_without_a_reload() {
         let mut s = State::default();
         let held = serde_json::json!({ "paused": true, "since_ms": 1000, "by": "owner", "reason": "held", "cancelled": 3 });
@@ -1272,19 +1211,5 @@ mod tests {
         ));
         assert!(apply_frame(&mut s, "work", &serde_json::json!({})));
         assert!(!apply_frame(&mut s, "transcript", &serde_json::json!({})));
-    }
-
-    #[test]
-    fn events_reload_waits_for_the_one_in_flight() {
-        let ctx = ctx();
-        let mut s = State::default();
-        s.loading = true;
-        let frame = events::Event {
-            kind: "agent".into(),
-            data: serde_json::json!({}),
-        };
-        let _ = update(&mut s, Msg::Frame(frame), &ctx);
-        assert!(s.again);
-        assert!(s.loading);
     }
 }

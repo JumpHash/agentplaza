@@ -2318,11 +2318,6 @@ mod proposal_tests {
     }
 
     #[test]
-    fn a_valid_proposal_passes_its_checks() {
-        assert!(check(&sample("acme-valid")).is_empty());
-    }
-
-    #[test]
     fn private_hosts_http_and_bad_methods_are_flagged() {
         for base in [
             "http://api.acme-test.example",

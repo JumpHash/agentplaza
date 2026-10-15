@@ -568,94 +568,175 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn private_and_loopback_endpoints_are_refused_unless_allowed() {
-        assert!(check_endpoint("http://127.0.0.1:9000/mcp", false, &[]).is_err());
-        assert!(check_endpoint("http://127.0.0.1:9000/mcp", true, &[]).is_ok());
-        assert!(check_endpoint("https://10.1.2.3/mcp", false, &[]).is_err());
-        assert!(check_endpoint("https://[::1]/mcp", false, &[]).is_err());
-        assert!(check_endpoint("https://localhost/mcp", false, &[]).is_err());
+    fn private_and_blocklisted_endpoints_are_refused() {
+        let evil = vec!["evil.example".to_string()];
+        let none: Vec<String> = Vec::new();
+        for (case, url, allow_private, blocklist, want_ok) in [
+            (
+                "loopback is refused unless private is allowed",
+                "http://127.0.0.1:9000/mcp",
+                false,
+                &none,
+                false,
+            ),
+            (
+                "loopback is allowed once private is allowed",
+                "http://127.0.0.1:9000/mcp",
+                true,
+                &none,
+                true,
+            ),
+            (
+                "a private address is refused unless private is allowed",
+                "https://10.1.2.3/mcp",
+                false,
+                &none,
+                false,
+            ),
+            (
+                "IPv6 loopback is refused",
+                "https://[::1]/mcp",
+                false,
+                &none,
+                false,
+            ),
+            (
+                "localhost is refused",
+                "https://localhost/mcp",
+                false,
+                &none,
+                false,
+            ),
+            (
+                "the fetch blocklist applies to a subdomain even when private is allowed",
+                "https://mcp.evil.example/mcp",
+                true,
+                &evil,
+                false,
+            ),
+            (
+                "the fetch blocklist applies to the host even when private is allowed",
+                "https://evil.example/mcp",
+                true,
+                &evil,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                check_endpoint(url, allow_private, blocklist).is_ok(),
+                want_ok,
+                "{case}"
+            );
+        }
     }
 
     #[test]
-    fn the_fetch_blocklist_applies_even_when_private_is_allowed() {
-        let block = vec!["evil.example".to_string()];
-        assert!(check_endpoint("https://mcp.evil.example/mcp", true, &block).is_err());
-        assert!(check_endpoint("https://evil.example/mcp", true, &block).is_err());
+    fn event_streams_are_parsed_into_jsonrpc_messages() {
+        // An event stream is read up to the reply and no further.
+        {
+            let stream = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n\
+                          event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n\
+                          data: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{}}\n\n";
+            let id = serde_json::json!(7);
+            let messages =
+                read_events(std::io::Cursor::new(stream.as_bytes().to_vec()), &id).unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1]["result"]["ok"], true);
+        }
+        // A multi-line event is joined before it is parsed.
+        {
+            let stream = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":3,\"result\":{}}\n\n";
+            let messages = read_events(
+                std::io::Cursor::new(stream.as_bytes().to_vec()),
+                &serde_json::json!(3),
+            )
+            .unwrap();
+            assert_eq!(messages[0]["id"], 3);
+        }
     }
 
     #[test]
-    fn an_event_stream_is_read_up_to_the_reply_and_no_further() {
-        let stream = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n\
-                      event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n\
-                      data: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{}}\n\n";
-        let id = serde_json::json!(7);
-        let messages = read_events(std::io::Cursor::new(stream.as_bytes().to_vec()), &id).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1]["result"]["ok"], true);
-    }
-
-    #[test]
-    fn a_multi_line_event_is_joined_before_it_is_parsed() {
-        let stream = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":3,\"result\":{}}\n\n";
-        let messages = read_events(
-            std::io::Cursor::new(stream.as_bytes().to_vec()),
-            &serde_json::json!(3),
-        )
-        .unwrap();
-        assert_eq!(messages[0]["id"], 3);
-    }
-
-    #[test]
-    fn a_redirect_to_loopback_is_refused_before_anything_is_sent_there() {
-        let (mut transport, sent) =
-            secured(vec![redirect("http://127.0.0.1:9/mcp")], policy(false, &[]));
-        let err = transport
-            .send(&request(2), Duration::from_secs(5))
-            .unwrap_err();
-        assert!(err.to_string().contains("refused"), "{err}");
-        assert_eq!(
-            sent.lock().unwrap().len(),
-            1,
-            "only the origin was asked; the loopback target was never sent to"
-        );
-    }
-
-    #[test]
-    fn a_redirect_to_a_blocklisted_host_is_refused() {
-        let (mut transport, sent) = secured(
-            vec![redirect("https://evil.example/mcp")],
-            policy(false, &["evil.example"]),
-        );
-        let err = transport
-            .send(&request(2), Duration::from_secs(5))
-            .unwrap_err();
-        assert!(err.to_string().contains("blocklist"), "{err}");
-        assert_eq!(sent.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn an_allowed_hop_works_and_the_endpoint_moves_to_it() {
-        let (mut transport, sent) = secured(
-            vec![redirect("https://1.1.1.1/mcp"), ok_json(2), ok_json(2)],
-            policy(false, &[]),
-        );
-        let messages = transport.send(&request(2), Duration::from_secs(5)).unwrap();
-        assert_eq!(messages[0]["id"], 2);
-        transport.send(&request(2), Duration::from_secs(5)).unwrap();
-        let urls: Vec<String> = sent
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(u, _)| u.clone())
-            .collect();
-        assert_eq!(
-            urls,
-            [
-                "https://8.8.8.8/mcp",
-                "https://1.1.1.1/mcp",
-                "https://1.1.1.1/mcp"
-            ]
-        );
+    fn redirects_are_followed_only_within_policy() {
+        // A redirect to loopback is refused before anything is sent there.
+        {
+            let (mut transport, sent) =
+                secured(vec![redirect("http://127.0.0.1:9/mcp")], policy(false, &[]));
+            let err = transport
+                .send(&request(2), Duration::from_secs(5))
+                .unwrap_err();
+            assert!(err.to_string().contains("refused"), "{err}");
+            assert_eq!(
+                sent.lock().unwrap().len(),
+                1,
+                "only the origin was asked; the loopback target was never sent to"
+            );
+        }
+        // A redirect to a blocklisted host is refused.
+        {
+            let (mut transport, sent) = secured(
+                vec![redirect("https://evil.example/mcp")],
+                policy(false, &["evil.example"]),
+            );
+            let err = transport
+                .send(&request(2), Duration::from_secs(5))
+                .unwrap_err();
+            assert!(err.to_string().contains("blocklist"), "{err}");
+            assert_eq!(sent.lock().unwrap().len(), 1);
+        }
+        // An allowed hop works and the endpoint moves to it.
+        {
+            let (mut transport, sent) = secured(
+                vec![redirect("https://1.1.1.1/mcp"), ok_json(2), ok_json(2)],
+                policy(false, &[]),
+            );
+            let messages = transport.send(&request(2), Duration::from_secs(5)).unwrap();
+            assert_eq!(messages[0]["id"], 2);
+            transport.send(&request(2), Duration::from_secs(5)).unwrap();
+            let urls: Vec<String> = sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(u, _)| u.clone())
+                .collect();
+            assert_eq!(
+                urls,
+                [
+                    "https://8.8.8.8/mcp",
+                    "https://1.1.1.1/mcp",
+                    "https://1.1.1.1/mcp"
+                ]
+            );
+        }
+        // More than three redirects are refused; the fourth hop is never sent.
+        {
+            let answers = vec![
+                redirect("https://1.1.1.1/a"),
+                redirect("https://1.1.1.1/b"),
+                redirect("https://1.1.1.1/c"),
+                redirect("https://1.1.1.1/d"),
+            ];
+            let (mut transport, sent) = secured(answers, policy(false, &[]));
+            let err = transport
+                .send(&request(2), Duration::from_secs(5))
+                .unwrap_err();
+            assert!(err.to_string().contains("more than 3 redirects"), "{err}");
+            assert_eq!(
+                sent.lock().unwrap().len(),
+                4,
+                "the fourth hop is refused before it is sent"
+            );
+        }
+        // A relative or scheme-changing redirect is refused; next_url resolves relative paths.
+        {
+            let (mut transport, _) =
+                secured(vec![redirect("ftp://1.1.1.1/mcp")], policy(false, &[]));
+            assert!(transport.send(&request(2), Duration::from_secs(5)).is_err());
+            assert_eq!(
+                next_url("https://8.8.8.8/mcp", "/other").unwrap(),
+                "https://8.8.8.8/other"
+            );
+            assert!(next_url("https://8.8.8.8/mcp", "other").is_err());
+        }
     }
 
     #[test]
@@ -676,37 +757,6 @@ pub(crate) mod tests {
             !log[1].1.iter().any(|(k, _)| k == "Authorization"),
             "a credential is never sent to another origin"
         );
-    }
-
-    #[test]
-    fn more_than_three_redirects_are_refused() {
-        let answers = vec![
-            redirect("https://1.1.1.1/a"),
-            redirect("https://1.1.1.1/b"),
-            redirect("https://1.1.1.1/c"),
-            redirect("https://1.1.1.1/d"),
-        ];
-        let (mut transport, sent) = secured(answers, policy(false, &[]));
-        let err = transport
-            .send(&request(2), Duration::from_secs(5))
-            .unwrap_err();
-        assert!(err.to_string().contains("more than 3 redirects"), "{err}");
-        assert_eq!(
-            sent.lock().unwrap().len(),
-            4,
-            "the fourth hop is refused before it is sent"
-        );
-    }
-
-    #[test]
-    fn a_relative_or_scheme_changing_redirect_is_refused() {
-        let (mut transport, _) = secured(vec![redirect("ftp://1.1.1.1/mcp")], policy(false, &[]));
-        assert!(transport.send(&request(2), Duration::from_secs(5)).is_err());
-        assert_eq!(
-            next_url("https://8.8.8.8/mcp", "/other").unwrap(),
-            "https://8.8.8.8/other"
-        );
-        assert!(next_url("https://8.8.8.8/mcp", "other").is_err());
     }
 
     #[test]

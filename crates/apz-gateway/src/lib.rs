@@ -892,128 +892,134 @@ mod tests {
     }
 
     #[test]
-    fn a_sealed_vault_fails_the_call_with_its_own_text_not_not_set() {
-        let err = refused_call(Refusing(Some(SecretReason::Sealed)));
-        assert!(
-            matches!(&err, GatewayError::Vault { status: 503, .. }),
-            "{err:?}"
-        );
-        assert_eq!(err.to_string(), "vault sealed");
-    }
-
-    #[test]
-    fn a_tampered_vault_and_a_secret_held_elsewhere_fail_with_their_own_status() {
-        let tampered = refused_call(Refusing(Some(SecretReason::Tampered(
-            "the index MAC does not match".into(),
-        ))));
-        assert!(
-            matches!(&tampered, GatewayError::Vault { status: 503, .. }),
-            "{tampered:?}"
-        );
-        assert_eq!(
-            tampered.to_string(),
-            "vault tampered: the index MAC does not match"
-        );
-        let elsewhere = refused_call(Refusing(Some(SecretReason::OutOfScope)));
-        assert!(
-            matches!(&elsewhere, GatewayError::Vault { status: 403, .. }),
-            "{elsewhere:?}"
-        );
-        assert_eq!(
-            elsewhere.to_string(),
-            "that secret is not scoped to this node"
-        );
-    }
-
-    #[test]
-    fn without_a_reason_the_call_still_says_the_secret_is_not_set() {
-        let err = refused_call(Refusing(None));
-        assert!(matches!(&err, GatewayError::Auth(_)), "{err:?}");
-        assert!(
-            err.to_string().contains("secret `CLAUDE_KEY` is not set"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn model_names_with_effort_pins() {
-        let r = |s: &str| ModelRef::parse(s).unwrap();
-        let pinned = r("anthropic/claude-opus-5-5@low");
-        assert_eq!(
-            (
-                pinned.provider.as_str(),
-                pinned.model.as_str(),
-                pinned.effort.as_deref()
-            ),
-            ("anthropic", "claude-opus-5-5", Some("low"))
-        );
-        assert_eq!(pinned.to_string(), "anthropic/claude-opus-5-5@low");
-        assert_eq!(pinned.base_name(), "anthropic/claude-opus-5-5");
-        assert_eq!(r("xai/grok-4.7@XHigh").to_string(), "xai/grok-4.7@xhigh");
-        assert_eq!(r("openrouter/anthropic/claude").model, "anthropic/claude");
-        // A Vertex version suffix is part of the model, not an effort.
-        let vertex = r("vertex/claude-sonnet-4-5@20250929");
-        assert_eq!(
-            (vertex.model.as_str(), vertex.effort),
-            ("claude-sonnet-4-5@20250929", None)
-        );
-        assert_eq!(
-            r("vertex/claude-sonnet-4-5@20250929@max").effort.as_deref(),
-            Some("max")
-        );
-        for bad in ["gpt-5", "openai/", "/gpt-5", "openai/@low"] {
+    fn a_refused_secret_fails_the_call_with_the_reason_it_gave() {
+        // A sealed vault fails the call with its own text, not as an unset secret.
+        {
+            let err = refused_call(Refusing(Some(SecretReason::Sealed)));
             assert!(
-                matches!(ModelRef::parse(bad), Err(GatewayError::BadModelName(_))),
-                "{bad}"
+                matches!(&err, GatewayError::Vault { status: 503, .. }),
+                "{err:?}"
+            );
+            assert_eq!(err.to_string(), "vault sealed");
+        }
+
+        // A tampered vault and a secret held elsewhere each fail with their own status.
+        {
+            let tampered = refused_call(Refusing(Some(SecretReason::Tampered(
+                "the index MAC does not match".into(),
+            ))));
+            assert!(
+                matches!(&tampered, GatewayError::Vault { status: 503, .. }),
+                "{tampered:?}"
+            );
+            assert_eq!(
+                tampered.to_string(),
+                "vault tampered: the index MAC does not match"
+            );
+            let elsewhere = refused_call(Refusing(Some(SecretReason::OutOfScope)));
+            assert!(
+                matches!(&elsewhere, GatewayError::Vault { status: 403, .. }),
+                "{elsewhere:?}"
+            );
+            assert_eq!(
+                elsewhere.to_string(),
+                "that secret is not scoped to this node"
+            );
+        }
+
+        // Without a reason the call still says the secret is not set.
+        {
+            let err = refused_call(Refusing(None));
+            assert!(matches!(&err, GatewayError::Auth(_)), "{err:?}");
+            assert!(
+                err.to_string().contains("secret `CLAUDE_KEY` is not set"),
+                "{err}"
             );
         }
     }
 
     #[test]
-    fn nested_model_ids_split_on_the_first_slash() {
-        let r = |s: &str| ModelRef::parse(s).unwrap();
-        let plain = r("openrouter/anthropic/claude-x");
-        assert_eq!(
-            (
-                plain.provider.as_str(),
-                plain.model.as_str(),
-                plain.effort.as_deref()
-            ),
-            ("openrouter", "anthropic/claude-x", None)
-        );
-        let free = r("openrouter/meta-llama/llama-3.3-70b-instruct:free");
-        assert_eq!(free.model, "meta-llama/llama-3.3-70b-instruct:free");
-        let zen = r("opencode/claude-x@high");
-        assert_eq!(
-            (
-                zen.provider.as_str(),
-                zen.model.as_str(),
-                zen.effort.as_deref()
-            ),
-            ("opencode", "claude-x", Some("high"))
-        );
-        let pinned = r("openrouter/anthropic/claude-x@xhigh");
-        assert_eq!(
-            (pinned.model.as_str(), pinned.effort.as_deref()),
-            ("anthropic/claude-x", Some("xhigh"))
-        );
-        // Not an effort: the `@` stays part of the model.
-        let bogus = r("openrouter/vendor/model@bogus");
-        assert_eq!(
-            (bogus.model.as_str(), bogus.effort.is_none()),
-            ("vendor/model@bogus", true)
-        );
-        // The base name round-trips the nested id, and the pin survives Display.
-        assert_eq!(pinned.base_name(), "openrouter/anthropic/claude-x");
-        assert_eq!(
-            free.base_name(),
-            "openrouter/meta-llama/llama-3.3-70b-instruct:free"
-        );
-        assert_eq!(
-            ModelRef::parse(&pinned.base_name()).unwrap().base_name(),
-            pinned.base_name()
-        );
-        assert_eq!(pinned.to_string(), "openrouter/anthropic/claude-x@xhigh");
+    fn model_refs_split_provider_model_and_effort() {
+        // Model names keep their effort pin and reject malformed names.
+        {
+            let r = |s: &str| ModelRef::parse(s).unwrap();
+            let pinned = r("anthropic/claude-opus-5-5@low");
+            assert_eq!(
+                (
+                    pinned.provider.as_str(),
+                    pinned.model.as_str(),
+                    pinned.effort.as_deref()
+                ),
+                ("anthropic", "claude-opus-5-5", Some("low"))
+            );
+            assert_eq!(pinned.to_string(), "anthropic/claude-opus-5-5@low");
+            assert_eq!(pinned.base_name(), "anthropic/claude-opus-5-5");
+            assert_eq!(r("xai/grok-4.7@XHigh").to_string(), "xai/grok-4.7@xhigh");
+            assert_eq!(r("openrouter/anthropic/claude").model, "anthropic/claude");
+            // A Vertex version suffix is part of the model, not an effort.
+            let vertex = r("vertex/claude-sonnet-4-5@20250929");
+            assert_eq!(
+                (vertex.model.as_str(), vertex.effort),
+                ("claude-sonnet-4-5@20250929", None)
+            );
+            assert_eq!(
+                r("vertex/claude-sonnet-4-5@20250929@max").effort.as_deref(),
+                Some("max")
+            );
+            for bad in ["gpt-5", "openai/", "/gpt-5", "openai/@low"] {
+                assert!(
+                    matches!(ModelRef::parse(bad), Err(GatewayError::BadModelName(_))),
+                    "{bad}"
+                );
+            }
+        }
+
+        // Nested model ids split on the first slash, and the pin survives the round trip.
+        {
+            let r = |s: &str| ModelRef::parse(s).unwrap();
+            let plain = r("openrouter/anthropic/claude-x");
+            assert_eq!(
+                (
+                    plain.provider.as_str(),
+                    plain.model.as_str(),
+                    plain.effort.as_deref()
+                ),
+                ("openrouter", "anthropic/claude-x", None)
+            );
+            let free = r("openrouter/meta-llama/llama-3.3-70b-instruct:free");
+            assert_eq!(free.model, "meta-llama/llama-3.3-70b-instruct:free");
+            let zen = r("opencode/claude-x@high");
+            assert_eq!(
+                (
+                    zen.provider.as_str(),
+                    zen.model.as_str(),
+                    zen.effort.as_deref()
+                ),
+                ("opencode", "claude-x", Some("high"))
+            );
+            let pinned = r("openrouter/anthropic/claude-x@xhigh");
+            assert_eq!(
+                (pinned.model.as_str(), pinned.effort.as_deref()),
+                ("anthropic/claude-x", Some("xhigh"))
+            );
+            // Not an effort: the `@` stays part of the model.
+            let bogus = r("openrouter/vendor/model@bogus");
+            assert_eq!(
+                (bogus.model.as_str(), bogus.effort.is_none()),
+                ("vendor/model@bogus", true)
+            );
+            // The base name round-trips the nested id, and the pin survives Display.
+            assert_eq!(pinned.base_name(), "openrouter/anthropic/claude-x");
+            assert_eq!(
+                free.base_name(),
+                "openrouter/meta-llama/llama-3.3-70b-instruct:free"
+            );
+            assert_eq!(
+                ModelRef::parse(&pinned.base_name()).unwrap().base_name(),
+                pinned.base_name()
+            );
+            assert_eq!(pinned.to_string(), "openrouter/anthropic/claude-x@xhigh");
+        }
     }
 
     #[test]

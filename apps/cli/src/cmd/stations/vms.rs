@@ -233,31 +233,32 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_vm_body_names_only_what_was_given() {
-        assert_eq!(
-            create_body(&args(OsArg::Linux)),
-            json!({"node": "n1", "os": "linux", "name": "desk-1", "cpus": 4, "ram_mb": 8192, "disk_gb": 40, "backend": "auto"})
-        );
-    }
-
-    #[test]
-    fn a_windows_vm_body_carries_its_image_gpu_and_backend() {
-        let mut windows = args(OsArg::Windows);
-        windows.image = Some(r"D:\images\win.img".into());
-        windows.gpu = Some("vfio:0000:01:00.0".into());
-        windows.backend = BackendArg::Qemu;
-        assert_eq!(
-            create_body(&windows),
-            json!({
-                "node": "n1", "os": "windows", "name": "desk-1", "cpus": 4, "ram_mb": 8192, "disk_gb": 40,
-                "backend": "qemu", "gpu": "vfio:0000:01:00.0", "image": r"D:\images\win.img"
-            })
-        );
-    }
-
-    #[test]
-    fn a_macos_vm_body_says_macos() {
-        assert_eq!(create_body(&args(OsArg::Macos))["os"], "macos");
+    fn create_body_carries_only_what_was_given_for_each_os() {
+        // A Linux body names only what was given.
+        {
+            assert_eq!(
+                create_body(&args(OsArg::Linux)),
+                json!({"node": "n1", "os": "linux", "name": "desk-1", "cpus": 4, "ram_mb": 8192, "disk_gb": 40, "backend": "auto"})
+            );
+        }
+        // A Windows body carries its image, GPU and backend.
+        {
+            let mut windows = args(OsArg::Windows);
+            windows.image = Some(r"D:\images\win.img".into());
+            windows.gpu = Some("vfio:0000:01:00.0".into());
+            windows.backend = BackendArg::Qemu;
+            assert_eq!(
+                create_body(&windows),
+                json!({
+                    "node": "n1", "os": "windows", "name": "desk-1", "cpus": 4, "ram_mb": 8192, "disk_gb": 40,
+                    "backend": "qemu", "gpu": "vfio:0000:01:00.0", "image": r"D:\images\win.img"
+                })
+            );
+        }
+        // A macOS body says macos.
+        {
+            assert_eq!(create_body(&args(OsArg::Macos))["os"], "macos");
+        }
     }
 
     #[test]

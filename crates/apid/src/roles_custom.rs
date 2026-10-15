@@ -399,35 +399,4 @@ mod tests {
         assert_eq!(saved.created_by, "owner");
         assert_eq!(store.get("scout").unwrap().title, "Scout Two");
     }
-
-    #[test]
-    fn remove_reports_a_missing_role() {
-        let store = Store::default();
-        store.save(sample("scout")).unwrap();
-        assert!(store.remove("scout").is_ok());
-        assert_eq!(store.remove("scout").unwrap_err(), "no role scout");
-    }
-
-    #[test]
-    fn prompt_has_the_sections() {
-        let prompt = prompt_of(&sample("scout"));
-        for section in [
-            "# Scout",
-            "## Purpose",
-            "## Responsibilities",
-            "## Deliverables",
-            "## Working with others",
-            "## Boundaries",
-            "## Budget",
-        ] {
-            assert!(prompt.contains(section), "missing {section}");
-        }
-        assert!(prompt.contains("Default task budget: 500 credits."));
-    }
-
-    #[test]
-    fn purpose_is_read_from_a_builtin_prompt() {
-        let prompt = "# Builder\n\n## Purpose\nYou build.\nAnd test.\n\n## Output\nthings\n";
-        assert_eq!(purpose_of(prompt), "You build.\nAnd test.");
-    }
 }

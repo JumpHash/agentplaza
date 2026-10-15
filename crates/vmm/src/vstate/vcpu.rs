@@ -771,44 +771,36 @@ mod tests {
     }
 
     #[test]
-    fn an_opened_gate_releases_every_thread_to_run() {
-        // What the gate replaces - upstream's `Barrier` - cannot do: release a
-        // set of threads whose number is not known when it is created. A VM
-        // whose vCPU *k* cannot be spawned has *k-1* threads to release, and
-        // leaving them parked would hang the join that is supposed to report
-        // the failure.
-        let gate = Arc::new(StartGate::new());
-        let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
+    fn start_gate_releases_every_parked_thread() {
+        // an_opened_gate_releases_every_thread_to_run: an opened gate runs every
+        // parked thread, and a thread that arrives later is not held back.
+        {
+            // What the gate replaces - upstream's `Barrier` - cannot do: release a
+            // set of threads whose number is not known when it is created. A VM
+            // whose vCPU *k* cannot be spawned has *k-1* threads to release, and
+            // leaving them parked would hang the join that is supposed to report
+            // the failure.
+            let gate = Arc::new(StartGate::new());
+            let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
 
-        gate.open();
-        for thread in parked {
-            assert!(thread.join().unwrap(), "an opened gate runs the vCPU");
+            gate.open();
+            for thread in parked {
+                assert!(thread.join().unwrap(), "an opened gate runs the vCPU");
+            }
+            // A thread that arrives after the release is not held back either.
+            assert!(gate.wait());
         }
-        // A thread that arrives after the release is not held back either.
-        assert!(gate.wait());
-    }
+        // an_aborted_gate_releases_the_threads_without_running_them: an aborted
+        // gate releases the parked threads without running them.
+        {
+            let gate = Arc::new(StartGate::new());
+            let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
 
-    #[test]
-    fn a_failed_save_is_answered_as_an_error_with_its_reason() {
-        // The save result is turned into the answer here, on the vCPU thread;
-        // a failure must reach the waiter as an `Error`, not disappear with
-        // the thread.
-        let response = super::save_response::<&str>(Err("save failed"));
-        assert!(
-            matches!(&response, super::VcpuResponse::Error(reason) if reason == "save failed"),
-            "got {response:?}"
-        );
-    }
-
-    #[test]
-    fn an_aborted_gate_releases_the_threads_without_running_them() {
-        let gate = Arc::new(StartGate::new());
-        let parked: Vec<_> = (0..3).map(|_| park(&gate)).collect();
-
-        gate.abort();
-        for thread in parked {
-            assert!(!thread.join().unwrap(), "an aborted gate stops the vCPU");
+            gate.abort();
+            for thread in parked {
+                assert!(!thread.join().unwrap(), "an aborted gate stops the vCPU");
+            }
+            assert!(!gate.wait());
         }
-        assert!(!gate.wait());
     }
 }

@@ -1101,73 +1101,124 @@ mod tests {
     }
 
     #[test]
-    fn allowed_is_per_tier_and_canonical() {
-        let dir = temp_dir("allowed");
-        let store = Store::load(&dir, false).unwrap();
-        // Worker tier: the effort-suffixed entry passes, the plain one does not.
-        assert!(
-            store
-                .allowed(Tier::Worker, "anthropic/claude-opus-5-5@low")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Worker, "deepseek/deepseek-flash")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ")
-                .is_ok()
-        );
-        // Workers may run any model; their list only holds the presets.
-        assert!(
-            store
-                .allowed(Tier::Worker, "anthropic/claude-opus-5-5")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Worker, "openai/gpt-4-turbo-2024-04-09")
-                .is_ok()
-        );
-        let err = store
-            .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
-            .unwrap_err();
-        assert!(
-            err.contains("not allowed for the orchestrator tier"),
-            "{err}"
-        );
-        assert!(err.contains("allowed: "), "{err}");
-        // Orchestrator tier: only its own list, at any effort when the entry pins none.
-        assert!(
-            store
-                .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5@max")
-                .is_ok()
-        );
-        assert!(
-            store
-                .allowed(Tier::Orchestrator, "deepseek/deepseek-flash@high")
-                .is_err()
-        );
-        assert!(
-            store
+    fn allowed_follows_the_tier_rules() {
+        // allowed_is_per_tier_and_canonical: each tier admits its own entries, names are canonical, and an unparseable name fails with the parser text.
+        {
+            let dir = temp_dir("allowed");
+            let store = Store::load(&dir, false).unwrap();
+            // Worker tier: the effort-suffixed entry passes, the plain one does not.
+            assert!(
+                store
+                    .allowed(Tier::Worker, "anthropic/claude-opus-5-5@low")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Worker, "deepseek/deepseek-flash")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Worker, "  anthropic/claude-haiku-5-5 ")
+                    .is_ok()
+            );
+            // Workers may run any model; their list only holds the presets.
+            assert!(
+                store
+                    .allowed(Tier::Worker, "anthropic/claude-opus-5-5")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Worker, "openai/gpt-4-turbo-2024-04-09")
+                    .is_ok()
+            );
+            let err = store
                 .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
-                .is_err()
-        );
-        // Unparseable names fail with the parser's text.
-        assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+                .unwrap_err();
+            assert!(
+                err.contains("not allowed for the orchestrator tier"),
+                "{err}"
+            );
+            assert!(err.contains("allowed: "), "{err}");
+            // Orchestrator tier: only its own list, at any effort when the entry pins none.
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "anthropic/claude-opus-5-5@max")
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "deepseek/deepseek-flash@high")
+                    .is_err()
+            );
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
+                    .is_err()
+            );
+            // Unparseable names fail with the parser's text.
+            assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // the_orchestrator_is_restricted_and_workers_may_run_any_model: the orchestrator is held to its list, and workers may run any model.
+        {
+            let dir = temp_dir("tier-rules");
+            let store = Store::load(&dir, false).unwrap();
+            // The orchestrator is held to its list, and the error names it.
+            assert!(
+                store
+                    .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
+                    .is_ok()
+            );
+            let err = store
+                .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
+                .unwrap_err();
+            assert!(
+                err.contains("not allowed for the orchestrator tier")
+                    && err.contains("allowed: anthropic/claude-opus-5-5"),
+                "{err}"
+            );
+            // An orchestrator role model off its list is refused.
+            let mut orch_role = Settings::default();
+            orch_role
+                .role_models
+                .insert("orchestrator".into(), "deepseek/deepseek-flash".into());
+            assert!(store.put(orch_role).is_err());
+
+            // Workers are not restricted: a worker's model or role model may be anything, on or off the list.
+            assert!(store.allowed(Tier::Worker, "openai/gpt-6-astra").is_ok());
+            assert!(store.allowed(Tier::Worker, "anything/at-all").is_ok());
+            let mut worker_role = Settings::default();
+            worker_role
+                .role_models
+                .insert("scout".into(), "anthropic/claude-fable-5-1".into());
+            assert!(store.put(worker_role).is_ok());
+            let mut worker_default = Settings::default();
+            worker_default.default_model = "openai/gpt-6-astra".into();
+            assert!(store.put(worker_default).is_ok());
+
+            // An empty orchestrator list admits nothing and says so; an empty worker list changes nothing.
+            let mut closed = Settings::default();
+            closed.model_policy.orchestrator.clear();
+            let err = store.put(closed).unwrap_err();
+            assert!(err.contains("allowed: none"), "{err}");
+            let mut open = Settings::default();
+            open.model_policy.worker.clear();
+            assert!(store.put(open).is_ok());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1368,54 +1419,6 @@ mod tests {
     }
 
     #[test]
-    fn the_orchestrator_is_restricted_and_workers_may_run_any_model() {
-        let dir = temp_dir("tier-rules");
-        let store = Store::load(&dir, false).unwrap();
-        // The orchestrator is held to its list, and the error names it.
-        assert!(
-            store
-                .allowed(Tier::Orchestrator, "openai/gpt-6-astra@high")
-                .is_ok()
-        );
-        let err = store
-            .allowed(Tier::Orchestrator, "deepseek/deepseek-flash")
-            .unwrap_err();
-        assert!(
-            err.contains("not allowed for the orchestrator tier")
-                && err.contains("allowed: anthropic/claude-opus-5-5"),
-            "{err}"
-        );
-        // An orchestrator role model off its list is refused.
-        let mut orch_role = Settings::default();
-        orch_role
-            .role_models
-            .insert("orchestrator".into(), "deepseek/deepseek-flash".into());
-        assert!(store.put(orch_role).is_err());
-
-        // Workers are not restricted: a worker's model or role model may be anything, on or off the list.
-        assert!(store.allowed(Tier::Worker, "openai/gpt-6-astra").is_ok());
-        assert!(store.allowed(Tier::Worker, "anything/at-all").is_ok());
-        let mut worker_role = Settings::default();
-        worker_role
-            .role_models
-            .insert("scout".into(), "anthropic/claude-fable-5-1".into());
-        assert!(store.put(worker_role).is_ok());
-        let mut worker_default = Settings::default();
-        worker_default.default_model = "openai/gpt-6-astra".into();
-        assert!(store.put(worker_default).is_ok());
-
-        // An empty orchestrator list admits nothing and says so; an empty worker list changes nothing.
-        let mut closed = Settings::default();
-        closed.model_policy.orchestrator.clear();
-        let err = store.put(closed).unwrap_err();
-        assert!(err.contains("allowed: none"), "{err}");
-        let mut open = Settings::default();
-        open.model_policy.worker.clear();
-        assert!(store.put(open).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn a_hand_edited_file_is_repaired_on_load_and_named() {
         let dir = temp_dir("repair");
         let mut edited = serde_json::to_value(Settings::default()).unwrap();
@@ -1524,25 +1527,72 @@ mod tests {
     }
 
     #[test]
-    fn review_timeout_defaults_to_thirty_minutes_and_old_settings_load_it() {
-        assert_eq!(Settings::default().review_timeout_minutes, 30);
-        assert_eq!(DEFAULT_REVIEW_TIMEOUT_MINUTES, 30);
+    fn old_settings_load_their_defaults() {
+        // review_timeout_defaults_to_thirty_minutes_and_old_settings_load_it: the review timeout defaults to 30 minutes, and old settings load it.
+        {
+            assert_eq!(Settings::default().review_timeout_minutes, 30);
+            assert_eq!(DEFAULT_REVIEW_TIMEOUT_MINUTES, 30);
 
-        // Settings saved before the review timeout existed carry no such key: they load the default.
-        let mut old = serde_json::to_value(Settings::default()).unwrap();
-        old.as_object_mut()
-            .unwrap()
-            .remove("review_timeout_minutes");
-        let loaded: Settings = serde_json::from_value(old).unwrap();
-        assert_eq!(
-            loaded.review_timeout_minutes,
-            DEFAULT_REVIEW_TIMEOUT_MINUTES
-        );
+            // Settings saved before the review timeout existed carry no such key: they load the default.
+            let mut old = serde_json::to_value(Settings::default()).unwrap();
+            old.as_object_mut()
+                .unwrap()
+                .remove("review_timeout_minutes");
+            let loaded: Settings = serde_json::from_value(old).unwrap();
+            assert_eq!(
+                loaded.review_timeout_minutes,
+                DEFAULT_REVIEW_TIMEOUT_MINUTES
+            );
 
-        // A saved value is kept as it is.
-        let set: Settings =
-            serde_json::from_value(serde_json::json!({"review_timeout_minutes": 5})).unwrap();
-        assert_eq!(set.review_timeout_minutes, 5);
+            // A saved value is kept as it is.
+            let set: Settings =
+                serde_json::from_value(serde_json::json!({"review_timeout_minutes": 5})).unwrap();
+            assert_eq!(set.review_timeout_minutes, 5);
+        }
+
+        // acp_v2_is_off_by_default_and_old_settings_keep_v1: ACP v2 is off by default, and old settings keep v1.
+        {
+            assert!(!Settings::default().acp_v2);
+            // Settings saved before the draft existed carry no key: editors keep speaking v1.
+            let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
+            assert!(!old.acp_v2);
+            let on: Settings = serde_json::from_str("{\"acp_v2\": true}").unwrap();
+            assert!(on.acp_v2);
+            assert!(
+                !on.acp_write_back,
+                "the other ACP switches keep their defaults"
+            );
+        }
+
+        // payments_default_and_settings_saved_without_them_load_the_defaults: payments default, and settings saved without them load the defaults.
+        {
+            assert_eq!(
+                Payments::default(),
+                Payments {
+                    approve_over: 500,
+                    charge_models: true
+                }
+            );
+            assert_eq!(Settings::default().payments, Payments::default());
+
+            // Settings saved before payments existed carry no such key: they load the defaults.
+            let mut old = serde_json::to_value(Settings::default()).unwrap();
+            old.as_object_mut().unwrap().remove("payments");
+            let loaded: Settings = serde_json::from_value(old).unwrap();
+            assert_eq!(loaded.payments, Payments::default());
+
+            // A partial block keeps the fields it names and defaults the rest.
+            let partial: Settings =
+                serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}}))
+                    .unwrap();
+            assert_eq!(
+                partial.payments,
+                Payments {
+                    approve_over: 0,
+                    charge_models: true
+                }
+            );
+        }
     }
 
     #[test]
@@ -1576,47 +1626,59 @@ mod tests {
     }
 
     #[test]
-    fn acp_v2_is_off_by_default_and_old_settings_keep_v1() {
-        assert!(!Settings::default().acp_v2);
-        // Settings saved before the draft existed carry no key: editors keep speaking v1.
-        let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
-        assert!(!old.acp_v2);
-        let on: Settings = serde_json::from_str("{\"acp_v2\": true}").unwrap();
-        assert!(on.acp_v2);
-        assert!(
-            !on.acp_write_back,
-            "the other ACP switches keep their defaults"
-        );
-    }
+    fn settings_repair_on_load() {
+        // engines_repair_on_load_and_old_settings_load_the_defaults: old settings load the engine defaults, and a hand-edited engine list is repaired on load.
+        {
+            // Settings saved before the engines existed carry neither key: they load the defaults.
+            let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
+            assert_eq!(old.engines_enabled, DEFAULT_ENGINE_IDS);
+            assert_eq!(old.engines_mode, "acp");
 
-    #[test]
-    fn engines_repair_on_load_and_old_settings_load_the_defaults() {
-        // Settings saved before the engines existed carry neither key: they load the defaults.
-        let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
-        assert_eq!(old.engines_enabled, DEFAULT_ENGINE_IDS);
-        assert_eq!(old.engines_mode, "acp");
+            // A hand-edited file: an unknown or repeated id is dropped, a bad mode is reset.
+            let mut s = Settings::default();
+            s.engines_enabled = vec!["claude".into(), "bash".into(), "claude".into()];
+            s.engines_mode = "pipes".into();
+            let (fixed, notes) = repair(s, false);
+            assert_eq!(fixed.engines_enabled, ["claude"]);
+            assert_eq!(fixed.engines_mode, "acp");
+            assert!(notes.iter().any(|n| n.contains("bash")), "{notes:?}");
+            assert!(notes.iter().any(|n| n.contains("pipes")), "{notes:?}");
 
-        // A hand-edited file: an unknown or repeated id is dropped, a bad mode is reset.
-        let mut s = Settings::default();
-        s.engines_enabled = vec!["claude".into(), "bash".into(), "claude".into()];
-        s.engines_mode = "pipes".into();
-        let (fixed, notes) = repair(s, false);
-        assert_eq!(fixed.engines_enabled, ["claude"]);
-        assert_eq!(fixed.engines_mode, "acp");
-        assert!(notes.iter().any(|n| n.contains("bash")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("pipes")), "{notes:?}");
+            // The headless run is gone: a file saved under it loads as ACP, with a note.
+            let saved: Settings = serde_json::from_str("{\"engines_mode\": \"headless\"}").unwrap();
+            let (fixed, notes) = repair(saved, false);
+            assert_eq!(fixed.engines_mode, "acp");
+            assert!(notes.iter().any(|n| n.contains("headless")), "{notes:?}");
 
-        // The headless run is gone: a file saved under it loads as ACP, with a note.
-        let saved: Settings = serde_json::from_str("{\"engines_mode\": \"headless\"}").unwrap();
-        let (fixed, notes) = repair(saved, false);
-        assert_eq!(fixed.engines_mode, "acp");
-        assert!(notes.iter().any(|n| n.contains("headless")), "{notes:?}");
+            // A list with no engine left is the defaults.
+            let mut none = Settings::default();
+            none.engines_enabled = vec!["bash".into()];
+            let (fixed, _) = repair(none, false);
+            assert_eq!(fixed.engines_enabled, DEFAULT_ENGINE_IDS);
+        }
 
-        // A list with no engine left is the defaults.
-        let mut none = Settings::default();
-        none.engines_enabled = vec!["bash".into()];
-        let (fixed, _) = repair(none, false);
-        assert_eq!(fixed.engines_enabled, DEFAULT_ENGINE_IDS);
+        // idle_sleep_settings_saved_without_them_load_the_defaults_and_bad_ones_are_repaired: idle-sleep settings saved without them load the defaults, and bad ones are repaired.
+        {
+            let mut old = serde_json::to_value(Settings::default()).unwrap();
+            let obj = old.as_object_mut().unwrap();
+            obj.remove("idle_sleep_min");
+            obj.remove("sleep_never_roles");
+            let loaded: Settings = serde_json::from_value(old).unwrap();
+            assert_eq!(loaded.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
+            assert_eq!(loaded.sleep_never_roles, vec!["orchestrator".to_string()]);
+
+            let mut bad = Settings::default();
+            bad.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 5;
+            bad.sleep_never_roles = vec!["".into(), "builder".into()];
+            let (fixed, notes) = repair(bad, false);
+            assert_eq!(fixed.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
+            assert_eq!(fixed.sleep_never_roles, vec!["builder".to_string()]);
+            assert!(
+                notes.iter().any(|n| n.contains("idle_sleep_min")),
+                "{notes:?}"
+            );
+            assert!(check_settings(&fixed, false).is_ok());
+        }
     }
 
     #[test]
@@ -1642,58 +1704,6 @@ mod tests {
             "0 (agents never sleep) and no never-roles are kept"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn idle_sleep_settings_saved_without_them_load_the_defaults_and_bad_ones_are_repaired() {
-        let mut old = serde_json::to_value(Settings::default()).unwrap();
-        let obj = old.as_object_mut().unwrap();
-        obj.remove("idle_sleep_min");
-        obj.remove("sleep_never_roles");
-        let loaded: Settings = serde_json::from_value(old).unwrap();
-        assert_eq!(loaded.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
-        assert_eq!(loaded.sleep_never_roles, vec!["orchestrator".to_string()]);
-
-        let mut bad = Settings::default();
-        bad.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 5;
-        bad.sleep_never_roles = vec!["".into(), "builder".into()];
-        let (fixed, notes) = repair(bad, false);
-        assert_eq!(fixed.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
-        assert_eq!(fixed.sleep_never_roles, vec!["builder".to_string()]);
-        assert!(
-            notes.iter().any(|n| n.contains("idle_sleep_min")),
-            "{notes:?}"
-        );
-        assert!(check_settings(&fixed, false).is_ok());
-    }
-
-    #[test]
-    fn payments_default_and_settings_saved_without_them_load_the_defaults() {
-        assert_eq!(
-            Payments::default(),
-            Payments {
-                approve_over: 500,
-                charge_models: true
-            }
-        );
-        assert_eq!(Settings::default().payments, Payments::default());
-
-        // Settings saved before payments existed carry no such key: they load the defaults.
-        let mut old = serde_json::to_value(Settings::default()).unwrap();
-        old.as_object_mut().unwrap().remove("payments");
-        let loaded: Settings = serde_json::from_value(old).unwrap();
-        assert_eq!(loaded.payments, Payments::default());
-
-        // A partial block keeps the fields it names and defaults the rest.
-        let partial: Settings =
-            serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}})).unwrap();
-        assert_eq!(
-            partial.payments,
-            Payments {
-                approve_over: 0,
-                charge_models: true
-            }
-        );
     }
 
     #[test]

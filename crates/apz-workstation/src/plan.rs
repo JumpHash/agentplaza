@@ -173,17 +173,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_plan_renders_its_commands_and_writes_in_order() {
-        let mut plan = Plan::default();
-        plan.run("useradd", &["--create-home", "agentplaza"]);
-        plan.write("/tmp/x/unit", "[Unit]\n", 0o644);
-        assert_eq!(
-            plan.render(),
-            vec![
-                "$ useradd --create-home agentplaza".to_string(),
-                "write /tmp/x/unit (7 bytes)".to_string(),
-            ]
-        );
+    fn a_plan_renders_its_commands_writes_and_quoting() {
+        // a_plan_renders_its_commands_and_writes_in_order
+        {
+            let mut plan = Plan::default();
+            plan.run("useradd", &["--create-home", "agentplaza"]);
+            plan.write("/tmp/x/unit", "[Unit]\n", 0o644);
+            assert_eq!(
+                plan.render(),
+                vec![
+                    "$ useradd --create-home agentplaza".to_string(),
+                    "write /tmp/x/unit (7 bytes)".to_string(),
+                ]
+            );
+        }
+        // words_with_spaces_are_quoted_for_display
+        {
+            let mut plan = Plan::default();
+            plan.run("sysadminctl", &["-fullName", "AgentPlaza agents"]);
+            assert_eq!(
+                plan.render(),
+                vec!["$ sysadminctl -fullName \"AgentPlaza agents\"".to_string()]
+            );
+        }
     }
 
     #[test]
@@ -197,15 +209,5 @@ mod tests {
         let text = plan.render().join("\n");
         assert!(!text.contains("s3cret-value"), "{text}");
         assert!(text.contains("********"));
-    }
-
-    #[test]
-    fn words_with_spaces_are_quoted_for_display() {
-        let mut plan = Plan::default();
-        plan.run("sysadminctl", &["-fullName", "AgentPlaza agents"]);
-        assert_eq!(
-            plan.render(),
-            vec!["$ sysadminctl -fullName \"AgentPlaza agents\"".to_string()]
-        );
     }
 }

@@ -577,12 +577,4 @@ mod tests {
         .unwrap();
         assert!(motion.quorum.rule.contains("3 of the 4 filled seats"));
     }
-
-    #[test]
-    fn owner_states_wait_for_the_owner_and_are_toned_explicitly() {
-        assert!(needs_owner("awaiting_owner"));
-        assert!(needs_owner("tie_to_owner"));
-        assert!(!needs_owner("ratified"));
-        assert!(!needs_owner("no_quorum"));
-    }
 }

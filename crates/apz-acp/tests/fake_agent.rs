@@ -153,41 +153,44 @@ fn a_turn_streams_updates_and_answers_every_client_request() {
 }
 
 #[test]
-fn a_rejecting_client_selects_the_reject_option() {
-    let script = json!({"steps": [permission_request("call-2")], "stopReason": "end_turn"});
-    let config = ClientConfig {
-        permission: PermissionAnswer::Kind(PermissionOptionKind::RejectOnce),
-        ..ClientConfig::default()
-    };
-    let (client, _running, log_path) = start("reject", &script, config);
-    client.initialize().expect("initialize");
-    let session = client.new_session("/work").expect("session/new");
-    assert_eq!(
-        client.prompt(&session, "edit").expect("prompt"),
-        StopReason::EndTurn
-    );
-    let answers = logged_answers(&log_path);
-    assert_eq!(
-        answers[0]["answer"]["result"]["outcome"],
-        json!({"outcome": "selected", "optionId": "reject"})
-    );
-}
+fn permission_answers_select_the_reject_option_or_cancel() {
+    // A rejecting client selects the reject option.
+    {
+        let script = json!({"steps": [permission_request("call-2")], "stopReason": "end_turn"});
+        let config = ClientConfig {
+            permission: PermissionAnswer::Kind(PermissionOptionKind::RejectOnce),
+            ..ClientConfig::default()
+        };
+        let (client, _running, log_path) = start("reject", &script, config);
+        client.initialize().expect("initialize");
+        let session = client.new_session("/work").expect("session/new");
+        assert_eq!(
+            client.prompt(&session, "edit").expect("prompt"),
+            StopReason::EndTurn
+        );
+        let answers = logged_answers(&log_path);
+        assert_eq!(
+            answers[0]["answer"]["result"]["outcome"],
+            json!({"outcome": "selected", "optionId": "reject"})
+        );
+    }
 
-#[test]
-fn a_client_that_cancels_the_permission_gives_a_cancelled_outcome() {
-    let script = json!({"steps": [permission_request("call-3")], "stopReason": "end_turn"});
-    let config = ClientConfig {
-        permission: PermissionAnswer::Cancelled,
-        ..ClientConfig::default()
-    };
-    let (client, _running, log_path) = start("permission_cancelled", &script, config);
-    client.initialize().expect("initialize");
-    let session = client.new_session("/work").expect("session/new");
-    client.prompt(&session, "edit").expect("prompt");
-    assert_eq!(
-        logged_answers(&log_path)[0]["answer"]["result"]["outcome"],
-        json!({"outcome": "cancelled"})
-    );
+    // A client that cancels the permission gives a cancelled outcome.
+    {
+        let script = json!({"steps": [permission_request("call-3")], "stopReason": "end_turn"});
+        let config = ClientConfig {
+            permission: PermissionAnswer::Cancelled,
+            ..ClientConfig::default()
+        };
+        let (client, _running, log_path) = start("permission_cancelled", &script, config);
+        client.initialize().expect("initialize");
+        let session = client.new_session("/work").expect("session/new");
+        client.prompt(&session, "edit").expect("prompt");
+        assert_eq!(
+            logged_answers(&log_path)[0]["answer"]["result"]["outcome"],
+            json!({"outcome": "cancelled"})
+        );
+    }
 }
 
 #[test]

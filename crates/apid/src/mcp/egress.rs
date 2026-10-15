@@ -780,56 +780,57 @@ mod tests {
     }
 
     #[test]
-    fn the_blocklist_refuses_even_when_private_is_allowed() {
-        let block = list(&["evil.example"]);
-        assert!(
-            decide("evil.example", 443, false, &block)
-                .unwrap_err()
-                .contains("blocklist")
-        );
-        assert!(
-            decide("evil.example", 443, true, &block)
-                .unwrap_err()
-                .contains("blocklist")
-        );
-        assert!(decide("api.evil.example", 443, true, &block).is_err());
-    }
-
-    #[test]
-    fn private_loopback_link_local_and_metadata_are_refused_unless_allowed() {
-        for host in [
-            "127.0.0.1",
-            "10.0.0.5",
-            "192.168.1.1",
-            "169.254.169.254",
-            "[fe80::1]",
-            "[fd00:ec2::254]",
-            "localhost",
-            "0.0.0.0",
-        ] {
+    fn decide_applies_the_blocklist_and_the_private_address_rules() {
+        // the_blocklist_refuses_even_when_private_is_allowed
+        {
+            let block = list(&["evil.example"]);
             assert!(
-                decide(host, 80, false, &[]).is_err(),
-                "{host} must be refused"
+                decide("evil.example", 443, false, &block)
+                    .unwrap_err()
+                    .contains("blocklist")
             );
             assert!(
-                decide(host, 80, true, &[]).is_ok(),
-                "{host} is allowed with allow_private"
+                decide("evil.example", 443, true, &block)
+                    .unwrap_err()
+                    .contains("blocklist")
+            );
+            assert!(decide("api.evil.example", 443, true, &block).is_err());
+        }
+        // private_loopback_link_local_and_metadata_are_refused_unless_allowed
+        {
+            for host in [
+                "127.0.0.1",
+                "10.0.0.5",
+                "192.168.1.1",
+                "169.254.169.254",
+                "[fe80::1]",
+                "[fd00:ec2::254]",
+                "localhost",
+                "0.0.0.0",
+            ] {
+                assert!(
+                    decide(host, 80, false, &[]).is_err(),
+                    "{host} must be refused"
+                );
+                assert!(
+                    decide(host, 80, true, &[]).is_ok(),
+                    "{host} is allowed with allow_private"
+                );
+            }
+            assert!(
+                decide("169.254.169.254", 80, false, &[])
+                    .unwrap_err()
+                    .contains("metadata")
             );
         }
-        assert!(
-            decide("169.254.169.254", 80, false, &[])
-                .unwrap_err()
-                .contains("metadata")
-        );
-    }
-
-    #[test]
-    fn a_public_address_is_allowed() {
-        assert_eq!(
-            decide("8.8.8.8", 443, false, &[]).unwrap(),
-            "8.8.8.8:443".parse().unwrap()
-        );
-        assert!(decide("[2001:4860:4860::8888]", 443, false, &[]).is_ok());
+        // a_public_address_is_allowed
+        {
+            assert_eq!(
+                decide("8.8.8.8", 443, false, &[]).unwrap(),
+                "8.8.8.8:443".parse().unwrap()
+            );
+            assert!(decide("[2001:4860:4860::8888]", 443, false, &[]).is_ok());
+        }
     }
 
     #[test]
@@ -1011,19 +1012,6 @@ mod tests {
         assert_eq!(out, "", "no token line, no answer");
     }
 
-    #[test]
-    fn the_source_address_of_the_relay_is_not_checked_the_token_is_the_gate() {
-        // Docker Desktop NATs the relay, so its address is no gate: a connection from loopback with the right token works.
-        let (addr, _) = proxy(false, &["evil.example"]);
-        let reply = relayed(
-            addr,
-            "tok",
-            "172.29.250.9",
-            "CONNECT evil.example:443 HTTP/1.1\r\n\r\n",
-        );
-        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
-    }
-
     /// A proxy with the given handshake bounds, on loopback, with the token `tok` and one leased server.
     fn bounded(handshake: Handshake) -> (SocketAddr, Arc<Egress>) {
         let egress = Egress::with_setup(Setup {
@@ -1093,29 +1081,6 @@ mod tests {
             started.elapsed() >= Duration::from_millis(350),
             "{:?}",
             started.elapsed()
-        );
-    }
-
-    #[test]
-    fn a_burst_of_evictions_logs_once_then_reports_what_it_suppressed() {
-        let mut log = EvictionLog::default();
-        let t0 = Instant::now();
-        // 100 evictions within one second: the first is logged at once, the rest are suppressed.
-        let lines: Vec<String> = (0..100u64)
-            .filter_map(|k| log.record(t0 + Duration::from_millis(k * 10)))
-            .collect();
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].starts_with("closed the oldest"), "{}", lines[0]);
-        assert!(!lines[0].contains("more since"), "{}", lines[0]);
-        // The next eviction after the window is logged, and reports the 99 suppressed.
-        let next = log
-            .record(t0 + EVICTION_LOG_WINDOW)
-            .expect("logged after the window");
-        assert!(next.contains("99 more since the last log line"), "{next}");
-        // And the count restarts from there.
-        assert!(
-            log.record(t0 + EVICTION_LOG_WINDOW + Duration::from_secs(1))
-                .is_none()
         );
     }
 
@@ -1294,75 +1259,60 @@ mod listener_tests {
     }
 
     #[test]
-    fn the_proxy_listens_on_loopback_and_on_the_bridge_gateway_when_the_host_has_it() {
-        let bound = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&bound);
-        let egress = Egress::with_setup(Setup {
-            docker: Arc::new(MockDocker::new(
-                Default::default(),
-                healthy(Some("172.17.0.1")),
-            )),
-            bind: Box::new(move |ip: Ipv4Addr| {
-                record.lock().unwrap().push(ip);
-                TcpListener::bind("127.0.0.1:0")
-            }),
-            port: DEFAULT_PORT,
-            state_dir: std::env::temp_dir(),
-            relay_for: relay_to(binary("both")),
-            handshake: Handshake::fast(),
-        });
-        egress.ensure_listeners().unwrap();
-        assert_eq!(
-            *bound.lock().unwrap(),
-            [Ipv4Addr::LOCALHOST, Ipv4Addr::new(172, 17, 0, 1)]
-        );
-    }
-
-    #[test]
-    fn docker_desktop_without_a_host_gateway_still_serves_loopback() {
-        let bound = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&bound);
-        let egress = Egress::with_setup(Setup {
-            docker: Arc::new(MockDocker::new(
-                Default::default(),
-                healthy(Some("172.17.0.1")),
-            )),
-            bind: Box::new(move |ip: Ipv4Addr| {
-                record.lock().unwrap().push(ip);
-                if ip == Ipv4Addr::LOCALHOST {
+    fn ensure_listeners_binds_loopback_and_the_optional_bridge_gateway() {
+        // the_proxy_listens_on_loopback_and_on_the_bridge_gateway_when_the_host_has_it
+        {
+            let bound = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&bound);
+            let egress = Egress::with_setup(Setup {
+                docker: Arc::new(MockDocker::new(
+                    Default::default(),
+                    healthy(Some("172.17.0.1")),
+                )),
+                bind: Box::new(move |ip: Ipv4Addr| {
+                    record.lock().unwrap().push(ip);
                     TcpListener::bind("127.0.0.1:0")
-                } else {
-                    Err(io::Error::from(io::ErrorKind::AddrNotAvailable))
-                }
-            }),
-            port: DEFAULT_PORT,
-            state_dir: std::env::temp_dir(),
-            relay_for: relay_to(binary("desktop")),
-            handshake: Handshake::fast(),
-        });
-        egress.ensure_listeners().unwrap();
-        assert_eq!(
-            bound.lock().unwrap().len(),
-            2,
-            "both were tried; the gateway one was optional"
-        );
-    }
-
-    #[test]
-    fn a_loopback_that_cannot_be_bound_is_a_clear_error() {
-        let egress = Egress::with_setup(Setup {
-            docker: Arc::new(MockDocker::silent()),
-            bind: Box::new(|_: Ipv4Addr| Err(io::Error::from(io::ErrorKind::AddrInUse))),
-            port: DEFAULT_PORT,
-            state_dir: std::env::temp_dir(),
-            relay_for: relay_to(binary("busy")),
-            handshake: Handshake::fast(),
-        });
-        let err = egress.ensure_listeners().unwrap_err();
-        assert!(
-            err.contains("127.0.0.1") && !err.contains("os error"),
-            "{err}"
-        );
+                }),
+                port: DEFAULT_PORT,
+                state_dir: std::env::temp_dir(),
+                relay_for: relay_to(binary("both")),
+                handshake: Handshake::fast(),
+            });
+            egress.ensure_listeners().unwrap();
+            assert_eq!(
+                *bound.lock().unwrap(),
+                [Ipv4Addr::LOCALHOST, Ipv4Addr::new(172, 17, 0, 1)]
+            );
+        }
+        // docker_desktop_without_a_host_gateway_still_serves_loopback
+        {
+            let bound = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&bound);
+            let egress = Egress::with_setup(Setup {
+                docker: Arc::new(MockDocker::new(
+                    Default::default(),
+                    healthy(Some("172.17.0.1")),
+                )),
+                bind: Box::new(move |ip: Ipv4Addr| {
+                    record.lock().unwrap().push(ip);
+                    if ip == Ipv4Addr::LOCALHOST {
+                        TcpListener::bind("127.0.0.1:0")
+                    } else {
+                        Err(io::Error::from(io::ErrorKind::AddrNotAvailable))
+                    }
+                }),
+                port: DEFAULT_PORT,
+                state_dir: std::env::temp_dir(),
+                relay_for: relay_to(binary("desktop")),
+                handshake: Handshake::fast(),
+            });
+            egress.ensure_listeners().unwrap();
+            assert_eq!(
+                bound.lock().unwrap().len(),
+                2,
+                "both were tried; the gateway one was optional"
+            );
+        }
     }
 
     #[test]

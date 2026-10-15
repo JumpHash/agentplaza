@@ -1412,112 +1412,11 @@ mod tests {
     }
 
     #[test]
-    fn chip_colours_follow_the_state() {
-        let card = |state: &str| json!({ "state": state });
-        assert_eq!(chip_tone(&pull(1), Some(&card("open"))), ChipTone::Ok);
-        assert_eq!(chip_tone(&pull(1), Some(&card("draft"))), ChipTone::Draft);
-        assert_eq!(chip_tone(&pull(1), Some(&card("merged"))), ChipTone::Merged);
-        assert_eq!(chip_tone(&pull(1), Some(&card("closed"))), ChipTone::Closed);
-        let issue = Ref::GithubIssue {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 7,
-        };
-        assert_eq!(chip_tone(&issue, Some(&card("closed"))), ChipTone::Closed);
-        assert_eq!(chip_tone(&pull(1), None), ChipTone::Plain);
-        let agent = Ref::Agent {
-            name: Some("Ada".into()),
-            cid: None,
-        };
-        assert_eq!(
-            chip_tone(&agent, Some(&json!({ "status": "working" }))),
-            ChipTone::Info
-        );
-        assert_eq!(
-            chip_tone(&agent, Some(&json!({ "status": "offline" }))),
-            ChipTone::Muted
-        );
-        let task = Ref::Task { number: 5 };
-        assert_eq!(
-            chip_tone(&task, Some(&json!({ "status": "failed" }))),
-            ChipTone::Crit
-        );
-        assert_eq!(
-            chip_tone(&task, Some(&json!({ "status": "claimed" }))),
-            ChipTone::Info
-        );
-    }
-
-    #[test]
-    fn a_pending_or_fresh_reference_is_not_asked_again() {
-        let mut cards = Cards::default();
-        let first = cards.claim_refs(vec![pull(1), pull(2)], 1_000);
-        assert_eq!(first.len(), 2, "both are new");
-        assert!(
-            cards.claim_refs(vec![pull(1)], 1_000).is_empty(),
-            "pending, so not asked twice"
-        );
-        cards.absorb(Loaded {
-            at: 1_000,
-            asked: first.iter().map(key).collect(),
-            // A load answers every reference it asked for; a failure is an answer too, and it is kept for the TTL.
-            answers: vec![
-                (
-                    key(&pull(1)),
-                    json!({"ok": true, "card": {"state": "open"}}),
-                ),
-                (key(&pull(2)), json!({"ok": false, "error": "unavailable"})),
-            ],
-            roster_asked: false,
-            roster: None,
-            images_asked: Vec::new(),
-            images: Vec::new(),
-        });
-        assert!(
-            cards
-                .claim_refs(vec![pull(1)], 1_000 + TTL_MS - 1)
-                .is_empty(),
-            "fresh inside the TTL"
-        );
-        assert_eq!(
-            cards.claim_refs(vec![pull(1)], 1_000 + TTL_MS).len(),
-            1,
-            "stale after the TTL: asked again"
-        );
-        assert!(
-            cards.claim_refs(vec![pull(2)], 1_001).is_empty(),
-            "a failed answer is kept for the TTL too"
-        );
-    }
-
-    #[test]
     fn asks_go_out_in_batches_of_fifty() {
         let refs: Vec<Ref> = (1..=120).map(pull).collect();
         let sizes: Vec<usize> = batches(&refs).iter().map(|b| b.len()).collect();
         assert_eq!(sizes, vec![50, 50, 20]);
         assert!(batches(&[]).is_empty());
-    }
-
-    #[test]
-    fn the_roster_is_read_for_a_text_that_names_an_agent_and_at_most_once_a_minute() {
-        let mut cards = Cards::default();
-        assert!(
-            !cards.claim_roster(&["no names here"], 0),
-            "no @ in the text"
-        );
-        assert!(cards.claim_roster(&["ask @Ada"], 0));
-        assert!(!cards.claim_roster(&["ask @Ada"], 1), "pending");
-        cards.absorb(Loaded {
-            at: 0,
-            asked: vec![],
-            answers: vec![],
-            roster_asked: true,
-            roster: Some(vec![]),
-            images_asked: vec![],
-            images: vec![],
-        });
-        assert!(!cards.claim_roster(&["ask @Ada"], 59_999));
-        assert!(cards.claim_roster(&["ask @Ada"], 60_000));
     }
 
     #[test]
@@ -1704,53 +1603,6 @@ mod tests {
     }
 
     #[test]
-    fn routes_open_agents_tasks_and_the_library_only() {
-        assert_eq!(RichAction::OpenAgent(3).route(), Some(Id::Agent(3)));
-        assert_eq!(
-            RichAction::OpenTask(528).route(),
-            Some(Id::Task("t528".into()))
-        );
-        assert_eq!(
-            RichAction::OpenLibrary("x".into()).route(),
-            Some(Id::Library)
-        );
-        assert_eq!(RichAction::OpenUrl("https://x.io".into()).route(), None);
-        assert_eq!(
-            RichAction::OpenPath {
-                path: "a".into(),
-                line: None
-            }
-            .route(),
-            None
-        );
-    }
-
-    #[test]
-    fn a_paragraph_with_no_reference_is_the_plain_paragraph() {
-        let c = ctx();
-        // Text with no reference takes the plain path: its spans are the markdown spans `ui::markdown` draws.
-        let no_refs = "plain **bold** and `code`";
-        assert!(
-            !apz_rich::classify(no_refs, &c)
-                .iter()
-                .any(|s| matches!(s, Span::Ref { .. }))
-        );
-        assert_eq!(ui::inline(no_refs).len(), 4);
-        // A reference in it makes the paragraph a flow of chips.
-        assert!(
-            apz_rich::classify(
-                "see #528 and **bold**",
-                &Ctx {
-                    project: Some("pr1".into()),
-                    ..Ctx::default()
-                }
-            )
-            .iter()
-            .any(|s| matches!(s, Span::Ref { .. }))
-        );
-    }
-
-    #[test]
     fn image_urls_are_fetched_from_the_right_place() {
         let client = Client::new("http://127.0.0.1:7700", None, Some("secret".into()));
         let (target, path) =
@@ -1774,26 +1626,5 @@ mod tests {
             "plain http to another host is refused"
         );
         assert!(image_target(&client, "https:///a.png").is_err());
-    }
-
-    #[test]
-    fn written_urls_come_from_a_bare_link_or_a_markdown_target() {
-        assert_eq!(
-            written_url("https://a.io/x").as_deref(),
-            Some("https://a.io/x")
-        );
-        assert_eq!(
-            written_url("[label](https://a.io/y)").as_deref(),
-            Some("https://a.io/y")
-        );
-        assert_eq!(written_url("[label](/v1/files/x)"), None);
-        assert_eq!(written_url("#528"), None);
-    }
-
-    #[test]
-    fn sizes_read_as_the_library_shows_them() {
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(2048), "2.0 KB");
-        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
     }
 }

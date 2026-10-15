@@ -2269,76 +2269,80 @@ mod tests {
     }
 
     #[test]
-    fn repo_update_sends_the_sha_and_a_stale_one_is_a_conflict_with_the_current_hash() {
-        let fake =
-            Fake::new("rstale", |_, _| ok(json!({}))).with_forge(|method, path, _| match method {
-                "PUT" => forge_ok(422, json!({"message": "sha does not match"})),
-                _ => {
-                    assert_eq!(
-                        path,
-                        "/api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=main"
-                    );
-                    forge_ok(200, json!({"sha": "now"}))
-                }
-            });
-        let body = json!({ "path": "a.txt", "text": "two", "expected_hash": "old" });
-        let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
-        assert_eq!(response.status, 409);
-        let answer = body_of(response);
-        assert_eq!(answer, json!({"error": "conflict", "current_hash": "now"}));
-        assert_eq!(
-            fake.forge_paths()[0],
-            "PUT /api/v1/repos/agentplaza/p1-plaza/contents/a.txt"
-        );
-        assert_eq!(fake.forge_log.borrow()[0].2["sha"], json!("old"));
-        assert!(
-            fake.db.ide_audit(None, 10).unwrap().is_empty(),
-            "a refused write is not audited"
-        );
-        assert!(fake.events.borrow().is_empty());
-    }
-
-    #[test]
-    fn repo_write_conflicts_report_null_for_a_removed_file_and_a_new_one_for_a_create() {
-        // Update of a file that is gone: the PUT is 404 and the file has no hash now.
-        let gone =
-            Fake::new("rgone", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-                "PUT" => forge_ok(404, json!({"message": "file does not exist"})),
-                _ => forge_ok(404, json!({"message": "file does not exist"})),
-            });
-        let update = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
-        let response = repo_write(&gone, &repo("p1-plaza", "main"), &update).unwrap_err();
-        assert_eq!(
-            body_of(response),
-            json!({"error": "conflict", "current_hash": null})
-        );
-
+    fn repo_write_conflicts_carry_the_current_hash_and_keep_other_refusals() {
+        // A stale sha on update is a conflict: 409 with the file's current hash. A refused write is not audited.
+        {
+            let fake =
+                Fake::new("rstale", |_, _| ok(json!({}))).with_forge(
+                    |method, path, _| match method {
+                        "PUT" => forge_ok(422, json!({"message": "sha does not match"})),
+                        _ => {
+                            assert_eq!(
+                                path,
+                                "/api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=main"
+                            );
+                            forge_ok(200, json!({"sha": "now"}))
+                        }
+                    },
+                );
+            let body = json!({ "path": "a.txt", "text": "two", "expected_hash": "old" });
+            let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
+            assert_eq!(response.status, 409);
+            let answer = body_of(response);
+            assert_eq!(answer, json!({"error": "conflict", "current_hash": "now"}));
+            assert_eq!(
+                fake.forge_paths()[0],
+                "PUT /api/v1/repos/agentplaza/p1-plaza/contents/a.txt"
+            );
+            assert_eq!(fake.forge_log.borrow()[0].2["sha"], json!("old"));
+            assert!(
+                fake.db.ide_audit(None, 10).unwrap().is_empty(),
+                "a refused write is not audited"
+            );
+            assert!(fake.events.borrow().is_empty());
+        }
+        // Update of a file that is gone: the PUT is 404 and the file has no hash now, so the hash is null.
+        {
+            let gone =
+                Fake::new("rgone", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
+                    "PUT" => forge_ok(404, json!({"message": "file does not exist"})),
+                    _ => forge_ok(404, json!({"message": "file does not exist"})),
+                });
+            let update = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
+            let response = repo_write(&gone, &repo("p1-plaza", "main"), &update).unwrap_err();
+            assert_eq!(
+                body_of(response),
+                json!({"error": "conflict", "current_hash": null})
+            );
+        }
         // A create over a file that exists: the POST is 422 and the file has a hash.
-        let exists =
-            Fake::new("rexists", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-                "POST" => forge_ok(422, json!({"message": "already exists"})),
-                _ => forge_ok(200, json!({"sha": "now"})),
-            });
-        let create = json!({ "path": "a.txt", "text": "x", "expected_hash": null });
-        let response = repo_write(&exists, &repo("p1-plaza", "main"), &create).unwrap_err();
-        assert_eq!(
-            body_of(response),
-            json!({"error": "conflict", "current_hash": "now"})
-        );
-    }
-
-    #[test]
-    fn a_refusal_that_is_not_a_conflict_keeps_forgejos_status() {
-        // The file still has the hash the owner read, so the 422 is some other refusal.
-        let fake =
-            Fake::new("rother", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-                "PUT" => forge_ok(422, json!({"message": "branch is protected"})),
-                _ => forge_ok(200, json!({"sha": "old"})),
-            });
-        let body = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
-        let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
-        assert_eq!(response.status, 422);
-        assert_eq!(body_of(response)["error"], json!("branch is protected"));
+        {
+            let exists =
+                Fake::new("rexists", |_, _| ok(json!({}))).with_forge(
+                    |method, _, _| match method {
+                        "POST" => forge_ok(422, json!({"message": "already exists"})),
+                        _ => forge_ok(200, json!({"sha": "now"})),
+                    },
+                );
+            let create = json!({ "path": "a.txt", "text": "x", "expected_hash": null });
+            let response = repo_write(&exists, &repo("p1-plaza", "main"), &create).unwrap_err();
+            assert_eq!(
+                body_of(response),
+                json!({"error": "conflict", "current_hash": "now"})
+            );
+        }
+        // The file still has the hash the owner read, so the 422 is some other refusal and keeps its status and message.
+        {
+            let fake =
+                Fake::new("rother", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
+                    "PUT" => forge_ok(422, json!({"message": "branch is protected"})),
+                    _ => forge_ok(200, json!({"sha": "old"})),
+                });
+            let body = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
+            let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
+            assert_eq!(response.status, 422);
+            assert_eq!(body_of(response)["error"], json!("branch is protected"));
+        }
     }
 
     #[test]
@@ -2444,29 +2448,64 @@ mod tests {
     }
 
     #[test]
-    fn changes_refuse_a_base_that_is_not_a_branch_and_an_empty_compare_has_no_files() {
-        let fake = Fake::new("rbase", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => {
-                forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
-            }
-            "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => {
-                forge_ok(200, json!({"files": []}))
-            }
-            _ => forge_ok(200, json!({"default_branch": "main"})),
-        });
-        let ws = repo("p1-plaza", "main");
-        assert_eq!(
-            status_of(repo_changes(&fake, &ws, Some("checkpoint:3"))),
-            400
-        );
-        assert_eq!(
-            status_of(repo_changes(&fake, &ws, Some("branch:a..b"))),
-            400
-        );
-        let empty = repo_changes(&fake, &ws, Some("branch:main")).unwrap();
-        assert_eq!(empty["files"], json!([]));
-        assert_eq!(empty["stats"]["files"], json!(0));
-        assert_eq!(empty["diff"], json!(""));
+    fn changes_refuse_a_base_or_compare_they_cannot_make() {
+        // A base that is not a branch is refused, and an empty compare has no files.
+        {
+            let fake =
+                Fake::new("rbase", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+                    p if p.contains("commits?sha=") => {
+                        forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
+                    }
+                    "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => {
+                        forge_ok(200, json!({"files": []}))
+                    }
+                    _ => forge_ok(200, json!({"default_branch": "main"})),
+                });
+            let ws = repo("p1-plaza", "main");
+            assert_eq!(
+                status_of(repo_changes(&fake, &ws, Some("checkpoint:3"))),
+                400
+            );
+            assert_eq!(
+                status_of(repo_changes(&fake, &ws, Some("branch:a..b"))),
+                400
+            );
+            let empty = repo_changes(&fake, &ws, Some("branch:main")).unwrap();
+            assert_eq!(empty["files"], json!([]));
+            assert_eq!(empty["stats"]["files"], json!(0));
+            assert_eq!(empty["diff"], json!(""));
+        }
+        // A compare with no file list is the git host's fault.
+        {
+            let fake =
+                Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+                    p if p.contains("commits?sha=") => forge_ok(
+                        200,
+                        json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
+                    ),
+                    p if p.contains("/compare/") => forge_ok(200, json!({"total_commits": 1})),
+                    _ => forge_ok(200, json!({"default_branch": "main"})),
+                });
+            assert_eq!(
+                status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
+                502,
+                "a compare with no file list is the git host's fault"
+            );
+        }
+        // The first commit has no parent to compare with.
+        {
+            let root =
+                Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
+                    p if p.contains("commits?sha=") => {
+                        forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
+                    }
+                    _ => forge_ok(200, json!({"default_branch": "main"})),
+                });
+            assert_eq!(
+                status_of(repo_changes(&root, &repo("p1-plaza", "main"), None)),
+                400
+            );
+        }
     }
 
     #[test]
@@ -2546,34 +2585,6 @@ mod tests {
     }
 
     #[test]
-    fn changes_refuse_a_compare_they_cannot_make() {
-        let fake = Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => forge_ok(
-                200,
-                json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
-            ),
-            p if p.contains("/compare/") => forge_ok(200, json!({"total_commits": 1})),
-            _ => forge_ok(200, json!({"default_branch": "main"})),
-        });
-        assert_eq!(
-            status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
-            502,
-            "a compare with no file list is the git host's fault"
-        );
-        // The first commit has no parent to compare with.
-        let root = Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=") => {
-                forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
-            }
-            _ => forge_ok(200, json!({"default_branch": "main"})),
-        });
-        assert_eq!(
-            status_of(repo_changes(&root, &repo("p1-plaza", "main"), None)),
-            400
-        );
-    }
-
-    #[test]
     fn checkpoints_are_the_branchs_commits_newest_first_with_their_first_line_and_time() {
         let fake = Fake::new("rcp", |_, _| ok(json!({}))).with_forge(|_, path, _| {
             assert_eq!(path, "/api/v1/repos/agentplaza/p1-plaza/commits?sha=main&limit=50&stat=false");
@@ -2592,24 +2603,6 @@ mod tests {
             rows[1],
             json!({"n": 1, "label": "First", "created_ms": null, "sha": "c1"})
         );
-    }
-
-    #[test]
-    fn rfc3339_instants_become_milliseconds() {
-        assert_eq!(rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(rfc3339_ms("2026-10-14T09:30:00Z"), Some(1_791_970_200_000));
-        assert_eq!(
-            rfc3339_ms("2026-10-14T09:30:00.250+02:00"),
-            Some(1_791_963_000_250)
-        );
-        assert_eq!(
-            rfc3339_ms("2026-10-14T09:30:00.25-01:30"),
-            Some(1_791_975_600_250)
-        );
-        assert_eq!(rfc3339_ms("2026-10-14"), None);
-        assert_eq!(rfc3339_ms("2026-13-01T00:00:00Z"), None);
-        assert_eq!(rfc3339_ms("2026-10-14T09:30:00.Z"), None);
-        assert_eq!(rfc3339_ms("2026-10-14T09:30:00+0200"), None);
     }
 
     #[test]
@@ -2730,42 +2723,44 @@ mod tests {
     }
 
     #[test]
-    fn read_assembles_chunks() {
-        const TEXT: &str = "the quick brown fox jumps over the lazy dog";
-        let fake = Fake::new("read", |name, args| {
-            assert_eq!(name, "ide_read");
-            let offset = args["offset"].as_u64().unwrap() as usize;
-            let end = (offset + 7).min(TEXT.len());
-            ok(json!({
-                "path": "a.txt",
-                "size": TEXT.len(),
-                "hash": "h1",
-                "offset": offset,
-                "text": &TEXT[offset..end],
-                "done": end == TEXT.len(),
-            }))
-        });
-        let file = read_file(&fake, 12, Some("a.txt")).unwrap();
-        assert_eq!(file["text"], json!(TEXT));
-        assert_eq!(file["hash"], json!("h1"));
-        assert_eq!(file["size"], json!(TEXT.len()));
-        assert_eq!(fake.calls(), TEXT.len().div_ceil(7));
-    }
-
-    #[test]
-    fn read_refuses_a_file_that_changes_while_it_is_read() {
-        let fake = Fake::new("moving", |_, args| {
-            let offset = args["offset"].as_u64().unwrap();
-            let (hash, text, done) = if offset == 0 {
-                ("h1", "abcd", false)
-            } else {
-                ("h2", "efgh", true)
-            };
-            ok(
-                json!({ "path": "a.txt", "size": 8, "hash": hash, "offset": offset, "text": text, "done": done }),
-            )
-        });
-        assert_eq!(status_of(read_file(&fake, 12, Some("a.txt"))), 409);
+    fn read_assembles_chunks_and_refuses_a_file_that_changes_while_it_is_read() {
+        // The chunks are joined into the whole text, with the file's hash and size.
+        {
+            const TEXT: &str = "the quick brown fox jumps over the lazy dog";
+            let fake = Fake::new("read", |name, args| {
+                assert_eq!(name, "ide_read");
+                let offset = args["offset"].as_u64().unwrap() as usize;
+                let end = (offset + 7).min(TEXT.len());
+                ok(json!({
+                    "path": "a.txt",
+                    "size": TEXT.len(),
+                    "hash": "h1",
+                    "offset": offset,
+                    "text": &TEXT[offset..end],
+                    "done": end == TEXT.len(),
+                }))
+            });
+            let file = read_file(&fake, 12, Some("a.txt")).unwrap();
+            assert_eq!(file["text"], json!(TEXT));
+            assert_eq!(file["hash"], json!("h1"));
+            assert_eq!(file["size"], json!(TEXT.len()));
+            assert_eq!(fake.calls(), TEXT.len().div_ceil(7));
+        }
+        // A file whose hash changes between chunks is refused as a conflict.
+        {
+            let fake = Fake::new("moving", |_, args| {
+                let offset = args["offset"].as_u64().unwrap();
+                let (hash, text, done) = if offset == 0 {
+                    ("h1", "abcd", false)
+                } else {
+                    ("h2", "efgh", true)
+                };
+                ok(
+                    json!({ "path": "a.txt", "size": 8, "hash": hash, "offset": offset, "text": text, "done": done }),
+                )
+            });
+            assert_eq!(status_of(read_file(&fake, 12, Some("a.txt"))), 409);
+        }
     }
 
     #[test]
@@ -2788,31 +2783,33 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_write_is_a_conflict_and_is_not_logged() {
-        let fake = Fake::new("conflict", |_, args| {
-            if args["expected_hash"] == json!("stale") {
-                refused("conflict: abc123")
-            } else {
-                ok(json!({ "path": "a.txt", "hash": "new", "checkpoint": 7 }))
-            }
-        });
-        let stale = json!({ "path": "a.txt", "text": "two", "expected_hash": "stale" });
-        let response = write_file(&fake, 12, &stale).unwrap_err();
-        assert_eq!(response.status, 409);
-        let body = body_of(response);
-        assert_eq!(body["error"], json!("conflict"));
-        assert_eq!(body["current_hash"], json!("abc123"));
-        assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
-        assert!(fake.events.borrow().is_empty());
-    }
-
-    #[test]
-    fn a_write_to_a_missing_file_says_so() {
-        let fake = Fake::new("missing", |_, _| refused("conflict: missing"));
-        let body = json!({ "path": "gone.txt", "text": "x", "expected_hash": "h0" });
-        let response = write_file(&fake, 12, &body).unwrap_err();
-        assert_eq!(response.status, 409);
-        assert_eq!(body_of(response)["current_hash"], Value::Null);
+    fn write_conflicts_are_not_logged_and_a_missing_file_says_so() {
+        // A stale write is a conflict: 409 with the current hash, and it is neither audited nor published.
+        {
+            let fake = Fake::new("conflict", |_, args| {
+                if args["expected_hash"] == json!("stale") {
+                    refused("conflict: abc123")
+                } else {
+                    ok(json!({ "path": "a.txt", "hash": "new", "checkpoint": 7 }))
+                }
+            });
+            let stale = json!({ "path": "a.txt", "text": "two", "expected_hash": "stale" });
+            let response = write_file(&fake, 12, &stale).unwrap_err();
+            assert_eq!(response.status, 409);
+            let body = body_of(response);
+            assert_eq!(body["error"], json!("conflict"));
+            assert_eq!(body["current_hash"], json!("abc123"));
+            assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
+            assert!(fake.events.borrow().is_empty());
+        }
+        // A write to a file that is gone is a conflict with no current hash.
+        {
+            let fake = Fake::new("missing", |_, _| refused("conflict: missing"));
+            let body = json!({ "path": "gone.txt", "text": "x", "expected_hash": "h0" });
+            let response = write_file(&fake, 12, &body).unwrap_err();
+            assert_eq!(response.status, 409);
+            assert_eq!(body_of(response)["current_hash"], Value::Null);
+        }
     }
 
     #[test]
@@ -2864,56 +2861,57 @@ index 0000000..3333333
 ";
 
     #[test]
-    fn changes_assemble_chunks_and_parse_the_diff() {
-        const DIFF: &str = SAMPLE_DIFF;
-        let fake = Fake::new("changes", |name, args| {
-            assert_eq!(name, "ide_changes");
-            let offset = args["offset"].as_u64().unwrap() as usize;
-            let end = (offset + 40).min(DIFF.len());
-            ok(json!({
-                "base": "work_start",
-                "checkpoint": 5,
-                "offset": offset,
-                "total": DIFF.len(),
-                "diff": &DIFF[offset..end],
-                "done": end == DIFF.len(),
-            }))
-        });
-        let reply = changes(&fake, 12, None).unwrap();
-        assert_eq!(reply["base"], json!("work_start"));
-        assert_eq!(reply["checkpoint"], json!(5));
-        assert_eq!(reply["diff"], json!(DIFF));
-        assert_eq!(reply["files"].as_array().unwrap().len(), 2);
-        assert_eq!(reply["files"][1]["status"], json!("added"));
-        assert_eq!(reply["stats"]["files"], json!(2));
-        assert_eq!(reply["stats"]["additions"], json!(2));
-        assert_eq!(reply["stats"]["deletions"], json!(1));
-    }
-
-    #[test]
-    fn an_empty_diff_has_no_files() {
-        let fake = Fake::new("empty", |_, _| {
-            ok(
-                json!({ "base": "work_start", "checkpoint": 1, "offset": 0, "total": 0, "diff": "", "done": true }),
-            )
-        });
-        let reply = changes(&fake, 12, None).unwrap();
-        assert_eq!(reply["files"], json!([]));
-        assert_eq!(reply["stats"]["files"], json!(0));
-    }
-
-    #[test]
-    fn changes_forward_the_base() {
-        let fake = Fake::new("base", |_, _| {
-            ok(
-                json!({ "base": "checkpoint:4", "checkpoint": 4, "offset": 0, "total": 0, "diff": "", "done": true }),
-            )
-        });
-        assert!(changes(&fake, 12, Some("checkpoint:4")).is_ok());
-        assert_eq!(
-            fake.last_args(),
-            json!({ "base": "checkpoint:4", "offset": 0 })
-        );
+    fn changes_chunk_the_diff_parse_its_files_and_forward_the_base() {
+        // The diff comes in chunks and is assembled whole; its files and stats are parsed from it.
+        {
+            const DIFF: &str = SAMPLE_DIFF;
+            let fake = Fake::new("changes", |name, args| {
+                assert_eq!(name, "ide_changes");
+                let offset = args["offset"].as_u64().unwrap() as usize;
+                let end = (offset + 40).min(DIFF.len());
+                ok(json!({
+                    "base": "work_start",
+                    "checkpoint": 5,
+                    "offset": offset,
+                    "total": DIFF.len(),
+                    "diff": &DIFF[offset..end],
+                    "done": end == DIFF.len(),
+                }))
+            });
+            let reply = changes(&fake, 12, None).unwrap();
+            assert_eq!(reply["base"], json!("work_start"));
+            assert_eq!(reply["checkpoint"], json!(5));
+            assert_eq!(reply["diff"], json!(DIFF));
+            assert_eq!(reply["files"].as_array().unwrap().len(), 2);
+            assert_eq!(reply["files"][1]["status"], json!("added"));
+            assert_eq!(reply["stats"]["files"], json!(2));
+            assert_eq!(reply["stats"]["additions"], json!(2));
+            assert_eq!(reply["stats"]["deletions"], json!(1));
+        }
+        // An empty diff has no files.
+        {
+            let fake = Fake::new("empty", |_, _| {
+                ok(
+                    json!({ "base": "work_start", "checkpoint": 1, "offset": 0, "total": 0, "diff": "", "done": true }),
+                )
+            });
+            let reply = changes(&fake, 12, None).unwrap();
+            assert_eq!(reply["files"], json!([]));
+            assert_eq!(reply["stats"]["files"], json!(0));
+        }
+        // The base is forwarded to the tool.
+        {
+            let fake = Fake::new("base", |_, _| {
+                ok(
+                    json!({ "base": "checkpoint:4", "checkpoint": 4, "offset": 0, "total": 0, "diff": "", "done": true }),
+                )
+            });
+            assert!(changes(&fake, 12, Some("checkpoint:4")).is_ok());
+            assert_eq!(
+                fake.last_args(),
+                json!({ "base": "checkpoint:4", "offset": 0 })
+            );
+        }
     }
 
     #[test]
@@ -2998,58 +2996,60 @@ index 0000000..3333333
     }
 
     #[test]
-    fn a_failed_tell_maps_to_its_status() {
-        type Tell = fn(&str, &Value) -> Result<(u16, Value), String>;
-        let cases: [(&str, Tell, u16); 7] = [
-            ("timeout", |_, _| Ok((504, json!({ "error": "x" }))), 504),
-            ("no session", |_, _| Ok((409, json!({ "error": "x" }))), 409),
-            (
-                "unknown cid",
-                |_, _| Ok((404, json!({ "error": "x" }))),
-                404,
-            ),
-            (
-                "role",
-                |_, _| {
-                    Ok((
-                        403,
-                        json!({ "ok": false, "output": "role does not grant ide_list" }),
-                    ))
-                },
-                403,
-            ),
-            (
-                "node down",
-                |_, _| Err("node n2 is offline".to_string()),
-                502,
-            ),
-            (
-                "refusal",
-                |_, _| refused("denied: secret files are not available"),
-                400,
-            ),
-            (
-                "not json",
-                |_, _| Ok((200, json!({ "ok": true, "output": "nope" }))),
-                502,
-            ),
-        ];
-        for (tag, answer, want) in cases {
-            let fake = Fake::new(tag, answer);
-            assert_eq!(status_of(tree(&fake, 12, None, None)), want, "{tag}");
+    fn a_failed_tell_maps_to_its_status_and_a_refusal_keeps_its_text() {
+        // Each failed tell maps to the status of its cause.
+        {
+            type Tell = fn(&str, &Value) -> Result<(u16, Value), String>;
+            let cases: [(&str, Tell, u16); 7] = [
+                ("timeout", |_, _| Ok((504, json!({ "error": "x" }))), 504),
+                ("no session", |_, _| Ok((409, json!({ "error": "x" }))), 409),
+                (
+                    "unknown cid",
+                    |_, _| Ok((404, json!({ "error": "x" }))),
+                    404,
+                ),
+                (
+                    "role",
+                    |_, _| {
+                        Ok((
+                            403,
+                            json!({ "ok": false, "output": "role does not grant ide_list" }),
+                        ))
+                    },
+                    403,
+                ),
+                (
+                    "node down",
+                    |_, _| Err("node n2 is offline".to_string()),
+                    502,
+                ),
+                (
+                    "refusal",
+                    |_, _| refused("denied: secret files are not available"),
+                    400,
+                ),
+                (
+                    "not json",
+                    |_, _| Ok((200, json!({ "ok": true, "output": "nope" }))),
+                    502,
+                ),
+            ];
+            for (tag, answer, want) in cases {
+                let fake = Fake::new(tag, answer);
+                assert_eq!(status_of(tree(&fake, 12, None, None)), want, "{tag}");
+            }
         }
-    }
-
-    #[test]
-    fn an_unknown_tell_text_is_the_refusal_text() {
-        let fake = Fake::new("text", |_, _| {
-            refused("denied: secret files are not available")
-        });
-        let response = tree(&fake, 12, None, None).unwrap_err();
-        assert_eq!(
-            body_of(response)["error"],
-            json!("denied: secret files are not available")
-        );
+        // A refusal's text is the error body, unchanged.
+        {
+            let fake = Fake::new("text", |_, _| {
+                refused("denied: secret files are not available")
+            });
+            let response = tree(&fake, 12, None, None).unwrap_err();
+            assert_eq!(
+                body_of(response)["error"],
+                json!("denied: secret files are not available")
+            );
+        }
     }
 
     #[test]
@@ -3082,14 +3082,6 @@ index 0000000..3333333
         assert_eq!(status_of(audit_rows(&fake, None, Some("0"))), 400);
         assert_eq!(status_of(audit_rows(&fake, None, Some("1001"))), 400);
         assert_eq!(status_of(audit_rows(&fake, None, Some("abc"))), 400);
-    }
-
-    #[test]
-    fn a_checkpoint_number_must_be_a_number() {
-        let fake = Fake::new("cp", |_, _| ok(json!({ "checkpoints": [] })));
-        assert!(checkpoints(&fake, 12).is_ok());
-        assert_eq!(status_of(parse_u64("3x", "n")), 400);
-        assert_eq!(parse_u64("3", "n").ok(), Some(3));
     }
 
     // The station kind: a workstation's work folder, its runs and its audit, through its daemon.

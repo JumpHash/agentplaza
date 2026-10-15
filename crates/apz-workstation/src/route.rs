@@ -219,26 +219,39 @@ mod tests {
     }
 
     #[test]
-    fn each_lane_numbers_its_own_sessions_and_the_route_keeps_them_apart() {
-        let mut route = Route::new(
-            Box::new(FakeDesktop::new()),
-            Some(Box::new(FakeDesktop::new())),
-            "no pixel",
-        );
-        let shared = route.open_session(&spec(SessionKind::Shared)).unwrap();
-        let pixel = route.open_session(&spec(SessionKind::Pixel)).unwrap();
-        assert_ne!(shared, pixel, "the route ids are distinct");
-        assert!(route.capture(shared).is_ok());
-        assert!(route.capture(pixel).is_ok());
-        route.close_session(pixel).unwrap();
-        assert!(matches!(
-            route.capture(pixel),
-            Err(DesktopError::UnknownSession(_))
-        ));
-        assert!(
-            route.capture(shared).is_ok(),
-            "closing one leaves the other"
-        );
+    fn sessions_are_numbered_per_lane_and_unknown_ids_are_refused() {
+        // Each lane numbers its own sessions, the route keeps them apart, and closing
+        // one leaves the other.
+        {
+            let mut route = Route::new(
+                Box::new(FakeDesktop::new()),
+                Some(Box::new(FakeDesktop::new())),
+                "no pixel",
+            );
+            let shared = route.open_session(&spec(SessionKind::Shared)).unwrap();
+            let pixel = route.open_session(&spec(SessionKind::Pixel)).unwrap();
+            assert_ne!(shared, pixel, "the route ids are distinct");
+            assert!(route.capture(shared).is_ok());
+            assert!(route.capture(pixel).is_ok());
+            route.close_session(pixel).unwrap();
+            assert!(matches!(
+                route.capture(pixel),
+                Err(DesktopError::UnknownSession(_))
+            ));
+            assert!(
+                route.capture(shared).is_ok(),
+                "closing one leaves the other"
+            );
+        }
+        // An id that no lane opened is refused as an unknown session.
+        {
+            let mut route = Route::new(Box::new(FakeDesktop::new()), None, "none");
+            assert!(matches!(
+                route.capture(99),
+                Err(DesktopError::UnknownSession(99))
+            ));
+            assert!(!route.owner_active(99));
+        }
     }
 
     #[test]
@@ -248,16 +261,6 @@ mod tests {
             Err(DesktopError::Unsupported(reason)) => assert_eq!(reason, "install Xvfb"),
             other => panic!("expected a refusal, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn an_unknown_session_is_refused() {
-        let mut route = Route::new(Box::new(FakeDesktop::new()), None, "none");
-        assert!(matches!(
-            route.capture(99),
-            Err(DesktopError::UnknownSession(99))
-        ));
-        assert!(!route.owner_active(99));
     }
 
     #[test]

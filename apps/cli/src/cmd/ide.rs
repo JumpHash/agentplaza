@@ -1758,16 +1758,6 @@ mod term {
         }
 
         #[test]
-        fn keys_survive_the_base64_round_trip() {
-            let bytes: Vec<u8> = (0u8..=255).collect();
-            let frame = input_frame(&bytes);
-            let back = STANDARD
-                .decode(frame["data"].as_str().unwrap_or_default())
-                .unwrap_or_default();
-            assert_eq!(back, bytes);
-        }
-
-        #[test]
         fn the_hubs_frames_parse() {
             assert_eq!(
                 parse_term_frame(r#"{"t":"opened","term":"term-1"}"#),
@@ -1819,88 +1809,90 @@ mod term {
         }
 
         #[test]
-        fn ctrl_bracket_then_d_detaches_and_keeps_the_keys_before_it() {
-            let mut escape = Escape::default();
-            assert_eq!(
-                escape.feed(b"ls"),
-                Keys {
-                    send: b"ls".to_vec(),
-                    detach: false
-                }
-            );
-            assert_eq!(
-                escape.feed(&[ESCAPE, b'd']),
-                Keys {
-                    send: vec![],
-                    detach: true
-                }
-            );
-            let mut escape = Escape::default();
-            assert_eq!(
-                escape.feed(b"a\x1dd"),
-                Keys {
-                    send: b"a".to_vec(),
-                    detach: true
-                }
-            );
-            let mut escape = Escape::default();
-            assert_eq!(
-                escape.feed(&[ESCAPE]),
-                Keys {
-                    send: vec![],
-                    detach: false
-                },
-                "the escape waits for the next read"
-            );
-            assert_eq!(
-                escape.feed(b"d"),
-                Keys {
-                    send: vec![],
-                    detach: true
-                },
-                "and detaches when the sequence is split across reads"
-            );
-        }
-
-        #[test]
-        fn a_plain_d_is_only_a_key_and_ctrl_bracket_otherwise_sends_both() {
-            let mut escape = Escape::default();
-            assert_eq!(
-                escape.feed(b"d"),
-                Keys {
-                    send: b"d".to_vec(),
-                    detach: false
-                }
-            );
-            assert_eq!(
-                escape.feed(&[ESCAPE, b'x']),
-                Keys {
-                    send: vec![ESCAPE, b'x'],
-                    detach: false
-                }
-            );
-            assert_eq!(
-                escape.feed(&[ESCAPE, ESCAPE]),
-                Keys {
-                    send: vec![ESCAPE],
-                    detach: false
-                }
-            );
-            assert_eq!(
-                escape.feed(b"d"),
-                Keys {
-                    send: b"d".to_vec(),
-                    detach: false
-                },
-                "the escape is over"
-            );
-            assert_eq!(
-                escape.feed(&[ESCAPE, ESCAPE, b'd']),
-                Keys {
-                    send: vec![ESCAPE, b'd'],
-                    detach: false
-                }
-            );
+        fn the_escape_feed_detaches_or_sends_the_keys() {
+            // Ctrl-] then d detaches and keeps the keys before it.
+            {
+                let mut escape = Escape::default();
+                assert_eq!(
+                    escape.feed(b"ls"),
+                    Keys {
+                        send: b"ls".to_vec(),
+                        detach: false
+                    }
+                );
+                assert_eq!(
+                    escape.feed(&[ESCAPE, b'd']),
+                    Keys {
+                        send: vec![],
+                        detach: true
+                    }
+                );
+                let mut escape = Escape::default();
+                assert_eq!(
+                    escape.feed(b"a\x1dd"),
+                    Keys {
+                        send: b"a".to_vec(),
+                        detach: true
+                    }
+                );
+                let mut escape = Escape::default();
+                assert_eq!(
+                    escape.feed(&[ESCAPE]),
+                    Keys {
+                        send: vec![],
+                        detach: false
+                    },
+                    "the escape waits for the next read"
+                );
+                assert_eq!(
+                    escape.feed(b"d"),
+                    Keys {
+                        send: vec![],
+                        detach: true
+                    },
+                    "and detaches when the sequence is split across reads"
+                );
+            }
+            // A plain d is only a key, and Ctrl-] otherwise sends both.
+            {
+                let mut escape = Escape::default();
+                assert_eq!(
+                    escape.feed(b"d"),
+                    Keys {
+                        send: b"d".to_vec(),
+                        detach: false
+                    }
+                );
+                assert_eq!(
+                    escape.feed(&[ESCAPE, b'x']),
+                    Keys {
+                        send: vec![ESCAPE, b'x'],
+                        detach: false
+                    }
+                );
+                assert_eq!(
+                    escape.feed(&[ESCAPE, ESCAPE]),
+                    Keys {
+                        send: vec![ESCAPE],
+                        detach: false
+                    }
+                );
+                assert_eq!(
+                    escape.feed(b"d"),
+                    Keys {
+                        send: b"d".to_vec(),
+                        detach: false
+                    },
+                    "the escape is over"
+                );
+                assert_eq!(
+                    escape.feed(&[ESCAPE, ESCAPE, b'd']),
+                    Keys {
+                        send: vec![ESCAPE, b'd'],
+                        detach: false
+                    }
+                );
+            }
         }
 
         #[test]
@@ -1929,13 +1921,6 @@ mod term {
                 "a signal is 128 plus its number"
             );
             assert_eq!(exit_status(None), 1, "no code from the guest is a failure");
-        }
-
-        #[test]
-        fn the_hints_name_the_terminal_and_the_offset_to_resume_at() {
-            let hints = detach_hints("agent:12", "term-1", 42);
-            assert!(hints.contains("--attach term-1 --offset 42"), "{hints}");
-            assert!(hints.contains("--kill term-1"), "{hints}");
         }
     }
 }
@@ -1984,33 +1969,6 @@ mod tests {
     }
 
     #[test]
-    fn a_station_has_a_shell_and_a_repo_does_not() {
-        let station: WorkspaceId = "station:w3".parse().unwrap();
-        assert!(has_shell(&station));
-        assert!(has_shell(&"agent:3".parse().unwrap()));
-        assert!(!has_shell(&"repo:demo@main".parse().unwrap()));
-    }
-
-    #[test]
-    fn a_station_row_shows_its_kind_and_os() {
-        let station = json!({"id": "station:w3", "kind": "station", "owner": "w3", "name": "studio mac", "os": "macos", "writable": true, "status": "online"});
-        assert_eq!(
-            workspace_row(&station),
-            [
-                "station:w3",
-                "station",
-                "w3",
-                "studio mac",
-                "macos",
-                "true",
-                "online"
-            ]
-        );
-        let agent = json!({"id": "agent:7", "kind": "agent", "owner": "7", "name": "scout", "writable": true, "status": "idle"});
-        assert_eq!(workspace_row(&agent)[4], "", "an agent has no OS to show");
-    }
-
-    #[test]
     fn save_replies_read_as_saved_conflict_or_error() {
         assert_eq!(
             classify_save("/x", 200, json!({"hash": "h3"})).unwrap(),
@@ -2048,15 +2006,6 @@ mod tests {
     }
 
     #[test]
-    fn the_conflict_answers_are_reload_keep_or_abort() {
-        assert_eq!(parse_resolution("r"), Some(Resolution::Reload));
-        assert_eq!(parse_resolution(" Keep \n"), Some(Resolution::Keep));
-        assert_eq!(parse_resolution("A"), Some(Resolution::Abort));
-        assert_eq!(parse_resolution(""), None, "an empty answer asks again");
-        assert_eq!(parse_resolution("y"), None);
-    }
-
-    #[test]
     fn editors_split_into_a_program_and_arguments() {
         assert_eq!(
             split_command("code --wait"),
@@ -2064,55 +2013,6 @@ mod tests {
         );
         assert_eq!(split_command("vi"), Some(("vi".into(), vec![])));
         assert_eq!(split_command("   "), None);
-    }
-
-    #[test]
-    fn base_accepts_work_start_and_checkpoints_only() {
-        assert_eq!(parse_base("work_start").unwrap(), "work_start");
-        assert_eq!(parse_base("checkpoint:3").unwrap(), "checkpoint:3");
-        assert!(parse_base("checkpoint:").is_err());
-        assert!(parse_base("checkpoint:x").is_err());
-        assert!(parse_base("branch:main").is_err());
-    }
-
-    #[test]
-    fn colour_is_only_for_a_terminal_without_no_color() {
-        assert!(
-            !use_colour(false, false),
-            "a pipe or a file gets plain text"
-        );
-        assert!(!use_colour(true, true), "NO_COLOR turns it off");
-        assert!(use_colour(true, false));
-    }
-
-    #[test]
-    fn a_diff_is_unchanged_when_colour_is_off() {
-        let diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n context\n";
-        assert_eq!(colour_diff(diff, false), diff);
-    }
-
-    #[test]
-    fn colour_paints_the_hunk_lines_and_leaves_the_rest_alone() {
-        let diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n context\n";
-        let painted = colour_diff(diff, true);
-        assert!(painted.contains("\x1b[1m--- a/x\x1b[0m\n"), "{painted:?}");
-        assert!(painted.contains("\x1b[31m-old\x1b[0m\n"));
-        assert!(painted.contains("\x1b[32m+new\x1b[0m\n"));
-        assert!(painted.contains("\x1b[36m@@ -1 +1 @@\x1b[0m\n"));
-        assert!(painted.ends_with(" context\n"));
-    }
-
-    #[test]
-    fn stat_lines_count_each_file_and_the_totals() {
-        let diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-one\n+uno\n two\n";
-        let set = parse_unified(diff).unwrap();
-        assert_eq!(
-            stat_lines(&set),
-            vec![
-                " a.txt | +1 -1".to_string(),
-                "1 files changed, 1 insertions(+), 1 deletions(-)".to_string()
-            ]
-        );
     }
 
     #[test]

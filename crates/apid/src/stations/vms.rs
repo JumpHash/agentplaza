@@ -762,62 +762,65 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_vm_is_accepted_and_the_sizes_are_bounded() {
-        assert_eq!(check(&request("linux"), false, 0), Ok(()));
-        let mut big = request("linux");
-        big.cpus = MAX_CPUS + 1;
-        assert!(check(&big, false, 0).unwrap_err().contains("cpus"));
-        let mut small = request("linux");
-        small.disk_gb = MIN_DISK_GB - 1;
-        assert!(check(&small, false, 0).unwrap_err().contains("disk_gb"));
-        let mut name = request("linux");
-        name.name = "Desk".into();
-        assert!(check(&name, false, 0).is_err());
-        assert!(
-            check(&request("freebsd"), true, 0)
-                .unwrap_err()
-                .contains("os must be")
-        );
-    }
-
-    #[test]
-    fn a_windows_vm_needs_an_owner_image_on_the_node_and_more_memory() {
-        assert_eq!(check(&request("windows"), false, 0), Ok(()));
-        let mut none = request("windows");
-        none.image = None;
-        assert!(check(&none, false, 0).unwrap_err().contains("image"));
-        let mut relative = request("windows");
-        relative.image = Some("win.img".into());
-        assert!(check(&relative, false, 0).unwrap_err().contains("absolute"));
-        let mut windows_path = request("windows");
-        windows_path.image = Some(r"D:\images\win.img".into());
-        assert_eq!(check(&windows_path, false, 0), Ok(()));
-        let mut low = request("windows");
-        low.ram_mb = MIN_WINDOWS_RAM_MB - 1;
-        assert!(check(&low, false, 0).unwrap_err().contains("ram_mb"));
-    }
-
-    #[test]
-    fn a_macos_vm_runs_only_on_apple_hardware_and_at_most_two_per_mac() {
-        let mac = request("macos");
-        assert!(check(&mac, false, 0).unwrap_err().contains("Apple"));
-        assert_eq!(check(&mac, true, 0), Ok(()));
-        assert_eq!(check(&mac, true, 1), Ok(()));
-        let err = check(&mac, true, MAX_MACOS_PER_NODE).unwrap_err();
-        assert!(err.contains("at most 2"), "{err}");
-    }
-
-    #[test]
-    fn the_gpu_option_is_checked_by_its_shape() {
-        for ok in ["none", "virtual", "vfio:0000:01:00.0", "vfio:0000:0A:00.1"] {
-            let mut r = request("linux");
-            r.gpu = Some(ok.into());
-            assert_eq!(check(&r, false, 0), Ok(()), "{ok}");
+    fn a_vm_request_is_checked_by_os_sizes_image_gpu_and_mac_limits() {
+        // a linux VM is accepted, and its sizes and name are bounded.
+        {
+            assert_eq!(check(&request("linux"), false, 0), Ok(()));
+            let mut big = request("linux");
+            big.cpus = MAX_CPUS + 1;
+            assert!(check(&big, false, 0).unwrap_err().contains("cpus"));
+            let mut small = request("linux");
+            small.disk_gb = MIN_DISK_GB - 1;
+            assert!(check(&small, false, 0).unwrap_err().contains("disk_gb"));
+            let mut name = request("linux");
+            name.name = "Desk".into();
+            assert!(check(&name, false, 0).is_err());
+            assert!(
+                check(&request("freebsd"), true, 0)
+                    .unwrap_err()
+                    .contains("os must be")
+            );
         }
-        for bad in ["cuda", "vfio:01:00.0", "vfio:0000:01:00.9"] {
-            let mut r = request("linux");
-            r.gpu = Some(bad.into());
-            assert!(check(&r, false, 0).is_err(), "{bad}");
+
+        // a windows VM needs an owner image on the node (absolute path) and more memory.
+        {
+            assert_eq!(check(&request("windows"), false, 0), Ok(()));
+            let mut none = request("windows");
+            none.image = None;
+            assert!(check(&none, false, 0).unwrap_err().contains("image"));
+            let mut relative = request("windows");
+            relative.image = Some("win.img".into());
+            assert!(check(&relative, false, 0).unwrap_err().contains("absolute"));
+            let mut windows_path = request("windows");
+            windows_path.image = Some(r"D:\images\win.img".into());
+            assert_eq!(check(&windows_path, false, 0), Ok(()));
+            let mut low = request("windows");
+            low.ram_mb = MIN_WINDOWS_RAM_MB - 1;
+            assert!(check(&low, false, 0).unwrap_err().contains("ram_mb"));
+        }
+
+        // a macOS VM runs only on Apple hardware and at most two per Mac.
+        {
+            let mac = request("macos");
+            assert!(check(&mac, false, 0).unwrap_err().contains("Apple"));
+            assert_eq!(check(&mac, true, 0), Ok(()));
+            assert_eq!(check(&mac, true, 1), Ok(()));
+            let err = check(&mac, true, MAX_MACOS_PER_NODE).unwrap_err();
+            assert!(err.contains("at most 2"), "{err}");
+        }
+
+        // the GPU option is checked by its shape.
+        {
+            for ok in ["none", "virtual", "vfio:0000:01:00.0", "vfio:0000:0A:00.1"] {
+                let mut r = request("linux");
+                r.gpu = Some(ok.into());
+                assert_eq!(check(&r, false, 0), Ok(()), "{ok}");
+            }
+            for bad in ["cuda", "vfio:01:00.0", "vfio:0000:01:00.9"] {
+                let mut r = request("linux");
+                r.gpu = Some(bad.into());
+                assert!(check(&r, false, 0).is_err(), "{bad}");
+            }
         }
     }
 
@@ -906,86 +909,89 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_or_a_revert_is_stop_then_its_disk_step_then_start_through_the_node() {
-        for (work, path) in [(Step::Snapshot, "snapshot"), (Step::Revert, "revert")] {
+    fn a_disk_step_runs_between_a_stop_and_a_start_and_stops_on_a_failure() {
+        // a reset or a revert is stop, then its disk step, then start, through the node.
+        {
+            for (work, path) in [(Step::Snapshot, "snapshot"), (Step::Revert, "revert")] {
+                let fake = Fake {
+                    calls: RefCell::new(Vec::new()),
+                    answer: all_ok,
+                };
+                around(&fake, "n1", "wv3", work).expect("every step answers");
+                assert_eq!(
+                    *fake.calls.borrow(),
+                    [
+                        "n1 POST /v1/workstations/wv3/stop".to_string(),
+                        format!("n1 POST /v1/workstations/wv3/{path}"),
+                        "n1 POST /v1/workstations/wv3/start".to_string(),
+                    ],
+                    "{path}"
+                );
+            }
+        }
+
+        // a failed disk step still starts the VM again and reports the step.
+        {
+            fn snapshot_fails(path: &str) -> (u16, Value) {
+                if path.ends_with("/snapshot") {
+                    (409, json!({"error": "must be stopped"}))
+                } else {
+                    (200, json!({}))
+                }
+            }
             let fake = Fake {
                 calls: RefCell::new(Vec::new()),
-                answer: all_ok,
+                answer: snapshot_fails,
             };
-            around(&fake, "n1", "wv3", work).expect("every step answers");
+            let err = around(&fake, "n1", "wv3", Step::Snapshot).expect_err("the snapshot failed");
+            assert!(
+                err.contains("Snapshot") && err.contains("must be stopped"),
+                "{err}"
+            );
             assert_eq!(
-                *fake.calls.borrow(),
-                [
-                    "n1 POST /v1/workstations/wv3/stop".to_string(),
-                    format!("n1 POST /v1/workstations/wv3/{path}"),
-                    "n1 POST /v1/workstations/wv3/start".to_string(),
-                ],
-                "{path}"
+                fake.calls.borrow().last().unwrap(),
+                "n1 POST /v1/workstations/wv3/start",
+                "the VM is started again"
+            );
+            assert_eq!(fake.calls.borrow().len(), 3);
+        }
+
+        // a failed stop runs nothing else.
+        {
+            fn stop_fails(path: &str) -> (u16, Value) {
+                if path.ends_with("/stop") {
+                    (500, json!({"error": "did not stop"}))
+                } else {
+                    (200, json!({}))
+                }
+            }
+            let fake = Fake {
+                calls: RefCell::new(Vec::new()),
+                answer: stop_fails,
+            };
+            assert!(around(&fake, "n1", "wv3", Step::Revert).is_err());
+            assert_eq!(
+                fake.calls.borrow().len(),
+                1,
+                "a VM that did not stop is not touched again"
             );
         }
-    }
 
-    #[test]
-    fn a_failed_disk_step_still_starts_the_vm_and_reports_the_step() {
-        fn snapshot_fails(path: &str) -> (u16, Value) {
-            if path.ends_with("/snapshot") {
-                (409, json!({"error": "must be stopped"}))
-            } else {
-                (200, json!({}))
+        // a node refusal names the node, the step and the VM.
+        {
+            fn refused(_: &str) -> (u16, Value) {
+                (404, json!({"error": "no workstation VM wv9"}))
             }
+            let fake = Fake {
+                calls: RefCell::new(Vec::new()),
+                answer: refused,
+            };
+            let err = around(&fake, "n5", "wv9", Step::Snapshot).unwrap_err();
+            assert!(
+                err.contains("n5") && err.contains("404") && err.contains("wv9"),
+                "{err}"
+            );
         }
-        let fake = Fake {
-            calls: RefCell::new(Vec::new()),
-            answer: snapshot_fails,
-        };
-        let err = around(&fake, "n1", "wv3", Step::Snapshot).expect_err("the snapshot failed");
-        assert!(
-            err.contains("Snapshot") && err.contains("must be stopped"),
-            "{err}"
-        );
-        assert_eq!(
-            fake.calls.borrow().last().unwrap(),
-            "n1 POST /v1/workstations/wv3/start",
-            "the VM is started again"
-        );
-        assert_eq!(fake.calls.borrow().len(), 3);
-    }
-
-    #[test]
-    fn a_failed_stop_runs_nothing_else() {
-        fn stop_fails(path: &str) -> (u16, Value) {
-            if path.ends_with("/stop") {
-                (500, json!({"error": "did not stop"}))
-            } else {
-                (200, json!({}))
-            }
-        }
-        let fake = Fake {
-            calls: RefCell::new(Vec::new()),
-            answer: stop_fails,
-        };
-        assert!(around(&fake, "n1", "wv3", Step::Revert).is_err());
-        assert_eq!(
-            fake.calls.borrow().len(),
-            1,
-            "a VM that did not stop is not touched again"
-        );
-    }
-
-    #[test]
-    fn a_node_refusal_names_the_node_and_the_step() {
-        fn refused(_: &str) -> (u16, Value) {
-            (404, json!({"error": "no workstation VM wv9"}))
-        }
-        let fake = Fake {
-            calls: RefCell::new(Vec::new()),
-            answer: refused,
-        };
-        let err = around(&fake, "n5", "wv9", Step::Snapshot).unwrap_err();
-        assert!(
-            err.contains("n5") && err.contains("404") && err.contains("wv9"),
-            "{err}"
-        );
     }
 
     #[test]
@@ -1021,47 +1027,50 @@ mod tests {
     }
 
     #[test]
-    fn auto_takes_qemu_for_windows_or_vfio_and_plaza_otherwise() {
-        let mut vfio = request("linux");
-        vfio.gpu = Some("vfio:0000:01:00.0".into());
-        assert_eq!(backend_for(&request("linux"), false), Ok("plaza"));
-        assert_eq!(backend_for(&request("linux"), true), Ok("plaza"));
-        assert_eq!(backend_for(&vfio, true), Ok("qemu"));
-        assert_eq!(backend_for(&request("windows"), true), Ok("qemu"));
-        // A Windows guest on a node with no QEMU is refused with the install hint, not sent to plaza to fail there.
-        let err = backend_for(&request("windows"), false).unwrap_err();
-        assert_eq!(
-            err,
-            "this node has no QEMU/OVMF; install qemu and edk2-ovmf"
-        );
-        assert!(backend_for(&vfio, false).unwrap_err().contains("no QEMU"));
-    }
+    fn the_backend_is_picked_by_os_and_gpu_or_taken_as_given() {
+        // auto picks qemu for a windows guest or a vfio gpu when the node has QEMU, and plaza otherwise; no QEMU is refused with the install hint.
+        {
+            let mut vfio = request("linux");
+            vfio.gpu = Some("vfio:0000:01:00.0".into());
+            assert_eq!(backend_for(&request("linux"), false), Ok("plaza"));
+            assert_eq!(backend_for(&request("linux"), true), Ok("plaza"));
+            assert_eq!(backend_for(&vfio, true), Ok("qemu"));
+            assert_eq!(backend_for(&request("windows"), true), Ok("qemu"));
+            // A Windows guest on a node with no QEMU is refused with the install hint, not sent to plaza to fail there.
+            let err = backend_for(&request("windows"), false).unwrap_err();
+            assert_eq!(
+                err,
+                "this node has no QEMU/OVMF; install qemu and edk2-ovmf"
+            );
+            assert!(backend_for(&vfio, false).unwrap_err().contains("no QEMU"));
+        }
 
-    #[test]
-    fn an_explicit_backend_is_honored_and_checked() {
-        let mut plaza = request("windows");
-        plaza.backend = Some("plaza".into());
-        assert_eq!(
-            backend_for(&plaza, true),
-            Ok("plaza"),
-            "noded refuses it with the cause"
-        );
+        // an explicit backend is honored when the node allows it, and checked against the node and the OS.
+        {
+            let mut plaza = request("windows");
+            plaza.backend = Some("plaza".into());
+            assert_eq!(
+                backend_for(&plaza, true),
+                Ok("plaza"),
+                "noded refuses it with the cause"
+            );
 
-        let mut qemu = request("linux");
-        qemu.backend = Some("qemu".into());
-        assert_eq!(backend_for(&qemu, true), Ok("qemu"));
-        assert!(backend_for(&qemu, false).unwrap_err().contains("no QEMU"));
+            let mut qemu = request("linux");
+            qemu.backend = Some("qemu".into());
+            assert_eq!(backend_for(&qemu, true), Ok("qemu"));
+            assert!(backend_for(&qemu, false).unwrap_err().contains("no QEMU"));
 
-        let mut bogus = request("linux");
-        bogus.backend = Some("hyperv".into());
-        assert!(
-            backend_for(&bogus, true)
-                .unwrap_err()
-                .contains("backend must be")
-        );
+            let mut bogus = request("linux");
+            bogus.backend = Some("hyperv".into());
+            assert!(
+                backend_for(&bogus, true)
+                    .unwrap_err()
+                    .contains("backend must be")
+            );
 
-        let mut mac = request("macos");
-        mac.backend = Some("qemu".into());
-        assert!(backend_for(&mac, true).unwrap_err().contains("Apple"));
+            let mut mac = request("macos");
+            mac.backend = Some("qemu".into());
+            assert!(backend_for(&mac, true).unwrap_err().contains("Apple"));
+        }
     }
 }

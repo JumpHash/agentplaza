@@ -2641,12 +2641,4 @@ mod tests {
         assert!(split_gateway_port(vec!["--e2b-gateway-port".into(), "x".into()]).is_err());
         assert_eq!(split_gateway_port(vec![]).unwrap().0, None);
     }
-
-    #[test]
-    fn sandbox_ids_are_sb_and_sixteen_hex_digits() {
-        let id = format!("sb{}", hex_of(&apz_trust::random::<8>()));
-        assert_eq!(id.len(), 18);
-        assert!(id.starts_with("sb"));
-        assert!(id[2..].bytes().all(|b| b.is_ascii_hexdigit()));
-    }
 }

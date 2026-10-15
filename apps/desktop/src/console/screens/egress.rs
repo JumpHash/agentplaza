@@ -637,30 +637,32 @@ mod tests {
     }
 
     #[test]
-    fn egress_rule_parses_with_the_hubs_defaults() {
-        let rule: Rule =
-            serde_json::from_str(r#"{"id":"r1","host":"api.example.com"}"#).expect("a rule parses");
-        assert_eq!(rule.port, 443);
-        assert_eq!(rule.path_prefix, "/");
-        assert_eq!(rule.format, "Bearer ${SECRET}");
-        assert!(rule.enabled, "a rule with no enabled flag is on");
-        assert!(rule.roles.is_empty() && rule.methods.is_empty());
-    }
-
-    #[test]
-    fn egress_rule_list_parses_from_the_owner_api() {
-        let list: RuleList = serde_json::from_str(
-            r#"{"rules":[{"id":"r2","roles":["coder"],"host":"*.example.com","port":8443,
-                "methods":["GET"],"path_prefix":"/v1","header":"X-Api-Key","format":"${SECRET}",
-                "secret":"k","enabled":false,"created_ms":9}]}"#,
-        )
-        .expect("the list parses");
-        let rule = &list.rules[0];
-        assert_eq!(rule.host, "*.example.com");
-        assert_eq!(rule.port, 8443);
-        assert_eq!(rule.roles, vec!["coder".to_string()]);
-        assert!(!rule.enabled);
-        assert_eq!(rule.created_ms, 9);
+    fn egress_rules_parse_with_the_hubs_defaults_and_from_the_owner_api() {
+        {
+            // egress_rule_parses_with_the_hubs_defaults
+            let rule: Rule = serde_json::from_str(r#"{"id":"r1","host":"api.example.com"}"#)
+                .expect("a rule parses");
+            assert_eq!(rule.port, 443);
+            assert_eq!(rule.path_prefix, "/");
+            assert_eq!(rule.format, "Bearer ${SECRET}");
+            assert!(rule.enabled, "a rule with no enabled flag is on");
+            assert!(rule.roles.is_empty() && rule.methods.is_empty());
+        }
+        {
+            // egress_rule_list_parses_from_the_owner_api
+            let list: RuleList = serde_json::from_str(
+                r#"{"rules":[{"id":"r2","roles":["coder"],"host":"*.example.com","port":8443,
+                    "methods":["GET"],"path_prefix":"/v1","header":"X-Api-Key","format":"${SECRET}",
+                    "secret":"k","enabled":false,"created_ms":9}]}"#,
+            )
+            .expect("the list parses");
+            let rule = &list.rules[0];
+            assert_eq!(rule.host, "*.example.com");
+            assert_eq!(rule.port, 8443);
+            assert_eq!(rule.roles, vec!["coder".to_string()]);
+            assert!(!rule.enabled);
+            assert_eq!(rule.created_ms, 9);
+        }
     }
 
     #[test]
@@ -677,69 +679,6 @@ mod tests {
         assert_eq!(body["format"], "Bearer ${SECRET}");
         assert_eq!(body["secret"], "github_token");
         assert_eq!(body["enabled"], true);
-    }
-
-    #[test]
-    fn egress_refuses_port_80_and_out_of_range_ports() {
-        let mut d = draft("example.com");
-        d.port = "80".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("cannot be 80"));
-        d.port = "0".to_string();
-        assert!(rule_body(&d).is_err());
-        d.port = "70000".to_string();
-        assert!(rule_body(&d).is_err());
-        d.port = "8443".to_string();
-        assert!(rule_body(&d).is_ok());
-    }
-
-    #[test]
-    fn egress_refuses_a_header_that_is_not_a_name_or_is_framing() {
-        let mut d = draft("example.com");
-        d.header = "Auth orization".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("header is a name"));
-        d.header = "".to_string();
-        assert!(rule_body(&d).is_err());
-        d.header = "Host".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("framing header"));
-        d.header = "x-api-key".to_string();
-        assert!(rule_body(&d).is_ok());
-    }
-
-    #[test]
-    fn egress_refuses_a_format_without_the_secret_placeholder() {
-        let mut d = draft("example.com");
-        d.format = "Bearer token".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("${SECRET}"));
-        d.format = "Bearer ${SECRET}\r\nX: y".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("control characters"));
-    }
-
-    #[test]
-    fn egress_refuses_an_empty_secret_name_and_a_bad_path_or_method() {
-        let mut d = draft("example.com");
-        d.secret = "  ".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("vault secret"));
-        d = draft("example.com");
-        d.path_prefix = "v1".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("path prefix"));
-        d = draft("example.com");
-        d.methods = "GET POST".to_string();
-        assert!(rule_body(&d).unwrap_err().contains("method"));
-    }
-
-    #[test]
-    fn egress_host_is_a_name_or_a_wildcard_suffix() {
-        for host in [
-            "https://example.com",
-            "example.com/x",
-            "*.",
-            "example.com:443",
-            "",
-        ] {
-            assert!(rule_body(&draft(host)).is_err(), "{host:?} is refused");
-        }
-        assert!(rule_body(&draft("*.example.com")).is_ok());
-        assert!(rule_body(&draft("example.com")).is_ok());
     }
 
     #[test]

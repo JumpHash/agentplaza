@@ -256,47 +256,46 @@ mod tests {
     }
 
     #[test]
-    fn only_the_main_group_counts() {
-        let entry = parse_desktop_entry("editor", Path::new("/x"), ENTRY).expect("parses");
-        assert_eq!(entry.name, "Text Editor", "the action's Name is not taken");
-    }
-
-    #[test]
-    fn hidden_non_application_and_incomplete_entries_are_not_launchable() {
-        let p = Path::new("/x");
-        assert!(
-            parse_desktop_entry("a", p, "[Desktop Entry]\nType=Link\nName=A\nExec=a\n").is_none()
-        );
-        assert!(
-            parse_desktop_entry(
-                "a",
-                p,
-                "[Desktop Entry]\nType=Application\nName=A\nExec=a\nHidden=true\n"
-            )
-            .is_none()
-        );
-        assert!(
-            parse_desktop_entry(
-                "a",
-                p,
-                "[Desktop Entry]\nType=Application\nName=A\nExec=a\nNoDisplay=true\n"
-            )
-            .is_none()
-        );
-        assert!(
-            parse_desktop_entry("a", p, "[Desktop Entry]\nType=Application\nExec=a\n").is_none()
-        );
-        assert!(
-            parse_desktop_entry("a", p, "[Desktop Entry]\nType=Application\nName=A\n").is_none()
-        );
-    }
-
-    #[test]
-    fn a_localised_name_does_not_replace_the_name() {
-        let text =
-            "[Desktop Entry]\nType=Application\nName[de]=Editor\nName=Text Editor\nExec=ed\n";
-        let entry = parse_desktop_entry("ed", Path::new("/x"), text).expect("parses");
-        assert_eq!(entry.name, "Text Editor");
+    fn desktop_entries_follow_the_launch_rules() {
+        // A link, a hidden entry, a hidden-from-menu entry, and entries missing a name or a command are not launchable.
+        {
+            let p = Path::new("/x");
+            assert!(
+                parse_desktop_entry("a", p, "[Desktop Entry]\nType=Link\nName=A\nExec=a\n")
+                    .is_none()
+            );
+            assert!(
+                parse_desktop_entry(
+                    "a",
+                    p,
+                    "[Desktop Entry]\nType=Application\nName=A\nExec=a\nHidden=true\n"
+                )
+                .is_none()
+            );
+            assert!(
+                parse_desktop_entry(
+                    "a",
+                    p,
+                    "[Desktop Entry]\nType=Application\nName=A\nExec=a\nNoDisplay=true\n"
+                )
+                .is_none()
+            );
+            assert!(
+                parse_desktop_entry("a", p, "[Desktop Entry]\nType=Application\nExec=a\n")
+                    .is_none()
+            );
+            assert!(
+                parse_desktop_entry("a", p, "[Desktop Entry]\nType=Application\nName=A\n")
+                    .is_none()
+            );
+        }
+        // A localised Name[de] key does not replace the plain Name.
+        {
+            let text =
+                "[Desktop Entry]\nType=Application\nName[de]=Editor\nName=Text Editor\nExec=ed\n";
+            let entry = parse_desktop_entry("ed", Path::new("/x"), text).expect("parses");
+            assert_eq!(entry.name, "Text Editor");
+        }
     }
 
     #[test]
@@ -310,34 +309,36 @@ mod tests {
     }
 
     #[test]
-    fn field_codes_take_the_files_or_drop_out() {
-        let files = vec!["/a.txt".to_string(), "/b.txt".to_string()];
-        assert_eq!(
-            expand_exec("editor --new %U", &files).expect("expands"),
-            vec!["editor", "--new", "/a.txt", "/b.txt"]
-        );
-        assert_eq!(
-            expand_exec("viewer %f %i %c", &files).expect("expands"),
-            vec!["viewer", "/a.txt"]
-        );
-        assert_eq!(
-            expand_exec("tool --name=%k%%", &[]).expect("expands"),
-            vec!["tool", "--name=%"]
-        );
-    }
-
-    #[test]
-    fn files_are_appended_when_the_line_has_no_file_code() {
-        let files = vec!["/a.txt".to_string()];
-        assert_eq!(
-            expand_exec("plain", &files).expect("expands"),
-            vec!["plain", "/a.txt"]
-        );
-        assert_eq!(expand_exec("plain", &[]).expect("expands"), vec!["plain"]);
-        assert!(
-            expand_exec("%i", &[]).is_err(),
-            "an empty command is refused"
-        );
+    fn expand_exec_places_the_files_by_field_code() {
+        // File codes take the files; a code that names one file drops out; %% is a literal percent.
+        {
+            let files = vec!["/a.txt".to_string(), "/b.txt".to_string()];
+            assert_eq!(
+                expand_exec("editor --new %U", &files).expect("expands"),
+                vec!["editor", "--new", "/a.txt", "/b.txt"]
+            );
+            assert_eq!(
+                expand_exec("viewer %f %i %c", &files).expect("expands"),
+                vec!["viewer", "/a.txt"]
+            );
+            assert_eq!(
+                expand_exec("tool --name=%k%%", &[]).expect("expands"),
+                vec!["tool", "--name=%"]
+            );
+        }
+        // With no file code the files are appended; an empty command is refused.
+        {
+            let files = vec!["/a.txt".to_string()];
+            assert_eq!(
+                expand_exec("plain", &files).expect("expands"),
+                vec!["plain", "/a.txt"]
+            );
+            assert_eq!(expand_exec("plain", &[]).expect("expands"), vec!["plain"]);
+            assert!(
+                expand_exec("%i", &[]).is_err(),
+                "an empty command is refused"
+            );
+        }
     }
 
     #[test]

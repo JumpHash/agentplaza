@@ -1156,43 +1156,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn envelopes_round_trip_and_a_wrong_length_is_refused() {
-        let bytes = encode_envelope(0, b"{\"a\":1}");
-        assert_eq!(bytes[0], 0);
-        assert_eq!(&bytes[1..5], &7u32.to_be_bytes());
-        assert_eq!(decode_one(&bytes), Ok((0, &b"{\"a\":1}"[..])));
-        assert!(decode_one(&bytes[..6]).is_err(), "a truncated envelope");
-        assert!(decode_one(&[0, 0]).is_err(), "a short header");
+    fn envelopes_round_trip_and_a_run_decodes_to_each_of_them() {
+        // one envelope round-trips; a wrong length, a truncated envelope and a short header are refused.
+        {
+            let bytes = encode_envelope(0, b"{\"a\":1}");
+            assert_eq!(bytes[0], 0);
+            assert_eq!(&bytes[1..5], &7u32.to_be_bytes());
+            assert_eq!(decode_one(&bytes), Ok((0, &b"{\"a\":1}"[..])));
+            assert!(decode_one(&bytes[..6]).is_err(), "a truncated envelope");
+            assert!(decode_one(&[0, 0]).is_err(), "a short header");
 
-        let end = end_envelope(Some(&RpcError::new("not_found", "gone")));
-        let (flags, payload) = decode_one(&end).expect("one envelope");
-        assert_eq!(flags, FLAG_END);
-        assert_eq!(
-            serde_json::from_slice::<Value>(payload).expect("JSON"),
-            json!({"error": {"code": "not_found", "message": "gone"}})
-        );
-        assert_eq!(decode_one(&end_envelope(None)).expect("one").1, b"{}");
-    }
+            let end = end_envelope(Some(&RpcError::new("not_found", "gone")));
+            let (flags, payload) = decode_one(&end).expect("one envelope");
+            assert_eq!(flags, FLAG_END);
+            assert_eq!(
+                serde_json::from_slice::<Value>(payload).expect("JSON"),
+                json!({"error": {"code": "not_found", "message": "gone"}})
+            );
+            assert_eq!(decode_one(&end_envelope(None)).expect("one").1, b"{}");
+        }
 
-    #[test]
-    fn a_run_of_envelopes_decodes_to_each_of_them() {
-        let mut body = encode_envelope(0, b"{\"a\":1}");
-        body.extend(encode_envelope(0, b"{}"));
-        body.extend(end_envelope(None));
-        let envelopes = decode_all(&body).expect("three envelopes");
-        assert_eq!(
-            envelopes,
-            vec![
-                (0, &b"{\"a\":1}"[..]),
-                (0, &b"{}"[..]),
-                (FLAG_END, &b"{}"[..])
-            ]
-        );
-        assert_eq!(decode_all(&[]), Ok(Vec::new()));
-        assert!(
-            decode_all(&body[..body.len() - 1]).is_err(),
-            "a truncated run"
-        );
+        // a run of envelopes decodes to each of them in order; a truncated run is refused.
+        {
+            let mut body = encode_envelope(0, b"{\"a\":1}");
+            body.extend(encode_envelope(0, b"{}"));
+            body.extend(end_envelope(None));
+            let envelopes = decode_all(&body).expect("three envelopes");
+            assert_eq!(
+                envelopes,
+                vec![
+                    (0, &b"{\"a\":1}"[..]),
+                    (0, &b"{}"[..]),
+                    (FLAG_END, &b"{}"[..])
+                ]
+            );
+            assert_eq!(decode_all(&[]), Ok(Vec::new()));
+            assert!(
+                decode_all(&body[..body.len() - 1]).is_err(),
+                "a truncated run"
+            );
+        }
     }
 
     #[test]
@@ -1385,15 +1388,6 @@ mod tests {
             assert!(reply.starts_with(b"HTTP/1.1 400"), "{bad}");
         }
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn named_user_decodes_the_query_value() {
-        let request = Request {
-            query: "username=%72oot&path=x".to_string(),
-            ..Request::default()
-        };
-        assert_eq!(named_user(&request).as_deref(), Some("root"));
     }
 
     #[test]

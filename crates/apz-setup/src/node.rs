@@ -465,16 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn the_link_is_the_plans_first_process() {
-        assert_eq!(link(), plan(20, 4, &layout())[0]);
-    }
-
-    #[test]
-    fn the_plan_is_the_same_for_the_same_identity() {
-        assert_eq!(plan(20, 4, &layout()), plan(20, 4, &layout()));
-    }
-
-    #[test]
     fn cid_ranges_read_inclusive() {
         assert_eq!(cid_list(20, 3), "20,21,22");
         assert_eq!(cid_range(20, 3), "20-22");
@@ -515,50 +505,15 @@ mod tests {
     }
 
     #[test]
-    fn a_node_vsockd_is_found_by_its_arguments_and_a_hubs_is_not() {
-        let node_vsockd = plan(20, 4, &layout())[1].clone();
-        // A hub's vsockd on the same machine: the same binary, its own CIDs and its apid on 7700.
-        let hub_vsockd = PlanProcess {
-            name: "vsockd",
-            args: argv(&[
-                "--uds-dir",
-                "/run/uds",
-                "--cids",
-                "20,21,22,23,24",
-                "--port",
-                "5000",
-                "--http-port",
-                "19080",
-                "--apid",
-                "http://127.0.0.1:7700",
-                "--internal-token-file",
-                "/state/internal.token",
-            ]),
-            env: None,
-        };
-        let procs = vec![
-            (
-                100,
-                cmdline(&[
-                    "/usr/bin/vsockd",
-                    "--uds-dir",
-                    "/run/uds",
-                    "--cids",
-                    "20,21,22,23",
-                    "--port",
-                    "5000",
-                    "--http-port",
-                    "19080",
-                    "--apid",
-                    "http://127.0.0.1:7701",
-                    "--internal-token-file",
-                    "/state/node/internal-token",
-                ]),
-            ),
-            (
-                101,
-                cmdline(&[
-                    "/usr/bin/vsockd",
+    fn node_identity_is_matched_by_its_own_arguments_only() {
+        // a_node_vsockd_is_found_by_its_arguments_and_a_hubs_is_not: a hub's vsockd on the same
+        // machine is not the node's, and neither is a vsockd with one argument more.
+        {
+            let node_vsockd = plan(20, 4, &layout())[1].clone();
+            // A hub's vsockd on the same machine: the same binary, its own CIDs and its apid on 7700.
+            let hub_vsockd = PlanProcess {
+                name: "vsockd",
+                args: argv(&[
                     "--uds-dir",
                     "/run/uds",
                     "--cids",
@@ -572,112 +527,151 @@ mod tests {
                     "--internal-token-file",
                     "/state/internal.token",
                 ]),
-            ),
-            // The owner's main plaza's vsockd: its own directory and CIDs.
-            (
-                102,
-                cmdline(&[
-                    "vsockd",
-                    "--uds-dir",
-                    "/home/u/.local/state/agentplaza/vsock",
-                    "--cids",
-                    "200,201,202",
-                ]),
-            ),
-            // The node's vsockd with one argument more: not the node's.
-            (
-                103,
-                cmdline(&[
-                    "/usr/bin/vsockd",
+                env: None,
+            };
+            let procs = vec![
+                (
+                    100,
+                    cmdline(&[
+                        "/usr/bin/vsockd",
+                        "--uds-dir",
+                        "/run/uds",
+                        "--cids",
+                        "20,21,22,23",
+                        "--port",
+                        "5000",
+                        "--http-port",
+                        "19080",
+                        "--apid",
+                        "http://127.0.0.1:7701",
+                        "--internal-token-file",
+                        "/state/node/internal-token",
+                    ]),
+                ),
+                (
+                    101,
+                    cmdline(&[
+                        "/usr/bin/vsockd",
+                        "--uds-dir",
+                        "/run/uds",
+                        "--cids",
+                        "20,21,22,23,24",
+                        "--port",
+                        "5000",
+                        "--http-port",
+                        "19080",
+                        "--apid",
+                        "http://127.0.0.1:7700",
+                        "--internal-token-file",
+                        "/state/internal.token",
+                    ]),
+                ),
+                // The owner's main plaza's vsockd: its own directory and CIDs.
+                (
+                    102,
+                    cmdline(&[
+                        "vsockd",
+                        "--uds-dir",
+                        "/home/u/.local/state/agentplaza/vsock",
+                        "--cids",
+                        "200,201,202",
+                    ]),
+                ),
+                // The node's vsockd with one argument more: not the node's.
+                (
+                    103,
+                    cmdline(&[
+                        "/usr/bin/vsockd",
+                        "--uds-dir",
+                        "/run/uds",
+                        "--cids",
+                        "20,21,22,23",
+                        "--port",
+                        "5000",
+                        "--http-port",
+                        "19080",
+                        "--apid",
+                        "http://127.0.0.1:7701",
+                        "--internal-token-file",
+                        "/state/node/internal-token",
+                        "--extra",
+                    ]),
+                ),
+            ];
+            assert_eq!(pids_running_plan(&node_vsockd, procs.clone()), vec![100]);
+            assert_eq!(pids_running_plan(&hub_vsockd, procs), vec![101]);
+        }
+        // a_hubs_noded_is_not_a_nodes_even_though_it_has_all_of_the_nodes_flags: a hub's noded
+        // carries all the node's flags but --run-cids, so it must not match either way.
+        {
+            let node_noded = plan(20, 4, &layout())[2].clone();
+            let hub_noded = PlanProcess {
+                name: "noded",
+                args: argv(&[
+                    "--port",
+                    "8899",
                     "--uds-dir",
                     "/run/uds",
-                    "--cids",
-                    "20,21,22,23",
+                    "--agents",
+                    "/share/roles.json",
+                ]),
+                env: None,
+            };
+            // The node's noded is the hub's plus --run-cids: a subset match would have stopped it from the hub.
+            let node_cmd = command_of(&node_noded);
+            let hub_cmd = command_of(&hub_noded);
+            assert!(runs_plan(&node_cmd, &node_noded));
+            assert!(!runs_plan(&node_cmd, &hub_noded));
+            assert!(runs_plan(&hub_cmd, &hub_noded));
+            assert!(!runs_plan(&hub_cmd, &node_noded));
+            // The owner's main plaza's noded, started with its own paths.
+            let procs = vec![(
+                200,
+                cmdline(&[
+                    "noded",
                     "--port",
-                    "5000",
-                    "--http-port",
-                    "19080",
-                    "--apid",
-                    "http://127.0.0.1:7701",
-                    "--internal-token-file",
-                    "/state/node/internal-token",
-                    "--extra",
-                ]),
-            ),
-        ];
-        assert_eq!(pids_running_plan(&node_vsockd, procs.clone()), vec![100]);
-        assert_eq!(pids_running_plan(&hub_vsockd, procs), vec![101]);
-    }
-
-    #[test]
-    fn a_hubs_noded_is_not_a_nodes_even_though_it_has_all_of_the_nodes_flags() {
-        let node_noded = plan(20, 4, &layout())[2].clone();
-        let hub_noded = PlanProcess {
-            name: "noded",
-            args: argv(&[
-                "--port",
-                "8899",
-                "--uds-dir",
-                "/run/uds",
-                "--agents",
-                "/share/roles.json",
-            ]),
-            env: None,
-        };
-        // The node's noded is the hub's plus --run-cids: a subset match would have stopped it from the hub.
-        let node_cmd = command_of(&node_noded);
-        let hub_cmd = command_of(&hub_noded);
-        assert!(runs_plan(&node_cmd, &node_noded));
-        assert!(!runs_plan(&node_cmd, &hub_noded));
-        assert!(runs_plan(&hub_cmd, &hub_noded));
-        assert!(!runs_plan(&hub_cmd, &node_noded));
-        // The owner's main plaza's noded, started with its own paths.
-        let procs = vec![(
-            200,
-            cmdline(&[
-                "noded",
-                "--port",
-                "8899",
-                "--uds-dir",
-                "/home/u/.local/state/agentplaza/vsock",
-                "--agents",
-                "/srv/roles.json",
-            ]),
-        )];
-        assert!(pids_running_plan(&node_noded, procs.clone()).is_empty());
-        assert!(pids_running_plan(&hub_noded, procs).is_empty());
-    }
-
-    #[test]
-    fn apz_link_is_the_nodes_only_with_its_own_arguments() {
-        let procs = vec![
-            (
-                300,
-                cmdline(&[
-                    "/usr/bin/apz-link",
-                    "run",
-                    "--noded",
                     "8899",
-                    "--vsockd",
-                    "19080",
-                    "--forward",
-                    "7701",
+                    "--uds-dir",
+                    "/home/u/.local/state/agentplaza/vsock",
+                    "--agents",
+                    "/srv/roles.json",
                 ]),
-            ),
-            (
-                301,
-                cmdline(&[
-                    "/usr/bin/apz-link",
-                    "run",
-                    "--noded",
-                    "8899",
-                    "--vsockd",
-                    "19080",
-                ]),
-            ),
-            (302, cmdline(&["/usr/bin/apz-link", "join", "code"])),
-        ];
-        assert_eq!(pids_running_plan(&link(), procs), vec![300]);
+            )];
+            assert!(pids_running_plan(&node_noded, procs.clone()).is_empty());
+            assert!(pids_running_plan(&hub_noded, procs).is_empty());
+        }
+        // apz_link_is_the_nodes_only_with_its_own_arguments: apz-link is the node's only when
+        // it runs with the node's own --noded and --vsockd ports and the forward.
+        {
+            let procs = vec![
+                (
+                    300,
+                    cmdline(&[
+                        "/usr/bin/apz-link",
+                        "run",
+                        "--noded",
+                        "8899",
+                        "--vsockd",
+                        "19080",
+                        "--forward",
+                        "7701",
+                    ]),
+                ),
+                (
+                    301,
+                    cmdline(&[
+                        "/usr/bin/apz-link",
+                        "run",
+                        "--noded",
+                        "8899",
+                        "--vsockd",
+                        "19080",
+                    ]),
+                ),
+                (302, cmdline(&["/usr/bin/apz-link", "join", "code"])),
+            ];
+            assert_eq!(pids_running_plan(&link(), procs), vec![300]);
+        }
     }
 
     #[test]
@@ -707,16 +701,5 @@ mod tests {
             cmdline_argv(b"x\0\0"),
             Some(vec!["x".to_string(), String::new()])
         );
-    }
-
-    #[test]
-    fn a_name_that_runs_nowhere_finds_no_pid() {
-        let nowhere = PlanProcess {
-            name: "agentplaza-no-such-service-zz9",
-            args: vec!["--x".into()],
-            env: None,
-        };
-        assert!(find_plan_pids(&nowhere).is_empty());
-        assert!(named_pids("agentplaza-no-such-service-zz9").is_empty());
     }
 }

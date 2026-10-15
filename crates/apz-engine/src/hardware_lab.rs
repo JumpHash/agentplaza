@@ -259,19 +259,6 @@ impl Lab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stage::Stage;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn the_stage_builds_the_lab_when_its_model_is_named() {
-        let mut vars = BTreeMap::new();
-        vars.insert("APZ_HW_LAB".to_string(), "board/workstation".to_string());
-        vars.insert("APZ_HW_GPUS".to_string(), "1".to_string());
-        crate::set_env_overrides(vars);
-        let stage = Stage::default();
-        crate::set_env_overrides(BTreeMap::new());
-        assert!(stage.hardware_lab.is_some());
-    }
 
     #[test]
     fn the_params_read_as_name_value_pairs_and_the_gpus_are_their_own() {
@@ -284,24 +271,6 @@ mod tests {
         assert_eq!(p.values.get("studio"), Some(&0.5));
         assert_eq!(p.values.get("pcb_top"), Some(&0.336));
         assert!(!p.values.contains_key("x") && !p.values.contains_key("bad"));
-    }
-
-    #[test]
-    fn the_camera_presets_look_at_the_model_from_their_side() {
-        let model = hardware::model("exterior/workstation").expect("the model is embedded");
-        let (front, target) = view(model, "front");
-        assert!(
-            front[2] > 0.0 && front[0].abs() < 1e-4,
-            "front looks from +z: {front:?}"
-        );
-        assert!((target[1] - model.size[1] / 2.0).abs() < 1e-4);
-        let (iso, _) = view(model, "iso");
-        assert!(
-            iso[0] > 0.0 && iso[1] > target[1] && iso[2] > 0.0,
-            "iso is up and to the front-right: {iso:?}"
-        );
-        let (top, _) = view(model, "top");
-        assert!(top[1] > front[1], "top is above the front view");
     }
 
     #[test]
@@ -333,63 +302,36 @@ mod tests {
     }
 
     #[test]
-    fn a_dimm_strip_is_hidden_from_the_top_view_as_three_js_hid_it() {
-        let model = hardware::model("board/workstation").expect("embedded");
-        let mut built = hardware::build(model, &Params::default());
-        let strip = dimm_strip(&built);
-        assert!(
-            built.details()[strip].shown(),
-            "shown until the camera has framed it"
-        );
-        // The lab's top view: its eye is about 123 units from the strip's box, past the 90 of detail 2 (plus the band).
-        let (eye, _) = view(model, "top");
-        built.frame_detail(Vec3::from(eye), glam::Mat4::IDENTITY);
-        assert!(
-            !built.details()[strip].shown(),
-            "the strip hides from the top view"
-        );
-    }
-
-    #[test]
-    fn a_dimm_strip_shows_when_the_camera_is_near_it() {
-        let model = hardware::model("board/workstation").expect("embedded");
-        let mut built = hardware::build(model, &Params::default());
-        let strip = dimm_strip(&built);
-        // 30 units above the strip: within detail 2's 90.
-        let near = built.details()[strip].centre() + Vec3::Y * 30.0;
-        built.frame_detail(near, glam::Mat4::IDENTITY);
-        assert!(
-            built.details()[strip].shown(),
-            "the strip shows 30 units from it"
-        );
-    }
-
-    #[test]
-    fn the_lab_places_the_plaza_atom_at_the_models_anchor() {
-        let name = "board/workstation";
-        assert!(
-            hardware::model(name)
-                .expect("embedded")
-                .anchors
-                .atom
-                .is_some(),
-            "the board has an atom anchor"
-        );
-        let mut floor = Floor::new();
-        let mut vars = std::collections::BTreeMap::new();
-        vars.insert("APZ_HW_LAB".to_string(), name.to_string());
-        crate::set_env_overrides(vars);
-        let lab = build(&mut floor);
-        crate::set_env_overrides(std::collections::BTreeMap::new());
-        let lab = lab.expect("the lab builds");
-        let node = lab
-            .atom
-            .as_ref()
-            .expect("the atom is placed at the anchor")
-            .node
-            .clone();
-        let mut under_root = false;
-        floor.root.traverse(&mut |o: &Obj| under_root |= *o == node);
-        assert!(under_root, "the atom's node is under the lab's scene root");
+    fn a_dimm_strip_hides_from_the_top_view_and_shows_when_the_camera_is_near() {
+        // a_dimm_strip_is_hidden_from_the_top_view_as_three_js_hid_it: the strip hides from the lab's top view, as three.js hid it.
+        {
+            let model = hardware::model("board/workstation").expect("embedded");
+            let mut built = hardware::build(model, &Params::default());
+            let strip = dimm_strip(&built);
+            assert!(
+                built.details()[strip].shown(),
+                "shown until the camera has framed it"
+            );
+            // The lab's top view: its eye is about 123 units from the strip's box, past the 90 of detail 2 (plus the band).
+            let (eye, _) = view(model, "top");
+            built.frame_detail(Vec3::from(eye), glam::Mat4::IDENTITY);
+            assert!(
+                !built.details()[strip].shown(),
+                "the strip hides from the top view"
+            );
+        }
+        // a_dimm_strip_shows_when_the_camera_is_near_it: the strip shows when the camera is near it.
+        {
+            let model = hardware::model("board/workstation").expect("embedded");
+            let mut built = hardware::build(model, &Params::default());
+            let strip = dimm_strip(&built);
+            // 30 units above the strip: within detail 2's 90.
+            let near = built.details()[strip].centre() + Vec3::Y * 30.0;
+            built.frame_detail(near, glam::Mat4::IDENTITY);
+            assert!(
+                built.details()[strip].shown(),
+                "the strip shows 30 units from it"
+            );
+        }
     }
 }

@@ -795,116 +795,106 @@ mod tests {
     }
 
     #[test]
-    fn a_model_id_splits_on_its_first_slash() {
-        assert_eq!(
-            split_model("openrouter/anthropic/claude-x").expect("a split"),
-            ("openrouter", "anthropic/claude-x")
-        );
-        assert_eq!(
-            split_model("opencode/claude-sonnet-5-5").expect("a split"),
-            ("opencode", "claude-sonnet-5-5")
-        );
-        for bad in ["claude-sonnet-5-5", "/claude", "openrouter/"] {
-            assert!(split_model(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn claude_code_points_at_the_anthropic_shaped_gateway_routes() {
-        let route =
-            model_route(Engine::Claude, Some("openrouter/anthropic/claude-x")).expect("a route");
-        assert_eq!(
-            route.env,
-            [(
-                "ANTHROPIC_BASE_URL".to_string(),
-                "http://plaza.gateway/openrouter".to_string()
-            )]
-        );
-        assert_eq!(route.model.as_deref(), Some("anthropic/claude-x"));
-        let route =
-            model_route(Engine::Claude, Some("opencode/claude-sonnet-5-5")).expect("a route");
-        assert_eq!(
-            route.env,
-            [(
-                "ANTHROPIC_BASE_URL".to_string(),
-                "http://plaza.gateway/opencode".to_string()
-            )]
-        );
-        assert_eq!(route.model.as_deref(), Some("claude-sonnet-5-5"));
-        assert_eq!(
-            model_route(Engine::Claude, None).expect("the default"),
-            Route::default()
-        );
-    }
-
-    #[test]
-    fn claude_code_refuses_an_opencode_model_its_route_does_not_serve() {
-        let err =
-            model_route(Engine::Claude, Some("opencode/deepseek-v4-pro")).expect_err("refused");
-        assert!(
-            err.contains("Claude Code needs an Anthropic-shaped model"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn codex_takes_only_the_models_its_wire_protocol_serves() {
-        let route = model_route(Engine::Codex, Some("opencode/gpt-5")).expect("a route");
-        assert_eq!(
-            route.env,
-            [(
-                "OPENAI_BASE_URL".to_string(),
-                "http://plaza.gateway/opencode/v1".to_string()
-            )]
-        );
-        assert_eq!(route.model.as_deref(), Some("gpt-5"));
-        let openai = model_route(Engine::Codex, Some("openai/gpt-5")).expect("a route");
-        assert!(openai.env.is_empty());
-        assert_eq!(openai.model.as_deref(), Some("gpt-5"));
-        for refused in [
-            "openrouter/anthropic/claude-x",
-            "opencode/deepseek-v4-pro",
-            "google/gemini-x",
-        ] {
-            assert!(
-                model_route(Engine::Codex, Some(refused)).is_err(),
-                "{refused}"
+    fn model_route_follows_each_engine_to_the_route_that_serves_its_model() {
+        // Claude Code points at the Anthropic-shaped gateway routes, names the model after the route prefix, and the default route is empty.
+        {
+            let route = model_route(Engine::Claude, Some("openrouter/anthropic/claude-x"))
+                .expect("a route");
+            assert_eq!(
+                route.env,
+                [(
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "http://plaza.gateway/openrouter".to_string()
+                )]
+            );
+            assert_eq!(route.model.as_deref(), Some("anthropic/claude-x"));
+            let route =
+                model_route(Engine::Claude, Some("opencode/claude-sonnet-5-5")).expect("a route");
+            assert_eq!(
+                route.env,
+                [(
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "http://plaza.gateway/opencode".to_string()
+                )]
+            );
+            assert_eq!(route.model.as_deref(), Some("claude-sonnet-5-5"));
+            assert_eq!(
+                model_route(Engine::Claude, None).expect("the default"),
+                Route::default()
             );
         }
+        // Claude Code refuses an OpenCode model that its Anthropic-shaped route does not serve.
+        {
+            let err =
+                model_route(Engine::Claude, Some("opencode/deepseek-v4-pro")).expect_err("refused");
+            assert!(
+                err.contains("Claude Code needs an Anthropic-shaped model"),
+                "{err}"
+            );
+        }
+        // Codex takes only the models its OpenAI wire protocol serves and refuses the rest.
+        {
+            let route = model_route(Engine::Codex, Some("opencode/gpt-5")).expect("a route");
+            assert_eq!(
+                route.env,
+                [(
+                    "OPENAI_BASE_URL".to_string(),
+                    "http://plaza.gateway/opencode/v1".to_string()
+                )]
+            );
+            assert_eq!(route.model.as_deref(), Some("gpt-5"));
+            let openai = model_route(Engine::Codex, Some("openai/gpt-5")).expect("a route");
+            assert!(openai.env.is_empty());
+            assert_eq!(openai.model.as_deref(), Some("gpt-5"));
+            for refused in [
+                "openrouter/anthropic/claude-x",
+                "opencode/deepseek-v4-pro",
+                "google/gemini-x",
+            ] {
+                assert!(
+                    model_route(Engine::Codex, Some(refused)).is_err(),
+                    "{refused}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn gemini_launch_points_at_the_gateway_and_takes_its_model_from_the_environment() {
-        let workspace = scratch("gemini-launch");
-        let (env, model) = acp_launch(&workspace, "gemini", None).expect("gemini");
-        assert_eq!(
-            env[0],
-            format!(
-                "HOME={}",
-                workspace.dir().join(".engines/home/gemini").display()
-            )
-        );
-        assert!(env.contains(&"GOOGLE_GEMINI_BASE_URL=http://plaza.gateway/gemini".to_string()));
-        assert!(env.contains(&"GEMINI_API_KEY=plaza".to_string()));
-        assert!(env.contains(&"GEMINI_CLI_TRUST_WORKSPACE=true".to_string()));
-        assert!(!env.iter().any(|pair| pair.starts_with("GEMINI_MODEL=")));
-        assert_eq!(model, None);
+    fn gemini_launch_follows_its_gateway_route_and_refuses_another_provider() {
+        // Gemini launch points at the gateway and takes its model from the environment only when a gemini/ model is named.
+        {
+            let workspace = scratch("gemini-launch");
+            let (env, model) = acp_launch(&workspace, "gemini", None).expect("gemini");
+            assert_eq!(
+                env[0],
+                format!(
+                    "HOME={}",
+                    workspace.dir().join(".engines/home/gemini").display()
+                )
+            );
+            assert!(
+                env.contains(&"GOOGLE_GEMINI_BASE_URL=http://plaza.gateway/gemini".to_string())
+            );
+            assert!(env.contains(&"GEMINI_API_KEY=plaza".to_string()));
+            assert!(env.contains(&"GEMINI_CLI_TRUST_WORKSPACE=true".to_string()));
+            assert!(!env.iter().any(|pair| pair.starts_with("GEMINI_MODEL=")));
+            assert_eq!(model, None);
 
-        let (env, model) =
-            acp_launch(&workspace, "gemini", Some("gemini/gemini-2.5-pro")).expect("a model");
-        assert!(env.contains(&"GEMINI_MODEL=gemini-2.5-pro".to_string()));
-        assert_eq!(model, None);
-    }
-
-    #[test]
-    fn gemini_refuses_a_model_from_another_provider() {
-        let workspace = scratch("gemini-refuse");
-        let err =
-            acp_launch(&workspace, "gemini", Some("anthropic/claude-x")).expect_err("refused");
-        assert_eq!(
-            err,
-            "invalid input: \"model\" is \"anthropic/claude-x\"; Gemini CLI takes gemini/<model> models"
-        );
+            let (env, model) =
+                acp_launch(&workspace, "gemini", Some("gemini/gemini-2.5-pro")).expect("a model");
+            assert!(env.contains(&"GEMINI_MODEL=gemini-2.5-pro".to_string()));
+            assert_eq!(model, None);
+        }
+        // Gemini refuses a model from another provider, with the Gemini CLI hint.
+        {
+            let workspace = scratch("gemini-refuse");
+            let err =
+                acp_launch(&workspace, "gemini", Some("anthropic/claude-x")).expect_err("refused");
+            assert_eq!(
+                err,
+                "invalid input: \"model\" is \"anthropic/claude-x\"; Gemini CLI takes gemini/<model> models"
+            );
+        }
     }
 
     #[test]
@@ -981,40 +971,46 @@ mod tests {
 
     #[test]
     fn qwen_launch_follows_the_model_provider_to_its_gateway_route() {
-        let workspace = scratch("qwen-launch");
-        let (env, model) = acp_launch(&workspace, "qwen", None).expect("qwen");
-        assert_eq!(
-            env[0],
-            format!(
-                "HOME={}",
-                workspace.dir().join(".engines/home/qwen").display()
-            )
-        );
-        assert!(env.contains(&"OPENAI_API_KEY=plaza".to_string()));
-        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openai/v1".to_string()));
-        assert!(!env.iter().any(|pair| pair.starts_with("OPENAI_MODEL=")));
-        assert_eq!(model, None);
+        // Qwen launch with no model uses the OpenAI gateway route and sets no model; openrouter/ and opencode/ models follow their own routes.
+        {
+            let workspace = scratch("qwen-launch");
+            let (env, model) = acp_launch(&workspace, "qwen", None).expect("qwen");
+            assert_eq!(
+                env[0],
+                format!(
+                    "HOME={}",
+                    workspace.dir().join(".engines/home/qwen").display()
+                )
+            );
+            assert!(env.contains(&"OPENAI_API_KEY=plaza".to_string()));
+            assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openai/v1".to_string()));
+            assert!(!env.iter().any(|pair| pair.starts_with("OPENAI_MODEL=")));
+            assert_eq!(model, None);
 
-        let (env, model) =
-            acp_launch(&workspace, "qwen", Some("openrouter/anthropic/claude-x")).expect("a model");
-        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openrouter/v1".to_string()));
-        assert!(env.contains(&"OPENAI_MODEL=anthropic/claude-x".to_string()));
-        assert_eq!(model, None);
+            let (env, model) =
+                acp_launch(&workspace, "qwen", Some("openrouter/anthropic/claude-x"))
+                    .expect("a model");
+            assert!(
+                env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openrouter/v1".to_string())
+            );
+            assert!(env.contains(&"OPENAI_MODEL=anthropic/claude-x".to_string()));
+            assert_eq!(model, None);
 
-        let (env, _) =
-            acp_launch(&workspace, "qwen", Some("opencode/deepseek-v4-pro")).expect("oc");
-        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/opencode/v1".to_string()));
-        assert!(env.contains(&"OPENAI_MODEL=deepseek-v4-pro".to_string()));
-    }
-
-    #[test]
-    fn qwen_refuses_a_model_from_a_provider_it_cannot_reach() {
-        let workspace = scratch("qwen-refuse");
-        let err = acp_launch(&workspace, "qwen", Some("anthropic/claude-x")).expect_err("refused");
-        assert_eq!(
-            err,
-            "invalid input: \"model\" is \"anthropic/claude-x\"; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
-        );
+            let (env, _) =
+                acp_launch(&workspace, "qwen", Some("opencode/deepseek-v4-pro")).expect("oc");
+            assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/opencode/v1".to_string()));
+            assert!(env.contains(&"OPENAI_MODEL=deepseek-v4-pro".to_string()));
+        }
+        // Qwen refuses a model from a provider it cannot reach, and names the providers it takes.
+        {
+            let workspace = scratch("qwen-refuse");
+            let err =
+                acp_launch(&workspace, "qwen", Some("anthropic/claude-x")).expect_err("refused");
+            assert_eq!(
+                err,
+                "invalid input: \"model\" is \"anthropic/claude-x\"; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
+            );
+        }
     }
 
     #[test]
@@ -1058,46 +1054,49 @@ mod tests {
     }
 
     #[test]
-    fn copilot_runs_its_byok_mode_through_the_gateway_with_no_github_credential() {
-        let workspace = scratch("copilot-launch");
-        let (env, model) = acp_launch(&workspace, "copilot", Some("openrouter/anthropic/claude-x"))
-            .expect("copilot");
-        assert_eq!(model, None);
-        assert_eq!(value(&env, "COPILOT_OFFLINE"), Some("true"));
-        assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("openai"));
-        assert_eq!(
-            value(&env, "COPILOT_PROVIDER_BASE_URL"),
-            Some("http://plaza.gateway/openrouter/v1")
-        );
-        assert_eq!(value(&env, "COPILOT_PROVIDER_API_KEY"), Some("plaza"));
-        assert_eq!(value(&env, "COPILOT_MODEL"), Some("anthropic/claude-x"));
-        // Copilot must never see a GitHub credential or the allow-all switch: the harness never sets
-        // them, and the bash environment it inherits is cleared of them.
-        for key in [
-            "COPILOT_GITHUB_TOKEN",
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "COPILOT_ALLOW_ALL",
-        ] {
-            assert_eq!(value(&env, key), None, "{key} is never set");
+    fn copilot_runs_byok_through_the_gateway_and_needs_a_reachable_model() {
+        // Copilot BYOK mode runs through the gateway with no GitHub credential, for an openrouter/ model and an anthropic/ model.
+        {
+            let workspace = scratch("copilot-launch");
+            let (env, model) =
+                acp_launch(&workspace, "copilot", Some("openrouter/anthropic/claude-x"))
+                    .expect("copilot");
+            assert_eq!(model, None);
+            assert_eq!(value(&env, "COPILOT_OFFLINE"), Some("true"));
+            assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("openai"));
+            assert_eq!(
+                value(&env, "COPILOT_PROVIDER_BASE_URL"),
+                Some("http://plaza.gateway/openrouter/v1")
+            );
+            assert_eq!(value(&env, "COPILOT_PROVIDER_API_KEY"), Some("plaza"));
+            assert_eq!(value(&env, "COPILOT_MODEL"), Some("anthropic/claude-x"));
+            // Copilot must never see a GitHub credential or the allow-all switch: the harness never sets
+            // them, and the bash environment it inherits is cleared of them.
+            for key in [
+                "COPILOT_GITHUB_TOKEN",
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "COPILOT_ALLOW_ALL",
+            ] {
+                assert_eq!(value(&env, key), None, "{key} is never set");
+            }
+            let (env, _) =
+                acp_launch(&workspace, "copilot", Some("anthropic/claude-x")).expect("claude");
+            assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("anthropic"));
+            assert_eq!(
+                value(&env, "COPILOT_PROVIDER_BASE_URL"),
+                Some("http://plaza.gateway/anthropic")
+            );
+            assert_eq!(value(&env, "COPILOT_MODEL"), Some("claude-x"));
         }
-        let (env, _) =
-            acp_launch(&workspace, "copilot", Some("anthropic/claude-x")).expect("claude");
-        assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("anthropic"));
-        assert_eq!(
-            value(&env, "COPILOT_PROVIDER_BASE_URL"),
-            Some("http://plaza.gateway/anthropic")
-        );
-        assert_eq!(value(&env, "COPILOT_MODEL"), Some("claude-x"));
-    }
-
-    #[test]
-    fn copilot_needs_a_model_on_a_provider_it_can_reach() {
-        let workspace = scratch("copilot-refused");
-        let err = acp_launch(&workspace, "copilot", None).expect_err("refused");
-        assert!(err.contains("Copilot needs \"model\""), "{err}");
-        let err = acp_launch(&workspace, "copilot", Some("gemini/x")).expect_err("refused");
-        assert!(err.contains("Copilot takes"), "{err}");
+        // Copilot needs a model, and refuses a model on a provider it cannot reach.
+        {
+            let workspace = scratch("copilot-refused");
+            let err = acp_launch(&workspace, "copilot", None).expect_err("refused");
+            assert!(err.contains("Copilot needs \"model\""), "{err}");
+            let err = acp_launch(&workspace, "copilot", Some("gemini/x")).expect_err("refused");
+            assert!(err.contains("Copilot takes"), "{err}");
+        }
     }
 
     #[test]
@@ -1211,128 +1210,132 @@ mod tests {
     }
 
     #[test]
-    fn cline_setup_follows_the_model_provider_to_its_gateway_route() {
-        let setup = |model: &str| {
-            setup_args("cline", Some(model))
-                .expect("a setup")
-                .expect("Cline has one")
-                .join(" ")
-        };
-        assert_eq!(
-            setup("anthropic/claude-x"),
-            "auth -p anthropic -k plaza -b http://plaza.gateway/anthropic -m claude-x"
-        );
-        assert_eq!(
-            setup("openrouter/anthropic/claude-x"),
-            "auth -p anthropic -k plaza -b http://plaza.gateway/openrouter -m anthropic/claude-x"
-        );
-        assert_eq!(
-            setup("opencode/claude-x"),
-            "auth -p anthropic -k plaza -b http://plaza.gateway/opencode -m claude-x"
-        );
-        assert_eq!(
-            setup("openai/gpt-x"),
-            "auth -p openai -k plaza -b http://plaza.gateway/openai/v1 -m gpt-x"
-        );
-        assert_eq!(
-            setup("opencode/deepseek-v4-pro"),
-            "auth -p openai -k plaza -b http://plaza.gateway/opencode/v1 -m deepseek-v4-pro"
-        );
-    }
-
-    #[test]
-    fn cline_setup_needs_a_model_and_a_provider_it_can_reach() {
-        assert_eq!(
-            setup_args("cline", None).expect_err("refused"),
-            "invalid input: Cline needs \"model\""
-        );
-        let err = setup_args("cline", Some("gemini/x")).expect_err("refused");
-        assert!(err.contains("Cline takes anthropic/..."), "{err}");
-        assert_eq!(
-            setup_args("qwen", Some("openai/x")).expect("no setup"),
-            None
-        );
-    }
-
-    #[test]
-    fn opencode_config_names_a_plaza_provider_at_the_gateway() {
-        let route =
-            model_route(Engine::OpenCode, Some("openrouter/anthropic/claude-x")).expect("a route");
-        assert_eq!(route.model, None);
-        assert_eq!(route.env[0].0, "OPENCODE_CONFIG_CONTENT");
-        let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
-        assert_eq!(config["model"], "plaza-openrouter/anthropic/claude-x");
-        assert_eq!(
-            config["provider"]["plaza-openrouter"]["options"]["baseURL"],
-            "http://plaza.gateway/openrouter/v1"
-        );
-        assert!(
-            config["provider"]["plaza-openrouter"]["models"]
-                .get("anthropic/claude-x")
-                .is_some()
-        );
-        let pairs = engine_env(Path::new("/workspace"), &route);
-        assert!(
-            pairs.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)),
-            "{pairs:?}"
-        );
-        assert!(model_route(Engine::OpenCode, Some("bad_name/x")).is_err());
-    }
-
-    #[test]
-    fn opencode_config_parses_and_each_model_names_the_block_whose_api_shape_serves_it() {
-        let opencode = "http://plaza.gateway/opencode/v1";
-        for (model, block, npm, base) in [
-            (
-                "opencode/gpt-5.6-terra",
-                "plaza-opencode-responses",
-                "@ai-sdk/openai",
-                opencode,
-            ),
-            (
-                "opencode/claude-sonnet-5-5",
-                "plaza-opencode-anthropic",
-                "@ai-sdk/anthropic",
-                opencode,
-            ),
-            (
-                "opencode/deepseek-v4-pro",
-                "plaza-opencode",
-                "@ai-sdk/openai-compatible",
-                opencode,
-            ),
-            (
-                "openai/gpt-5.6-terra",
-                "plaza-openai",
-                "@ai-sdk/openai",
-                "http://plaza.gateway/openai/v1",
-            ),
-            (
-                "openrouter/anthropic/claude-x",
-                "plaza-openrouter",
-                "@ai-sdk/openai-compatible",
-                "http://plaza.gateway/openrouter/v1",
-            ),
-        ] {
-            let route = model_route(Engine::OpenCode, Some(model)).expect("a route");
-            let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
-            let selected = config["model"].as_str().expect("a model");
-            let (selected_block, served) = selected.split_once('/').expect("<block>/<model>");
-            assert_eq!(selected_block, block, "{model}: {config}");
-            assert_eq!(config["provider"][block]["npm"], npm, "{model}: {config}");
+    fn cline_setup_follows_the_model_provider_and_needs_a_reachable_model() {
+        // Cline setup follows each model's provider to its gateway route (anthropic, openai and opencode routes).
+        {
+            let setup = |model: &str| {
+                setup_args("cline", Some(model))
+                    .expect("a setup")
+                    .expect("Cline has one")
+                    .join(" ")
+            };
             assert_eq!(
-                config["provider"][block]["options"]["baseURL"], base,
-                "{model}: {config}"
+                setup("anthropic/claude-x"),
+                "auth -p anthropic -k plaza -b http://plaza.gateway/anthropic -m claude-x"
+            );
+            assert_eq!(
+                setup("openrouter/anthropic/claude-x"),
+                "auth -p anthropic -k plaza -b http://plaza.gateway/openrouter -m anthropic/claude-x"
+            );
+            assert_eq!(
+                setup("opencode/claude-x"),
+                "auth -p anthropic -k plaza -b http://plaza.gateway/opencode -m claude-x"
+            );
+            assert_eq!(
+                setup("openai/gpt-x"),
+                "auth -p openai -k plaza -b http://plaza.gateway/openai/v1 -m gpt-x"
+            );
+            assert_eq!(
+                setup("opencode/deepseek-v4-pro"),
+                "auth -p openai -k plaza -b http://plaza.gateway/opencode/v1 -m deepseek-v4-pro"
+            );
+        }
+        // Cline setup needs a model and refuses a provider it cannot reach; Qwen has no Cline setup.
+        {
+            assert_eq!(
+                setup_args("cline", None).expect_err("refused"),
+                "invalid input: Cline needs \"model\""
+            );
+            let err = setup_args("cline", Some("gemini/x")).expect_err("refused");
+            assert!(err.contains("Cline takes anthropic/..."), "{err}");
+            assert_eq!(
+                setup_args("qwen", Some("openai/x")).expect("no setup"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_config_names_plaza_blocks_at_the_gateway_and_each_model_names_its_block() {
+        // OpenCode config names a plaza provider block at the gateway, selects it as the model, and refuses a bad model name.
+        {
+            let route = model_route(Engine::OpenCode, Some("openrouter/anthropic/claude-x"))
+                .expect("a route");
+            assert_eq!(route.model, None);
+            assert_eq!(route.env[0].0, "OPENCODE_CONFIG_CONTENT");
+            let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
+            assert_eq!(config["model"], "plaza-openrouter/anthropic/claude-x");
+            assert_eq!(
+                config["provider"]["plaza-openrouter"]["options"]["baseURL"],
+                "http://plaza.gateway/openrouter/v1"
             );
             assert!(
-                config["provider"][block]["models"].get(served).is_some(),
-                "{model}: {config}"
+                config["provider"]["plaza-openrouter"]["models"]
+                    .get("anthropic/claude-x")
+                    .is_some()
             );
-            assert_eq!(
-                config["provider"].as_object().map(|blocks| blocks.len()),
-                Some(1),
-                "{model}: {config}"
+            let pairs = engine_env(Path::new("/workspace"), &route);
+            assert!(
+                pairs.contains(&format!("OPENCODE_CONFIG_CONTENT={}", route.env[0].1)),
+                "{pairs:?}"
             );
+            assert!(model_route(Engine::OpenCode, Some("bad_name/x")).is_err());
+        }
+        // OpenCode config parses, and each model names the block whose API shape serves it.
+        {
+            let opencode = "http://plaza.gateway/opencode/v1";
+            for (model, block, npm, base) in [
+                (
+                    "opencode/gpt-5.6-terra",
+                    "plaza-opencode-responses",
+                    "@ai-sdk/openai",
+                    opencode,
+                ),
+                (
+                    "opencode/claude-sonnet-5-5",
+                    "plaza-opencode-anthropic",
+                    "@ai-sdk/anthropic",
+                    opencode,
+                ),
+                (
+                    "opencode/deepseek-v4-pro",
+                    "plaza-opencode",
+                    "@ai-sdk/openai-compatible",
+                    opencode,
+                ),
+                (
+                    "openai/gpt-5.6-terra",
+                    "plaza-openai",
+                    "@ai-sdk/openai",
+                    "http://plaza.gateway/openai/v1",
+                ),
+                (
+                    "openrouter/anthropic/claude-x",
+                    "plaza-openrouter",
+                    "@ai-sdk/openai-compatible",
+                    "http://plaza.gateway/openrouter/v1",
+                ),
+            ] {
+                let route = model_route(Engine::OpenCode, Some(model)).expect("a route");
+                let config: Value = serde_json::from_str(&route.env[0].1).expect("JSON");
+                let selected = config["model"].as_str().expect("a model");
+                let (selected_block, served) = selected.split_once('/').expect("<block>/<model>");
+                assert_eq!(selected_block, block, "{model}: {config}");
+                assert_eq!(config["provider"][block]["npm"], npm, "{model}: {config}");
+                assert_eq!(
+                    config["provider"][block]["options"]["baseURL"], base,
+                    "{model}: {config}"
+                );
+                assert!(
+                    config["provider"][block]["models"].get(served).is_some(),
+                    "{model}: {config}"
+                );
+                assert_eq!(
+                    config["provider"].as_object().map(|blocks| blocks.len()),
+                    Some(1),
+                    "{model}: {config}"
+                );
+            }
         }
     }
 }

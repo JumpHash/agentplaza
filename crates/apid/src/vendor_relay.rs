@@ -395,37 +395,39 @@ mod tests {
     }
 
     #[test]
-    fn augment_takes_the_tenant_as_base_and_the_token_as_a_bearer() {
-        let json = r#"{"accessToken":"tok-123","tenantURL":"https://acme.api.augmentcode.com/","scopes":["read"]}"#;
-        let (base, headers) = augment_upstream(&secret(json)).unwrap();
-        assert_eq!(base, "https://acme.api.augmentcode.com");
-        assert_eq!(
-            headers,
-            vec![("Authorization".to_string(), "Bearer tok-123".to_string())]
-        );
-    }
+    fn augment_upstream_reads_the_session_and_refuses_what_it_cannot_read() {
+        // the tenant is the base and the token is sent as a bearer
+        {
+            let json = r#"{"accessToken":"tok-123","tenantURL":"https://acme.api.augmentcode.com/","scopes":["read"]}"#;
+            let (base, headers) = augment_upstream(&secret(json)).unwrap();
+            assert_eq!(base, "https://acme.api.augmentcode.com");
+            assert_eq!(
+                headers,
+                vec![("Authorization".to_string(), "Bearer tok-123".to_string())]
+            );
+        }
+        // a session it cannot read is refused without echoing the token
+        {
+            let truncated = r#"{"accessToken":"tok-123","tenantURL":"https://acme.api.augmentcode"#;
+            let err = augment_upstream(&secret(truncated)).unwrap_err();
+            assert!(
+                !err.contains("tok-123"),
+                "the message echoed the token: {err}"
+            );
 
-    #[test]
-    fn augment_refuses_a_session_it_cannot_read_without_echoing_it() {
-        let truncated = r#"{"accessToken":"tok-123","tenantURL":"https://acme.api.augmentcode"#;
-        let err = augment_upstream(&secret(truncated)).unwrap_err();
-        assert!(
-            !err.contains("tok-123"),
-            "the message echoed the token: {err}"
-        );
+            let foreign = r#"{"accessToken":"tok-123","tenantURL":"https://evil.example/"}"#;
+            assert!(augment_upstream(&secret(foreign)).is_err());
 
-        let foreign = r#"{"accessToken":"tok-123","tenantURL":"https://evil.example/"}"#;
-        assert!(augment_upstream(&secret(foreign)).is_err());
+            let no_token = r#"{"tenantURL":"https://acme.api.augmentcode.com/"}"#;
+            assert!(
+                augment_upstream(&secret(no_token))
+                    .unwrap_err()
+                    .contains("accessToken")
+            );
 
-        let no_token = r#"{"tenantURL":"https://acme.api.augmentcode.com/"}"#;
-        assert!(
-            augment_upstream(&secret(no_token))
-                .unwrap_err()
-                .contains("accessToken")
-        );
-
-        let empty = r#"{"accessToken":"","tenantURL":"https://acme.api.augmentcode.com/"}"#;
-        assert!(augment_upstream(&secret(empty)).is_err());
+            let empty = r#"{"accessToken":"","tenantURL":"https://acme.api.augmentcode.com/"}"#;
+            assert!(augment_upstream(&secret(empty)).is_err());
+        }
     }
 
     #[test]

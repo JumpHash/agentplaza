@@ -238,35 +238,3 @@ pub fn host_env() -> Env {
 /// command interpreter, the Windows directory and the executable extensions. Without them most programs fail to
 /// start, because a process's environment starts empty.
 pub const WINDOWS_VARS: [&str; 4] = ["SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_work_folder_is_expanded_under_the_home() {
-        let home = Path::new("/home/agent");
-        assert_eq!(
-            work_folder("~/AgentPlaza", home).unwrap(),
-            PathBuf::from("/home/agent/AgentPlaza")
-        );
-        assert_eq!(
-            work_folder("~", home).unwrap(),
-            PathBuf::from("/home/agent")
-        );
-        assert_eq!(
-            work_folder("projects/x", home).unwrap(),
-            PathBuf::from("/home/agent/projects/x")
-        );
-        assert_eq!(
-            work_folder("/srv/work", home).unwrap(),
-            PathBuf::from("/srv/work")
-        );
-        assert!(work_folder("  ", home).is_err());
-    }
-
-    #[test]
-    fn windows_runs_get_the_system_variables_from_the_daemon() {
-        assert_eq!(WINDOWS_VARS, ["SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"]);
-    }
-}

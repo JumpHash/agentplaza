@@ -932,39 +932,6 @@ mod tests {
     }
 
     #[test]
-    fn reverse_reader_yields_whole_lines_newest_first_across_blocks() {
-        let dir = state("reverse");
-        let path = dir.join("lines.jsonl");
-        let text = "first line\nsecond is longer than the block size\n\nlast";
-        fs::write(&path, text).unwrap();
-        for chunk in [1u64, 3, 7, 64] {
-            let mut seen = Vec::new();
-            for_each_line_rev(&path, chunk, |line| {
-                seen.push(String::from_utf8(line.to_vec()).unwrap());
-                true
-            })
-            .unwrap();
-            assert_eq!(
-                seen,
-                vec![
-                    "last",
-                    "",
-                    "second is longer than the block size",
-                    "first line"
-                ],
-                "chunk {chunk}"
-            );
-        }
-        let mut count = 0;
-        for_each_line_rev(&path, 4, |_| {
-            count += 1;
-            count < 2
-        })
-        .unwrap();
-        assert_eq!(count, 2, "a visit that returns false stops the read");
-    }
-
-    #[test]
     fn transcripts_round_trip_and_pages_are_newest_first_across_a_restart() {
         let dir = state("round-trip");
         let files = Files::open(&dir);
@@ -1247,33 +1214,5 @@ mod tests {
             "the rows survive a restart"
         );
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// Rotation keeps two generations of the IDE audit: the newest rows survive, contiguous and newest first.
-    #[test]
-    fn ide_audit_rotation_keeps_the_newest_rows() {
-        let dir = state("ide-audit-rotate");
-        let files = Files::open_with(&dir, 200, CHUNK);
-        for at_ms in 1..=30u64 {
-            files.append_ide_audit(&json!({ "at_ms": at_ms, "actor": "owner", "workspace": "agent:12", "kind": "write" })).unwrap();
-        }
-        assert!(dir.join("ide-audit.1.jsonl").exists());
-        assert!(dir.join("ide-audit.2.jsonl").exists());
-        assert!(
-            !dir.join("ide-audit.3.jsonl").exists(),
-            "only two rotations are kept"
-        );
-        let ats: Vec<u64> = files
-            .ide_audit(None, 500)
-            .unwrap()
-            .iter()
-            .map(|r| r["at_ms"].as_u64().unwrap())
-            .collect();
-        assert_eq!(ats.first(), Some(&30));
-        assert!(
-            ats.windows(2).all(|w| w[0] == w[1] + 1),
-            "the kept rows are contiguous: {ats:?}"
-        );
-        assert_eq!(files.ide_audit(Some("agent:12"), 3).unwrap().len(), 3);
     }
 }

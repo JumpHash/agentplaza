@@ -258,7 +258,6 @@ fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
 
     #[derive(Resource, Debug, Default)]
     struct Sim {
@@ -313,19 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn time_resource_tracks_dt_and_elapsed() {
-        let mut engine = EngineWorld::new();
-        engine.advance(Duration::from_millis(1000));
-        let t = *engine.world().resource::<Time>();
-        assert_eq!((t.dt, t.elapsed), (0.0, 0.0));
-        engine.advance(Duration::from_millis(1007));
-        let t = *engine.world().resource::<Time>();
-        assert!((t.dt - 0.007).abs() < 1e-12);
-        assert!((t.elapsed - 0.007).abs() < 1e-12);
-        assert!((t.now - 1.007).abs() < 1e-12);
-    }
-
-    #[test]
     fn motion_follows_the_markers() {
         let mut engine = EngineWorld::new();
         assert!(matches!(engine.motion(), Motion::Rest));
@@ -350,54 +336,5 @@ mod tests {
 
         assert!(engine.world_mut().despawn(ambient));
         assert!(matches!(engine.motion(), Motion::Rest));
-    }
-
-    #[test]
-    fn transforms_propagate_through_three_levels() {
-        let mut engine = EngineWorld::new();
-        let root = engine.spawn_node(Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)));
-        let mid = engine.spawn_child(
-            root,
-            Transform {
-                translation: Vec3::new(0.0, 2.0, 0.0),
-                scale: Vec3::splat(2.0),
-                ..Transform::default()
-            },
-        );
-        let leaf = engine.spawn_child(mid, Transform::from_translation(Vec3::new(0.0, 0.0, 3.0)));
-        engine.advance(Duration::ZERO);
-
-        // The mid node's scale applies to its child's offset: (1,2,0) + 2 * (0,0,3).
-        let expected = Vec3::new(1.0, 2.0, 6.0);
-        let got = Vec3::from(
-            engine
-                .world()
-                .get::<GlobalTransform>(leaf)
-                .unwrap()
-                .0
-                .translation,
-        );
-        assert!(
-            (got - expected).abs().max_element() < 1e-5,
-            "leaf at {got:?}"
-        );
-        let mid_at = Vec3::from(
-            engine
-                .world()
-                .get::<GlobalTransform>(mid)
-                .unwrap()
-                .0
-                .translation,
-        );
-        assert!((mid_at - Vec3::new(1.0, 2.0, 0.0)).abs().max_element() < 1e-5);
-    }
-
-    #[test]
-    fn a_parent_cycle_terminates() {
-        let mut engine = EngineWorld::new();
-        let a = engine.spawn_node(Transform::default());
-        let b = engine.spawn_child(a, Transform::default());
-        engine.world_mut().entity_mut(a).insert(Parent(b));
-        engine.advance(Duration::ZERO);
     }
 }

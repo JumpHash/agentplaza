@@ -388,98 +388,158 @@ mod tests {
     }
 
     #[test]
-    fn gemini_is_the_cli_in_acp_mode_with_yolo_refused() {
-        let gemini = entry("gemini").expect("gemini");
-        assert_eq!(
-            gemini.install,
-            Install::Npm {
-                package: "@google/gemini-cli",
-                version: "0.62.0",
-                integrity: "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww==",
-            }
-        );
-        assert_eq!(gemini.binary, "gemini");
-        assert_eq!(gemini.args, ["--acp"]);
-        assert_eq!(gemini.refused_modes, ["yolo"]);
+    fn engine_pins_install_the_cli_in_acp_mode_with_bypass_modes_refused() {
+        // gemini is the CLI in ACP mode with yolo refused.
+        {
+            let gemini = entry("gemini").expect("gemini");
+            assert_eq!(
+                gemini.install,
+                Install::Npm {
+                    package: "@google/gemini-cli",
+                    version: "0.62.0",
+                    integrity: "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww==",
+                }
+            );
+            assert_eq!(gemini.binary, "gemini");
+            assert_eq!(gemini.args, ["--acp"]);
+            assert_eq!(gemini.refused_modes, ["yolo"]);
+        }
+        // qwen is the CLI in ACP mode with yolo refused.
+        {
+            let qwen = entry("qwen").expect("qwen");
+            assert_eq!(
+                qwen.install,
+                Install::Npm {
+                    package: "@qwen-code/qwen-code",
+                    version: "0.24.7",
+                    integrity: "sha512-NE+Ps9juMJS7DaHEVENIAJWCrzTiO/2bNq2TidmxmFc0ZbSMVKCfX3tlu2RY+CoP8xHFfUcy3MfQDQNszBJpJQ==",
+                }
+            );
+            assert_eq!(qwen.binary, "qwen");
+            assert_eq!(qwen.args, ["--acp"]);
+            assert_eq!(qwen.refused_modes, ["yolo"]);
+        }
+        // cline is the CLI in ACP mode with no mode refused.
+        {
+            let cline = entry("cline").expect("cline");
+            assert_eq!(
+                cline.install,
+                Install::Npm {
+                    package: "cline",
+                    version: "3.0.67",
+                    integrity: "sha512-4aMoB/jww42vDt/9iXqdMbmA7QiVNP5dPLDrz4mt4veKp9Y2DL041RL67PCrEH0TeWsLuAo4nIjEiwsa93TL3A==",
+                }
+            );
+            assert_eq!(cline.binary, "cline");
+            assert_eq!(cline.args, ["--acp"]);
+            assert!(cline.refused_modes.is_empty());
+        }
+        // kilo is the CLI in ACP mode with no mode refused.
+        {
+            let kilo = entry("kilo").expect("kilo");
+            assert_eq!(
+                kilo.install,
+                Install::Npm {
+                    package: "@kilocode/cli",
+                    version: "7.8.1",
+                    integrity: "sha512-3dNWXhFhMxLkTXt8lMJ8fH1ZK8Ws7D6jEipMCmxejkaMNp9hd7FPnjCGUjK6zknnSJZokkA4+guFxoJQ+njYYw==",
+                }
+            );
+            assert_eq!(kilo.binary, "kilo");
+            assert_eq!(kilo.args, ["acp"]);
+            assert!(kilo.refused_modes.is_empty());
+        }
+        // copilot is the CLI in ACP mode with its bypass modes refused.
+        {
+            let copilot = entry("copilot").expect("copilot");
+            assert_eq!(
+                copilot.install,
+                Install::Npm {
+                    package: "@github/copilot",
+                    version: "1.0.90",
+                    integrity: "sha512-XNhA7NscW1D/H537wK+NRuUyWNCqK5JIZZ4aknhibZMiOvRLLbasR4t1QxzSEfr+ZOC6AIY9e6PkGMjgOAN5aQ==",
+                }
+            );
+            assert_eq!(copilot.binary, "copilot");
+            assert_eq!(copilot.args, ["--acp", "--stdio"]);
+            assert_eq!(
+                copilot.refused_modes,
+                ["allow-all", "allow_all", "yolo", "autopilot"]
+            );
+        }
+        // vibe is the PyPI install of its CLI in ACP mode with auto-approve and bypass refused.
+        {
+            let vibe = entry("vibe").expect("vibe");
+            assert_eq!(
+                vibe.install,
+                Install::Pip {
+                    package: "mistral-vibe",
+                    version: "2.25.0",
+                    file: "mistral_vibe-2.25.0-py3-none-any.whl",
+                    sha256: "cdedb722d5b8ae6770b56496f6b17677cc2d02705b6e6d5205c0c09167e652fa",
+                }
+            );
+            assert_eq!(vibe.binary, "vibe-acp");
+            assert!(vibe.args.is_empty());
+            assert_eq!(vibe.refused_modes, ["auto-approve", "bypass"]);
+            assert!(vibe.refuses("auto-approve"));
+            assert!(vibe.refuses("Bypass_Tool_Permissions"));
+            assert!(!vibe.refuses("default"));
+        }
     }
 
     #[test]
-    fn qwen_is_the_cli_in_acp_mode_with_yolo_refused() {
-        let qwen = entry("qwen").expect("qwen");
-        assert_eq!(
-            qwen.install,
-            Install::Npm {
-                package: "@qwen-code/qwen-code",
-                version: "0.24.7",
-                integrity: "sha512-NE+Ps9juMJS7DaHEVENIAJWCrzTiO/2bNq2TidmxmFc0ZbSMVKCfX3tlu2RY+CoP8xHFfUcy3MfQDQNszBJpJQ==",
-            }
-        );
-        assert_eq!(qwen.binary, "qwen");
-        assert_eq!(qwen.args, ["--acp"]);
-        assert_eq!(qwen.refused_modes, ["yolo"]);
-    }
-
-    #[test]
-    fn cline_is_the_cli_in_acp_mode_with_no_mode_refused() {
-        let cline = entry("cline").expect("cline");
-        assert_eq!(
-            cline.install,
-            Install::Npm {
-                package: "cline",
-                version: "3.0.67",
-                integrity: "sha512-4aMoB/jww42vDt/9iXqdMbmA7QiVNP5dPLDrz4mt4veKp9Y2DL041RL67PCrEH0TeWsLuAo4nIjEiwsa93TL3A==",
-            }
-        );
-        assert_eq!(cline.binary, "cline");
-        assert_eq!(cline.args, ["--acp"]);
-        assert!(cline.refused_modes.is_empty());
-    }
-
-    #[test]
-    fn kilo_is_the_cli_in_acp_mode_with_no_mode_refused() {
-        let kilo = entry("kilo").expect("kilo");
-        assert_eq!(
-            kilo.install,
-            Install::Npm {
-                package: "@kilocode/cli",
-                version: "7.8.1",
-                integrity: "sha512-3dNWXhFhMxLkTXt8lMJ8fH1ZK8Ws7D6jEipMCmxejkaMNp9hd7FPnjCGUjK6zknnSJZokkA4+guFxoJQ+njYYw==",
-            }
-        );
-        assert_eq!(kilo.binary, "kilo");
-        assert_eq!(kilo.args, ["acp"]);
-        assert!(kilo.refused_modes.is_empty());
-    }
-
-    #[test]
-    fn copilot_is_the_cli_in_acp_mode_with_its_bypass_modes_refused() {
-        let copilot = entry("copilot").expect("copilot");
-        assert_eq!(
-            copilot.install,
-            Install::Npm {
-                package: "@github/copilot",
-                version: "1.0.90",
-                integrity: "sha512-XNhA7NscW1D/H537wK+NRuUyWNCqK5JIZZ4aknhibZMiOvRLLbasR4t1QxzSEfr+ZOC6AIY9e6PkGMjgOAN5aQ==",
-            }
-        );
-        assert_eq!(copilot.binary, "copilot");
-        assert_eq!(copilot.args, ["--acp", "--stdio"]);
-        assert_eq!(
-            copilot.refused_modes,
-            ["allow-all", "allow_all", "yolo", "autopilot"]
-        );
-    }
-
-    #[test]
-    fn a_mode_is_refused_when_its_id_names_a_refused_word_in_any_case() {
-        let copilot = entry("copilot").expect("copilot");
-        assert!(copilot.refuses("allow-all"));
-        assert!(copilot.refuses("Allow_All_Tools"));
-        assert!(copilot.refuses("autopilot"));
-        assert!(!copilot.refuses("ask"));
-        let claude = entry("claude").expect("claude");
-        assert!(claude.refuses("bypassPermissions"));
-        assert!(!claude.refuses("acceptEdits"));
+    fn refused_modes_match_by_word_in_any_case_and_exactly() {
+        // A mode is refused when its id names a refused word in any case.
+        {
+            let copilot = entry("copilot").expect("copilot");
+            assert!(copilot.refuses("allow-all"));
+            assert!(copilot.refuses("Allow_All_Tools"));
+            assert!(copilot.refuses("autopilot"));
+            assert!(!copilot.refuses("ask"));
+            let claude = entry("claude").expect("claude");
+            assert!(claude.refuses("bypassPermissions"));
+            assert!(!claude.refuses("acceptEdits"));
+        }
+        // kimi is the CLI in ACP mode with yolo refused, and auto matched exactly.
+        {
+            let kimi = entry("kimi").expect("kimi");
+            assert_eq!(
+                kimi.install,
+                Install::Npm {
+                    package: "@moonshot-ai/kimi-code",
+                    version: "2.1.1",
+                    integrity: "sha512-xClqcnTQUKgKDbeOGPU78qcwxGzL8wA2rqWuOX3CLpyQ1/NhSX7jAh6hZo/JFwThSX8obkgef3uw/li5JaJNyw==",
+                }
+            );
+            assert_eq!(kimi.binary, "kimi");
+            assert_eq!(kimi.args, ["acp"]);
+            assert!(kimi.refuses("yolo"));
+            assert!(kimi.refuses("YOLO"));
+            assert!(kimi.refuses("auto"));
+            assert!(kimi.refuses("Auto"));
+            // The substring of a harmless mode is not the auto mode.
+            assert!(!kimi.refuses("autonomous"));
+            assert!(!kimi.refuses("auto-edit"));
+            assert!(!kimi.refuses("default"));
+        }
+        // auggie is the CLI in ACP mode with its launch allow rule refused.
+        {
+            let auggie = entry("auggie").expect("auggie");
+            assert_eq!(
+                auggie.install,
+                Install::Npm {
+                    package: "@augmentcode/auggie",
+                    version: "0.36.0",
+                    integrity: "sha512-jb4kq97pGzG0i5UyISc//LjTVlFzIywwD+VfPemiSIl58KjLfxry3KDgxWYnr1vmV8yUkySVzjLnj4ewUEbT/Q==",
+                }
+            );
+            assert_eq!(auggie.binary, "auggie");
+            assert_eq!(auggie.args, ["--acp"]);
+            assert!(auggie.refuses("launch-process:allow"));
+            assert!(auggie.refuses("Launch-Process:Allow-All"));
+            assert!(!auggie.refuses("launch-process:ask"));
+        }
     }
 
     #[test]
@@ -511,26 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn vibe_is_the_pypi_install_of_its_cli_in_acp_mode_with_auto_approve_and_bypass_refused() {
-        let vibe = entry("vibe").expect("vibe");
-        assert_eq!(
-            vibe.install,
-            Install::Pip {
-                package: "mistral-vibe",
-                version: "2.25.0",
-                file: "mistral_vibe-2.25.0-py3-none-any.whl",
-                sha256: "cdedb722d5b8ae6770b56496f6b17677cc2d02705b6e6d5205c0c09167e652fa",
-            }
-        );
-        assert_eq!(vibe.binary, "vibe-acp");
-        assert!(vibe.args.is_empty());
-        assert_eq!(vibe.refused_modes, ["auto-approve", "bypass"]);
-        assert!(vibe.refuses("auto-approve"));
-        assert!(vibe.refuses("Bypass_Tool_Permissions"));
-        assert!(!vibe.refuses("default"));
-    }
-
-    #[test]
     fn goose_ships_a_pinned_musl_archive_per_architecture_with_auto_refused() {
         let goose = entry("goose").expect("goose");
         let Install::Release {
@@ -558,46 +598,5 @@ mod tests {
             assets[1].sha256,
             "4584ba8840fc77c2f3e48758f45543c18f1c1293d704941a8eeb5220852ce653"
         );
-    }
-
-    #[test]
-    fn kimi_is_the_cli_in_acp_mode_with_yolo_refused_and_auto_matched_exactly() {
-        let kimi = entry("kimi").expect("kimi");
-        assert_eq!(
-            kimi.install,
-            Install::Npm {
-                package: "@moonshot-ai/kimi-code",
-                version: "2.1.1",
-                integrity: "sha512-xClqcnTQUKgKDbeOGPU78qcwxGzL8wA2rqWuOX3CLpyQ1/NhSX7jAh6hZo/JFwThSX8obkgef3uw/li5JaJNyw==",
-            }
-        );
-        assert_eq!(kimi.binary, "kimi");
-        assert_eq!(kimi.args, ["acp"]);
-        assert!(kimi.refuses("yolo"));
-        assert!(kimi.refuses("YOLO"));
-        assert!(kimi.refuses("auto"));
-        assert!(kimi.refuses("Auto"));
-        // The substring of a harmless mode is not the auto mode.
-        assert!(!kimi.refuses("autonomous"));
-        assert!(!kimi.refuses("auto-edit"));
-        assert!(!kimi.refuses("default"));
-    }
-
-    #[test]
-    fn auggie_is_the_cli_in_acp_mode_with_its_launch_allow_rule_refused() {
-        let auggie = entry("auggie").expect("auggie");
-        assert_eq!(
-            auggie.install,
-            Install::Npm {
-                package: "@augmentcode/auggie",
-                version: "0.36.0",
-                integrity: "sha512-jb4kq97pGzG0i5UyISc//LjTVlFzIywwD+VfPemiSIl58KjLfxry3KDgxWYnr1vmV8yUkySVzjLnj4ewUEbT/Q==",
-            }
-        );
-        assert_eq!(auggie.binary, "auggie");
-        assert_eq!(auggie.args, ["--acp"]);
-        assert!(auggie.refuses("launch-process:allow"));
-        assert!(auggie.refuses("Launch-Process:Allow-All"));
-        assert!(!auggie.refuses("launch-process:ask"));
     }
 }

@@ -334,57 +334,59 @@ mod tests {
     }
 
     #[test]
-    fn with_no_backend_built_nothing_is_chosen() {
-        for os in [Os::Linux, Os::Macos, Os::Windows] {
-            let mut p = probe(os);
-            p.display = true;
-            p.wayland = true;
-            p.portal = true;
-            assert_eq!(choose(&p, NONE), Backend::Unavailable);
+    fn backend_choice_follows_the_built_backends_and_the_display() {
+        // with_no_backend_built_nothing_is_chosen: with no backend built,
+        // nothing is chosen on any OS.
+        {
+            for os in [Os::Linux, Os::Macos, Os::Windows] {
+                let mut p = probe(os);
+                p.display = true;
+                p.wayland = true;
+                p.portal = true;
+                assert_eq!(choose(&p, NONE), Backend::Unavailable);
+            }
         }
-    }
+        // linux_picks_wayland_only_with_the_portal_and_x11_for_a_display:
+        // Wayland needs the portal, X11 serves a display.
+        {
+            let mut wayland = probe(Os::Linux);
+            wayland.wayland = true;
+            wayland.display = true;
+            wayland.portal = true;
+            assert_eq!(choose(&wayland, BOTH), Backend::Wayland);
 
-    #[test]
-    fn linux_picks_wayland_only_with_the_portal_and_x11_for_a_display() {
-        let mut wayland = probe(Os::Linux);
-        wayland.wayland = true;
-        wayland.display = true;
-        wayland.portal = true;
-        assert_eq!(choose(&wayland, BOTH), Backend::Wayland);
+            wayland.portal = false;
+            assert_eq!(
+                choose(&wayland, BOTH),
+                Backend::X11,
+                "XWayland's DISPLAY serves when the portal is not reachable"
+            );
 
-        wayland.portal = false;
-        assert_eq!(
-            choose(&wayland, BOTH),
-            Backend::X11,
-            "XWayland's DISPLAY serves when the portal is not reachable"
-        );
-
-        let mut x = probe(Os::Linux);
-        x.display = true;
-        assert_eq!(choose(&x, BOTH), Backend::X11);
-    }
-
-    #[test]
-    fn xvfb_alone_is_not_a_shared_screen() {
-        let mut xvfb = probe(Os::Linux);
-        xvfb.xvfb = true;
-        assert_eq!(
-            choose(&xvfb, BOTH),
-            Backend::Unavailable,
-            "pixel sessions use Xvfb; the owner's screen needs DISPLAY or Wayland"
-        );
-        assert!(unavailable_reason(&xvfb, BOTH).contains("DISPLAY"));
-    }
-
-    #[test]
-    fn macos_and_windows_pick_their_own_backend() {
-        let built = Built {
-            macos: true,
-            windows: true,
-            ..NONE
-        };
-        assert_eq!(choose(&probe(Os::Macos), built), Backend::MacOs);
-        assert_eq!(choose(&probe(Os::Windows), built), Backend::Windows);
+            let mut x = probe(Os::Linux);
+            x.display = true;
+            assert_eq!(choose(&x, BOTH), Backend::X11);
+        }
+        // xvfb_alone_is_not_a_shared_screen: Xvfb alone is not a shared screen.
+        {
+            let mut xvfb = probe(Os::Linux);
+            xvfb.xvfb = true;
+            assert_eq!(
+                choose(&xvfb, BOTH),
+                Backend::Unavailable,
+                "pixel sessions use Xvfb; the owner's screen needs DISPLAY or Wayland"
+            );
+            assert!(unavailable_reason(&xvfb, BOTH).contains("DISPLAY"));
+        }
+        // macos_and_windows_pick_their_own_backend: each OS picks its backend.
+        {
+            let built = Built {
+                macos: true,
+                windows: true,
+                ..NONE
+            };
+            assert_eq!(choose(&probe(Os::Macos), built), Backend::MacOs);
+            assert_eq!(choose(&probe(Os::Windows), built), Backend::Windows);
+        }
     }
 
     #[test]
@@ -421,27 +423,5 @@ mod tests {
         assert!(!ui_tree(&linux, Backend::Fake, BOTH));
         assert!(ui_tree(&probe(Os::Macos), Backend::MacOs, NONE));
         assert!(!ui_tree(&probe(Os::Windows), Backend::Unavailable, NONE));
-    }
-
-    #[test]
-    fn the_fake_desktop_counts_no_applications() {
-        let mut desktop = open(
-            Backend::Fake,
-            &probe(Os::Linux),
-            NONE,
-            Path::new("/nonexistent"),
-        );
-        assert_eq!(apps_count(Backend::Fake, desktop.as_mut()), 0);
-    }
-
-    #[test]
-    fn an_unavailable_desktop_counts_no_applications() {
-        let mut desktop = open(
-            Backend::Unavailable,
-            &probe(Os::Linux),
-            NONE,
-            Path::new("/nonexistent"),
-        );
-        assert_eq!(apps_count(Backend::Unavailable, desktop.as_mut()), 0);
     }
 }

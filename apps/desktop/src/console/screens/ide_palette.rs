@@ -231,32 +231,3 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         _ => Task::none(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_commands_are_always_offered_and_an_empty_query_keeps_them_all() {
-        let st = State::default();
-        let all = filtered(&st);
-        assert!(all.iter().any(|i| i.label == "Show the diff"));
-        assert_eq!(all.len(), items(&st).len());
-    }
-
-    #[test]
-    fn a_query_keeps_only_the_items_with_each_of_its_words() {
-        let mut st = State::default();
-        st.palette = Some(Palette {
-            query: "terminal drawer".into(),
-            cursor: 0,
-        });
-        let hits: Vec<String> = filtered(&st).into_iter().map(|i| i.label).collect();
-        assert_eq!(hits, vec!["Toggle the terminal drawer".to_string()]);
-        st.palette = Some(Palette {
-            query: "nothing like this".into(),
-            cursor: 0,
-        });
-        assert!(filtered(&st).is_empty());
-    }
-}

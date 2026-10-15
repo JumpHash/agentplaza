@@ -307,52 +307,53 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_name_is_refused() {
-        let root = scratch("duplicate");
-        let src = root.join("src.ext4");
-        write_image(&src);
-        let store = VolumeStore::open(root.join("store")).expect("a store");
-        store.create("data", &src).expect("a volume");
+    fn volume_create_refuses_duplicate_bad_and_relative_inputs() {
+        // duplicate_name_is_refused: a second volume with the same name is refused.
+        {
+            let root = scratch("duplicate");
+            let src = root.join("src.ext4");
+            write_image(&src);
+            let store = VolumeStore::open(root.join("store")).expect("a store");
+            store.create("data", &src).expect("a volume");
 
-        assert!(matches!(
-            store.create("data", &src),
-            Err(VolumeError::Exists(_))
-        ));
+            assert!(matches!(
+                store.create("data", &src),
+                Err(VolumeError::Exists(_))
+            ));
 
-        let _ = fs::remove_dir_all(&root);
-    }
+            let _ = fs::remove_dir_all(&root);
+        }
+        // bad_name_is_refused: a name with a path part or an empty name is refused, and nothing is listed.
+        {
+            let root = scratch("bad-name");
+            let src = root.join("src.ext4");
+            write_image(&src);
+            let store = VolumeStore::open(root.join("store")).expect("a store");
 
-    #[test]
-    fn bad_name_is_refused() {
-        let root = scratch("bad-name");
-        let src = root.join("src.ext4");
-        write_image(&src);
-        let store = VolumeStore::open(root.join("store")).expect("a store");
+            assert!(matches!(
+                store.create("../escape", &src),
+                Err(VolumeError::Invalid(_))
+            ));
+            assert!(matches!(
+                store.create("", &src),
+                Err(VolumeError::Invalid(_))
+            ));
+            assert!(store.list().is_empty());
 
-        assert!(matches!(
-            store.create("../escape", &src),
-            Err(VolumeError::Invalid(_))
-        ));
-        assert!(matches!(
-            store.create("", &src),
-            Err(VolumeError::Invalid(_))
-        ));
-        assert!(store.list().is_empty());
+            let _ = fs::remove_dir_all(&root);
+        }
+        // relative_source_is_refused: a relative source image path is refused.
+        {
+            let root = scratch("relative");
+            let store = VolumeStore::open(root.join("store")).expect("a store");
 
-        let _ = fs::remove_dir_all(&root);
-    }
+            assert!(matches!(
+                store.create("data", Path::new("src.ext4")),
+                Err(VolumeError::Invalid(_))
+            ));
 
-    #[test]
-    fn relative_source_is_refused() {
-        let root = scratch("relative");
-        let store = VolumeStore::open(root.join("store")).expect("a store");
-
-        assert!(matches!(
-            store.create("data", Path::new("src.ext4")),
-            Err(VolumeError::Invalid(_))
-        ));
-
-        let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

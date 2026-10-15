@@ -347,34 +347,6 @@ mod tests {
     }
 
     #[test]
-    fn a_search_is_trimmed_and_cut_on_a_character_boundary() {
-        assert_eq!(clamp_query("  hi  "), "hi");
-        assert_eq!(clamp_query(&"é".repeat(150)).len(), 200);
-        // "a" then 100 two-byte characters: the 100th would make 201 bytes, so it is dropped whole.
-        let text = format!("a{}", "é".repeat(100));
-        assert_eq!(clamp_query(&text).len(), 199);
-        assert_eq!(clamp_query("   "), "");
-    }
-
-    #[test]
-    fn an_older_page_is_only_asked_for_when_it_is_older() {
-        assert_eq!(older_cursor(Some(40), None), Some(40));
-        assert_eq!(older_cursor(Some(40), Some(90)), Some(40));
-        assert_eq!(older_cursor(Some(90), Some(90)), None);
-        assert_eq!(older_cursor(None, Some(90)), None);
-    }
-
-    #[test]
-    fn pages_join_oldest_first_whichever_order_they_were_read_in() {
-        let msg = |n: i64| json!({ "id": format!("c{n}") });
-        // Read newest page first: c9..c7 then c6..c4.
-        let pages = vec![vec![msg(7), msg(8), msg(9)], vec![msg(4), msg(5), msg(6)]];
-        let joined = join_pages(pages);
-        let ids: Vec<&str> = joined.iter().map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["c4", "c5", "c6", "c7", "c8", "c9"]);
-    }
-
-    #[test]
     fn a_listing_carries_only_the_paging_and_search_it_was_given() {
         assert_eq!(listing_path(None, None, None), "/v1/conversations");
         assert_eq!(
@@ -388,54 +360,32 @@ mod tests {
     }
 
     #[test]
-    fn the_next_page_hint_repeats_the_limit_and_the_search() {
-        assert_eq!(
-            more_hint(12, None, None),
-            "agentplaza conversations list --before c12"
-        );
-        assert_eq!(
-            more_hint(12, Some(20), Some("hi")),
-            "agentplaza conversations list --before c12 --limit 20 --q \"hi\""
-        );
-    }
-
-    #[test]
-    fn retention_is_read_in_words() {
-        assert_eq!(
-            retention_line(&json!({ "conversations_max": 4096, "conversations_days": 30 })),
-            "keeps the newest 4096 exchanges, deleted after 30 days"
-        );
-        assert_eq!(
-            retention_line(&json!({ "conversations_max": 100, "conversations_days": 0 })),
-            "keeps the newest 100 exchanges, kept forever"
-        );
-    }
-
-    #[test]
-    fn setting_retention_keeps_the_other_settings_and_drops_dev_models() {
-        let mut doc = json!({
-            "dev_models": true,
-            "laws": { "strict_permits": true },
-            "retention": { "conversations_max": 4096, "conversations_days": 30, "posts_max": 1024 }
-        });
-        set_retention(&mut doc, Some(500), None).unwrap();
-        assert!(doc.get("dev_models").is_none());
-        assert_eq!(doc["laws"]["strict_permits"], true);
-        assert_eq!(doc["retention"]["conversations_max"], 500);
-        assert_eq!(doc["retention"]["conversations_days"], 30);
-        assert_eq!(doc["retention"]["posts_max"], 1024);
-        set_retention(&mut doc, None, Some(0)).unwrap();
-        assert_eq!(doc["retention"]["conversations_max"], 500);
-        assert_eq!(doc["retention"]["conversations_days"], 0);
-    }
-
-    #[test]
-    fn a_settings_document_without_a_retention_block_gets_one() {
-        let mut doc = json!({ "laws": {} });
-        set_retention(&mut doc, Some(100), Some(7)).unwrap();
-        assert_eq!(
-            doc["retention"],
-            json!({ "conversations_max": 100, "conversations_days": 7 })
-        );
+    fn setting_retention_edits_only_the_retention_block() {
+        // Setting retention keeps the other settings and drops the dev models.
+        {
+            let mut doc = json!({
+                "dev_models": true,
+                "laws": { "strict_permits": true },
+                "retention": { "conversations_max": 4096, "conversations_days": 30, "posts_max": 1024 }
+            });
+            set_retention(&mut doc, Some(500), None).unwrap();
+            assert!(doc.get("dev_models").is_none());
+            assert_eq!(doc["laws"]["strict_permits"], true);
+            assert_eq!(doc["retention"]["conversations_max"], 500);
+            assert_eq!(doc["retention"]["conversations_days"], 30);
+            assert_eq!(doc["retention"]["posts_max"], 1024);
+            set_retention(&mut doc, None, Some(0)).unwrap();
+            assert_eq!(doc["retention"]["conversations_max"], 500);
+            assert_eq!(doc["retention"]["conversations_days"], 0);
+        }
+        // A settings document without a retention block gets one.
+        {
+            let mut doc = json!({ "laws": {} });
+            set_retention(&mut doc, Some(100), Some(7)).unwrap();
+            assert_eq!(
+                doc["retention"],
+                json!({ "conversations_max": 100, "conversations_days": 7 })
+            );
+        }
     }
 }

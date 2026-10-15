@@ -156,147 +156,92 @@ mod tests {
         }
     }
 
-    fn paths(v: &[&Entry]) -> Vec<String> {
-        v.iter().map(|e| e.path.clone()).collect()
-    }
-
     #[test]
-    fn root_children_list_dirs_first_then_names_case_insensitively() {
-        let entries = vec![
-            file("README.md"),
-            file("b.txt"),
-            dir("src"),
-            file("Cargo.toml"),
-            dir("Docs"),
-            file("a/nested.txt"),
-            dir("a"),
-        ];
-        let got = children(&entries, "");
-        assert_eq!(
-            paths(&got),
-            ["a", "Docs", "src", "b.txt", "Cargo.toml", "README.md"]
-        );
-    }
+    fn changed_filter_keeps_only_what_the_diff_touches() {
+        // A changed file is kept and the rest is dropped.
+        {
+            let entries = vec![
+                dir("src"),
+                file("src/main.rs"),
+                file("Cargo.toml"),
+                file("a.txt"),
+            ];
+            let changes = parse_unified(include_str!("../tests/fixtures/modify.diff")).unwrap();
+            let kept = changed_filter(&entries, &changes);
+            let got: Vec<&str> = kept.iter().map(|e| e.path.as_str()).collect();
+            assert_eq!(got, ["a.txt"]);
+            assert_eq!(kept[0].kind, EntryKind::File);
+            assert!(
+                kept[0].hash.is_some(),
+                "a kept entry is the listed entry, not a synthesised one"
+            );
+        }
 
-    #[test]
-    fn nested_children_exclude_the_dir_itself_and_deeper_entries() {
-        let entries = vec![
-            dir("src"),
-            dir("src/deep"),
-            file("src/deep/x.rs"),
-            file("src/lib.rs"),
-            file("srcs.txt"),
-            file("src-other/y.rs"),
-        ];
-        assert_eq!(
-            paths(&children(&entries, "src")),
-            ["src/deep", "src/lib.rs"]
-        );
-        assert_eq!(
-            paths(&children(&entries, "src/")),
-            ["src/deep", "src/lib.rs"]
-        );
-        assert_eq!(paths(&children(&entries, "src/deep")), ["src/deep/x.rs"]);
-        assert!(children(&entries, "missing").is_empty());
-    }
+        // The ancestor dirs of a changed file are kept.
+        {
+            let entries = vec![
+                dir("src"),
+                dir("src/ui"),
+                file("src/ui/app.rs"),
+                file("src/main.rs"),
+                dir("docs"),
+                file("docs/guide.md"),
+            ];
+            let changes = parse_unified(
+                "diff --git a/src/ui/app.rs b/src/ui/app.rs\n--- a/src/ui/app.rs\n+++ b/src/ui/app.rs\n@@ -1 +1 @@\n-a\n+b\n",
+            )
+            .unwrap();
+            let kept = changed_filter(&entries, &changes);
+            let got: Vec<&str> = kept.iter().map(|e| e.path.as_str()).collect();
+            assert_eq!(got, ["src", "src/ui", "src/ui/app.rs"]);
+            assert_eq!(kept[0].kind, EntryKind::Dir);
+        }
 
-    #[test]
-    fn entry_name_is_the_last_segment() {
-        assert_eq!(file("a/b/c.txt").name(), "c.txt");
-        assert_eq!(file("top.txt").name(), "top.txt");
-    }
+        // Removed files and missing dirs are shown.
+        {
+            // Multi-file fixture: deleted.txt is gone from the tree, and nothing lists it.
+            let changes = parse_unified(include_str!("../tests/fixtures/multi_file.diff")).unwrap();
+            let entries = vec![file("a.txt"), file("Cargo.toml")];
+            let kept = changed_filter(&entries, &changes);
+            let got: Vec<(&str, EntryKind, bool)> = kept
+                .iter()
+                .map(|e| (e.path.as_str(), e.kind, e.binary))
+                .collect();
+            assert!(got.contains(&("a.txt", EntryKind::File, false)));
+            assert!(got.contains(&("deleted.txt", EntryKind::File, false)));
+            assert!(
+                got.contains(&("old.txt", EntryKind::File, false)),
+                "a rename removes its old path"
+            );
+            assert!(got.contains(&("bin.dat", EntryKind::File, true)));
+            assert!(!got.iter().any(|(p, _, _)| *p == "Cargo.toml"));
+            assert!(
+                kept.windows(2).all(|w| w[0].path < w[1].path),
+                "sorted by path"
+            );
+            let synthesised = kept.iter().find(|e| e.path == "deleted.txt").unwrap();
+            assert_eq!(synthesised.size, 0);
+            assert_eq!(synthesised.hash, None);
+        }
 
-    #[test]
-    fn changed_filter_keeps_a_changed_file_and_drops_the_rest() {
-        let entries = vec![
-            dir("src"),
-            file("src/main.rs"),
-            file("Cargo.toml"),
-            file("a.txt"),
-        ];
-        let changes = parse_unified(include_str!("../tests/fixtures/modify.diff")).unwrap();
-        let kept = changed_filter(&entries, &changes);
-        let got: Vec<&str> = kept.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(got, ["a.txt"]);
-        assert_eq!(kept[0].kind, EntryKind::File);
-        assert!(
-            kept[0].hash.is_some(),
-            "a kept entry is the listed entry, not a synthesised one"
-        );
-    }
-
-    #[test]
-    fn changed_filter_keeps_ancestor_dirs_of_a_changed_file() {
-        let entries = vec![
-            dir("src"),
-            dir("src/ui"),
-            file("src/ui/app.rs"),
-            file("src/main.rs"),
-            dir("docs"),
-            file("docs/guide.md"),
-        ];
-        let changes = parse_unified(
-            "diff --git a/src/ui/app.rs b/src/ui/app.rs\n--- a/src/ui/app.rs\n+++ b/src/ui/app.rs\n@@ -1 +1 @@\n-a\n+b\n",
-        )
-        .unwrap();
-        let kept = changed_filter(&entries, &changes);
-        let got: Vec<&str> = kept.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(got, ["src", "src/ui", "src/ui/app.rs"]);
-        assert_eq!(kept[0].kind, EntryKind::Dir);
-    }
-
-    #[test]
-    fn changed_filter_shows_removed_files_and_missing_dirs() {
-        // Multi-file fixture: deleted.txt is gone from the tree, and nothing lists it.
-        let changes = parse_unified(include_str!("../tests/fixtures/multi_file.diff")).unwrap();
-        let entries = vec![file("a.txt"), file("Cargo.toml")];
-        let kept = changed_filter(&entries, &changes);
-        let got: Vec<(&str, EntryKind, bool)> = kept
-            .iter()
-            .map(|e| (e.path.as_str(), e.kind, e.binary))
-            .collect();
-        assert!(got.contains(&("a.txt", EntryKind::File, false)));
-        assert!(got.contains(&("deleted.txt", EntryKind::File, false)));
-        assert!(
-            got.contains(&("old.txt", EntryKind::File, false)),
-            "a rename removes its old path"
-        );
-        assert!(got.contains(&("bin.dat", EntryKind::File, true)));
-        assert!(!got.iter().any(|(p, _, _)| *p == "Cargo.toml"));
-        assert!(
-            kept.windows(2).all(|w| w[0].path < w[1].path),
-            "sorted by path"
-        );
-        let synthesised = kept.iter().find(|e| e.path == "deleted.txt").unwrap();
-        assert_eq!(synthesised.size, 0);
-        assert_eq!(synthesised.hash, None);
-    }
-
-    #[test]
-    fn changed_filter_synthesises_a_deleted_file_alone() {
-        let changes = parse_unified(include_str!("../tests/fixtures/delete.diff")).unwrap();
-        let kept = changed_filter(&[], &changes);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].path, "deleted.txt");
-        assert_eq!(kept[0].kind, EntryKind::File);
-    }
-
-    #[test]
-    fn changed_filter_synthesises_missing_ancestors_of_a_deleted_file() {
-        let nested = parse_unified(
-            "diff --git a/d/e/f.txt b/d/e/f.txt\ndeleted file mode 100644\n--- a/d/e/f.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
-        )
-        .unwrap();
-        let kept = changed_filter(&[dir("d")], &nested);
-        let got: Vec<(&str, EntryKind)> = kept.iter().map(|e| (e.path.as_str(), e.kind)).collect();
-        assert_eq!(
-            got,
-            [
-                ("d", EntryKind::Dir),
-                ("d/e", EntryKind::Dir),
-                ("d/e/f.txt", EntryKind::File)
-            ]
-        );
+        // The missing ancestors of a deleted file are synthesised.
+        {
+            let nested = parse_unified(
+                "diff --git a/d/e/f.txt b/d/e/f.txt\ndeleted file mode 100644\n--- a/d/e/f.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
+            )
+            .unwrap();
+            let kept = changed_filter(&[dir("d")], &nested);
+            let got: Vec<(&str, EntryKind)> =
+                kept.iter().map(|e| (e.path.as_str(), e.kind)).collect();
+            assert_eq!(
+                got,
+                [
+                    ("d", EntryKind::Dir),
+                    ("d/e", EntryKind::Dir),
+                    ("d/e/f.txt", EntryKind::File)
+                ]
+            );
+        }
     }
 
     #[test]

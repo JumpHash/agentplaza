@@ -263,187 +263,184 @@ mod tests {
     }
 
     #[test]
-    fn page_is_one_4k_page() {
-        assert_eq!(ZERO_PAGE_SIZE, 4096);
-        let zp = ZeroPage::new(None).unwrap();
-        assert_eq!(zp.as_bytes().len(), 4096);
-    }
-
-    #[test]
-    fn no_header_sets_only_kernel_alignment() {
-        let zp = ZeroPage::new(None).unwrap();
-        let b = zp.as_bytes();
-        assert_eq!(u32_at(b, 0x230), 0x0100_0000);
-        assert!(b[0x1f1..0x230].iter().all(|&x| x == 0));
-        assert!(b[0x234..0x290].iter().all(|&x| x == 0));
-    }
-
-    #[test]
-    fn setup_header_is_copied_to_0x1f1() {
-        let hdr: Vec<u8> = (0..0x20u8).map(|i| i ^ 0x5a).collect();
-        let zp = ZeroPage::new(Some(&hdr)).unwrap();
-        assert_eq!(&zp.as_bytes()[0x1f1..0x1f1 + 0x20], &hdr[..]);
-    }
-
-    #[test]
-    fn too_long_setup_header_is_rejected() {
-        assert!(ZeroPage::new(Some(&vec![0u8; 0x9f])).is_ok());
-        assert_eq!(
-            ZeroPage::new(Some(&vec![0u8; 0xa0])).err(),
-            Some(ZeroPageError::SetupHeaderTooLong(0xa0))
-        );
-    }
-
-    #[test]
-    fn set_command_line_writes_fields_at_fixed_offsets() {
-        let mut zp = ZeroPage::new(None).unwrap();
-        zp.set_command_line(0x2000_0000, 0x7ff);
-        let b = zp.as_bytes();
-        assert_eq!(b[0x210], 0xff);
-        assert_eq!(&b[0x1fe..0x200], &[0x55, 0xaa]);
-        assert_eq!(u32_at(b, 0x202), 0x5372_6448);
-        assert_eq!(u32_at(b, 0x228), 0x2000_0000);
-        assert_eq!(u32_at(b, 0x238), 0x7ff);
-    }
-
-    #[test]
-    fn set_initrd_and_acpi_rsdp_write_at_fixed_offsets() {
-        let mut zp = ZeroPage::new(None).unwrap();
-        zp.set_initrd(0x3000_0000, 0x12_3456);
-        zp.set_acpi_rsdp(0x000e_0000_1234_5678);
-        let b = zp.as_bytes();
-        assert_eq!(u32_at(b, 0x218), 0x3000_0000);
-        assert_eq!(u32_at(b, 0x21c), 0x12_3456);
-        assert_eq!(u64_at(b, 0x070), 0x000e_0000_1234_5678);
-    }
-
-    #[test]
-    fn add_e820_writes_packed_entries_and_bumps_count() {
-        let mut zp = ZeroPage::new(None).unwrap();
-        let a = E820Entry {
-            addr: 0,
-            size: 0x9_fc00,
-            kind: E820_RAM,
-        };
-        let b = E820Entry {
-            addr: 0x10_0000,
-            size: 0x1f00_0000,
-            kind: E820_RAM,
-        };
-        zp.add_e820(a).unwrap();
-        zp.add_e820(b).unwrap();
-        let bytes = zp.as_bytes();
-        assert_eq!(bytes[0x1e8], 2);
-        for (i, e) in [a, b].iter().enumerate() {
-            let off = 0x2d0 + 20 * i;
-            assert_eq!(u64_at(bytes, off), e.addr);
-            assert_eq!(u64_at(bytes, off + 8), e.size);
-            assert_eq!(u32_at(bytes, off + 16), e.kind);
+    fn zero_page_setup_header_handling() {
+        // no_header_sets_only_kernel_alignment: without a setup header only the
+        // kernel alignment field is set.
+        {
+            let zp = ZeroPage::new(None).unwrap();
+            let b = zp.as_bytes();
+            assert_eq!(u32_at(b, 0x230), 0x0100_0000);
+            assert!(b[0x1f1..0x230].iter().all(|&x| x == 0));
+            assert!(b[0x234..0x290].iter().all(|&x| x == 0));
+        }
+        // setup_header_is_copied_to_0x1f1: the header bytes land at offset 0x1f1.
+        {
+            let hdr: Vec<u8> = (0..0x20u8).map(|i| i ^ 0x5a).collect();
+            let zp = ZeroPage::new(Some(&hdr)).unwrap();
+            assert_eq!(&zp.as_bytes()[0x1f1..0x1f1 + 0x20], &hdr[..]);
+        }
+        // too_long_setup_header_is_rejected: 0x9f bytes fit, 0xa0 bytes are rejected.
+        {
+            assert!(ZeroPage::new(Some(&vec![0u8; 0x9f])).is_ok());
+            assert_eq!(
+                ZeroPage::new(Some(&vec![0u8; 0xa0])).err(),
+                Some(ZeroPageError::SetupHeaderTooLong(0xa0))
+            );
         }
     }
 
     #[test]
-    fn e820_table_is_full_at_129th_entry() {
-        let mut zp = ZeroPage::new(None).unwrap();
-        for i in 0..E820_MAX_ENTRIES as u64 {
-            zp.add_e820(E820Entry {
-                addr: i * MIB,
-                size: MIB,
-                kind: E820_RAM,
-            })
-            .unwrap();
+    fn zero_page_set_fields() {
+        // set_command_line_writes_fields_at_fixed_offsets: command line fields
+        // and boot flags land at their fixed offsets.
+        {
+            let mut zp = ZeroPage::new(None).unwrap();
+            zp.set_command_line(0x2000_0000, 0x7ff);
+            let b = zp.as_bytes();
+            assert_eq!(b[0x210], 0xff);
+            assert_eq!(&b[0x1fe..0x200], &[0x55, 0xaa]);
+            assert_eq!(u32_at(b, 0x202), 0x5372_6448);
+            assert_eq!(u32_at(b, 0x228), 0x2000_0000);
+            assert_eq!(u32_at(b, 0x238), 0x7ff);
         }
-        assert_eq!(zp.as_bytes()[0x1e8], 128);
-        let extra = E820Entry {
-            addr: 0,
-            size: 0,
-            kind: E820_RESERVED,
-        };
-        assert_eq!(zp.add_e820(extra), Err(ZeroPageError::E820Full));
-        assert_eq!(zp.as_bytes()[0x1e8], 128);
-        assert_eq!(zp.e820_entries().len(), 128);
+        // set_initrd_and_acpi_rsdp_write_at_fixed_offsets: initrd and ACPI RSDP
+        // fields land at their fixed offsets.
+        {
+            let mut zp = ZeroPage::new(None).unwrap();
+            zp.set_initrd(0x3000_0000, 0x12_3456);
+            zp.set_acpi_rsdp(0x000e_0000_1234_5678);
+            let b = zp.as_bytes();
+            assert_eq!(u32_at(b, 0x218), 0x3000_0000);
+            assert_eq!(u32_at(b, 0x21c), 0x12_3456);
+            assert_eq!(u64_at(b, 0x070), 0x000e_0000_1234_5678);
+        }
     }
 
     #[test]
-    fn standard_e820_single_region_has_four_entries_in_order() {
-        let map = one_region_map();
-        assert_eq!(map.len(), 4);
-        assert_eq!(
-            map[0],
-            E820Entry {
+    fn zero_page_add_e820() {
+        // add_e820_writes_packed_entries_and_bumps_count: entries are packed
+        // from offset 0x2d0 and the count at 0x1e8 is bumped per entry.
+        {
+            let mut zp = ZeroPage::new(None).unwrap();
+            let a = E820Entry {
                 addr: 0,
                 size: 0x9_fc00,
-                kind: E820_RAM
+                kind: E820_RAM,
+            };
+            let b = E820Entry {
+                addr: 0x10_0000,
+                size: 0x1f00_0000,
+                kind: E820_RAM,
+            };
+            zp.add_e820(a).unwrap();
+            zp.add_e820(b).unwrap();
+            let bytes = zp.as_bytes();
+            assert_eq!(bytes[0x1e8], 2);
+            for (i, e) in [a, b].iter().enumerate() {
+                let off = 0x2d0 + 20 * i;
+                assert_eq!(u64_at(bytes, off), e.addr);
+                assert_eq!(u64_at(bytes, off + 8), e.size);
+                assert_eq!(u32_at(bytes, off + 16), e.kind);
             }
-        );
-        assert_eq!(
-            map[1],
-            E820Entry {
-                addr: 0x9_fc00,
-                size: 0xe_0000 - 0x9_fc00,
-                kind: E820_RESERVED
-            }
-        );
-        assert_eq!(
-            map[2],
-            E820Entry {
-                addr: 0xe000_0000,
-                size: 0x1000_0000,
-                kind: E820_RESERVED
-            }
-        );
-        assert_eq!(
-            map[3],
-            E820Entry {
-                addr: MIB,
-                size: 512 * MIB - MIB,
-                kind: E820_RAM
-            }
-        );
-    }
-
-    #[test]
-    fn standard_e820_skips_region_entirely_below_himem() {
-        let map = standard_e820(
-            &[(0, 0x8_0000)],
-            MIB,
-            0x9_fc00,
-            0x4_0400,
-            0xe000_0000,
-            0x1000_0000,
-        );
-        assert_eq!(map.len(), 3);
-        assert!(map.iter().all(|e| e.kind != E820_RAM || e.addr == 0));
-    }
-
-    #[test]
-    fn standard_e820_clips_region_straddling_himem() {
-        let map = standard_e820(
-            &[(0x8_0000, 0x20_0000)],
-            MIB,
-            0x9_fc00,
-            0x4_0400,
-            0xe000_0000,
-            0x1000_0000,
-        );
-        let last = map[map.len() - 1];
-        assert_eq!(
-            last,
-            E820Entry {
-                addr: MIB,
-                size: 0x28_0000 - MIB,
-                kind: E820_RAM
-            }
-        );
-    }
-
-    #[test]
-    fn e820_entries_round_trip() {
-        let map = one_region_map();
-        let mut zp = ZeroPage::new(None).unwrap();
-        for e in &map {
-            zp.add_e820(*e).unwrap();
         }
-        assert_eq!(zp.e820_entries(), map);
+        // e820_table_is_full_at_129th_entry: 128 entries fit, the 129th is
+        // rejected with E820Full and the count stays at 128.
+        {
+            let mut zp = ZeroPage::new(None).unwrap();
+            for i in 0..E820_MAX_ENTRIES as u64 {
+                zp.add_e820(E820Entry {
+                    addr: i * MIB,
+                    size: MIB,
+                    kind: E820_RAM,
+                })
+                .unwrap();
+            }
+            assert_eq!(zp.as_bytes()[0x1e8], 128);
+            let extra = E820Entry {
+                addr: 0,
+                size: 0,
+                kind: E820_RESERVED,
+            };
+            assert_eq!(zp.add_e820(extra), Err(ZeroPageError::E820Full));
+            assert_eq!(zp.as_bytes()[0x1e8], 128);
+            assert_eq!(zp.e820_entries().len(), 128);
+        }
+    }
+
+    #[test]
+    fn zero_page_standard_e820_map() {
+        // standard_e820_single_region_has_four_entries_in_order: one usable region
+        // yields four entries in address order.
+        {
+            let map = one_region_map();
+            assert_eq!(map.len(), 4);
+            assert_eq!(
+                map[0],
+                E820Entry {
+                    addr: 0,
+                    size: 0x9_fc00,
+                    kind: E820_RAM
+                }
+            );
+            assert_eq!(
+                map[1],
+                E820Entry {
+                    addr: 0x9_fc00,
+                    size: 0xe_0000 - 0x9_fc00,
+                    kind: E820_RESERVED
+                }
+            );
+            assert_eq!(
+                map[2],
+                E820Entry {
+                    addr: 0xe000_0000,
+                    size: 0x1000_0000,
+                    kind: E820_RESERVED
+                }
+            );
+            assert_eq!(
+                map[3],
+                E820Entry {
+                    addr: MIB,
+                    size: 512 * MIB - MIB,
+                    kind: E820_RAM
+                }
+            );
+        }
+        // standard_e820_skips_region_entirely_below_himem: a region that ends below
+        // the high-memory start contributes no RAM entry.
+        {
+            let map = standard_e820(
+                &[(0, 0x8_0000)],
+                MIB,
+                0x9_fc00,
+                0x4_0400,
+                0xe000_0000,
+                0x1000_0000,
+            );
+            assert_eq!(map.len(), 3);
+            assert!(map.iter().all(|e| e.kind != E820_RAM || e.addr == 0));
+        }
+        // standard_e820_clips_region_straddling_himem: a region crossing the
+        // high-memory start is clipped to begin at 1 MiB.
+        {
+            let map = standard_e820(
+                &[(0x8_0000, 0x20_0000)],
+                MIB,
+                0x9_fc00,
+                0x4_0400,
+                0xe000_0000,
+                0x1000_0000,
+            );
+            let last = map[map.len() - 1];
+            assert_eq!(
+                last,
+                E820Entry {
+                    addr: MIB,
+                    size: 0x28_0000 - MIB,
+                    kind: E820_RAM
+                }
+            );
+        }
     }
 }

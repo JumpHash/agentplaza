@@ -781,46 +781,65 @@ mod tests {
     }
 
     #[test]
-    fn a_start_streams_its_pid_its_output_and_its_end() {
-        let ctx = test_ctx();
-        let (events, end) = call_stream(
-            &ctx,
-            "/process.Process/Start",
-            json!({"process": {"cmd": "echo", "args": ["hi"]}}),
-        );
-        assert!(end.get("error").is_none(), "{end}");
-        assert!(events[0].pointer("/event/start/pid").is_some());
-        assert_eq!(output_of(&events, "stdout"), b"hi\n");
-        let last = events.last().expect("an end event");
-        assert_eq!(last.pointer("/event/end/exitCode"), Some(&json!(0)));
-        assert_eq!(last.pointer("/event/end/exited"), Some(&json!(true)));
-    }
-
-    #[test]
-    fn a_non_zero_exit_is_the_end_event_and_stderr_is_its_own_stream() {
-        let ctx = test_ctx();
-        let (events, _) = call_stream(
-            &ctx,
-            "/process.Process/Start",
-            json!({"process": {"cmd": "sh", "args": ["-c", "echo oops >&2; exit 3"]}}),
-        );
-        assert_eq!(output_of(&events, "stderr"), b"oops\n");
-        assert_eq!(
-            events.last().and_then(|e| e.pointer("/event/end/exitCode")),
-            Some(&json!(3))
-        );
-    }
-
-    #[test]
-    fn a_command_that_does_not_exist_ends_the_stream_with_its_error() {
-        let ctx = test_ctx();
-        let (events, end) = call_stream(
-            &ctx,
-            "/process.Process/Start",
-            json!({"process": {"cmd": "/no/such/command"}}),
-        );
-        assert!(events.is_empty());
-        assert_eq!(end.pointer("/error/code"), Some(&json!("not_found")));
+    fn a_start_streams_its_events_and_its_end() {
+        // A start streams its pid, its stdout and its end event.
+        {
+            let ctx = test_ctx();
+            let (events, end) = call_stream(
+                &ctx,
+                "/process.Process/Start",
+                json!({"process": {"cmd": "echo", "args": ["hi"]}}),
+            );
+            assert!(end.get("error").is_none(), "{end}");
+            assert!(events[0].pointer("/event/start/pid").is_some());
+            assert_eq!(output_of(&events, "stdout"), b"hi\n");
+            let last = events.last().expect("an end event");
+            assert_eq!(last.pointer("/event/end/exitCode"), Some(&json!(0)));
+            assert_eq!(last.pointer("/event/end/exited"), Some(&json!(true)));
+        }
+        // A non-zero exit is the end event, and stderr is its own stream.
+        {
+            let ctx = test_ctx();
+            let (events, _) = call_stream(
+                &ctx,
+                "/process.Process/Start",
+                json!({"process": {"cmd": "sh", "args": ["-c", "echo oops >&2; exit 3"]}}),
+            );
+            assert_eq!(output_of(&events, "stderr"), b"oops\n");
+            assert_eq!(
+                events.last().and_then(|e| e.pointer("/event/end/exitCode")),
+                Some(&json!(3))
+            );
+        }
+        // A command that does not exist ends the stream with its error.
+        {
+            let ctx = test_ctx();
+            let (events, end) = call_stream(
+                &ctx,
+                "/process.Process/Start",
+                json!({"process": {"cmd": "/no/such/command"}}),
+            );
+            assert!(events.is_empty());
+            assert_eq!(end.pointer("/error/code"), Some(&json!("not_found")));
+        }
+        // A pty start runs on a terminal of the size it asks for.
+        {
+            let ctx = test_ctx();
+            let (events, _) = call_stream(
+                &ctx,
+                "/process.Process/Start",
+                json!({
+                    "process": {"cmd": "sh", "args": ["-c", "stty size"]},
+                    "pty": {"size": {"cols": 100, "rows": 40}},
+                }),
+            );
+            let text = String::from_utf8_lossy(&output_of(&events, "pty")).into_owned();
+            assert!(text.contains("40 100"), "stty said {text:?}");
+            assert_eq!(
+                events.last().and_then(|e| e.pointer("/event/end/exitCode")),
+                Some(&json!(0))
+            );
+        }
     }
 
     #[test]
@@ -887,25 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pty_start_runs_on_a_terminal_of_the_size_it_asks_for() {
-        let ctx = test_ctx();
-        let (events, _) = call_stream(
-            &ctx,
-            "/process.Process/Start",
-            json!({
-                "process": {"cmd": "sh", "args": ["-c", "stty size"]},
-                "pty": {"size": {"cols": 100, "rows": 40}},
-            }),
-        );
-        let text = String::from_utf8_lossy(&output_of(&events, "pty")).into_owned();
-        assert!(text.contains("40 100"), "stty said {text:?}");
-        assert_eq!(
-            events.last().and_then(|e| e.pointer("/event/end/exitCode")),
-            Some(&json!(0))
-        );
-    }
-
-    #[test]
     fn a_signal_ends_a_running_process_with_its_signal_status() {
         let ctx = test_ctx();
         let tag = "sleeper-signal";
@@ -944,56 +944,58 @@ mod tests {
     }
 
     #[test]
-    fn stream_input_writes_each_data_message_to_the_process_stdin() {
-        let ctx = test_ctx();
-        let tag = "cat-stream-input";
-        let starting = {
-            let ctx = ctx.clone();
-            std::thread::spawn(move || {
-                call_stream(
-                    &ctx,
-                    "/process.Process/Start",
-                    json!({
-                        "process": {"cmd": "cat"},
-                        "tag": tag,
-                        "stdin": true,
-                    }),
-                )
-            })
-        };
-        wait_for_tag(&ctx, tag);
+    fn stream_input_writes_its_data_and_refuses_a_stream_without_start() {
+        // Each data message is written to the process stdin, in order.
+        {
+            let ctx = test_ctx();
+            let tag = "cat-stream-input";
+            let starting = {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    call_stream(
+                        &ctx,
+                        "/process.Process/Start",
+                        json!({
+                            "process": {"cmd": "cat"},
+                            "tag": tag,
+                            "stdin": true,
+                        }),
+                    )
+                })
+            };
+            wait_for_tag(&ctx, tag);
 
-        let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
-        let messages = [
-            json!({"start": {"process": {"tag": tag}}}),
-            json!({"data": {"input": {"stdin": encode("hello\n")}}}),
-            json!({"keepalive": {}}),
-            json!({"data": {"input": {"stdin": encode("world\n")}}}),
-        ];
-        stream_input(&messages).expect("both inputs are written");
-        let closed = call(
-            &ctx,
-            "/process.Process/CloseStdin",
-            json!({"process": {"tag": tag}}),
-        );
-        assert!(closed.starts_with(b"HTTP/1.1 200"));
+            let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+            let messages = [
+                json!({"start": {"process": {"tag": tag}}}),
+                json!({"data": {"input": {"stdin": encode("hello\n")}}}),
+                json!({"keepalive": {}}),
+                json!({"data": {"input": {"stdin": encode("world\n")}}}),
+            ];
+            stream_input(&messages).expect("both inputs are written");
+            let closed = call(
+                &ctx,
+                "/process.Process/CloseStdin",
+                json!({"process": {"tag": tag}}),
+            );
+            assert!(closed.starts_with(b"HTTP/1.1 200"));
 
-        let (events, end) = starting.join().expect("the start thread");
-        assert!(end.get("error").is_none(), "{end}");
-        assert_eq!(output_of(&events, "stdout"), b"hello\nworld\n");
-    }
-
-    #[test]
-    fn stream_input_refuses_a_stream_that_does_not_start_with_start() {
-        let data = json!({"data": {"input": {"stdin": ""}}});
-        assert_eq!(
-            stream_input(&[]).expect_err("refused").code,
-            "invalid_argument"
-        );
-        assert_eq!(
-            stream_input(&[data]).expect_err("refused").code,
-            "invalid_argument"
-        );
+            let (events, end) = starting.join().expect("the start thread");
+            assert!(end.get("error").is_none(), "{end}");
+            assert_eq!(output_of(&events, "stdout"), b"hello\nworld\n");
+        }
+        // A stream that does not start with a start message is refused.
+        {
+            let data = json!({"data": {"input": {"stdin": ""}}});
+            assert_eq!(
+                stream_input(&[]).expect_err("refused").code,
+                "invalid_argument"
+            );
+            assert_eq!(
+                stream_input(&[data]).expect_err("refused").code,
+                "invalid_argument"
+            );
+        }
     }
 
     #[test]

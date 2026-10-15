@@ -1066,35 +1066,72 @@ mod tests {
 
     #[test]
     fn a_permission_request_asks_the_hub_and_answers_the_engine() {
-        let dir = scratch("permission");
-        let log = dir.join("log.json");
-        let script = write_script(
-            &dir,
-            &json!({
-                "steps": [{"permission": {
-                    "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"},
-                    "options": [
-                        {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-                        {"optionId": "no", "name": "Reject", "kind": "reject_once"},
-                    ],
-                }}],
-                "stopReason": "end_turn",
-            }),
-        );
-        let workspace = Workspace::at(&dir);
-        let link = TestLink::new(Verdict::Deny("not today".to_string()), None);
+        // Protocol 1: the request names the tool call directly.
+        {
+            let dir = scratch("permission");
+            let log = dir.join("log.json");
+            let script = write_script(
+                &dir,
+                &json!({
+                    "steps": [{"permission": {
+                        "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"},
+                        "options": [
+                            {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                            {"optionId": "no", "name": "Reject", "kind": "reject_once"},
+                        ],
+                    }}],
+                    "stopReason": "end_turn",
+                }),
+            );
+            let workspace = Workspace::at(&dir);
+            let link = TestLink::new(Verdict::Deny("not today".to_string()), None);
 
-        prompt_turn(
-            &options(&workspace, &dir, argv_logged(&script, &log)),
-            "hello",
-            &link,
-        )
-        .expect("the turn runs");
+            prompt_turn(
+                &options(&workspace, &dir, argv_logged(&script, &log)),
+                "hello",
+                &link,
+            )
+            .expect("the turn runs");
 
-        let decisions = lock(&link.decisions).clone();
-        assert_eq!(decisions[0].0, "engine.edit");
-        let answer = read_log(&log)[0]["answer"]["result"].clone();
-        assert_eq!(answer["outcome"]["optionId"], "no");
+            let decisions = lock(&link.decisions).clone();
+            assert_eq!(decisions[0].0, "engine.edit");
+            let answer = read_log(&log)[0]["answer"]["result"].clone();
+            assert_eq!(answer["outcome"]["optionId"], "no");
+        }
+        // Protocol 2: the request carries its tool call as a subject, and the answer
+        // comes back in v2's shape: the outcome, under the same key.
+        {
+            let dir = scratch("v2-permission");
+            let log = dir.join("log.json");
+            let script = write_script(
+                &dir,
+                &json!({
+                    "protocol": 2,
+                    "steps": [{"permission": {
+                        "title": "edit a.txt",
+                        "subject": {"type": "tool_call", "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"}},
+                        "options": [
+                            {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                            {"optionId": "no", "name": "Reject", "kind": "reject_once"},
+                        ],
+                    }}],
+                    "stopReason": "end_turn",
+                }),
+            );
+            let workspace = Workspace::at(&dir);
+            let link = TestLink::new(Verdict::Deny("not today".to_string()), None);
+            let mut options = options(&workspace, &dir, argv_logged(&script, &log));
+            options.protocol = 2;
+
+            let outcome = prompt_turn(&options, "hello", &link).expect("the turn runs");
+
+            assert_eq!(outcome.stop_reason, "end_turn");
+            let decisions = lock(&link.decisions).clone();
+            assert_eq!(decisions[0].0, "engine.edit");
+            // The engine gets its answer in v2's shape: the outcome, under the same key.
+            let answer = read_log(&log)[0]["answer"]["result"].clone();
+            assert_eq!(answer["outcome"]["optionId"], "no");
+        }
     }
 
     #[test]
@@ -1203,40 +1240,6 @@ mod tests {
         }));
         assert_eq!(end[0]["sessionUpdate"], "_apz_turn_end");
         assert_eq!(end[0]["stopReason"], "end_turn");
-    }
-
-    #[test]
-    fn a_v2_permission_request_round_trips_through_the_gate() {
-        let dir = scratch("v2-permission");
-        let log = dir.join("log.json");
-        let script = write_script(
-            &dir,
-            &json!({
-                "protocol": 2,
-                "steps": [{"permission": {
-                    "title": "edit a.txt",
-                    "subject": {"type": "tool_call", "toolCall": {"toolCallId": "t1", "title": "edit a.txt", "kind": "edit"}},
-                    "options": [
-                        {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-                        {"optionId": "no", "name": "Reject", "kind": "reject_once"},
-                    ],
-                }}],
-                "stopReason": "end_turn",
-            }),
-        );
-        let workspace = Workspace::at(&dir);
-        let link = TestLink::new(Verdict::Deny("not today".to_string()), None);
-        let mut options = options(&workspace, &dir, argv_logged(&script, &log));
-        options.protocol = 2;
-
-        let outcome = prompt_turn(&options, "hello", &link).expect("the turn runs");
-
-        assert_eq!(outcome.stop_reason, "end_turn");
-        let decisions = lock(&link.decisions).clone();
-        assert_eq!(decisions[0].0, "engine.edit");
-        // The engine gets its answer in v2's shape: the outcome, under the same key.
-        let answer = read_log(&log)[0]["answer"]["result"].clone();
-        assert_eq!(answer["outcome"]["optionId"], "no");
     }
 
     #[test]

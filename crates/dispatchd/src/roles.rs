@@ -358,47 +358,49 @@ mod tests {
         assert!(!roles.grants("", "read_file"));
     }
 
-    /// A manifest the dispatcher cannot read is an error, never a policy with
-    /// roles missing from it.
+    /// A manifest is read whole or refused whole: one the dispatcher cannot
+    /// read is an error, never a policy with roles missing from it, and a
+    /// manifest with every role read in full answers for each of them.
     #[test]
-    fn a_manifest_outside_the_contract_is_refused() {
-        for text in [
-            "not json",
-            "{}",
-            r#"{"roles": {}}"#,
-            r#"{"roles": {"builder": {"role": "builder"}}}"#,
-            r#"{"roles": {"builder": {"role": "builder", "tools": []}}}"#,
-            r#"{"roles": {"builder": {"tools": ["bash"]}}}"#,
-            r#"{"roles": {"builder": {"role": "builer", "tools": ["bash"]}}}"#,
-        ] {
-            let err = Manifest::parse(text).expect_err("outside the contract");
-            assert!(!err.to_string().is_empty(), "{text}");
+    fn manifest_parse_refuses_a_bad_manifest_and_reads_a_good_one() {
+        // A manifest the dispatcher cannot read is an error, never a policy with
+        // roles missing from it.
+        {
+            for text in [
+                "not json",
+                "{}",
+                r#"{"roles": {}}"#,
+                r#"{"roles": {"builder": {"role": "builder"}}}"#,
+                r#"{"roles": {"builder": {"role": "builder", "tools": []}}}"#,
+                r#"{"roles": {"builder": {"tools": ["bash"]}}}"#,
+                r#"{"roles": {"builder": {"role": "builer", "tools": ["bash"]}}}"#,
+            ] {
+                let err = Manifest::parse(text).expect_err("outside the contract");
+                assert!(!err.to_string().is_empty(), "{text}");
+            }
+            // The messages name what to fix.
+            assert!(
+                Manifest::parse(r#"{"roles": {"builder": {"role": "builder"}}}"#)
+                    .expect_err("no tools")
+                    .to_string()
+                    .contains("declares no tools")
+            );
+            assert!(
+                Manifest::parse(r#"{"roles": {}}"#)
+                    .expect_err("no roles")
+                    .to_string()
+                    .contains("lists no roles")
+            );
+            assert!(
+                Manifest::load(Path::new("/no/such/dispatchd-roles.json"))
+                    .expect_err("not there")
+                    .to_string()
+                    .contains("/no/such/dispatchd-roles.json")
+            );
         }
-        // The messages name what to fix.
-        assert!(
-            Manifest::parse(r#"{"roles": {"builder": {"role": "builder"}}}"#)
-                .expect_err("no tools")
-                .to_string()
-                .contains("declares no tools")
-        );
-        assert!(
-            Manifest::parse(r#"{"roles": {}}"#)
-                .expect_err("no roles")
-                .to_string()
-                .contains("lists no roles")
-        );
-        assert!(
-            Manifest::load(Path::new("/no/such/dispatchd-roles.json"))
-                .expect_err("not there")
-                .to_string()
-                .contains("/no/such/dispatchd-roles.json")
-        );
-    }
-
-    /// A manifest with every role read in full answers for each of them.
-    #[test]
-    fn a_well_formed_manifest_reads() {
-        let text = r#"{
+        // A manifest with every role read in full answers for each of them.
+        {
+            let text = r#"{
             "source": "docs/codex-draft/roles/build/roles_src.py",
             "roles": {
                 "builder": {
@@ -413,10 +415,11 @@ mod tests {
                 "librarian": { "role": "librarian", "title": "Librarian", "tools": ["search"] }
             }
         }"#;
-        let roles = Manifest::parse(text).expect("the manifest reads");
-        assert_eq!(roles.len(), 2);
-        assert_eq!(roles.decide("builder", "write_file"), Decision::Allow);
-        assert_eq!(roles.decide("librarian", "write_file"), Decision::Ungranted);
-        assert_eq!(roles.decide("librarian", "search"), Decision::Allow);
+            let roles = Manifest::parse(text).expect("the manifest reads");
+            assert_eq!(roles.len(), 2);
+            assert_eq!(roles.decide("builder", "write_file"), Decision::Allow);
+            assert_eq!(roles.decide("librarian", "write_file"), Decision::Ungranted);
+            assert_eq!(roles.decide("librarian", "search"), Decision::Allow);
+        }
     }
 }

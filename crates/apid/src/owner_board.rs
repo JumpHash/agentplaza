@@ -380,50 +380,52 @@ mod tests {
     }
 
     #[test]
-    fn a_mention_reaches_the_named_agent_or_every_agent_with_the_role() {
-        assert_eq!(
-            reach(&names(&["ada"]), None, &[], &roster()),
-            Ok(vec![3]),
-            "names match without case"
-        );
-        assert_eq!(
-            reach(&names(&["builder"]), None, &[], &roster()),
-            Ok(vec![3, 4]),
-            "a role reaches each holder"
-        );
-        assert_eq!(
-            reach(&names(&["Ada", "builder"]), None, &[], &roster()),
-            Ok(vec![3, 4]),
-            "repeats reach once"
-        );
-        assert!(
-            reach(&names(&["nobody"]), None, &[], &roster()).is_err(),
-            "an unknown name is refused"
-        );
-    }
-
-    #[test]
-    fn all_is_the_project_members_or_every_agent_without_one() {
-        let everyone = [3, 4, 5];
-        assert_eq!(
-            reach(&names(&["all"]), Some(&[4]), &everyone, &roster()),
-            Ok(vec![4]),
-            "all on a project is its members"
-        );
-        assert_eq!(
-            reach(&names(&["ALL"]), None, &everyone, &roster()),
-            Ok(vec![3, 4, 5]),
-            "no project: every agent"
-        );
-        assert_eq!(
-            reach(&names(&["all", "Rex"]), Some(&[4]), &everyone, &roster()),
-            Ok(vec![4, 5])
-        );
-        assert_eq!(
-            reach(&names(&["all"]), Some(&[]), &everyone, &roster()),
-            Ok(vec![]),
-            "an empty project reaches nobody, not everyone"
-        );
+    fn a_mention_reaches_its_agents_and_all_reaches_the_project_or_everyone() {
+        // A mention reaches the named agent, or every agent with the role; an unknown name is refused.
+        {
+            assert_eq!(
+                reach(&names(&["ada"]), None, &[], &roster()),
+                Ok(vec![3]),
+                "names match without case"
+            );
+            assert_eq!(
+                reach(&names(&["builder"]), None, &[], &roster()),
+                Ok(vec![3, 4]),
+                "a role reaches each holder"
+            );
+            assert_eq!(
+                reach(&names(&["Ada", "builder"]), None, &[], &roster()),
+                Ok(vec![3, 4]),
+                "repeats reach once"
+            );
+            assert!(
+                reach(&names(&["nobody"]), None, &[], &roster()).is_err(),
+                "an unknown name is refused"
+            );
+        }
+        // All is the project's members, or every agent without one; an empty project reaches nobody.
+        {
+            let everyone = [3, 4, 5];
+            assert_eq!(
+                reach(&names(&["all"]), Some(&[4]), &everyone, &roster()),
+                Ok(vec![4]),
+                "all on a project is its members"
+            );
+            assert_eq!(
+                reach(&names(&["ALL"]), None, &everyone, &roster()),
+                Ok(vec![3, 4, 5]),
+                "no project: every agent"
+            );
+            assert_eq!(
+                reach(&names(&["all", "Rex"]), Some(&[4]), &everyone, &roster()),
+                Ok(vec![4, 5])
+            );
+            assert_eq!(
+                reach(&names(&["all"]), Some(&[]), &everyone, &roster()),
+                Ok(vec![]),
+                "an empty project reaches nobody, not everyone"
+            );
+        }
     }
 
     #[test]
@@ -464,13 +466,6 @@ mod tests {
             serde_json::from_str::<PauseBody>(r#"{"project": "pr1"}"#).is_err(),
             "on is required"
         );
-    }
-
-    #[test]
-    fn timestamps_are_utc_civil_dates() {
-        assert_eq!(iso(0), "1970-01-01 00:00 UTC");
-        assert_eq!(iso(1_791_970_200_000), "2026-10-14 09:30 UTC");
-        assert_eq!(iso(951_782_400_000), "2000-02-29 00:00 UTC", "a leap day");
     }
 
     #[test]

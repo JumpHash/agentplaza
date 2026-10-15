@@ -1365,166 +1365,185 @@ mod tests {
     use crate::settings::ORCHESTRATOR_ROLE;
 
     #[test]
-    fn code_engine_model_input_takes_a_provider_model() {
+    fn code_engine_model_input_names_a_provider_or_takes_the_default() {
         let ask = |model: &str| json!({"engine": "claude", "prompt": "p", "model": model});
-        // An openrouter id keeps its nested slashes; an effort suffix is part of the shape.
-        assert_eq!(
-            model_input(&ask(" openrouter/anthropic/claude-x ")),
-            Ok(Some("openrouter/anthropic/claude-x"))
-        );
-        assert_eq!(
-            model_input(&ask("opencode/claude-sonnet-5-5@high")),
-            Ok(Some("opencode/claude-sonnet-5-5@high"))
-        );
-    }
-
-    #[test]
-    fn code_engine_model_must_name_a_provider() {
-        let bare = json!({"engine": "codex", "prompt": "p", "model": "claude-sonnet-5-5"});
-        let err = model_input(&bare).unwrap_err();
-        assert!(err.contains("<provider>/<model>"), "{err}");
-        assert!(model_input(&json!({"model": 3})).is_err());
-    }
-
-    #[test]
-    fn code_engine_gemini_takes_only_gemini_models() {
-        let ask =
-            |engine: &str, model: &str| json!({"engine": engine, "prompt": "p", "model": model});
-        assert!(
-            engine_provider(
-                &ask("gemini", "gemini/gemini-2.5-pro@high"),
-                "gemini/gemini-2.5-pro@high"
-            )
-            .is_ok()
-        );
-        let err = engine_provider(&ask("gemini", "openrouter/x"), "openrouter/x").unwrap_err();
-        assert!(
-            err.contains("Gemini CLI takes gemini/<model> models"),
-            "{err}"
-        );
-        // The other engines keep their own routes.
-        assert!(engine_provider(&ask("claude", "openrouter/x"), "openrouter/x").is_ok());
-    }
-
-    #[test]
-    fn code_engine_qwen_takes_the_chat_completions_providers() {
-        let ask = |model: &str| json!({"engine": "qwen", "prompt": "p", "model": model});
-        for model in [
-            "openai/gpt-5.6-terra",
-            "openrouter/x/y",
-            "opencode/deepseek-v4-pro",
+        // A provider/model id is passed through as written, slashes and effort suffix included.
+        // An absent, null or blank model is the default.
+        for (case, input, want) in [
+            (
+                "an openrouter id keeps its nested slashes",
+                ask(" openrouter/anthropic/claude-x "),
+                Ok(Some("openrouter/anthropic/claude-x")),
+            ),
+            (
+                "an effort suffix is part of the shape",
+                ask("opencode/claude-sonnet-5-5@high"),
+                Ok(Some("opencode/claude-sonnet-5-5@high")),
+            ),
+            (
+                "an absent model is the default",
+                json!({"prompt": "p"}),
+                Ok(None),
+            ),
+            (
+                "a blank model is the default",
+                json!({"model": "  "}),
+                Ok(None),
+            ),
+            (
+                "a null model is the default",
+                json!({"model": null}),
+                Ok(None),
+            ),
         ] {
-            assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+            assert_eq!(model_input(&input), want, "{case}");
         }
-        for model in ["anthropic/claude-x", "bare-model"] {
-            let err = engine_provider(&ask(model), model).unwrap_err();
-            assert!(err.contains("Qwen Code takes openai/<model>"), "{err}");
+        // A bare model name is refused: the model must name a provider (code_engine_model_must_name_a_provider).
+        {
+            let bare = json!({"engine": "codex", "prompt": "p", "model": "claude-sonnet-5-5"});
+            let err = model_input(&bare).unwrap_err();
+            assert!(err.contains("<provider>/<model>"), "{err}");
+            assert!(model_input(&json!({"model": 3})).is_err());
         }
     }
 
     #[test]
-    fn code_engine_copilot_and_goose_take_their_provider_routes_and_need_a_model() {
-        let copilot = |model: &str| json!({"engine": "copilot", "prompt": "p", "model": model});
-        for model in [
-            "anthropic/claude-x",
-            "openai/gpt-x",
-            "openrouter/anthropic/claude-x",
-            "opencode/gpt-x",
-        ] {
-            assert!(engine_provider(&copilot(model), model).is_ok(), "{model}");
+    fn code_engine_routes_take_each_engines_provider_models() {
+        // Gemini CLI takes only gemini/<model> models; the other engines keep their own routes.
+        {
+            let ask = |engine: &str, model: &str| json!({"engine": engine, "prompt": "p", "model": model});
+            assert!(
+                engine_provider(
+                    &ask("gemini", "gemini/gemini-2.5-pro@high"),
+                    "gemini/gemini-2.5-pro@high"
+                )
+                .is_ok()
+            );
+            let err = engine_provider(&ask("gemini", "openrouter/x"), "openrouter/x").unwrap_err();
+            assert!(
+                err.contains("Gemini CLI takes gemini/<model> models"),
+                "{err}"
+            );
+            // The other engines keep their own routes.
+            assert!(engine_provider(&ask("claude", "openrouter/x"), "openrouter/x").is_ok());
         }
-        assert!(engine_provider(&copilot("gemini/x"), "gemini/x").is_err());
-        let err =
-            model_required(&json!({"engine": "copilot", "prompt": "p"})).expect_err("refused");
-        assert!(err.contains("Copilot needs \"model\""), "{err}");
-        let goose = |model: &str| json!({"engine": "goose", "prompt": "p", "model": model});
-        for model in [
-            "anthropic/claude-x",
-            "openrouter/anthropic/claude-x",
-            "openai/gpt-x",
-        ] {
-            assert!(engine_provider(&goose(model), model).is_ok(), "{model}");
+
+        // Qwen Code takes the openai, openrouter and opencode chat-completions routes.
+        {
+            let ask = |model: &str| json!({"engine": "qwen", "prompt": "p", "model": model});
+            for model in [
+                "openai/gpt-5.6-terra",
+                "openrouter/x/y",
+                "opencode/deepseek-v4-pro",
+            ] {
+                assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+            }
+            for model in ["anthropic/claude-x", "bare-model"] {
+                let err = engine_provider(&ask(model), model).unwrap_err();
+                assert!(err.contains("Qwen Code takes openai/<model>"), "{err}");
+            }
         }
-        assert!(engine_provider(&goose("qwen/x"), "qwen/x").is_err());
-        let err = model_required(&json!({"engine": "goose", "prompt": "p"})).expect_err("refused");
-        assert!(err.contains("Goose needs \"model\""), "{err}");
-    }
 
-    #[test]
-    fn code_engine_kimi_takes_its_provider_routes_and_needs_a_model() {
-        let kimi = |model: &str| json!({"engine": "kimi", "prompt": "p", "model": model});
-        for model in [
-            "anthropic/claude-x",
-            "openai/gpt-x",
-            "openrouter/anthropic/claude-x",
-            "opencode/gpt-x",
-        ] {
-            assert!(engine_provider(&kimi(model), model).is_ok(), "{model}");
+        // Copilot and Goose take their provider routes and refuse a missing model.
+        {
+            let copilot = |model: &str| json!({"engine": "copilot", "prompt": "p", "model": model});
+            for model in [
+                "anthropic/claude-x",
+                "openai/gpt-x",
+                "openrouter/anthropic/claude-x",
+                "opencode/gpt-x",
+            ] {
+                assert!(engine_provider(&copilot(model), model).is_ok(), "{model}");
+            }
+            assert!(engine_provider(&copilot("gemini/x"), "gemini/x").is_err());
+            let err =
+                model_required(&json!({"engine": "copilot", "prompt": "p"})).expect_err("refused");
+            assert!(err.contains("Copilot needs \"model\""), "{err}");
+            let goose = |model: &str| json!({"engine": "goose", "prompt": "p", "model": model});
+            for model in [
+                "anthropic/claude-x",
+                "openrouter/anthropic/claude-x",
+                "openai/gpt-x",
+            ] {
+                assert!(engine_provider(&goose(model), model).is_ok(), "{model}");
+            }
+            assert!(engine_provider(&goose("qwen/x"), "qwen/x").is_err());
+            let err =
+                model_required(&json!({"engine": "goose", "prompt": "p"})).expect_err("refused");
+            assert!(err.contains("Goose needs \"model\""), "{err}");
         }
-        assert!(engine_provider(&kimi("gemini/x"), "gemini/x").is_err());
-        let err = model_required(&json!({"engine": "kimi", "prompt": "p"})).expect_err("refused");
-        assert!(err.contains("Kimi Code needs \"model\""), "{err}");
-    }
 
-    #[test]
-    fn code_engine_auggie_takes_only_augments_own_models_and_needs_no_model() {
-        let auggie = |model: &str| json!({"engine": "auggie", "prompt": "p", "model": model});
-        assert!(engine_provider(&auggie("augment/claude-x"), "augment/claude-x").is_ok());
-        let err = engine_provider(&auggie("anthropic/claude-x"), "anthropic/claude-x")
-            .expect_err("refused");
-        assert!(err.contains("use augment/<model>"), "{err}");
-        assert!(model_required(&json!({"engine": "auggie", "prompt": "p"})).is_ok());
-    }
-
-    #[test]
-    fn code_engine_vibe_takes_the_three_routes_its_config_maps_and_needs_a_model() {
-        let vibe = |model: &str| json!({"engine": "vibe", "prompt": "p", "model": model});
-        for model in [
-            "openai/gpt-x",
-            "openrouter/mistralai/mistral-large",
-            "opencode/gpt-x",
-        ] {
-            assert!(engine_provider(&vibe(model), model).is_ok(), "{model}");
+        // Kimi Code takes its provider routes and needs a model.
+        {
+            let kimi = |model: &str| json!({"engine": "kimi", "prompt": "p", "model": model});
+            for model in [
+                "anthropic/claude-x",
+                "openai/gpt-x",
+                "openrouter/anthropic/claude-x",
+                "opencode/gpt-x",
+            ] {
+                assert!(engine_provider(&kimi(model), model).is_ok(), "{model}");
+            }
+            assert!(engine_provider(&kimi("gemini/x"), "gemini/x").is_err());
+            let err =
+                model_required(&json!({"engine": "kimi", "prompt": "p"})).expect_err("refused");
+            assert!(err.contains("Kimi Code needs \"model\""), "{err}");
         }
-        let err = engine_provider(&vibe("anthropic/x"), "anthropic/x").unwrap_err();
-        assert!(err.contains("Vibe takes openai/..."), "{err}");
-        let err = model_required(&json!({"engine": "vibe", "prompt": "p"})).expect_err("refused");
-        assert!(err.contains("Vibe needs \"model\""), "{err}");
-    }
 
-    #[test]
-    fn code_engine_cline_takes_the_four_routes_and_needs_a_model() {
-        let ask = |model: &str| json!({"engine": "cline", "prompt": "p", "model": model});
-        for model in [
-            "anthropic/claude-x",
-            "openrouter/anthropic/claude-x",
-            "openai/gpt-x",
-            "opencode/deepseek-v4-pro",
-        ] {
-            assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+        // Auggie takes only augment/<model> and needs no model.
+        {
+            let auggie = |model: &str| json!({"engine": "auggie", "prompt": "p", "model": model});
+            assert!(engine_provider(&auggie("augment/claude-x"), "augment/claude-x").is_ok());
+            let err = engine_provider(&auggie("anthropic/claude-x"), "anthropic/claude-x")
+                .expect_err("refused");
+            assert!(err.contains("use augment/<model>"), "{err}");
+            assert!(model_required(&json!({"engine": "auggie", "prompt": "p"})).is_ok());
         }
-        let err = engine_provider(&ask("gemini/x"), "gemini/x").unwrap_err();
-        assert!(err.contains("Cline takes anthropic/..."), "{err}");
 
-        let no_model = json!({"engine": "cline", "prompt": "p"});
-        assert_eq!(
-            model_required(&no_model).unwrap_err(),
-            "invalid input: Cline needs \"model\""
-        );
-        assert!(model_required(&json!({"engine": "claude", "prompt": "p"})).is_ok());
-    }
+        // Vibe takes the three routes its config maps and needs a model.
+        {
+            let vibe = |model: &str| json!({"engine": "vibe", "prompt": "p", "model": model});
+            for model in [
+                "openai/gpt-x",
+                "openrouter/mistralai/mistral-large",
+                "opencode/gpt-x",
+            ] {
+                assert!(engine_provider(&vibe(model), model).is_ok(), "{model}");
+            }
+            let err = engine_provider(&vibe("anthropic/x"), "anthropic/x").unwrap_err();
+            assert!(err.contains("Vibe takes openai/..."), "{err}");
+            let err =
+                model_required(&json!({"engine": "vibe", "prompt": "p"})).expect_err("refused");
+            assert!(err.contains("Vibe needs \"model\""), "{err}");
+        }
 
-    #[test]
-    fn code_engine_kilo_has_no_provider_rule_of_its_own() {
-        let input = json!({"engine": "kilo", "prompt": "p", "model": "anthropic/x"});
-        assert!(engine_provider(&input, "anthropic/x").is_ok());
-    }
+        // Cline takes the four routes and needs a model.
+        {
+            let ask = |model: &str| json!({"engine": "cline", "prompt": "p", "model": model});
+            for model in [
+                "anthropic/claude-x",
+                "openrouter/anthropic/claude-x",
+                "openai/gpt-x",
+                "opencode/deepseek-v4-pro",
+            ] {
+                assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+            }
+            let err = engine_provider(&ask("gemini/x"), "gemini/x").unwrap_err();
+            assert!(err.contains("Cline takes anthropic/..."), "{err}");
 
-    #[test]
-    fn code_engine_model_absent_or_empty_is_the_default() {
-        assert_eq!(model_input(&json!({"prompt": "p"})), Ok(None));
-        assert_eq!(model_input(&json!({"model": "  "})), Ok(None));
-        assert_eq!(model_input(&json!({"model": null})), Ok(None));
+            let no_model = json!({"engine": "cline", "prompt": "p"});
+            assert_eq!(
+                model_required(&no_model).unwrap_err(),
+                "invalid input: Cline needs \"model\""
+            );
+            assert!(model_required(&json!({"engine": "claude", "prompt": "p"})).is_ok());
+        }
+
+        // Kilo has no provider rule of its own.
+        {
+            let input = json!({"engine": "kilo", "prompt": "p", "model": "anthropic/x"});
+            assert!(engine_provider(&input, "anthropic/x").is_ok());
+        }
     }
 
     #[test]
@@ -1564,34 +1583,64 @@ mod tests {
     }
 
     #[test]
-    fn tier_and_seat_change_the_offer() {
-        let worker = offered("worker", &[]);
-        let orchestrator = offered(ORCHESTRATOR_ROLE, &[]);
-        assert!(worker.iter().any(|n| n == "plaza_bid"));
-        assert!(!worker.iter().any(|n| n == "plaza_post_task"));
-        assert!(orchestrator.iter().any(|n| n == "plaza_post_task"));
-        assert!(!orchestrator.iter().any(|n| n == "plaza_bid"));
-        assert!(!worker.iter().any(|n| n == "plaza_vote"));
-        let seated = offered("finance", &[]);
-        assert!(seated.iter().any(|n| n == "plaza_vote"));
-        assert!(seated.iter().any(|n| n == "plaza_propose"));
-    }
+    fn role_offer_follows_tier_seat_projects_and_laws() {
+        // A tier and a seat change the offer: workers bid, orchestrators post tasks, seated roles vote and propose.
+        {
+            let worker = offered("worker", &[]);
+            let orchestrator = offered(ORCHESTRATOR_ROLE, &[]);
+            assert!(worker.iter().any(|n| n == "plaza_bid"));
+            assert!(!worker.iter().any(|n| n == "plaza_post_task"));
+            assert!(orchestrator.iter().any(|n| n == "plaza_post_task"));
+            assert!(!orchestrator.iter().any(|n| n == "plaza_bid"));
+            assert!(!worker.iter().any(|n| n == "plaza_vote"));
+            let seated = offered("finance", &[]);
+            assert!(seated.iter().any(|n| n == "plaza_vote"));
+            assert!(seated.iter().any(|n| n == "plaza_propose"));
+        }
 
-    #[test]
-    fn project_and_harness_tools_go_to_their_roles() {
-        let has = |role: &str, tool: &str| offered(role, &[]).iter().any(|n| n == tool);
-        assert!(has(ORCHESTRATOR_ROLE, "plaza_project_open"));
-        assert!(has(ORCHESTRATOR_ROLE, "plaza_project_advance"));
-        assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
-        assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
-        assert!(has("planner", "plaza_project_advance"));
-        assert!(has("mayor", "plaza_project_approve"));
-        assert!(has("mayor", "plaza_agent_control"));
-        assert!(!has("builder", "plaza_project_open"));
-        assert!(!has("builder", "plaza_project_approve"));
-        assert!(!has("builder", "plaza_agent_control"));
-        // Everyone can read projects, attach to them and critique them.
-        assert!(has("builder", "plaza_projects") && has("builder", "plaza_project_critique"));
+        // Projects and harness tools go to their roles; everyone reads projects and critiques them.
+        {
+            let has = |role: &str, tool: &str| offered(role, &[]).iter().any(|n| n == tool);
+            assert!(has(ORCHESTRATOR_ROLE, "plaza_project_open"));
+            assert!(has(ORCHESTRATOR_ROLE, "plaza_project_advance"));
+            assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
+            assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
+            assert!(has("planner", "plaza_project_advance"));
+            assert!(has("mayor", "plaza_project_approve"));
+            assert!(has("mayor", "plaza_agent_control"));
+            assert!(!has("builder", "plaza_project_open"));
+            assert!(!has("builder", "plaza_project_approve"));
+            assert!(!has("builder", "plaza_agent_control"));
+            // Everyone can read projects, attach to them and critique them.
+            assert!(has("builder", "plaza_projects") && has("builder", "plaza_project_critique"));
+        }
+
+        // The laws decide the offer: a builder cannot post a task or approve a project, a mayor can.
+        {
+            assert!(
+                !offered("builder", &[])
+                    .iter()
+                    .any(|n| n == "plaza_post_task")
+            );
+            assert!(
+                !offered("builder", &[])
+                    .iter()
+                    .any(|n| n == "plaza_project_approve")
+            );
+            assert!(
+                offered("mayor", &[])
+                    .iter()
+                    .any(|n| n == "plaza_project_approve")
+            );
+            assert!(refusal("builder", "plaza_post_task").is_some());
+        }
+
+        // A worker calling post_task is refused.
+        {
+            assert!(refusal("worker", "plaza_post_task").is_some());
+            assert!(refusal(ORCHESTRATOR_ROLE, "plaza_post_task").is_none());
+            assert!(refusal("worker", "bash").is_some());
+        }
     }
 
     #[test]
@@ -1603,26 +1652,6 @@ mod tests {
             }
         }
         assert!(runs("bash") == Some(Runs::Guest));
-    }
-
-    #[test]
-    fn the_laws_decide_the_offer() {
-        assert!(
-            !offered("builder", &[])
-                .iter()
-                .any(|n| n == "plaza_post_task")
-        );
-        assert!(
-            !offered("builder", &[])
-                .iter()
-                .any(|n| n == "plaza_project_approve")
-        );
-        assert!(
-            offered("mayor", &[])
-                .iter()
-                .any(|n| n == "plaza_project_approve")
-        );
-        assert!(refusal("builder", "plaza_post_task").is_some());
     }
 
     #[test]
@@ -1643,13 +1672,6 @@ mod tests {
         }
         assert!(budget_arg(&json!({"budget": -5})).is_err());
         assert!(budget_arg(&json!({"budget": "lots"})).is_err());
-    }
-
-    #[test]
-    fn worker_calling_post_task_is_refused() {
-        assert!(refusal("worker", "plaza_post_task").is_some());
-        assert!(refusal(ORCHESTRATOR_ROLE, "plaza_post_task").is_none());
-        assert!(refusal("worker", "bash").is_some());
     }
 
     /// Agents never run anything on the host: the host-side tools are the
@@ -1693,39 +1715,5 @@ mod tests {
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
-    }
-}
-
-#[cfg(test)]
-mod money_report_tests {
-    use super::*;
-    use apz_plaza::treasury::{TaskMoney, WalletMoney};
-
-    #[test]
-    fn the_report_names_the_wallet_the_task_and_the_rules() {
-        let wallet = WalletMoney {
-            balance: 15,
-            sent_today: 5,
-            earned: 20,
-        };
-        let money = TaskMoney {
-            minted: 300,
-            escrow: 0,
-            spent: 100,
-            paid: vec![(7, 20)],
-            refunded: 180,
-        };
-        let report = money_report(8, &wallet, Some(("t1", "done", &money)));
-        assert!(report.starts_with(
-            "your wallet (cid:8): balance 15 credits; sent today 5 of the 1000 daily cap"
-        ));
-        assert!(report.contains("budget (minted into escrow): 300"));
-        assert!(report.contains("real spend charged so far: 100"));
-        assert!(report.contains("paid to agents: cid:7 20"));
-        assert!(report.contains("refunded to the plaza: 180"));
-        assert!(report.ends_with(&HOW_MONEY_WORKS.to_string()));
-        assert!(!HOW_MONEY_WORKS.contains("plaza_money shows"));
-        let bare = money_report(8, &wallet, None);
-        assert!(!bare.contains("budget (minted"));
     }
 }

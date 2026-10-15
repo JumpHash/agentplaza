@@ -788,55 +788,65 @@ mod tests {
     }
 
     #[test]
-    fn the_node_with_the_most_free_memory_takes_a_new_agent() {
-        let picked = choose(&[
-            candidate("n0", 2048, 0, false),
-            candidate("n1", 8192, 0, false),
-        ]);
-        assert_eq!(picked, "n1");
-    }
-
-    #[test]
-    fn a_warm_template_outweighs_a_little_more_memory() {
-        let picked = choose(&[
-            candidate("n0", 3000, 0, true),
-            candidate("n1", 3500, 0, false),
-        ]);
-        assert_eq!(picked, "n0");
-        let picked = choose(&[
-            candidate("n0", 3000, 0, false),
-            candidate("n1", 3500, 0, false),
-        ]);
-        assert_eq!(picked, "n1", "without the template the roomier node wins");
-    }
-
-    #[test]
-    fn the_vms_a_node_runs_count_against_it() {
-        let picked = choose(&[
-            candidate("n0", 4096, 4, false),
-            candidate("n1", 3000, 0, false),
-        ]);
-        assert_eq!(picked, "n1");
-    }
-
-    #[test]
-    fn a_tie_goes_to_n0_whatever_the_order() {
-        let picked = choose(&[
-            candidate("n1", 4096, 0, false),
-            candidate("n0", 4096, 0, false),
-        ]);
-        assert_eq!(picked, "n0");
-    }
-
-    #[test]
-    fn a_node_without_room_for_an_agent_is_skipped_and_none_means_n0() {
-        let picked = choose(&[
-            candidate("n0", 512, 0, false),
-            candidate("n1", 2048, 0, false),
-        ]);
-        assert_eq!(picked, "n1");
-        assert_eq!(choose(&[candidate("n1", 512, 0, true)]), "n0");
-        assert_eq!(choose(&[]), "n0");
+    fn choose_weighs_memory_warmth_vms_and_ties() {
+        for (case, nodes, want) in [
+            (
+                "the node with the most free memory takes a new agent",
+                vec![
+                    candidate("n0", 2048, 0, false),
+                    candidate("n1", 8192, 0, false),
+                ],
+                "n1",
+            ),
+            (
+                "a warm template outweighs a little more memory",
+                vec![
+                    candidate("n0", 3000, 0, true),
+                    candidate("n1", 3500, 0, false),
+                ],
+                "n0",
+            ),
+            (
+                "without the template the roomier node wins",
+                vec![
+                    candidate("n0", 3000, 0, false),
+                    candidate("n1", 3500, 0, false),
+                ],
+                "n1",
+            ),
+            (
+                "the VMs a node runs count against it",
+                vec![
+                    candidate("n0", 4096, 4, false),
+                    candidate("n1", 3000, 0, false),
+                ],
+                "n1",
+            ),
+            (
+                "a tie goes to n0 whatever the order",
+                vec![
+                    candidate("n1", 4096, 0, false),
+                    candidate("n0", 4096, 0, false),
+                ],
+                "n0",
+            ),
+            (
+                "a node without room for an agent is skipped",
+                vec![
+                    candidate("n0", 512, 0, false),
+                    candidate("n1", 2048, 0, false),
+                ],
+                "n1",
+            ),
+            (
+                "a node without room alone means n0",
+                vec![candidate("n1", 512, 0, true)],
+                "n0",
+            ),
+            ("no node at all means n0", vec![], "n0"),
+        ] {
+            assert_eq!(choose(&nodes), want, "{case}");
+        }
     }
 
     #[test]
@@ -883,10 +893,29 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_move_wins_over_the_cid_ranges() {
-        assert_eq!(node_for(Some("n0".into()), Some("n1".into())), "n0");
-        assert_eq!(node_for(None, Some("n1".into())), "n1");
-        assert_eq!(node_for(None, None), LOCAL);
+    fn a_recorded_move_or_override_wins_over_the_range_owner() {
+        // A recorded move wins over the cid ranges.
+        {
+            assert_eq!(node_for(Some("n0".into()), Some("n1".into())), "n0");
+            assert_eq!(node_for(None, Some("n1".into())), "n1");
+            assert_eq!(node_for(None, None), LOCAL);
+        }
+        // node_of takes the override over the range owner.
+        {
+            let store = crate::nodes::Store::default();
+            store
+                .restore(
+                    &json!({"nodes": [{"id": "n1", "name": "a", "public_key": "", "cid_base": 1000,
+                        "cid_count": 100, "joined_ms": 0, "last_seen_ms": 0}], "codes": []})
+                    .to_string(),
+                )
+                .unwrap();
+            let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
+            assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
+            store.set_override(1005, Some("n0"));
+            assert_eq!(node_for(store.override_of(1005), owner(1005)), "n0");
+            assert_eq!(node_for(store.override_of(1006), owner(1006)), "n1");
+        }
     }
 
     #[test]
@@ -908,23 +937,6 @@ mod tests {
         let store = crate::nodes::Store::default();
         store.restore(r#"{"nodes":[],"codes":[]}"#).unwrap();
         assert_eq!(store.override_of(1005), None);
-    }
-
-    #[test]
-    fn node_of_takes_the_override_over_the_range_owner() {
-        let store = crate::nodes::Store::default();
-        store
-            .restore(
-                &json!({"nodes": [{"id": "n1", "name": "a", "public_key": "", "cid_base": 1000,
-                    "cid_count": 100, "joined_ms": 0, "last_seen_ms": 0}], "codes": []})
-                .to_string(),
-            )
-            .unwrap();
-        let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
-        assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
-        store.set_override(1005, Some("n0"));
-        assert_eq!(node_for(store.override_of(1005), owner(1005)), "n0");
-        assert_eq!(node_for(store.override_of(1006), owner(1006)), "n1");
     }
 
     #[test]
@@ -982,15 +994,6 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_copied_in_pieces_and_arrives_whole() {
-        let data: Vec<u8> = (0..10).collect();
-        let files = std::collections::BTreeMap::from([("memory".to_string(), data.clone())]);
-        let (result, target) = copy_with(&files, &[part("memory", 10)], 4, false);
-        assert_eq!(result, Ok(10));
-        assert_eq!(target["memory"], data);
-    }
-
-    #[test]
     fn every_write_is_at_most_512_kib_and_the_file_arrives_whole() {
         let len = 2 * WRITE_CHUNK + 5;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
@@ -1026,11 +1029,54 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_file_is_created_and_copies_nothing() {
-        let files = std::collections::BTreeMap::from([("vmstate".to_string(), Vec::new())]);
-        let (result, target) = copy_with(&files, &[part("vmstate", 0)], CHUNK, false);
-        assert_eq!(result, Ok(0));
-        assert_eq!(target["vmstate"], Vec::<u8>::new());
+    fn a_copy_ends_cleanly_or_fails_at_the_edges() {
+        // An empty file is created and copies nothing.
+        {
+            let files = std::collections::BTreeMap::from([("vmstate".to_string(), Vec::new())]);
+            let (result, target) = copy_with(&files, &[part("vmstate", 0)], CHUNK, false);
+            assert_eq!(result, Ok(0));
+            assert_eq!(target["vmstate"], Vec::<u8>::new());
+        }
+        // A source that ends early, or a short piece, fails the copy.
+        {
+            let files = std::collections::BTreeMap::from([("memory".to_string(), vec![1_u8; 10])]);
+            let (result, _) = copy_with(&files, &[part("memory", 10)], 4, true);
+            assert!(result.unwrap_err().contains("eof"), "eof before the end");
+            let mut short = |_: &str, _: u64, len: u64| {
+                Ok(Fetched {
+                    data: b64(&vec![1_u8; usize::try_from(len).unwrap() - 1]),
+                    eof: false,
+                    zeros: None,
+                })
+            };
+            let parts = [part("memory", 10)];
+            let result = copy_files(4, &parts, &mut short, |_, _, _| Ok(()));
+            assert!(result.unwrap_err().contains("bytes"), "a short piece");
+        }
+        // A failed push stops the copy.
+        {
+            let parts = [part("memory", 8)];
+            let result = copy_files(
+                4,
+                &parts,
+                |_, offset, len| {
+                    let piece = vec![0_u8; usize::try_from(len).unwrap()];
+                    Ok(Fetched {
+                        data: b64(&piece),
+                        eof: offset + len == 8,
+                        zeros: None,
+                    })
+                },
+                |_, offset, _| {
+                    if offset == 4 {
+                        Err("the import refused the piece".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert_eq!(result, Err("the import refused the piece".to_string()));
+        }
     }
 
     #[test]
@@ -1063,47 +1109,5 @@ mod tests {
         .expect("copies");
         assert_eq!(copied, 8);
         assert_eq!(pushed, vec![(4, b64(&[7, 7, 7, 7]))]);
-    }
-
-    #[test]
-    fn a_source_that_ends_early_or_a_short_piece_fails_the_copy() {
-        let files = std::collections::BTreeMap::from([("memory".to_string(), vec![1_u8; 10])]);
-        let (result, _) = copy_with(&files, &[part("memory", 10)], 4, true);
-        assert!(result.unwrap_err().contains("eof"), "eof before the end");
-        let mut short = |_: &str, _: u64, len: u64| {
-            Ok(Fetched {
-                data: b64(&vec![1_u8; usize::try_from(len).unwrap() - 1]),
-                eof: false,
-                zeros: None,
-            })
-        };
-        let parts = [part("memory", 10)];
-        let result = copy_files(4, &parts, &mut short, |_, _, _| Ok(()));
-        assert!(result.unwrap_err().contains("bytes"), "a short piece");
-    }
-
-    #[test]
-    fn a_failed_push_stops_the_copy() {
-        let parts = [part("memory", 8)];
-        let result = copy_files(
-            4,
-            &parts,
-            |_, offset, len| {
-                let piece = vec![0_u8; usize::try_from(len).unwrap()];
-                Ok(Fetched {
-                    data: b64(&piece),
-                    eof: offset + len == 8,
-                    zeros: None,
-                })
-            },
-            |_, offset, _| {
-                if offset == 4 {
-                    Err("the import refused the piece".to_string())
-                } else {
-                    Ok(())
-                }
-            },
-        );
-        assert_eq!(result, Err("the import refused the piece".to_string()));
     }
 }

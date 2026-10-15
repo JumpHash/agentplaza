@@ -59,48 +59,51 @@ mod tests {
     use std::io::{Read, Write};
 
     #[test]
-    fn encodes_path_and_nul_terminates() {
-        let buf = encode_sun_path(Path::new("/tmp/vm3_1024")).unwrap();
-        assert_eq!(&buf[..13], b"/tmp/vm3_1024");
-        assert!(buf[13..].iter().all(|&b| b == 0));
-    }
+    fn encode_sun_path_enforces_path_rules() {
+        // Was encodes_path_and_nul_terminates: the path is copied in and the rest is NUL.
+        {
+            let buf = encode_sun_path(Path::new("/tmp/vm3_1024")).unwrap();
+            assert_eq!(&buf[..13], b"/tmp/vm3_1024");
+            assert!(buf[13..].iter().all(|&b| b == 0));
+        }
 
-    #[test]
-    fn accepts_exactly_107_bytes() {
-        let p = "a".repeat(107);
-        let buf = encode_sun_path(Path::new(&p)).unwrap();
-        assert_eq!(buf[106], b'a');
-        assert_eq!(buf[107], 0);
-    }
+        // Was accepts_exactly_107_bytes: 107 bytes fit with the terminating NUL at index 107.
+        {
+            let p = "a".repeat(107);
+            let buf = encode_sun_path(Path::new(&p)).unwrap();
+            assert_eq!(buf[106], b'a');
+            assert_eq!(buf[107], 0);
+        }
 
-    #[test]
-    fn rejects_108_bytes_as_too_long() {
-        let p = "a".repeat(108);
-        let err = encode_sun_path(Path::new(&p)).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("too long"));
-    }
+        // Was rejects_108_bytes_as_too_long: 108 bytes leave no room for the NUL.
+        {
+            let p = "a".repeat(108);
+            let err = encode_sun_path(Path::new(&p)).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains("too long"));
+        }
 
-    #[test]
-    fn rejects_empty_path() {
-        let err = encode_sun_path(Path::new("")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
+        // Was rejects_empty_path: an empty path is invalid.
+        {
+            let err = encode_sun_path(Path::new("")).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
 
-    #[test]
-    fn rejects_interior_nul() {
-        let err = encode_sun_path(Path::new("a\0b")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
+        // Was rejects_interior_nul: a NUL byte inside the path is invalid.
+        {
+            let err = encode_sun_path(Path::new("a\0b")).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_utf8() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-        let p = Path::new(OsStr::from_bytes(b"/tmp/\xff"));
-        let err = encode_sun_path(p).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // Was rejects_non_utf8 (unix only): a path that is not valid UTF-8 is invalid.
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let p = Path::new(OsStr::from_bytes(b"/tmp/\xff"));
+            let err = encode_sun_path(p).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

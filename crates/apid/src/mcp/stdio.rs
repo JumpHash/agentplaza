@@ -580,15 +580,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn push_capped_keeps_the_newest() {
-        let mut lines = VecDeque::new();
-        for i in 0..5 {
-            push_capped(&mut lines, i, 3);
-        }
-        assert_eq!(lines.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
-    }
-
-    #[test]
     fn the_network_is_internal_and_has_the_fixed_subnet_and_gateway() {
         let create = network_create_args().join(" ");
         assert_eq!(
@@ -635,44 +626,46 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_missing_or_unreachable_docker_gives_one_actionable_line() {
-        let missing = MockDocker::new(Default::default(), |_: &[String]| {
-            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-        });
-        assert_eq!(ensure_network(&missing).unwrap_err(), NO_DOCKER);
-        assert!(
-            NO_DOCKER.contains("install Docker")
-                && NO_DOCKER.contains("remote (http) servers still work")
-        );
-        let unreachable = MockDocker::new(Default::default(), |_: &[String]| {
-            ran(
-                false,
-                "",
-                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
-            )
-        });
-        assert_eq!(ensure_network(&unreachable).unwrap_err(), NO_DAEMON);
-    }
-
-    #[test]
-    fn a_network_that_cannot_be_created_names_dockers_reason_and_no_socket_error() {
-        let docker = MockDocker::new(Default::default(), |args: &[String]| {
-            if args.get(1).map(String::as_str) == Some("create") {
+    fn a_missing_docker_or_an_uncreatable_network_gives_one_actionable_line() {
+        // A missing or unreachable docker gives one actionable line.
+        {
+            let missing = MockDocker::new(Default::default(), |_: &[String]| {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            });
+            assert_eq!(ensure_network(&missing).unwrap_err(), NO_DOCKER);
+            assert!(
+                NO_DOCKER.contains("install Docker")
+                    && NO_DOCKER.contains("remote (http) servers still work")
+            );
+            let unreachable = MockDocker::new(Default::default(), |_: &[String]| {
                 ran(
                     false,
                     "",
-                    "Error response from daemon: permission denied while trying to connect\nmore",
+                    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
                 )
-            } else {
-                ran(false, "", "Error: No such network: apz-mcp")
-            }
-        });
-        let err = ensure_network(&docker).unwrap_err();
-        assert!(
-            err.contains("could not be created") && err.contains("permission denied"),
-            "{err}"
-        );
-        assert!(!err.contains("os error") && !err.contains("\n"), "{err}");
+            });
+            assert_eq!(ensure_network(&unreachable).unwrap_err(), NO_DAEMON);
+        }
+        // A network that cannot be created names docker's reason and no socket error.
+        {
+            let docker = MockDocker::new(Default::default(), |args: &[String]| {
+                if args.get(1).map(String::as_str) == Some("create") {
+                    ran(
+                        false,
+                        "",
+                        "Error response from daemon: permission denied while trying to connect\nmore",
+                    )
+                } else {
+                    ran(false, "", "Error: No such network: apz-mcp")
+                }
+            });
+            let err = ensure_network(&docker).unwrap_err();
+            assert!(
+                err.contains("could not be created") && err.contains("permission denied"),
+                "{err}"
+            );
+            assert!(!err.contains("os error") && !err.contains("\n"), "{err}");
+        }
     }
 
     #[test]

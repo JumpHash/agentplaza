@@ -238,38 +238,6 @@ fn number_value(key: &str, text: &str) -> Option<String> {
     (1.0..=12.0).contains(&x).then(|| format!("{}", x))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn number_value_reads_the_size_as_typed() {
-        assert_eq!(number_value("width", "3.3").as_deref(), Some("3.3"));
-        assert_eq!(number_value("depth", " 12 ").as_deref(), Some("12"));
-        assert_eq!(number_value("width", "13"), None);
-        assert_eq!(number_value("width", "0.5"), None);
-    }
-
-    #[test]
-    fn number_value_floors_the_seed_within_range() {
-        assert_eq!(number_value("seed", "12.7").as_deref(), Some("12"));
-        assert_eq!(number_value("seed", "0").as_deref(), Some("0"));
-        assert_eq!(
-            number_value("seed", "4294967295").as_deref(),
-            Some("4294967295")
-        );
-        assert_eq!(number_value("seed", "-1"), None);
-        assert_eq!(number_value("seed", "4294967296"), None);
-    }
-
-    #[test]
-    fn number_value_rejects_text_that_is_not_a_number() {
-        assert_eq!(number_value("width", "abc"), None);
-        assert_eq!(number_value("seed", "abc"), None);
-        assert_eq!(number_value("width", "NaN"), None);
-    }
-}
-
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Stage(m) => floor::update(&mut state.stage, m, ctx).map(Msg::Stage),

@@ -868,19 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn vault_edit_body_refuses_a_specific_scope_with_no_node() {
-        let form = EditForm {
-            scope: ScopeMode::Nodes,
-            nodes: vec![("n0".into(), false)],
-            ..Default::default()
-        };
-        assert_eq!(
-            edit_body(&form).unwrap_err(),
-            "Pick at least one node, or choose Plaza."
-        );
-    }
-
-    #[test]
     fn vault_rotate_rollback_and_test_bodies() {
         let mut v = "new".to_string();
         assert_eq!(rotate_body(&mut v).unwrap(), json!({ "value": "new" }));

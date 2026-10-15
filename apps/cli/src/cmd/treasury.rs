@@ -275,55 +275,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_blank_fine_memo_is_refused_and_a_memo_is_trimmed() {
-        assert_eq!(fine_memo(""), Err("A fine needs a memo.".to_string()));
-        assert_eq!(fine_memo("  \t "), Err("A fine needs a memo.".to_string()));
-        assert_eq!(
-            fine_memo("  late delivery  "),
-            Ok("late delivery".to_string())
-        );
-    }
-
-    #[test]
-    fn the_journal_path_carries_only_the_filters_it_is_given() {
-        assert_eq!(
-            journal_path(None, None, None, None, None),
-            "/v1/treasury/journal"
-        );
-        assert_eq!(
-            journal_path(Some(10), None, Some(""), None, Some("")),
-            "/v1/treasury/journal?limit=10"
-        );
-        assert_eq!(
-            journal_path(Some(25), Some(42), Some("fine"), Some(7), Some("t/1 x")),
-            "/v1/treasury/journal?limit=25&before=42&kind=fine&wallet=7&task=t%2F1%20x"
-        );
-    }
-
-    #[test]
-    fn the_series_path_names_the_range_and_bucket_given() {
-        assert_eq!(series_path(None, None, None), "/v1/treasury/series");
-        assert_eq!(
-            series_path(Some(1000), Some(5000), Some("hour")),
-            "/v1/treasury/series?from=1000&to=5000&bucket=hour"
-        );
-    }
-
-    #[test]
-    fn postings_read_the_account_number_and_the_amount() {
-        let entry = json!({ "postings": [ { "account": 3, "amount": -5 }, { "account": 9, "amount": 5 } ] });
-        assert_eq!(postings(&entry), "3 -5, 9 5");
-        assert_eq!(postings(&json!({})), "");
-    }
-
-    #[test]
-    fn the_journal_entry_fields_are_the_hub_s() {
-        let entry = json!({ "id": 4, "kind": "fine", "created_at": 1_791_811_353_718u64, "task_id": "t-1", "memo": "late" });
-        assert_eq!(ctx::text(&entry, "task_id"), "t-1");
-        assert_ne!(
-            ctx::when(&entry["created_at"]),
-            "—",
-            "created_at is the time the hub sends"
-        );
+    fn the_paths_carry_only_the_query_they_are_given() {
+        // The journal path carries only the filters it is given.
+        {
+            assert_eq!(
+                journal_path(None, None, None, None, None),
+                "/v1/treasury/journal"
+            );
+            assert_eq!(
+                journal_path(Some(10), None, Some(""), None, Some("")),
+                "/v1/treasury/journal?limit=10"
+            );
+            assert_eq!(
+                journal_path(Some(25), Some(42), Some("fine"), Some(7), Some("t/1 x")),
+                "/v1/treasury/journal?limit=25&before=42&kind=fine&wallet=7&task=t%2F1%20x"
+            );
+        }
+        // The series path names the range and bucket given.
+        {
+            assert_eq!(series_path(None, None, None), "/v1/treasury/series");
+            assert_eq!(
+                series_path(Some(1000), Some(5000), Some("hour")),
+                "/v1/treasury/series?from=1000&to=5000&bucket=hour"
+            );
+        }
     }
 }

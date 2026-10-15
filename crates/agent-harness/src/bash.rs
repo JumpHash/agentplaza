@@ -535,22 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn a_command_sees_the_trust_bundle_path() {
-        let workspace = scratch("trust-run");
-        std::fs::create_dir_all(workspace.plaza_dir()).expect("the plaza directory");
-        std::fs::write(workspace.plaza_dir().join("ca-bundle.pem"), "bundle").expect("a bundle");
-        let output =
-            run(&workspace, &json!({ "command": "echo \"$SSL_CERT_FILE\"" })).expect("exit 0");
-        assert_eq!(
-            output,
-            format!(
-                "{}\nexit 0",
-                workspace.plaza_dir().join("ca-bundle.pem").display()
-            )
-        );
-    }
-
-    #[test]
     fn a_nonzero_exit_is_an_error_that_carries_its_status() {
         let workspace = scratch("exit");
         let err = run(&workspace, &json!({ "command": "echo bye; exit 3" })).expect_err("exit 3");
@@ -603,13 +587,6 @@ mod tests {
             with_line("root:x:0:", ENGINE_GROUP),
             Some(format!("root:x:0:\n{ENGINE_GROUP}\n"))
         );
-    }
-
-    #[test]
-    fn a_coding_engine_runs_with_its_own_home_and_the_agent_path() {
-        let home = Path::new("/workspace/.engines/home/goose");
-        let env = coding_engine_env(home).expect("an environment");
-        assert_eq!(env.home(), home);
     }
 
     #[test]

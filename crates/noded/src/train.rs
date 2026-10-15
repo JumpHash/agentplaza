@@ -1092,70 +1092,70 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_is_docker_nvidia_and_ready_only_with_its_runtime_and_cdi() {
-        let nvidia = runtimes(&["runc", "nvidia"]);
-        let trainer = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia)));
-        assert_eq!((trainer.runtime, trainer.ok), (Some("docker-nvidia"), true));
+    fn trainer_choice_follows_the_accelerators_and_the_runtimes() {
+        // nvidia_is_docker_nvidia_and_ready_only_with_its_runtime_and_cdi: the nvidia runtime and CDI are both needed for a ready nvidia trainer.
+        {
+            let nvidia = runtimes(&["runc", "nvidia"]);
+            let trainer = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia)));
+            assert_eq!((trainer.runtime, trainer.ok), (Some("docker-nvidia"), true));
 
-        let plain = runtimes(&["runc"]);
-        let missing = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&plain)));
-        assert_eq!(
-            (missing.runtime, missing.ok),
-            (Some("docker-nvidia"), false)
-        );
-        assert!(missing.detail.contains("nvidia runtime"));
-        let no_cdi = Inputs {
-            cdi: false,
-            ..trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia))
-        };
-        assert!(!choose_trainer(&no_cdi).ok);
-    }
-
-    #[test]
-    fn amd_needs_kfd_and_intel_needs_dri() {
-        let docker = runtimes(&["runc"]);
-        let amd = Inputs {
-            kfd: true,
-            ..trainer_inputs("linux", &["amd"], Some(&docker))
-        };
-        assert_eq!(choose_trainer(&amd).runtime, Some("docker-rocm"));
-        assert!(choose_trainer(&amd).ok);
-        assert!(!choose_trainer(&trainer_inputs("linux", &["amd"], Some(&docker))).ok);
-        let intel = Inputs {
-            dri: true,
-            ..trainer_inputs("linux", &["intel"], Some(&docker))
-        };
-        assert_eq!(
-            (choose_trainer(&intel).runtime, choose_trainer(&intel).ok),
-            (Some("docker-xpu"), true)
-        );
-    }
-
-    #[test]
-    fn docker_without_accelerators_is_docker_cpu_and_no_docker_has_no_runtime() {
-        let docker = runtimes(&["runc"]);
-        let cpu = choose_trainer(&trainer_inputs("linux", &[], Some(&docker)));
-        assert_eq!((cpu.runtime, cpu.ok), (Some("docker-cpu"), true));
-        let none = choose_trainer(&trainer_inputs("linux", &[], None));
-        assert_eq!((none.runtime, none.ok), (None, false));
-    }
-
-    #[test]
-    fn macos_runs_natively_when_uv_is_installed() {
-        let with_uv = Inputs {
-            uv: true,
-            ..trainer_inputs("macos", &["apple"], None)
-        };
-        assert_eq!(
-            (
-                choose_trainer(&with_uv).runtime,
-                choose_trainer(&with_uv).ok
-            ),
-            (Some("native-mps"), true)
-        );
-        let without = choose_trainer(&trainer_inputs("macos", &["apple"], None));
-        assert_eq!((without.runtime, without.ok), (Some("native-mps"), false));
-        assert!(without.detail.contains("uv"));
+            let plain = runtimes(&["runc"]);
+            let missing = choose_trainer(&trainer_inputs("linux", NVIDIA_HOST, Some(&plain)));
+            assert_eq!(
+                (missing.runtime, missing.ok),
+                (Some("docker-nvidia"), false)
+            );
+            assert!(missing.detail.contains("nvidia runtime"));
+            let no_cdi = Inputs {
+                cdi: false,
+                ..trainer_inputs("linux", NVIDIA_HOST, Some(&nvidia))
+            };
+            assert!(!choose_trainer(&no_cdi).ok);
+        }
+        // amd_needs_kfd_and_intel_needs_dri: amd needs kfd and intel needs dri before they are ready.
+        {
+            let docker = runtimes(&["runc"]);
+            let amd = Inputs {
+                kfd: true,
+                ..trainer_inputs("linux", &["amd"], Some(&docker))
+            };
+            assert_eq!(choose_trainer(&amd).runtime, Some("docker-rocm"));
+            assert!(choose_trainer(&amd).ok);
+            assert!(!choose_trainer(&trainer_inputs("linux", &["amd"], Some(&docker))).ok);
+            let intel = Inputs {
+                dri: true,
+                ..trainer_inputs("linux", &["intel"], Some(&docker))
+            };
+            assert_eq!(
+                (choose_trainer(&intel).runtime, choose_trainer(&intel).ok),
+                (Some("docker-xpu"), true)
+            );
+        }
+        // docker_without_accelerators_is_docker_cpu_and_no_docker_has_no_runtime: docker alone is the cpu trainer, and no docker means no runtime.
+        {
+            let docker = runtimes(&["runc"]);
+            let cpu = choose_trainer(&trainer_inputs("linux", &[], Some(&docker)));
+            assert_eq!((cpu.runtime, cpu.ok), (Some("docker-cpu"), true));
+            let none = choose_trainer(&trainer_inputs("linux", &[], None));
+            assert_eq!((none.runtime, none.ok), (None, false));
+        }
+        // macos_runs_natively_when_uv_is_installed: macos runs natively, ready only when uv is installed.
+        {
+            let with_uv = Inputs {
+                uv: true,
+                ..trainer_inputs("macos", &["apple"], None)
+            };
+            assert_eq!(
+                (
+                    choose_trainer(&with_uv).runtime,
+                    choose_trainer(&with_uv).ok
+                ),
+                (Some("native-mps"), true)
+            );
+            let without = choose_trainer(&trainer_inputs("macos", &["apple"], None));
+            assert_eq!((without.runtime, without.ok), (Some("native-mps"), false));
+            assert!(without.detail.contains("uv"));
+        }
     }
 
     #[test]

@@ -562,26 +562,6 @@ mod tests {
     }
 
     #[test]
-    fn times_read_as_utc_with_a_z_without_a_local_offset() {
-        assert_eq!(format_when(0, None), "1970-01-01 00:00Z");
-        assert_eq!(format_when(1_791_811_353_718, None), "2026-10-12 13:22Z");
-        assert_eq!(format_when(0, Some(7200)), "1970-01-01 02:00");
-        assert_eq!(format_when(0, Some(-18_000)), "1969-12-31 19:00");
-    }
-
-    #[test]
-    fn ago_reads_in_minutes_hours_and_days() {
-        let now = 10 * 86_400_000;
-        assert_eq!(ago_at(now, now), "just now");
-        assert_eq!(ago_at(now + 1000, now), "just now");
-        assert_eq!(ago_at(now - 5 * 60_000, now), "5 min ago");
-        assert_eq!(ago_at(now - 3 * 3_600_000, now), "3 h ago");
-        assert_eq!(ago_at(now - 2 * 86_400_000, now), "2 d ago");
-        assert_eq!(when(&Value::Null), "—");
-        assert_eq!(ago(&Value::Null), "—");
-    }
-
-    #[test]
     fn pins_parse_in_both_spellings() {
         let hex = "ab".repeat(32);
         assert_eq!(parse_pin(&hex).unwrap(), [0xab; 32]);

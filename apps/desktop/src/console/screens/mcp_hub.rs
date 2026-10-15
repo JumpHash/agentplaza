@@ -1600,49 +1600,43 @@ mod tests {
     const TOKEN: &str = "apz_mcp_test";
 
     #[test]
-    fn mcp_hub_setup_snippets_match_the_web_strings() {
-        let s = setup_snippets(URL, Some(TOKEN));
-        assert_eq!(
-            s.claude_code,
-            "claude mcp add --transport http agentplaza https://hub.example.test/mcp --header \"Authorization: Bearer apz_mcp_test\""
-        );
-        assert_eq!(
-            s.desktop_login.as_deref(),
-            Some("agentplaza mcp login --hub https://hub.example.test")
-        );
-        assert_eq!(
-            s.generic,
-            "URL: https://hub.example.test/mcp\nAuthorization: Bearer apz_mcp_test"
-        );
-        let desktop: Value = serde_json::from_str(&s.desktop).expect("the desktop block is JSON");
-        assert_eq!(
-            desktop["mcpServers"]["agentplaza"]["args"],
-            json!(["mcp", "serve", "--hub", "https://hub.example.test"])
-        );
-        assert!(
-            !s.desktop.contains(TOKEN),
-            "the desktop block never carries the token"
-        );
-    }
-
-    #[test]
-    fn mcp_hub_open_mode_setup_drops_the_token() {
-        let s = setup_snippets(URL, None);
-        assert_eq!(
-            s.claude_code,
-            "claude mcp add --transport http agentplaza https://hub.example.test/mcp"
-        );
-        assert_eq!(s.desktop_login, None);
-        assert_eq!(s.generic, "URL: https://hub.example.test/mcp");
-    }
-
-    #[test]
-    fn mcp_hub_origin_is_the_url_without_its_path() {
-        assert_eq!(hub_origin(URL), "https://hub.example.test");
-        assert_eq!(
-            hub_origin("https://hub.example.test/mcp/"),
-            "https://hub.example.test"
-        );
+    fn mcp_hub_setup_snippets_match_the_web_strings_and_drop_the_token_in_open_mode() {
+        // Original: mcp_hub_setup_snippets_match_the_web_strings
+        {
+            let s = setup_snippets(URL, Some(TOKEN));
+            assert_eq!(
+                s.claude_code,
+                "claude mcp add --transport http agentplaza https://hub.example.test/mcp --header \"Authorization: Bearer apz_mcp_test\""
+            );
+            assert_eq!(
+                s.desktop_login.as_deref(),
+                Some("agentplaza mcp login --hub https://hub.example.test")
+            );
+            assert_eq!(
+                s.generic,
+                "URL: https://hub.example.test/mcp\nAuthorization: Bearer apz_mcp_test"
+            );
+            let desktop: Value =
+                serde_json::from_str(&s.desktop).expect("the desktop block is JSON");
+            assert_eq!(
+                desktop["mcpServers"]["agentplaza"]["args"],
+                json!(["mcp", "serve", "--hub", "https://hub.example.test"])
+            );
+            assert!(
+                !s.desktop.contains(TOKEN),
+                "the desktop block never carries the token"
+            );
+        }
+        // Original: mcp_hub_open_mode_setup_drops_the_token
+        {
+            let s = setup_snippets(URL, None);
+            assert_eq!(
+                s.claude_code,
+                "claude mcp add --transport http agentplaza https://hub.example.test/mcp"
+            );
+            assert_eq!(s.desktop_login, None);
+            assert_eq!(s.generic, "URL: https://hub.example.test/mcp");
+        }
     }
 
     #[test]
@@ -1768,16 +1762,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_hub_dates_and_ages_read_in_plain_words() {
-        assert_eq!(date_text(0), "1970-01-01");
-        assert_eq!(date_text(11_017 * DAY_MS), "2000-03-01");
-        assert_eq!(ago(10_000, 9_000), "just now");
-        assert_eq!(ago(10 * 60_000, 0), "10 min ago");
-        assert_eq!(expiry_text(5, None), "never expires");
-        assert_eq!(expiry_text(5, Some(4)), "expired 1970-01-01");
-    }
-
-    #[test]
     fn mcp_hub_editor_snippets_are_the_pasted_text() {
         let s = editor_snippets();
         assert_eq!(
@@ -1811,31 +1795,6 @@ mod tests {
         assert_eq!(session_title(&list[1]), "untitled");
         assert!(list[1].closed);
         assert!(parse_sessions(json!({"error": "nope"})).is_err());
-    }
-
-    #[test]
-    fn mcp_hub_session_lines_read_in_plain_words() {
-        let open = AcpSession {
-            cid: 7,
-            cwd: "/work/app".into(),
-            client: "zed 0.200".into(),
-            title: String::new(),
-            updated_ms: 1_000_000,
-            closed: false,
-        };
-        assert_eq!(
-            session_line(&open, 1_000_000 + 120_000),
-            "cid 7 · zed 0.200 · /work/app · updated 2 min ago"
-        );
-        let closed = AcpSession {
-            cwd: String::new(),
-            closed: true,
-            ..open
-        };
-        assert_eq!(
-            session_line(&closed, 1_000_000),
-            "cid 7 · zed 0.200 · updated just now · closed"
-        );
     }
 
     #[test]

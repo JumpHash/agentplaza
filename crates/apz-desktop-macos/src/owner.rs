@@ -31,35 +31,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_recent_input_means_the_owner_is_away() {
-        assert!(!owner_is_active(30.0, None));
-        assert!(!owner_is_active(30.0, Some(60.0)));
-        assert!(!owner_is_active(f64::NAN, None));
-        assert!(!owner_is_active(-1.0, None));
-    }
-
-    #[test]
-    fn recent_input_with_no_injection_is_the_owners() {
-        assert!(owner_is_active(0.3, None));
-    }
-
-    #[test]
-    fn input_after_our_last_event_is_the_owners() {
-        // We posted 10 s ago, the owner moved 0.5 s ago.
-        assert!(owner_is_active(0.5, Some(10.0)));
-    }
-
-    #[test]
-    fn our_own_event_as_the_last_input_is_not_the_owner() {
-        // We posted 0.1 s ago, and that is the most recent input.
-        assert!(!owner_is_active(0.1, Some(0.1)));
-        // The input was ours even though the system recorded it a moment later.
-        assert!(!owner_is_active(0.2, Some(0.3)));
-    }
-
-    #[test]
-    fn owner_input_before_our_event_does_not_count() {
-        // The owner moved 1.0 s ago, then we posted 0.2 s ago: our event is the latest.
-        assert!(!owner_is_active(1.0, Some(0.2)));
+    fn owner_is_active_only_for_recent_input_newer_than_ours() {
+        // Each case: idle seconds, seconds since our last event, and whether the owner is active.
+        for (case, idle, ours, want) in [
+            ("no recent input means the owner is away", 30.0, None, false),
+            (
+                "no recent input after our event means away",
+                30.0,
+                Some(60.0),
+                false,
+            ),
+            (
+                "NaN is in no range, so not recent input",
+                f64::NAN,
+                None,
+                false,
+            ),
+            ("a negative time is not recent input", -1.0, None, false),
+            (
+                "recent input with no injection is the owner's",
+                0.3,
+                None,
+                true,
+            ),
+            // We posted 10 s ago, the owner moved 0.5 s ago.
+            (
+                "input after our last event is the owner's",
+                0.5,
+                Some(10.0),
+                true,
+            ),
+            // We posted 0.1 s ago, and that is the most recent input.
+            (
+                "our own event as the last input is not the owner",
+                0.1,
+                Some(0.1),
+                false,
+            ),
+            // The input was ours even though the system recorded it a moment later.
+            (
+                "our event recorded a moment later is still ours",
+                0.2,
+                Some(0.3),
+                false,
+            ),
+            // The owner moved 1.0 s ago, then we posted 0.2 s ago: our event is the latest.
+            (
+                "owner input before our event does not count",
+                1.0,
+                Some(0.2),
+                false,
+            ),
+        ] {
+            assert_eq!(owner_is_active(idle, ours), want, "{case}");
+        }
     }
 }

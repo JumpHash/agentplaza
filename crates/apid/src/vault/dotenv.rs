@@ -132,31 +132,32 @@ mod tests {
     }
 
     #[test]
-    fn bare_quoted_and_exported_lines_parse() {
-        let text = "\u{feff}# a comment\n\nexport ANTHROPIC_API_KEY=sk-ant-1\nHF_TOKEN = hf_x  # trailing comment\nTITLE=\"two words\"\nSINGLE='a \\n literal'\nEMPTY=\nHASH=#not-a-value\n";
-        assert_eq!(
-            pairs(text),
-            vec![
-                ("ANTHROPIC_API_KEY".into(), "sk-ant-1".into()),
-                ("HF_TOKEN".into(), "hf_x".into()),
-                ("TITLE".into(), "two words".into()),
-                ("SINGLE".into(), "a \\n literal".into()),
-                ("EMPTY".into(), String::new()),
-                ("HASH".into(), String::new()),
-            ]
-        );
-    }
-
-    #[test]
-    fn double_quotes_take_escapes_and_may_span_lines() {
-        let text = "KEY=\"line one\\nline \\\"two\\\"\nline three\" # done\nNEXT=1\n";
-        assert_eq!(
-            pairs(text),
-            vec![
-                ("KEY".into(), "line one\nline \"two\"\nline three".into()),
-                ("NEXT".into(), "1".into())
-            ]
-        );
+    fn dotenv_pairs_parse_bare_quoted_exported_and_escaped_values() {
+        let cases: [(&str, &str, Vec<(String, String)>); 2] = [
+            (
+                "bare, quoted, exported and empty lines parse",
+                "\u{feff}# a comment\n\nexport ANTHROPIC_API_KEY=sk-ant-1\nHF_TOKEN = hf_x  # trailing comment\nTITLE=\"two words\"\nSINGLE='a \\n literal'\nEMPTY=\nHASH=#not-a-value\n",
+                vec![
+                    ("ANTHROPIC_API_KEY".into(), "sk-ant-1".into()),
+                    ("HF_TOKEN".into(), "hf_x".into()),
+                    ("TITLE".into(), "two words".into()),
+                    ("SINGLE".into(), "a \\n literal".into()),
+                    ("EMPTY".into(), String::new()),
+                    ("HASH".into(), String::new()),
+                ],
+            ),
+            (
+                "double quotes take escapes and may span lines",
+                "KEY=\"line one\\nline \\\"two\\\"\nline three\" # done\nNEXT=1\n",
+                vec![
+                    ("KEY".into(), "line one\nline \"two\"\nline three".into()),
+                    ("NEXT".into(), "1".into()),
+                ],
+            ),
+        ];
+        for (case, text, want) in cases {
+            assert_eq!(pairs(text), want, "{case}");
+        }
     }
 
     #[test]

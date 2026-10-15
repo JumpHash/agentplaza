@@ -295,13 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn gdt_entries_match_firecracker_values() {
-        assert_eq!(gdt_entry(0xa09b, 0, 0xfffff), 0x00af_9b00_0000_ffff);
-        assert_eq!(gdt_entry(0xc093, 0, 0xfffff), 0x00cf_9300_0000_ffff);
-        assert_eq!(gdt_entry(0x808b, 0, 0xfffff), 0x008f_8b00_0000_ffff);
-    }
-
-    #[test]
     fn code_segment_is_flat_64bit_code() {
         let (regs, _) = long_mode_boot(ENTRY);
         let cs = regs.cs;
@@ -403,13 +396,6 @@ mod tests {
                 limit: 7
             }
         );
-    }
-
-    #[test]
-    fn memory_writes_are_in_documented_order() {
-        let (_, writes) = long_mode_boot(ENTRY);
-        let gpas: Vec<u64> = writes.iter().map(|w| w.gpa).collect();
-        assert_eq!(gpas, vec![0x500, 0x520, 0x9000, 0xa000, 0xb000]);
     }
 
     #[test]

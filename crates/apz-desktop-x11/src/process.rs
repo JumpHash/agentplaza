@@ -171,39 +171,42 @@ mod tests {
     }
 
     #[test]
-    fn the_tree_is_the_launched_process_and_what_runs_beneath_it() {
-        let table: HashMap<u32, Stat> = [
-            entry(100, 1, 5),   // the launched app
-            entry(101, 100, 6), // its child
-            entry(102, 101, 7), // a grandchild
-            entry(200, 1, 8),   // something else on the machine
-            entry(300, 1, 9),   // the display's server, started by the daemon
-        ]
-        .into_iter()
-        .collect();
-        let launch = Started {
-            pid: 100,
-            started: 5,
-        };
-        assert_eq!(
-            tree(&[launch], &table),
-            [100, 101, 102].into_iter().collect()
-        );
-    }
-
-    #[test]
-    fn a_reused_pid_is_not_the_launched_process() {
-        let table: HashMap<u32, Stat> =
-            [entry(100, 1, 6), entry(101, 100, 7)].into_iter().collect();
-        let stale = Started {
-            pid: 100,
-            started: 5,
-        };
-        assert!(!is_still(stale, &table), "the start time differs");
-        assert!(
-            tree(&[stale], &table).is_empty(),
-            "nothing beneath a reused pid is ours"
-        );
+    fn the_tree_is_the_live_launched_process_and_what_runs_beneath_it() {
+        // The tree is the launched process and its descendants, not unrelated processes.
+        {
+            let table: HashMap<u32, Stat> = [
+                entry(100, 1, 5),   // the launched app
+                entry(101, 100, 6), // its child
+                entry(102, 101, 7), // a grandchild
+                entry(200, 1, 8),   // something else on the machine
+                entry(300, 1, 9),   // the display's server, started by the daemon
+            ]
+            .into_iter()
+            .collect();
+            let launch = Started {
+                pid: 100,
+                started: 5,
+            };
+            assert_eq!(
+                tree(&[launch], &table),
+                [100, 101, 102].into_iter().collect()
+            );
+        }
+        // A pid that was reused by another process (different start time) is not the launched
+        // process, so it is not live and nothing beneath it is ours.
+        {
+            let table: HashMap<u32, Stat> =
+                [entry(100, 1, 6), entry(101, 100, 7)].into_iter().collect();
+            let stale = Started {
+                pid: 100,
+                started: 5,
+            };
+            assert!(!is_still(stale, &table), "the start time differs");
+            assert!(
+                tree(&[stale], &table).is_empty(),
+                "nothing beneath a reused pid is ours"
+            );
+        }
     }
 
     #[test]

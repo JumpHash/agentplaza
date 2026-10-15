@@ -79,47 +79,62 @@ mod tests {
     }
 
     #[test]
-    fn a_role_and_a_name_must_both_match() {
+    fn selectors_match_on_role_and_name_in_document_order() {
         let tree = fixture();
-        assert_eq!(
-            first_match(&tree, &sel(Some("button"), Some("Ping"))),
-            Some(vec![0, 0])
-        );
-        assert_eq!(first_match(&tree, &sel(Some("button"), Some("Name"))), None);
-        assert_eq!(
-            first_match(&tree, &sel(Some("text_field"), Some("Ping"))),
-            None
-        );
-    }
-
-    #[test]
-    fn a_role_alone_or_a_name_alone_picks_the_first_match_in_document_order() {
-        let tree = fixture();
-        assert_eq!(
-            first_match(&tree, &sel(Some("text_field"), None)),
-            Some(vec![0, 1])
-        );
-        assert_eq!(
-            first_match(&tree, &sel(None, Some("Apz Test App"))),
-            Some(vec![0])
-        );
-    }
-
-    #[test]
-    fn a_selector_with_neither_role_nor_name_picks_nothing() {
+        // (case, role, name, the path the selector should pick)
+        for (case, role, name, want) in [
+            (
+                "a role and a name must both match",
+                Some("button"),
+                Some("Ping"),
+                Some(vec![0, 0]),
+            ),
+            (
+                "a role with another name does not match",
+                Some("button"),
+                Some("Name"),
+                None,
+            ),
+            (
+                "a name with another role does not match",
+                Some("text_field"),
+                Some("Ping"),
+                None,
+            ),
+            (
+                "a role alone picks the first match in document order",
+                Some("text_field"),
+                None,
+                Some(vec![0, 1]),
+            ),
+            (
+                "a name alone picks the first match in document order",
+                None,
+                Some("Apz Test App"),
+                Some(vec![0]),
+            ),
+            (
+                "a selector with neither role nor name picks nothing",
+                None,
+                None,
+                None,
+            ),
+            (
+                "an unnamed control is picked by its role",
+                Some("text"),
+                None,
+                Some(vec![0, 2]),
+            ),
+            (
+                "a named selector does not pick an unnamed control",
+                Some("text"),
+                Some("anything"),
+                None,
+            ),
+        ] {
+            assert_eq!(first_match(&tree, &sel(role, name)), want, "{case}");
+        }
+        // A selector with neither role nor name selects no control, even a named button.
         assert!(!selects(&sel(None, None), "button", Some("Ping")));
-        assert_eq!(first_match(&fixture(), &sel(None, None)), None);
-    }
-
-    #[test]
-    fn an_unnamed_control_is_picked_by_its_role() {
-        assert_eq!(
-            first_match(&fixture(), &sel(Some("text"), None)),
-            Some(vec![0, 2])
-        );
-        assert_eq!(
-            first_match(&fixture(), &sel(Some("text"), Some("anything"))),
-            None
-        );
     }
 }

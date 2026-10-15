@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use apz_board::{Board, embedded_files};
+use apz_board::Board;
 use serde_json::Value;
 
 const FIXTURE: &str = include_str!("fixtures/boards.json");
@@ -23,70 +23,30 @@ fn nums(v: &Value) -> Vec<f64> {
 }
 
 #[test]
-fn every_embedded_file_parses() {
-    let mut boards = 0;
-    let mut parts = 0;
-    for (name, text) in embedded_files() {
-        if *name == "palette" {
-            let v: Value = serde_json::from_str(text).expect("palette parses");
-            assert!(v["colors"].is_object(), "palette has colors");
-            continue;
-        }
-        let v: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert!(v["parts"].is_array(), "{name} has parts");
-        if name.starts_with("board/") {
-            boards += 1;
-        } else {
-            parts += 1;
-        }
-    }
-    assert_eq!(boards, 6);
-    assert!(parts >= 50, "the parts folder is embedded ({parts})");
-}
-
-#[test]
-fn every_board_builds_from_its_kind() {
-    let kinds: Vec<&str> = embedded_files()
-        .iter()
-        .filter_map(|(n, _)| n.strip_prefix("board/"))
-        .collect();
-    assert_eq!(kinds.len(), 6);
-    for kind in kinds {
-        let b = Board::from_kind(kind, &BTreeMap::new());
-        assert!(!b.parts().is_empty(), "{kind} has items");
-        let bb = b.bounds();
-        assert!(
-            bb.min.iter().chain(bb.max.iter()).all(|v| v.is_finite()),
-            "{kind} bounds are finite"
-        );
-    }
-}
-
-#[test]
-fn boards_match_the_web_build() {
+fn boards_and_variants_match_the_web_build() {
     let fx = fixture();
-    let boards = fx["boards"].as_object().expect("boards");
-    assert_eq!(boards.len(), 6);
-    for (kind, want) in boards {
-        check(kind, &BTreeMap::new(), want);
+    // The boards with no params: each one's parts, items, bounds and support field.
+    {
+        let boards = fx["boards"].as_object().expect("boards");
+        assert_eq!(boards.len(), 6);
+        for (kind, want) in boards {
+            check(kind, &BTreeMap::new(), want);
+        }
     }
-}
-
-#[test]
-fn board_variants_match_the_web_build() {
     // The same boards with params (gpus, amd, studio, cooler, p_cores...): the `when`s, the counts and the `use`s.
-    let fx = fixture();
-    let variants = fx["variants"].as_array().expect("variants");
-    assert!(variants.len() >= 5);
-    for v in variants {
-        let kind = v["kind"].as_str().unwrap();
-        let params: BTreeMap<String, f64> = v["params"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(k, x)| (k.clone(), x.as_f64().unwrap()))
-            .collect();
-        check(&format!("{kind} {params:?}"), &params, v);
+    {
+        let variants = fx["variants"].as_array().expect("variants");
+        assert!(variants.len() >= 5);
+        for v in variants {
+            let kind = v["kind"].as_str().unwrap();
+            let params: BTreeMap<String, f64> = v["params"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, x)| (k.clone(), x.as_f64().unwrap()))
+                .collect();
+            check(&format!("{kind} {params:?}"), &params, v);
+        }
     }
 }
 

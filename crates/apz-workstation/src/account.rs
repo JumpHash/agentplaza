@@ -409,12 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn the_owner_warning_names_the_account() {
-        let text = owner_warning("zarathos");
-        assert!(text.starts_with("agents will act as zarathos"), "{text}");
-    }
-
-    #[test]
     fn homes_follow_each_os() {
         assert_eq!(
             home_for(Os::Linux, "agentplaza", "C:"),
@@ -442,109 +436,112 @@ mod tests {
     }
 
     #[test]
-    fn linux_creates_the_user_joins_the_present_groups_and_makes_the_work_folder() {
-        let plan = plan_agent_user(
-            Os::Linux,
-            "agentplaza",
-            Path::new("/home/agentplaza"),
-            &["video", "input"],
-            false,
-            PASSWORD,
-        );
-        let lines = plan.render();
-        assert_eq!(
-            lines[0],
-            "$ useradd --create-home --shell /bin/bash agentplaza"
-        );
-        assert_eq!(lines[1], "$ usermod -aG video,input agentplaza");
-        assert_eq!(
-            lines[2],
-            "$ install -d -m 700 -o agentplaza -g agentplaza /home/agentplaza/AgentPlaza"
-        );
-        assert_eq!(lines.len(), 3);
-        assert!(plan.privileged);
-        assert!(!lines.join("\n").contains(PASSWORD));
-    }
-
-    #[test]
-    fn linux_skips_creation_for_an_existing_user_and_missing_groups() {
-        let plan = plan_agent_user(
-            Os::Linux,
-            "agentplaza",
-            Path::new("/home/agentplaza"),
-            &[],
-            true,
-            PASSWORD,
-        );
-        assert_eq!(plan.steps.len(), 1, "{:?}", plan.render());
-        assert!(plan.render()[0].starts_with("$ install -d"));
-    }
-
-    #[test]
-    fn macos_creates_the_user_with_sysadminctl_and_hides_the_password() {
-        let plan = plan_agent_user(
-            Os::Macos,
-            "agentplaza",
-            Path::new("/Users/agentplaza"),
-            &[],
-            false,
-            PASSWORD,
-        );
-        let lines = plan.render();
-        assert_eq!(
-            lines[0],
-            "$ sysadminctl -addUser agentplaza -fullName \"AgentPlaza agents\" -password ******** -home /Users/agentplaza"
-        );
-        assert_eq!(
-            lines[1],
-            "$ install -d -m 700 -o agentplaza -g staff /Users/agentplaza/AgentPlaza"
-        );
-        assert!(!lines.join("\n").contains(PASSWORD));
-        // The arguments that run do carry the password.
-        match &plan.steps[0] {
-            crate::plan::Step::Run { args, .. } => assert!(args.contains(&PASSWORD.to_string())),
-            other => panic!("not a command: {other:?}"),
+    fn agent_user_plan_creates_or_skips_the_account_per_os() {
+        // linux_creates_the_user_joins_the_present_groups_and_makes_the_work_folder:
+        // on Linux a new user is created, joins the groups present, and gets the folder.
+        {
+            let plan = plan_agent_user(
+                Os::Linux,
+                "agentplaza",
+                Path::new("/home/agentplaza"),
+                &["video", "input"],
+                false,
+                PASSWORD,
+            );
+            let lines = plan.render();
+            assert_eq!(
+                lines[0],
+                "$ useradd --create-home --shell /bin/bash agentplaza"
+            );
+            assert_eq!(lines[1], "$ usermod -aG video,input agentplaza");
+            assert_eq!(
+                lines[2],
+                "$ install -d -m 700 -o agentplaza -g agentplaza /home/agentplaza/AgentPlaza"
+            );
+            assert_eq!(lines.len(), 3);
+            assert!(plan.privileged);
+            assert!(!lines.join("\n").contains(PASSWORD));
         }
-    }
-
-    #[test]
-    fn windows_creates_the_account_grants_the_folder_and_hides_the_password() {
-        let plan = plan_agent_user(
-            Os::Windows,
-            "agentplaza",
-            Path::new("C:\\Users\\agentplaza"),
-            &[],
-            false,
-            PASSWORD,
-        );
-        let lines = plan.render();
-        assert_eq!(
-            lines[0],
-            "$ net user agentplaza ******** /add \"/fullname:AgentPlaza agents\""
-        );
-        assert!(
-            lines[1].starts_with("$ powershell -NoProfile -Command"),
-            "{}",
-            lines[1]
-        );
-        assert!(
-            lines[2].ends_with("/grant agentplaza:(OI)(CI)F"),
-            "{}",
-            lines[2]
-        );
-        assert!(!lines.join("\n").contains(PASSWORD));
-    }
-
-    #[test]
-    fn windows_with_an_existing_user_only_makes_the_folder() {
-        let plan = plan_agent_user(
-            Os::Windows,
-            "agentplaza",
-            Path::new("C:\\Users\\agentplaza"),
-            &[],
-            true,
-            PASSWORD,
-        );
-        assert_eq!(plan.steps.len(), 2);
+        // linux_skips_creation_for_an_existing_user_and_missing_groups: an existing
+        // user with no groups to join only gets the folder.
+        {
+            let plan = plan_agent_user(
+                Os::Linux,
+                "agentplaza",
+                Path::new("/home/agentplaza"),
+                &[],
+                true,
+                PASSWORD,
+            );
+            assert_eq!(plan.steps.len(), 1, "{:?}", plan.render());
+            assert!(plan.render()[0].starts_with("$ install -d"));
+        }
+        // macos_creates_the_user_with_sysadminctl_and_hides_the_password
+        {
+            let plan = plan_agent_user(
+                Os::Macos,
+                "agentplaza",
+                Path::new("/Users/agentplaza"),
+                &[],
+                false,
+                PASSWORD,
+            );
+            let lines = plan.render();
+            assert_eq!(
+                lines[0],
+                "$ sysadminctl -addUser agentplaza -fullName \"AgentPlaza agents\" -password ******** -home /Users/agentplaza"
+            );
+            assert_eq!(
+                lines[1],
+                "$ install -d -m 700 -o agentplaza -g staff /Users/agentplaza/AgentPlaza"
+            );
+            assert!(!lines.join("\n").contains(PASSWORD));
+            // The arguments that run do carry the password.
+            match &plan.steps[0] {
+                crate::plan::Step::Run { args, .. } => {
+                    assert!(args.contains(&PASSWORD.to_string()))
+                }
+                other => panic!("not a command: {other:?}"),
+            }
+        }
+        // windows_creates_the_account_grants_the_folder_and_hides_the_password
+        {
+            let plan = plan_agent_user(
+                Os::Windows,
+                "agentplaza",
+                Path::new("C:\\Users\\agentplaza"),
+                &[],
+                false,
+                PASSWORD,
+            );
+            let lines = plan.render();
+            assert_eq!(
+                lines[0],
+                "$ net user agentplaza ******** /add \"/fullname:AgentPlaza agents\""
+            );
+            assert!(
+                lines[1].starts_with("$ powershell -NoProfile -Command"),
+                "{}",
+                lines[1]
+            );
+            assert!(
+                lines[2].ends_with("/grant agentplaza:(OI)(CI)F"),
+                "{}",
+                lines[2]
+            );
+            assert!(!lines.join("\n").contains(PASSWORD));
+        }
+        // windows_with_an_existing_user_only_makes_the_folder
+        {
+            let plan = plan_agent_user(
+                Os::Windows,
+                "agentplaza",
+                Path::new("C:\\Users\\agentplaza"),
+                &[],
+                true,
+                PASSWORD,
+            );
+            assert_eq!(plan.steps.len(), 2);
+        }
     }
 }

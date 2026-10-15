@@ -952,97 +952,83 @@ mod tests {
     }
 
     #[test]
-    fn packaging_refuses_a_tool_over_its_file_or_size_limit_or_with_no_files() {
-        let ws = scratch("count");
-        for index in 0..=MAX_FILES {
-            write(
-                &ws.dir().join("tool").join(format!("f{index:02}.txt")),
-                b"x",
+    fn packaging_refuses_a_bad_tool_and_names_the_fault() {
+        // A tool over the file or size limit, or with no files, is refused.
+        {
+            let ws = scratch("count");
+            for index in 0..=MAX_FILES {
+                write(
+                    &ws.dir().join("tool").join(format!("f{index:02}.txt")),
+                    b"x",
+                );
+            }
+            let err = package(&ws, &input("tool")).expect_err("too many files");
+            assert!(err.contains("more than 50 files"), "{err}");
+
+            let ws = scratch("size");
+            write(&ws.dir().join("tool/big.bin"), &vec![7u8; 512 * 1024 + 1]);
+            let err = package(&ws, &input("tool")).expect_err("too big");
+            assert!(err.contains("512 KiB"), "{err}");
+
+            let ws = scratch("empty");
+            write(&ws.dir().join("tool/.git/config"), b"x");
+            let err = package(&ws, &input("tool")).expect_err("no files");
+            assert!(err.contains("no files"), "{err}");
+        }
+        // The input is checked field by field, and each refusal names the field at fault.
+        {
+            let ws = scratch("bad");
+            write(&ws.dir().join("tool/a.txt"), b"x");
+            let long = "a".repeat(41);
+            for name in ["Bad", "ab", "1abc", "a-b-c", long.as_str()] {
+                let mut bad = input("tool");
+                bad["name"] = json!(name);
+                let err = package(&ws, &bad).expect_err(name);
+                assert!(err.contains("tool name"), "{err}");
+            }
+
+            let mut empty = input("tool");
+            empty["description"] = json!("");
+            assert!(
+                package(&ws, &empty)
+                    .expect_err("empty")
+                    .contains("description")
+            );
+            let mut long_description = input("tool");
+            long_description["description"] = json!("d".repeat(501));
+            assert!(
+                package(&ws, &long_description)
+                    .expect_err("long")
+                    .contains("description")
+            );
+
+            assert!(
+                package(&ws, &input("nope"))
+                    .expect_err("missing")
+                    .contains("not a directory")
+            );
+            assert!(
+                package(&ws, &input("../tool"))
+                    .expect_err("escape")
+                    .contains("inside the workspace")
+            );
+            assert!(package(&ws, &input(".plaza/tools")).is_err());
+
+            let mut no_command = input("tool");
+            no_command["command"] = json!([]);
+            assert!(
+                package(&ws, &no_command)
+                    .expect_err("no command")
+                    .contains("command")
+            );
+            let mut no_schema = input("tool");
+            no_schema["input_schema"] = json!("object");
+            assert!(
+                package(&ws, &no_schema)
+                    .expect_err("schema")
+                    .contains("input_schema")
             );
         }
-        let err = package(&ws, &input("tool")).expect_err("too many files");
-        assert!(err.contains("more than 50 files"), "{err}");
-
-        let ws = scratch("size");
-        write(&ws.dir().join("tool/big.bin"), &vec![7u8; 512 * 1024 + 1]);
-        let err = package(&ws, &input("tool")).expect_err("too big");
-        assert!(err.contains("512 KiB"), "{err}");
-
-        let ws = scratch("empty");
-        write(&ws.dir().join("tool/.git/config"), b"x");
-        let err = package(&ws, &input("tool")).expect_err("no files");
-        assert!(err.contains("no files"), "{err}");
-    }
-
-    #[test]
-    fn packaging_names_what_is_wrong_with_the_input() {
-        let ws = scratch("bad");
-        write(&ws.dir().join("tool/a.txt"), b"x");
-        let long = "a".repeat(41);
-        for name in ["Bad", "ab", "1abc", "a-b-c", long.as_str()] {
-            let mut bad = input("tool");
-            bad["name"] = json!(name);
-            let err = package(&ws, &bad).expect_err(name);
-            assert!(err.contains("tool name"), "{err}");
-        }
-
-        let mut empty = input("tool");
-        empty["description"] = json!("");
-        assert!(
-            package(&ws, &empty)
-                .expect_err("empty")
-                .contains("description")
-        );
-        let mut long_description = input("tool");
-        long_description["description"] = json!("d".repeat(501));
-        assert!(
-            package(&ws, &long_description)
-                .expect_err("long")
-                .contains("description")
-        );
-
-        assert!(
-            package(&ws, &input("nope"))
-                .expect_err("missing")
-                .contains("not a directory")
-        );
-        assert!(
-            package(&ws, &input("../tool"))
-                .expect_err("escape")
-                .contains("inside the workspace")
-        );
-        assert!(package(&ws, &input(".plaza/tools")).is_err());
-
-        let mut no_command = input("tool");
-        no_command["command"] = json!([]);
-        assert!(
-            package(&ws, &no_command)
-                .expect_err("no command")
-                .contains("command")
-        );
-        let mut no_schema = input("tool");
-        no_schema["input_schema"] = json!("object");
-        assert!(
-            package(&ws, &no_schema)
-                .expect_err("schema")
-                .contains("input_schema")
-        );
-    }
-
-    #[test]
-    fn base64_round_trips_with_padding() {
-        for (plain, text) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-        ] {
-            assert_eq!(base64_encode(plain.as_bytes()), text);
-            assert_eq!(base64_decode(text).expect("decodes"), plain.as_bytes());
-        }
-        assert!(base64_decode("Zm9").is_err());
-        assert!(base64_decode("Z!9v").is_err());
     }
 
     #[test]

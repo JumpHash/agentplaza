@@ -612,42 +612,43 @@ mod tests {
     }
 
     #[test]
-    fn a_duplicate_slot_is_refused() {
-        let text = slotted(&[("builder", Some(4)), ("reviewer", Some(4))]);
-        let err = fleet(&text).expect_err("two roles cannot share a slot");
-        assert_eq!(
-            err,
-            FleetError::DuplicateSlot {
-                slot: 4,
-                first: "builder".to_string(),
-                second: "reviewer".to_string(),
-            }
-        );
-        assert_eq!(
-            err.to_string(),
-            "roles \"builder\" and \"reviewer\" both have slot 4"
-        );
-    }
-
-    #[test]
-    fn a_manifest_where_only_some_roles_have_a_slot_is_refused() {
-        let text = slotted(&[("builder", Some(0)), ("reviewer", None), ("qa", None)]);
-        assert_eq!(
-            fleet(&text),
-            Err(FleetError::SlotsPartial {
-                missing: vec!["qa".to_string(), "reviewer".to_string()],
-            })
-        );
-    }
-
-    #[test]
-    fn a_slot_past_the_transport_is_refused() {
-        let text = slotted(&[("builder", Some(u32::MAX))]);
-        let err = fleet(&text).expect_err("that slot is past every guest CID");
-        assert!(
-            matches!(err, FleetError::CidRange { cid_base: 100, .. }),
-            "{err:?}"
-        );
+    fn bad_slot_assignments_are_refused() {
+        // Two roles cannot share a slot; the error names both roles and the slot.
+        {
+            let text = slotted(&[("builder", Some(4)), ("reviewer", Some(4))]);
+            let err = fleet(&text).expect_err("two roles cannot share a slot");
+            assert_eq!(
+                err,
+                FleetError::DuplicateSlot {
+                    slot: 4,
+                    first: "builder".to_string(),
+                    second: "reviewer".to_string(),
+                }
+            );
+            assert_eq!(
+                err.to_string(),
+                "roles \"builder\" and \"reviewer\" both have slot 4"
+            );
+        }
+        // A manifest where only some roles have a slot is refused, naming the rest.
+        {
+            let text = slotted(&[("builder", Some(0)), ("reviewer", None), ("qa", None)]);
+            assert_eq!(
+                fleet(&text),
+                Err(FleetError::SlotsPartial {
+                    missing: vec!["qa".to_string(), "reviewer".to_string()],
+                })
+            );
+        }
+        // A slot past the transport's last guest CID is refused.
+        {
+            let text = slotted(&[("builder", Some(u32::MAX))]);
+            let err = fleet(&text).expect_err("that slot is past every guest CID");
+            assert!(
+                matches!(err, FleetError::CidRange { cid_base: 100, .. }),
+                "{err:?}"
+            );
+        }
     }
 
     #[test]
@@ -690,147 +691,143 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_manifest_is_reported_with_its_path() {
-        let path = Path::new("/nonexistent/initial-roles.json");
-        let err = Fleet::load(path, 100, 128, 1).expect_err("there is no manifest there");
-        assert!(matches!(err, FleetError::Read { .. }), "{err:?}");
-        assert!(err.to_string().contains("/nonexistent/initial-roles.json"));
-    }
-
-    #[test]
-    fn a_manifest_that_is_not_json_is_reported() {
-        let err = fleet("not json at all").expect_err("that is not a manifest");
-        assert!(matches!(err, FleetError::Json { .. }), "{err:?}");
-    }
-
-    #[test]
-    fn a_role_missing_its_documented_fields_is_refused() {
-        // No title: the manifest does not document this role, so it is
-        // malformed rather than a role with a missing field.
-        let text =
-            r#"{"roles":{"builder":{"role":"builder","permits":[],"toolsets":[],"budget":1}}}"#;
-        assert!(matches!(fleet(text), Err(FleetError::Json { .. })));
-        // No budget either.
-        let text = r#"{"roles":{"builder":{"role":"builder","title":"Builder","permits":[],"toolsets":[]}}}"#;
-        assert!(matches!(fleet(text), Err(FleetError::Json { .. })));
-    }
-
-    #[test]
-    fn a_manifest_with_no_roles_is_refused() {
-        let err = fleet(r#"{"roles":{}}"#).expect_err("no roles is not a fleet");
-        assert_eq!(err, FleetError::Empty);
-        assert_eq!(err.to_string(), "the roles manifest lists no roles");
-    }
-
-    #[test]
-    fn a_role_that_disagrees_with_the_key_it_is_filed_under_is_refused() {
-        let text = r#"{"roles":{"builder":{"role":"reviewer","title":"Builder","permits":[],"toolsets":[],"budget":1}}}"#;
-        let err = fleet(text).expect_err("the manifest disagrees with itself");
-        assert_eq!(
-            err,
-            FleetError::RoleMismatch {
-                key: "builder".to_string(),
-                role: "reviewer".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn a_role_name_that_cannot_go_on_a_command_line_is_refused() {
-        for (name, reason) in [
-            ("", "it is empty"),
-            ("two words", "it contains whitespace"),
-            ("role=other", "it contains '='"),
-        ] {
-            let text = manifest(&[name]);
-            let err = fleet(&text).expect_err("that name cannot be a command-line value");
+    fn a_malformed_roles_manifest_is_refused() {
+        // A manifest that is not JSON is reported as a JSON error.
+        {
+            let err = fleet("not json at all").expect_err("that is not a manifest");
+            assert!(matches!(err, FleetError::Json { .. }), "{err:?}");
+        }
+        // A role missing its documented fields is refused.
+        {
+            // No title: the manifest does not document this role, so it is
+            // malformed rather than a role with a missing field.
+            let text =
+                r#"{"roles":{"builder":{"role":"builder","permits":[],"toolsets":[],"budget":1}}}"#;
+            assert!(matches!(fleet(text), Err(FleetError::Json { .. })));
+            // No budget either.
+            let text = r#"{"roles":{"builder":{"role":"builder","title":"Builder","permits":[],"toolsets":[]}}}"#;
+            assert!(matches!(fleet(text), Err(FleetError::Json { .. })));
+        }
+        // A manifest with no roles is refused.
+        {
+            let err = fleet(r#"{"roles":{}}"#).expect_err("no roles is not a fleet");
+            assert_eq!(err, FleetError::Empty);
+            assert_eq!(err.to_string(), "the roles manifest lists no roles");
+        }
+        // A role that disagrees with the key it is filed under is refused.
+        {
+            let text = r#"{"roles":{"builder":{"role":"reviewer","title":"Builder","permits":[],"toolsets":[],"budget":1}}}"#;
+            let err = fleet(text).expect_err("the manifest disagrees with itself");
             assert_eq!(
                 err,
-                FleetError::BadRoleName {
-                    name: name.to_string(),
-                    reason,
-                },
-                "{name:?}"
+                FleetError::RoleMismatch {
+                    key: "builder".to_string(),
+                    role: "reviewer".to_string(),
+                }
             );
         }
     }
 
     #[test]
-    fn a_role_name_with_an_invisible_character_is_refused() {
-        // JSON carries a control character as an escape, so a manifest can name
-        // a role that would be invisible in a log line (or split a command
-        // line); the name arrives intact and the check is what refuses it.
-        let text = "{\"roles\":{\"role\\u001b[2K\":{\"role\":\"role\\u001b[2K\",\
-                    \"title\":\"t\",\"permits\":[],\"toolsets\":[],\"budget\":1}}}";
-        let err = fleet(text).expect_err("an invisible role name is not a role name");
-        assert_eq!(
-            err,
-            FleetError::BadRoleName {
-                name: "role\u{1b}[2K".to_string(),
-                reason: "it contains a control character",
+    fn a_role_name_unfit_for_the_command_line_is_refused() {
+        // A name that cannot go on a command line (empty, whitespace, or '=')
+        // is refused, with the reason.
+        {
+            for (name, reason) in [
+                ("", "it is empty"),
+                ("two words", "it contains whitespace"),
+                ("role=other", "it contains '='"),
+            ] {
+                let text = manifest(&[name]);
+                let err = fleet(&text).expect_err("that name cannot be a command-line value");
+                assert_eq!(
+                    err,
+                    FleetError::BadRoleName {
+                        name: name.to_string(),
+                        reason,
+                    },
+                    "{name:?}"
+                );
             }
-        );
-        assert_eq!(
-            err.to_string(),
-            "role \"role\\u{1b}[2K\" cannot be a plaza.role= value: it contains a control character"
-        );
+        }
+        // A role name with an invisible character is refused.
+        {
+            // JSON carries a control character as an escape, so a manifest can name
+            // a role that would be invisible in a log line (or split a command
+            // line); the name arrives intact and the check is what refuses it.
+            let text = "{\"roles\":{\"role\\u001b[2K\":{\"role\":\"role\\u001b[2K\",\
+                        \"title\":\"t\",\"permits\":[],\"toolsets\":[],\"budget\":1}}}";
+            let err = fleet(text).expect_err("an invisible role name is not a role name");
+            assert_eq!(
+                err,
+                FleetError::BadRoleName {
+                    name: "role\u{1b}[2K".to_string(),
+                    reason: "it contains a control character",
+                }
+            );
+            assert_eq!(
+                err.to_string(),
+                "role \"role\\u{1b}[2K\" cannot be a plaza.role= value: it contains a control character"
+            );
+        }
     }
 
     #[test]
-    fn a_fleet_that_does_not_fit_the_transport_is_refused_before_anything_boots() {
-        // The last CID (base + roles - 1) must still be a guest CID.
-        let text = manifest(&["builder", "reviewer"]);
-        let err = Fleet::parse(&text, MAX_GUEST_CID, 128, 1)
-            .expect_err("the second agent runs past the last CID");
-        assert!(matches!(err, FleetError::CidRange { .. }), "{err:?}");
-        assert!(Fleet::parse(&text, MAX_GUEST_CID - 1, 128, 1).is_ok());
+    fn a_fleet_outside_the_parse_limits_is_refused() {
+        // A fleet that does not fit the transport is refused before anything boots.
+        {
+            // The last CID (base + roles - 1) must still be a guest CID.
+            let text = manifest(&["builder", "reviewer"]);
+            let err = Fleet::parse(&text, MAX_GUEST_CID, 128, 1)
+                .expect_err("the second agent runs past the last CID");
+            assert!(matches!(err, FleetError::CidRange { .. }), "{err:?}");
+            assert!(Fleet::parse(&text, MAX_GUEST_CID - 1, 128, 1).is_ok());
 
-        // CIDs 0, 1 and 2 belong to the vsock stack, not to guests.
-        assert!(matches!(
-            Fleet::parse(&text, 2, 128, 1),
-            Err(FleetError::BadCidBase {
-                cid_base: 2,
-                min: 3
-            })
-        ));
-    }
-
-    #[test]
-    fn a_fleet_larger_than_one_run_is_refused() {
-        let names: Vec<String> = (0..=MAX_VMS).map(|n| format!("role-{n}")).collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let err = fleet(&manifest(&names)).expect_err("more roles than a run has VMs");
-        assert_eq!(
-            err,
-            FleetError::TooManyRoles {
-                roles: MAX_VMS as usize + 1,
-                max: MAX_VMS as usize,
-            }
-        );
-        // And exactly the cap is a fleet.
-        let names: Vec<String> = (0..MAX_VMS).map(|n| format!("role-{n}")).collect();
-        let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        assert!(fleet(&manifest(&names)).is_ok());
-    }
-
-    #[test]
-    fn a_guest_shape_outside_the_contracts_ranges_is_refused() {
-        let text = manifest(&["builder"]);
-        assert_eq!(
-            Fleet::parse(&text, 100, 127, 1),
-            Err(FleetError::BadMemory {
-                memory_mib: 127,
-                min: 128
-            })
-        );
-        assert_eq!(
-            Fleet::parse(&text, 100, 128, 0),
-            Err(FleetError::BadVcpus { vcpus: 0, max: 64 })
-        );
-        assert_eq!(
-            Fleet::parse(&text, 100, 128, 65),
-            Err(FleetError::BadVcpus { vcpus: 65, max: 64 })
-        );
-        assert!(Fleet::parse(&text, 100, 128, 64).is_ok());
+            // CIDs 0, 1 and 2 belong to the vsock stack, not to guests.
+            assert!(matches!(
+                Fleet::parse(&text, 2, 128, 1),
+                Err(FleetError::BadCidBase {
+                    cid_base: 2,
+                    min: 3
+                })
+            ));
+        }
+        // A fleet larger than one run is refused; exactly the cap is a fleet.
+        {
+            let names: Vec<String> = (0..=MAX_VMS).map(|n| format!("role-{n}")).collect();
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let err = fleet(&manifest(&names)).expect_err("more roles than a run has VMs");
+            assert_eq!(
+                err,
+                FleetError::TooManyRoles {
+                    roles: MAX_VMS as usize + 1,
+                    max: MAX_VMS as usize,
+                }
+            );
+            // And exactly the cap is a fleet.
+            let names: Vec<String> = (0..MAX_VMS).map(|n| format!("role-{n}")).collect();
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            assert!(fleet(&manifest(&names)).is_ok());
+        }
+        // A guest shape outside the contract's ranges is refused.
+        {
+            let text = manifest(&["builder"]);
+            assert_eq!(
+                Fleet::parse(&text, 100, 127, 1),
+                Err(FleetError::BadMemory {
+                    memory_mib: 127,
+                    min: 128
+                })
+            );
+            assert_eq!(
+                Fleet::parse(&text, 100, 128, 0),
+                Err(FleetError::BadVcpus { vcpus: 0, max: 64 })
+            );
+            assert_eq!(
+                Fleet::parse(&text, 100, 128, 65),
+                Err(FleetError::BadVcpus { vcpus: 65, max: 64 })
+            );
+            assert!(Fleet::parse(&text, 100, 128, 64).is_ok());
+        }
     }
 }

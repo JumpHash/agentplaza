@@ -287,50 +287,50 @@ mod tests {
     }
 
     #[test]
-    fn a_little_endian_bgrx_pixel_becomes_rgba() {
-        // One pixel, blue 10, green 20, red 30, padding byte 0, stored least significant byte first.
-        let data = [10u8, 20, 30, 0];
-        let frame = zpixmap_to_frame(&data, 1, 1, format(32, ByteOrder::Lsb)).expect("converts");
-        assert_eq!(frame.rgba, vec![30, 20, 10, 255]);
-    }
-
-    #[test]
-    fn a_big_endian_pixel_becomes_the_same_rgba() {
+    fn zpixmap_frames_convert_to_rgba_or_are_refused() {
+        // A little-endian BGRX pixel: blue 10, green 20, red 30, padding byte 0, least significant byte first.
+        {
+            let data = [10u8, 20, 30, 0];
+            let frame =
+                zpixmap_to_frame(&data, 1, 1, format(32, ByteOrder::Lsb)).expect("converts");
+            assert_eq!(frame.rgba, vec![30, 20, 10, 255]);
+        }
         // The same colour, stored most significant byte first: padding, red, green, blue.
-        let data = [0u8, 30, 20, 10];
-        let frame = zpixmap_to_frame(&data, 1, 1, format(32, ByteOrder::Msb)).expect("converts");
-        assert_eq!(frame.rgba, vec![30, 20, 10, 255]);
-    }
-
-    #[test]
-    fn a_24_bit_screen_skips_to_the_padded_next_row() {
+        {
+            let data = [0u8, 30, 20, 10];
+            let frame =
+                zpixmap_to_frame(&data, 1, 1, format(32, ByteOrder::Msb)).expect("converts");
+            assert_eq!(frame.rgba, vec![30, 20, 10, 255]);
+        }
         // Three pixels of three bytes per row: nine bytes, padded with three to 12 per row, for two rows.
-        let row0 = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0];
-        let row1 = [10u8, 11, 12, 13, 14, 15, 16, 17, 18, 0, 0, 0];
-        let data: Vec<u8> = row0.iter().chain(row1.iter()).copied().collect();
-        let frame = zpixmap_to_frame(&data, 3, 2, format(24, ByteOrder::Lsb)).expect("converts");
-        assert_eq!(
-            frame.rgba,
-            vec![
-                3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, //
-                12, 11, 10, 255, 15, 14, 13, 255, 18, 17, 16, 255,
-            ]
-        );
-    }
-
-    #[test]
-    fn a_short_image_or_an_odd_screen_is_refused() {
-        assert!(zpixmap_to_frame(&[0; 3], 1, 1, format(32, ByteOrder::Lsb)).is_err());
-        assert!(zpixmap_to_frame(&[0; 64], 1, 1, format(16, ByteOrder::Lsb)).is_err());
-        let wide = PixelFormat {
-            bits_per_pixel: 32,
-            order: ByteOrder::Lsb,
-            masks: ChannelMasks {
-                red: 0xf800,
-                green: 0x07e0,
-                blue: 0x001f,
-            },
-        };
-        assert!(zpixmap_to_frame(&[0; 8], 1, 1, wide).is_err());
+        {
+            let row0 = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0];
+            let row1 = [10u8, 11, 12, 13, 14, 15, 16, 17, 18, 0, 0, 0];
+            let data: Vec<u8> = row0.iter().chain(row1.iter()).copied().collect();
+            let frame =
+                zpixmap_to_frame(&data, 3, 2, format(24, ByteOrder::Lsb)).expect("converts");
+            assert_eq!(
+                frame.rgba,
+                vec![
+                    3, 2, 1, 255, 6, 5, 4, 255, 9, 8, 7, 255, //
+                    12, 11, 10, 255, 15, 14, 13, 255, 18, 17, 16, 255,
+                ]
+            );
+        }
+        // A short image, an unsupported depth, and a pixel format with odd masks are all refused.
+        {
+            assert!(zpixmap_to_frame(&[0; 3], 1, 1, format(32, ByteOrder::Lsb)).is_err());
+            assert!(zpixmap_to_frame(&[0; 64], 1, 1, format(16, ByteOrder::Lsb)).is_err());
+            let wide = PixelFormat {
+                bits_per_pixel: 32,
+                order: ByteOrder::Lsb,
+                masks: ChannelMasks {
+                    red: 0xf800,
+                    green: 0x07e0,
+                    blue: 0x001f,
+                },
+            };
+            assert!(zpixmap_to_frame(&[0; 8], 1, 1, wide).is_err());
+        }
     }
 }

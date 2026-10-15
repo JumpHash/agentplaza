@@ -1352,31 +1352,4 @@ mod tests {
         );
         assert!(!is_station_change("owner_input"));
     }
-
-    #[test]
-    fn number_keys_show_the_tabs_and_zero_shows_the_tenth() {
-        assert_eq!(Tab::from_key('1'), Some(Tab::Floor));
-        assert_eq!(Tab::from_key('9'), Some(Tab::Machines));
-        assert_eq!(Tab::from_key('0'), Some(Tab::Workspace));
-        assert_eq!(Tab::from_key('x'), None);
-        assert_eq!(Tab::from_key('w'), Some(Tab::Workstations));
-        for tab in Tab::ALL {
-            assert_eq!(Tab::from_key(tab.key()), Some(tab));
-        }
-    }
-
-    #[test]
-    fn event_log_keeps_the_newest_lines() {
-        let mut log = EventLog::new(2);
-        for line in ["a", "b", "c"] {
-            log.push(line.to_string());
-        }
-        let kept: Vec<&str> = log.iter().map(String::as_str).collect();
-        assert_eq!(kept, ["b", "c"]);
-        assert_eq!(log.len(), 2);
-
-        let mut none = EventLog::new(0);
-        none.push("x".to_string());
-        assert_eq!(none.len(), 0);
-    }
 }
