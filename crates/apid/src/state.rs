@@ -151,6 +151,8 @@ pub struct App {
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
     pub usage: crate::usage::Ledger,
+    /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
+    pub metrics: crate::metrics::Metrics,
     /// Each agent's robot species (dealt on its first hello, or set by the owner).
     pub looks: crate::looks::Looks,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -262,6 +264,13 @@ impl App {
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
+            metrics: crate::metrics::Metrics::open(
+                &config.state_dir,
+                env.get("APZ_DATABASE_URL")
+                    .map(String::as_str)
+                    .filter(|u| !u.trim().is_empty()),
+                apz_plaza::now_ms(),
+            ),
             looks: crate::looks::Looks::open(config.state_dir.join("looks.json")),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
             mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
@@ -322,6 +331,7 @@ impl App {
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
+        crate::metrics::spawn(Arc::clone(&app));
         crate::foundry::routes::spawn_tracker(Arc::clone(&app));
         // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
         let prices_app = Arc::clone(&app);
@@ -405,9 +415,20 @@ impl App {
         });
         let router = api::router();
         // The hub's front door first (owner token off loopback), then the routes.
-        server.spawn(move |request| match crate::hub_auth::gate(&app, &request) {
-            Some(refused) => refused,
-            None => router.handle(&app, request),
+        server.spawn(move |request| {
+            let started = std::time::Instant::now();
+            let response = match crate::hub_auth::gate(&app, &request) {
+                Some(refused) => refused,
+                None => router.handle(&app, request),
+            };
+            crate::metrics::collect::request(
+                &app,
+                &request.method,
+                &request.path,
+                response.status,
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+            response
         })
     }
 }
