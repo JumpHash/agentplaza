@@ -49,6 +49,9 @@ pub type Upstream = Arc<dyn Fn(&Forward) -> io::Result<Reply> + Send + Sync>;
 /// A relay for one plaza repository, listening on 127.0.0.1 until it is dropped.
 pub struct Relay {
     port: u16,
+    /// The path prefix the relay answers under. Only git is told it, so another local process that
+    /// finds the port cannot borrow the owner token while the push runs.
+    secret: String,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
 }
@@ -59,15 +62,17 @@ impl Relay {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
+        let secret = secret();
         let stop = Arc::new(AtomicBool::new(false));
         let accept = {
-            let (stop, repo) = (stop.clone(), repo.to_string());
+            let (stop, repo, key) = (stop.clone(), repo.to_string(), secret.clone());
             thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let (repo, upstream) = (repo.clone(), upstream.clone());
-                            thread::spawn(move || serve(stream, &repo, &upstream));
+                            let (repo, key, upstream) =
+                                (repo.clone(), key.clone(), upstream.clone());
+                            thread::spawn(move || serve(stream, &repo, &key, &upstream));
                         }
                         Err(_) => thread::sleep(POLL),
                     }
@@ -76,6 +81,7 @@ impl Relay {
         };
         Ok(Relay {
             port,
+            secret,
             stop,
             accept: Some(accept),
         })
@@ -83,6 +89,14 @@ impl Relay {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The URL git pushes to for repository `name`: the loopback port and the secret prefix.
+    pub fn url(&self, name: &str) -> String {
+        format!(
+            "http://127.0.0.1:{}/{}/v1/git/smart/{name}",
+            self.port, self.secret
+        )
     }
 }
 
@@ -109,7 +123,7 @@ pub fn push(client: &Client, top: &Path, name: &str, refspec: &str) -> Result<()
     });
     let relay =
         Relay::start(name, upstream).map_err(|e| format!("cannot start the local relay: {e}"))?;
-    let url = format!("http://127.0.0.1:{}/v1/git/smart/{name}", relay.port());
+    let url = relay.url(name);
     let no_proxy = no_proxy();
     let env = [
         ("NO_PROXY", no_proxy.as_str()),
@@ -131,7 +145,7 @@ fn no_proxy() -> String {
 }
 
 /// One connection: one request, one answer, then the connection closes (git reconnects as it needs).
-fn serve(stream: TcpStream, repo: &str, upstream: &Upstream) {
+fn serve(stream: TcpStream, repo: &str, secret: &str, upstream: &Upstream) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(IDLE));
     let _ = stream.set_write_timeout(Some(IDLE));
@@ -139,18 +153,23 @@ fn serve(stream: TcpStream, repo: &str, upstream: &Upstream) {
         return;
     };
     let mut input = BufReader::new(stream);
-    let _ = handle(&mut input, &mut out, repo, &**upstream);
+    let _ = handle(&mut input, &mut out, repo, secret, &**upstream);
 }
 
-/// Reads one request, forwards it when its path is inside `repo`, and writes the answer to `out`.
+/// Reads one request, forwards it when its path is under the `secret` prefix and inside `repo`
+/// (the prefix is taken off before forwarding), and writes the answer to `out`.
 fn handle(
     input: &mut impl BufRead,
     out: &mut impl Write,
     repo: &str,
+    secret: &str,
     upstream: &dyn Fn(&Forward) -> io::Result<Reply>,
 ) -> io::Result<()> {
     let Ok((method, path, headers)) = read_head(input) else {
         return refuse(out, 400);
+    };
+    let Some(path) = unprefixed(&path, secret) else {
+        return refuse(out, 404);
     };
     if !inside(&path, repo) {
         return refuse(out, 404);
@@ -191,6 +210,34 @@ fn handle(
             format!("the hub did not answer: {err}\n").as_bytes(),
         ),
     }
+}
+
+/// `path` without the relay's secret prefix (`/<secret>/v1/...` → `/v1/...`), or None when it does
+/// not carry it. An empty secret takes every path as it is (the tests' relay).
+fn unprefixed(path: &str, secret: &str) -> Option<String> {
+    if secret.is_empty() {
+        return Some(path.to_string());
+    }
+    path.strip_prefix('/')
+        .and_then(|rest| rest.strip_prefix(secret))
+        .filter(|rest| rest.starts_with('/'))
+        .map(str::to_string)
+}
+
+/// 128 unguessable bits as hex: two hashes from the standard library's randomly keyed hasher
+/// (seeded from the operating system), of the time and a counter.
+fn secret() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher;
+    use std::sync::atomic::AtomicU64;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let a = RandomState::new().hash_one((at, n, 1u8));
+    let b = RandomState::new().hash_one((at, n, 2u8));
+    format!("{a:016x}{b:016x}")
 }
 
 /// Whether `path` is inside the repository `repo`: `/v1/git/smart/<repo>/...`. The name must end at
@@ -373,8 +420,14 @@ mod tests {
     /// Runs one request through the relay's handler for the repository `acme`; returns the answer.
     fn run(request: &[u8], hub: &dyn Fn(&Forward) -> io::Result<Reply>) -> String {
         let mut out = Vec::new();
-        handle(&mut Cursor::new(request.to_vec()), &mut out, "acme", hub)
-            .expect("the answer is written");
+        handle(
+            &mut Cursor::new(request.to_vec()),
+            &mut out,
+            "acme",
+            "",
+            hub,
+        )
+        .expect("the answer is written");
         String::from_utf8_lossy(&out).into_owned()
     }
 
@@ -473,22 +526,45 @@ mod tests {
     }
 
     #[test]
+    fn the_secret_prefix_is_required_and_taken_off() {
+        assert_eq!(
+            unprefixed("/abc/v1/git/smart/acme/info/refs", "abc").as_deref(),
+            Some("/v1/git/smart/acme/info/refs")
+        );
+        assert_eq!(unprefixed("/v1/git/smart/acme/info/refs", "abc"), None);
+        assert_eq!(unprefixed("/abcd/v1/x", "abc"), None);
+        assert_ne!(secret(), secret());
+        assert_eq!(secret().len(), 32);
+    }
+
+    #[test]
     fn a_relay_answers_over_tcp_and_is_gone_once_dropped() {
         let hub: Upstream = Arc::new(|_: &Forward| -> io::Result<Reply> { Ok(answer(b"ok")) });
         let relay = Relay::start("acme", hub).expect("listens on loopback");
         let port = relay.port();
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
-        stream
-            .write_all(b"GET /v1/git/smart/acme/info/refs HTTP/1.1\r\nHost: x\r\n\r\n")
-            .expect("writes");
-        let mut text = String::new();
-        stream
-            .read_to_string(&mut text)
-            .expect("the relay closes after one answer");
+        let ask = |path: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+            stream
+                .write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+                .expect("writes");
+            let mut text = String::new();
+            stream
+                .read_to_string(&mut text)
+                .expect("the relay closes after one answer");
+            text
+        };
+        // Only the URL git is given carries the secret prefix; without it the relay answers 404.
+        let url = relay.url("acme");
+        let path = &url[url
+            .find("/v1")
+            .map(|at| url[..at].rfind('/').unwrap_or(at))
+            .unwrap_or(0)..];
+        let text = ask(&format!("{path}/info/refs"));
         assert!(
             text.starts_with("HTTP/1.1 200 OK") && text.ends_with("ok"),
             "{text}"
         );
+        assert!(ask("/v1/git/smart/acme/info/refs").starts_with("HTTP/1.1 404"));
         drop(relay);
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
