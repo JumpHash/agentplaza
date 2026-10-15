@@ -157,6 +157,9 @@ pub struct WorkRow {
     pub totals: Totals,
 }
 
+/// The most work items whose usage the ledger keeps.
+pub const WORKS_MAX: usize = 20_000;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LedgerState {
     pub next_id: u64,
@@ -164,7 +167,8 @@ pub struct LedgerState {
     #[serde(with = "hour_list", default)]
     pub hours: BTreeMap<HourKey, HourRow>,
     /// The totals of every work item that made a metered call, by (cid, work). Not pruned with the
-    /// call rows: a work's usage must not shrink while the plaza keeps the work.
+    /// call rows (a work's usage must not shrink while the plaza keeps the work), only capped at
+    /// [`WORKS_MAX`] rows, the newest work items kept.
     #[serde(with = "work_list", default)]
     pub works: BTreeMap<(u64, u64), WorkRow>,
 }
@@ -423,12 +427,19 @@ impl Ledger {
         }
     }
 
-    /// Drops call rows beyond `calls_max` (oldest first) and hour rows older than `days`
-    /// (0 = keep), relative to `now_ms`.
+    /// Drops call rows beyond `calls_max` (oldest first), hour rows older than `days` (0 = keep),
+    /// relative to `now_ms`, and work rows beyond [`WORKS_MAX`] (the oldest work items first).
     pub fn prune(&self, now_ms: u64, calls_max: usize, days: u32) {
         let mut state = self.lock();
         while state.calls.len() > calls_max {
             state.calls.pop_front();
+        }
+        if state.works.len() > WORKS_MAX {
+            // Work ids grow over the plaza's life, so the lowest are the oldest.
+            let mut ids: Vec<u64> = state.works.keys().map(|key| key.1).collect();
+            ids.sort_unstable();
+            let cutoff = ids[ids.len() - WORKS_MAX];
+            state.works.retain(|key, _| key.1 >= cutoff);
         }
         if days > 0 {
             let cutoff = now_ms.saturating_sub(u64::from(days) * DAY_MS);
@@ -989,6 +1000,29 @@ mod tests {
             CallsPage::default()
         );
         assert_eq!(ledger.calls(None, 0, None, None).calls.len(), 5);
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_work_rows_only() {
+        let ledger = Ledger::default();
+        {
+            let mut state = ledger.lock();
+            for work in 1..=(WORKS_MAX as u64 + 2) {
+                state.works.insert(
+                    (7, work),
+                    WorkRow {
+                        cid: 7,
+                        work,
+                        totals: Totals::default(),
+                    },
+                );
+            }
+        }
+        ledger.prune(H, usize::MAX, 0);
+        let state = ledger.lock();
+        assert_eq!(state.works.len(), WORKS_MAX);
+        assert!(!state.works.contains_key(&(7, 1)) && !state.works.contains_key(&(7, 2)));
+        assert!(state.works.contains_key(&(7, WORKS_MAX as u64 + 2)));
     }
 
     #[test]
