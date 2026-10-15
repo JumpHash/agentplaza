@@ -793,7 +793,9 @@ export function mountHubTab(root: HTMLElement): Cleanup {
       h(
         'p.mcp-muted',
         null,
-        'With `agentplaza acp --repo`, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
+        'With ',
+        h('code', null, 'agentplaza acp --repo'),
+        ', the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
       ),
       snippet('Zed', ACP_SNIPPETS.zed, 'Add this to the settings.json of Zed. It runs the default plaza agent.'),
       snippet('Zed, one agent', ACP_SNIPPETS.zedAgent, "The same, pinned to one plaza agent. Replace <name> with the agent's name."),

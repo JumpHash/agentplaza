@@ -1416,7 +1416,7 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
             .into(),
         ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
         write_back.into(),
-        ui::faint("With `agentplaza acp --repo`, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.").into(),
+        ui::faint("With agentplaza acp --repo, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.").into(),
     ];
     if let Some(error) = &state.acp_error {
         parts.push(ui::error_line(error));
