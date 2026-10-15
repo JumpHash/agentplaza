@@ -10,6 +10,8 @@
 //!
 //! POST   /v1/e2b/keys {label}                      → {id, label, key, created_ms}  (the key, once)
 //! GET    /v1/e2b/keys                              → {keys: [{id, label, created_ms}]}
+//! GET    /v1/e2b/sandboxes                         → {sandboxes: [ListedSandbox + cid, run]}  (owner)
+//! DELETE /v1/e2b/sandboxes/{id} · POST …/{id}/pause · POST …/{id}/resume       (owner)
 //! DELETE /v1/e2b/keys/{id}                         → {ok}
 //!
 //! POST   /e2b/sandboxes        NewSandbox          → 201 Sandbox
@@ -1343,6 +1345,9 @@ fn civil(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// Who acts when the owner ends, pauses or resumes a sandbox from the console (the transcript's actor).
+const OWNER: &str = "owner";
+
 /// The owner's key routes and the E2B routes (listed in the module docs).
 pub fn routes(router: Router<App>) -> Router<App> {
     router
@@ -1364,6 +1369,33 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(refused) => refuse(refused),
             }
+        })
+        // The owner's view of the sandboxes (the console): every one, running or paused, with its
+        // VM's CID and run; never its envd token. Ending, pausing and resuming act as the owner.
+        .get("/v1/e2b/sandboxes", |app, _, _| {
+            let mut all = sandboxes(app).list();
+            all.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
+            let rows: Vec<Value> = all
+                .iter()
+                .map(|s| {
+                    let mut row = listed_view(s);
+                    row["cid"] = json!(s.cid);
+                    row["run"] = json!(s.run);
+                    row["allowInternetAccess"] = json!(s.allow_internet);
+                    row["autoPause"] = json!(s.auto_pause);
+                    row
+                })
+                .collect();
+            Response::json(200, &json!({ "sandboxes": rows }))
+        })
+        .delete("/v1/e2b/sandboxes/{id}", |app, _, p| {
+            kill(app, p.get("id"), OWNER).unwrap_or_else(refuse)
+        })
+        .post("/v1/e2b/sandboxes/{id}/pause", |app, _, p| {
+            pause(app, p.get("id"), OWNER).unwrap_or_else(refuse)
+        })
+        .post("/v1/e2b/sandboxes/{id}/resume", |app, req, p| {
+            resume(app, req, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
         .post("/e2b/sandboxes", |app, req, _| {
             guard(app, req, |key| create(app, req, key))
