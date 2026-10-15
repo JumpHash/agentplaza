@@ -16,6 +16,8 @@
 #[cfg(any(target_os = "linux", windows))]
 mod apid;
 #[cfg(any(target_os = "linux", windows))]
+mod e2b;
+#[cfg(any(target_os = "linux", windows))]
 mod egress;
 #[cfg(any(target_os = "linux", windows))]
 mod http;
@@ -32,6 +34,8 @@ use std::process::ExitCode;
 use apz_uds::{UnixListener, UnixStream};
 #[cfg(any(target_os = "linux", windows))]
 use std::collections::BTreeMap;
+#[cfg(any(target_os = "linux", windows))]
+use std::net::TcpListener;
 #[cfg(any(target_os = "linux", windows))]
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", windows))]
@@ -121,6 +125,7 @@ impl Drop for SessionGuard {
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
+              [--e2b-port P]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
                     %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
@@ -138,6 +143,9 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid U
   --internal-token-file PATH
                     the token apid's internal surface requires (re-read on every
                     call); without it the v3 agent loop is not forwarded
+  --e2b-port P      the E2B gateway on 127.0.0.1:P (default off): the SDKs' sandbox
+                    requests, relayed to the sandbox's port 49983 through its VM's
+                    muxer; needs --internal-token-file, since apid names the sandbox
   -h, --help        print this help
 
 Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
@@ -189,6 +197,7 @@ struct Config {
     internal_token_file: Option<PathBuf>,
     egress: bool,
     egress_ports: Vec<u16>,
+    e2b_port: Option<u16>,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -203,6 +212,7 @@ impl Default for Config {
             internal_token_file: None,
             egress: true,
             egress_ports: Vec::new(),
+            e2b_port: None,
         }
     }
 }
@@ -248,6 +258,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                             .map_err(|err| format!("--egress-ports: invalid port {part}: {err}"))
                     })
                     .collect::<Result<_, _>>()?;
+            }
+            "--e2b-port" => {
+                let port: u16 = value?.parse().map_err(|err| format!("--e2b-port: {err}"))?;
+                if port == 0 {
+                    return Err("--e2b-port: port 0 is not a port to listen on".to_string());
+                }
+                config.e2b_port = Some(port);
             }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
             "--http-port" => {
@@ -297,6 +314,14 @@ fn run(config: Config) -> Result<(), String> {
             config.uds_dir.display()
         )
     })?;
+    // The E2B gateway looks sandboxes up in apid, which needs the internal token: without it the
+    // gateway would refuse every request, so it is not started.
+    if config.e2b_port.is_some() && !apid.enabled() {
+        return Err("--e2b-port needs --internal-token-file: apid names the sandboxes".to_string());
+    }
+    let e2b_gateway = config
+        .e2b_port
+        .map(|_| Arc::new(e2b::Gateway::new(apid.clone(), config.uds_dir.clone())));
     let egress_apid = apid.clone();
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog), apid));
     let egress_setup = config.egress.then(|| {
@@ -331,6 +356,18 @@ fn run(config: Config) -> Result<(), String> {
     })?;
     println!("vsockd: http on http://127.0.0.1:{}", http.port());
 
+    // The E2B listener is bound with the others, so a taken port fails the daemon before anything
+    // is served.
+    let e2b_listener = match config.e2b_port {
+        Some(port) => {
+            let listener = TcpListener::bind(("127.0.0.1", port))
+                .map_err(|err| format!("cannot listen on 127.0.0.1:{port} for E2B: {err}"))?;
+            println!("vsockd: e2b gateway on 127.0.0.1:{port}");
+            Some(listener)
+        }
+        None => None,
+    };
+
     // Every listener is bound before any is served: a taken path fails the
     // daemon rather than half-serving.
     let mut bound = Vec::new();
@@ -340,6 +377,9 @@ fn run(config: Config) -> Result<(), String> {
     for listeners in bound {
         registry.start(listeners);
     }
+    let e2b_thread = e2b_listener
+        .zip(e2b_gateway)
+        .map(|(listener, gateway)| thread::spawn(move || e2b::serve(listener, gateway)));
 
     // The accept loops serve until a stop request; run-time CIDs stop with them.
     while !sys::shutdown_requested() {
@@ -348,6 +388,10 @@ fn run(config: Config) -> Result<(), String> {
     println!("vsockd: stop requested, closing the listeners");
     drop(http);
     registry.close();
+    if let Some(handle) = e2b_thread {
+        // The E2B accept loop checks for the stop request within one poll.
+        let _ = handle.join();
+    }
     Ok(())
 }
 
@@ -755,6 +799,8 @@ mod tests {
             "off",
             "--egress-ports",
             "8080,8443",
+            "--e2b-port",
+            "49990",
         ])
         .unwrap();
         let expected = Config {
@@ -766,6 +812,7 @@ mod tests {
             internal_token_file: Some("t.token".into()),
             egress: false,
             egress_ports: vec![8080, 8443],
+            e2b_port: Some(49990),
         };
         assert_eq!(config, expected);
         assert!(
@@ -780,6 +827,8 @@ mod tests {
             &["--roles", "r.json"],
             &["--egress", "maybe"],
             &["--egress-ports", "70000"],
+            &["--e2b-port", "0"],
+            &["--e2b-port", "70000"],
         ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }

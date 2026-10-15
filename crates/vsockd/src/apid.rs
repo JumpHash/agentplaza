@@ -28,6 +28,8 @@ const EGRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 const EGRESS_CERT_TIMEOUT: Duration = Duration::from_secs(5);
 /// An injection is asked per intercepted request, and the request waits for it.
 const EGRESS_INJECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// An E2B request waits on the sandbox lookup before it can be relayed, so it is kept short.
+const E2B_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// apid's decision on one egress connection: allowed, or refused with the reason the guest is told.
 /// `intercept` says a credential rule could match this agent and host, so the proxy must terminate
@@ -51,6 +53,14 @@ pub struct EgressLeaf {
 pub struct Injection {
     pub header: String,
     pub value: String,
+}
+
+/// A plaza sandbox as apid names it to the E2B gateway: the guest CID its VM is served at, and the
+/// access token its requests must carry (empty when the sandbox is not secured).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct E2bSandbox {
+    pub cid: u32,
+    pub access_token: String,
 }
 
 /// Where apid's internal surface is, and the file that holds its token.
@@ -187,6 +197,43 @@ impl Apid {
                 .to_string();
         let reply = self.post("/internal/egress/inject", &body, EGRESS_INJECT_TIMEOUT)?;
         injection_of(&reply)
+    }
+
+    /// Asks apid for the sandbox `id`: `Ok(None)` when apid does not know it, `Err` when apid
+    /// cannot be asked or answers anything but 200 or 404. The caller validates `id` first, since
+    /// it becomes part of the path.
+    pub fn e2b_sandbox(&self, id: &str) -> Result<Option<E2bSandbox>, String> {
+        let token = self.token()?;
+        let path = format!("/internal/e2b/sandboxes/{id}");
+        let reply = send_with(
+            self.port,
+            "GET",
+            &path,
+            &[(TOKEN_HEADER, &token)],
+            None,
+            E2B_LOOKUP_TIMEOUT,
+        )
+        .map_err(|err| format!("apid unreachable: {err}"))?;
+        match reply.status {
+            404 => Ok(None),
+            200 => {
+                let body = reply
+                    .json()
+                    .map_err(|err| format!("apid's sandbox answer: {err}"))?;
+                let cid = body
+                    .get("cid")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|cid| u32::try_from(cid).ok())
+                    .ok_or("apid's sandbox answer names no cid")?;
+                let access_token = body
+                    .get("access_token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                Ok(Some(E2bSandbox { cid, access_token }))
+            }
+            other => Err(format!("apid answered {other} to the sandbox lookup")),
+        }
     }
 
     /// A plain TCP connection to apid's internal surface, for a relay that
