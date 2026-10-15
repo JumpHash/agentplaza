@@ -699,6 +699,14 @@ impl std::fmt::Debug for SharedVm {
     }
 }
 
+impl Drop for SharedVm {
+    /// The device threads stop with the VM, whichever way it ended: a VM whose
+    /// vCPUs all finished without `request_stop` still releases them.
+    fn drop(&mut self) {
+        self.exit.signal();
+    }
+}
+
 impl SharedVm {
     /// Creates the shared state of a VM with `vcpu_count` vCPUs, none of
     /// which are running yet.

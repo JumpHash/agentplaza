@@ -402,13 +402,17 @@ pub mod epoll {
                 .map(|(fd, ev)| (*fd, *ev))
                 .collect();
 
-            // One poll entry per socket. `owner` maps it to its snapshot index.
+            // One poll entry per socket. `owner` maps it to its snapshot index;
+            // `inner_sets` holds the nested entry's registered set (`None` for a
+            // direct socket).
             let mut pfds: Vec<WSAPOLLFD> = Vec::new();
             let mut owner: Vec<usize> = Vec::new();
+            let mut inner_sets: Vec<Option<EventSet>> = Vec::new();
             for (i, (fd, ev)) in snapshot.iter().enumerate() {
                 if *fd & PSEUDO_BIT != 0 {
-                    // A nested Epoll: its sockets report for this entry. Deeper
-                    // nesting, and a dropped Epoll, contribute nothing.
+                    // A nested Epoll reports IN when any of its entries is ready for
+                    // what that entry registered, as on Linux. Deeper nesting, and a
+                    // dropped Epoll, contribute nothing.
                     if let Some(inner) = live_registry(*fd) {
                         let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
                             .iter()
@@ -418,11 +422,13 @@ pub mod epoll {
                         for (sock, sev) in inner_entries {
                             pfds.push(poll_entry(sock, sev));
                             owner.push(i);
+                            inner_sets.push(Some(sev.event_set()));
                         }
                     }
                 } else {
                     pfds.push(poll_entry(*fd, *ev));
                     owner.push(i);
+                    inner_sets.push(None);
                 }
             }
 
@@ -453,20 +459,34 @@ pub mod epoll {
 
             // Map readiness back onto each snapshot entry.
             let mut ready = vec![EventSet::empty(); snapshot.len()];
-            for (pfd, &i) in pfds.iter().zip(owner.iter()) {
+            for ((pfd, &i), inner_set) in pfds.iter().zip(owner.iter()).zip(inner_sets.iter()) {
                 let r = pfd.revents;
-                let bits = &mut ready[i];
+                let mut bits = EventSet::empty();
                 if r & POLLRDNORM != 0 {
-                    *bits |= EventSet::IN;
+                    bits |= EventSet::IN;
                 }
                 if r & POLLHUP != 0 {
-                    *bits |= EventSet::IN | EventSet::HANG_UP;
+                    bits |= EventSet::IN | EventSet::HANG_UP;
                 }
                 if r & POLLWRNORM != 0 {
-                    *bits |= EventSet::OUT;
+                    bits |= EventSet::OUT;
                 }
                 if r & POLLERR != 0 {
-                    *bits |= EventSet::ERROR;
+                    bits |= EventSet::ERROR;
+                }
+                match inner_set {
+                    // A socket inside a nested Epoll counts only when it is ready for
+                    // what its own entry registered (or errored or hung up); the outer
+                    // entry then reports IN, and nothing else.
+                    Some(inner) => {
+                        let asked = (*inner & (EventSet::IN | EventSet::OUT))
+                            | EventSet::ERROR
+                            | EventSet::HANG_UP;
+                        if !(bits & asked).is_empty() {
+                            ready[i] |= EventSet::IN;
+                        }
+                    }
+                    None => ready[i] |= bits,
                 }
             }
 
@@ -581,6 +601,34 @@ mod tests {
         let mut out = [EpollEvent::default(); 4];
         assert_eq!(outer.wait(0, &mut out).unwrap(), 0);
         efd.write(1).unwrap();
+        assert_eq!(outer.wait(1000, &mut out).unwrap(), 1);
+        assert_eq!(out[0].data(), 42);
+        assert!(out[0].event_set().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn nested_epoll_reports_inner_writability_as_readable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_b, _) = listener.accept().unwrap();
+        let inner = Epoll::new().unwrap();
+        inner
+            .ctl(
+                ControlOperation::Add,
+                std::os::windows::io::AsRawSocket::as_raw_socket(&a) as _,
+                EpollEvent::new(EventSet::OUT, 1),
+            )
+            .unwrap();
+        let outer = Epoll::new().unwrap();
+        outer
+            .ctl(
+                ControlOperation::Add,
+                inner.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 42),
+            )
+            .unwrap();
+        // A fresh connection's send buffer is empty, so the inner socket is writable.
+        let mut out = [EpollEvent::default(); 4];
         assert_eq!(outer.wait(1000, &mut out).unwrap(), 1);
         assert_eq!(out[0].data(), 42);
         assert!(out[0].event_set().contains(EventSet::IN));

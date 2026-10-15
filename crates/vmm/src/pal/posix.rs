@@ -110,12 +110,23 @@ pub mod eventfd {
             *counter = before.saturating_add(v);
             if before == 0 && *counter != 0 {
                 let byte = [1u8];
-                // SAFETY: writes one byte from the live stack array `byte` to the pipe's write end, which this EventFd owns.
-                let n = unsafe { libc::write(self.inner.tx.as_raw_fd(), byte.as_ptr().cast(), 1) };
-                if n < 0 {
+                loop {
+                    // SAFETY: writes one byte from the live stack array `byte` to the pipe's write end, which this EventFd owns.
+                    let n =
+                        unsafe { libc::write(self.inner.tx.as_raw_fd(), byte.as_ptr().cast(), 1) };
+                    if n >= 0 {
+                        break;
+                    }
                     let e = io::Error::last_os_error();
-                    if e.kind() != ErrorKind::WouldBlock {
-                        return Err(e);
+                    match e.kind() {
+                        // A full pipe already holds a byte, so readers are still signalled.
+                        ErrorKind::WouldBlock => break,
+                        ErrorKind::Interrupted => continue,
+                        _ => {
+                            // No byte was queued: undo the increment so the counter and the pipe agree.
+                            *counter = before;
+                            return Err(e);
+                        }
                     }
                 }
             }
@@ -209,6 +220,13 @@ pub mod epoll {
 
     fn live_registry(handle: RawFd) -> Option<Arc<Registry>> {
         lock(registries()).get(&handle).and_then(Weak::upgrade)
+    }
+
+    /// Whether `fd` names no open descriptor (`fcntl(F_GETFD)` fails with `EBADF`).
+    fn is_closed(fd: RawFd) -> bool {
+        // SAFETY: F_GETFD only reads the descriptor's flags; any value of `fd` is allowed.
+        let rc = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        rc < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
     }
 
     struct Registry {
@@ -349,6 +367,16 @@ pub mod epoll {
         }
     }
 
+    /// Where one poll entry came from.
+    struct Source {
+        /// Snapshot index of the entry the descriptor reports for.
+        owner: usize,
+        /// For a descriptor of a nested Epoll, the events its inner entry registered.
+        inner: Option<EventSet>,
+        /// The nested registry it was read from, or `None` for a direct entry.
+        home: Option<Arc<Registry>>,
+    }
+
     impl Epoll {
         pub fn new() -> io::Result<Epoll> {
             let handle = -NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
@@ -401,13 +429,16 @@ pub mod epoll {
                 .map(|(fd, ev)| (*fd, *ev))
                 .collect();
 
-            // One poll entry per descriptor. `owner` maps it to its snapshot index.
+            // One poll entry per descriptor. `sources` says which snapshot entry it
+            // reports for, and which registry it was registered in.
             let mut pfds: Vec<libc::pollfd> = Vec::new();
-            let mut owner: Vec<usize> = Vec::new();
+            let mut sources: Vec<Source> = Vec::new();
             for (i, (fd, ev)) in snapshot.iter().enumerate() {
                 if *fd < 0 {
-                    // A nested Epoll: its descriptors report for this entry. Deeper
-                    // nesting, and a dropped Epoll, contribute nothing.
+                    // A nested Epoll. As on Linux, it is readable when any of its own
+                    // entries is ready for the events that entry asked for, so each inner
+                    // entry is polled with its own registered set. Deeper nesting, and a
+                    // dropped Epoll, contribute nothing.
                     if let Some(inner) = live_registry(*fd) {
                         let inner_entries: Vec<(RawFd, EpollEvent)> = lock(&inner.entries)
                             .iter()
@@ -416,12 +447,20 @@ pub mod epoll {
                             .collect();
                         for (sock, sev) in inner_entries {
                             pfds.push(poll_entry(sock, sev));
-                            owner.push(i);
+                            sources.push(Source {
+                                owner: i,
+                                inner: Some(sev.event_set()),
+                                home: Some(Arc::clone(&inner)),
+                            });
                         }
                     }
                 } else {
                     pfds.push(poll_entry(*fd, *ev));
-                    owner.push(i);
+                    sources.push(Source {
+                        owner: i,
+                        inner: None,
+                        home: None,
+                    });
                 }
             }
 
@@ -448,20 +487,53 @@ pub mod epoll {
 
             // Map readiness back onto each snapshot entry.
             let mut ready = vec![EventSet::empty(); snapshot.len()];
-            for (pfd, &i) in pfds.iter().zip(owner.iter()) {
+            // Descriptors found closed (POLLNVAL), with the registry each came from.
+            let mut closed: Vec<(Option<Arc<Registry>>, RawFd)> = Vec::new();
+            for (pfd, src) in pfds.iter().zip(sources.iter()) {
                 let r = pfd.revents;
-                let bits = &mut ready[i];
+                if r & libc::POLLNVAL != 0 {
+                    // Closed without a Delete. Linux drops such a descriptor by itself, so
+                    // report nothing for it and drop it from its registry below.
+                    closed.push((src.home.clone(), pfd.fd));
+                    continue;
+                }
+                let mut bits = EventSet::empty();
                 if r & libc::POLLIN != 0 {
-                    *bits |= EventSet::IN;
+                    bits |= EventSet::IN;
                 }
                 if r & libc::POLLHUP != 0 {
-                    *bits |= EventSet::IN | EventSet::HANG_UP;
+                    bits |= EventSet::IN | EventSet::HANG_UP;
                 }
                 if r & libc::POLLOUT != 0 {
-                    *bits |= EventSet::OUT;
+                    bits |= EventSet::OUT;
                 }
-                if r & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                    *bits |= EventSet::ERROR;
+                if r & libc::POLLERR != 0 {
+                    bits |= EventSet::ERROR;
+                }
+                match src.inner {
+                    // Linux semantics for a nested epoll: it is readable when one of its
+                    // entries is ready for the events that entry registered, whatever the
+                    // outer entry asked for. So the outer entry gets IN and nothing else.
+                    Some(inner) => {
+                        let inner_wanted = (inner & (EventSet::IN | EventSet::OUT))
+                            | EventSet::ERROR
+                            | EventSet::HANG_UP;
+                        if bits.intersects(inner_wanted) {
+                            ready[src.owner] |= EventSet::IN;
+                        }
+                    }
+                    None => ready[src.owner] |= bits,
+                }
+            }
+            // Drop the closed descriptors, each from the registry it came from. Only
+            // brief locks: none is held while polling. A descriptor reopened under the
+            // same number since the poll is kept: each is removed only if it is still
+            // closed when checked under its registry's lock.
+            for (home, fd) in closed {
+                let registry = home.as_deref().unwrap_or(&*self.registry);
+                let mut entries = lock(&registry.entries);
+                if is_closed(fd) {
+                    entries.remove(&fd);
                 }
             }
 
@@ -623,6 +695,71 @@ mod tests {
         assert_eq!(outer.wait(1000, &mut out).unwrap(), 1);
         assert_eq!(out[0].data(), 42);
         assert!(out[0].event_set().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn nested_epoll_reports_inner_writability_as_readable() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let inner = Epoll::new().unwrap();
+        inner
+            .ctl(
+                ControlOperation::Add,
+                a.as_raw_fd(),
+                EpollEvent::new(EventSet::OUT, 1),
+            )
+            .unwrap();
+        let outer = Epoll::new().unwrap();
+        outer
+            .ctl(
+                ControlOperation::Add,
+                inner.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 42),
+            )
+            .unwrap();
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(outer.wait(0, &mut out).unwrap(), 1);
+        assert_eq!(out[0].data(), 42);
+        assert!(out[0].event_set().contains(EventSet::IN));
+    }
+
+    #[test]
+    fn nested_epoll_ignores_inner_readiness_it_did_not_ask_for() {
+        let inner = Epoll::new().unwrap();
+        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
+        inner
+            .ctl(
+                ControlOperation::Add,
+                efd.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 1),
+            )
+            .unwrap();
+        let outer = Epoll::new().unwrap();
+        outer
+            .ctl(
+                ControlOperation::Add,
+                inner.as_raw_fd(),
+                EpollEvent::new(EventSet::IN, 42),
+            )
+            .unwrap();
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(outer.wait(0, &mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_closed_descriptor_is_dropped_not_reported() {
+        // Never open, so poll(2) reports POLLNVAL for it.
+        const CLOSED_FD: i32 = 1_000_000;
+        let ep = Epoll::new().unwrap();
+        let ev = EpollEvent::new(EventSet::IN, CLOSED_FD as u64);
+        ep.ctl(ControlOperation::Add, CLOSED_FD, ev).unwrap();
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
+        assert_eq!(
+            ep.ctl(ControlOperation::Delete, CLOSED_FD, ev)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotFound
+        );
     }
 
     #[test]

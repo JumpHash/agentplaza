@@ -153,6 +153,8 @@ impl VmControl for HvfControl {
             .iter()
             .map(|t| save(t, "data volume"))
             .collect::<Result<Vec<_>, SpawnError>>()?;
+        // The interrupt controller with the devices, before the memory dump: the relay still runs.
+        let gic = vm.gic_state();
         std::fs::create_dir_all(dir).map_err(|err| failed(format!("{}: {err}", dir.display())))?;
         // SAFETY: `vm` holds the memory, and its vCPUs are paused.
         let (regions, memory_written) = write_memory_file(dir, &unsafe { regions(vm.memory()) })
@@ -166,7 +168,7 @@ impl VmControl for HvfControl {
                 vcpus,
                 running: vm.running(),
                 guest_counter,
-                gic: vm.gic_state(),
+                gic,
                 serial,
                 vsock,
                 workspace,

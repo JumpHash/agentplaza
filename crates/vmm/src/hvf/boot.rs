@@ -500,9 +500,45 @@ fn attach_devices(
     // transport's interrupt status first).
     let mut pending: Vec<u32> = Vec::new();
 
+    // The block devices: the workspace volume and the shared data volumes.
+    // Their requests are served on the vCPU that rings their doorbell, so they
+    // need no thread of their own.
+    let workspace = match &spec.workspace {
+        Some(image) => {
+            let state = restored.and_then(|s| s.workspace.as_ref());
+            note_pending(&mut pending, state, WORKSPACE_GSI);
+            Some(attach_block(
+                shared,
+                image,
+                None,
+                WORKSPACE_MMIO_START,
+                WORKSPACE_GSI,
+                state,
+                &mut irq_sources,
+            )?)
+        }
+        None => None,
+    };
+    let mut volumes = Vec::with_capacity(spec.volumes.len());
+    for (index, volume) in spec.volumes.iter().enumerate() {
+        let gsi = DATA_GSI_START + index as u32;
+        let state = restored.and_then(|s| s.volumes.get(index));
+        note_pending(&mut pending, state, gsi);
+        volumes.push(attach_block(
+            shared,
+            &volume.image,
+            Some(&volume.name),
+            DATA_MMIO_START + index as u64 * MMIO_LEN,
+            gsi,
+            state,
+            &mut irq_sources,
+        )?);
+    }
+
     // The vsock device: the userspace device and its muxer, which binds
     // `uds_path` (a taken path fails the boot here), and its ring-processing
-    // event thread.
+    // event thread. It comes after the block devices, so a volume that cannot
+    // be opened fails the boot before a socket is bound or a thread started.
     let vsock = match &spec.vsock {
         Some(config) => {
             let irq = new_irq(&mut irq_sources, VSOCK_GSI)?;
@@ -543,41 +579,6 @@ fn attach_devices(
         }
         None => None,
     };
-
-    // The block devices: the workspace volume and the shared data volumes.
-    // Their requests are served on the vCPU that rings their doorbell, so they
-    // need no thread of their own.
-    let workspace = match &spec.workspace {
-        Some(image) => {
-            let state = restored.and_then(|s| s.workspace.as_ref());
-            note_pending(&mut pending, state, WORKSPACE_GSI);
-            Some(attach_block(
-                shared,
-                image,
-                None,
-                WORKSPACE_MMIO_START,
-                WORKSPACE_GSI,
-                state,
-                &mut irq_sources,
-            )?)
-        }
-        None => None,
-    };
-    let mut volumes = Vec::with_capacity(spec.volumes.len());
-    for (index, volume) in spec.volumes.iter().enumerate() {
-        let gsi = DATA_GSI_START + index as u32;
-        let state = restored.and_then(|s| s.volumes.get(index));
-        note_pending(&mut pending, state, gsi);
-        volumes.push(attach_block(
-            shared,
-            &volume.image,
-            Some(&volume.name),
-            DATA_MMIO_START + index as u64 * MMIO_LEN,
-            gsi,
-            state,
-            &mut irq_sources,
-        )?);
-    }
 
     // The interrupt relay, when there is anything to relay. It holds the VM
     // weakly: the VM is released when its last vCPU finishes, not when the
@@ -711,6 +712,11 @@ fn relay_interrupts(
                 return;
             }
         };
+        // A VM released without its exit signal (its last reference dropped):
+        // nothing is left to interrupt.
+        if ready == 0 && vm.strong_count() == 0 {
+            return;
+        }
         for event in &events[..ready] {
             let data = event.data();
             if data == EXIT {
