@@ -1,6 +1,8 @@
 //! The hub's front door: who may call it, and how the hub proves who it is.
 //!
-//! - Loopback callers (the console on this machine, the local agent gateway) are trusted as today.
+//! - Loopback callers (the console on this machine, the local agent gateway) are trusted, but only
+//!   under a local `Host` ([`trusted_host`]): a web page that rebinds its own domain to 127.0.0.1
+//!   sends that domain as `Host` and is treated like any other caller.
 //! - Any other caller of an owner route must send `Authorization: Bearer <owner token>` or the
 //!   session cookie a sign-in gave it (`POST /v1/auth/session` with the owner token: an HttpOnly,
 //!   Secure, SameSite=Strict cookie, so the browser console's event stream and downloads carry it;
@@ -187,16 +189,20 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
     )
 }
 
-/// Whether a request is the owner's: the machine's own (a loopback or unknown peer), the owner token as a bearer,
-/// or a live console session. Owner routes and the editors' socket both ask this first.
+/// Whether a request is the owner's: the machine's own (a loopback or unknown peer under a local `Host`), the owner
+/// token as a bearer, or a live console session. Owner routes and the editors' socket both ask this first.
 pub fn is_owner(app: &App, req: &Request) -> bool {
     is_owner_of(&app.hub_auth, req, apz_plaza::now_ms())
 }
 
 fn is_owner_of(hub: &Hub, req: &Request, now_ms: u64) -> bool {
-    // A request whose peer is unknown or loopback is the machine's own (console, local gateway).
+    // A request whose peer is unknown or loopback is the machine's own (console, local gateway), when its
+    // `Host` says so too: a DNS-rebinding page reaches loopback with its own name in `Host`.
     if req.peer.is_none_or(|peer| peer.is_loopback()) {
-        return true;
+        let public_host = host_of(&hub.lock().public_url);
+        if trusted_host(req.header("host"), Some(&public_host)) {
+            return true;
+        }
     }
     let presented = req.header("authorization").and_then(|value| {
         let (scheme, token) = value.split_once(' ')?;
@@ -208,6 +214,35 @@ fn is_owner_of(hub: &Hub, req: &Request, now_ms: u64) -> bool {
         return true;
     }
     session_of(req).is_some_and(|id| hub.session_ok(id, now_ms))
+}
+
+/// Whether a `Host` header names this machine, so a loopback peer may act as the owner. Only `localhost`,
+/// the loopback addresses, `*.localhost` and the hub's own public host pass. A missing header (an HTTP/1.0
+/// client sends none) keeps the loopback trust.
+fn trusted_host(host: Option<&str>, public_host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return true;
+    };
+    let name = host_name(host).to_ascii_lowercase();
+    let local = matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1")
+        || name
+            .strip_suffix(".localhost")
+            .is_some_and(|label| !label.is_empty());
+    let public =
+        public_host.is_some_and(|public| !public.is_empty() && name == public.to_ascii_lowercase());
+    local || public
+}
+
+/// The name in a `Host` value: the port dropped and IPv6 unbracketed (`[::1]:7700` is `::1`). A bare
+/// IPv6 address has no port to drop.
+fn host_name(host: &str) -> &str {
+    if let Some(v6) = host.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or_default();
+    }
+    if host.matches(':').count() > 1 {
+        return host;
+    }
+    host.split(':').next().unwrap_or_default()
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -558,5 +593,56 @@ mod tests {
         assert_eq!(host_of("https://hub.example.org:7700/x"), "hub.example.org");
         assert_eq!(host_of("http://[::1]:7700"), "::1");
         assert_eq!(host_of("http://127.0.0.1:7700"), "127.0.0.1");
+    }
+
+    #[test]
+    fn only_a_local_or_the_public_host_is_the_machine() {
+        let public = Some("hub.example.org");
+        assert!(trusted_host(Some("localhost:7700"), None));
+        assert!(trusted_host(Some("LocalHost"), None));
+        assert!(trusted_host(Some("127.0.0.1:7700"), None));
+        assert!(trusted_host(Some("[::1]:7700"), None));
+        assert!(trusted_host(Some("::1"), None));
+        assert!(trusted_host(Some("app.localhost:7700"), None));
+        assert!(trusted_host(Some("hub.example.org:7700"), public));
+        assert!(trusted_host(Some("HUB.example.org"), public));
+        assert!(!trusted_host(Some("hub.example.org:7700"), None));
+        assert!(!trusted_host(Some("evil.example:7700"), public));
+        assert!(!trusted_host(Some("evil.localhost.example:7700"), None));
+        assert!(!trusted_host(Some("localhost.evil.example"), None));
+        assert!(!trusted_host(Some(".localhost"), None));
+        assert!(!trusted_host(Some(""), None));
+        assert!(!trusted_host(Some("evil.example:7700"), Some("")));
+        assert!(trusted_host(None, None), "an HTTP/1.0 client sends no Host");
+        assert!(trusted_host(None, public));
+    }
+
+    #[test]
+    fn a_loopback_peer_under_a_foreign_host_is_not_the_owner() {
+        let dir = scratch("rebind");
+        let hub = Hub::load(&dir, "https://hub.example.org:7700", false).unwrap();
+        let loopback = |host: Option<&str>| Request {
+            method: "GET".into(),
+            path: "/v1/agents".into(),
+            headers: host
+                .map(|host| vec![("host".into(), host.into())])
+                .unwrap_or_default(),
+            peer: Some(Ipv4Addr::LOCALHOST.into()),
+            ..Request::default()
+        };
+        let now = 1_000_000;
+        assert!(is_owner_of(&hub, &loopback(Some("127.0.0.1:7700")), now));
+        assert!(is_owner_of(
+            &hub,
+            &loopback(Some("hub.example.org:7700")),
+            now
+        ));
+        assert!(is_owner_of(&hub, &loopback(None), now));
+        assert!(!is_owner_of(
+            &hub,
+            &loopback(Some("evil.example:7700")),
+            now
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
