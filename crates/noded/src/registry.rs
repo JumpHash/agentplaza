@@ -150,6 +150,11 @@ pub struct CreateRun {
     /// a balloon.
     #[serde(default)]
     pub balloon_usable_mib: Option<u32>,
+    /// Whether the run's guests are sandboxes: E2B-compatible VMs whose guest runs the envd-compatible
+    /// daemon (`plaza.sandbox=1`) in place of an agent session. A sandbox has no role and is never a
+    /// keepalive agent; its workspace is a per-run copy of the base image, never a persistent one.
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 /// The longest role name a run may carry.
@@ -203,6 +208,16 @@ impl CreateRun {
                 ));
             }
         }
+        if self.sandbox {
+            if self.role.is_some() {
+                return Err("a sandbox has no role".to_string());
+            }
+            if self.keepalive == Some(true) {
+                return Err(
+                    "a sandbox is not a keepalive agent: keepalive cannot be true".to_string(),
+                );
+            }
+        }
         if let Some(role) = &self.role {
             checked_role(role)?;
             if self.keepalive == Some(false) {
@@ -219,12 +234,20 @@ impl CreateRun {
     }
 
     /// Whether the run's guests are keepalive agents: always for a roled run,
-    /// otherwise the request's choice or the default its session implies.
+    /// never for a sandbox, otherwise the request's choice or the default its
+    /// session implies.
     fn keepalive(&self, session: RunSession) -> bool {
+        if self.sandbox {
+            return false;
+        }
         self.role.is_some() || self.keepalive.unwrap_or(session == RunSession::Agent)
     }
 
     /// The kernel command line of VM `index` of the run.
+    ///
+    /// A sandbox's VM names the harness and the sandbox flag, which makes its
+    /// guest run the envd-compatible daemon instead of an agent session; it is
+    /// never a keepalive agent, so it carries no keepalive flag.
     ///
     /// A roled VM is the role fleet's VM, flag for flag (see [`agent_flags`]),
     /// behind the console device and the churn count when the run has one. Any
@@ -235,6 +258,9 @@ impl CreateRun {
             Some(beats) => format!(" plaza.beats={beats}"),
             None => String::new(),
         };
+        if self.sandbox {
+            return format!("{CONSOLE}{beats} plaza.harness=1 plaza.sandbox=1 plaza.vm={index}");
+        }
         match &self.role {
             // An agent's console carries its session: kernel chatter below warnings
             // (the balloon's inflate retries, for one) stays out of it.
@@ -461,6 +487,8 @@ struct RunMeta {
     keepalive: bool,
     /// The usable guest memory per VM at boot, when the VMs get a balloon.
     balloon_usable_mib: Option<u32>,
+    /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
+    sandbox: bool,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -676,6 +704,8 @@ pub struct RunView<'a> {
     pub beats: Option<u32>,
     /// The role every VM of the run runs as, or `null`.
     pub role: Option<&'a str>,
+    /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
+    pub sandbox: bool,
     /// When the run was created, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// When the run ended, in milliseconds since the Unix epoch, or `null`.
@@ -826,6 +856,52 @@ fn persistent_workspace_path(persist_dir: &std::path::Path, cid: u64) -> PathBuf
     persist_dir
         .join("workspaces")
         .join(format!("cid-{cid}.ext4"))
+}
+
+/// Whether a VM's kernel command line makes its guest a sandbox (`plaza.sandbox=1`).
+fn is_sandbox_cmdline(cmdline: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|word| word == "plaza.sandbox=1")
+}
+
+/// The workspace image of VM `index` of a sandbox run: `run_dir/workspace-{index}.ext4`. It is the
+/// name [`spawner::materialize_workspaces`] gives a run's copies, so a sandbox's copy and a template's
+/// clone of the same VM land at one path.
+fn sandbox_workspace_path(run_dir: &Path, index: usize) -> PathBuf {
+    run_dir.join(format!("workspace-{index}.ext4"))
+}
+
+/// The template start of one new VM of the shape `shape` (guest CID `cid`), whose workspace is `target`:
+/// the template for the shape (built on first use) with `target` laid down as a clone of its disk. The
+/// result is the template's snapshot to restore the VM from, or `None` when the VM boots cold.
+fn template_start(
+    templates: &crate::templates::Templates,
+    shape: &crate::templates::Shape,
+    cid: u64,
+    target: &Path,
+) -> Option<PathBuf> {
+    let template = match templates.get_or_build(shape) {
+        Ok(template) => template,
+        Err(err) => {
+            eprintln!("noded: no warm template for cid {cid} ({err}); booting it cold");
+            return None;
+        }
+    };
+    let laid = target
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| vmm::clonefile::clone_file(&template.workspace, target));
+    match laid {
+        Ok(_) => Some(template.snapshot),
+        Err(err) => {
+            let _ = std::fs::remove_file(target);
+            eprintln!(
+                "noded: cannot copy the template disk for cid {cid} ({err}); booting it cold"
+            );
+            None
+        }
+    }
 }
 
 /// Replaces the workspace image `image` with a fresh copy of the base image
@@ -1076,25 +1152,48 @@ impl Registry {
         self.templates.as_deref()
     }
 
-    /// For each planned VM of a keepalive run on a node with templates and persistent workspaces:
-    /// the template to restore it from, when the VM is new (it has no persistent workspace yet), its
-    /// template could be had, and its workspace was laid down as a copy of the template's disk. A VM
-    /// that already has a workspace (an agent coming back after a restart of the node) boots cold
-    /// from its own disk; a template that cannot be built is logged and the VM boots cold too.
+    /// For each planned VM of a keepalive run on a node with templates and persistent workspaces, and
+    /// for each VM of a sandbox run on a node with templates: the template to restore it from, when
+    /// its workspace could be laid down as a clone of the template's disk. A keepalive VM is new when
+    /// it has no persistent workspace yet; one that already has one (an agent coming back after a
+    /// restart of the node) boots cold from its own disk. A sandbox's workspace is its run's own, so
+    /// it is always new. A template that cannot be built is logged and the VM boots cold too.
     fn template_starts(
         &self,
+        id: &str,
         meta: &RunMeta,
         plans: &[VmPlan],
         vcpus: u8,
         memory_mib: usize,
     ) -> Vec<Option<PathBuf>> {
-        let (Some(templates), Some(base), Some(persist)) =
-            (&self.templates, &self.images.workspace, &self.persist_dir)
-        else {
-            return vec![None; plans.len()];
+        let none = || vec![None; plans.len()];
+        let (Some(templates), Some(base)) = (&self.templates, &self.images.workspace) else {
+            return none();
+        };
+        if meta.sandbox {
+            let run_dir = self.run_dir(id);
+            if let Err(err) = snapshots::private_dir(&run_dir) {
+                eprintln!(
+                    "noded: run {id}: cannot create {} ({err}); its sandboxes boot cold",
+                    run_dir.display()
+                );
+                return none();
+            }
+            return plans
+                .iter()
+                .enumerate()
+                .map(|(index, plan)| {
+                    let target = sandbox_workspace_path(&run_dir, index);
+                    let shape = self.template_shape(base, meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, &target)
+                })
+                .collect();
+        }
+        let Some(persist) = &self.persist_dir else {
+            return none();
         };
         if !meta.keepalive {
-            return vec![None; plans.len()];
+            return none();
         }
         plans
             .iter()
@@ -1103,42 +1202,31 @@ impl Registry {
                 if image.exists() {
                     return None;
                 }
-                let shape = crate::templates::Shape {
-                    kernel: self.images.kernel.clone(),
-                    initrd: Some(self.images.initrd.clone()),
-                    workspace_base: base.clone(),
-                    vcpus,
-                    memory_mib,
-                    balloon: meta.balloon_usable_mib,
-                    cmdline: plan.cmdline.clone(),
-                };
-                let template = match templates.get_or_build(&shape) {
-                    Ok(template) => template,
-                    Err(err) => {
-                        eprintln!(
-                            "noded: no warm template for cid {} ({err}); booting it cold",
-                            plan.vsock_cid
-                        );
-                        return None;
-                    }
-                };
-                let laid = image
-                    .parent()
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .and_then(|()| vmm::clonefile::clone_file(&template.workspace, &image));
-                match laid {
-                    Ok(_) => Some(template.snapshot),
-                    Err(err) => {
-                        let _ = std::fs::remove_file(&image);
-                        eprintln!(
-                            "noded: cannot copy the template disk for cid {} ({err}); booting it cold",
-                            plan.vsock_cid
-                        );
-                        None
-                    }
-                }
+                let shape = self.template_shape(base, meta, plan, vcpus, memory_mib);
+                template_start(templates, &shape, plan.vsock_cid, &image)
             })
             .collect()
+    }
+
+    /// The template shape of one planned VM: the run's kernel, initrd and base image, and the VM's own
+    /// command line (sandbox or agent, whichever the plan carries).
+    fn template_shape(
+        &self,
+        base: &Path,
+        meta: &RunMeta,
+        plan: &VmPlan,
+        vcpus: u8,
+        memory_mib: usize,
+    ) -> crate::templates::Shape {
+        crate::templates::Shape {
+            kernel: self.images.kernel.clone(),
+            initrd: Some(self.images.initrd.clone()),
+            workspace_base: base.to_path_buf(),
+            vcpus,
+            memory_mib,
+            balloon: meta.balloon_usable_mib,
+            cmdline: plan.cmdline.clone(),
+        }
     }
 
     /// Draws the runs' CIDs (those whose create request names none) from
@@ -1209,6 +1297,7 @@ impl Registry {
                 role: request.role.clone(),
                 keepalive,
                 balloon_usable_mib: request.balloon_usable_mib,
+                sandbox: request.sandbox,
             },
             plans,
         )
@@ -1245,6 +1334,7 @@ impl Registry {
                 // Fleet VMs are long-lived keepalive agents.
                 keepalive: true,
                 balloon_usable_mib: fleet.balloon_usable_mib(),
+                sandbox: false,
             },
             plans,
         )
@@ -1281,10 +1371,11 @@ impl Registry {
         let memory_mib =
             spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
         let vms = plans.len();
-        // New agent VMs start from a warm template where the node keeps them: their workspace is
-        // laid down here as a copy of the template's disk, which `prepare_persistent_workspace`
-        // below then finds in place.
-        let starts = self.template_starts(&meta, &plans, vcpus, memory_mib);
+        // New agent VMs and sandboxes start from a warm template where the node keeps them: their
+        // workspace is laid down here as a clone of the template's disk, which the workspace step
+        // below then finds in place (a keepalive one by `prepare_persistent_workspace`, a sandbox's
+        // by the sandbox branch).
+        let starts = self.template_starts(&id, &meta, &plans, vcpus, memory_mib);
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
         // directory under the daemon's UDS root. The directory is created
@@ -1308,6 +1399,30 @@ impl Registry {
                         )
                     })?,
             ),
+            // A sandbox's workspaces are per run, never the persistent images: each VM's copy is the
+            // base image cloned into the run's directory, except a VM a template started, whose copy
+            // is already the template's disk (see `template_starts`).
+            (Some(base), _) if meta.sandbox => {
+                let run_dir = self.run_dir(&id);
+                let copies = snapshots::private_dir(&run_dir)
+                    .map_err(|err| format!("cannot create {}: {err}", run_dir.display()))
+                    .and_then(|()| {
+                        (0..vms)
+                            .map(|index| {
+                                let copy = sandbox_workspace_path(&run_dir, index);
+                                if starts[index].is_some() {
+                                    return Ok(copy);
+                                }
+                                vmm::clonefile::clone_file(base, &copy)
+                                    .map(|_| copy)
+                                    .map_err(|err| {
+                                        format!("cannot prepare the run's workspace images: {err}")
+                                    })
+                            })
+                            .collect::<Result<Vec<PathBuf>, String>>()
+                    });
+                Some(copies.map_err(|err| self.give_back(&id, err))?)
+            }
             (Some(base), _) => {
                 // The directory name carries the daemon's start stamp as well
                 // as the run id: run ids restart with the daemon, so a bare
@@ -1823,6 +1938,8 @@ impl Registry {
         let memory_mib = spawner_memory_mib(vm.memory_mib).map_err(VmOpError::Invalid)?;
         let store = self.snapshot_store()?;
         let id = self.reserve_run_id();
+        // A sandbox travels with its command line: its import is a sandbox, never a keepalive agent.
+        let sandbox = is_sandbox_cmdline(&vm.cmdline);
         // The CID is the hub's choice, so it may sit outside the run range; the book holds it all
         // the same, for as long as the run lives.
         if !self.cids.hold_unless_busy(&id, vec![vm.cid]) {
@@ -1857,8 +1974,9 @@ impl Registry {
                 memory_mib: vm.memory_mib,
                 beats: None,
                 role: vm.role.clone(),
-                keepalive: true,
+                keepalive: !sandbox,
                 balloon_usable_mib: vm.balloon_usable_mib,
+                sandbox,
             },
         );
         {
@@ -1896,7 +2014,8 @@ impl Registry {
             .install(vm.cid, &vm.sleep_dir, snapshots::SLEEP)
             .map_err(|err| VmOpError::Failed(format!("cannot keep the sleep snapshot: {err}")))?;
         let dest = match &self.persist_dir {
-            Some(persist) => {
+            // A sandbox's workspace is its run's own copy, never the persistent image.
+            Some(persist) if !is_sandbox_cmdline(&vm.cmdline) => {
                 let image = persistent_workspace_path(persist, vm.cid);
                 if let Some(dir) = image.parent() {
                     snapshots::private_dir(dir).map_err(|err| {
@@ -1905,7 +2024,7 @@ impl Registry {
                 }
                 image
             }
-            None => {
+            _ => {
                 let dir = self.run_dir(id);
                 snapshots::private_dir(&dir).map_err(|err| {
                     VmOpError::Failed(format!("cannot create {}: {err}", dir.display()))
@@ -1938,6 +2057,7 @@ impl Registry {
                 role: None,
                 keepalive: true,
                 balloon_usable_mib: None,
+                sandbox: false,
             },
         );
         {
@@ -2072,6 +2192,9 @@ impl Registry {
             role: meta.role.clone(),
             keepalive: Some(meta.keepalive),
             balloon_usable_mib: meta.balloon_usable_mib,
+            // A fork of a sandbox is a sandbox: its command line is the sandbox's, so a restart of
+            // the fork boots the same daemon.
+            sandbox: meta.sandbox,
         };
         let spec = VmSpec {
             kernel: self.images.kernel.clone(),
@@ -2277,6 +2400,7 @@ impl Registry {
             beats: meta.beats,
             role: meta.role,
             keepalive: meta.keepalive,
+            sandbox: meta.sandbox,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
@@ -2418,6 +2542,9 @@ pub struct Run {
     /// Whether the run's guests are keepalive agents: their workspace images
     /// are persistent, so a wipe copies the base image over the persistent one.
     keepalive: bool,
+    /// Whether the run's guests are sandboxes: never keepalive, and their
+    /// workspaces are per-run copies of the base image.
+    sandbox: bool,
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
@@ -2544,6 +2671,7 @@ impl Run {
             memory_mib: self.memory_mib,
             beats: self.beats,
             role: self.role.as_deref(),
+            sandbox: self.sandbox,
             created_at: self.created_at,
             ended_at: inner.ended_at,
             vms: inner
@@ -2765,6 +2893,7 @@ impl Run {
             role: self.role.clone(),
             keepalive: self.keepalive,
             balloon_usable_mib,
+            sandbox: self.sandbox,
         }
     }
 
@@ -3182,6 +3311,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
             })
             .expect("the run exists even when its VMs cannot boot");
@@ -3311,6 +3441,7 @@ mod tests {
             beats: None,
             role: role.map(str::to_string),
             keepalive: false,
+            sandbox: false,
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
@@ -3359,6 +3490,7 @@ mod tests {
             vsock_cid: None,
             role: role.map(str::to_string),
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
         };
         assert_eq!(
@@ -3405,6 +3537,7 @@ mod tests {
             vsock_cid: None,
             role: None,
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
         };
 
@@ -3444,6 +3577,7 @@ mod tests {
             vsock_cid,
             role: None,
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
         };
 
@@ -3586,6 +3720,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
             })
             .err()
@@ -3637,6 +3772,7 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
             })
             .err()
@@ -3672,6 +3808,7 @@ mod tests {
                 vsock_cid: Some(crate::DEFAULT_AGENTS_CID_BASE),
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
             })
             .expect("a pinned run does not need the run range");
@@ -3695,6 +3832,7 @@ mod tests {
                     vsock_cid: None,
                     role: None,
                     keepalive: None,
+                    sandbox: false,
                     balloon_usable_mib: None,
                 })
                 .expect("the run exists even when its VMs cannot boot");
@@ -4011,6 +4149,216 @@ mod tests {
             registry.run_dir("r7").join("fork-40.ext4")
         );
         let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    /// A one-VM sandbox request on the given CID span.
+    fn sandbox_request() -> CreateRun {
+        CreateRun {
+            n: 1,
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            vsock_cid: None,
+            role: None,
+            keepalive: None,
+            balloon_usable_mib: None,
+            sandbox: true,
+        }
+    }
+
+    fn sandbox_meta() -> RunMeta {
+        RunMeta {
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            role: None,
+            keepalive: false,
+            balloon_usable_mib: None,
+            sandbox: true,
+        }
+    }
+
+    #[test]
+    fn a_sandbox_is_refused_with_a_role_and_with_keepalive() {
+        let request = |role: Option<&str>, keepalive: Option<bool>| CreateRun {
+            role: role.map(str::to_string),
+            keepalive,
+            ..sandbox_request()
+        };
+        assert_eq!(
+            request(Some("builder"), None).checked(),
+            Err("a sandbox has no role".to_string())
+        );
+        assert_eq!(
+            request(None, Some(true)).checked(),
+            Err("a sandbox is not a keepalive agent: keepalive cannot be true".to_string())
+        );
+        assert!(request(None, None).checked().is_ok());
+        assert!(request(None, Some(false)).checked().is_ok());
+    }
+
+    /// A sandbox boots the harness in sandbox mode with no keepalive flag, under either session: a
+    /// pinned CID (the frozen session) and an allocated one (the agent session) both give it no keepalive.
+    #[test]
+    fn a_sandbox_boots_the_sandbox_cmdline_and_is_never_keepalive() {
+        let request = sandbox_request();
+        assert_eq!(
+            request.vm_cmdline(0, false),
+            "console=ttyS0 plaza.harness=1 plaza.sandbox=1 plaza.vm=0"
+        );
+        let beaten = CreateRun {
+            beats: Some(3),
+            ..sandbox_request()
+        };
+        assert_eq!(
+            beaten.vm_cmdline(2, false),
+            "console=ttyS0 plaza.beats=3 plaza.harness=1 plaza.sandbox=1 plaza.vm=2"
+        );
+        assert!(!request.keepalive(RunSession::Agent));
+        assert!(!request.keepalive(RunSession::Frozen));
+    }
+
+    #[test]
+    fn the_sandbox_flag_is_optional_on_the_wire_and_defaults_to_false() {
+        let plain: CreateRun =
+            serde_json::from_str(r#"{"n":1,"vcpus":1,"memory_mib":128}"#).expect("a create body");
+        assert!(!plain.sandbox);
+        let sandbox: CreateRun =
+            serde_json::from_str(r#"{"n":1,"vcpus":1,"memory_mib":128,"sandbox":true}"#)
+                .expect("a sandbox body");
+        assert!(sandbox.sandbox);
+        assert!(sandbox.checked().is_ok());
+    }
+
+    #[test]
+    fn a_sandbox_run_view_reports_its_sandbox_flag() {
+        let run = |sandbox: bool| Run {
+            id: "r1".to_string(),
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            role: None,
+            keepalive: false,
+            sandbox,
+            created_at: now_ms(),
+            events: EventBus::new(),
+            cids: Arc::new(CidBook::default()),
+            inner: Mutex::new(RunInner {
+                state: RunState::Running,
+                ended_at: None,
+                vms: Vec::new(),
+            }),
+        };
+        let view = |run: &Run| {
+            serde_json::to_value(run.view(Detail::Summary)).expect("a run view")["sandbox"].clone()
+        };
+        assert_eq!(view(&run(true)), serde_json::Value::Bool(true));
+        assert_eq!(view(&run(false)), serde_json::Value::Bool(false));
+    }
+
+    /// A sandbox's template shape is the sandbox's own command line over the run's base image, so a
+    /// template built for it is never one an agent restores, and the other way round.
+    #[test]
+    fn a_sandbox_template_shape_is_built_from_the_sandbox_cmdline() {
+        let dir =
+            std::env::temp_dir().join(format!("apz-noded-sandbox-shape-{}", std::process::id()));
+        let registry = Registry::new(
+            VmImages {
+                kernel: PathBuf::from("kernel"),
+                initrd: PathBuf::from("initrd"),
+                workspace: Some(PathBuf::from("base.ext4")),
+            },
+            dir,
+            EventBus::new(),
+        );
+        let meta = sandbox_meta();
+        let plans: Vec<VmPlan> = (0..2)
+            .map(|index| VmPlan {
+                cmdline: sandbox_request().vm_cmdline(index, false),
+                vsock_cid: 20 + index as u64,
+                role: None,
+            })
+            .collect();
+        let shape = registry.template_shape(Path::new("base.ext4"), &meta, &plans[1], 1, 128);
+        assert_eq!(shape.cmdline, plans[1].cmdline);
+        assert!(shape.cmdline.contains("plaza.sandbox=1") && !shape.cmdline.contains("keepalive"));
+        assert_eq!(shape.workspace_base, PathBuf::from("base.ext4"));
+        assert_eq!(shape.balloon, None);
+        // The agent shape of the same index is a different one.
+        let agent = VmPlan {
+            cmdline: CreateRun {
+                sandbox: false,
+                ..sandbox_request()
+            }
+            .vm_cmdline(1, true),
+            vsock_cid: 21,
+            role: None,
+        };
+        assert_ne!(
+            registry.template_shape(Path::new("base.ext4"), &meta, &agent, 1, 128),
+            shape
+        );
+    }
+
+    /// A sandbox's workspace is its run's own copy, and it is never a persistent image: with a
+    /// stand-in template store whose kernel is missing, no template can be had, so every VM boots
+    /// cold and no workspace is laid down.
+    #[test]
+    fn a_sandbox_with_no_template_boots_cold_and_lays_no_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("apz-noded-sandbox-cold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let base = dir.join("base.ext4");
+        std::fs::write(&base, b"base").expect("the base image");
+        let registry = Registry::new(
+            VmImages {
+                kernel: dir.join("missing-kernel"),
+                initrd: dir.join("initrd"),
+                workspace: Some(base),
+            },
+            dir.join("uds"),
+            EventBus::new(),
+        )
+        .with_templates(Some(crate::templates::Templates::new(
+            dir.join("snapshots"),
+        )))
+        .with_persist_dir(Some(dir.join("persist")));
+        let meta = sandbox_meta();
+        let plans = vec![VmPlan {
+            cmdline: sandbox_request().vm_cmdline(0, false),
+            vsock_cid: 20,
+            role: None,
+        }];
+        let starts = registry.template_starts("r1", &meta, &plans, 1, MIN_MEMORY_MIB as usize);
+        assert_eq!(starts, vec![None]);
+        assert!(!registry.run_dir("r1").join("workspace-0.ext4").exists());
+        assert!(
+            !dir.join("persist")
+                .join("workspaces")
+                .join("cid-20.ext4")
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sandbox_copies_and_imports_are_recognised_by_their_command_line() {
+        assert!(is_sandbox_cmdline(
+            "console=ttyS0 plaza.harness=1 plaza.sandbox=1 plaza.vm=0"
+        ));
+        assert!(!is_sandbox_cmdline(
+            "console=ttyS0 plaza.harness=1 plaza.keepalive=1 plaza.vm=0"
+        ));
+        assert_eq!(
+            sandbox_workspace_path(Path::new("/run"), 2),
+            PathBuf::from("/run/workspace-2.ext4")
+        );
     }
 }
 
