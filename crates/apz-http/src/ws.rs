@@ -1008,14 +1008,6 @@ mod tests {
     }
 
     #[test]
-    fn the_accept_key_is_the_rfc_example() {
-        assert_eq!(
-            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
-            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-        );
-    }
-
-    #[test]
     fn a_valid_handshake_is_upgraded_with_its_accept_key() {
         let response = accept(
             &request(&[]),
@@ -1049,49 +1041,34 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_key_is_refused() {
-        // "short" is five bytes, not sixteen; an empty key is no key at all.
-        assert_eq!(
-            status(
-                &request(&[("sec-websocket-key", "c2hvcnQ=")]),
-                Origins::SameHost,
-                None
-            ),
-            400
-        );
-        assert_eq!(
-            status(
-                &request(&[("sec-websocket-key", "")]),
-                Origins::SameHost,
-                None
-            ),
-            400
-        );
-    }
-
-    #[test]
-    fn a_request_that_is_not_a_websocket_upgrade_is_refused() {
-        assert_eq!(
-            status(&request(&[("upgrade", "")]), Origins::SameHost, None),
-            400
-        );
-        assert_eq!(
-            status(
-                &request(&[("connection", "keep-alive")]),
-                Origins::SameHost,
-                None
-            ),
-            400
-        );
+    fn a_handshake_that_is_not_a_websocket_upgrade_is_refused() {
         let post = Request {
             method: "POST".to_string(),
             ..request(&[])
         };
-        assert_eq!(status(&post, Origins::SameHost, None), 405);
+        // "short" is five bytes, not sixteen; an empty key is no key at all.
+        for (case, req, want) in [
+            (
+                "a key of five bytes",
+                request(&[("sec-websocket-key", "c2hvcnQ=")]),
+                400,
+            ),
+            ("an empty key", request(&[("sec-websocket-key", "")]), 400),
+            ("an upgrade with no value", request(&[("upgrade", "")]), 400),
+            (
+                "a connection that is not an upgrade",
+                request(&[("connection", "keep-alive")]),
+                400,
+            ),
+            ("a POST", post, 405),
+        ] {
+            assert_eq!(status(&req, Origins::SameHost, None), want, "{case}");
+        }
     }
 
     #[test]
-    fn the_origin_policy_matches_the_host_with_default_ports() {
+    fn the_origin_policy_follows_the_origins_setting() {
+        // Same host: the Origin matches the Host, with default ports implied.
         let same = |host: &str, origin: &str| {
             status(
                 &request(&[("host", host), ("origin", origin)]),
@@ -1099,26 +1076,45 @@ mod tests {
                 None,
             )
         };
-        assert_eq!(same("127.0.0.1:7700", "http://127.0.0.1:7700"), 101);
-        assert_eq!(same("example.com", "https://Example.com:443"), 101);
-        assert_eq!(same("example.com:80", "http://example.com"), 101);
-        assert_eq!(same("example.com:8080", "http://example.com"), 403);
-        assert_eq!(same("127.0.0.1:7700", "https://evil.example"), 403);
-        assert_eq!(same("127.0.0.1:7700", "null"), 403);
-        assert_eq!(
-            status(
-                &request(&[("host", ""), ("origin", "http://127.0.0.1:7700")]),
-                Origins::SameHost,
-                None
+        for (case, host, origin, want) in [
+            (
+                "the same host and port",
+                "127.0.0.1:7700",
+                "http://127.0.0.1:7700",
+                101,
             ),
-            403
-        );
+            (
+                "an https default port",
+                "example.com",
+                "https://Example.com:443",
+                101,
+            ),
+            (
+                "an http default port",
+                "example.com:80",
+                "http://example.com",
+                101,
+            ),
+            (
+                "a port that differs",
+                "example.com:8080",
+                "http://example.com",
+                403,
+            ),
+            (
+                "a foreign origin",
+                "127.0.0.1:7700",
+                "https://evil.example",
+                403,
+            ),
+            ("a null origin", "127.0.0.1:7700", "null", 403),
+            ("an empty host", "", "http://127.0.0.1:7700", 403),
+        ] {
+            assert_eq!(same(host, origin), want, "{case}");
+        }
         // A client that sends no Origin (a daemon) is served.
         assert_eq!(status(&request(&[]), Origins::SameHost, None), 101);
-    }
-
-    #[test]
-    fn with_no_browsers_any_origin_is_refused() {
+        // With no browsers, any Origin is refused; a client with no Origin is still served.
         assert_eq!(
             status(
                 &request(&[("origin", "http://127.0.0.1:7700")]),
