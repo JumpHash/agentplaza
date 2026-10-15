@@ -473,6 +473,13 @@ def reconstruct_console(serial: str) -> str:
 # ------------------------------------------------------------------ the daemons
 
 
+def _free_port() -> int:
+    """A localhost TCP port nothing listens on now (bound and released)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 class LabError(RuntimeError):
     """A lab could not be brought up or driven."""
 
@@ -655,6 +662,12 @@ class Lab:
                 ",".join(str(cid) for cid in self.cids),
                 "--port",
                 str(VSOCK_PORT),
+                # A lab is hermetic: its HTTP surface on a free port (the host's own vsockd holds the
+                # default), and an apid address nothing listens on, so no hello reaches a real hub.
+                "--http-port",
+                str(_free_port()),
+                "--apid",
+                f"http://127.0.0.1:{_free_port()}",
             ]
             if self.status_port is not None:
                 # The read-only registry surface, on an ephemeral port by
