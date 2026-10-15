@@ -14,7 +14,8 @@
 //! * `GET`/`PUT /v1/metrics/settings`; `GET`/`PUT /v1/metrics/dashboards` ([`apz_metrics_view::Saved`]).
 //! * `GET /v1/metrics/alerts`; `PUT /v1/metrics/alerts/rules` (a rule, upsert); `DELETE
 //!   /v1/metrics/alerts/rules/{id}`; `POST /v1/metrics/alerts/{id}/mute` `{until_ms}`; `POST
-//!   /v1/metrics/alerts/{id}/ack` `{subject}`; `GET /v1/metrics/slos`; `GET /v1/metrics/forecast`.
+//!   /v1/metrics/alerts/{id}/ack` `{subject}`; `POST /v1/metrics/alerts/{id}/on` `{on}`; `GET /v1/metrics/slos`;
+//!   `GET /v1/metrics/forecast`.
 //! * `POST /v1/nodes/{id}/metrics` lives in nodes.rs (signed by the node); this module ingests it.
 //! * `GET /metrics` — OpenMetrics text with `Authorization: Bearer <openmetrics token>`, 404 when off.
 
@@ -92,6 +93,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .route("POST", "/v1/metrics/alerts/{id}/ack", |app, req, params| {
             ack_route(app, req, params)
+        })
+        .route("POST", "/v1/metrics/alerts/{id}/on", |app, req, params| {
+            rule_on_route(app, req, params)
         })
         .get("/v1/metrics/slos", |app, _, _| slos_route(app))
         .get("/v1/metrics/forecast", |app, req, _| {
@@ -393,6 +397,32 @@ fn mute_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         apz_plaza::now_ms(),
     );
     Response::json(200, &json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+struct OnBody {
+    on: bool,
+}
+
+/// Switches a rule (a starter or the owner's) on or off.
+fn rule_on_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
+    let body: OnBody = match json_body(req) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let id = params.get("id");
+    let Some(mut rule) = app.metrics.alerts.rules().into_iter().find(|r| r.id == id) else {
+        return Response::error(404, "no such rule");
+    };
+    rule.on = body.on;
+    match app
+        .metrics
+        .alerts
+        .put_rule(app.metrics.store.as_ref(), rule)
+    {
+        Ok(rule) => Response::json(200, &json!({ "ok": true, "rule": rule })),
+        Err(message) => Response::error(400, &message),
+    }
 }
 
 fn ack_route(app: &App, req: &Request, params: &Params<'_>) -> Response {

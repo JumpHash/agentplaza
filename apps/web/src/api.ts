@@ -865,6 +865,7 @@ export const api = {
   metricsPutRule: (r: MetricsRule) => put<MetricsRule>('/v1/metrics/alerts/rules', r),
   metricsDeleteRule: (id: string) => del<{ ok: boolean }>(`/v1/metrics/alerts/rules/${encodeURIComponent(id)}`),
   metricsMute: (id: string, until_ms: number) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/mute`, { until_ms }),
+  metricsRuleOn: (id: string, on: boolean) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/on`, { on }),
   metricsAck: (id: string, subject: string) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/ack`, { subject }),
   metricsExportUrl: (q: MetricsQuery) => `/v1/metrics/export${metricsQuery(q)}`,
   /** Every known model price (USD per million tokens). Large: prefer `price` for the few models in use. */
