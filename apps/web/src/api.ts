@@ -3,6 +3,7 @@
 
 import type { FileChange, Stats, TreePage, WorkspaceKind } from './ide/types';
 import type { Ref } from './ui/rich';
+import type { Around as MetricsAround, LiveLease, MetricDef, MetricsSettings, Rule as MetricsRule, Saved as MetricsSaved, ScopeNode as MetricsScopeNode, View as MetricsView, ViewQuery as MetricsQuery } from './metrics/model';
 
 export class ApiError extends Error {
   /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
@@ -848,6 +849,24 @@ export const api = {
   usageSeries: (from: number, to: number, bucket: UsageBucket, by: UsageGroup) => get<UsageSeries>(`/v1/usage/series${query({ from, to, bucket, by })}`),
   /** Calls newest first. Pass the previous page's `next_before` to load older calls. */
   usageCalls: (q: { before?: number; limit?: number; model?: string; cid?: number }) => get<UsageCallsPage>(`/v1/usage/calls${query({ ...q })}`),
+  // Metrics (crates/apid/src/metrics/routes.rs): composed views, the scope tree, what changed, live leases, the owner's
+  // pins and settings, alert rules. The types are in metrics/model.ts.
+  metricsView: (q: MetricsQuery) => get<MetricsView>(`/v1/metrics/view${metricsQuery(q)}`),
+  metricsAround: (q: MetricsQuery, t: number) => get<MetricsAround>(`/v1/metrics/around${metricsQuery(q)}&t=${t}`),
+  metricsScopes: () => get<MetricsScopeNode[]>('/v1/metrics/scopes'),
+  metricsCatalog: () => get<MetricDef[]>('/v1/metrics/catalog'),
+  metricsCalls: (scope: string, before: number, limit = 50) => get<{ calls: MetricsCallRow[] }>(`/v1/metrics/calls${query({ scope, before, limit })}`),
+  metricsLive: (lease: LiveLease) => post<{ ok: boolean }>('/v1/metrics/live', lease),
+  metricsOpen: (cid: number) => post<{ ok: boolean }>(`/v1/metrics/open/${cid}`),
+  metricsSaved: () => get<MetricsSaved>('/v1/metrics/dashboards'),
+  metricsSave: (s: MetricsSaved) => put<MetricsSaved>('/v1/metrics/dashboards', s),
+  metricsSettings: () => get<MetricsSettings>('/v1/metrics/settings'),
+  metricsPutSettings: (s: MetricsSettings) => put<MetricsSettings & { openmetrics_token?: string }>('/v1/metrics/settings', s),
+  metricsPutRule: (r: MetricsRule) => put<MetricsRule>('/v1/metrics/alerts/rules', r),
+  metricsDeleteRule: (id: string) => del<{ ok: boolean }>(`/v1/metrics/alerts/rules/${encodeURIComponent(id)}`),
+  metricsMute: (id: string, until_ms: number) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/mute`, { until_ms }),
+  metricsAck: (id: string, subject: string) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/ack`, { subject }),
+  metricsExportUrl: (q: MetricsQuery) => `/v1/metrics/export${metricsQuery(q)}`,
   /** Every known model price (USD per million tokens). Large: prefer `price` for the few models in use. */
   prices: () => get<PricesView>('/v1/prices'),
   /** One model's price. Rejects with an ApiError (404) when no source prices the model. */
@@ -1549,3 +1568,34 @@ export const ideApi = {
   runPoll: (id: string, run: string, offset: number) => get<IdeRunPoll>(`${ideWs(id)}/runs/${encodeURIComponent(run)}${query({ offset })}`),
   runStop: (id: string, run: string) => post<IdeRunStop>(`${ideWs(id)}/runs/${encodeURIComponent(run)}/stop`),
 };
+
+// The Metrics view's types live with the view (metrics/model.ts); re-exported here under api names.
+export type { MetricsAround, MetricsQuery, MetricsRule, MetricsSaved, MetricsScopeNode, MetricsView };
+
+/** One model call of `GET /v1/metrics/calls` (the call log's "Load older"). */
+export interface MetricsCallRow {
+  at_ms: number;
+  cid: number;
+  agent: string;
+  provider: string;
+  model: string;
+  tokens_in: number;
+  cache_read: number;
+  tokens_out: number;
+  ttft_ms: number | null;
+  duration_ms: number | null;
+  cost_usd: number;
+  status: number;
+  trace: string | null;
+}
+
+/** The query string of a Metrics view request. */
+function metricsQuery(q: MetricsQuery): string {
+  const p = new URLSearchParams({ tab: q.tab, scope: q.scope, range: q.range, compare: q.compare, group: q.group, width: String(q.width), tz: String(q.tz) });
+  if (q.shift) p.set('shift', String(q.shift));
+  if (q.zoom) p.set('zoom', `${q.zoom[0]},${q.zoom[1]}`);
+  if (q.trace) p.set('trace', q.trace);
+  if (q.filter) p.set('filter', q.filter);
+  if (q.fixture) p.set('fixture', '1');
+  return `?${p.toString()}`;
+}

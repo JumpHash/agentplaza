@@ -32,6 +32,7 @@ import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as usage } from './usage';
+import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
 import { mount as workstations } from './workstations';
 import { lazyMount } from './lazy';
@@ -60,6 +61,7 @@ export const SCREENS: Screen[] = [
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
   { key: 'floor', label: 'Floor', icon: 'floor', section: 'Plaza', mount: floor },
+  { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
   { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
   { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },
   { key: 'board', label: 'Board', icon: 'boardpin', section: 'Social', mount: board },
