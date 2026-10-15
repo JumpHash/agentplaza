@@ -83,10 +83,11 @@ pub fn relay_to(path: PathBuf) -> RelayFor {
 }
 
 /// An unauthenticated connection, open until it authenticates, is evicted, or is closed. The socket is kept so an
-/// eviction can close it from outside its thread.
+/// eviction can close it from outside its thread. It is the connection's own handle, shared with its thread, not a
+/// `try_clone`: on Windows a clone's shutdown now and then fails with WSAENOTCONN, and the evicted peer would wait.
 struct Pending {
     id: u64,
-    socket: TcpStream,
+    socket: Arc<TcpStream>,
 }
 
 /// The window in which evictions after the first are counted, not logged.
@@ -301,7 +302,7 @@ impl Egress {
     /// Admits a connection as pending. When the cap is full, the oldest pending connection is closed to make room. A
     /// real relay authenticates within milliseconds, so it is never the oldest for long; an attacker holding slots is
     /// churned out instead of locking the relay out.
-    fn admit_pending(&self, socket: TcpStream) -> u64 {
+    fn admit_pending(&self, socket: Arc<TcpStream>) -> u64 {
         let id = self.next_pending.fetch_add(1, Ordering::SeqCst);
         let mut pending = lock(&self.pending);
         if pending.len() >= self.handshake.max_pending {
@@ -437,10 +438,8 @@ pub fn proxy_env(proxy: &str) -> Vec<(String, String)> {
 /// Accepts relay connections on a listener, one thread each. Each is admitted as pending, which may evict the oldest.
 pub fn serve(listener: TcpListener, egress: Arc<Egress>) {
     for stream in listener.incoming().flatten() {
-        let Ok(socket) = stream.try_clone() else {
-            continue;
-        };
-        let id = egress.admit_pending(socket);
+        let stream = Arc::new(stream);
+        let id = egress.admit_pending(Arc::clone(&stream));
         let egress = Arc::clone(&egress);
         std::thread::spawn(move || relay_connection(stream, &egress, id));
     }
@@ -462,7 +461,7 @@ pub fn parse_proxy_v1(line: &str) -> Option<Ipv4Addr> {
 /// One relay connection. A valid handshake leaves the pending set and serves the request. A failed one is logged
 /// (never with the token), held until the tarpit time while it is still pending, and closed. An evicted connection
 /// is closed, and never served.
-fn relay_connection(stream: TcpStream, egress: &Egress, id: u64) {
+fn relay_connection(stream: Arc<TcpStream>, egress: &Egress, id: u64) {
     let accepted = Instant::now();
     let peer = match stream.peer_addr() {
         Ok(SocketAddr::V4(peer)) => *peer.ip(),
@@ -475,7 +474,7 @@ fn relay_connection(stream: TcpStream, egress: &Egress, id: u64) {
                 return;
             }
             let _ = stream.set_read_timeout(Some(IDLE));
-            serve_request(stream, reader, source, egress);
+            serve_request(&stream, reader, source, egress);
         }
         Err(why) => {
             eprintln!("apid: mcp: relay handshake from {peer} refused: {why}");
@@ -488,12 +487,11 @@ fn relay_connection(stream: TcpStream, egress: &Egress, id: u64) {
 
 /// The handshake: the token line, then the PROXY line. Returns the reader (with anything read past the two lines)
 /// and the source address.
-fn handshake(
-    stream: &TcpStream,
+fn handshake<'a>(
+    stream: &'a TcpStream,
     egress: &Egress,
-) -> Result<(BufReader<TcpStream>, Ipv4Addr), &'static str> {
-    let clone = stream.try_clone().map_err(|_| "the connection failed")?;
-    let mut reader = BufReader::new(clone);
+) -> Result<(BufReader<&'a TcpStream>, Ipv4Addr), &'static str> {
+    let mut reader = BufReader::new(stream);
     let hello = read_line_capped(&mut reader, 256)
         .map_err(|_| "no token before the timeout")?
         .ok_or("no token")?;
@@ -508,7 +506,7 @@ fn handshake(
     Ok((reader, source))
 }
 
-fn respond(client: &mut TcpStream, code: u16, reason: &str, text: &str) {
+fn respond(mut client: &TcpStream, code: u16, reason: &str, text: &str) {
     let reply = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
         text.len()
@@ -541,8 +539,8 @@ fn read_head(reader: &mut impl BufRead) -> Result<Vec<String>, Option<u16>> {
 
 /// The request for one client: the policy for the server `source` belongs to, then the tunnel or the request.
 fn serve_request(
-    mut client: TcpStream,
-    mut reader: BufReader<TcpStream>,
+    mut client: &TcpStream,
+    mut reader: BufReader<&TcpStream>,
     source: Ipv4Addr,
     egress: &Egress,
 ) {
@@ -551,12 +549,12 @@ fn serve_request(
         Ok(head) => head,
         Err(None) => return,
         Err(Some(code)) => {
-            return respond(&mut client, code, "Request Header Fields Too Large", "");
+            return respond(client, code, "Request Header Fields Too Large", "");
         }
     };
     let Some((server, allow_private)) = egress.tenant(source) else {
         return respond(
-            &mut client,
+            client,
             403,
             "Forbidden",
             "no network lease for this address",
@@ -568,7 +566,7 @@ fn serve_request(
         .unwrap_or_default();
     let [method, target, version] = parts.as_slice() else {
         return respond(
-            &mut client,
+            client,
             400,
             "Bad Request",
             "a request line is method, target and version",
@@ -578,12 +576,12 @@ fn serve_request(
     let (host, port, rewritten) = if connect {
         match split_host_port(target, 443) {
             Some((host, port)) => (host, port, None),
-            None => return respond(&mut client, 400, "Bad Request", "CONNECT needs host:port"),
+            None => return respond(client, 400, "Bad Request", "CONNECT needs host:port"),
         }
     } else {
         let Some(rest) = target.strip_prefix("http://") else {
             return respond(
-                &mut client,
+                client,
                 400,
                 "Bad Request",
                 "only http:// URLs and CONNECT are proxied",
@@ -595,7 +593,7 @@ fn serve_request(
         };
         match split_host_port(authority, 80) {
             Some((host, port)) => (host, port, Some(format!("{method} {path} {version}"))),
-            None => return respond(&mut client, 400, "Bad Request", "bad host"),
+            None => return respond(client, 400, "Bad Request", "bad host"),
         }
     };
     let blocklist = read(&egress.blocklist).clone();
@@ -606,18 +604,15 @@ fn serve_request(
         }
         Err(why) => {
             egress.log(&server, &host, false, &why);
-            return respond(&mut client, 403, "Forbidden", &why);
+            return respond(client, 403, "Forbidden", &why);
         }
     };
     let Ok(upstream) = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) else {
-        return respond(&mut client, 502, "Bad Gateway", "cannot reach the host");
+        return respond(client, 502, "Bad Gateway", "cannot reach the host");
     };
     let _ = upstream.set_read_timeout(Some(IDLE));
     let leftover = reader.buffer().to_vec();
-    let mut upstream_out = match upstream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    let mut upstream_out = &upstream;
     match rewritten {
         None => {
             if client
@@ -642,7 +637,7 @@ fn serve_request(
     if !leftover.is_empty() && upstream_out.write_all(&leftover).is_err() {
         return;
     }
-    pump(reader.into_inner(), client, upstream);
+    pump(client, &upstream);
 }
 
 /// The decision for a connection to `host:port`: the address to connect to, or why not.
@@ -755,19 +750,19 @@ fn split_host_port(authority: &str, default: u16) -> Option<(String, u16)> {
     }
 }
 
-/// Copies both ways until either side closes.
-fn pump(mut client_read: TcpStream, mut client_write: TcpStream, mut upstream: TcpStream) {
-    let Ok(mut upstream_write) = upstream.try_clone() else {
-        return;
-    };
-    let forward = std::thread::spawn(move || {
-        let _ = io::copy(&mut client_read, &mut upstream_write);
-        let _ = upstream_write.shutdown(Shutdown::Write);
+/// Copies both ways until either side closes. Both directions use each socket's one handle (`&TcpStream` reads and
+/// writes), not a `try_clone`: on Windows a clone is a `WSADuplicateSocketW` handle whose shutdown now and then fails
+/// with WSAENOTCONN, so the client's half-close would never reach the upstream, which would wait for more request.
+fn pump(client: &TcpStream, upstream: &TcpStream) {
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = io::copy(&mut &*client, &mut &*upstream);
+            let _ = upstream.shutdown(Shutdown::Write);
+        });
+        let _ = io::copy(&mut &*upstream, &mut &*client);
+        let _ = client.shutdown(Shutdown::Both);
+        let _ = upstream.shutdown(Shutdown::Both);
     });
-    let _ = io::copy(&mut upstream, &mut client_write);
-    let _ = client_write.shutdown(Shutdown::Both);
-    let _ = upstream.shutdown(Shutdown::Both);
-    let _ = forward.join();
 }
 
 #[cfg(test)]
