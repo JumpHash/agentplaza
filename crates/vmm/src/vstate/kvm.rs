@@ -73,7 +73,7 @@ impl Kvm {
 
 /// Whether this machine lets the tests use KVM (`/dev/kvm` opens read-write). CI's containers have
 /// no `/dev/kvm`: the KVM tests then skip themselves with a note instead of failing.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) fn usable_for_tests() -> bool {
     std::fs::OpenOptions::new()
         .read(true)
