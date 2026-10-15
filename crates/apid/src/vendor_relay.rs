@@ -26,6 +26,9 @@ pub struct Vendor {
     pub secret: &'static str,
     /// The vault binding allowed to read it: the engine that uses it.
     pub binding: &'static str,
+    /// The engine (`code_engine` id) the relay serves: it must be among the owner's enabled engines,
+    /// and the calling agent's role must be granted `code_engine`.
+    pub engine: &'static str,
     /// The label the console shows for the binding.
     pub label: &'static str,
     /// The 403 the relay answers when the vault cannot give the credential.
@@ -41,6 +44,7 @@ const VENDORS: &[Vendor] = &[Vendor {
     id: "augment",
     secret: "AUGMENT_SESSION_AUTH",
     binding: "engine:auggie",
+    engine: "auggie",
     label: "Auggie (Augment session)",
     refusal: "Auggie needs your Augment session in the vault: store `auggie token print` as AUGMENT_SESSION_AUTH and bind it to engine:auggie",
     upstream: augment_upstream,
@@ -96,9 +100,18 @@ fn relay(app: &App, req: &Request, cid: u64, rest: &str) -> Result<Response, Res
             "the plaza is held (STOP ALL); waiting for the owner to resume",
         ));
     }
-    app.agents
+    let agent = app
+        .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    // Only an agent that may run this vendor's engine reaches the vendor with the owner's account.
+    let enabled = app.settings.get().engines_enabled;
+    let granted = crate::tools::specs_for_agent(app, &agent)
+        .iter()
+        .any(|spec| spec.name == "code_engine");
+    if let Some(refused) = engine_refusal(vendor.engine, &enabled, granted) {
+        return Err(Response::error(403, &refused));
+    }
     let consumer = Consumer::agent(&app.nodes.list(), cid, vendor.binding);
     let secret = app
         .vault
@@ -278,8 +291,29 @@ fn augment_upstream(secret: &SecretString) -> Result<(String, Vec<(String, Strin
     ))
 }
 
+/// Why an agent may not use a vendor's relay: its engine is off, or the agent may not run engines.
+fn engine_refusal(engine: &str, enabled: &[String], code_engine_granted: bool) -> Option<String> {
+    if !enabled.iter().any(|id| id == engine) {
+        return Some(format!(
+            "the owner has not enabled the {engine} engine, so its vendor relay is closed"
+        ));
+    }
+    if !code_engine_granted {
+        return Some("this agent's role may not run coding engines".to_string());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_relay_serves_only_an_enabled_engine_and_an_agent_that_may_run_engines() {
+        let on = vec!["claude".to_string(), "auggie".to_string()];
+        assert_eq!(engine_refusal("auggie", &on, true), None);
+        assert!(engine_refusal("auggie", &on[..1], true).is_some());
+        assert!(engine_refusal("auggie", &on, false).is_some());
+    }
+
     use super::*;
 
     fn secret(json: &str) -> SecretString {
