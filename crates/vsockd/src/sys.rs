@@ -81,6 +81,96 @@ pub fn poll_readable(listener: &apz_uds::UnixListener, timeout_ms: i32) -> io::R
     }
 }
 
+/// A handle that [`wait_readable`] can watch: a file descriptor on Unix, a socket on Windows.
+#[cfg(unix)]
+pub type RawHandle = std::os::fd::RawFd;
+/// A handle that [`wait_readable`] can watch: a file descriptor on Unix, a socket on Windows.
+#[cfg(windows)]
+pub type RawHandle = std::os::windows::io::RawSocket;
+
+/// The `timeout` argument of `poll`/`WSAPoll` in milliseconds: `-1` (no limit) for `None`, capped at `i32::MAX`.
+fn timeout_millis(timeout: Option<std::time::Duration>) -> i32 {
+    match timeout {
+        None => -1,
+        Some(dur) => dur.as_millis().min(i32::MAX as u128) as i32,
+    }
+}
+
+/// Waits until one of `handles` is readable (or has hung up / errored), at most `timeout` (`None` waits without
+/// limit). Returns one bool per handle, in order; all false on a timeout.
+#[cfg(unix)]
+pub fn wait_readable(
+    handles: &[RawHandle],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    if handles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let timeout_ms = timeout_millis(timeout);
+    let mut pollfds: Vec<libc::pollfd> = handles
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    loop {
+        // SAFETY: `pollfds` holds one initialised entry per handle, and the vector stays alive and unmoved for the
+        // call; `poll` may modify each `revents` in place and nothing else.
+        let ret = unsafe {
+            libc::poll(
+                pollfds.as_mut_ptr(),
+                pollfds.len() as libc::nfds_t,
+                timeout_ms,
+            )
+        };
+        if ret >= 0 {
+            break;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    Ok(pollfds.iter().map(|p| p.revents != 0).collect())
+}
+
+/// Waits until one of `handles` is readable (or has hung up / errored), at most `timeout` (`None` waits without
+/// limit). Returns one bool per handle, in order; all false on a timeout. Uses `WSAPoll` on the sockets.
+#[cfg(windows)]
+pub fn wait_readable(
+    handles: &[RawHandle],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<Vec<bool>> {
+    use windows_sys::Win32::Networking::WinSock::{
+        POLLRDNORM, SOCKET, WSAGetLastError, WSAPOLLFD, WSAPoll,
+    };
+
+    if handles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let timeout_ms = timeout_millis(timeout);
+    let mut pollfds: Vec<WSAPOLLFD> = handles
+        .iter()
+        .map(|&sock| WSAPOLLFD {
+            fd: sock as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        })
+        .collect();
+    // SAFETY: `pollfds` holds one initialised entry per handle, and the vector stays alive and unmoved for the
+    // call; `WSAPoll` may modify each `revents` in place and nothing else.
+    let ret = unsafe { WSAPoll(pollfds.as_mut_ptr(), pollfds.len() as u32, timeout_ms) };
+    if ret < 0 {
+        // SAFETY: `WSAGetLastError` takes no arguments and only reads the
+        // calling thread's last Winsock error.
+        let code = unsafe { WSAGetLastError() };
+        return Err(io::Error::from_raw_os_error(code));
+    }
+    Ok(pollfds.iter().map(|p| p.revents != 0).collect())
+}
+
 /// Asks the process to stop on `SIGTERM`/`SIGINT`.
 ///
 /// The handler only sets [`SHUTDOWN`] (the async-signal-safe thing to do); the

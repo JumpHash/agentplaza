@@ -27,6 +27,8 @@ mod hub;
 mod serve;
 #[cfg(any(target_os = "linux", windows))]
 mod sys;
+#[cfg(any(target_os = "linux", windows))]
+mod waker;
 
 use std::process::ExitCode;
 
