@@ -106,9 +106,104 @@ impl TailSampler {
 
     /// Why to keep `t`, or `None` to drop it. `open` says whether the agent is open in a console right now.
     pub fn decide(&mut self, t: &Trace, open: bool) -> Option<Keep> {
-        let _ = (t, open);
-        todo!(
-            "check error, open, slow (p95 of role before recording this one), sampled; keep_all -> Sampled for the rest; then record dur into the role histogram"
-        )
+        let keep = if !t.ok {
+            Some(Keep::Error)
+        } else if open {
+            Some(Keep::Open)
+        } else {
+            // The turn is judged against the earlier turns of its role, so it is recorded only afterwards.
+            let hist = self.roles.entry(t.role.clone()).or_default();
+            let slow = hist.count >= 20 && hist.quantile(0.95).is_some_and(|p95| t.dur_ms > p95);
+            if slow {
+                Some(Keep::Slow)
+            } else if self.keep_all {
+                Some(Keep::Sampled)
+            } else {
+                self.roll()
+            }
+        };
+        self.roles
+            .entry(t.role.clone())
+            .or_default()
+            .record(t.dur_ms);
+        keep
+    }
+
+    /// One xorshift step; keeps the turn at random with the sample rate.
+    fn roll(&mut self) -> Option<Keep> {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        if x % 10_000 < (SAMPLE_RATE * 10_000.0) as u64 {
+            Some(Keep::Sampled)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(role: &str, dur_ms: f64, ok: bool) -> Trace {
+        Trace {
+            id: format!("{role}-{dur_ms}"),
+            cid: 1,
+            role: role.to_string(),
+            start_ms: 0,
+            dur_ms,
+            ok,
+            spans: Vec::new(),
+            kept: None,
+        }
+    }
+
+    #[test]
+    fn an_error_or_an_open_agent_turn_is_always_kept() {
+        let mut sampler = TailSampler::new(7);
+        assert_eq!(
+            sampler.decide(&turn("worker", 10.0, false), false),
+            Some(Keep::Error)
+        );
+        assert_eq!(
+            sampler.decide(&turn("worker", 10.0, false), true),
+            Some(Keep::Error)
+        );
+        assert_eq!(
+            sampler.decide(&turn("worker", 10.0, true), true),
+            Some(Keep::Open)
+        );
+        for _ in 0..100 {
+            assert!(
+                sampler
+                    .decide(&turn("worker", 10.0, false), false)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn a_slow_turn_after_warm_up_is_kept_and_about_one_percent_of_ordinary_turns_are_sampled() {
+        let mut sampler = TailSampler::new(7);
+        for i in 0..100 {
+            let dur = 1000.0 + (i % 5) as f64 * 10.0;
+            sampler.decide(&turn("worker", dur, true), false);
+        }
+        assert_eq!(
+            sampler.decide(&turn("worker", 5000.0, true), false),
+            Some(Keep::Slow)
+        );
+
+        let mut sampler = TailSampler::new(7);
+        let sampled = (0..10_000)
+            .filter(|_| sampler.decide(&turn("worker", 1000.0, true), false) == Some(Keep::Sampled))
+            .count();
+        assert!(
+            (30..=300).contains(&sampled),
+            "sampled {sampled} of 10000 ordinary turns, expected about 1 percent"
+        );
     }
 }
