@@ -21,18 +21,25 @@
 
 //! Single-VM build and boot orchestration.
 
+use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::devices::legacy::SerialDevice;
+use crate::control::DeviceGate;
+use crate::devices::legacy::{SerialDevice, SerialOut};
+use crate::devices::virtio::VirtioError;
+use crate::devices::virtio::mmio::{MmioDeviceState, VirtioDevice, VirtioMmioTransport};
 use crate::devices::virtio::vsock::Vsock;
 use crate::devices::virtio::vsock::unix::VsockUnixBackend;
 use crate::spawner::{SpawnError, VmRuntime, VmSpec};
+use crate::vstate::memory::GuestMemoryMmap;
+use crate::vstate::snapshot::{MEMORY_FILE, SerialRegisters, SnapshotError, VmSnapshot};
 use crate::vstate::vm::KvmVm;
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
@@ -87,9 +94,13 @@ fn jail_the_vm(spec: &VmSpec, id: u32) -> Result<(), crate::jail::jailer::Jailer
     let base = jailer::default_base(uds_dir);
 
     let mut plan = Jailer::new(jailer::root_for(&base, id));
-    plan.bind(&spec.kernel, Access::ReadOnly);
-    if let Some(initrd) = spec.initrd.as_ref() {
-        plan.bind(initrd, Access::ReadOnly);
+    // A restore loads no kernel and no initrd (its spec's paths are unused, and may be empty), so
+    // it binds neither: the memory it maps is opened before the jail, like the kernel is in a boot.
+    if spec.restore.is_none() {
+        plan.bind(&spec.kernel, Access::ReadOnly);
+        if let Some(initrd) = spec.initrd.as_ref() {
+            plan.bind(initrd, Access::ReadOnly);
+        }
     }
     if let Some(workspace) = spec.workspace.as_ref() {
         // The one writable source in the whole jail (invariant 3).
@@ -346,10 +357,15 @@ fn start_exit_watcher<D: Send + 'static>(
 /// ports, and the stop control), and is what the thread actually trusts: an
 /// event fd count the watcher consumed first is invisible to a level-triggered
 /// `epoll_wait`, so the flag - not the wakeup - is the source of truth.
+///
+/// `gate` is the VM's device gate: the thread holds its read half for each
+/// processing pass, so a snapshot holding the write half freezes it (see
+/// [`crate::control`]).
 fn start_vsock_event_thread(
     exit_evt: &EventFd,
     exit_signalled: &Arc<AtomicBool>,
     device: Arc<Mutex<Vsock<VsockUnixBackend>>>,
+    gate: &DeviceGate,
     runtime: &Arc<VmRuntime>,
 ) -> io::Result<()> {
     let exit_evt = exit_evt.try_clone()?;
@@ -358,6 +374,7 @@ fn start_vsock_event_thread(
         device,
         exit_evt,
         exit_signalled,
+        Arc::clone(gate),
         runtime.id,
     )?;
     runtime.add_thread(handle);
@@ -373,6 +390,149 @@ fn set_serial_input_hook(runtime: &Arc<VmRuntime>, serial: &Arc<Mutex<SerialDevi
         }
         None => Err("the VM has stopped".to_string()),
     });
+}
+
+/// The machine a VM is built from, as a restore compares it with its snapshot.
+/// The vsock CID and the workspace path are not part of it: a restore may name
+/// another CID and a copy of the volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MachineShape {
+    vcpus: u8,
+    memory_mib: usize,
+    vsock: bool,
+    workspace: bool,
+    balloon: bool,
+}
+
+/// Whether this backend builds a balloon. `aarch64` does not yet: its boot says
+/// so and gives the VM all of its memory, so a spec's balloon is not part of the
+/// machine there, and a snapshot never has one.
+const BALLOON_BUILT: bool = cfg!(target_arch = "x86_64");
+
+impl MachineShape {
+    fn of_spec(spec: &VmSpec) -> Self {
+        Self {
+            vcpus: spec.vcpus,
+            memory_mib: spec.memory_mib,
+            vsock: spec.vsock.is_some(),
+            workspace: spec.workspace.is_some(),
+            balloon: BALLOON_BUILT && spec.balloon.is_some(),
+        }
+    }
+
+    fn of_snapshot(snapshot: &VmSnapshot) -> Self {
+        Self {
+            vcpus: snapshot.meta.vcpus,
+            memory_mib: snapshot.meta.memory_mib,
+            vsock: snapshot.devices.vsock.is_some(),
+            workspace: snapshot.devices.workspace.is_some(),
+            balloon: snapshot.devices.balloon.is_some(),
+        }
+    }
+}
+
+/// Refuses a snapshot whose machine is not the one the spec describes, naming
+/// every difference. It runs before anything is built, so a refused restore
+/// leaves no device, thread or file behind.
+fn check_restore_shape(spec: MachineShape, snapshot: MachineShape) -> Result<(), SnapshotError> {
+    let mut differences = Vec::new();
+    if spec.vcpus != snapshot.vcpus {
+        differences.push(format!(
+            "vCPUs: the spec has {}, the snapshot {}",
+            spec.vcpus, snapshot.vcpus
+        ));
+    }
+    if spec.memory_mib != snapshot.memory_mib {
+        differences.push(format!(
+            "memory: the spec has {} MiB, the snapshot {} MiB",
+            spec.memory_mib, snapshot.memory_mib
+        ));
+    }
+    let devices = [
+        ("vsock", spec.vsock, snapshot.vsock),
+        ("workspace", spec.workspace, snapshot.workspace),
+        ("balloon", spec.balloon, snapshot.balloon),
+    ];
+    for (name, wanted, saved) in devices {
+        if wanted != saved {
+            differences.push(format!(
+                "{name}: the spec {}, the snapshot {}",
+                describe_device(wanted),
+                describe_device(saved)
+            ));
+        }
+    }
+    if differences.is_empty() {
+        Ok(())
+    } else {
+        Err(SnapshotError::Mismatch(differences.join("; ")))
+    }
+}
+
+fn describe_device(present: bool) -> &'static str {
+    if present { "has it" } else { "lacks it" }
+}
+
+/// The error of a KVM or device state that did not restore.
+fn state_error(err: impl std::fmt::Display) -> SnapshotError {
+    SnapshotError::State(err.to_string())
+}
+
+/// Opens a snapshot's memory file for a restore. The restored VM keeps it open
+/// for its whole life: its snapshot control reflinks it for the next snapshot.
+fn open_memory(dir: &Path) -> Result<File, SnapshotError> {
+    let path = dir.join(MEMORY_FILE);
+    File::open(&path).map_err(|source| SnapshotError::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+/// The serial console rebuilt from its saved UART registers (vm-superio's
+/// `Serial::from_state`). The interrupt trigger and the buffer-ready event are
+/// fresh: they are the VM's to register, not part of the snapshot.
+fn restore_serial(state: &SerialRegisters, out: SerialOut) -> Result<SerialDevice, SnapshotError> {
+    use crate::devices::legacy::EventFdTrigger;
+    use crate::devices::legacy::serial::SerialEventsWrapper;
+
+    let fresh_fd = || {
+        crate::pal::eventfd::EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)
+            .map_err(|err| SnapshotError::State(format!("the serial console: {err}")))
+    };
+    let state = vm_superio::serial::SerialState {
+        baud_divisor_low: state.baud_divisor_low,
+        baud_divisor_high: state.baud_divisor_high,
+        interrupt_enable: state.interrupt_enable,
+        interrupt_identification: state.interrupt_identification,
+        line_control: state.line_control,
+        line_status: state.line_status,
+        modem_control: state.modem_control,
+        modem_status: state.modem_status,
+        scratch: state.scratch,
+        in_buffer: state.in_buffer.clone(),
+    };
+    let events = SerialEventsWrapper {
+        buffer_ready_event_fd: Some(EventFdTrigger::new(fresh_fd()?)),
+    };
+    let serial =
+        vm_superio::Serial::from_state(&state, EventFdTrigger::new(fresh_fd()?), events, out)
+            .map_err(|err| SnapshotError::State(format!("the serial console: {err:?}")))?;
+    Ok(SerialDevice { serial })
+}
+
+/// A virtio-mmio transport for `device`: a new one for a boot, or one rebuilt
+/// from the snapshot's `state` for a restore (its registers, its queues and,
+/// once the driver had brought the device up, its activation and its state).
+fn transport(
+    device: Box<dyn VirtioDevice>,
+    mem: GuestMemoryMmap,
+    irq: EventFd,
+    state: Option<&MmioDeviceState>,
+) -> Result<VirtioMmioTransport, VirtioError> {
+    Ok(match state {
+        Some(state) => VirtioMmioTransport::restore(device, mem, irq, state)?,
+        None => VirtioMmioTransport::new(device, mem, irq),
+    })
 }
 
 /// Blocks until `evt` is signalled.
@@ -519,13 +679,107 @@ mod tests {
             guest_cmdline("console=ttyS0", false, false, false)
         );
     }
+
+    /// A restore is refused before anything is built when the spec's machine is
+    /// not the snapshot's: the vCPU count, the memory, or which devices there
+    /// are. A different vsock CID is not a difference.
+    #[test]
+    fn a_restore_refuses_a_machine_the_snapshot_was_not_taken_from() {
+        use super::{MachineShape, SnapshotError, check_restore_shape};
+
+        let saved = MachineShape {
+            vcpus: 2,
+            memory_mib: 256,
+            vsock: true,
+            workspace: true,
+            balloon: false,
+        };
+        check_restore_shape(saved, saved).expect("the same machine restores");
+
+        for spec in [
+            MachineShape { vcpus: 1, ..saved },
+            MachineShape {
+                memory_mib: 512,
+                ..saved
+            },
+            MachineShape {
+                vsock: false,
+                ..saved
+            },
+            MachineShape {
+                workspace: false,
+                ..saved
+            },
+            MachineShape {
+                balloon: true,
+                ..saved
+            },
+        ] {
+            assert!(
+                matches!(
+                    check_restore_shape(spec, saved),
+                    Err(SnapshotError::Mismatch(_))
+                ),
+                "{spec:?} must not restore {saved:?}"
+            );
+        }
+
+        // Every difference is named, not only the first.
+        let err = check_restore_shape(
+            MachineShape {
+                vcpus: 1,
+                vsock: false,
+                ..saved
+            },
+            saved,
+        )
+        .expect_err("two differences");
+        let text = err.to_string();
+        assert!(text.contains("vCPUs") && text.contains("vsock"), "{text}");
+    }
+
+    /// The serial console comes back with the registers it was saved with,
+    /// including the input it had not yet handed to the guest.
+    #[test]
+    fn the_serial_console_is_rebuilt_from_its_registers() {
+        use super::{SerialOut, restore_serial};
+        use crate::devices::legacy::SerialDevice;
+        use crate::devices::legacy::serial::RawIOHandler;
+        use crate::vstate::snapshot::SerialRegisters;
+        use std::sync::{Arc, Mutex};
+
+        let out = || SerialOut::shared(Arc::new(Mutex::new(Vec::new())));
+        let mut serial = SerialDevice::new(out()).expect("a serial console");
+        serial.serial.raw_input(b"abc").expect("input");
+        let state = serial.serial.state();
+        let registers = SerialRegisters {
+            baud_divisor_low: state.baud_divisor_low,
+            baud_divisor_high: state.baud_divisor_high,
+            interrupt_enable: state.interrupt_enable,
+            interrupt_identification: state.interrupt_identification,
+            line_control: state.line_control,
+            line_status: state.line_status,
+            modem_control: state.modem_control,
+            modem_status: state.modem_status,
+            scratch: state.scratch,
+            in_buffer: state.in_buffer.clone(),
+        };
+        assert_eq!(registers.in_buffer, b"abc");
+
+        let restored = restore_serial(&registers, out()).expect("the console restores");
+        let back = restored.serial.state();
+        assert_eq!(back.in_buffer, state.in_buffer);
+        assert_eq!(back.line_status, state.line_status);
+        assert_eq!(back.interrupt_enable, state.interrupt_enable);
+    }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod x86_64 {
     use std::fs::File;
     use std::io;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
     use linux_loader::loader::Cmdline;
     use vmm_sys_util::eventfd::EventFd;
@@ -538,6 +792,7 @@ mod x86_64 {
         ConfigurationError, InitrdConfig, InitrdError, arch_memory_regions,
         configure_system_for_boot, load_kernel,
     };
+    use crate::control::{DeviceGate, InProcessControl, VmDevices};
     use crate::devices::legacy::{
         I8042Device, PM1_CNT_SIZE, Pm1CntDevice, SLEEP_CONTROL_PORT, SerialDevice, SerialOut,
     };
@@ -551,7 +806,9 @@ mod x86_64 {
     use crate::devices::virtio::vsock::unix::VsockUnixBackend;
     use crate::spawner::{SpawnError, VmRuntime, VmSpec};
     use crate::vstate::kvm::{Kvm, KvmError};
-    use crate::vstate::memory::{MemoryError, anonymous, mib_to_bytes};
+    use crate::vstate::memory::{MemoryError, anonymous, map_private, mib_to_bytes};
+    use crate::vstate::snapshot::{DeviceStates, SnapshotError, VmSnapshot, read_state};
+    use crate::vstate::vcpu::Vcpu;
     use crate::vstate::vm::{KvmVm, StartVcpusError, VmError};
 
     /// Serial port 1 (`COM1`): data register base and register window.
@@ -631,11 +888,35 @@ mod x86_64 {
         /// Failed to enter the jailer's per-VM root: {0}
         #[error("failed to enter the jail: {0}")]
         Jail(#[from] crate::jail::jailer::JailerError),
+        /// Failed to restore the VM from a snapshot: {0}
+        #[error("snapshot: {0}")]
+        Snapshot(#[from] SnapshotError),
     }
 
-    /// Builds and boots the VM, leaving its vCPUs running.
+    /// The VM's devices. A boot builds them new; a restore rebuilds each one from
+    /// its state in the snapshot.
+    struct Devices {
+        serial: Arc<Mutex<SerialDevice>>,
+        /// Never read here: the bus holds these weakly, so this strong handle is
+        /// what keeps them alive for the VM's life.
+        #[allow(dead_code)]
+        i8042: Arc<Mutex<I8042Device>>,
+        /// Kept alive the same way as `i8042`.
+        #[allow(dead_code)]
+        pm1: Arc<Mutex<Pm1CntDevice>>,
+        vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
+        workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
+        balloon: Option<Arc<Mutex<VirtioMmioTransport>>>,
+    }
+
+    /// Builds and boots the VM, leaving its vCPUs running; or, with
+    /// `spec.restore`, restores it from that snapshot and leaves it running.
     pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-        boot_inner(spec, &runtime).map_err(SpawnError::backend)
+        match &spec.restore {
+            Some(dir) => restore_inner(spec, dir, &runtime),
+            None => boot_inner(spec, &runtime),
+        }
+        .map_err(SpawnError::backend)
     }
 
     /// Guest memory: one region per architectural region (x86_64 splits the
@@ -657,14 +938,133 @@ mod x86_64 {
         // thread exists (see `jail_the_vm` and `crate::jail::jailer`).
         super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
 
-        // The guest's only devices: the serial console and the i8042
-        // controller (which emulates just enough to reset the machine), plus
-        // the vsock device when the caller asked for one. There is no network
-        // device by design.
-        let serial = Arc::new(Mutex::new(
-            SerialDevice::new(SerialOut::shared(Arc::clone(&runtime.serial)))
-                .map_err(BootError::Serial)?,
-        ));
+        let gate: DeviceGate = Arc::new(RwLock::new(()));
+        let devices = build_devices(&vm, spec, runtime, &gate, None)?;
+
+        // Load the kernel (ELF first, bzImage fallback), the optional initrd,
+        // and write the boot parameters into guest memory.
+        let kernel = File::open(&spec.kernel).map_err(|source| BootError::Kernel {
+            path: spec.kernel.clone(),
+            source,
+        })?;
+        let entry_point = load_kernel(&kernel, vm.guest_memory()).map_err(BootError::from)?;
+        let initrd = match &spec.initrd {
+            Some(path) => {
+                let file = File::open(path).map_err(|source| BootError::Initrd {
+                    path: path.clone(),
+                    source,
+                })?;
+                Some(InitrdConfig::from_file(vm.guest_memory(), file)?)
+            }
+            None => None,
+        };
+        let cmdline = Cmdline::try_from(
+            super::guest_cmdline(
+                &spec.cmdline,
+                spec.vsock.is_some(),
+                spec.workspace.is_some(),
+                spec.balloon.is_some(),
+            )
+            .as_str(),
+            CMDLINE_MAX_SIZE,
+        )?;
+        configure_system_for_boot(
+            vm.kvm(),
+            &vm,
+            &mut vcpus,
+            spec.vcpus,
+            false,
+            entry_point,
+            &initrd,
+            cmdline,
+        )
+        .map_err(BootError::from)?;
+
+        let vm = Arc::new(vm);
+        install_control(&vm, runtime, spec, &gate, &devices, None);
+        run_vm(vm, runtime, devices, vcpus)
+    }
+
+    /// Restores the VM from the snapshot in `dir` (see `VmSpec::restore`). Nothing
+    /// is loaded: the guest's kernel, command line and boot parameters are in its
+    /// memory already. The memory is mapped privately from the snapshot's file,
+    /// the devices are rebuilt from their saved state, and the VM and its vCPUs
+    /// get their saved state back before anything runs.
+    fn restore_inner(spec: &VmSpec, dir: &Path, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+        let snapshot = read_state(dir)?;
+        super::check_restore_shape(
+            super::MachineShape::of_spec(spec),
+            super::MachineShape::of_snapshot(&snapshot),
+        )?;
+        check_vcpu_states(spec, &snapshot)?;
+
+        let memory = super::open_memory(dir)?;
+        let guest_regions =
+            map_private(&memory, &snapshot.meta.regions).map_err(BootError::from)?;
+
+        let kvm = Kvm::new().map_err(BootError::from)?;
+        let mut vm = KvmVm::new(kvm).map_err(BootError::from)?;
+        let vcpus = vm.create_vcpus(spec.vcpus).map_err(BootError::from)?;
+        vm.register_dram_memory_regions(guest_regions)
+            .map_err(BootError::from)?;
+
+        super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
+
+        let gate: DeviceGate = Arc::new(RwLock::new(()));
+        let devices = build_devices(&vm, spec, runtime, &gate, Some(&snapshot.devices))?;
+
+        // The VM's state (the irqchip, the PIT and the clock), then each vCPU's.
+        vm.restore_state(&snapshot.vm)
+            .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
+        for (vcpu, state) in vcpus.iter().zip(&snapshot.vcpus) {
+            vcpu.kvm_vcpu
+                .restore_state(state)
+                .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
+        }
+        if let Some(vsock) = &devices.vsock {
+            vsock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .on_restored()?;
+        }
+
+        let vm = Arc::new(vm);
+        install_control(&vm, runtime, spec, &gate, &devices, Some(memory));
+        run_vm(vm, runtime, devices, vcpus)
+    }
+
+    /// Refuses a snapshot whose vCPU states do not match its vCPU count.
+    fn check_vcpu_states(spec: &VmSpec, snapshot: &VmSnapshot) -> Result<(), SnapshotError> {
+        if snapshot.vcpus.len() == usize::from(spec.vcpus) {
+            return Ok(());
+        }
+        Err(SnapshotError::Mismatch(format!(
+            "vCPUs: the snapshot holds {} vCPU states for {} vCPUs",
+            snapshot.vcpus.len(),
+            snapshot.meta.vcpus
+        )))
+    }
+
+    /// Builds the VM's devices and wires them to its buses. A boot (`restored` is
+    /// `None`) builds each one new; a restore rebuilds each transport from the
+    /// snapshot's state. The serial console, the i8042 and the PM1 device are the
+    /// same either way. The devices are owned by the caller until
+    /// [`run_vm`] hands them to the exit watcher.
+    fn build_devices(
+        vm: &KvmVm,
+        spec: &VmSpec,
+        runtime: &Arc<VmRuntime>,
+        gate: &DeviceGate,
+        restored: Option<&DeviceStates>,
+    ) -> Result<Devices, BootError> {
+        // The guest's only legacy devices: the serial console and the i8042
+        // controller (which emulates just enough to reset the machine). There is
+        // no network device by design.
+        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial = Arc::new(Mutex::new(match restored {
+            Some(states) => super::restore_serial(&states.serial, serial_out)?,
+            None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,
+        }));
         let reset_evt = vm
             .vcpus_exit_evt()
             .try_clone()
@@ -719,7 +1119,9 @@ mod x86_64 {
         // the guest is started, instead of leaving it unreachable. (A CID
         // outside `MIN_GUEST_CID..=MAX_GUEST_CID` is refused even earlier, by
         // the spawner, before any device is built.) Its ring processing runs
-        // on a dedicated event thread, never on the vCPU thread.
+        // on a dedicated event thread, never on the vCPU thread. A restore keeps
+        // the same window and interrupt, but the backend is new: it carries the
+        // spec's CID and socket.
         let vsock = match &spec.vsock {
             Some(config) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
@@ -740,14 +1142,16 @@ mod x86_64 {
                     vm.vcpus_exit_evt(),
                     vm.exit_signalled(),
                     Arc::clone(&device),
+                    gate,
                     runtime,
                 )
                 .map_err(BootError::EventFd)?;
-                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
+                let transport = Arc::new(Mutex::new(super::transport(
                     Box::new(VsockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
                     irq,
-                )));
+                    restored.and_then(|states| states.vsock.as_ref()),
+                )?));
                 vm.common
                     .mmio_bus
                     .insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
@@ -771,11 +1175,12 @@ mod x86_64 {
                 let device = VirtioBlock::new(image)
                     .map_err(VirtioError::from)
                     .map_err(BootError::Virtio)?;
-                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
+                let transport = Arc::new(Mutex::new(super::transport(
                     Box::new(BlockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
                     irq,
-                )));
+                    restored.and_then(|states| states.workspace.as_ref()),
+                )?));
                 vm.common
                     .mmio_bus
                     .insert(transport.clone(), WORKSPACE_MMIO_START, MMIO_LEN)?;
@@ -794,11 +1199,12 @@ mod x86_64 {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
                 vm.register_irq(&irq, BALLOON_GSI).map_err(BootError::Irq)?;
                 let shared = SharedBalloon::new(VirtioBalloon::new());
-                let transport = VirtioMmioTransport::new(
+                let transport = super::transport(
                     Box::new(shared.clone()),
                     vm.guest_memory().clone(),
                     irq,
-                );
+                    restored.and_then(|states| states.balloon.as_ref()),
+                )?;
                 shared.set_interrupt_status(transport.interrupt_status_handle());
                 let transport = Arc::new(Mutex::new(transport));
                 vm.common
@@ -819,60 +1225,57 @@ mod x86_64 {
         // guest that is gone.
         super::set_serial_input_hook(runtime, &serial);
 
-        // The bus only holds weak references: the VM must own strong handles
-        // to its devices for as long as it runs. They are moved into the exit
-        // watcher below, which is the VM's last thread — so the devices live
-        // exactly as long as the VM does.
-        let legacy_devices = (serial, i8042, pm1, vsock, workspace, balloon);
+        Ok(Devices {
+            serial,
+            i8042,
+            pm1,
+            vsock,
+            workspace,
+            balloon,
+        })
+    }
 
-        // Load the kernel (ELF first, bzImage fallback), the optional initrd,
-        // and write the boot parameters into guest memory.
-        let kernel = File::open(&spec.kernel).map_err(|source| BootError::Kernel {
-            path: spec.kernel.clone(),
-            source,
-        })?;
-        let entry_point = load_kernel(&kernel, vm.guest_memory()).map_err(BootError::from)?;
-        let initrd = match &spec.initrd {
-            Some(path) => {
-                let file = File::open(path).map_err(|source| BootError::Initrd {
-                    path: path.clone(),
-                    source,
-                })?;
-                Some(InitrdConfig::from_file(vm.guest_memory(), file)?)
-            }
-            None => None,
+    /// Installs the VM's snapshot control: weak handles on the VM and its
+    /// devices (the exit watcher owns them), the device gate, and, for a restored
+    /// VM, the memory file it was restored from. Called before the devices move
+    /// into the watcher.
+    fn install_control(
+        vm: &Arc<KvmVm>,
+        runtime: &Arc<VmRuntime>,
+        spec: &VmSpec,
+        gate: &DeviceGate,
+        devices: &Devices,
+        restored_from: Option<File>,
+    ) {
+        let devices = VmDevices {
+            serial: Arc::downgrade(&devices.serial),
+            vsock: devices.vsock.as_ref().map(Arc::downgrade),
+            workspace: devices.workspace.as_ref().map(Arc::downgrade),
+            balloon: devices.balloon.as_ref().map(Arc::downgrade),
         };
-        let cmdline = Cmdline::try_from(
-            super::guest_cmdline(
-                &spec.cmdline,
-                spec.vsock.is_some(),
-                spec.workspace.is_some(),
-                spec.balloon.is_some(),
-            )
-            .as_str(),
-            CMDLINE_MAX_SIZE,
-        )?;
-        configure_system_for_boot(
-            vm.kvm(),
-            &vm,
-            &mut vcpus,
+        runtime.set_vm_control(Arc::new(InProcessControl::new(
+            Arc::downgrade(vm),
+            devices,
+            Arc::clone(gate),
             spec.vcpus,
-            false,
-            entry_point,
-            &initrd,
-            cmdline,
-        )
-        .map_err(BootError::from)?;
+            spec.memory_mib,
+            restored_from,
+        )));
+    }
 
-        // The exit watcher goes in before the vCPUs start: it is the VM's last
-        // thread (the one the spawner joins) and it owns the stop control, so
-        // whichever vCPU stops the VM - guest shutdown or reset, a vCPU
-        // fault, or the i8042 reset port - writes `vcpus_exit_evt` and the
-        // watcher stops and joins the vCPU threads, then drops the devices.
-        // It only polls the event fd until then, so it does not need the vCPUs
-        // to exist yet.
-        let vm = Arc::new(vm);
-        super::start_exit_watcher(Arc::clone(&vm), runtime, legacy_devices)
+    /// The last steps of a boot or a restore: the exit watcher goes in before the
+    /// vCPUs start (it is the VM's last thread, owns the stop control and the
+    /// devices), then the vCPUs start. A failed start is stopped and joined here,
+    /// before the caller's VM and its memory can be freed.
+    fn run_vm(
+        vm: Arc<KvmVm>,
+        runtime: &Arc<VmRuntime>,
+        devices: Devices,
+        vcpus: Vec<Vcpu>,
+    ) -> Result<(), BootError> {
+        // The watcher only polls the event fd until the guest (or a fault) stops
+        // the VM, so it does not need the vCPUs to exist yet.
+        super::start_exit_watcher(Arc::clone(&vm), runtime, devices)
             .map_err(BootError::WaitExitEvent)?;
 
         if let Err(err) = vm.start_vcpus(vcpus) {
@@ -898,12 +1301,15 @@ mod x86_64 {
 /// The order differs from x86_64 in one important way: the in-kernel vGIC must
 /// be created *after* the vCPUs exist (`KVM_CREATE_VCPU` fails once the irqchip
 /// is initialized on arm64), which `KvmVm::arch_post_create_vcpus` takes care
-/// of inside `create_vcpus`.
+/// of inside `create_vcpus`. A restore has the same constraint in reverse: each
+/// vCPU is initialized by its own state restore before the GIC's state, which
+/// is keyed by the vCPUs' MPIDRs, is put back.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 mod aarch64 {
     use std::fs::File;
     use std::io;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
     use linux_loader::loader::Cmdline;
     use vmm_sys_util::eventfd::EventFd;
@@ -917,6 +1323,7 @@ mod aarch64 {
         ConfigurationError, InitrdConfig, InitrdError, SerialFdtInfo, VirtioMmioFdtInfo,
         arch_memory_regions, configure_system_for_boot, load_kernel,
     };
+    use crate::control::{DeviceGate, InProcessControl, VmDevices};
     use crate::devices::legacy::{SerialDevice, SerialOut};
     use crate::devices::virtio::VirtioError;
     use crate::devices::virtio::block::device::VirtioBlock;
@@ -927,7 +1334,9 @@ mod aarch64 {
     use crate::devices::virtio::vsock::unix::VsockUnixBackend;
     use crate::spawner::{GicVersion, SpawnError, VmRuntime, VmSpec};
     use crate::vstate::kvm::{Kvm, KvmError};
-    use crate::vstate::memory::{MemoryError, anonymous, mib_to_bytes};
+    use crate::vstate::memory::{MemoryError, anonymous, map_private, mib_to_bytes};
+    use crate::vstate::snapshot::{DeviceStates, SnapshotError, VmSnapshot, read_state};
+    use crate::vstate::vcpu::Vcpu;
     use crate::vstate::vm::{KvmVm, StartVcpusError, VmError};
 
     /// The guest's only legacy device is the serial console, so it takes the
@@ -997,11 +1406,27 @@ mod aarch64 {
         /// Failed to enter the jailer's per-VM root: {0}
         #[error("failed to enter the jail: {0}")]
         Jail(#[from] crate::jail::jailer::JailerError),
+        /// Failed to restore the VM from a snapshot: {0}
+        #[error("snapshot: {0}")]
+        Snapshot(#[from] SnapshotError),
     }
 
-    /// Builds and boots the VM, leaving its vCPUs running.
+    /// The VM's devices. A boot builds them new; a restore rebuilds each one from
+    /// its state in the snapshot.
+    struct Devices {
+        serial: Arc<Mutex<SerialDevice>>,
+        vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
+        workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
+    }
+
+    /// Builds and boots the VM, leaving its vCPUs running; or, with
+    /// `spec.restore`, restores it from that snapshot and leaves it running.
     pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-        boot_inner(spec, &runtime).map_err(SpawnError::backend)
+        match &spec.restore {
+            Some(dir) => restore_inner(spec, dir, &runtime),
+            None => boot_inner(spec, &runtime),
+        }
+        .map_err(SpawnError::backend)
     }
 
     fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
@@ -1025,131 +1450,20 @@ mod aarch64 {
         // thread exists (see `jail_the_vm` and `crate::jail::jailer`).
         super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
 
-        // The guest's only device: the serial console, on the MMIO bus (there
-        // is no network device by design).
-        let serial = Arc::new(Mutex::new(
-            SerialDevice::new(SerialOut::shared(Arc::clone(&runtime.serial)))
-                .map_err(BootError::Serial)?,
-        ));
-        vm.common
-            .mmio_bus
-            .insert(serial.clone(), SERIAL_MEM_START, MMIO_LEN)?;
-        {
-            let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
-            vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
-                .map_err(BootError::Irq)?;
+        // The balloon is `x86_64` only for now: this backend boots with all of
+        // `memory_mib` and says so.
+        if spec.balloon.is_some() {
+            eprintln!("warning: no balloon on this backend yet; the VM gets all of its memory");
         }
-
-        // The guest's other device, when the caller configured one: the vsock
-        // device, whose transport sits on the MMIO bus at the layout's window
-        // with its interrupt on the layout's GSI (registered as a KVM irqfd,
-        // like the console's). The *userspace* device (the VMM's own muxer,
-        // not the kernel's vhost-vsock) binds `uds_path`, so a taken path
-        // fails the boot here, before the guest is started. (A CID outside
-        // `MIN_GUEST_CID..=MAX_GUEST_CID` is refused even earlier, by the
-        // spawner.) Its ring processing runs on a dedicated event thread,
-        // never on the vCPU thread.
-        let vsock = match &spec.vsock {
-            Some(config) => {
-                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
-                vm.register_irq(&irq, VSOCK_GSI).map_err(BootError::Irq)?;
-                let backend = VsockUnixBackend::new(
-                    config.guest_cid,
-                    config.uds_path.to_string_lossy().into_owned(),
-                )
-                .map_err(VsockError::from)
-                .map_err(VirtioError::from)
-                .map_err(BootError::Virtio)?;
-                let device = Arc::new(Mutex::new(
-                    super::Vsock::new(config.guest_cid, backend)
-                        .map_err(VirtioError::from)
-                        .map_err(BootError::Virtio)?,
-                ));
-                super::start_vsock_event_thread(
-                    vm.vcpus_exit_evt(),
-                    vm.exit_signalled(),
-                    Arc::clone(&device),
-                    runtime,
-                )
-                .map_err(BootError::EventFd)?;
-                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
-                    Box::new(VsockMmioDevice::new(device)),
-                    vm.guest_memory().clone(),
-                    irq,
-                )));
-                vm.common
-                    .mmio_bus
-                    .insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
-                Some(transport)
-            }
-            None => None,
-        };
-
-        // The block device, when the caller configured a workspace volume: a
-        // second virtio-mmio transport in the layout's next MMIO slot, its own
-        // interrupt on the layout's next legacy GSI (registered as a KVM
-        // irqfd, like the console's), and the *writable* volume behind it — the
-        // only writable queue in this port (invariant 3). The device opens the
-        // image read-write here, so a path that does not exist (or is not
-        // writable) fails the boot with the path in the error, before the guest
-        // is started.
-        let workspace = match &spec.workspace {
-            Some(image) => {
-                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
-                vm.register_irq(&irq, WORKSPACE_GSI)
-                    .map_err(BootError::Irq)?;
-                let device = VirtioBlock::new(image)
-                    .map_err(VirtioError::from)
-                    .map_err(BootError::Virtio)?;
-                let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
-                    Box::new(BlockMmioDevice::new(device)),
-                    vm.guest_memory().clone(),
-                    irq,
-                )));
-                vm.common
-                    .mmio_bus
-                    .insert(transport.clone(), WORKSPACE_MMIO_START, MMIO_LEN)?;
-                Some(transport)
-            }
-            None => None,
-        };
+        let gate: DeviceGate = Arc::new(RwLock::new(()));
+        let devices = build_devices(&vm, spec, runtime, &gate, None)?;
 
         // The device tree nodes that tell the guest where the virtio-mmio
         // transports are — the `aarch64` counterpart of the command-line
         // entries the `x86_64` backend appends. They are written with the rest
-        // of the device tree below, after the devices are handed to the
-        // watcher. Each node carries its own window and interrupt.
-        let mut virtio_mmio = Vec::new();
-        if vsock.is_some() {
-            virtio_mmio.push(VirtioMmioFdtInfo {
-                addr: VSOCK_MMIO_START,
-                len: MMIO_LEN,
-                gsi: VSOCK_GSI,
-            });
-        }
-        if workspace.is_some() {
-            virtio_mmio.push(VirtioMmioFdtInfo {
-                addr: WORKSPACE_MMIO_START,
-                len: MMIO_LEN,
-                gsi: WORKSPACE_GSI,
-            });
-        }
-
-        // Host console input (a caller's bytes for the guest to read from its
-        // serial line): installed before the vCPUs start, so it is in place by
-        // the time the spawner hands the VM out. It holds the console weakly,
-        // so input sent after the VM stopped fails instead of being queued for
-        // a guest that is gone.
-        super::set_serial_input_hook(runtime, &serial);
-
-        // The bus only holds weak references: the watcher below keeps the
-        // strong handles, so the devices live exactly as long as the VM.
-        // The balloon is `x86_64` only for now: this backend boots with all
-        // of `memory_mib` and says so.
-        if spec.balloon.is_some() {
-            eprintln!("warning: no balloon on this backend yet; the VM gets all of its memory");
-        }
-        let legacy_devices = (serial, vsock, workspace);
+        // of the device tree below. Each node carries its own window and
+        // interrupt.
+        let virtio_mmio = virtio_mmio_fdt(spec);
 
         // Load the kernel (the PE loader, which covers arm64 `Image` and
         // EFI-stub images alike), the optional initrd, and write the boot
@@ -1179,11 +1493,7 @@ mod aarch64 {
             .as_str(),
             CMDLINE_MAX_SIZE,
         )?;
-        let serial_info = SerialFdtInfo {
-            addr: SERIAL_MEM_START,
-            len: MMIO_LEN,
-            gsi: SERIAL_GSI,
-        };
+        let serial_info = serial_fdt_info();
         configure_system_for_boot(
             &vm,
             &mut vcpus,
@@ -1194,18 +1504,252 @@ mod aarch64 {
             &virtio_mmio,
         )?;
 
-        // The exit watcher goes in before the vCPUs start, exactly as on
-        // x86_64: it owns the stop control and is the thread the spawner
-        // joins, and it only polls the VM's exit event until the guest (or a
-        // fault) stops the VM.
         let vm = Arc::new(vm);
-        super::start_exit_watcher(Arc::clone(&vm), runtime, legacy_devices)
+        install_control(&vm, runtime, spec, &gate, &devices, None);
+        run_vm(vm, runtime, devices, vcpus)
+    }
+
+    /// Restores the VM from the snapshot in `dir` (see `VmSpec::restore`). Nothing
+    /// is loaded: the guest's memory holds its kernel and its device tree already.
+    /// Each vCPU is restored first, which initializes it; the GIC's state is keyed
+    /// by the MPIDRs those vCPUs then have, so it comes back after them.
+    fn restore_inner(spec: &VmSpec, dir: &Path, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+        let snapshot = read_state(dir)?;
+        super::check_restore_shape(
+            super::MachineShape::of_spec(spec),
+            super::MachineShape::of_snapshot(&snapshot),
+        )?;
+        check_vcpu_states(spec, &snapshot)?;
+
+        let memory = super::open_memory(dir)?;
+        let guest_regions = map_private(&memory, &snapshot.meta.regions)?;
+
+        let kvm = Kvm::new()?;
+        let mut vm = KvmVm::new(kvm)?;
+        vm.set_gic_version(gic_version(spec.gic));
+        let mut vcpus = vm.create_vcpus(spec.vcpus)?;
+        vm.register_dram_memory_regions(guest_regions)?;
+
+        super::jail_the_vm(spec, runtime.id).map_err(BootError::from)?;
+
+        let gate: DeviceGate = Arc::new(RwLock::new(()));
+        let devices = build_devices(&vm, spec, runtime, &gate, Some(&snapshot.devices))?;
+
+        for (vcpu, state) in vcpus.iter_mut().zip(&snapshot.vcpus) {
+            vcpu.kvm_vcpu
+                .restore_state(state)
+                .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
+        }
+        let mpidrs: Vec<u64> = snapshot.vcpus.iter().map(|state| state.mpidr).collect();
+        vm.restore_state(&mpidrs, &snapshot.vm)
+            .map_err(|err| BootError::Snapshot(super::state_error(err)))?;
+        if let Some(vsock) = &devices.vsock {
+            vsock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .on_restored()?;
+        }
+
+        let vm = Arc::new(vm);
+        install_control(&vm, runtime, spec, &gate, &devices, Some(memory));
+        run_vm(vm, runtime, devices, vcpus)
+    }
+
+    /// Refuses a snapshot whose vCPU states do not match its vCPU count.
+    fn check_vcpu_states(spec: &VmSpec, snapshot: &VmSnapshot) -> Result<(), SnapshotError> {
+        if snapshot.vcpus.len() == usize::from(spec.vcpus) {
+            return Ok(());
+        }
+        Err(SnapshotError::Mismatch(format!(
+            "vCPUs: the snapshot holds {} vCPU states for {} vCPUs",
+            snapshot.vcpus.len(),
+            snapshot.meta.vcpus
+        )))
+    }
+
+    /// The virtio-mmio transports the device tree describes, one node each.
+    fn virtio_mmio_fdt(spec: &VmSpec) -> Vec<VirtioMmioFdtInfo> {
+        let mut virtio_mmio = Vec::new();
+        if spec.vsock.is_some() {
+            virtio_mmio.push(VirtioMmioFdtInfo {
+                addr: VSOCK_MMIO_START,
+                len: MMIO_LEN,
+                gsi: VSOCK_GSI,
+            });
+        }
+        if spec.workspace.is_some() {
+            virtio_mmio.push(VirtioMmioFdtInfo {
+                addr: WORKSPACE_MMIO_START,
+                len: MMIO_LEN,
+                gsi: WORKSPACE_GSI,
+            });
+        }
+        virtio_mmio
+    }
+
+    fn serial_fdt_info() -> SerialFdtInfo {
+        SerialFdtInfo {
+            addr: SERIAL_MEM_START,
+            len: MMIO_LEN,
+            gsi: SERIAL_GSI,
+        }
+    }
+
+    /// Builds the VM's devices and wires them to its MMIO bus. A boot (`restored`
+    /// is `None`) builds each one new; a restore rebuilds each transport from the
+    /// snapshot's state. The devices are owned by the caller until [`run_vm`]
+    /// hands them to the exit watcher.
+    fn build_devices(
+        vm: &KvmVm,
+        spec: &VmSpec,
+        runtime: &Arc<VmRuntime>,
+        gate: &DeviceGate,
+        restored: Option<&DeviceStates>,
+    ) -> Result<Devices, BootError> {
+        // The guest's only legacy device: the serial console, on the MMIO bus
+        // (there is no network device by design).
+        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial = Arc::new(Mutex::new(match restored {
+            Some(states) => super::restore_serial(&states.serial, serial_out)?,
+            None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,
+        }));
+        vm.common
+            .mmio_bus
+            .insert(serial.clone(), SERIAL_MEM_START, MMIO_LEN)?;
+        {
+            let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
+            vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
+                .map_err(BootError::Irq)?;
+        }
+
+        // The vsock device, when the caller configured one: the transport sits on
+        // the MMIO bus at the layout's window with its interrupt on the layout's
+        // GSI (registered as a KVM irqfd, like the console's). The *userspace*
+        // device (the VMM's own muxer, not the kernel's vhost-vsock) binds
+        // `uds_path`, so a taken path fails the boot here, before the guest is
+        // started. (A CID outside `MIN_GUEST_CID..=MAX_GUEST_CID` is refused even
+        // earlier, by the spawner.) Its ring processing runs on a dedicated event
+        // thread, never on the vCPU thread. A restore keeps the window and the
+        // interrupt, but the backend is new: it carries the spec's CID and socket.
+        let vsock = match &spec.vsock {
+            Some(config) => {
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, VSOCK_GSI).map_err(BootError::Irq)?;
+                let backend = VsockUnixBackend::new(
+                    config.guest_cid,
+                    config.uds_path.to_string_lossy().into_owned(),
+                )
+                .map_err(VsockError::from)
+                .map_err(VirtioError::from)
+                .map_err(BootError::Virtio)?;
+                let device = Arc::new(Mutex::new(
+                    super::Vsock::new(config.guest_cid, backend)
+                        .map_err(VirtioError::from)
+                        .map_err(BootError::Virtio)?,
+                ));
+                super::start_vsock_event_thread(
+                    vm.vcpus_exit_evt(),
+                    vm.exit_signalled(),
+                    Arc::clone(&device),
+                    gate,
+                    runtime,
+                )
+                .map_err(BootError::EventFd)?;
+                let transport = Arc::new(Mutex::new(super::transport(
+                    Box::new(VsockMmioDevice::new(device)),
+                    vm.guest_memory().clone(),
+                    irq,
+                    restored.and_then(|states| states.vsock.as_ref()),
+                )?));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), VSOCK_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
+        // The block device, when the caller configured a workspace volume: a
+        // second virtio-mmio transport in the layout's next MMIO slot, its own
+        // interrupt on the layout's next legacy GSI, and the *writable* volume
+        // behind it — the only writable queue in this port (invariant 3). The
+        // device opens the image read-write here, so a path that does not exist
+        // (or is not writable) fails the boot with the path in the error.
+        let workspace = match &spec.workspace {
+            Some(image) => {
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, WORKSPACE_GSI)
+                    .map_err(BootError::Irq)?;
+                let device = VirtioBlock::new(image)
+                    .map_err(VirtioError::from)
+                    .map_err(BootError::Virtio)?;
+                let transport = Arc::new(Mutex::new(super::transport(
+                    Box::new(BlockMmioDevice::new(device)),
+                    vm.guest_memory().clone(),
+                    irq,
+                    restored.and_then(|states| states.workspace.as_ref()),
+                )?));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), WORKSPACE_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
+        // Host console input: installed before the vCPUs start, held weakly (see
+        // the x86_64 backend).
+        super::set_serial_input_hook(runtime, &serial);
+
+        Ok(Devices {
+            serial,
+            vsock,
+            workspace,
+        })
+    }
+
+    /// Installs the VM's snapshot control (see the x86_64 backend). Called before
+    /// the devices move into the watcher.
+    fn install_control(
+        vm: &Arc<KvmVm>,
+        runtime: &Arc<VmRuntime>,
+        spec: &VmSpec,
+        gate: &DeviceGate,
+        devices: &Devices,
+        restored_from: Option<File>,
+    ) {
+        let devices = VmDevices {
+            serial: Arc::downgrade(&devices.serial),
+            vsock: devices.vsock.as_ref().map(Arc::downgrade),
+            workspace: devices.workspace.as_ref().map(Arc::downgrade),
+            balloon: None,
+        };
+        runtime.set_vm_control(Arc::new(InProcessControl::new(
+            Arc::downgrade(vm),
+            devices,
+            Arc::clone(gate),
+            spec.vcpus,
+            spec.memory_mib,
+            restored_from,
+        )));
+    }
+
+    /// The last steps of a boot or a restore (see the x86_64 backend's `run_vm`).
+    fn run_vm(
+        vm: Arc<KvmVm>,
+        runtime: &Arc<VmRuntime>,
+        devices: Devices,
+        vcpus: Vec<Vcpu>,
+    ) -> Result<(), BootError> {
+        // The watcher only polls the VM's exit event until the guest (or a fault)
+        // stops the VM, so it does not need the vCPUs to exist yet.
+        super::start_exit_watcher(Arc::clone(&vm), runtime, devices)
             .map_err(BootError::WaitExitEvent)?;
 
         if let Err(err) = vm.start_vcpus(vcpus) {
             // Stop and join whatever started before the failure: the caller is
-            // about to free the VM and its guest memory, and a vCPU left
-            // running would fault through memory that is no longer its own.
+            // about to free the VM and its guest memory, and a vCPU left running
+            // would fault through memory that is no longer its own.
             vm.shutdown_vcpus();
             vm.exit_signalled()
                 .store(true, std::sync::atomic::Ordering::SeqCst);

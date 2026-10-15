@@ -28,6 +28,7 @@ use crate::pal::eventfd::EventFd;
 use super::VsockBackend;
 use super::device::{EVQ_INDEX, RXQ_INDEX, TXQ_INDEX, Vsock};
 use super::metrics::{IncMetric, METRICS};
+use crate::control::DeviceGate;
 
 /// Poll-set ids. The queue ids are `RXQ`/`TXQ`/`EVQ`; the backend fd is
 /// registered with [`BACKEND`], the device's activation event with [`ACTIVATE`]
@@ -63,10 +64,18 @@ const EXIT_POLL_TIMEOUT_MS: i32 = 200;
 /// this thread revalidates the fd, the flag - not the event fd - is the source
 /// of truth: it is checked on every iteration of the run loop, so a lost
 /// wakeup costs at most one [`EXIT_POLL_TIMEOUT_MS`].
+///
+/// `gate` is the VM's device gate ([`DeviceGate`]). The thread holds its read
+/// half for each processing pass — from the moment the epoll wait returns until
+/// the events are handled — and never while it waits. A snapshot holds the write
+/// half from before it saves the device state until the memory is written, so
+/// no packet can land between the two; the thread then blocks on the gate, not
+/// on the device lock, and resumes when the snapshot is done.
 pub fn start_event_thread<B>(
     device: Arc<Mutex<Vsock<B>>>,
     exit_evt: EventFd,
     exit_signalled: Arc<AtomicBool>,
+    gate: DeviceGate,
     vm_id: u32,
 ) -> std::io::Result<std::thread::JoinHandle<()>>
 where
@@ -85,7 +94,7 @@ where
                 eprintln!("vsock: cannot arm the seccomp jail: {err}");
                 return;
             }
-            run(device, exit_evt, exit_signalled)
+            run(device, exit_evt, exit_signalled, gate)
         })
 }
 
@@ -186,8 +195,12 @@ fn handle_backend<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSe
     used
 }
 
-fn run<B>(device: Arc<Mutex<Vsock<B>>>, exit_evt: EventFd, exit_signalled: Arc<AtomicBool>)
-where
+fn run<B>(
+    device: Arc<Mutex<Vsock<B>>>,
+    exit_evt: EventFd,
+    exit_signalled: Arc<AtomicBool>,
+    gate: DeviceGate,
+) where
     B: VsockBackend + Debug,
 {
     let epoll = match Epoll::new() {
@@ -241,6 +254,11 @@ where
             return;
         }
 
+        // One processing pass holds the device gate's read half, so a snapshot
+        // that holds the write half sees either all of a pass or none of it.
+        // The guard lives to the end of this iteration; the wait above is not
+        // under it.
+        let _pass = gate.read().unwrap_or_else(PoisonError::into_inner);
         for event in &events[..count] {
             match event.data() {
                 EXIT => return,
@@ -446,6 +464,7 @@ mod tests {
             device,
             exit_evt.try_clone().unwrap(),
             Arc::clone(&exit_signalled),
+            DeviceGate::default(),
             0,
         )
         .expect("the event thread starts");
@@ -473,6 +492,7 @@ mod tests {
             device,
             exit_evt.try_clone().unwrap(),
             Arc::clone(&exit_signalled),
+            DeviceGate::default(),
             0,
         )
         .expect("the event thread starts");
@@ -510,6 +530,7 @@ mod tests {
             Arc::clone(&device),
             exit_evt.try_clone().unwrap(),
             Arc::clone(&exit_signalled),
+            DeviceGate::default(),
             0,
         )
         .expect("the event thread starts");
