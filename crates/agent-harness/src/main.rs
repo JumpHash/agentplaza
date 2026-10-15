@@ -269,12 +269,16 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                     failures,
                     jitter_nanos(),
                 );
-                let _ = writeln!(
-                    out,
-                    "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
-                    delay.as_millis()
-                );
-                let _ = out.flush();
+                // A template waiting for its restore retries every 25 ms: only its first failure
+                // is printed, so the serial console (and the template's memory) is not flooded.
+                if !(config.template && !welcomed) || failures == 1 {
+                    let _ = writeln!(
+                        out,
+                        "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
+                        delay.as_millis()
+                    );
+                    let _ = out.flush();
+                }
                 sleep(delay);
             }
         }
