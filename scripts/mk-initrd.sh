@@ -1275,6 +1275,11 @@ static void lo_up(void)
 int main(void)
 {
     mount("devtmpfs", "/dev", "devtmpfs", 0, "");
+    // PTYs (the IDE's terminals, `script`, anything that calls openpty) need devpts: devtmpfs
+    // gives /dev/ptmx, but its peers live under /dev/pts. The Alpine root's /dev is a recursive
+    // bind of this one, so the agent sees it too.
+    mkdir("/dev/pts", 0755);
+    mount("devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC, "gid=5,mode=620,ptmxmode=666");
     mount("proc", "/proc", "proc", 0, "");
     mount("sysfs", "/sys", "sysfs", 0, "");
     lo_up();
