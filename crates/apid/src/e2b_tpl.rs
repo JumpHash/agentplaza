@@ -284,6 +284,38 @@ pub(crate) fn pinned(snapshot: &str) -> bool {
     e2b::lock(&PINNED).contains_key(snapshot)
 }
 
+/// Pins the base snapshot a build starts from, if a ready build still holds it. Called under the
+/// templates' lock (inside `Templates::edit`), the same lock the orphan cleanup in [`make_ready`] and
+/// template deletion decide under, so between this check and the pin neither can delete it.
+fn pin_held_base(set: &[Template], snapshot: &str) -> Result<(), Refused> {
+    let held = set
+        .iter()
+        .flat_map(|t| t.builds.iter())
+        .any(|b| b.status == Status::Ready && b.snapshot.as_deref() == Some(snapshot));
+    if !held {
+        return Err(Refused::new(
+            409,
+            "template_base_gone",
+            "the base template's build was replaced while this build started; start it again",
+        ));
+    }
+    *e2b::lock(&PINNED).entry(snapshot.to_string()).or_insert(0) += 1;
+    Ok(())
+}
+
+/// Gives back one build's pin on `snapshot`. A build that starts from a snapshot pins it (in
+/// `trigger`, under the templates' lock) until the build ends, so no orphan cleanup deletes it.
+fn unpin(snapshot: &str) {
+    let mut pins = e2b::lock(&PINNED);
+    let left = pins.get_mut(snapshot).map(|count| {
+        *count -= 1;
+        *count
+    });
+    if left == Some(0) {
+        pins.remove(snapshot);
+    }
+}
+
 struct Upload {
     template: String,
     hash: String,
@@ -1091,7 +1123,12 @@ fn trigger(
     };
     let now = apz_plaza::now_ms();
     let template_id = template.id.clone();
-    let cached: Option<(String, Vec<String>, Vec<String>)> = templates(app).edit(|set| {
+    let pin = match &plan.base {
+        Base::Template { snapshot, .. } => Some(snapshot.clone()),
+        Base::Image(_) => None,
+    };
+    let pinned_here = std::cell::Cell::new(false);
+    let edited = templates(app).edit(|set| {
         let source = reuse.as_deref().and_then(|other| {
             let owner = set.iter().find(|t| t.id == template_id)?;
             let found = owner.build(other)?;
@@ -1132,13 +1169,32 @@ fn trigger(
         }
         build.plan_hash = Some(hash.clone());
         let Some((other, snapshot, user, workdir)) = source else {
+            // The base snapshot is pinned here, under the lock the orphan cleanup (`make_ready`) and
+            // template deletion decide under, so neither can delete it between this check and the pin.
+            if let Some(snapshot) = &pin {
+                pin_held_base(set, snapshot)?;
+                pinned_here.set(true);
+            }
+            let build = set
+                .iter_mut()
+                .find(|t| t.id == template_id)
+                .and_then(|t| t.builds.iter_mut().find(|b| b.id == build_id))
+                .ok_or_else(|| build_not_found(build_id))?;
             build.status = Status::Building;
             return Ok(None);
         };
         let (removed, snapshots) =
             make_ready(set, &template_id, build_id, &snapshot, &user, &workdir, now)?;
         Ok(Some((other, removed, snapshots)))
-    })?;
+    });
+    // A pin taken in a change that was then not saved is given back.
+    if edited.is_err()
+        && pinned_here.get()
+        && let Some(snapshot) = &pin
+    {
+        unpin(snapshot);
+    }
+    let cached: Option<(String, Vec<String>, Vec<String>)> = edited?;
     if let Some((other, removed, snapshots)) = cached {
         log(
             build_id,
@@ -1153,24 +1209,8 @@ fn trigger(
     }
     let weak = app.handle();
     let (build_id, key) = (build_id.to_string(), key.to_string());
-    // A build that starts from a snapshot pins it until the build ends, so no orphan sweep deletes it.
-    fn unpin(snapshot: &str) {
-        let mut pins = e2b::lock(&PINNED);
-        let left = pins.get_mut(snapshot).map(|count| {
-            *count -= 1;
-            *count
-        });
-        if left == Some(0) {
-            pins.remove(snapshot);
-        }
-    }
-    let pin = match &plan.base {
-        Base::Template { snapshot, .. } => Some(snapshot.clone()),
-        Base::Image(_) => None,
-    };
-    if let Some(snapshot) = &pin {
-        *e2b::lock(&PINNED).entry(snapshot.clone()).or_insert(0) += 1;
-    }
+    // A cached build started nothing, so it pinned nothing.
+    let pin = if pinned_here.get() { pin } else { None };
     let spawned = std::thread::Builder::new()
         .name("e2b-template-build".into())
         .spawn({
@@ -2474,6 +2514,45 @@ mod tests {
             unreferenced(&set, vec!["sb:c".into(), "sb:c".into(), "sb:a".into()]),
             vec!["sb:c".to_string()]
         );
+    }
+
+    #[test]
+    fn a_base_is_pinned_only_while_a_ready_build_holds_it_and_a_pinned_base_survives_the_cleanup() {
+        // The base template: an older untagged ready build ("old", the one a new build starts from)
+        // and the build that is finishing now ("new", which takes the default tag).
+        let mut set = vec![Template {
+            id: "base".into(),
+            name: "base".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            builds: vec![
+                build("old", Status::Ready, &[], 1),
+                build("new", Status::Building, &[], 2),
+            ],
+        }];
+        let snapshot = "sb:pin-test-old";
+        set[0].builds[0].snapshot = Some(snapshot.into());
+
+        // Pinned while "old" is ready: the cleanup of "new" finishing keeps it.
+        pin_held_base(&set, snapshot).expect("the base is held, so it is pinned");
+        let (removed, snapshots) =
+            make_ready(&mut set, "base", "new", "sb:new", "user", "/home/user", 3).expect("ready");
+        assert!(
+            removed.is_empty() && snapshots.is_empty(),
+            "a pinned base stays"
+        );
+        unpin(snapshot);
+
+        // Unpinned, the same cleanup drops "old" and its snapshot; a build that starts from it
+        // afterwards is refused instead of starting from a deleted snapshot.
+        set[0].builds[1].status = Status::Building;
+        set[0].builds[1].tags.clear();
+        let (removed, snapshots) =
+            make_ready(&mut set, "base", "new", "sb:new", "user", "/home/user", 4).expect("ready");
+        assert_eq!(removed, vec!["old".to_string()]);
+        assert_eq!(snapshots, vec![snapshot.to_string()]);
+        assert!(pin_held_base(&set, snapshot).is_err());
+        assert!(!pinned(snapshot), "a refused pin leaves nothing pinned");
     }
 
     #[test]
