@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relay_answers_over_tcp_and_is_gone_once_dropped() {
+    fn a_relay_answers_over_tcp_under_its_secret_prefix_only() {
         let hub: Upstream = Arc::new(|_: &Forward| -> io::Result<Reply> { Ok(answer(b"ok")) });
         let relay = Relay::start("acme", hub).expect("listens on loopback");
         let port = relay.port();
@@ -564,7 +564,8 @@ mod tests {
             "{text}"
         );
         assert!(ask("/v1/git/smart/acme/info/refs").starts_with("HTTP/1.1 404"));
+        // Dropping the relay joins its accept thread, so the listener is closed when drop returns.
+        // (Connecting to the port again proves nothing: another test may already have bound it.)
         drop(relay);
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
 }
