@@ -944,7 +944,12 @@ mod tests {
             "removing the CID takes its socket file away"
         );
         let refused = UnixStream::connect(&path).expect_err("a removed CID refuses a new connect");
-        assert_eq!(refused.kind(), std::io::ErrorKind::NotFound, "{refused}");
+        // Windows AF_UNIX reports a missing socket file as `WSAECONNREFUSED`, not `ENOENT`.
+        #[cfg(not(windows))]
+        let gone = std::io::ErrorKind::NotFound;
+        #[cfg(windows)]
+        let gone = std::io::ErrorKind::ConnectionRefused;
+        assert_eq!(refused.kind(), gone, "{refused}");
         assert!(!registry.is_served(40));
         assert_eq!(registry.remove(40), Err(RemoveError::NotServed));
         registry.close();

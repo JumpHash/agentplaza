@@ -328,22 +328,18 @@ pub struct HostFacts {
     pub entropy: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HostFacts {
-    /// The facts as of now: the host clock and 32 bytes of `/dev/urandom` (none when it cannot be
-    /// read, which leaves the guest's pool as it is).
+    /// The facts as of now: the host clock and 32 bytes of the OS CSPRNG (none when it fails,
+    /// which leaves the guest's pool as it is). The CSPRNG, not `/dev/urandom`: Windows hosts
+    /// have no such file.
     pub fn now() -> Self {
-        use std::io::Read;
         let time_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| {
                 u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
             });
-        let mut bytes = [0u8; 32];
-        let entropy =
-            match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
-                Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
-                Err(_) => String::new(),
-            };
+        let entropy = apz_os::random::hex(32).unwrap_or_default();
         Self { time_ms, entropy }
     }
 }

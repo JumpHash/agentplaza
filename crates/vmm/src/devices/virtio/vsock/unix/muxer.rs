@@ -1303,10 +1303,13 @@ mod tests {
     /// (`ECONNABORTED`) is transient, and must not take the listener out of the poll set.
     #[test]
     fn a_transient_accept_error_does_not_pause() {
-        assert!(!exhausted(&std::io::Error::from_raw_os_error(
-            libc::ECONNABORTED
-        )));
-        assert!(exhausted(&std::io::Error::from_raw_os_error(libc::EMFILE)));
+        // Winsock reports its own codes (`WSAECONNABORTED`, `WSAEMFILE`), not the CRT's errno.
+        #[cfg(unix)]
+        let (aborted, emfile) = (libc::ECONNABORTED, libc::EMFILE);
+        #[cfg(windows)]
+        let (aborted, emfile) = (10053, 10024);
+        assert!(!exhausted(&std::io::Error::from_raw_os_error(aborted)));
+        assert!(exhausted(&std::io::Error::from_raw_os_error(emfile)));
     }
 
     /// Exhaustion can end without any connection closing, so a paused host socket is put back by
