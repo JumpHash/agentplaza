@@ -44,12 +44,25 @@
 //! [`spawn`](super::spawn) call (with the child's own log in the error) rather
 //! than a handle to a VM that does not exist.
 //!
-//! **The memory control is a second socket** (a VM with a balloon only). The
-//! child binds `{uds_path}.ctl` ([`control_path`], `--control`) once its VM is
-//! up, and the parent's [`ChildMemory`] makes one exchange over it per call:
-//! one request line (`usable N` or `stats`), one reply line ([`parse_reply`]).
-//! It lives beside the muxer's socket, so the jail's bind of the UDS directory
-//! covers it at the same path.
+//! **The VM control is a second socket** (every VM with a vsock socket path).
+//! The child binds `{uds_path}.ctl` ([`control_path`], `--control`) before its
+//! readiness line, and the parent makes one exchange over it per call — one
+//! request line, one reply line ([`parse_reply`]). The requests are `usable N`
+//! and `stats` (the balloon, [`ChildMemory`]) and `pause`, `resume` and
+//! `snapshot <full|diff> <dir>` ([`ChildControl`]); the child answers each from
+//! its own VM's control. It lives beside the muxer's socket, so the jail's bind
+//! of the UDS directory covers it at the same path. A VM with no vsock socket
+//! has no such directory to live in, so it has no control socket in this mode:
+//! its pause and snapshot calls fail with [`SpawnError::NoSnapshots`].
+//!
+//! **Restore and snapshots inside the jail.** `--restore DIR` (the spec's
+//! `restore`) is bound read-only at its own path, and snapshots are written
+//! under `--snapshot-root DIR`, bound read-write at its own path. The root is
+//! the VM's socket directory (the one the jail already binds read-write), so a
+//! snapshot directory must be under it; a snapshot request for any other path
+//! is refused by the child. Both binds reach the jail through
+//! [`crate::jail::jailer::bind_in_every_jail`], because the jail plan is built
+//! inside the child's boot, which does not see its command line.
 //!
 //! **The child dies with its daemon, structurally.** `apz-vmm` arms
 //! `PR_SET_PDEATHSIG(SIGKILL)` before it does anything else, so a parent that
@@ -126,7 +139,8 @@ use std::thread;
 use std::time::Duration;
 
 use super::{
-    CHILD_BOOT_TIMEOUT, CHILD_READY, MemoryControl, MemoryStats, SpawnError, VmRuntime, VmSpec,
+    CHILD_BOOT_TIMEOUT, CHILD_READY, MemoryControl, MemoryStats, SnapshotInfo, SnapshotKind,
+    SpawnError, VmControl, VmRuntime, VmSpec,
 };
 
 /// How many lines of the child's stderr log are kept, so a failed boot's error
@@ -137,6 +151,17 @@ const CHILD_LOG_LINES: usize = 200;
 /// the reply — before the call fails. A resize is a memory operation inside the
 /// child, so two seconds is generous for it, and it bounds a stuck child.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The budget for `pause` and `resume`: the vCPUs leave `KVM_RUN` and rejoin it,
+/// which is milliseconds, so five seconds bounds a stuck child without ever
+/// failing a healthy one.
+const PAUSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The budget for `snapshot`: the child writes the VM's memory, which is a
+/// sequential write of up to the VM's whole memory, so it can take seconds. A
+/// request that outlasts this has failed, and the VM is left paused for the
+/// caller to resume or stop.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The environment the per-VM process is given — the whole of it. Each name is
 /// a confinement switch this crate itself reads: the jailer's mode, base and
@@ -315,14 +340,18 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
     // the child's.
     runtime.set_process_id(pid);
 
-    // The memory control of a VM with a balloon: one exchange with the child's
-    // control socket per call (see [`ChildMemory`]). A VM without one installs
-    // nothing, as the in-process shape does.
+    // The VM controls, one exchange with the child's control socket per call
+    // (see [`ChildMemory`] and [`ChildControl`]). The pause/snapshot control is
+    // every VM's; the memory control is a balloon's, as the in-process shape
+    // installs it. A VM with no control socket installs nothing.
     if let Some(path) = control_path(spec) {
-        runtime.set_memory_control(Arc::new(ChildMemory {
-            path,
-            max_mib: u32::try_from(spec.memory_mib).unwrap_or(u32::MAX),
-        }));
+        if spec.balloon.is_some() {
+            runtime.set_memory_control(Arc::new(ChildMemory {
+                path: path.clone(),
+                max_mib: u32::try_from(spec.memory_mib).unwrap_or(u32::MAX),
+            }));
+        }
+        runtime.set_vm_control(Arc::new(ChildControl { path }));
     }
 
     // The guest's serial stream: the child's stdout. The reader blocks in
@@ -498,47 +527,107 @@ pub fn child_args(spec: &VmSpec) -> Vec<String> {
         args.push("--control".to_string());
         args.push(control.display().to_string());
     }
+    if let Some(restore) = &spec.restore {
+        args.push("--restore".to_string());
+        args.push(restore.display().to_string());
+    }
+    if let Some(root) = snapshot_root(spec) {
+        args.push("--snapshot-root".to_string());
+        args.push(root.display().to_string());
+    }
     args
 }
 
 /// The control socket's path for a VM: `{uds_path}.ctl`, beside the muxer's
 /// socket, so the jail's read-write bind of the UDS directory covers it at the
-/// same path. Only a VM with a balloon has one, and only a VM with a vsock
-/// socket path to put it beside.
+/// same path. Every VM with a vsock socket path has one; a VM with no vsock has
+/// no directory to put it in, so it has none.
 fn control_path(spec: &VmSpec) -> Option<PathBuf> {
-    if spec.balloon.is_none() {
-        return None;
-    }
     let vsock = spec.vsock.as_ref()?;
     let mut path = vsock.uds_path.clone().into_os_string();
     path.push(".ctl");
     Some(PathBuf::from(path))
 }
 
+/// The directory a process-mode VM's snapshots are written under: the VM's
+/// socket directory, which the jail binds read-write already. A relative socket
+/// path has no absolute directory to bind, so such a VM takes no snapshots.
+fn snapshot_root(spec: &VmSpec) -> Option<PathBuf> {
+    let dir = spec.vsock.as_ref()?.uds_path.parent()?;
+    dir.is_absolute().then(|| dir.to_path_buf())
+}
+
+/// The word a snapshot request and reply name a [`SnapshotKind`] by.
+pub fn snapshot_kind_word(kind: SnapshotKind) -> &'static str {
+    match kind {
+        SnapshotKind::Full => "full",
+        SnapshotKind::Diff => "diff",
+    }
+}
+
+/// The [`SnapshotKind`] a request or reply word names, `None` for any other word.
+pub fn parse_snapshot_kind(word: &str) -> Option<SnapshotKind> {
+    match word {
+        "full" => Some(SnapshotKind::Full),
+        "diff" => Some(SnapshotKind::Diff),
+        _ => None,
+    }
+}
+
 /// One reply line of the child's control socket.
 #[derive(Debug, PartialEq, Eq)]
 enum Reply {
-    /// `ok`: the resize took.
+    /// `ok`: the resize, pause or resume took.
     Ok,
+    /// `ok <kind> <memory_written> <paused_ms>`: the snapshot was written, and the
+    /// kind it holds (which may differ from the one asked for, see
+    /// [`SnapshotKind`]).
+    Snapshot {
+        kind: SnapshotKind,
+        memory_written: u64,
+        paused_ms: u64,
+    },
     /// `err <message>`: the child refused or could not carry out the request.
     Err(String),
     /// `stats …`: the balloon's counters.
     Stats(MemoryStats),
 }
 
-/// Parses one reply line: `ok`, `err <message>`, or
-/// `stats <max> <usable> <held> <free|-> <available|->`. A line that is none of
-/// these is an error, never a guess.
+/// Parses one reply line: `ok`, `ok <kind> <memory_written> <paused_ms>`,
+/// `err <message>`, or `stats <max> <usable> <held> <free|-> <available|->`. A
+/// line that is none of these is an error, never a guess.
 fn parse_reply(line: &str) -> Result<Reply, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     match verb {
         "ok" if rest.is_empty() => Ok(Reply::Ok),
+        "ok" => parse_snapshot(rest),
         "err" => Ok(Reply::Err(rest.to_string())),
         "stats" => parse_stats(rest).map(Reply::Stats),
         _ => Err(format!(
             "the control socket answered {line:?}, which is not a reply"
         )),
     }
+}
+
+/// The three fields of a snapshot reply: the kind, the bytes written, the pause.
+fn parse_snapshot(fields: &str) -> Result<Reply, String> {
+    let words: Vec<&str> = fields.split(' ').collect();
+    let [kind, memory_written, paused_ms] = words.as_slice() else {
+        return Err(format!(
+            "the snapshot reply {fields:?} does not have three fields"
+        ));
+    };
+    let kind = parse_snapshot_kind(kind)
+        .ok_or_else(|| format!("the snapshot reply's kind {kind:?} is not full or diff"))?;
+    let number = |text: &str, name: &str| {
+        text.parse::<u64>()
+            .map_err(|_| format!("the snapshot reply's {name} {text:?} is not a number"))
+    };
+    Ok(Reply::Snapshot {
+        kind,
+        memory_written: number(memory_written, "memory written")?,
+        paused_ms: number(paused_ms, "pause")?,
+    })
 }
 
 /// The five fields of a `stats` reply: the three counters, then the two optional
@@ -571,13 +660,14 @@ fn parse_stats(fields: &str) -> Result<MemoryStats, String> {
 }
 
 /// One exchange with the child's control socket: connect, send `request` as one
-/// line, read the reply line.
+/// line, read the reply line. `timeout` bounds the connect and each I/O step, so
+/// a request that the child is still working on (a snapshot) gets its budget.
 ///
 /// The connect runs on a helper thread, so a listener that stops accepting
-/// cannot hold the caller past [`CONTROL_TIMEOUT`] (a Unix-socket `connect` has
-/// no timeout of its own). If the caller gives up while that thread is still
-/// connecting, the thread finishes or fails on its own and its result is dropped.
-fn exchange(path: &Path, request: &str) -> Result<String, String> {
+/// cannot hold the caller past `timeout` (a Unix-socket `connect` has no timeout
+/// of its own). If the caller gives up while that thread is still connecting,
+/// the thread finishes or fails on its own and its result is dropped.
+fn exchange(path: &Path, request: &str, timeout: Duration) -> Result<String, String> {
     use std::io::BufRead;
 
     let (connected, answer) = mpsc::channel();
@@ -586,18 +676,18 @@ fn exchange(path: &Path, request: &str) -> Result<String, String> {
         let _ = connected.send(UnixStream::connect(target));
     });
     let stream = answer
-        .recv_timeout(CONTROL_TIMEOUT)
+        .recv_timeout(timeout)
         .map_err(|_| {
             format!(
                 "the control socket {} did not accept within {}s",
                 path.display(),
-                CONTROL_TIMEOUT.as_secs()
+                timeout.as_secs()
             )
         })?
         .map_err(|err| format!("cannot reach the control socket {}: {err}", path.display()))?;
     stream
-        .set_read_timeout(Some(CONTROL_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(CONTROL_TIMEOUT)))
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
         .map_err(|err| format!("cannot time the control socket exchange: {err}"))?;
     let mut writer = &stream;
     writeln!(writer, "{request}")
@@ -619,19 +709,19 @@ struct ChildMemory {
 
 impl MemoryControl for ChildMemory {
     fn set_usable_mib(&self, mib: u32) -> Result<(), SpawnError> {
-        let reply =
-            exchange(&self.path, &format!("usable {mib}")).and_then(|line| parse_reply(&line));
+        let reply = exchange(&self.path, &format!("usable {mib}"), CONTROL_TIMEOUT)
+            .and_then(|line| parse_reply(&line));
         match reply {
             Ok(Reply::Ok) => Ok(()),
             Ok(Reply::Err(reason)) | Err(reason) => Err(SpawnError::MemoryControl { reason }),
-            Ok(Reply::Stats(_)) => Err(SpawnError::MemoryControl {
-                reason: "the control socket answered a resize with stats".to_string(),
+            Ok(other) => Err(SpawnError::MemoryControl {
+                reason: format!("the control socket answered a resize with {other:?}"),
             }),
         }
     }
 
     fn stats(&self) -> MemoryStats {
-        match exchange(&self.path, "stats").and_then(|line| parse_reply(&line)) {
+        match exchange(&self.path, "stats", CONTROL_TIMEOUT).and_then(|line| parse_reply(&line)) {
             Ok(Reply::Stats(stats)) => stats,
             // A child that cannot be asked reports nothing: zeros and no reading,
             // never a stale or invented one. The maximum is the VM's own spec.
@@ -642,6 +732,78 @@ impl MemoryControl for ChildMemory {
                 free_mib: None,
                 available_mib: None,
             },
+        }
+    }
+}
+
+/// The pause, resume and snapshot control of a VM in its own process: each call
+/// is one exchange over the child's control socket, which the child answers from
+/// its own VM's control (`apz-vmm --control`).
+struct ChildControl {
+    path: PathBuf,
+}
+
+impl ChildControl {
+    /// One request whose only good answer is `ok`.
+    fn acknowledged(&self, request: &str, timeout: Duration) -> Result<(), SpawnError> {
+        match self.request(request, timeout)? {
+            Reply::Ok => Ok(()),
+            other => Err(unexpected(request, &other)),
+        }
+    }
+
+    fn request(&self, request: &str, timeout: Duration) -> Result<Reply, SpawnError> {
+        match exchange(&self.path, request, timeout).and_then(|line| parse_reply(&line)) {
+            Ok(Reply::Err(reason)) | Err(reason) => Err(SpawnError::Snapshot { reason }),
+            Ok(reply) => Ok(reply),
+        }
+    }
+}
+
+/// The error for a reply that does not answer the request that was sent.
+fn unexpected(request: &str, reply: &Reply) -> SpawnError {
+    SpawnError::Snapshot {
+        reason: format!("the control socket answered {request:?} with {reply:?}"),
+    }
+}
+
+impl VmControl for ChildControl {
+    fn pause(&self) -> Result<(), SpawnError> {
+        self.acknowledged("pause", PAUSE_TIMEOUT)
+    }
+
+    fn resume(&self) -> Result<(), SpawnError> {
+        self.acknowledged("resume", PAUSE_TIMEOUT)
+    }
+
+    fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        // The directory is the rest of the request line, so it must be one
+        // absolute line of text: a relative path or a line break would not reach
+        // the child as the directory the caller named.
+        let Some(text) = dir
+            .to_str()
+            .filter(|text| Path::new(text).is_absolute() && !text.contains(['\n', '\r']))
+        else {
+            return Err(SpawnError::Snapshot {
+                reason: format!(
+                    "the snapshot directory {} must be an absolute path with no line break",
+                    dir.display()
+                ),
+            });
+        };
+        let request = format!("snapshot {} {text}", snapshot_kind_word(kind));
+        match self.request(&request, SNAPSHOT_TIMEOUT)? {
+            Reply::Snapshot {
+                kind,
+                memory_written,
+                paused_ms,
+            } => Ok(SnapshotInfo {
+                dir: dir.to_path_buf(),
+                kind,
+                memory_written,
+                paused_ms,
+            }),
+            other => Err(unexpected(&request, &other)),
         }
     }
 }
@@ -712,6 +874,8 @@ fn fail_start(child: &mut Child, source: std::io::Error) -> Result<(), SpawnErro
 mod tests {
     use super::*;
     use crate::spawner::{GicVersion, VsockConfig};
+    use std::io::BufRead;
+    use std::os::unix::net::UnixListener;
 
     /// Every `VmSpec` field reaches the child's command line, including the
     /// exact vsock socket path (never a directory the child re-derives) and the
@@ -793,16 +957,168 @@ mod tests {
                 available_mib: Some(180),
             }))
         );
+        assert_eq!(
+            parse_reply("ok diff 4096 37"),
+            Ok(Reply::Snapshot {
+                kind: SnapshotKind::Diff,
+                memory_written: 4096,
+                paused_ms: 37,
+            })
+        );
         for bad in [
             "",
             "okay",
             "ok extra",
+            "ok full 4096",
+            "ok sparse 1 2",
+            "ok full x 2",
             "stats 512 256",
             "stats 512 x 200 - -",
             "usable 5",
         ] {
             assert!(parse_reply(bad).is_err(), "{bad:?} is not a reply");
         }
+    }
+
+    /// The restore directory and the snapshot root reach the child's command line,
+    /// and a VM whose socket path is relative has no absolute directory to bind
+    /// for snapshots, so it gets no snapshot root.
+    #[test]
+    fn restore_and_the_snapshot_root_reach_the_child() {
+        let vsock = |uds_path: &str| {
+            Some(VsockConfig {
+                guest_cid: 42,
+                uds_path: PathBuf::from(uds_path),
+            })
+        };
+        let spec = VmSpec {
+            restore: Some(PathBuf::from("/var/snap/vm42")),
+            vsock: vsock("/tmp/plaza-vsock/vm42"),
+            ..VmSpec::default()
+        };
+        let args = child_args(&spec);
+        let has = |flag: &str, value: &str| {
+            args.windows(2)
+                .any(|pair| pair[0] == flag && pair[1] == value)
+        };
+        assert!(has("--restore", "/var/snap/vm42"), "{args:?}");
+        assert!(has("--snapshot-root", "/tmp/plaza-vsock"), "{args:?}");
+        assert!(has("--control", "/tmp/plaza-vsock/vm42.ctl"), "{args:?}");
+
+        let relative = VmSpec {
+            vsock: vsock("vm42"),
+            ..VmSpec::default()
+        };
+        assert!(
+            !child_args(&relative)
+                .iter()
+                .any(|arg| arg == "--snapshot-root")
+        );
+        // The control socket still sits beside the relative socket path.
+        assert!(child_args(&relative).iter().any(|arg| arg == "vm42.ctl"));
+        assert!(
+            !child_args(&VmSpec::default())
+                .iter()
+                .any(|arg| arg == "--restore")
+        );
+    }
+
+    /// A stand-in child: it accepts one connection per reply, reads the request
+    /// line, and answers with the next canned reply. It returns the requests.
+    fn serve_replies(
+        listener: UnixListener,
+        replies: Vec<&'static str>,
+    ) -> thread::JoinHandle<Vec<String>> {
+        thread::spawn(move || {
+            let mut requests = Vec::new();
+            for reply in replies {
+                let (stream, _) = listener.accept().expect("a connection");
+                let mut request = String::new();
+                std::io::BufReader::new(&stream)
+                    .read_line(&mut request)
+                    .expect("a request line");
+                requests.push(request.trim_end().to_string());
+                writeln!(&stream, "{reply}").expect("the reply");
+            }
+            requests
+        })
+    }
+
+    /// The parent's pause, resume and snapshot calls make one request line each
+    /// and read the child's answer: `ok` acknowledges, the snapshot's three
+    /// fields become a [`SnapshotInfo`], and an `err` is an error. A snapshot
+    /// directory that is not one absolute line is refused without a connection.
+    #[test]
+    fn the_child_control_speaks_the_request_protocol() {
+        let dir = test_dir("child-control");
+        let path = dir.join("vm.ctl");
+        let listener = UnixListener::bind(&path).expect("a control socket");
+        let server = serve_replies(
+            listener,
+            vec![
+                "ok",
+                "ok",
+                "ok full 4096 37",
+                "err this VM cannot be paused or snapshotted on this backend",
+                "ok diff 0 5",
+            ],
+        );
+        let control = ChildControl { path: path.clone() };
+
+        control.pause().expect("pause is acknowledged");
+        control.resume().expect("resume is acknowledged");
+        let full = control
+            .snapshot(Path::new("/var/snap/a"), SnapshotKind::Full)
+            .expect("the snapshot is written");
+        assert_eq!(
+            full,
+            SnapshotInfo {
+                dir: PathBuf::from("/var/snap/a"),
+                kind: SnapshotKind::Full,
+                memory_written: 4096,
+                paused_ms: 37,
+            }
+        );
+        assert!(matches!(
+            control.snapshot(Path::new("/var/snap/b"), SnapshotKind::Full),
+            Err(SpawnError::Snapshot { .. })
+        ));
+        let diff = control
+            .snapshot(Path::new("/var/snap/c"), SnapshotKind::Diff)
+            .expect("the diff is written");
+        assert_eq!(diff.kind, SnapshotKind::Diff);
+
+        // Refused before any connection: the server would otherwise be waiting.
+        assert!(
+            control
+                .snapshot(Path::new("relative"), SnapshotKind::Full)
+                .is_err()
+        );
+        assert!(
+            control
+                .snapshot(Path::new("/a\nb"), SnapshotKind::Full)
+                .is_err()
+        );
+
+        assert_eq!(
+            server.join().expect("the stand-in child ends"),
+            vec![
+                "pause".to_string(),
+                "resume".to_string(),
+                "snapshot full /var/snap/a".to_string(),
+                "snapshot full /var/snap/b".to_string(),
+                "snapshot diff /var/snap/c".to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch directory for a socket test, emptied first.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-process-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a test directory");
+        dir
     }
 
     /// The supervisor is one long-lived thread that is *not* the caller's: the

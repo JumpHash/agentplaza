@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use vmm::jail::jailer;
 use vmm::spawner::{
-    CHILD_BINARY_ENV, CHILD_EXIT_USAGE, CHILD_PDEATHSIG, CHILD_READY, SpawnMode, VmExit, VmHandle,
-    VmSpec, VsockConfig, create_uds_dir, set_spawn_mode, spawn,
+    CHILD_BINARY_ENV, CHILD_EXIT_USAGE, CHILD_PDEATHSIG, CHILD_READY, SnapshotKind, SpawnMode,
+    VmExit, VmHandle, VmSpec, VsockConfig, create_uds_dir, set_spawn_mode, spawn,
 };
 
 /// The process-wide mode switch is shared by every test here: the tests
@@ -349,6 +349,41 @@ fn the_per_vm_process_boots_a_guest_and_carries_its_session() {
         "the VM must still be up after the session ended"
     );
     vm.kill().expect("the kill takes the per-VM process down");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A running per-VM process answers the pause, resume and snapshot control
+/// through its handle: pause and resume are acknowledged, and a snapshot lands
+/// under the VM's socket directory (the snapshot root the jail binds).
+///
+/// Ignored: it boots a guest, so it needs `APZ_VMM_SMOKE_KERNEL` and a
+/// hypervisor. It also needs the in-process `VmControl` installed on the child's
+/// runtime by the builder; until that is wired, the child answers `err` and this
+/// test fails on purpose.
+#[test]
+#[ignore = "needs APZ_VMM_SMOKE_KERNEL, a hypervisor, and the builder's in-process VmControl"]
+fn the_per_vm_process_pauses_resumes_and_snapshots() {
+    let _guard = mode_lock();
+    assert!(
+        smoke_kernel().is_some(),
+        "set APZ_VMM_SMOKE_KERNEL to a guest kernel"
+    );
+
+    let dir = scratch("control");
+    set_spawn_mode(SpawnMode::Process);
+    let mut vm = spawn(spec(&dir, 411, "console=ttyS0 panic=-1 plaza.keepalive=1"))
+        .expect("the per-VM process boots the guest");
+
+    vm.pause().expect("the child acknowledges the pause");
+    vm.resume().expect("the child acknowledges the resume");
+    let snap = dir.join("snap");
+    fs::create_dir_all(&snap).expect("a snapshot directory");
+    let info = vm
+        .snapshot(&snap, SnapshotKind::Full)
+        .expect("the child writes the snapshot");
+    assert_eq!(info.dir, snap);
+    assert!(info.memory_written > 0, "a booted guest has touched memory");
+    vm.kill().expect("the VM stops");
     let _ = fs::remove_dir_all(&dir);
 }
 

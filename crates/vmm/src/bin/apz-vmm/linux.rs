@@ -56,7 +56,7 @@
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -64,15 +64,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use vmm::jail::jailer::{self, Access};
+use vmm::spawner::process::{parse_snapshot_kind, snapshot_kind_word};
 use vmm::spawner::{
     CHILD_EXIT_FAILED, CHILD_EXIT_RESET, CHILD_EXIT_SHUTDOWN, CHILD_EXIT_USAGE, CHILD_PDEATHSIG,
-    CHILD_READY, GicVersion, MemoryControl, SpawnMode, VmExit, VmRuntime, VmSpec, VsockConfig,
+    CHILD_READY, GicVersion, MemoryControl, SpawnError, SpawnMode, VmControl, VmExit, VmRuntime,
+    VmSpec, VsockConfig,
 };
 
 const USAGE: &str = "\
 usage: apz-vmm --kernel PATH --cmdline STR [--initrd PATH] [--workspace IMAGE]
                [--memory-mib M] [--vcpus V] [--cid N] [--uds PATH]
                [--gic v2|v3] [--balloon-usable-mib N] [--control PATH]
+               [--restore DIR] [--snapshot-root DIR]
 
 Boots exactly one microVM in this process, jailed on its own boot path, and
 serves it:
@@ -93,9 +97,15 @@ serves it:
   --gic v2|v3        aarch64 interrupt controller (ignored on x86_64)
   --balloon-usable-mib N
                      with a balloon, the memory the guest may use at boot
-  --control PATH     a Unix socket (mode 0600) the parent resizes the balloon
-                     through: one request line per connection, `usable N` or
-                     `stats`. Needs a balloon.
+  --control PATH     a Unix socket (mode 0600) the parent drives the VM through:
+                     one request line per connection, one reply line back.
+                     `usable N` and `stats` (a balloon), `pause`, `resume`,
+                     and `snapshot full|diff DIR` (DIR under --snapshot-root).
+  --restore DIR      restore the VM from the snapshot in DIR instead of booting
+                     the kernel (DIR is bound read-only in the jail)
+  --snapshot-root DIR
+                     the absolute directory snapshots are written under (bound
+                     read-write in the jail)
   -h, --help         print this help
 
 The exit status is the VM's: 0 the guest shut down, 3 the guest reset, 1 a
@@ -141,15 +151,15 @@ pub(crate) fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let (spec, control) = match parse(&args) {
-        Ok(parsed) => parsed,
+    let launch = match parse(&args) {
+        Ok(launch) => launch,
         Err(err) => {
             eprintln!("apz-vmm: {err}");
             eprintln!("{USAGE}");
             return ExitCode::from(CHILD_EXIT_USAGE as u8);
         }
     };
-    match run(spec, control) {
+    match run(launch) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("apz-vmm: {err}");
@@ -221,15 +231,22 @@ fn arm_parent_death_signal() -> std::io::Result<()> {
     }
 }
 
-/// The one VM's specification, parsed from the command line the parent laid
-/// out (`vmm::spawner::process::child_args`), and the control socket's path if
-/// the command line asked for one.
+/// What the command line asks for: the one VM's specification, the control
+/// socket's path if the command line named one, and the directory snapshots go
+/// under if it named that.
 ///
 /// There is no VM *id* here: this process holds exactly one VM, so the VM is
 /// id `0` in every name this process makes (the VMM thread names, the jail
 /// root). The parent's own handle keeps the caller's id; nothing crosses the
 /// pipe that depends on the two agreeing.
-fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
+#[derive(Debug)]
+struct Launch {
+    spec: VmSpec,
+    control: Option<PathBuf>,
+    snapshot_root: Option<PathBuf>,
+}
+
+fn parse(args: &[String]) -> Result<Launch, String> {
     let mut kernel: Option<PathBuf> = None;
     let mut cmdline: Option<String> = None;
     let mut initrd: Option<PathBuf> = None;
@@ -241,6 +258,8 @@ fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
     let mut gic: Option<GicVersion> = None;
     let mut balloon: Option<u32> = None;
     let mut control: Option<PathBuf> = None;
+    let mut restore: Option<PathBuf> = None;
+    let mut snapshot_root: Option<PathBuf> = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -283,6 +302,16 @@ fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
             }
             "--uds" => uds = Some(PathBuf::from(value(args, &mut index, flag)?)),
             "--control" => control = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--restore" => restore = Some(PathBuf::from(value(args, &mut index, flag)?)),
+            "--snapshot-root" => {
+                let root = PathBuf::from(value(args, &mut index, flag)?);
+                // Snapshot requests name directories under this root by their
+                // absolute path, so a relative root could never match one.
+                if !root.is_absolute() {
+                    return Err(format!("{flag} {} is not an absolute path", root.display()));
+                }
+                snapshot_root = Some(root);
+            }
             "--gic" => {
                 let text = value(args, &mut index, flag)?;
                 gic = Some(match text {
@@ -322,9 +351,13 @@ fn parse(args: &[String]) -> Result<(VmSpec, Option<PathBuf>), String> {
         vsock,
         workspace,
         balloon,
-        restore: None,
+        restore,
     };
-    Ok((spec, control))
+    Ok(Launch {
+        spec,
+        control,
+        snapshot_root,
+    })
 }
 
 /// The value of `flag`: the argument after it, or why it is missing.
@@ -336,25 +369,41 @@ fn value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&'a st
 }
 
 /// Boots the VM, serves its console, and returns its exit status.
-fn run(spec: VmSpec, control: Option<PathBuf>) -> Result<ExitCode, String> {
+fn run(launch: Launch) -> Result<ExitCode, String> {
+    let Launch {
+        spec,
+        control,
+        snapshot_root,
+    } = launch;
     // This process exists to hold one VM: it can never take the per-VM process
     // mode itself, whatever the operator's environment says — that would be
     // `apz-vmm` spawning `apz-vmm` without end.
     vmm::spawner::set_spawn_mode(SpawnMode::InProcess);
 
+    // What the VM reads and writes outside its own images must be bound into
+    // the jail the boot builds, at the path it is named by: the restore
+    // directory read-only, the snapshot root read-write. See
+    // `jailer::bind_in_every_jail`.
+    if let Some(restore) = &spec.restore {
+        jailer::bind_in_every_jail(restore, Access::ReadOnly);
+    }
+    if let Some(root) = &snapshot_root {
+        jailer::bind_in_every_jail(root, Access::ReadWrite);
+    }
+
     let mut handle = vmm::spawner::spawn(spec).map_err(|err| err.to_string())?;
 
     // The control socket, when the command line asked for one: bound before the
     // readiness line, so the parent never holds a handle to a VM whose socket is
-    // not there yet. A VM without a balloon has nothing to resize, so the flag is
-    // refused rather than served with nothing behind it.
+    // not there yet. Each request is answered from what this VM has: a balloon,
+    // a pause and snapshot control, or neither (see [`answer`]).
     if let Some(path) = control {
-        match handle.runtime().memory_control() {
-            Some(memory) => serve_control(path, memory)?,
-            None => {
-                return Err("--control needs a VM with a balloon (--balloon-usable-mib)".into());
-            }
-        }
+        let controls = Controls {
+            memory: handle.runtime().memory_control(),
+            vm: handle.runtime().vm_control(),
+            snapshot_root,
+        };
+        serve_control(path, controls)?;
     }
 
     // The VM is up. This line is the parent's readiness gate; the jailer has
@@ -419,7 +468,7 @@ fn run(spec: VmSpec, control: Option<PathBuf>) -> Result<ExitCode, String> {
 /// path it named. A socket file left by an earlier run is removed first, since
 /// `bind(2)` refuses a path that exists. The directory is `0700`, so the window
 /// between `bind` and the `chmod` is closed by the directory, not by the umask.
-fn serve_control(path: PathBuf, memory: Arc<dyn MemoryControl>) -> Result<(), String> {
+fn serve_control(path: PathBuf, controls: Controls) -> Result<(), String> {
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -443,7 +492,7 @@ fn serve_control(path: PathBuf, memory: Arc<dyn MemoryControl>) -> Result<(), St
         .spawn(move || {
             for connection in listener.incoming() {
                 match connection {
-                    Ok(stream) => serve_one(&stream, &*memory),
+                    Ok(stream) => serve_one(&stream, &controls),
                     Err(err) => {
                         eprintln!("apz-vmm: control socket: {err}");
                         thread::sleep(CONTROL_RETRY);
@@ -455,10 +504,19 @@ fn serve_control(path: PathBuf, memory: Arc<dyn MemoryControl>) -> Result<(), St
         .map_err(|err| format!("cannot start the control thread: {err}"))
 }
 
+/// What the control socket answers from: the VM's balloon, its pause and
+/// snapshot control, and the directory its snapshots go under. Each is `None`
+/// when the VM has no such thing, and a request for it is refused by name.
+struct Controls {
+    memory: Option<Arc<dyn MemoryControl>>,
+    vm: Option<Arc<dyn VmControl>>,
+    snapshot_root: Option<PathBuf>,
+}
+
 /// Answers one control connection: reads one request line, writes one reply
 /// line. A connection that sends nothing, or stalls past [`CONTROL_IO_TIMEOUT`],
 /// is dropped without a reply.
-fn serve_one(stream: &UnixStream, memory: &dyn MemoryControl) {
+fn serve_one(stream: &UnixStream, controls: &Controls) {
     use std::io::BufRead;
 
     if stream.set_read_timeout(Some(CONTROL_IO_TIMEOUT)).is_err()
@@ -473,40 +531,122 @@ fn serve_one(stream: &UnixStream, memory: &dyn MemoryControl) {
     {
         return;
     }
-    let reply = answer(request.trim(), memory);
+    let reply = answer(request.trim(), controls);
     let mut writer = stream;
     let _ = writeln!(writer, "{reply}");
 }
 
-/// The reply to one request line: `usable N` resizes the balloon and answers
-/// `ok` or `err <why>`; `stats` answers the balloon's counters as
-/// `stats <max> <usable> <held> <free|-> <available|->`. Anything else is
-/// refused with `err`, never guessed at.
-fn answer(request: &str, memory: &dyn MemoryControl) -> String {
+/// The reply to one request line:
+///
+/// * `usable N` resizes the balloon, `stats` answers its counters as
+///   `stats <max> <usable> <held> <free|-> <available|->`;
+/// * `pause` and `resume` answer `ok` once the VM's vCPUs have stopped or
+///   started;
+/// * `snapshot full|diff DIR` writes a snapshot under the snapshot root and
+///   answers `ok <kind> <memory_written> <paused_ms>`, leaving the VM paused.
+///
+/// Anything else, and any request the VM cannot carry out, is `err <why>`.
+/// Never a guess: an error is one line, and a snapshot directory that is not
+/// under the snapshot root (or has a `..` in it) is refused before any write.
+fn answer(request: &str, controls: &Controls) -> String {
+    if let Some(rest) = request.strip_prefix("snapshot ") {
+        return snapshot_reply(rest, controls);
+    }
     let mut words = request.split_whitespace();
     match (words.next(), words.next(), words.next()) {
         (Some("usable"), Some(text), None) => match text.parse::<u32>() {
-            Ok(mib) => match memory.set_usable_mib(mib) {
-                Ok(()) => "ok".to_string(),
-                // A reply is one line: an error message never breaks the framing.
-                Err(err) => format!("err {}", err.to_string().replace('\n', " ")),
+            Ok(mib) => match controls.memory.as_deref() {
+                Some(memory) => match memory.set_usable_mib(mib) {
+                    Ok(()) => "ok".to_string(),
+                    Err(err) => err_line(err),
+                },
+                None => NO_BALLOON.to_string(),
             },
             Err(_) => format!("err {text:?} is not a number of MiB"),
         },
-        (Some("stats"), None, None) => {
-            let stats = memory.stats();
-            format!(
-                "stats {} {} {} {} {}",
-                stats.max_mib,
-                stats.usable_mib,
-                stats.held_mib,
-                field(stats.free_mib),
-                field(stats.available_mib)
-            )
-        }
+        (Some("stats"), None, None) => match controls.memory.as_deref() {
+            Some(memory) => {
+                let stats = memory.stats();
+                format!(
+                    "stats {} {} {} {} {}",
+                    stats.max_mib,
+                    stats.usable_mib,
+                    stats.held_mib,
+                    field(stats.free_mib),
+                    field(stats.available_mib)
+                )
+            }
+            None => NO_BALLOON.to_string(),
+        },
+        (Some("pause"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.pause()),
+        (Some("resume"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.resume()),
         _ => format!("err {request:?} is not a request this control socket takes"),
     }
 }
+
+/// The reply to `snapshot <kind> <dir>` (`rest` is the line after `snapshot `).
+/// The directory is the rest of the line, so it may contain spaces.
+fn snapshot_reply(rest: &str, controls: &Controls) -> String {
+    let Some((word, dir)) = rest.split_once(' ') else {
+        return "err snapshot takes a kind (full or diff) and a directory".to_string();
+    };
+    let Some(kind) = parse_snapshot_kind(word) else {
+        return format!("err {word:?} is not a snapshot kind (full or diff)");
+    };
+    let Some(root) = controls.snapshot_root.as_deref() else {
+        return "err this VM has no snapshot root (apz-vmm --snapshot-root)".to_string();
+    };
+    // Component-wise, so `/snap2` is not under `/snap`; and a `..` is refused
+    // even where it would stay under the root, because the jail's view of the
+    // path is the one that is written.
+    let dir = Path::new(dir);
+    let inside = dir.is_absolute()
+        && dir.starts_with(root)
+        && !dir.components().any(|part| part == Component::ParentDir);
+    if !inside {
+        return format!(
+            "err {} is not an absolute directory under the snapshot root {}",
+            dir.display(),
+            root.display()
+        );
+    }
+    match controls.vm.as_deref() {
+        Some(vm) => match vm.snapshot(dir, kind) {
+            Ok(info) => format!(
+                "ok {} {} {}",
+                snapshot_kind_word(info.kind),
+                info.memory_written,
+                info.paused_ms
+            ),
+            Err(err) => err_line(err),
+        },
+        None => NO_SNAPSHOTS.to_string(),
+    }
+}
+
+/// The reply to `pause` or `resume`: `ok`, or why the VM could not.
+fn acknowledge(
+    vm: Option<&dyn VmControl>,
+    call: impl FnOnce(&dyn VmControl) -> Result<(), SpawnError>,
+) -> String {
+    match vm {
+        Some(vm) => match call(vm) {
+            Ok(()) => "ok".to_string(),
+            Err(err) => err_line(err),
+        },
+        None => NO_SNAPSHOTS.to_string(),
+    }
+}
+
+/// The reply that carries an error: one line, so its message never breaks the
+/// framing.
+fn err_line(err: impl std::fmt::Display) -> String {
+    format!("err {}", err.to_string().replace('\n', " "))
+}
+
+/// The replies for a request this VM has no thing to carry out with.
+const NO_BALLOON: &str = "err this VM has no balloon";
+const NO_SNAPSHOTS: &str = "err this VM cannot be paused or snapshotted on this backend";
 
 /// An optional counter as a reply writes it: its number, or `-` when unreported.
 fn field<T: std::fmt::Display>(value: Option<T>) -> String {
@@ -606,7 +746,11 @@ mod tests {
             restore: None,
         };
         let args = vmm::spawner::process::child_args(&spec);
-        let (parsed, control) = parse(&args).expect("the parent's command line parses");
+        let Launch {
+            spec: parsed,
+            control,
+            snapshot_root,
+        } = parse(&args).expect("the parent's command line parses");
         assert_eq!(parsed.kernel, spec.kernel);
         assert_eq!(parsed.cmdline, spec.cmdline);
         assert_eq!(parsed.vcpus, spec.vcpus);
@@ -616,7 +760,165 @@ mod tests {
         assert_eq!(parsed.vsock, spec.vsock);
         assert_eq!(parsed.workspace, spec.workspace);
         assert_eq!(parsed.balloon, spec.balloon);
+        assert_eq!(parsed.restore, None);
         assert_eq!(control, Some(PathBuf::from("/tmp/plaza-vsock/vm42.ctl")));
+        assert_eq!(snapshot_root, Some(PathBuf::from("/tmp/plaza-vsock")));
+    }
+
+    /// `--restore` becomes the spec's restore, and `--snapshot-root` must be an
+    /// absolute path (a relative root could never match a snapshot request).
+    #[test]
+    fn restore_and_the_snapshot_root_are_parsed() {
+        let args: Vec<String> = [
+            "--kernel",
+            "/k",
+            "--cmdline",
+            "c",
+            "--restore",
+            "/var/snap/vm42",
+            "--snapshot-root",
+            "/tmp/plaza-vsock",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        let launch = parse(&args).expect("a restoring command line");
+        assert_eq!(launch.spec.restore, Some(PathBuf::from("/var/snap/vm42")));
+        assert_eq!(
+            launch.snapshot_root,
+            Some(PathBuf::from("/tmp/plaza-vsock"))
+        );
+
+        let relative: Vec<String> = [
+            "--kernel",
+            "/k",
+            "--cmdline",
+            "c",
+            "--snapshot-root",
+            "snaps",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        let err = parse(&relative).expect_err("a relative snapshot root is refused");
+        assert!(err.contains("--snapshot-root"), "{err}");
+    }
+
+    /// A balloon whose counters and resizes are fixed, for the control tests.
+    struct FakeMemory;
+
+    impl MemoryControl for FakeMemory {
+        fn set_usable_mib(&self, _mib: u32) -> Result<(), SpawnError> {
+            Ok(())
+        }
+        fn stats(&self) -> vmm::spawner::MemoryStats {
+            vmm::spawner::MemoryStats {
+                max_mib: 512,
+                usable_mib: 256,
+                held_mib: 200,
+                free_mib: None,
+                available_mib: Some(180),
+            }
+        }
+    }
+
+    /// A VM whose pause and snapshot control succeed: the snapshot holds the kind
+    /// asked for and a fixed size, so the reply is checkable.
+    struct FakeVm;
+
+    impl VmControl for FakeVm {
+        fn pause(&self) -> Result<(), SpawnError> {
+            Ok(())
+        }
+        fn resume(&self) -> Result<(), SpawnError> {
+            Ok(())
+        }
+        fn snapshot(
+            &self,
+            dir: &Path,
+            kind: vmm::spawner::SnapshotKind,
+        ) -> Result<vmm::spawner::SnapshotInfo, SpawnError> {
+            Ok(vmm::spawner::SnapshotInfo {
+                dir: dir.to_path_buf(),
+                kind,
+                memory_written: 4096,
+                paused_ms: 3,
+            })
+        }
+    }
+
+    /// A VM with every control: each request gets its own reply, in the shape the
+    /// parent parses (`ok`, `ok <kind> <bytes> <ms>`, `stats …`).
+    #[test]
+    fn the_control_answers_every_request_it_has_a_thing_for() {
+        let controls = Controls {
+            memory: Some(Arc::new(FakeMemory)),
+            vm: Some(Arc::new(FakeVm)),
+            snapshot_root: Some(PathBuf::from("/srv/snaps")),
+        };
+        assert_eq!(answer("usable 128", &controls), "ok");
+        assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
+        assert_eq!(answer("pause", &controls), "ok");
+        assert_eq!(answer("resume", &controls), "ok");
+        assert_eq!(
+            answer("snapshot full /srv/snaps/a", &controls),
+            "ok full 4096 3"
+        );
+        assert_eq!(
+            answer("snapshot diff /srv/snaps/with space", &controls),
+            "ok diff 4096 3"
+        );
+    }
+
+    /// A snapshot is refused, before any write, unless its directory is absolute
+    /// and under the root component-wise, with no `..`; a request the VM has
+    /// nothing for is refused by name.
+    #[test]
+    fn a_snapshot_outside_the_root_is_refused() {
+        let controls = Controls {
+            memory: None,
+            vm: Some(Arc::new(FakeVm)),
+            snapshot_root: Some(PathBuf::from("/srv/snaps")),
+        };
+        for bad in [
+            "snapshot full /etc/passwd",
+            "snapshot full /srv/snapsx/a",
+            "snapshot full /srv/snaps/../etc",
+            "snapshot full relative/dir",
+            "snapshot sparse /srv/snaps/a",
+            "snapshot full",
+        ] {
+            assert!(answer(bad, &controls).starts_with("err "), "{bad}");
+        }
+        // No balloon: a resize and stats are refused, not served from nothing.
+        assert_eq!(answer("usable 5", &controls), NO_BALLOON);
+        assert_eq!(answer("stats", &controls), NO_BALLOON);
+
+        let rootless = Controls {
+            memory: None,
+            vm: Some(Arc::new(FakeVm)),
+            snapshot_root: None,
+        };
+        assert!(answer("snapshot full /srv/snaps/a", &rootless).starts_with("err "));
+    }
+
+    /// A VM without a pause and snapshot control (a backend with no snapshot
+    /// support) refuses those requests, and keeps `usable` and `stats` working
+    /// when it has a balloon.
+    #[test]
+    fn a_vm_without_the_control_refuses_it() {
+        let controls = Controls {
+            memory: Some(Arc::new(FakeMemory)),
+            vm: None,
+            snapshot_root: Some(PathBuf::from("/srv/snaps")),
+        };
+        assert_eq!(answer("pause", &controls), NO_SNAPSHOTS);
+        assert_eq!(answer("resume", &controls), NO_SNAPSHOTS);
+        assert_eq!(
+            answer("snapshot full /srv/snaps/a", &controls),
+            NO_SNAPSHOTS
+        );
+        assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
     }
 
     /// A command line that does not describe one VM is refused, with the flag
@@ -655,13 +957,19 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string())
             .collect();
-        let (spec, control) = parse(&args).expect("a minimal command line");
+        let Launch {
+            spec,
+            control,
+            snapshot_root,
+        } = parse(&args).expect("a minimal command line");
         assert_eq!(spec.vcpus, VmSpec::default().vcpus);
         assert_eq!(spec.memory_mib, VmSpec::default().memory_mib);
         assert!(spec.vsock.is_none());
         assert!(spec.workspace.is_none());
         assert!(spec.initrd.is_none());
         assert!(spec.gic.is_none());
+        assert!(spec.restore.is_none());
         assert!(control.is_none());
+        assert!(snapshot_root.is_none());
     }
 }
