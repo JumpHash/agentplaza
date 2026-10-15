@@ -60,6 +60,7 @@ pub mod tools;
 pub mod treasury;
 pub mod usage;
 pub mod vault;
+pub mod volumes;
 pub mod wizard;
 pub mod workstations;
 pub mod workstations_files;
@@ -102,6 +103,8 @@ pub enum Id {
     Egress,
     /// The owner's E2B keys and the sandboxes running on the hub.
     E2b,
+    /// The owner's shared read-only data volumes, and the roles that mount them.
+    Volumes,
     Setup,
     /// One task in full, on the Tasks screen, by its id.
     Task(String),
@@ -162,6 +165,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Nodes, "Nodes", "Setup", "link"),
     (Id::Egress, "Egress", "Setup", "external"),
     (Id::E2b, "E2B API", "Setup", "square-code"),
+    (Id::Volumes, "Volumes", "Setup", "machine"),
     (Id::Setup, "Setup", "Setup", "settings"),
 ];
 
@@ -194,6 +198,7 @@ pub struct Screens {
     pub nodes: nodes::State,
     pub egress: egress::State,
     pub e2b: e2b::State,
+    pub volumes: volumes::State,
     pub setup: setup::State,
     pub agent: agent::State,
     pub lab: lab::State,
@@ -236,6 +241,7 @@ pub enum Msg {
     Nodes(nodes::Msg),
     Egress(egress::Msg),
     E2b(e2b::Msg),
+    Volumes(volumes::Msg),
     Setup(setup::Msg),
     Agent(agent::Msg),
     Lab(lab::Msg),
@@ -279,6 +285,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Nodes(m) => nodes::go(m),
         Msg::Egress(m) => egress::go(m),
         Msg::E2b(m) => e2b::go(m),
+        Msg::Volumes(m) => volumes::go(m),
         Msg::Setup(m) => setup::go(m),
         Msg::Agent(m) => agent::go(m),
         Msg::Lab(m) => lab::go(m),
@@ -299,6 +306,7 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     mcp_hub::leave(&mut screens.mcp.hub);
     // The new E2B key is shown once, so it does not outlive the tab either.
     e2b::leave(&mut screens.e2b);
+    volumes::leave(&mut screens.volumes);
     if let Id::Agent(cid) = id {
         screens.agent = agent::State {
             cid,
@@ -391,6 +399,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Nodes => nodes::load(&mut screens.nodes, ctx).map(Msg::Nodes),
         Id::Egress => egress::load(&mut screens.egress, ctx).map(Msg::Egress),
         Id::E2b => e2b::load(&mut screens.e2b, ctx).map(Msg::E2b),
+        Id::Volumes => volumes::load(&mut screens.volumes, ctx).map(Msg::Volumes),
         Id::Setup => setup::load(&mut screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
@@ -444,6 +453,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Nodes(m) => nodes::update(&mut screens.nodes, m, ctx).map(Msg::Nodes),
         Msg::Egress(m) => egress::update(&mut screens.egress, m, ctx).map(Msg::Egress),
         Msg::E2b(m) => e2b::update(&mut screens.e2b, m, ctx).map(Msg::E2b),
+        Msg::Volumes(m) => volumes::update(&mut screens.volumes, m, ctx).map(Msg::Volumes),
         Msg::Setup(m) => setup::update(&mut screens.setup, m, ctx).map(Msg::Setup),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
         Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
@@ -553,6 +563,7 @@ pub fn view<'a>(
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),
         Id::Egress => egress::view(&screens.egress).map(Msg::Egress),
         Id::E2b => e2b::view(&screens.e2b, ctx.client.base()).map(Msg::E2b),
+        Id::Volumes => volumes::view(&screens.volumes).map(Msg::Volumes),
         Id::Setup => setup::view(&screens.setup, ctx).map(Msg::Setup),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
