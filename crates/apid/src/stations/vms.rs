@@ -4,6 +4,7 @@
 //!   POST   /v1/stations/vms       {node, os: linux|windows|macos, name, cpus, ram_mb, disk_gb, gpu?, image?, backend?} → 201 VmView
 //!   GET    /v1/stations/vms       → [VmView]
 //!   DELETE /v1/stations/vms/{id}  → the removed VmView (its VM is removed from the node first)
+//!   POST   /v1/stations/vms/{id}/sleep|wake → the node's view (`state`: running|asleep|stopped); plaza VMs only
 //!
 //! A VM is made on a node by noded (`POST /v1/workstations`) with a join code the hub issues for it, so its daemon
 //! enrols as a workstation. The station that enrols with that code is this VM: its facts say `form: vm`, and its
@@ -642,6 +643,76 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .delete("/v1/stations/vms/{id}", |app, _, p| {
             remove_route(app, p.get("id"))
         })
+        // A plaza VM sleeps with its memory kept, and wakes from it in a fraction of a second.
+        .post("/v1/stations/vms/{id}/sleep", |app, _, p| {
+            power_route(app, p.get("id"), Power::Sleep)
+        })
+        .post("/v1/stations/vms/{id}/wake", |app, _, p| {
+            power_route(app, p.get("id"), Power::Wake)
+        })
+}
+
+/// What the owner asks of a workstation VM's power.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Power {
+    Sleep,
+    Wake,
+}
+
+impl Power {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Sleep => "sleep",
+            Self::Wake => "wake",
+        }
+    }
+}
+
+/// Puts workstation VM `id` to sleep or wakes it, through its node. Refused while the VM is being reset after a lease,
+/// and a sleep while a lease is open on its station (the lease's work would stop under it). Returns the node's view.
+pub fn power(app: &App, id: &str, what: Power, actor: &str) -> Result<Value, Failure> {
+    let record = app
+        .stations
+        .vm(id)
+        .ok_or((404, format!("no workstation VM {id}")))?;
+    if let Some(station) = &record.station {
+        if app.stations.is_resetting(station) {
+            return Err((
+                409,
+                "this workstation is resetting after a lease; try again once the reset is done"
+                    .into(),
+            ));
+        }
+        if what == Power::Sleep && busy(app, station) {
+            return Err((409, "a lease is open on this workstation".into()));
+        }
+    }
+    let answer = match fleet::noded(
+        app,
+        &record.node,
+        "POST",
+        &format!("/v1/workstations/{}/{}", record.vm, what.action()),
+        None,
+    ) {
+        Ok((status, body)) if (200..300).contains(&status) => body,
+        other => return Err(refusal_of(other)),
+    };
+    let row = json!({"vm": record.id, "node": record.node, "node_vm": record.vm});
+    let kind = match what {
+        Power::Sleep => "vm_sleep",
+        Power::Wake => "vm_wake",
+    };
+    if let Err(reason) = ops::audit(app, record.station.as_deref(), None, kind, actor, row) {
+        eprintln!("apid: workstation VM {id}: its {kind} is not in the audit: {reason}");
+    }
+    Ok(answer)
+}
+
+fn power_route(app: &App, id: &str, what: Power) -> Response {
+    match power(app, id, what, super::api::OWNER) {
+        Ok(view) => Response::json(200, &view),
+        Err((status, message)) => Response::error(status, &message),
+    }
 }
 
 fn create_route(app: &App, req: &Request) -> Response {
