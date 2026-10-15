@@ -25,7 +25,9 @@
 //! command is started in the background (its output goes to `/tmp/e2b-start-cmd.log`), the ready
 //! command is retried until it succeeds, the daemon is given the build's environment, user and
 //! working directory, and a memory snapshot is taken. The build sandbox is then killed and kept,
-//! retired, for that snapshot. There is no layer cache: every build runs every step.
+//! retired, for that snapshot. There is no layer cache: a build whose plan (base, steps, commands,
+//! size) equals a ready build's of the same template reuses that build's snapshot, unless the build
+//! or one of its steps says `force`; every other build runs every step.
 //!
 //! When a build is ready the tags it asked for (`default` when it named none) move to it, and an
 //! older ready build that holds no tag any more is deleted with its snapshot. A template's name
@@ -144,6 +146,10 @@ pub struct Build {
     pub user: String,
     #[serde(default = "build_home")]
     pub workdir: String,
+    /// The hash of the build's plan (base, steps, commands, size): a build whose plan equals a ready
+    /// build's of the same template reuses that build's snapshot.
+    #[serde(default)]
+    pub plan_hash: Option<String>,
 }
 
 fn build_user() -> String {
@@ -490,6 +496,7 @@ fn request_build(app: &App, req: &Request) -> Result<Response, Refused> {
         reason: None,
         user: build_user(),
         workdir: build_home(),
+        plan_hash: None,
     };
     let build_id = build.id.clone();
     let template_id = templates(app).edit(|set| {
@@ -698,6 +705,9 @@ struct StepBody {
     args: Option<Vec<String>>,
     #[serde(default)]
     files_hash: Option<String>,
+    /// Builds afresh: the build does not reuse a ready build's snapshot.
+    #[serde(default)]
+    force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -710,6 +720,9 @@ struct StartBody {
     steps: Option<Vec<StepBody>>,
     start_cmd: Option<String>,
     ready_cmd: Option<String>,
+    /// Builds afresh: the build does not reuse a ready build's snapshot.
+    #[serde(default)]
+    force: Option<bool>,
 }
 
 /// A checked build step.
@@ -872,6 +885,104 @@ fn check_steps(files: &Path, steps: &[StepBody]) -> Result<Vec<Step>, Refused> {
     Ok(checked)
 }
 
+/// The hash of a build's plan: its base (the image, or the base template's snapshot), its steps, its
+/// commands and its size. Two builds with equal hashes run the same steps from the same base.
+fn plan_hash_of(plan: &Plan) -> String {
+    let base_key = match &plan.base {
+        Base::Image(image) => image.clone(),
+        Base::Template { snapshot, .. } => snapshot.clone(),
+    };
+    let text = format!(
+        "{base_key}\n{:?}\n{:?}\n{:?}\n{}\n{}",
+        plan.steps, plan.start_cmd, plan.ready_cmd, plan.vcpus, plan.memory_mib
+    );
+    e2b::hex_of(&apz_trust::sha256(text.as_bytes()))
+}
+
+/// Whether a build listed in `set` still holds `snapshot`, so the snapshot must stay.
+fn referenced(set: &[Template], snapshot: &str) -> bool {
+    set.iter()
+        .flat_map(|t| t.builds.iter())
+        .any(|b| b.snapshot.as_deref() == Some(snapshot))
+}
+
+/// The distinct snapshots among `snapshots` that no build listed in `set` holds: the ones to delete.
+fn unreferenced(set: &[Template], mut snapshots: Vec<String>) -> Vec<String> {
+    snapshots.sort();
+    snapshots.dedup();
+    snapshots.retain(|s| !referenced(set, s));
+    snapshots
+}
+
+/// Marks build `build_id` of a template ready with `snapshot`, `user` and `workdir`, inside an edit of
+/// the templates: its wanted tags move to it, and the older ready builds that hold no tag any more are
+/// removed. Returns those builds' ids and the snapshots that no build left in `set` holds (to delete).
+fn make_ready(
+    set: &mut [Template],
+    template_id: &str,
+    build_id: &str,
+    snapshot: &str,
+    user: &str,
+    workdir: &str,
+    now: u64,
+) -> Result<(Vec<String>, Vec<String>), Refused> {
+    let template = set
+        .iter_mut()
+        .find(|t| t.id == template_id)
+        .ok_or_else(|| template_not_found(template_id))?;
+    template.updated_ms = now;
+    let wanted = template
+        .build(build_id)
+        .map(|b| b.wanted_tags.clone())
+        .unwrap_or_default();
+    for other in template.builds.iter_mut().filter(|b| b.id != build_id) {
+        other.tags.retain(|t| !wanted.contains(&t.tag));
+    }
+    let build = template
+        .builds
+        .iter_mut()
+        .find(|b| b.id == build_id)
+        .ok_or_else(|| build_not_found(build_id))?;
+    build.status = Status::Ready;
+    build.finished_ms = Some(now);
+    build.snapshot = Some(snapshot.to_string());
+    build.user = user.to_string();
+    build.workdir = workdir.to_string();
+    build.tags = wanted
+        .iter()
+        .map(|tag| Tag {
+            tag: tag.clone(),
+            assigned_ms: now,
+        })
+        .collect();
+    // Older ready builds that hold no tag now are removed; one a running build starts from stays.
+    let orphans: Vec<(String, String)> = template
+        .builds
+        .iter()
+        .filter(|b| b.id != build_id && b.status == Status::Ready && b.tags.is_empty())
+        .filter_map(|b| Some((b.id.clone(), b.snapshot.clone()?)))
+        .filter(|(_, snapshot)| !pinned(snapshot))
+        .collect();
+    template
+        .builds
+        .retain(|b| !orphans.iter().any(|(id, _)| *id == b.id));
+    let removed: Vec<String> = orphans.iter().map(|(id, _)| id.clone()).collect();
+    let snapshots = unreferenced(set, orphans.into_iter().map(|(_, s)| s).collect());
+    Ok((removed, snapshots))
+}
+
+/// Deletes the snapshots `owner`'s builds gave up; a failure is logged and the rest still go.
+fn delete_snapshots(app: &App, owner: &str, snapshots: &[String], key: &str) {
+    for snapshot in snapshots {
+        if let Err(refused) = e2b::delete_snapshot(app, snapshot, key) {
+            eprintln!(
+                "apid: template build {owner}: its snapshot {snapshot} was not deleted: {}",
+                refused.message()
+            );
+        }
+    }
+}
+
 /// `POST /e2b/v2/templates/{id}/builds/{build}`: checks the build's steps and starts it.
 fn trigger(
     app: &App,
@@ -950,14 +1061,57 @@ fn trigger(
         vcpus: build.vcpus,
         memory_mib: build.memory_mib,
     };
+    let hash = plan_hash_of(&plan);
+    // A ready build of this template with the same plan and a snapshot that still exists: this build
+    // reuses it, unless a force was asked for.
+    let forced = body.force.unwrap_or(false)
+        || body
+            .steps
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|s| s.force.unwrap_or(false));
+    let reuse: Option<String> = if forced {
+        None
+    } else {
+        template
+            .builds
+            .iter()
+            .filter(|b| {
+                b.id != build_id
+                    && b.status == Status::Ready
+                    && b.plan_hash.as_deref() == Some(hash.as_str())
+            })
+            .find(|b| {
+                b.snapshot
+                    .as_deref()
+                    .is_some_and(|s| e2b::snapshot_source(app, s).is_some())
+            })
+            .map(|b| b.id.clone())
+    };
+    let now = apz_plaza::now_ms();
     let template_id = template.id.clone();
-    templates(app).edit(|set| {
+    let cached: Option<(String, Vec<String>, Vec<String>)> = templates(app).edit(|set| {
+        let source = reuse.as_deref().and_then(|other| {
+            let owner = set.iter().find(|t| t.id == template_id)?;
+            let found = owner.build(other)?;
+            if found.status != Status::Ready || found.plan_hash.as_deref() != Some(hash.as_str()) {
+                return None;
+            }
+            Some((
+                other.to_string(),
+                found.snapshot.clone()?,
+                found.user.clone(),
+                found.workdir.clone(),
+            ))
+        });
         let running = set
             .iter()
             .flat_map(|t| t.builds.iter())
             .filter(|b| b.status == Status::Building)
             .count();
-        if running >= MAX_RUNNING {
+        // A reused build starts no sandbox, so it does not count against the running limit.
+        if source.is_none() && running >= MAX_RUNNING {
             return Err(Refused::new(
                 429,
                 "template_builds_busy",
@@ -976,9 +1130,27 @@ fn trigger(
                 "the build started already",
             ));
         }
-        build.status = Status::Building;
-        Ok(())
+        build.plan_hash = Some(hash.clone());
+        let Some((other, snapshot, user, workdir)) = source else {
+            build.status = Status::Building;
+            return Ok(None);
+        };
+        let (removed, snapshots) =
+            make_ready(set, &template_id, build_id, &snapshot, &user, &workdir, now)?;
+        Ok(Some((other, removed, snapshots)))
     })?;
+    if let Some((other, removed, snapshots)) = cached {
+        log(
+            build_id,
+            "info",
+            format!("Build cached: build {other} has the same steps; its snapshot is reused"),
+        );
+        for id in &removed {
+            e2b::lock(&LOGS).remove(id);
+        }
+        delete_snapshots(app, build_id, &snapshots, key);
+        return Ok(Response::json(202, &json!({})));
+    }
     let weak = app.handle();
     let (build_id, key) = (build_id.to_string(), key.to_string());
     // A build that starts from a snapshot pins it until the build ends, so no orphan sweep deletes it.
@@ -1068,59 +1240,22 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
                 format!("Build finished: snapshot {snapshot}"),
             );
             let finished = templates(app).edit(|set| {
-                let template = set
-                    .iter_mut()
-                    .find(|t| t.id == template_id)
-                    .ok_or_else(|| template_not_found(template_id))?;
-                template.updated_ms = now;
-                let wanted = template
-                    .build(build_id)
-                    .map(|b| b.wanted_tags.clone())
-                    .unwrap_or_default();
-                for other in template.builds.iter_mut().filter(|b| b.id != build_id) {
-                    other.tags.retain(|t| !wanted.contains(&t.tag));
-                }
-                let build = template
-                    .builds
-                    .iter_mut()
-                    .find(|b| b.id == build_id)
-                    .ok_or_else(|| build_not_found(build_id))?;
-                build.status = Status::Ready;
-                build.finished_ms = Some(now);
-                build.snapshot = Some(snapshot.clone());
-                build.user = cursor.user.clone();
-                build.workdir = cursor.workdir.clone();
-                build.tags = wanted
-                    .iter()
-                    .map(|tag| Tag {
-                        tag: tag.clone(),
-                        assigned_ms: now,
-                    })
-                    .collect();
-                // Older ready builds that hold no tag now: their snapshots go.
-                let orphans: Vec<(String, String)> = template
-                    .builds
-                    .iter()
-                    .filter(|b| b.id != build_id && b.status == Status::Ready && b.tags.is_empty())
-                    .filter_map(|b| Some((b.id.clone(), b.snapshot.clone()?)))
-                    .filter(|(_, snapshot)| !pinned(snapshot))
-                    .collect();
-                template
-                    .builds
-                    .retain(|b| !orphans.iter().any(|(id, _)| *id == b.id));
-                Ok(orphans)
+                make_ready(
+                    set,
+                    template_id,
+                    build_id,
+                    &snapshot,
+                    &cursor.user,
+                    &cursor.workdir,
+                    now,
+                )
             });
             match finished {
-                Ok(orphans) => {
-                    for (orphan, snapshot) in orphans {
-                        e2b::lock(&LOGS).remove(&orphan);
-                        if let Err(refused) = e2b::delete_snapshot(app, &snapshot, key) {
-                            eprintln!(
-                                "apid: template build {orphan}: its snapshot {snapshot} was not deleted: {}",
-                                refused.message()
-                            );
-                        }
+                Ok((removed, snapshots)) => {
+                    for id in &removed {
+                        e2b::lock(&LOGS).remove(id);
                     }
+                    delete_snapshots(app, build_id, &snapshots, key);
                 }
                 Err(refused) => {
                     let message = format!(
@@ -2138,13 +2273,22 @@ pub(crate) fn delete(app: &App, id: &str, key: &str) -> Option<Result<Response, 
                 format!("template {id} is in use by a running build"),
             ));
         }
-        Ok(set.remove(at))
+        let template = set.remove(at);
+        let snapshots = unreferenced(
+            set,
+            template
+                .builds
+                .iter()
+                .filter_map(|b| b.snapshot.clone())
+                .collect(),
+        );
+        Ok((template, snapshots))
     });
-    let template = match removed {
-        Ok(template) => template,
+    let (template, snapshots) = match removed {
+        Ok(found) => found,
         Err(refused) => return Some(Err(refused)),
     };
-    for snapshot in template.builds.iter().filter_map(|b| b.snapshot.as_deref()) {
+    for snapshot in &snapshots {
         if e2b::snapshot_source(app, snapshot).is_some()
             && let Err(refused) = e2b::delete_snapshot(app, snapshot, key)
         {
@@ -2270,7 +2414,69 @@ mod tests {
             reason: None,
             user: build_user(),
             workdir: build_home(),
+            plan_hash: None,
         }
+    }
+
+    fn run_plan(arg: &str) -> Plan {
+        Plan {
+            base: Base::Image("e2bdev/base".into()),
+            steps: vec![
+                Step::Run {
+                    cmd: "pip install x".into(),
+                    user: None,
+                },
+                Step::Run {
+                    cmd: arg.into(),
+                    user: Some("root".into()),
+                },
+            ],
+            start_cmd: Some("serve".into()),
+            ready_cmd: None,
+            vcpus: 2,
+            memory_mib: 512,
+        }
+    }
+
+    #[test]
+    fn equal_plans_hash_alike_and_a_changed_step_does_not() {
+        assert_eq!(plan_hash_of(&run_plan("a")), plan_hash_of(&run_plan("a")));
+        assert_ne!(plan_hash_of(&run_plan("a")), plan_hash_of(&run_plan("b")));
+        let mut bigger = run_plan("a");
+        bigger.memory_mib = 1024;
+        assert_ne!(plan_hash_of(&run_plan("a")), plan_hash_of(&bigger));
+        let mut other_base = run_plan("a");
+        other_base.base = Base::Template {
+            id: "t".into(),
+            snapshot: "sb:x".into(),
+            user: build_user(),
+            workdir: build_home(),
+        };
+        assert_ne!(plan_hash_of(&run_plan("a")), plan_hash_of(&other_base));
+    }
+
+    #[test]
+    fn a_snapshot_stays_while_a_build_lists_it() {
+        let set = vec![Template {
+            id: "t".into(),
+            name: "env".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            builds: vec![
+                build("a", Status::Ready, &["default"], 1),
+                build("b", Status::Ready, &[], 2),
+            ],
+        }];
+        assert!(referenced(&set, "sb:a"));
+        assert!(referenced(&set, "sb:b"));
+        assert!(!referenced(&set, "sb:c"));
+        assert_eq!(
+            unreferenced(
+                &set,
+                vec!["sb:c".into(), "sb:c".into(), "sb:a".into()]
+            ),
+            vec!["sb:c".to_string()]
+        );
     }
 
     #[test]
@@ -2374,6 +2580,7 @@ mod tests {
             kind: kind.into(),
             args: Some(args.iter().map(|a| a.to_string()).collect()),
             files_hash: None,
+            force: None,
         };
         let dir = std::env::temp_dir().join(format!("apid-e2b-tpl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
