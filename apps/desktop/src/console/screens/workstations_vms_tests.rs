@@ -430,3 +430,14 @@ fn an_edit_sets_its_field() {
     assert_eq!(form.backend, BackendChoice::Qemu);
     assert_eq!(form.os, Os::Windows);
 }
+
+#[test]
+fn sleep_and_wake_reach_only_plaza_vms() {
+    let vm = |backend: &str| Vm {
+        backend: backend.to_string(),
+        ..Vm::default()
+    };
+    assert!(runs_on_plaza(&vm("plaza")));
+    assert!(runs_on_plaza(&vm("")));
+    assert!(!runs_on_plaza(&vm("qemu")));
+}

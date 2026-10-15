@@ -611,7 +611,7 @@ pub fn vms_view<'a>(vms: &'a Load<Vec<Vm>>, nodes: &Load<Vec<NodeFacts>>) -> Ele
                     (2, "GPU"),
                     (1, "Backend"),
                     (2, "State"),
-                    (1, ""),
+                    (3, ""),
                 ],
                 rows,
             )
@@ -619,13 +619,40 @@ pub fn vms_view<'a>(vms: &'a Load<Vec<Vm>>, nodes: &Load<Vec<NodeFacts>>) -> Ele
     }
 }
 
-/// One VM's row: its name (a link to its station once it has enrolled), node, OS, size, GPU, backend, state, Delete.
+/// Whether the VM runs under plaza, the only backend Sleep and Wake reach (QEMU answers 409). A VM with no backend is plaza.
+pub fn runs_on_plaza(vm: &Vm) -> bool {
+    Launch::of(&vm.backend) == Launch::Plaza
+}
+
+/// One VM's row: its name (a link to its station once it has enrolled), node, OS, size, GPU, backend, state, and its
+/// actions: Sleep and Wake for a plaza VM, then Delete.
 fn vm_row<'a>(vm: &'a Vm, node: String) -> Element<'a, Msg> {
     let (state, tone) = vm_state_chip(vm);
     let name: Element<'a, Msg> = match &vm.station {
         Some(station) => ui::link(&vm.name, Msg::Select(station.clone()), false),
         None => ui::faint(vm.name.clone()).into(),
     };
+    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    if runs_on_plaza(vm) {
+        actions.push(ui::btn_sm(
+            "Sleep",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::SleepVm(vm.id.clone())),
+        ));
+        actions.push(ui::btn_sm(
+            "Wake",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::WakeVm(vm.id.clone())),
+        ));
+    }
+    actions.push(ui::btn_sm(
+        "Delete",
+        None,
+        ui::Kind::Danger,
+        Some(Msg::AskRemoveVm(vm.id.clone())),
+    ));
     cells(vec![
         (3, name),
         (2, ui::faint(node).into()),
@@ -634,15 +661,7 @@ fn vm_row<'a>(vm: &'a Vm, node: String) -> Element<'a, Msg> {
         (2, mono_text(vm_gpu(&vm.gpu))),
         (1, ui::faint(vm_backend(&vm.backend)).into()),
         (2, ui::badge(&state, tone)),
-        (
-            1,
-            ui::btn_sm(
-                "Delete",
-                None,
-                ui::Kind::Danger,
-                Some(Msg::AskRemoveVm(vm.id.clone())),
-            ),
-        ),
+        (3, iced::widget::row(actions).spacing(6).into()),
     ])
 }
 
