@@ -555,10 +555,9 @@ mod tests {
         };
         // Only the URL git is given carries the secret prefix; without it the relay answers 404.
         let url = relay.url("acme");
-        let path = &url[url
-            .find("/v1")
-            .map(|at| url[..at].rfind('/').unwrap_or(at))
-            .unwrap_or(0)..];
+        let path = url
+            .strip_prefix(&format!("http://127.0.0.1:{port}"))
+            .expect("a loopback URL");
         let text = ask(&format!("{path}/info/refs"));
         assert!(
             text.starts_with("HTTP/1.1 200 OK") && text.ends_with("ok"),
