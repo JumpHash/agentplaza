@@ -42,10 +42,11 @@ use serde::{Deserialize, Serialize};
 use crate::events::{Event, EventBus};
 use crate::fleet::{Fleet, agent_flags};
 use crate::snapshots::{self, SnapshotStore, SnapshotView};
+use crate::volumes::VolumeStore;
 use vmm::clonefile::clone_file;
 use vmm::spawner::{
-    self, MAX_GUEST_CID, MIN_GUEST_CID, SnapshotInfo, SnapshotKind, SpawnError, VmExit, VmHandle,
-    VmRuntime, VmSpec, VsockConfig,
+    self, DataVolume, MAX_GUEST_CID, MIN_GUEST_CID, SnapshotInfo, SnapshotKind, SpawnError, VmExit,
+    VmHandle, VmRuntime, VmSpec, VsockConfig,
 };
 
 /// The most forks one `fork` request may make.
@@ -182,6 +183,10 @@ pub struct CreateRun {
     /// keepalive agent; its workspace is a per-run copy of the base image, never a persistent one.
     #[serde(default)]
     pub sandbox: bool,
+    /// Shared data volumes (see [`crate::volumes`]) every VM of the run mounts read-only at
+    /// `/data/<name>`, by name. A VM with volumes boots cold: warm templates carry none.
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// The longest role name a run may carry.
@@ -516,6 +521,8 @@ struct RunMeta {
     balloon_usable_mib: Option<u32>,
     /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
     sandbox: bool,
+    /// The shared data volumes every VM of the run carries (see [`CreateRun::volumes`]).
+    volumes: Vec<DataVolume>,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -1207,6 +1214,8 @@ pub struct Registry {
     /// Warm templates (`crate::templates`): a new keepalive agent VM starts by restoring one instead
     /// of booting. `None` boots every VM cold.
     templates: Option<Arc<crate::templates::Templates>>,
+    /// The node's shared data volumes (`--volume-dir`), or `None` for a node that keeps none.
+    volumes: Option<Arc<VolumeStore>>,
     /// When this daemon started, in milliseconds since the Unix epoch: part of
     /// a run's workspace-directory name, because run ids restart with the
     /// daemon (a bare `run-{id}` would collide with the previous daemon's
@@ -1237,6 +1246,7 @@ impl Registry {
             persist_dir: None,
             snapshots: None,
             templates: None,
+            volumes: None,
             epoch_ms: now_ms(),
             events,
             cids: Arc::new(CidBook::default()),
@@ -1259,6 +1269,63 @@ impl Registry {
     pub fn with_snapshots(mut self, store: Option<SnapshotStore>) -> Self {
         self.snapshots = store;
         self
+    }
+
+    /// Keeps the node's shared data volumes in `store` (see [`crate::volumes`]); `None` keeps none, and
+    /// a run that names a volume is refused.
+    pub fn with_volumes(mut self, store: Option<VolumeStore>) -> Self {
+        self.volumes = store.map(Arc::new);
+        self
+    }
+
+    /// The node's volume store, if it keeps volumes.
+    pub fn volume_store(&self) -> Option<&VolumeStore> {
+        self.volumes.as_deref()
+    }
+
+    /// The data volumes a live run's VMs carry: volume name to the guest CIDs that mount it.
+    pub fn volumes_in_use(&self) -> std::collections::BTreeMap<String, Vec<u64>> {
+        let mut used: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+        for run in self.list() {
+            if run.volumes.is_empty() {
+                continue;
+            }
+            let inner = run.lock();
+            if !matches!(inner.state, RunState::Starting | RunState::Running) {
+                continue;
+            }
+            for cid in inner.vms.iter().filter_map(|slot| slot.guest_cid) {
+                for volume in &run.volumes {
+                    used.entry(volume.name.clone()).or_default().push(cid);
+                }
+            }
+        }
+        used
+    }
+
+    /// The volumes `names` name, as the VMs' specs carry them: each must be in the node's store.
+    fn resolve_volumes(&self, names: &[String]) -> Result<Vec<DataVolume>, String> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let store = self
+            .volumes
+            .as_deref()
+            .ok_or_else(|| "this node keeps no volumes".to_string())?;
+        let volumes = names
+            .iter()
+            .map(|name| {
+                store
+                    .image(name)
+                    .map(|image| DataVolume {
+                        name: name.clone(),
+                        image,
+                    })
+                    .ok_or_else(|| format!("no volume {name}"))
+            })
+            .collect::<Result<Vec<DataVolume>, String>>()?;
+        spawner::check_volumes(&volumes)?;
+        Ok(volumes)
     }
 
     /// Starts new keepalive agent VMs from warm templates kept in `templates` (see
@@ -1295,6 +1362,10 @@ impl Registry {
         let Some(templates) = &self.templates else {
             return none();
         };
+        // Templates carry no data volumes, and a restore must describe the machine it was taken of.
+        if !meta.volumes.is_empty() {
+            return none();
+        }
         let base = self.images.workspace.as_deref();
         if meta.sandbox {
             // A sandbox's copy is the base image cloned into its run's directory, so without a base
@@ -1405,6 +1476,7 @@ impl Registry {
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
         let (vms, named) = request.checked()?;
         let count = u32::try_from(vms).map_err(|_| "n is too large".to_string())?;
+        let volumes = self.resolve_volumes(&request.volumes)?;
         // The id is reserved before the CIDs, because the book keys a span by
         // the run that holds it: allocating and holding happen under the
         // book's lock, so two creates racing here never draw the same span.
@@ -1437,6 +1509,7 @@ impl Registry {
                 keepalive,
                 balloon_usable_mib: request.balloon_usable_mib,
                 sandbox: request.sandbox,
+                volumes,
             },
             plans,
         )
@@ -1474,6 +1547,7 @@ impl Registry {
                 keepalive: true,
                 balloon_usable_mib: fleet.balloon_usable_mib(),
                 sandbox: false,
+                volumes: Vec::new(),
             },
             plans,
         )
@@ -1607,7 +1681,7 @@ impl Registry {
                         .cloned(),
                     balloon,
                     restore: None,
-                    volumes: Vec::new(),
+                    volumes: meta.volumes.clone(),
                 }
             })
             .collect();
@@ -2113,6 +2187,7 @@ impl Registry {
                 keepalive: !sandbox,
                 balloon_usable_mib: vm.balloon_usable_mib,
                 sandbox,
+                volumes: Vec::new(),
             },
         );
         {
@@ -2198,6 +2273,7 @@ impl Registry {
                 keepalive: true,
                 balloon_usable_mib: None,
                 sandbox: false,
+                volumes: Vec::new(),
             },
         );
         {
@@ -2335,6 +2411,7 @@ impl Registry {
             // A fork of a sandbox is a sandbox: its command line is the sandbox's, so a restart of
             // the fork boots the same daemon.
             sandbox: meta.sandbox,
+            volumes: meta.volumes.iter().map(|v| v.name.clone()).collect(),
         };
         let spec = VmSpec {
             kernel: self.images.kernel.clone(),
@@ -2350,7 +2427,7 @@ impl Registry {
             workspace: workspace.map(Path::to_path_buf),
             balloon: meta.balloon_usable_mib,
             restore: None,
-            volumes: Vec::new(),
+            volumes: meta.volumes.clone(),
         };
         let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
         Ok((handle, spec, base))
@@ -2544,6 +2621,7 @@ impl Registry {
             role: meta.role,
             keepalive: meta.keepalive,
             sandbox: meta.sandbox,
+            volumes: meta.volumes,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
@@ -2690,6 +2768,8 @@ pub struct Run {
     /// Whether the run's guests are sandboxes: never keepalive, and their
     /// workspaces are per-run copies of the base image.
     sandbox: bool,
+    /// The shared data volumes every VM of the run carries.
+    volumes: Vec<DataVolume>,
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
@@ -3045,6 +3125,7 @@ impl Run {
             keepalive: self.keepalive,
             balloon_usable_mib,
             sandbox: self.sandbox,
+            volumes: self.volumes.clone(),
         }
     }
 
@@ -3619,6 +3700,7 @@ mod tests {
                 keepalive: None,
                 sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -3748,6 +3830,7 @@ mod tests {
             role: role.map(str::to_string),
             keepalive: false,
             sandbox: false,
+            volumes: Vec::new(),
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
@@ -3973,6 +4056,7 @@ mod tests {
             keepalive: None,
             sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
         assert_eq!(
             request(None, None).vm_cmdline(0, false),
@@ -4020,6 +4104,7 @@ mod tests {
             keepalive: None,
             sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
 
         let (vms, named) = request(2, 2, 512)
@@ -4060,6 +4145,7 @@ mod tests {
             keepalive: None,
             sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
@@ -4203,6 +4289,7 @@ mod tests {
                 keepalive: None,
                 sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .err()
             .expect("the workspace copies cannot be prepared");
@@ -4255,6 +4342,7 @@ mod tests {
                 keepalive: None,
                 sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .err()
             .expect("the run range is full");
@@ -4291,6 +4379,7 @@ mod tests {
                 keepalive: None,
                 sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .expect("a pinned run does not need the run range");
 
@@ -4315,6 +4404,7 @@ mod tests {
                     keepalive: None,
                     sandbox: false,
                     balloon_usable_mib: None,
+                    volumes: Vec::new(),
                 })
                 .expect("the run exists even when its VMs cannot boot");
             assert_eq!(run.view(Detail::Summary).state, "failed");
@@ -4649,6 +4739,7 @@ mod sandbox_tests {
             keepalive: None,
             balloon_usable_mib: None,
             sandbox: true,
+            volumes: Vec::new(),
         }
     }
 
@@ -4661,6 +4752,7 @@ mod sandbox_tests {
             keepalive: false,
             balloon_usable_mib: None,
             sandbox: true,
+            volumes: Vec::new(),
         }
     }
 
@@ -4726,6 +4818,7 @@ mod sandbox_tests {
             role: None,
             keepalive: false,
             sandbox,
+            volumes: Vec::new(),
             created_at: now_ms(),
             events: EventBus::new(),
             cids: Arc::new(CidBook::default()),

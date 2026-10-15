@@ -94,6 +94,9 @@ pub struct Config {
     /// directory, else under the daemon's state directory); `None` (`--no-snapshots`) keeps none, and
     /// every snapshot operation is refused.
     pub snapshot_dir: Option<PathBuf>,
+    /// Where the node's shared data volumes are kept (`--volume-dir`; by default `volumes` beside the
+    /// snapshots); `None` keeps none, and a run that names a volume is refused.
+    pub volume_dir: Option<PathBuf>,
     /// Start new keepalive agent VMs from warm templates kept under `<snapshot_dir>/templates`
     /// (`--no-warm-templates` turns it off). Needs a snapshot dir.
     pub warm_templates: bool,
@@ -124,6 +127,7 @@ impl Default for Config {
             workspace: None,
             persist_dir: None,
             snapshot_dir: None,
+            volume_dir: None,
             warm_templates: true,
             vm_processes: false,
             agents: None,
@@ -209,6 +213,16 @@ impl Node {
                         .map(|dir| crate::templates::Templates::new(dir.join("templates"))),
                 )
                 .with_snapshots(config.snapshot_dir.map(snapshots::SnapshotStore::new))
+                .with_volumes(config.volume_dir.and_then(|dir| {
+                    volumes::VolumeStore::open(dir.clone())
+                        .map_err(|err| {
+                            eprintln!(
+                                "noded: no data volumes: cannot open {}: {err}",
+                                dir.display()
+                            )
+                        })
+                        .ok()
+                }))
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
@@ -1702,6 +1716,14 @@ fn router() -> Router<Node> {
             )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
+        // Shared data volumes: read-only images agent VMs mount at /data/<name>.
+        .get("/v1/volumes", |node, _, _| list_volumes(node))
+        .post("/v1/volumes", |node, request, _| {
+            create_volume(node, &request.body)
+        })
+        .delete("/v1/volumes/{name}", |node, _, params| {
+            delete_volume(node, params.get("name"))
+        })
         // Warm templates: the ones built, and removing one (a VM restored from it keeps running).
         .get("/v1/templates", |node, _, _| {
             match node.registry().templates() {
@@ -2080,6 +2102,74 @@ struct ForkRequest {
     n: u32,
 }
 
+/// `GET /v1/volumes` → 200 with every data volume and the guest CIDs of the live VMs that mount it.
+fn list_volumes(node: &Node) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::json(200, &Vec::<serde_json::Value>::new());
+    };
+    let used = node.registry().volumes_in_use();
+    let listed: Vec<serde_json::Value> = store
+        .list()
+        .into_iter()
+        .map(|volume| {
+            let in_use = used.get(&volume.name).cloned().unwrap_or_default();
+            serde_json::json!({
+                "name": volume.name,
+                "size_bytes": volume.size_bytes,
+                "created_ms": volume.created_ms,
+                "source": volume.source,
+                "in_use": in_use,
+            })
+        })
+        .collect();
+    Response::json(200, &listed)
+}
+
+/// The `POST /v1/volumes` body: the volume's name and the absolute path, on this node, of an ext4
+/// image (cloned) or a directory (packed into a new image).
+#[derive(Debug, serde::Deserialize)]
+struct CreateVolume {
+    name: String,
+    source: PathBuf,
+}
+
+/// The HTTP status of a refused volume operation.
+fn volume_status(err: &volumes::VolumeError) -> u16 {
+    match err {
+        volumes::VolumeError::Invalid(_) => 400,
+        volumes::VolumeError::NotFound(_) => 404,
+        volumes::VolumeError::Exists(_) | volumes::VolumeError::InUse(_) => 409,
+        volumes::VolumeError::Io(_) => 500,
+    }
+}
+
+/// `POST /v1/volumes` → 201 with the new volume.
+fn create_volume(node: &Node, body: &[u8]) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::error(409, "this node keeps no volumes");
+    };
+    let request: CreateVolume = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid volume request: {err}")),
+    };
+    match store.create(&request.name, &request.source) {
+        Ok(view) => Response::json(201, &view),
+        Err(err) => Response::error(volume_status(&err), &err.to_string()),
+    }
+}
+
+/// `DELETE /v1/volumes/{name}` → 200 `{"removed": true}`; 409 while a live VM mounts it.
+fn delete_volume(node: &Node, name: &str) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::error(409, "this node keeps no volumes");
+    };
+    let in_use = node.registry().volumes_in_use().contains_key(name);
+    match store.remove(name, in_use) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "removed": true })),
+        Err(err) => Response::error(volume_status(&err), &err.to_string()),
+    }
+}
+
 /// `POST /v1/runs/{id}/vms/{index}/fork` → 201 with `{"forks": [{"run": id, "cid": n}, ...],
 /// "checkpoint": name}`: a checkpoint of the VM, and one new single-VM run per fork.
 fn fork_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
@@ -2291,6 +2381,54 @@ mod snapshot_route_tests {
         assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
         assert_eq!(checkpoint_delete(&node, "r1", "0", "cp-1-x").status, 409);
         assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 2}"#).status, 409);
+    }
+
+    /// A JSON response's body.
+    fn body_json(response: &Response) -> serde_json::Value {
+        match &response.body {
+            apz_http::Body::Bytes(bytes) => serde_json::from_slice(bytes).expect("a JSON body"),
+            other => panic!("not a byte body: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn data_volumes_are_made_listed_and_removed_through_the_routes() {
+        let root = std::env::temp_dir().join(format!("apz-noded-volumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let image = root.join("source.ext4");
+        std::fs::write(&image, vec![0u8; 1 << 20]).expect("a 1 MiB image");
+        let node = Node::new(Config {
+            volume_dir: Some(root.join("volumes")),
+            ..Config::default()
+        });
+        assert_eq!(body_json(&list_volumes(&node)), serde_json::json!([]));
+        let body = serde_json::json!({"name": "datasets", "source": image}).to_string();
+        assert_eq!(create_volume(&node, body.as_bytes()).status, 201);
+        assert_eq!(
+            create_volume(&node, body.as_bytes()).status,
+            409,
+            "the name is taken"
+        );
+        let bad = serde_json::json!({"name": "Bad Name", "source": image}).to_string();
+        assert_eq!(create_volume(&node, bad.as_bytes()).status, 400);
+        let listed = body_json(&list_volumes(&node));
+        assert_eq!(listed[0]["name"], "datasets");
+        assert_eq!(listed[0]["size_bytes"], 1 << 20);
+        assert_eq!(listed[0]["in_use"], serde_json::json!([]));
+        assert_eq!(delete_volume(&node, "datasets").status, 200);
+        assert_eq!(delete_volume(&node, "datasets").status, 404);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_node_with_no_volume_dir_lists_none_and_refuses_to_make_one() {
+        let node = node(None);
+        assert_eq!(body_json(&list_volumes(&node)), serde_json::json!([]));
+        assert_eq!(
+            create_volume(&node, br#"{"name":"a","source":"/x"}"#).status,
+            409
+        );
     }
 
     #[test]

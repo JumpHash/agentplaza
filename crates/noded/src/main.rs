@@ -34,6 +34,8 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    vsock on Windows; VM i's muxer binds DIR/vm{cid})
   --snapshot-dir DIR keep VM snapshots in DIR (default: snapshots/ under --persist-dir, else
                    under the state directory)
+  --volume-dir DIR keep the shared data volumes in DIR (default: volumes/ under --persist-dir,
+                   else under the state directory)
   --no-snapshots   keep no VM snapshots: sleep, checkpoint, restore, fork and export are
                    refused, and no warm templates are kept either
   --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
@@ -251,6 +253,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
+            "--volume-dir" => config.volume_dir = Some(PathBuf::from(value("--volume-dir")?)),
             "--no-snapshots" => no_snapshots = true,
             "--no-recover" => no_recover = true,
             "--no-warm-templates" => config.warm_templates = false,
@@ -305,6 +308,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         config.persist_dir.as_deref(),
         &apz_os::dirs::state(),
     )?;
+    // Data volumes live beside the snapshots unless the flag names a place.
+    if config.volume_dir.is_none() {
+        config.volume_dir = Some(match config.persist_dir.as_deref() {
+            Some(persist) => persist.join("volumes"),
+            None => apz_os::dirs::state().join("volumes"),
+        });
+    }
     Ok(config)
 }
 

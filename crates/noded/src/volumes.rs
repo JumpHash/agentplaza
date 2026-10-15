@@ -170,8 +170,9 @@ impl VolumeStore {
         let written = serde_json::to_vec_pretty(&view)
             .map_err(|err| VolumeError::Io(format!("encoding {name}: {err}")))
             .and_then(|json| {
-                fs::write(self.meta_path(name), json)
-                    .map_err(|err| VolumeError::Io(format!("writing the metadata of {name}: {err}")))
+                fs::write(self.meta_path(name), json).map_err(|err| {
+                    VolumeError::Io(format!("writing the metadata of {name}: {err}"))
+                })
             });
         if let Err(err) = written {
             let _ = fs::remove_file(&image);
@@ -233,7 +234,10 @@ fn remove_if_present(path: &Path) -> Result<(), VolumeError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(VolumeError::Io(format!("removing {}: {err}", path.display()))),
+        Err(err) => Err(VolumeError::Io(format!(
+            "removing {}: {err}",
+            path.display()
+        ))),
     }
 }
 
@@ -310,7 +314,10 @@ mod tests {
         let store = VolumeStore::open(root.join("store")).expect("a store");
         store.create("data", &src).expect("a volume");
 
-        assert!(matches!(store.create("data", &src), Err(VolumeError::Exists(_))));
+        assert!(matches!(
+            store.create("data", &src),
+            Err(VolumeError::Exists(_))
+        ));
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -322,8 +329,14 @@ mod tests {
         write_image(&src);
         let store = VolumeStore::open(root.join("store")).expect("a store");
 
-        assert!(matches!(store.create("../escape", &src), Err(VolumeError::Invalid(_))));
-        assert!(matches!(store.create("", &src), Err(VolumeError::Invalid(_))));
+        assert!(matches!(
+            store.create("../escape", &src),
+            Err(VolumeError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.create("", &src),
+            Err(VolumeError::Invalid(_))
+        ));
         assert!(store.list().is_empty());
 
         let _ = fs::remove_dir_all(&root);
@@ -350,13 +363,19 @@ mod tests {
         let store = VolumeStore::open(root.join("store")).expect("a store");
         store.create("data", &src).expect("a volume");
 
-        assert!(matches!(store.remove("data", true), Err(VolumeError::InUse(_))));
+        assert!(matches!(
+            store.remove("data", true),
+            Err(VolumeError::InUse(_))
+        ));
         assert!(store.image("data").is_some());
 
         store.remove("data", false).expect("the volume is removed");
         assert!(store.get("data").is_none());
         assert!(store.list().is_empty());
-        assert!(matches!(store.remove("data", false), Err(VolumeError::NotFound(_))));
+        assert!(matches!(
+            store.remove("data", false),
+            Err(VolumeError::NotFound(_))
+        ));
 
         let _ = fs::remove_dir_all(&root);
     }
