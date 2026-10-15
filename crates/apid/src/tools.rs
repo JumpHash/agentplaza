@@ -222,21 +222,10 @@ pub(crate) fn code_engine_model(
         return Ok(None);
     };
     engine_provider(input, model)?;
-    match app.settings.allowed(tier_of(role), model) {
-        Ok(()) => {}
-        // Auggie's models are Augment's own, billed to the owner's Augment account through the vendor
-        // relay, so the plaza's list (which names the gateway's models) does not name them. The
-        // provider was checked above, so only the `augment/` models of Auggie reach this arm.
-        Err(_) if is_auggie_model(input, model) => {}
-        Err(err) => return Err(err),
-    }
+    // Auggie's `augment/` models too: workers may run any model, and the orchestrator only the ones
+    // the owner listed for it, Augment's own included.
+    app.settings.allowed(tier_of(role), model)?;
     Ok(Some(model.to_string()))
-}
-
-/// True for a call to Auggie on one of its own `augment/` models.
-fn is_auggie_model(input: &Value, model: &str) -> bool {
-    input.get("engine").and_then(Value::as_str) == Some("auggie")
-        && model.split_once('/').map(|(provider, _)| provider) == Some("augment")
 }
 
 /// Refuses a call without a model where its engine needs one: Cline is configured with its model
@@ -1476,13 +1465,6 @@ mod tests {
             .expect_err("refused");
         assert!(err.contains("use augment/<model>"), "{err}");
         assert!(model_required(&json!({"engine": "auggie", "prompt": "p"})).is_ok());
-        // Only Auggie's own models skip the plaza's model list (see `code_engine_model`).
-        assert!(is_auggie_model(&auggie("augment/x"), "augment/x"));
-        assert!(!is_auggie_model(&auggie("anthropic/x"), "anthropic/x"));
-        assert!(!is_auggie_model(
-            &json!({"engine": "claude", "prompt": "p"}),
-            "augment/x"
-        ));
     }
 
     #[test]
