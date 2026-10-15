@@ -792,7 +792,8 @@ mod tests {
     use super::super::catalog::ENGINES;
     use super::*;
 
-    /// The fake agent, built before use (cargo does nothing when it is current).
+    /// The fake agent, beside this test binary. A workspace test run (cargo test or nextest) builds it for
+    /// the same target; a run of this crate alone does not, so it is built then.
     fn fake_agent() -> PathBuf {
         static BUILT: Once = Once::new();
         let exe = env::current_exe().expect("the test binary's path");
@@ -800,6 +801,10 @@ mod tests {
             .parent()
             .and_then(Path::parent)
             .expect("the target directory");
+        let agent = target.join("apz-acp-fake-agent");
+        if agent.exists() {
+            return agent;
+        }
         BUILT.call_once(|| {
             let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
             let status = Command::new(cargo)
@@ -838,21 +843,26 @@ mod tests {
         path
     }
 
+    /// The fake agent's command line, under cargo's runner for this target when the tests run under one.
+    fn agent_argv() -> Vec<String> {
+        apz_acp::testing::helper_argv(&fake_agent())
+    }
+
     fn argv(script: &Path) -> Vec<String> {
-        vec![
-            fake_agent().display().to_string(),
-            script.display().to_string(),
-        ]
+        let mut argv = agent_argv();
+        argv.push(script.display().to_string());
+        argv
     }
 
     /// The same, with the fake agent told where to log the client's answers.
     fn argv_logged(script: &Path, log: &Path) -> Vec<String> {
-        vec![
+        let mut argv = vec![
             "/usr/bin/env".to_string(),
             format!("APZ_ACP_FAKE_LOG={}", log.display()),
-            fake_agent().display().to_string(),
-            script.display().to_string(),
-        ]
+        ];
+        argv.extend(agent_argv());
+        argv.push(script.display().to_string());
+        argv
     }
 
     fn options<'w>(workspace: &'w Workspace, dir: &Path, argv: Vec<String>) -> Options<'w> {

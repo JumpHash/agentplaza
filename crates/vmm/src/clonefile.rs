@@ -138,10 +138,14 @@ mod tests {
         file.write_all(&[0xCD; 4096]).expect("written");
         file.sync_all().expect("on disk");
         drop(file);
-        assert!(
-            fs::metadata(&from).expect("the source").blocks() * 512 < 1 << 20,
-            "the source is sparse to begin with"
-        );
+        // A filesystem that allocates the whole length (some macOS volumes do) has no holes to keep: the
+        // copy's own correctness is covered by the other tests, so this one has nothing to check there.
+        if fs::metadata(&from).expect("the source").blocks() * 512 >= 1 << 20 {
+            eprintln!(
+                "skipped: this filesystem allocated the sparse source in full, so it has no holes"
+            );
+            return;
+        }
 
         let to = dir.join("copy.img");
         assert_eq!(clone_file(&from, &to).expect("a copy"), CopyMode::Copy);

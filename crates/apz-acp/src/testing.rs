@@ -245,3 +245,66 @@ fn decode<T: DeserializeOwned>(value: Value) -> Result<T, rpc::Error> {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// The command line that starts `binary`, a helper the tests built for the target they run on (the fake
+/// agent): the binary alone, or cargo's runner for this target first when one is set
+/// (`CARGO_TARGET_<TRIPLE>_RUNNER`, as CI sets `qemu-aarch64 -L …` for the arm64 tests on an x86_64 host).
+/// The runner starts only the test binary itself; a child the test starts would be handed to the kernel,
+/// which cannot run it on a host with no emulator registered for that architecture.
+pub fn helper_argv(binary: &std::path::Path) -> Vec<String> {
+    let mut argv: Vec<String> = target_runner(|name| std::env::var(name).ok())
+        .map(|runner| runner.split_whitespace().map(String::from).collect())
+        .unwrap_or_default();
+    argv.push(binary.display().to_string());
+    argv
+}
+
+/// Cargo's runner for the target these tests were built for, as `var` reads it: Linux GNU targets only,
+/// which are the ones the CI runs under an emulator.
+fn target_runner(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        return None;
+    }
+    let name = format!(
+        "CARGO_TARGET_{}_UNKNOWN_LINUX_GNU_RUNNER",
+        std::env::consts::ARCH.to_uppercase()
+    );
+    var(&name).filter(|runner| !runner.trim().is_empty())
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn a_helper_runs_under_the_targets_runner_only_when_one_is_set() {
+        let none = target_runner(|_| None);
+        assert_eq!(none, None);
+        let blank = target_runner(|_| Some("  ".to_string()));
+        assert_eq!(blank, None);
+        let asked = std::cell::RefCell::new(String::new());
+        let set = target_runner(|name| {
+            *asked.borrow_mut() = name.to_string();
+            Some("qemu-aarch64 -L /usr/aarch64-linux-gnu".to_string())
+        });
+        if cfg!(all(target_os = "linux", target_env = "gnu")) {
+            assert_eq!(
+                set.as_deref(),
+                Some("qemu-aarch64 -L /usr/aarch64-linux-gnu")
+            );
+            let arch = std::env::consts::ARCH.to_uppercase();
+            assert_eq!(
+                *asked.borrow(),
+                format!("CARGO_TARGET_{arch}_UNKNOWN_LINUX_GNU_RUNNER")
+            );
+        } else {
+            assert_eq!(set, None);
+        }
+        assert_eq!(
+            helper_argv(std::path::Path::new("/bin/fake"))
+                .last()
+                .map(String::as_str),
+            Some("/bin/fake")
+        );
+    }
+}
