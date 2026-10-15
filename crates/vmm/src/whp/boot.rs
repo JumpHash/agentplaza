@@ -81,6 +81,12 @@ pub enum BootError {
          (the virtio-block device is Linux-only)"
     )]
     UnsupportedWorkspace,
+    /// Shared data volumes are virtio-block devices too, which the Windows backend does not have.
+    #[error(
+        "this VM asked for shared data volumes, which the Windows backend cannot provide yet \
+         (the virtio-block device is Linux-only)"
+    )]
+    UnsupportedVolumes,
     /// A kernel or initrd file could not be read.
     #[error("cannot read {path}: {source}")]
     Read {
@@ -159,6 +165,9 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
     // would leave the guest waiting for a disk that never appears.
     if spec.workspace.is_some() {
         return Err(BootError::UnsupportedWorkspace);
+    }
+    if !spec.volumes.is_empty() {
+        return Err(BootError::UnsupportedVolumes);
     }
     if spec.balloon.is_some() {
         eprintln!(

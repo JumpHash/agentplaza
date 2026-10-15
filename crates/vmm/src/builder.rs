@@ -174,6 +174,7 @@ fn guest_cmdline(
     has_vsock: bool,
     has_workspace: bool,
     has_balloon: bool,
+    volumes: usize,
 ) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
@@ -229,10 +230,13 @@ fn guest_cmdline(
                 "virtio_mmio.device={MMIO_LEN:#x}@{BALLOON_MMIO_START:#x}:{BALLOON_GSI}"
             ));
         }
+        for (addr, gsi) in data_volume_slots(volumes) {
+            defaults.push(format!("virtio_mmio.device={MMIO_LEN:#x}@{addr:#x}:{gsi}"));
+        }
     }
     // On `aarch64` the device tree describes the transports.
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = (has_vsock, has_workspace, has_balloon);
+    let _ = (has_vsock, has_workspace, has_balloon, volumes);
 
     if defaults.is_empty() {
         return requested.to_string();
@@ -399,6 +403,22 @@ fn set_serial_input_hook(runtime: &Arc<VmRuntime>, serial: &Arc<Mutex<SerialDevi
     });
 }
 
+/// The MMIO window and GSI of each of a VM's `count` shared data volumes, in the spec's order: one
+/// layout slot each from `DATA_MMIO_START` and `DATA_GSI_START` on.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn data_volume_slots(count: usize) -> impl Iterator<Item = (u64, u32)> {
+    #[cfg(target_arch = "aarch64")]
+    use crate::arch::aarch64::layout::{DATA_GSI_START, DATA_MMIO_START, MMIO_LEN};
+    #[cfg(target_arch = "x86_64")]
+    use crate::arch::x86_64::layout::{DATA_GSI_START, DATA_MMIO_START, MMIO_LEN};
+    (0..count.min(crate::spawner::MAX_DATA_VOLUMES)).map(|i| {
+        (
+            DATA_MMIO_START + i as u64 * MMIO_LEN,
+            DATA_GSI_START + i as u32,
+        )
+    })
+}
+
 /// The machine a VM is built from, as a restore compares it with its snapshot.
 /// The vsock CID and the workspace path are not part of it: a restore may name
 /// another CID and a copy of the volume.
@@ -409,6 +429,8 @@ struct MachineShape {
     vsock: bool,
     workspace: bool,
     balloon: bool,
+    /// How many shared data volumes the VM carries.
+    volumes: usize,
 }
 
 /// Whether this backend builds a balloon. `aarch64` does not yet: its boot says
@@ -424,6 +446,7 @@ impl MachineShape {
             vsock: spec.vsock.is_some(),
             workspace: spec.workspace.is_some(),
             balloon: BALLOON_BUILT && spec.balloon.is_some(),
+            volumes: spec.volumes.len(),
         }
     }
 
@@ -434,6 +457,7 @@ impl MachineShape {
             vsock: snapshot.devices.vsock.is_some(),
             workspace: snapshot.devices.workspace.is_some(),
             balloon: snapshot.devices.balloon.is_some(),
+            volumes: snapshot.devices.volumes.len(),
         }
     }
 }
@@ -468,6 +492,12 @@ fn check_restore_shape(spec: MachineShape, snapshot: MachineShape) -> Result<(),
                 describe_device(saved)
             ));
         }
+    }
+    if spec.volumes != snapshot.volumes {
+        differences.push(format!(
+            "data volumes: the spec has {}, the snapshot {}",
+            spec.volumes, snapshot.volumes
+        ));
     }
     if differences.is_empty() {
         Ok(())
@@ -576,15 +606,15 @@ mod tests {
     #[test]
     fn guest_cmdline_appends_console_defaults() {
         assert_eq!(
-            guest_cmdline("console=ttyS0 panic=-1", false, false, false),
+            guest_cmdline("console=ttyS0 panic=-1", false, false, false, 0),
             format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("", false, false, false),
+            guest_cmdline("", false, false, false, 0),
             format!("pci=off loglevel=7{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("  panic=-1  ", false, false, false),
+            guest_cmdline("  panic=-1  ", false, false, false, 0),
             format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
         );
     }
@@ -592,28 +622,28 @@ mod tests {
     #[test]
     fn guest_cmdline_respects_the_callers_settings() {
         assert_eq!(
-            guest_cmdline("quiet", false, false, false),
+            guest_cmdline("quiet", false, false, false, 0),
             format!("quiet pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("debug", false, false, false),
+            guest_cmdline("debug", false, false, false, 0),
             format!("debug pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("loglevel=3 ignore_loglevel", false, false, false),
+            guest_cmdline("loglevel=3 ignore_loglevel", false, false, false, 0),
             format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=off loglevel=9", false, false, false),
+            guest_cmdline("pci=off loglevel=9", false, false, false, 0),
             format!("pci=off loglevel=9{REBOOT_ACPI}")
         );
         assert_eq!(
-            guest_cmdline("pci=nocrs", false, false, false),
+            guest_cmdline("pci=nocrs", false, false, false, 0),
             format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
         );
         // A caller-chosen reboot mode is left alone.
         assert_eq!(
-            guest_cmdline("reboot=k", false, false, false),
+            guest_cmdline("reboot=k", false, false, false, 0),
             "reboot=k pci=off loglevel=7"
         );
     }
@@ -640,15 +670,15 @@ mod tests {
 
         // A vsock device, a workspace volume, or both.
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, false, false),
+            guest_cmdline("console=ttyS0", true, false, false, 0),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, true, false),
+            guest_cmdline("console=ttyS0", false, true, false, 0),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={workspace}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, false),
+            guest_cmdline("console=ttyS0", true, true, false, 0),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace}"
@@ -658,20 +688,40 @@ mod tests {
         let balloon = format!("{MMIO_LEN:#x}@{BALLOON_MMIO_START:#x}:{BALLOON_GSI}");
         assert!(balloon != vsock && balloon != workspace);
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, true),
+            guest_cmdline("console=ttyS0", true, true, true, 0),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace} virtio_mmio.device={balloon}"
             )
         );
+        // Each shared data volume gets the next data slot: its own window and interrupt.
+        let volume = |i: u64| {
+            use crate::arch::x86_64::layout::{DATA_GSI_START, DATA_MMIO_START};
+            format!(
+                "{MMIO_LEN:#x}@{:#x}:{}",
+                DATA_MMIO_START + i * MMIO_LEN,
+                DATA_GSI_START + i as u32
+            )
+        };
+        assert!(volume(0) != balloon && volume(1) != volume(0));
+        assert_eq!(
+            guest_cmdline("console=ttyS0", true, true, true, 2),
+            format!(
+                "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
+                 virtio_mmio.device={workspace} virtio_mmio.device={balloon} \
+                 virtio_mmio.device={} virtio_mmio.device={}",
+                volume(0),
+                volume(1)
+            )
+        );
         // A VM with neither device registers no transport...
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, false, false),
+            guest_cmdline("console=ttyS0", false, false, false, 0),
             "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
         // ...and a caller that registered transports itself keeps its own.
         assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true, false),
+            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true, false, 0),
             "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
@@ -682,8 +732,8 @@ mod tests {
     #[test]
     fn guest_cmdline_adds_nothing_for_the_virtio_transports() {
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, false),
-            guest_cmdline("console=ttyS0", false, false, false)
+            guest_cmdline("console=ttyS0", true, true, false, 0),
+            guest_cmdline("console=ttyS0", false, false, false, 0)
         );
     }
 
@@ -700,6 +750,7 @@ mod tests {
             vsock: true,
             workspace: true,
             balloon: false,
+            volumes: 1,
         };
         check_restore_shape(saved, saved).expect("the same machine restores");
 
@@ -719,6 +770,10 @@ mod tests {
             },
             MachineShape {
                 balloon: true,
+                ..saved
+            },
+            MachineShape {
+                volumes: 2,
                 ..saved
             },
         ] {
@@ -914,6 +969,7 @@ mod x86_64 {
         vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
         workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
         balloon: Option<Arc<Mutex<VirtioMmioTransport>>>,
+        volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
     }
 
     /// Builds and boots the VM, leaving its vCPUs running; or, with
@@ -971,6 +1027,7 @@ mod x86_64 {
                 spec.vsock.is_some(),
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
+                spec.volumes.len(),
             )
             .as_str(),
             CMDLINE_MAX_SIZE,
@@ -1196,6 +1253,29 @@ mod x86_64 {
             None => None,
         };
 
+        // The shared data volumes: one read-only block device each, in the layout's data slots, the
+        // volume's name as its device id (the guest mounts it at /data/<name> by that id).
+        let mut volumes = Vec::with_capacity(spec.volumes.len());
+        for ((addr, gsi), (index, volume)) in
+            super::data_volume_slots(spec.volumes.len()).zip(spec.volumes.iter().enumerate())
+        {
+            let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+            vm.register_irq(&irq, gsi).map_err(BootError::Irq)?;
+            let device = VirtioBlock::new_read_only(&volume.image, &volume.name)
+                .map_err(VirtioError::from)
+                .map_err(BootError::Virtio)?;
+            let transport = Arc::new(Mutex::new(super::transport(
+                Box::new(BlockMmioDevice::new(device)),
+                vm.guest_memory().clone(),
+                irq,
+                restored.and_then(|states| states.volumes.get(index)),
+            )?));
+            vm.common
+                .mmio_bus
+                .insert(transport.clone(), addr, MMIO_LEN)?;
+            volumes.push(transport);
+        }
+
         // The balloon, when the caller asked for one: a third transport in the
         // next MMIO slot on the next legacy GSI. The VM is sized at
         // `memory_mib` and the balloon starts out holding everything above the
@@ -1239,6 +1319,7 @@ mod x86_64 {
             vsock,
             workspace,
             balloon,
+            volumes,
         })
     }
 
@@ -1259,6 +1340,7 @@ mod x86_64 {
             vsock: devices.vsock.as_ref().map(Arc::downgrade),
             workspace: devices.workspace.as_ref().map(Arc::downgrade),
             balloon: devices.balloon.as_ref().map(Arc::downgrade),
+            volumes: devices.volumes.iter().map(Arc::downgrade).collect(),
         };
         runtime.set_vm_control(Arc::new(InProcessControl::new(
             Arc::downgrade(vm),
@@ -1424,6 +1506,7 @@ mod aarch64 {
         serial: Arc<Mutex<SerialDevice>>,
         vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
         workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
+        volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
     }
 
     /// Builds and boots the VM, leaving its vCPUs running; or, with
@@ -1496,6 +1579,7 @@ mod aarch64 {
                 spec.vsock.is_some(),
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
+                spec.volumes.len(),
             )
             .as_str(),
             CMDLINE_MAX_SIZE,
@@ -1589,6 +1673,13 @@ mod aarch64 {
                 addr: WORKSPACE_MMIO_START,
                 len: MMIO_LEN,
                 gsi: WORKSPACE_GSI,
+            });
+        }
+        for (addr, gsi) in super::data_volume_slots(spec.volumes.len()) {
+            virtio_mmio.push(VirtioMmioFdtInfo {
+                addr,
+                len: MMIO_LEN,
+                gsi,
             });
         }
         virtio_mmio
@@ -1704,6 +1795,29 @@ mod aarch64 {
             None => None,
         };
 
+        // The shared data volumes: one read-only block device each, in the layout's data slots, the
+        // volume's name as its device id (the guest mounts it at /data/<name> by that id).
+        let mut volumes = Vec::with_capacity(spec.volumes.len());
+        for ((addr, gsi), (index, volume)) in
+            super::data_volume_slots(spec.volumes.len()).zip(spec.volumes.iter().enumerate())
+        {
+            let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+            vm.register_irq(&irq, gsi).map_err(BootError::Irq)?;
+            let device = VirtioBlock::new_read_only(&volume.image, &volume.name)
+                .map_err(VirtioError::from)
+                .map_err(BootError::Virtio)?;
+            let transport = Arc::new(Mutex::new(super::transport(
+                Box::new(BlockMmioDevice::new(device)),
+                vm.guest_memory().clone(),
+                irq,
+                restored.and_then(|states| states.volumes.get(index)),
+            )?));
+            vm.common
+                .mmio_bus
+                .insert(transport.clone(), addr, MMIO_LEN)?;
+            volumes.push(transport);
+        }
+
         // Host console input: installed before the vCPUs start, held weakly (see
         // the x86_64 backend).
         super::set_serial_input_hook(runtime, &serial);
@@ -1712,6 +1826,7 @@ mod aarch64 {
             serial,
             vsock,
             workspace,
+            volumes,
         })
     }
 
@@ -1730,6 +1845,7 @@ mod aarch64 {
             vsock: devices.vsock.as_ref().map(Arc::downgrade),
             workspace: devices.workspace.as_ref().map(Arc::downgrade),
             balloon: None,
+            volumes: devices.volumes.iter().map(Arc::downgrade).collect(),
         };
         runtime.set_vm_control(Arc::new(InProcessControl::new(
             Arc::downgrade(vm),

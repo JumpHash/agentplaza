@@ -58,6 +58,8 @@ pub struct VmDevices {
     pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub balloon: Option<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The shared data volumes' transports, in the spec's order.
+    pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
 }
 
 /// The in-process [`VmControl`] of one VM.
@@ -145,6 +147,15 @@ impl InProcessControl {
             vsock: save_transport(self.devices.vsock.as_ref(), "vsock")?,
             workspace: save_transport(self.devices.workspace.as_ref(), "workspace")?,
             balloon: save_transport(self.devices.balloon.as_ref(), "balloon")?,
+            volumes: self
+                .devices
+                .volumes
+                .iter()
+                .map(|volume| {
+                    save_transport(Some(volume), "data volume")?
+                        .ok_or_else(|| snapshot_error("a data volume's transport is gone"))
+                })
+                .collect::<Result<Vec<_>, SpawnError>>()?,
         })
     }
 
@@ -330,6 +341,7 @@ mod tests {
                 serial: Weak::new(),
                 vsock: None,
                 workspace: None,
+                volumes: Vec::new(),
                 balloon: None,
             },
             DeviceGate::default(),
@@ -403,6 +415,7 @@ mod tests {
                 serial: Arc::downgrade(serial),
                 vsock: None,
                 workspace: None,
+                volumes: Vec::new(),
                 balloon: None,
             },
             DeviceGate::default(),

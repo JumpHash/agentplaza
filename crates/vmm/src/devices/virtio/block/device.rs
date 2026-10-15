@@ -868,7 +868,11 @@ mod tests {
         let (_file, block) = read_only_volume(&[0u8; 4096], "");
         assert!(block.is_read_only());
         assert_eq!(block.avail_features(), AVAIL_FEATURES | VIRTIO_BLK_F_RO);
-        assert_ne!(block.avail_features() & (1 << 5), 0, "VIRTIO_BLK_F_RO is bit 5");
+        assert_ne!(
+            block.avail_features() & (1 << 5),
+            0,
+            "VIRTIO_BLK_F_RO is bit 5"
+        );
 
         let (_file, writable) = volume(&[0u8; 4096]);
         assert!(!writable.is_read_only());

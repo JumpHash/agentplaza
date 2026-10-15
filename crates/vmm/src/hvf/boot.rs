@@ -115,6 +115,12 @@ pub enum BootError {
          device is implemented for that backend)"
     )]
     UnsupportedWorkspace,
+    /// Shared data volumes are virtio-mmio block devices too, which this backend does not have.
+    #[error(
+        "this VM asked for shared data volumes, which Hypervisor.framework VMs cannot carry yet \
+         (no block device is implemented for that backend)"
+    )]
+    UnsupportedVolumes,
     /// The VM did not start: {0}
     #[error("the VM did not start: {0}")]
     Startup(String),
@@ -139,6 +145,9 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
     // booting a guest that would wait forever for a device that never appears.
     if spec.workspace.is_some() {
         return Err(BootError::UnsupportedWorkspace);
+    }
+    if !spec.volumes.is_empty() {
+        return Err(BootError::UnsupportedVolumes);
     }
 
     let vcpu_count = usize::from(spec.vcpus);

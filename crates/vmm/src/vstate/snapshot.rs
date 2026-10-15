@@ -119,6 +119,10 @@ pub struct DeviceStates {
     pub vsock: Option<MmioDeviceState>,
     pub workspace: Option<MmioDeviceState>,
     pub balloon: Option<MmioDeviceState>,
+    /// The shared data volumes' transports, in the spec's order (`VmSpec::volumes`). Older snapshots
+    /// have none.
+    #[serde(default)]
+    pub volumes: Vec<MmioDeviceState>,
 }
 
 /// The UART's registers, mirrored from `vm_superio::serial::SerialState` (which has no serde).
