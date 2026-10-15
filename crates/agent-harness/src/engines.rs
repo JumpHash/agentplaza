@@ -17,12 +17,12 @@ const DEFAULT_TIMEOUT_S: u64 = 900;
 const MIN_TIMEOUT_S: u64 = 30;
 const MAX_TIMEOUT_S: u64 = 3600;
 /// npm's global prefix for the engines; their binaries are in its `bin`.
-const NPM_PREFIX: &str = "/workspace/.npm-global";
+pub(crate) const NPM_PREFIX: &str = "/workspace/.npm-global";
 /// An npm install of an engine may take a while on a cold cache.
-const INSTALL_TIMEOUT_S: u64 = 600;
+pub(crate) const INSTALL_TIMEOUT_S: u64 = 600;
 /// The most output a run returns, and the tail kept from a failure.
 const TAIL_BYTES: usize = 16 * 1024;
-const ENV_PROGRAM: &str = "/usr/bin/env";
+pub(crate) const ENV_PROGRAM: &str = "/usr/bin/env";
 /// Set for the engine on top of the bash tool's environment. `plaza.gateway` is relayed
 /// to the plaza's model gateway, so the placeholder keys are not real credentials.
 const ENGINE_ENV: &[(&str, &str)] = &[
@@ -155,26 +155,8 @@ impl Job {
             Some(prompt) if !prompt.trim().is_empty() => prompt.to_string(),
             _ => return Err("invalid input: \"prompt\" must be a non-empty string".to_string()),
         };
-        let timeout_s = match input.get("timeout_s") {
-            None | Some(Value::Null) => DEFAULT_TIMEOUT_S,
-            Some(value) => value
-                .as_u64()
-                .filter(|secs| (MIN_TIMEOUT_S..=MAX_TIMEOUT_S).contains(secs))
-                .ok_or_else(|| {
-                    format!("invalid input: \"timeout_s\" must be a whole number of seconds from {MIN_TIMEOUT_S} to {MAX_TIMEOUT_S}")
-                })?,
-        };
-        let model = match input.get("model") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(
-                value
-                    .as_str()
-                    .filter(|model| !model.trim().is_empty())
-                    .ok_or_else(|| {
-                        "invalid input: \"model\" must be a non-empty string".to_string()
-                    })?,
-            ),
-        };
+        let timeout_s = timeout_arg(input)?;
+        let model = optional_text(input, "model")?;
         let route = model_route(engine, model)?;
         let dir = job_dir(workspace, input.get("path"))?;
         Ok(Self {
@@ -185,6 +167,37 @@ impl Job {
             route,
         })
     }
+}
+
+/// The `timeout_s` of a call: a whole number of seconds from `MIN_TIMEOUT_S` to `MAX_TIMEOUT_S`,
+/// `DEFAULT_TIMEOUT_S` when absent. The ACP engines take the same limits.
+pub(crate) fn timeout_arg(input: &Value) -> Result<u64, String> {
+    match input.get("timeout_s") {
+        None | Some(Value::Null) => Ok(DEFAULT_TIMEOUT_S),
+        Some(value) => value
+            .as_u64()
+            .filter(|secs| (MIN_TIMEOUT_S..=MAX_TIMEOUT_S).contains(secs))
+            .ok_or_else(|| {
+                format!("invalid input: \"timeout_s\" must be a whole number of seconds from {MIN_TIMEOUT_S} to {MAX_TIMEOUT_S}")
+            }),
+    }
+}
+
+/// An optional string argument: absent or null is `None`; anything else must be a non-empty string.
+pub(crate) fn optional_text<'a>(input: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|text| !text.trim().is_empty())
+            .map(Some)
+            .ok_or_else(|| format!("invalid input: {key:?} must be a non-empty string")),
+    }
+}
+
+/// The folder an ACP engine session starts in: [`job_dir`]'s rules for `path`.
+pub(crate) fn job_folder(workspace: &Workspace, path: Option<&Value>) -> Result<PathBuf, String> {
+    job_dir(workspace, path)
 }
 
 /// The folder a run starts in: the workspace, or `path` under it. A `path` that is
@@ -216,6 +229,11 @@ fn job_dir(workspace: &Workspace, path: Option<&Value>) -> Result<PathBuf, Strin
     Ok(canonical)
 }
 
+/// Installs `nodejs` and `npm` through apk; the engines' npm installs need both.
+pub(crate) fn ensure_node(workspace: &Workspace) -> Result<(), String> {
+    bash::install_packages(workspace, &json!({ "packages": ["nodejs", "npm"] })).map(|_| ())
+}
+
 /// Installs the engine when its binary is missing: `nodejs` and `npm` through apk, then
 /// the engine's package into the agent's npm prefix. A failure says which step failed.
 fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String> {
@@ -223,14 +241,12 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
     if binary.exists() {
         return Ok(());
     }
-    bash::install_packages(workspace, &json!({ "packages": ["nodejs", "npm"] })).map_err(
-        |err| {
-            format!(
-                "cannot install nodejs and npm for {}: {err}",
-                engine.binary()
-            )
-        },
-    )?;
+    ensure_node(workspace).map_err(|err| {
+        format!(
+            "cannot install nodejs and npm for {}: {err}",
+            engine.binary()
+        )
+    })?;
     bash::execute(
         workspace.dir(),
         "npm",
@@ -250,23 +266,51 @@ fn ensure_installed(workspace: &Workspace, engine: Engine) -> Result<(), String>
     }
 }
 
-/// The `env` arguments that start the engine: `HOME` is the workspace (the engine's own
-/// config lives there, not in a `path` subfolder), then the engine's environment, then the
-/// route's settings (`env` applies its pairs in order, so they override the defaults),
-/// then the binary and its arguments.
-fn command_args(engine: Engine, prompt: &str, home: &Path, route: &Route) -> Vec<String> {
-    let mut argv = vec![format!("HOME={}", home.display())];
-    argv.extend(
+/// The `KEY=VALUE` pairs that start an engine: `HOME` is the workspace (the engine's own config
+/// lives there, not in a `path` subfolder), then the engine's environment, then the route's
+/// settings (`env` applies its pairs in order, so they override the defaults).
+fn engine_env(home: &Path, route: &Route) -> Vec<String> {
+    let mut pairs = vec![format!("HOME={}", home.display())];
+    pairs.extend(
         ENGINE_ENV
             .iter()
             .map(|(key, value)| format!("{key}={value}")),
     );
-    argv.extend(
+    pairs.extend(
         route
             .env
             .iter()
             .map(|(key, value)| format!("{key}={value}")),
     );
+    pairs
+}
+
+/// What an ACP engine session starts with, for the catalogue's engine `engine_id`: its `KEY=VALUE`
+/// pairs (see [`engine_env`]) and the model id the engine is given, from the same routes as the
+/// headless runs. OpenCode's model id is its provider block's `<id>/<model>`, which its config
+/// names as the default model.
+pub(crate) fn acp_launch(
+    workspace: &Workspace,
+    engine_id: &str,
+    model: Option<&str>,
+) -> Result<(Vec<String>, Option<String>), String> {
+    let engine = Engine::parse(engine_id)?;
+    let route = model_route(engine, model)?;
+    let model_id = match (engine, model) {
+        (Engine::OpenCode, Some(model)) => {
+            let (provider, rest) = split_model(model)?;
+            let (id, _, _) = opencode_provider_for(provider, rest);
+            Some(format!("{id}/{rest}"))
+        }
+        _ => route.model.clone(),
+    };
+    Ok((engine_env(workspace.dir(), &route), model_id))
+}
+
+/// The `env` arguments that start the headless engine: its pairs (see [`engine_env`]), then the
+/// binary and its arguments.
+fn command_args(engine: Engine, prompt: &str, home: &Path, route: &Route) -> Vec<String> {
+    let mut argv = engine_env(home, route);
     argv.push(engine.binary().to_string());
     argv.extend(engine.args(prompt, route.model.as_deref()));
     argv
@@ -465,7 +509,7 @@ fn strip_exit_line(text: &str) -> &str {
 }
 
 /// The last `TAIL_BYTES` of `text`, on a character boundary, with a note when cut.
-fn tail(text: &str) -> String {
+pub(crate) fn tail(text: &str) -> String {
     if text.len() <= TAIL_BYTES {
         return text.to_string();
     }
