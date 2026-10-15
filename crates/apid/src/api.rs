@@ -72,6 +72,8 @@ pub fn router() -> Router<App> {
     let router = crate::rules::routes(router);
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
+    let router = crate::sleep::routes(router);
+    let router = crate::vm_snapshots::routes(router);
     let router = crate::roles_custom::routes(router);
     let router = crate::agent_proposals::routes(router);
     let router = crate::nodes::routes(router);

@@ -26,6 +26,9 @@ pub enum Status {
     Offline,
     Idle,
     Working,
+    /// The agent's VM was snapshotted and stopped while it had nothing to do; it is woken (restored
+    /// from that snapshot) as soon as work, a chat or the owner needs it (`crate::sleep`).
+    Asleep,
 }
 
 /// One agent. `cid` is its identity.

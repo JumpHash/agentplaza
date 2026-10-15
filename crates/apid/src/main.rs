@@ -60,6 +60,7 @@ mod sanctions;
 mod scheduler;
 mod settings;
 mod skills;
+mod sleep;
 mod society;
 mod spawned;
 mod state;
@@ -72,6 +73,7 @@ mod unfurl;
 mod upstream;
 mod usage;
 mod vault;
+mod vm_snapshots;
 
 use std::process::ExitCode;
 
