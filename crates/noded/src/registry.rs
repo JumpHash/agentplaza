@@ -872,14 +872,15 @@ fn sandbox_workspace_path(run_dir: &Path, index: usize) -> PathBuf {
     run_dir.join(format!("workspace-{index}.ext4"))
 }
 
-/// The template start of one new VM of the shape `shape` (guest CID `cid`), whose workspace is `target`:
-/// the template for the shape (built on first use) with `target` laid down as a clone of its disk. The
-/// result is the template's snapshot to restore the VM from, or `None` when the VM boots cold.
+/// The template start of one new VM of the shape `shape` (guest CID `cid`), whose workspace is `target`
+/// (`None` for a VM with no workspace volume): the template for the shape (built on first use) with
+/// `target` laid down as a clone of its disk. The result is the template's snapshot to restore the VM
+/// from, or `None` when the VM boots cold.
 fn template_start(
     templates: &crate::templates::Templates,
     shape: &crate::templates::Shape,
     cid: u64,
-    target: &Path,
+    target: Option<&Path>,
 ) -> Option<PathBuf> {
     let template = match templates.get_or_build(shape) {
         Ok(template) => template,
@@ -888,14 +889,25 @@ fn template_start(
             return None;
         }
     };
-    let laid = target
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| vmm::clonefile::clone_file(&template.workspace, target));
+    let laid = match (target, template.workspace.as_deref()) {
+        (Some(target), Some(disk)) => target
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| vmm::clonefile::clone_file(disk, target))
+            .map(|_| ()),
+        // No disk on either side: the VM has no workspace volume, so there is nothing to lay down.
+        (None, None) => Ok(()),
+        // The template is of the VM's own shape, so its disk and the VM's always agree.
+        _ => Err(std::io::Error::other(
+            "the template and the VM disagree on a workspace volume",
+        )),
+    };
     match laid {
-        Ok(_) => Some(template.snapshot),
+        Ok(()) => Some(template.snapshot),
         Err(err) => {
-            let _ = std::fs::remove_file(target);
+            if let Some(target) = target {
+                let _ = std::fs::remove_file(target);
+            }
             eprintln!(
                 "noded: cannot copy the template disk for cid {cid} ({err}); booting it cold"
             );
@@ -936,8 +948,9 @@ pub struct ImportedVm {
     pub cmdline: String,
     /// A staged directory holding `memory.img` and `vmstate.json`: moved into the CID's sleep snapshot.
     pub sleep_dir: PathBuf,
-    /// The staged `workspace.img`: moved to the VM's workspace image on this node.
-    pub workspace: PathBuf,
+    /// The staged `workspace.img`, moved to the VM's workspace image on this node. `None` for a VM
+    /// with no workspace volume: its export carries no workspace image.
+    pub workspace: Option<PathBuf>,
 }
 
 /// An asleep VM, as an export reads it (see [`Registry::asleep_vm`]).
@@ -1001,8 +1014,8 @@ struct PreparedFork {
     cid: u64,
     handle: VmHandle,
     spec: VmSpec,
-    /// The fork's own workspace image.
-    workspace: PathBuf,
+    /// The fork's own workspace image, when the fork has a workspace volume.
+    workspace: Option<PathBuf>,
     /// The fork's diff base (see [`SnapshotStore::stage_base`]).
     base: PathBuf,
 }
@@ -1158,6 +1171,10 @@ impl Registry {
     /// it has no persistent workspace yet; one that already has one (an agent coming back after a
     /// restart of the node) boots cold from its own disk. A sandbox's workspace is its run's own, so
     /// it is always new. A template that cannot be built is logged and the VM boots cold too.
+    ///
+    /// A node with no base image gives its keepalive VMs no workspace volume at all (their
+    /// `/workspace` lives in guest RAM): their template has no disk to lay down, and a new VM is
+    /// simply one being created now, whether or not the node has a persist directory.
     fn template_starts(
         &self,
         id: &str,
@@ -1167,10 +1184,16 @@ impl Registry {
         memory_mib: usize,
     ) -> Vec<Option<PathBuf>> {
         let none = || vec![None; plans.len()];
-        let (Some(templates), Some(base)) = (&self.templates, &self.images.workspace) else {
+        let Some(templates) = &self.templates else {
             return none();
         };
+        let base = self.images.workspace.as_deref();
         if meta.sandbox {
+            // A sandbox's copy is the base image cloned into its run's directory, so without a base
+            // image there is no disk for its template to lay down.
+            let Some(base) = base else {
+                return none();
+            };
             let run_dir = self.run_dir(id);
             if let Err(err) = snapshots::private_dir(&run_dir) {
                 eprintln!(
@@ -1184,35 +1207,43 @@ impl Registry {
                 .enumerate()
                 .map(|(index, plan)| {
                     let target = sandbox_workspace_path(&run_dir, index);
-                    let shape = self.template_shape(base, meta, plan, vcpus, memory_mib);
-                    template_start(templates, &shape, plan.vsock_cid, &target)
+                    let shape = self.template_shape(Some(base), meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, Some(&target))
                 })
                 .collect();
         }
-        let Some(persist) = &self.persist_dir else {
-            return none();
-        };
         if !meta.keepalive {
             return none();
         }
-        plans
-            .iter()
-            .map(|plan| {
-                let image = persistent_workspace_path(persist, plan.vsock_cid);
-                if image.exists() {
-                    return None;
-                }
-                let shape = self.template_shape(base, meta, plan, vcpus, memory_mib);
-                template_start(templates, &shape, plan.vsock_cid, &image)
-            })
-            .collect()
+        match (base, &self.persist_dir) {
+            (None, _) => plans
+                .iter()
+                .map(|plan| {
+                    let shape = self.template_shape(None, meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, None)
+                })
+                .collect(),
+            (Some(_), None) => none(),
+            (Some(base), Some(persist)) => plans
+                .iter()
+                .map(|plan| {
+                    let image = persistent_workspace_path(persist, plan.vsock_cid);
+                    if image.exists() {
+                        return None;
+                    }
+                    let shape = self.template_shape(Some(base), meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, Some(&image))
+                })
+                .collect(),
+        }
     }
 
-    /// The template shape of one planned VM: the run's kernel, initrd and base image, and the VM's own
-    /// command line (sandbox or agent, whichever the plan carries).
+    /// The template shape of one planned VM: the run's kernel, initrd and base image (none for a VM
+    /// with no workspace volume), and the VM's own command line (sandbox or agent, whichever the plan
+    /// carries).
     fn template_shape(
         &self,
-        base: &Path,
+        base: Option<&Path>,
         meta: &RunMeta,
         plan: &VmPlan,
         vcpus: u8,
@@ -1221,7 +1252,7 @@ impl Registry {
         crate::templates::Shape {
             kernel: self.images.kernel.clone(),
             initrd: Some(self.images.initrd.clone()),
-            workspace_base: base.to_path_buf(),
+            workspace_base: base.map(Path::to_path_buf),
             vcpus,
             memory_mib,
             balloon: meta.balloon_usable_mib,
@@ -1634,12 +1665,6 @@ impl Registry {
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
-        if held.spec.workspace.is_none() {
-            run.return_vm(vm, held.handle);
-            return Err(VmOpError::Unsupported(format!(
-                "VM {vm} has no workspace volume, so it cannot sleep"
-            )));
-        }
         let Held {
             mut handle,
             restored_from,
@@ -1873,6 +1898,7 @@ impl Registry {
         let cid = source.vm_cid(vm)?;
         let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
         let meta = source.meta(held.spec.balloon);
+        let has_workspace = held.spec.workspace.is_some();
         let taken = Self::checkpoint_held(store, cid, &held, "fork");
         let state = thaw(held.state, &held.handle);
         source.return_vm_in(vm, held.handle, state);
@@ -1881,7 +1907,7 @@ impl Registry {
         let snapshot = store.dir(cid, &checkpoint.name);
         let mut forks = Vec::with_capacity(n as usize);
         for _ in 0..n {
-            match self.boot_fork(store, &meta, &snapshot) {
+            match self.boot_fork(store, &meta, &snapshot, has_workspace) {
                 Ok(fork) => forks.push(fork),
                 Err(err) => {
                     self.discard_forks(store, forks);
@@ -1963,7 +1989,7 @@ impl Registry {
                 guest_cid: vm.cid,
                 uds_path: self.uds_dir.join(format!("vm{}", vm.cid)),
             }),
-            workspace: Some(workspace),
+            workspace,
             balloon: vm.balloon_usable_mib,
             restore: None,
         };
@@ -1999,20 +2025,24 @@ impl Registry {
     }
 
     /// Moves an imported VM's files into the node's places for guest CID `vm.cid` and returns the
-    /// workspace image's path: the sleep snapshot takes the CID's `sleep` directory, and the
-    /// workspace image the CID's persistent image (or the run's directory without a persist dir).
+    /// workspace image's path, or `None` for a VM with no workspace volume: the sleep snapshot takes
+    /// the CID's `sleep` directory, and the workspace image the CID's persistent image (or the run's
+    /// directory without a persist dir).
     fn place_import(
         &self,
         id: &str,
         vm: &ImportedVm,
         store: &SnapshotStore,
-    ) -> Result<PathBuf, VmOpError> {
+    ) -> Result<Option<PathBuf>, VmOpError> {
         store.prepare(vm.cid).map_err(|err| {
             VmOpError::Failed(format!("cannot create VM {}'s directory: {err}", vm.cid))
         })?;
         store
             .install(vm.cid, &vm.sleep_dir, snapshots::SLEEP)
             .map_err(|err| VmOpError::Failed(format!("cannot keep the sleep snapshot: {err}")))?;
+        let Some(staged) = &vm.workspace else {
+            return Ok(None);
+        };
         let dest = match &self.persist_dir {
             // A sandbox's workspace is its run's own copy, never the persistent image.
             Some(persist) if !is_sandbox_cmdline(&vm.cmdline) => {
@@ -2033,14 +2063,14 @@ impl Registry {
                 dir.join("workspace-0.ext4")
             }
         };
-        if let Err(err) = move_file(&vm.workspace, &dest) {
+        if let Err(err) = move_file(staged, &dest) {
             // The sleep snapshot was kept for this VM; it goes with the workspace it cannot be paired with.
             let _ = store.remove(vm.cid, snapshots::SLEEP);
             return Err(VmOpError::Failed(format!(
                 "cannot place the workspace image: {err}"
             )));
         }
-        Ok(dest)
+        Ok(Some(dest))
     }
 
     /// A running run whose one VM is in `state`, with no handle or spec: a stand-in for the
@@ -2107,11 +2137,6 @@ impl Registry {
         held: &Held,
         label: &str,
     ) -> Result<SnapshotView, VmOpError> {
-        if held.spec.workspace.is_none() {
-            return Err(VmOpError::Unsupported(
-                "this VM has no workspace volume, so it cannot be checkpointed".to_string(),
-            ));
-        }
         store.prepare(cid).map_err(|err| {
             VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
         })?;
@@ -2139,18 +2164,21 @@ impl Registry {
         Ok(view)
     }
 
-    /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and a
-    /// copy of the checkpoint's workspace. Nothing is registered until every fork has booted.
+    /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and, when
+    /// the forked VM has a workspace volume (`workspace`), a copy of the checkpoint's workspace. A fork
+    /// of a VM with no workspace volume has none either. Nothing is registered until every fork has
+    /// booted.
     fn boot_fork(
         &self,
         store: &SnapshotStore,
         meta: &RunMeta,
         snapshot: &Path,
+        workspace: bool,
     ) -> Result<PreparedFork, VmOpError> {
         let id = self.reserve_run_id();
         let cid = self.cids.allocate(&id, 1).map_err(VmOpError::Failed)?;
-        let workspace = self.fork_workspace(&id, cid, meta.keepalive);
-        match self.boot_fork_vm(store, meta, snapshot, cid, &workspace) {
+        let workspace = workspace.then(|| self.fork_workspace(&id, cid, meta.keepalive));
+        match self.boot_fork_vm(store, meta, snapshot, cid, workspace.as_deref()) {
             Ok((handle, spec, base)) => Ok(PreparedFork {
                 id,
                 cid,
@@ -2161,23 +2189,25 @@ impl Registry {
             }),
             Err(err) => {
                 self.cids.release(&id);
-                let _ = fs::remove_file(&workspace);
+                if let Some(workspace) = &workspace {
+                    let _ = fs::remove_file(workspace);
+                }
                 let _ = fs::remove_dir_all(store.dir(cid, snapshots::BASE));
                 Err(err)
             }
         }
     }
 
-    /// The VM of a fork: restored from `snapshot`, with its workspace copied from it.
+    /// The VM of a fork: restored from `snapshot`, with its workspace copied from it when it has one.
     fn boot_fork_vm(
         &self,
         store: &SnapshotStore,
         meta: &RunMeta,
         snapshot: &Path,
         cid: u64,
-        workspace: &Path,
+        workspace: Option<&Path>,
     ) -> Result<(VmHandle, VmSpec, PathBuf), VmOpError> {
-        if let Some(parent) = workspace.parent() {
+        if let Some(parent) = workspace.and_then(Path::parent) {
             snapshots::private_dir(parent).map_err(|err| {
                 VmOpError::Failed(format!("cannot create {}: {err}", parent.display()))
             })?;
@@ -2207,7 +2237,7 @@ impl Registry {
                 guest_cid: cid,
                 uds_path: self.uds_dir.join(format!("vm{cid}")),
             }),
-            workspace: Some(workspace.to_path_buf()),
+            workspace: workspace.map(Path::to_path_buf),
             balloon: meta.balloon_usable_mib,
             restore: None,
         };
@@ -2277,7 +2307,9 @@ impl Registry {
                 eprintln!("noded: fork {}: VM did not stop: {err}", fork.id);
             }
             self.cids.release(&fork.id);
-            let _ = fs::remove_file(&fork.workspace);
+            if let Some(workspace) = &fork.workspace {
+                let _ = fs::remove_file(workspace);
+            }
             let _ = fs::remove_dir_all(store.dir(fork.cid, snapshots::BASE));
         }
     }
@@ -2445,7 +2477,7 @@ pub enum VmOpError {
     Refused(String),
     /// The VM could not be prepared or booted again.
     Failed(String),
-    /// The node keeps no snapshots (no `--snapshot-dir` and no `--persist-dir`).
+    /// The node keeps no snapshots (it was started with `--no-snapshots`).
     NoSnapshots,
     /// The VM has no snapshot of that name.
     UnknownCheckpoint(String),
@@ -2453,7 +2485,7 @@ pub enum VmOpError {
     Invalid(String),
     /// The VM is in a state the operation does not apply to (a paused VM cannot be paused again).
     WrongState { vm: u32, state: VmState },
-    /// The VM has no vsock CID or no workspace volume, which the snapshot operation needs.
+    /// The VM has no vsock CID, which the snapshot operation needs.
     Unsupported(String),
     /// An import named a guest CID a run of this node already holds.
     CidInUse(u64),
@@ -2507,7 +2539,7 @@ impl std::fmt::Display for VmOpError {
             VmOpError::Failed(reason) => write!(formatter, "{reason}"),
             VmOpError::NoSnapshots => write!(
                 formatter,
-                "this node keeps no snapshots: start it with --snapshot-dir or --persist-dir"
+                "this node keeps no snapshots: it was started with --no-snapshots"
             ),
             VmOpError::UnknownCheckpoint(name) => {
                 write!(formatter, "the VM has no snapshot named {name}")
@@ -4017,7 +4049,7 @@ mod tests {
         assert_eq!(refused.status(), 409);
         assert_eq!(
             refused.to_string(),
-            "this node keeps no snapshots: start it with --snapshot-dir or --persist-dir"
+            "this node keeps no snapshots: it was started with --no-snapshots"
         );
         assert_eq!(VmOpError::UnknownCheckpoint("cp-1".into()).status(), 404);
         assert_eq!(VmOpError::Invalid("n".into()).status(), 400);
@@ -4284,10 +4316,10 @@ mod sandbox_tests {
                 role: None,
             })
             .collect();
-        let shape = registry.template_shape(Path::new("base.ext4"), &meta, &plans[1], 1, 128);
+        let shape = registry.template_shape(Some(Path::new("base.ext4")), &meta, &plans[1], 1, 128);
         assert_eq!(shape.cmdline, plans[1].cmdline);
         assert!(shape.cmdline.contains("plaza.sandbox=1") && !shape.cmdline.contains("keepalive"));
-        assert_eq!(shape.workspace_base, PathBuf::from("base.ext4"));
+        assert_eq!(shape.workspace_base, Some(PathBuf::from("base.ext4")));
         assert_eq!(shape.balloon, None);
         // The agent shape of the same index is a different one.
         let agent = VmPlan {
@@ -4300,7 +4332,7 @@ mod sandbox_tests {
             role: None,
         };
         assert_ne!(
-            registry.template_shape(Path::new("base.ext4"), &meta, &agent, 1, 128),
+            registry.template_shape(Some(Path::new("base.ext4")), &meta, &agent, 1, 128),
             shape
         );
     }

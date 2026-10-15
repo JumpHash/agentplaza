@@ -2,7 +2,7 @@
 //!
 //! A sleeping VM is its sleep snapshot (`cid-<cid>/sleep/{memory.img, vmstate.json}`), its workspace
 //! image and its shape ([`VmMeta`]). Nothing here runs the VM: an export reads the stopped VM's
-//! files, and an import stages them and makes the VM asleep on the target, where `wake` restores it.
+//! files (none for a VM with no workspace volume), and an import stages them and makes the VM asleep on the target, where `wake` restores it.
 //!
 //! The hub relays the bytes through each node's command queue, whose replies are bounded JSON, so
 //! every transfer is chunked and the hub never holds a whole image: an export is read in pieces of
@@ -38,8 +38,11 @@ pub const MAX_READ: u64 = 4 << 20;
 pub const MAX_WRITE: usize = 512 << 10;
 /// The sleep snapshot's VM state file.
 const STATE_FILE: &str = "vmstate.json";
-/// The files of a sleeping VM, in the order an export lists them. An import carries exactly these.
+/// The files of a sleeping VM with a workspace volume, in the order an export lists them.
 const FILES: [&str; 3] = [MEMORY_FILE, STATE_FILE, WORKSPACE_FILE];
+/// The files of a sleeping VM with no workspace volume: its sleep snapshot alone, since its
+/// `/workspace` lives in guest RAM and the memory snapshot holds it.
+const SLEEP_FILES: [&str; 2] = [MEMORY_FILE, STATE_FILE];
 /// The most bytes one read of a file hashes at a time.
 const HASH_BUF: usize = 1 << 20;
 
@@ -237,15 +240,14 @@ pub fn export_vm(
 ) -> Result<ExportView, MigrateError> {
     let asleep = registry.asleep_vm(run, vm)?;
     let spec = &asleep.spec;
-    let workspace = spec
-        .workspace
-        .clone()
-        .ok_or_else(|| MigrateError::Failed(format!("VM {vm} has no workspace image to export")))?;
-    let sources = [
+    let mut sources = vec![
         (MEMORY_FILE, asleep.sleep_dir.join(MEMORY_FILE)),
         (STATE_FILE, asleep.sleep_dir.join(STATE_FILE)),
-        (WORKSPACE_FILE, workspace),
     ];
+    // A VM with no workspace volume exports its sleep snapshot alone.
+    if let Some(workspace) = &spec.workspace {
+        sources.push((WORKSPACE_FILE, workspace.clone()));
+    }
     let files = sources
         .iter()
         .map(|(name, path)| open_export_file(name, path).map(Arc::new))
@@ -412,16 +414,21 @@ pub fn create_import(
     Ok(id)
 }
 
-/// The files an import carries: exactly the three a sleeping VM has, each with a sha256.
+/// The files an import carries: exactly the files a sleeping VM has (its three, or its two when it
+/// has no workspace volume), each with a sha256.
 fn check_files(files: &[FileEntry]) -> Result<(), MigrateError> {
     let mut names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
     names.sort_unstable();
-    let mut expected = FILES.to_vec();
-    expected.sort_unstable();
-    if names != expected {
+    let sorted = |list: &[&'static str]| {
+        let mut list = list.to_vec();
+        list.sort_unstable();
+        list
+    };
+    if names != sorted(&FILES) && names != sorted(&SLEEP_FILES) {
         return Err(MigrateError::Invalid(format!(
-            "an import carries exactly {}, not {names:?}",
-            FILES.join(", ")
+            "an import carries exactly {} (or {} for a VM with no workspace volume), not {names:?}",
+            FILES.join(", "),
+            SLEEP_FILES.join(", ")
         )));
     }
     for file in files {
@@ -544,6 +551,7 @@ fn place(found: &Import, registry: &Registry) -> Result<Arc<Run>, MigrateError> 
             .map_err(|err| MigrateError::Failed(format!("cannot stage {name}: {err}")))?;
     }
     let meta = &found.meta;
+    let has_workspace = found.files.iter().any(|file| file.name == WORKSPACE_FILE);
     Ok(registry.import_run(ImportedVm {
         cid: meta.cid,
         role: meta.role.clone(),
@@ -552,7 +560,7 @@ fn place(found: &Import, registry: &Registry) -> Result<Arc<Run>, MigrateError> 
         balloon_usable_mib: meta.balloon_usable_mib,
         cmdline: meta.cmdline.clone(),
         sleep_dir: sleep,
-        workspace: found.staging.join(WORKSPACE_FILE),
+        workspace: has_workspace.then(|| found.staging.join(WORKSPACE_FILE)),
     })?)
 }
 
@@ -672,10 +680,32 @@ mod tests {
                 balloon_usable_mib: Some(128),
                 cmdline: "console=ttyS0 plaza.vm=0".to_string(),
                 sleep_dir,
-                workspace: image,
+                workspace: Some(image),
             })
             .expect("the VM is imported asleep");
         assert_eq!(run.id(), "r1");
+        node
+    }
+
+    /// A node holding asleep VM 0 of run `r1` with no workspace volume, imported from stand-in sleep
+    /// files of `memory` bytes.
+    fn asleep_node_without_workspace(root: &Path, cid: u64, memory: usize) -> Registry {
+        let node = node_at(root);
+        let sleep_dir = root.join("sleep-in");
+        fs::create_dir_all(&sleep_dir).expect("the stand-in sleep directory");
+        fs::write(sleep_dir.join(MEMORY_FILE), pattern(memory, 3)).expect("memory");
+        fs::write(sleep_dir.join(STATE_FILE), br#"{"meta":{"format":1}}"#).expect("state");
+        node.import_run(ImportedVm {
+            cid,
+            role: None,
+            vcpus: 1,
+            memory_mib: 256,
+            balloon_usable_mib: None,
+            cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+            sleep_dir,
+            workspace: None,
+        })
+        .expect("the VM is imported asleep");
         node
     }
 
@@ -817,6 +847,69 @@ mod tests {
             fs::read(arrived.spec.workspace.as_ref().expect("a workspace")).expect("the image"),
             fs::read(original.spec.workspace.as_ref().expect("a workspace")).expect("the image"),
         );
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
+    }
+
+    #[test]
+    fn a_vm_with_no_workspace_volume_moves_as_its_sleep_snapshot_alone() {
+        let (src_root, dst_root) = (scratch("bare-src"), scratch("bare-dst"));
+        let source = asleep_node_without_workspace(&src_root, 42, 9000);
+        let source_migrations = Migrations::new();
+        let export = export_vm(&source_migrations, &source, "r1", 0).expect("an asleep VM exports");
+        let names: Vec<&str> = export.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [MEMORY_FILE, STATE_FILE],
+            "no workspace file is exported"
+        );
+
+        let target = node_at(&dst_root);
+        let target_migrations = Migrations::new();
+        let import = start_import(&target_migrations, &target, &export);
+        relay(
+            &source_migrations,
+            &export,
+            &target_migrations,
+            &import,
+            None,
+            None,
+        );
+        let done =
+            finish_import(&target_migrations, &target, &import).expect("the import finishes");
+        assert_eq!(done.cid, 42);
+        let arrived = target
+            .asleep_vm(&done.run, 0)
+            .expect("the imported VM is asleep");
+        assert_eq!(
+            arrived.spec.workspace, None,
+            "the VM comes with no workspace"
+        );
+        for name in [MEMORY_FILE, STATE_FILE] {
+            assert_eq!(
+                fs::read(arrived.sleep_dir.join(name)).expect("the arrived file"),
+                fs::read(
+                    source
+                        .asleep_vm("r1", 0)
+                        .expect("the source VM")
+                        .sleep_dir
+                        .join(name)
+                )
+                .expect("the original file"),
+                "{name} arrives byte for byte"
+            );
+        }
+        // An import carries the two files of a VM with no workspace, or the three of one with a
+        // workspace, and no other list.
+        let mut with_workspace = export.files.clone();
+        with_workspace.push(FileEntry {
+            name: WORKSPACE_FILE.to_string(),
+            len: 0,
+            sha256: "0".repeat(64),
+        });
+        assert!(check_files(&export.files).is_ok());
+        assert!(check_files(&with_workspace).is_ok());
+        assert!(check_files(&export.files[..1]).is_err());
         let _ = fs::remove_dir_all(&src_root);
         let _ = fs::remove_dir_all(&dst_root);
     }

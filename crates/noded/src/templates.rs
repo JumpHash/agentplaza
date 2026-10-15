@@ -66,8 +66,9 @@ pub const TEMPLATE_CID: u64 = 3;
 pub struct Shape {
     pub kernel: PathBuf,
     pub initrd: Option<PathBuf>,
-    /// The base workspace image new agents start from.
-    pub workspace_base: PathBuf,
+    /// The base workspace image new agents start from, or `None` for a VM with no workspace volume
+    /// (its `/workspace` lives in guest RAM, so the template boots with no block device at all).
+    pub workspace_base: Option<PathBuf>,
     pub vcpus: u8,
     pub memory_mib: usize,
     pub balloon: Option<u32>,
@@ -93,8 +94,9 @@ pub struct Template {
     pub key: String,
     /// The snapshot directory to restore from (`VmSpec::restore`).
     pub snapshot: PathBuf,
-    /// The template's workspace disk: clone it for a new VM (`vmm::clonefile::clone_file`).
-    pub workspace: PathBuf,
+    /// The template's workspace disk: clone it for a new VM (`vmm::clonefile::clone_file`). `None`
+    /// when the shape has no workspace volume, so there is no disk to clone.
+    pub workspace: Option<PathBuf>,
 }
 
 /// The node's templates.
@@ -131,13 +133,13 @@ impl Templates {
     /// dir when that path is too long for a unix socket.
     pub fn get_or_build(&self, shape: &Shape) -> Result<Template, String> {
         let key = self.key(shape)?;
-        if let Some(template) = self.ready(&key) {
+        if let Some(template) = self.ready(&key, shape) {
             return Ok(template);
         }
         let gate = lock(&self.gates).entry(key.clone()).or_default().clone();
         let _building = gate.lock().unwrap_or_else(PoisonError::into_inner);
         // Another caller may have built it while this one waited for the gate.
-        if let Some(template) = self.ready(&key) {
+        if let Some(template) = self.ready(&key, shape) {
             return Ok(template);
         }
         let failed_at = lock(&self.failed).get(&key).copied();
@@ -197,21 +199,22 @@ impl Templates {
         }
     }
 
-    /// The template at `key` when it is complete.
-    fn ready(&self, key: &str) -> Option<Template> {
+    /// The template of `shape` at `key` when it is complete.
+    fn ready(&self, key: &str, shape: &Shape) -> Option<Template> {
         self.root
             .join(key)
             .join(TEMPLATE_FILE)
             .is_file()
-            .then(|| self.template(key))
+            .then(|| self.template(key, shape.workspace_base.is_some()))
     }
 
-    fn template(&self, key: &str) -> Template {
+    /// The template at `key`, whose disk is there when `workspace` is set.
+    fn template(&self, key: &str, workspace: bool) -> Template {
         let dir = self.root.join(key);
         Template {
             key: key.to_string(),
             snapshot: dir.join(SNAP_DIR),
-            workspace: dir.join(WORKSPACE_FILE),
+            workspace: workspace.then(|| dir.join(WORKSPACE_FILE)),
         }
     }
 
@@ -227,18 +230,16 @@ impl Templates {
         let _ = fs::remove_dir_all(&dir);
         spawner::create_uds_dir(&dir).map_err(|err| format!("create {}: {err}", dir.display()))?;
         let _dir = Scratch(dir.clone());
-        clone_file(&shape.workspace_base, &dir.join(WORKSPACE_FILE)).map_err(|err| {
-            format!(
-                "copy the base workspace {}: {err}",
-                shape.workspace_base.display()
-            )
-        })?;
+        if let Some(base) = &shape.workspace_base {
+            clone_file(base, &dir.join(WORKSPACE_FILE))
+                .map_err(|err| format!("copy the base workspace {}: {err}", base.display()))?;
+        }
         let (socket, _socket_dir) = socket_path(&dir, key)?;
         boot_and_snapshot(&dir, &socket, shape)?;
         write_template(&dir, key, shape, started)?;
         fs::rename(&dir, self.root.join(key))
             .map_err(|err| format!("publish template {key}: {err}"))?;
-        Ok(self.template(key))
+        Ok(self.template(key, shape.workspace_base.is_some()))
     }
 
     /// The key of `shape`: a SHA-256 over the snapshot format, this crate's version, the images'
@@ -257,11 +258,12 @@ impl Templates {
             None => Vec::new(),
         };
         field(&mut hasher, "initrd", &initrd);
-        field(
-            &mut hasher,
-            "workspace",
-            &self.digest(&shape.workspace_base)?,
-        );
+        match &shape.workspace_base {
+            Some(base) => field(&mut hasher, "workspace", &self.digest(base)?),
+            // A shape with no workspace volume has a field of its own, so its key is never one a
+            // shape with a base image gets; a shape with a base image keeps the key it always had.
+            None => field(&mut hasher, "no-workspace", &[]),
+        }
         field(&mut hasher, "vcpus", &[shape.vcpus]);
         field(
             &mut hasher,
@@ -316,7 +318,10 @@ fn boot_and_snapshot(dir: &Path, socket: &Path, shape: &Shape) -> Result<(), Str
             guest_cid: TEMPLATE_CID,
             uds_path: socket.to_path_buf(),
         }),
-        workspace: Some(dir.join(WORKSPACE_FILE)),
+        workspace: shape
+            .workspace_base
+            .is_some()
+            .then(|| dir.join(WORKSPACE_FILE)),
         balloon: shape.balloon,
         ..VmSpec::default()
     };
@@ -377,9 +382,12 @@ fn socket_path(dir: &Path, key: &str) -> Result<(PathBuf, Option<Scratch>), Stri
 
 /// Writes the template's `template.json` into `dir`.
 fn write_template(dir: &Path, key: &str, shape: &Shape, started: Instant) -> Result<(), String> {
-    let disk_bytes = fs::metadata(dir.join(WORKSPACE_FILE))
-        .map_err(|err| format!("stat the template workspace: {err}"))?
-        .len();
+    let disk_bytes = match shape.workspace_base {
+        Some(_) => fs::metadata(dir.join(WORKSPACE_FILE))
+            .map_err(|err| format!("stat the template workspace: {err}"))?
+            .len(),
+        None => 0,
+    };
     let view = TemplateView {
         key: key.to_string(),
         role: role_of(&shape.cmdline),
@@ -494,7 +502,7 @@ mod tests {
         Shape {
             kernel,
             initrd: Some(initrd),
-            workspace_base,
+            workspace_base: Some(workspace_base),
             vcpus: 2,
             memory_mib: 1024,
             balloon: None,
@@ -583,6 +591,13 @@ mod tests {
             }),
             base
         );
+        assert_ne!(
+            key_of(Shape {
+                workspace_base: None,
+                ..shape.clone()
+            }),
+            base
+        );
         // One byte of the kernel changes, same size, with a later mtime.
         let mut kernel = fs::read(&shape.kernel).unwrap();
         kernel[0] ^= 0xff;
@@ -627,7 +642,30 @@ mod tests {
         let template = templates.get_or_build(&shape).unwrap();
         assert_eq!(template.key, key);
         assert_eq!(template.snapshot, built.join(SNAP_DIR));
-        assert_eq!(template.workspace, built.join(WORKSPACE_FILE));
+        assert_eq!(template.workspace, Some(built.join(WORKSPACE_FILE)));
+    }
+
+    #[test]
+    fn a_template_without_a_base_image_has_its_own_key_and_no_disk() {
+        let (dir, _clean) = test_dir("no-workspace");
+        let shape = Shape {
+            workspace_base: None,
+            ..fake_shape(&dir)
+        };
+        let templates = Templates::new(dir.join("templates"));
+        // The key is stable, and it is not the key of the same shape with a base image.
+        let key = templates.key(&shape).unwrap();
+        assert_eq!(templates.key(&shape).unwrap(), key);
+        assert_ne!(templates.key(&fake_shape(&dir)).unwrap(), key);
+        // A complete template of this shape is returned with no disk to clone.
+        let built = dir.join("templates").join(&key);
+        fs::create_dir_all(&built).unwrap();
+        let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
+        write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
+        let template = templates.get_or_build(&shape).unwrap();
+        assert_eq!(template.key, key);
+        assert_eq!(template.snapshot, built.join(SNAP_DIR));
+        assert_eq!(template.workspace, None);
     }
 
     #[test]
@@ -691,7 +729,7 @@ mod tests {
         let shape = Shape {
             kernel,
             initrd: Some(initrd),
-            workspace_base: workspace,
+            workspace_base: Some(workspace),
             vcpus: 1,
             memory_mib: 512,
             balloon: None,
@@ -706,7 +744,11 @@ mod tests {
                 .join(vmm::vstate::snapshot::STATE_FILE)
                 .is_file()
         );
-        assert!(template.workspace.is_file());
+        let disk = template
+            .workspace
+            .clone()
+            .expect("a template with a base has a disk");
+        assert!(disk.is_file());
         let started = Instant::now();
         assert_eq!(templates.get_or_build(&shape).expect("reuse"), template);
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -714,7 +756,7 @@ mod tests {
 
         // A VM restored from the template answers its console at once.
         let workspace = dir.join("agent.ext4");
-        vmm::clonefile::clone_file(&template.workspace, &workspace).expect("clone the disk");
+        vmm::clonefile::clone_file(&disk, &workspace).expect("clone the disk");
         let restored_at = Instant::now();
         let mut vm = vmm::spawner::spawn(vmm::spawner::VmSpec {
             kernel: shape.kernel.clone(),
