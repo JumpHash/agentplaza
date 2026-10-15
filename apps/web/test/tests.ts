@@ -45,6 +45,9 @@ import { movableNodes, moveText } from '../src/views/agent-detail';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
 import type { Entry as TreeEntry } from '../src/ide/types';
+import { format, nice, timeLabel } from '../src/metrics/format';
+import type { Unit } from '../src/metrics/model';
+import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1635,6 +1638,25 @@ sectionEnd('sleep and checkpoint tests: ok');
   eq(moveText({ from: 'n1', to: 'n2', bytes: 3 * 1048576, ms: 2500 }, (id) => id.toUpperCase()), 'Moved from N1 to N2: 3.0 MB in 2.5 s.', 'move: the outcome names both nodes, the MB moved and the seconds');
 }
 sectionEnd('egress credentials and e2b tests: ok');
+
+// Metrics formatting: every case of the golden file the Rust formatter is checked against, and the dash for a value
+// that is not there.
+{
+  for (const [unit, v, text] of formatGolden.format as [Unit, number, string][]) {
+    eq(format(unit, v), text, `metrics format: ${unit} ${v} prints ${text}`);
+  }
+  for (const [max, expected] of formatGolden.nice as [number, number][]) {
+    eq(nice(max), expected, `metrics nice: ${max} gives ${expected}`);
+  }
+  for (const [t, step, offset, text] of formatGolden.time as [number, number, number, string][]) {
+    eq(timeLabel(t, step, offset), text, `metrics time label: ${t} at step ${step} and offset ${offset} reads ${text}`);
+  }
+  eq(format('usd', Infinity), '—', 'metrics format: an infinite value is a dash');
+  eq(format('usd', NaN), '—', 'metrics format: NaN is a dash');
+  eq(format('usd', null), '—', 'metrics format: no value is a dash');
+  eq(format('usd', undefined), '—', 'metrics format: an undefined value is a dash');
+}
+sectionEnd('metrics format, nice and time labels: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
