@@ -462,6 +462,12 @@ fn print_entry(ctx: &Ctx, rich_ctx: &RichCtx, e: &Value) {
         println!("{e}");
         return;
     }
+    if let Some(lines) = engine_lines(e) {
+        for line in lines {
+            println!("{line}");
+        }
+        return;
+    }
     let data: String = e
         .get("data")
         .map(|d| d.to_string())
@@ -477,4 +483,279 @@ fn print_entry(ctx: &Ctx, rich_ctx: &RichCtx, e: &Value) {
         ctx::s(e, "kind"),
         data
     );
+}
+
+/// How many lines of an agent message the transcript prints before it cuts to `│ …`.
+const MESSAGE_LINES: usize = 12;
+
+/// The lines one coding-engine entry prints, or `None` for an entry that prints as a plain line.
+/// The entries are the ones a `code_engine` call produced: an `engine_update` from its ACP stream,
+/// and the approvals of the tools the engine itself asked for (their call ids carry `.e`). They
+/// are indented so they read as part of that call. An `allow` decision prints nothing.
+fn engine_lines(e: &Value) -> Option<Vec<String>> {
+    let kind = e.get("kind").and_then(Value::as_str)?;
+    let data = e.get("data")?;
+    let nested = data
+        .get("call")
+        .and_then(Value::as_str)
+        .is_some_and(|call| call.contains(".e"));
+    match kind {
+        "engine_update" => engine_update_lines(data),
+        "tool_request" if nested => {
+            let name = data.get("name").and_then(Value::as_str)?;
+            if !name.starts_with("engine.") {
+                return None;
+            }
+            Some(vec![
+                match data.pointer("/input/title").and_then(Value::as_str) {
+                    Some(title) => format!("    ? {name} {title}"),
+                    None => format!("    ? {name}"),
+                },
+            ])
+        }
+        "tool_decision" if nested => {
+            let output = data.get("output").and_then(Value::as_str).unwrap_or("");
+            match data.get("decision").and_then(Value::as_str)? {
+                // The output already reads "waiting for the owner's approval (<id>)".
+                "pending" => Some(vec![format!("    ⏸ {output}")]),
+                "deny" => Some(vec![format!("    ✗ denied: {output}")]),
+                _ => Some(Vec::new()),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The lines of one ACP session update the engine's stream forwarded, by its `item`.
+fn engine_update_lines(data: &Value) -> Option<Vec<String>> {
+    let update = data.get("update");
+    let field = |key: &str| {
+        update
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    };
+    let lines = match data.get("item").and_then(Value::as_str)? {
+        "tool_call" => {
+            let (title, kind) = (field("title"), field("kind"));
+            vec![if kind.is_empty() {
+                format!("    ⋯ {title}")
+            } else {
+                format!("    ⋯ {title} [{kind}]")
+            }]
+        }
+        "tool_status" => {
+            let glyph = match field("status") {
+                "completed" => "✓",
+                "failed" => "✗",
+                "in_progress" => "▸",
+                _ => "⋯",
+            };
+            let label = [field("title"), field("toolCallId")]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .unwrap_or("");
+            vec![format!("    {glyph} {label}")]
+        }
+        "message" => {
+            let text = data.get("text").and_then(Value::as_str).unwrap_or("");
+            let body: Vec<&str> = text.lines().collect();
+            let mut out: Vec<String> = body
+                .iter()
+                .take(MESSAGE_LINES)
+                .map(|line| format!("    │ {line}"))
+                .collect();
+            if body.len() > MESSAGE_LINES {
+                out.push("    │ …".to_string());
+            }
+            out
+        }
+        "plan" => {
+            let mut out = vec!["    plan:".to_string()];
+            let entries = update
+                .and_then(|u| u.get("entries"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            for entry in entries {
+                let done = entry.get("status").and_then(Value::as_str) == Some("completed");
+                let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
+                out.push(format!(
+                    "      [{}] {content}",
+                    if done { "x" } else { " " }
+                ));
+            }
+            out
+        }
+        "usage" => vec![format!("    usage: {}", update.unwrap_or(&Value::Null))],
+        "mode" => vec![format!("    mode: {}", field("currentModeId"))],
+        "truncated" => {
+            let after = data
+                .get("after")
+                .map_or_else(|| "?".to_string(), Value::to_string);
+            vec![format!(
+                "    … (engine stream truncated after {after} entries)"
+            )]
+        }
+        _ => return None,
+    };
+    Some(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(kind: &str, data: Value) -> Value {
+        json!({ "seq": 1, "at_ms": 0, "cid": 3, "work": 9, "kind": kind, "data": data })
+    }
+
+    fn update(item: &str, update: Value) -> Value {
+        entry(
+            "engine_update",
+            json!({ "call": "c4", "item": item, "update": update }),
+        )
+    }
+
+    fn printed(e: Value) -> Vec<String> {
+        engine_lines(&e).expect("an engine entry prints its own lines")
+    }
+
+    #[test]
+    fn tool_calls_name_their_kind() {
+        let with_kind = update(
+            "tool_call",
+            json!({ "title": "Read src/lib.rs", "kind": "read" }),
+        );
+        assert_eq!(printed(with_kind), ["    ⋯ Read src/lib.rs [read]"]);
+        let bare = update("tool_call", json!({ "title": "Think" }));
+        assert_eq!(printed(bare), ["    ⋯ Think"]);
+    }
+
+    #[test]
+    fn tool_status_shows_a_glyph_and_falls_back_to_the_call_id() {
+        let status = |s: &str| {
+            printed(update(
+                "tool_status",
+                json!({ "toolCallId": "t7", "title": "edit", "status": s }),
+            ))
+        };
+        assert_eq!(status("completed"), ["    ✓ edit"]);
+        assert_eq!(status("failed"), ["    ✗ edit"]);
+        assert_eq!(status("in_progress"), ["    ▸ edit"]);
+        assert_eq!(status("pending"), ["    ⋯ edit"]);
+        let untitled = update(
+            "tool_status",
+            json!({ "toolCallId": "t7", "status": "completed" }),
+        );
+        assert_eq!(printed(untitled), ["    ✓ t7"]);
+    }
+
+    #[test]
+    fn messages_are_quoted_and_cut_after_twelve_lines() {
+        let short = entry(
+            "engine_update",
+            json!({ "call": "c4", "item": "message", "text": "one\ntwo" }),
+        );
+        assert_eq!(printed(short), ["    │ one", "    │ two"]);
+
+        let text: String = (1..=14).map(|n| format!("line {n}\n")).collect();
+        let long = entry(
+            "engine_update",
+            json!({ "call": "c4", "item": "message", "text": text }),
+        );
+        let lines = printed(long);
+        assert_eq!(lines.len(), 13, "{lines:?}");
+        assert_eq!(lines[0], "    │ line 1");
+        assert_eq!(lines[11], "    │ line 12");
+        assert_eq!(lines[12], "    │ …");
+    }
+
+    #[test]
+    fn plans_tick_the_finished_steps() {
+        let plan = update(
+            "plan",
+            json!({ "entries": [
+                { "content": "read the spec", "status": "completed" },
+                { "content": "write the code", "status": "in_progress" },
+            ] }),
+        );
+        assert_eq!(
+            printed(plan),
+            [
+                "    plan:",
+                "      [x] read the spec",
+                "      [ ] write the code"
+            ]
+        );
+    }
+
+    #[test]
+    fn usage_mode_and_truncation_print_on_one_line() {
+        assert_eq!(
+            printed(update("usage", json!({ "used": 5 }))),
+            ["    usage: {\"used\":5}"]
+        );
+        assert_eq!(
+            printed(update("mode", json!({ "currentModeId": "code" }))),
+            ["    mode: code"]
+        );
+        let cut = entry(
+            "engine_update",
+            json!({ "call": "c4", "item": "truncated", "after": 400 }),
+        );
+        assert_eq!(
+            printed(cut),
+            ["    … (engine stream truncated after 400 entries)"]
+        );
+    }
+
+    #[test]
+    fn engine_requests_and_their_approvals_are_nested_under_the_call() {
+        let request = entry(
+            "tool_request",
+            json!({ "call": "c4.e2", "name": "engine.write", "input": { "title": "write notes.md" } }),
+        );
+        assert_eq!(printed(request), ["    ? engine.write write notes.md"]);
+
+        let pending = entry(
+            "tool_decision",
+            json!({ "call": "c4.e2", "decision": "pending", "output": "waiting for the owner's approval (ap-7)" }),
+        );
+        assert_eq!(
+            printed(pending),
+            ["    ⏸ waiting for the owner's approval (ap-7)"]
+        );
+
+        let allowed = entry(
+            "tool_decision",
+            json!({ "call": "c4.e2", "decision": "allow", "output": "ok" }),
+        );
+        assert!(printed(allowed).is_empty());
+
+        let denied = entry(
+            "tool_decision",
+            json!({ "call": "c4.e2", "decision": "deny", "output": "no" }),
+        );
+        assert_eq!(printed(denied), ["    ✗ denied: no"]);
+    }
+
+    #[test]
+    fn other_entries_keep_the_plain_line() {
+        // A request from the agent's own tool, not from the engine.
+        let own = entry(
+            "tool_request",
+            json!({ "call": "c4", "name": "plaza_tasks", "input": {} }),
+        );
+        assert!(engine_lines(&own).is_none());
+        let other_tool = entry(
+            "tool_request",
+            json!({ "call": "c4.e2", "name": "read", "input": {} }),
+        );
+        assert!(engine_lines(&other_tool).is_none());
+        let message = entry("message", json!({ "text": "hello" }));
+        assert!(engine_lines(&message).is_none());
+        let unknown = update("something_new", json!({}));
+        assert!(engine_lines(&unknown).is_none());
+    }
 }
