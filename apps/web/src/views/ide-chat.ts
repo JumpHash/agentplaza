@@ -93,7 +93,7 @@ function toolRow(tool: EngineTool, embeds: EmbedContext): HTMLElement {
   const places = tool.locations.map((loc) => {
     const label = loc.line !== null ? `${loc.path}:${loc.line}` : loc.path;
     if (!embeds.openPath) return h('span.ide-chat-engine-loc', null, label);
-    return button(label, () => embeds.openPath?.(loc.path, loc.line), { size: 'sm' });
+    return button(label, () => embeds.openPath?.(loc.path, loc.line), { kind: 'ghost', size: 'sm' });
   });
   return h(
     'li.ide-chat-engine-tool',

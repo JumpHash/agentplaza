@@ -323,7 +323,8 @@
   padding-left: calc(1.2em + var(--s2));
 }
 
-.ide-chat-engine-loc {
+.ide-chat-engine-loc,
+.ide-chat-engine-locs button {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
