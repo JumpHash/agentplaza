@@ -20,6 +20,7 @@
 
 pub mod events;
 pub mod fleet;
+pub mod metrics;
 pub mod migrate;
 pub mod registry;
 pub mod snapshots;
@@ -1732,6 +1733,9 @@ fn router() -> Router<Node> {
             )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
+        .get("/v1/metrics", |_, _, _| {
+            Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
+        })
         // Shared data volumes: read-only images agent VMs mount at /data/<name>.
         .get("/v1/volumes", |node, _, _| list_volumes(node))
         .post("/v1/volumes", |node, request, _| {

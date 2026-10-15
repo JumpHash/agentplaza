@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 apz-http.workspace = true
+apz-metrics.workspace = true
 apz-os = { path = "../apz-os" }
 apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }

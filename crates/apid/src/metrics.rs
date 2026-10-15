@@ -11,15 +11,23 @@ use crate::state::App;
 /// Wakes the hub started (one noded restore each).
 pub static WAKES: Counter = Counter::new("apz_hub_wakes_total", "Agent wakes the hub started");
 /// Wakes refused because the wake queue was full.
-pub static WAKES_REFUSED: Counter =
-    Counter::new("apz_hub_wakes_refused_total", "Agent wakes refused: the wake queue was full");
+pub static WAKES_REFUSED: Counter = Counter::new(
+    "apz_hub_wakes_refused_total",
+    "Agent wakes refused: the wake queue was full",
+);
 /// Wakes queued or running.
-pub static WAKES_IN_FLIGHT: Gauge = Gauge::new("apz_hub_wakes_in_flight", "Agent wakes queued or running");
+pub static WAKES_IN_FLIGHT: Gauge =
+    Gauge::new("apz_hub_wakes_in_flight", "Agent wakes queued or running");
 /// From the wake request to the agent's hello.
-pub static WAKE: Histogram = Histogram::new("apz_hub_wake_seconds", "A wake, from the request to the agent's hello");
+pub static WAKE: Histogram = Histogram::new(
+    "apz_hub_wake_seconds",
+    "A wake, from the request to the agent's hello",
+);
 /// The node's part of a wake: the restore call.
-pub static WAKE_NODE: Histogram =
-    Histogram::new("apz_hub_wake_node_seconds", "The node's part of a wake: its restore call");
+pub static WAKE_NODE: Histogram = Histogram::new(
+    "apz_hub_wake_node_seconds",
+    "The node's part of a wake: its restore call",
+);
 /// From the node's answer to the agent's hello: the guest reconnecting.
 pub static WAKE_RECONNECT: Histogram = Histogram::new(
     "apz_hub_wake_reconnect_seconds",
@@ -28,7 +36,10 @@ pub static WAKE_RECONNECT: Histogram = Histogram::new(
 /// Sleeps the hub started.
 pub static SLEEPS: Counter = Counter::new("apz_hub_sleeps_total", "Agent sleeps the hub started");
 /// A sleep: the node's snapshot and stop.
-pub static SLEEP: Histogram = Histogram::new("apz_hub_sleep_seconds", "A sleep: the node's snapshot and stop");
+pub static SLEEP: Histogram = Histogram::new(
+    "apz_hub_sleep_seconds",
+    "A sleep: the node's snapshot and stop",
+);
 
 /// `GET /v1/metrics`.
 pub fn routes(router: Router<App>) -> Router<App> {

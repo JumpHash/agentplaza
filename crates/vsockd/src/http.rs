@@ -89,6 +89,9 @@ pub fn serve(
 
 fn router() -> Router<Surface> {
     Router::<Surface>::new()
+        .get("/v1/metrics", |_, _, _| {
+            Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
+        })
         .get("/v1/status", |surface, _, _| {
             Response::new(
                 200,

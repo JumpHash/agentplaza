@@ -306,6 +306,7 @@ dependencies = [
  "apz-gateway",
  "apz-http",
  "apz-ide",
+ "apz-metrics",
  "apz-os",
  "apz-plaza",
  "apz-prompt",
@@ -4799,6 +4800,7 @@ name = "noded"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-metrics",
  "apz-os",
  "apz-station",
  "apz-uds",
@@ -8445,6 +8447,7 @@ name = "vsockd"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-metrics",
  "apz-os",
  "apz-proto",
  "apz-uds",

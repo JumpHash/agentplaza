@@ -24,6 +24,8 @@ mod http;
 #[cfg(any(target_os = "linux", windows))]
 mod hub;
 #[cfg(any(target_os = "linux", windows))]
+mod metrics;
+#[cfg(any(target_os = "linux", windows))]
 mod serve;
 #[cfg(any(target_os = "linux", windows))]
 mod sys;
