@@ -50,8 +50,9 @@ pub fn linear(history: &[Point], until_ms: u64, step_ms: u64) -> Projection {
     out
 }
 
-/// When the fitted trend of `history` reaches `limit` (rising or falling towards it), if it does within ten
-/// years. `None` when flat, moving away, or with fewer than two points.
+/// When the fitted trend of `history` reaches `limit` in its direction of travel (a rising trend from below, a
+/// falling one from above), if it does within ten years. A trend already past the limit in its direction of
+/// travel reached it at the last point. `None` when flat, further than ten years, or with fewer than two points.
 pub fn crossing(history: &[Point], limit: f64) -> Option<u64> {
     let fit = Fit::of(history)?;
     if fit.slope == 0.0 {

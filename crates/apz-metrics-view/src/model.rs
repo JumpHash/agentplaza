@@ -99,6 +99,32 @@ pub struct ViewQuery {
     /// The chart width in pixels, for the tier choice and downsampling.
     #[serde(default = "width")]
     pub width: u32,
+    /// The console's offset from UTC in minutes, for the times written into tables ("14:20").
+    #[serde(default)]
+    pub tz: i32,
+    /// Compose from the built-in fixture instead of recorded data (design review, screenshots).
+    #[serde(default)]
+    pub fixture: bool,
+}
+
+impl ViewQuery {
+    /// A query for a tab and scope with every other field at its default.
+    pub fn new(tab: &str, scope: &str, range: &str) -> ViewQuery {
+        ViewQuery {
+            tab: tab.into(),
+            scope: scope.into(),
+            range: range.into(),
+            shift: 0,
+            zoom: None,
+            compare: prev(),
+            group: provider(),
+            trace: None,
+            filter: None,
+            width: width(),
+            tz: 0,
+            fixture: false,
+        }
+    }
 }
 
 fn prev() -> String {
