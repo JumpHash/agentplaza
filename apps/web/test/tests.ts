@@ -8,6 +8,7 @@ import { ago, clip, compact, isTextValue } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
 import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
 import type { LawInfo, Settings } from '../src/api';
+import { approvalPath } from '../src/api';
 import { checkRetention, clampQuery, mergeNewest, mergeOlder, spanOf } from '../src/views/conversations';
 import { level, membersOf, parentOf, trailOf } from '../src/views/society';
 import type { Bond, Conversation, PriceRates, SocietyAgent, UsageCall } from '../src/api';
@@ -18,10 +19,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
-import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { DEFAULT_ENGINES, ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
-import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
+import { activitySplit, approvalIdIn, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
 import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
 import { mentionAt, mentionOptions } from '../src/board/owner';
@@ -376,7 +378,36 @@ sectionEnd('web tests: ok');
   eq(o.desktopLogin, null, 'hub mcp: open mode has no login line');
   eq(o.generic, 'URL: https://hub.example.test/mcp', 'hub mcp: open mode generic setup is the URL alone');
 }
+{
+  // The editor setup text: Zed's settings carry the agent server, the named form pins an agent, and none holds a token.
+  const a = acpSnippets();
+  eq(JSON.parse(a.zed), { agent_servers: { AgentPlaza: { command: 'agentplaza', args: ['acp'] } } }, 'acp editors: the Zed settings start the agent server');
+  eq(JSON.parse(a.zedAgent).agent_servers.AgentPlaza.args, ['acp', '--agent', '<name>'], 'acp editors: the named Zed form pins an agent');
+  eq(a.jetbrains, 'Command: agentplaza\nArguments: acp', 'acp editors: the JetBrains command and its arguments');
+  eq(a.neovim, 'adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }', 'acp editors: the CodeCompanion adapter');
+  eq(Object.values(a).some((t) => /Bearer|apz_/.test(t)), false, 'acp editors: no token in the editor text');
+}
 sectionEnd('hub mcp tests: ok');
+
+// The coding engines: switching one on or off keeps the canonical order, and the last engine stays on.
+{
+  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini', 'qwen', 'kilo', 'cline', 'copilot', 'goose', 'kimi', 'auggie', 'vibe'], 'engines: the twelve engines in order');
+  eq(ENGINES.find((e) => e.value === 'goose')?.label, 'Goose', 'engines: Goose is labelled');
+  eq(ENGINES.find((e) => e.value === 'kimi')?.label, 'Kimi Code', 'engines: Kimi Code is labelled');
+  eq(ENGINES.find((e) => e.value === 'auggie')?.label, 'Auggie', 'engines: Auggie is labelled');
+  eq(ENGINES.find((e) => e.value === 'cline')?.label, 'Cline', 'engines: Cline is labelled');
+  eq(toggleEngine(['claude'], 'cline', true), ['claude', 'cline'], 'engines: Cline switches on last');
+  eq(ENGINES.find((e) => e.value === 'gemini')?.label, 'Gemini CLI', 'engines: Gemini CLI is labelled');
+  eq(ENGINES.find((e) => e.value === 'qwen')?.label, 'Qwen Code', 'engines: Qwen Code is labelled');
+  eq(ENGINES.find((e) => e.value === 'kilo')?.label, 'Kilo Code', 'engines: Kilo Code is labelled');
+  eq(DEFAULT_ENGINES, ['claude', 'codex', 'opencode'], 'engines: Gemini CLI, Qwen Code, Kilo Code and Cline are off by default');
+  eq(toggleEngine(['claude'], 'gemini', true), ['claude', 'gemini'], 'engines: Gemini CLI switches on after the others');
+  eq(toggleEngine(['claude'], 'kilo', true), ['claude', 'kilo'], 'engines: Kilo Code switches on last');
+  eq(toggleEngine(['claude', 'codex'], 'codex', false), ['claude'], 'engines: switching one off leaves the rest');
+  eq(toggleEngine(['claude'], 'claude', false), ['claude'], 'engines: the last engine cannot be switched off');
+  eq(toggleEngine(['codex'], 'claude', true), ['claude', 'codex'], 'engines: switching on keeps the canonical order');
+  eq(toggleEngine(['claude', 'opencode'], 'codex', true), ['claude', 'codex', 'opencode'], 'engines: the middle engine goes between');
+}
 
 // The MCP wizard's pure helpers: the limit bounds the hub checks, the own-row names, and matching a server to its
 // preset by transport (not by id).
@@ -1142,6 +1173,47 @@ sectionEnd('station machine tests: ok');
   eq(stepsItem.kind === 'steps' ? stepsItem.last : '', 'Ran command', 'buildChat: last is the label of the last call');
   eq(stepsItem.kind === 'steps' ? stepsItem.outcome : '', 'mixed', 'buildChat: one ok and one failed is mixed');
   eq(stepsItem.kind === 'steps' ? stepLabel(stepsItem.steps[0]) : '', 'Read src/main.rs', 'stepLabel: read names the path');
+
+  // A code_engine call is one engine block: its updates fill it, and its nested checks go into it, never into a steps run.
+  // `engine_update` is not in the Entry kinds yet, so the fixture entries are typed by hand.
+  const ev = (seq: number, at_ms: number, kind: string, data: Record<string, unknown>): Entry => ({ seq, at_ms, cid: 1, work: 7, kind, data } as Entry);
+  const engineRun = buildChat([
+    ev(1, 10, 'tool_request', { call: 'k1', name: 'code_engine', input: { engine: 'claude-code', prompt: 'fix the parser', session: 'sess-12345678' } }),
+    ev(2, 11, 'tool_decision', { call: 'k1', decision: 'allow' }),
+    ev(3, 12, 'tool_request', { call: 'k1.e1', name: 'engine.read', input: { engine: 'claude-code', title: 'Read src/parser.rs', locations: [], raw: {} } }),
+    ev(4, 13, 'tool_decision', { call: 'k1.e1', decision: 'allow' }),
+    ev(5, 14, 'engine_update', { call: 'k1', item: 'tool_call', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit parser.rs', kind: 'edit', status: 'pending', locations: [{ path: 'src/parser.rs', line: 40 }], content: [{ type: 'diff', path: 'src/parser.rs', oldText: 'a', newText: 'b' }] } }),
+    ev(6, 15, 'engine_update', { call: 'k1', item: 'tool_status', update: { toolCallId: 't1', status: 'completed' } }),
+    ev(7, 16, 'engine_update', { call: 'k1', item: 'plan', update: [{ content: 'Find the bug', status: 'completed', priority: 'high' }, { content: 'Fix it', status: 'in_progress', priority: 'medium' }] }),
+    ev(8, 17, 'tool_request', { call: 'k1.e2', name: 'engine.exec', input: { engine: 'claude-code', title: 'Run cargo test', locations: [], raw: {} } }),
+    ev(9, 18, 'tool_decision', { call: 'k1.e2', decision: 'pending', output: "waiting for the owner's approval (a42)" }),
+    ev(10, 19, 'engine_update', { call: 'k1', item: 'message', text: 'Fixed the parser.' }),
+    ev(11, 20, 'tool_request', { id: 'c9', name: 'bash', input: { command: 'ls' } }),
+    ev(12, 21, 'tool_result', { id: 'c9', is_error: false }),
+    ev(13, 22, 'tool_result', { call: 'k1', ok: true, output: 'Fixed in one edit.' }),
+  ], false);
+  eq(engineRun.map((c) => c.kind).join(','), 'engine,steps', 'buildChat: one engine item, then the plaza\'s own bash call as steps');
+  const block = engineRun[0];
+  eq(block?.kind === 'engine' ? block.engine : '', 'claude-code', 'buildChat: the engine block names the engine');
+  eq(block?.kind === 'engine' ? block.session ?? '' : '', 'sess-12345678', 'buildChat: the engine block keeps the session');
+  eq(block?.kind === 'engine' ? block.status : '', 'ok', 'buildChat: a successful result is ok');
+  eq(block?.kind === 'engine' ? block.message : '', 'Fixed the parser.', 'buildChat: the engine message is its final text');
+  eq(block?.kind === 'engine' ? block.summary ?? '' : '', 'Fixed in one edit.', 'buildChat: the result output is the summary');
+  eq(block?.kind === 'engine' ? block.tools.map((t) => `${t.title}:${t.status}:${t.locations[0]?.line}`).join(',') : '', 'Edit parser.rs:completed:40', 'buildChat: a tool row takes its later status update');
+  eq(block?.kind === 'engine' ? block.tools[0]?.content[0]?.type ?? '' : '', 'diff', 'buildChat: a tool row keeps its diff content');
+  eq(block?.kind === 'engine' ? block.plan.map((p) => `${p.content}:${p.status}`).join(',') : '', 'Find the bug:completed,Fix it:in_progress', 'buildChat: the plan is the latest entries');
+  eq(block?.kind === 'engine' ? block.checks.map((c) => `${c.name}:${c.decision}:${c.approval ?? ''}`).join(',') : '', 'engine.read:allow:,engine.exec:pending:a42', 'buildChat: nested checks, the held one with its approval id');
+  eq(approvalPath('a7/../x y'), '/v1/approvals/a7%2F..%2Fx%20y', 'approvals: the id is one encoded path segment');
+  eq(approvalIdIn("waiting for the owner's approval (a42)") ?? '', 'a42', 'approvals: a hub id is read from the held output');
+  eq(approvalIdIn("waiting for the owner's approval (a42 b)") ?? '', '', 'approvals: an id of another shape is not read');
+  eq(approvalIdIn("waiting for the owner's approval (appr-42)") ?? '', '', 'approvals: an id that is not the hub shape is not read');
+  eq(engineRun[1]?.kind === 'steps' ? engineRun[1].steps.length : -1, 1, 'buildChat: nested checks make no steps, only the bash call does');
+
+  const deniedRun = buildChat([
+    ev(1, 10, 'tool_request', { call: 'k2', name: 'code_engine', input: { engine: 'codex', prompt: 'drop the table' } }),
+    ev(2, 11, 'tool_decision', { call: 'k2', decision: 'deny', output: 'denied by the owner' }),
+  ], false);
+  eq(deniedRun.map((c) => (c.kind === 'engine' ? `${c.status}:${c.summary ?? ''}` : c.kind)).join(','), 'denied:denied by the owner', 'buildChat: a denied engine call is a denied engine item');
 
   const act = activitySplit([
     en(1, 0, 'model_request'),

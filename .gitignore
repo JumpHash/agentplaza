@@ -28,3 +28,8 @@ __pycache__/
 # web build staging (build.mjs swaps dist.next into dist)
 apps/web/dist.next/
 apps/web/dist.old/
+
+# Local secrets (API keys); never committed.
+.env
+.env.*
+!.env.example

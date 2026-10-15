@@ -325,10 +325,15 @@ fn request_bytes(
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     if let Some(body) = body {
-        head.push_str(&format!(
-            "Content-Type: application/json\r\nContent-Length: {}\r\n",
-            body.len()
-        ));
+        // A caller that names its own type (a git relay forwards git's) keeps it: a second
+        // Content-Type would be a second, conflicting header.
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        {
+            head.push_str("Content-Type: application/json\r\n");
+        }
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
     }
     head.push_str("\r\n");
     let mut wire = head.into_bytes();

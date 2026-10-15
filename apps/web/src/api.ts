@@ -184,6 +184,20 @@ export interface Settings {
   role_volumes: Record<string, string[]>;
   /** Take a checkpoint of the agent's VM before each irreversible tool call. */
   vm_auto_checkpoints: boolean;
+  /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */
+  acp_enabled: boolean;
+  /** ACP: the editor offers to apply an agent's pull request to the editor's project (`agentplaza acp --repo`). */
+  acp_write_back?: boolean;
+  /** ACP: editors and coding engines that ask for protocol 2 get the ACP v2 draft; everything else stays on v1. */
+  acp_v2?: boolean;
+  /** The coding engines an agent may run (`claude`, `codex`, `opencode`); at least one stays on. */
+  engines_enabled: string[];
+}
+
+/** One editor session with a plaza agent (apid's `GET /v1/acp/sessions`). */
+export interface AcpSession {
+  id: string; cid: number; cwd: string; client: string; title: string; works: number;
+  created_ms: number; updated_ms: number; closed: boolean;
 }
 
 /** One saved state of an agent's VM (memory, disk and running processes). `diff` builds on the one before it. */
@@ -219,7 +233,7 @@ export interface ChatResponse {
   usage: Usage;
 }
 
-export type EntryKind = 'work_start' | 'model_request' | 'model_response' | 'tool_request' | 'tool_decision' | 'tool_result' | 'work_end' | 'error';
+export type EntryKind = 'work_start' | 'model_request' | 'model_response' | 'tool_request' | 'tool_decision' | 'tool_result' | 'work_end' | 'engine_update' | 'error';
 export interface Entry { seq: number; at_ms: number; cid: number; work: number; kind: EntryKind; data: Record<string, unknown> }
 
 export interface Delta { cid: number; work: number; req: number; delta: { type: 'text' | 'thinking'; text: string } | { type: 'tool_use'; name: string } }
@@ -555,6 +569,8 @@ export interface StationDelivery { id: string; name: string; size: number; kind:
 
 /** One path segment, encoded. */
 const seg = (text: string): string => encodeURIComponent(text);
+/** A decision's path: the approval id is one encoded segment, so no id can reach another route. */
+export const approvalPath = (id: string): string => `/v1/approvals/${seg(id)}`;
 /** A work-folder file's URL: each segment of its path encoded, the slashes kept. */
 const filesUrl = (station: string, path: string): string => `/v1/stations/${seg(station)}/files/${path.split('/').map(seg).join('/')}`;
 
@@ -734,7 +750,7 @@ export const api = {
 
   approvals: () => get<Approval[]>('/v1/approvals'),
   /** `action` picks what a sanction escalation does; left out, approve and deny act as they always have. */
-  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(`/v1/approvals/${id}`, { approve, reason, action }),
+  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(approvalPath(id), { approve, reason, action }),
   /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. `active` answers only the suspensions in force (no sanctions, no limit). */
   sanctions: (q: { cid?: number; law?: string; limit?: number; active?: boolean } = {}) =>
     get<SanctionsView>(`/v1/sanctions${query({ cid: q.cid, law: q.law, limit: q.limit, active: q.active ? 1 : undefined })}`),
@@ -1321,6 +1337,10 @@ export interface HubTokenBody { name: string; scope: HubScope; tools?: string[];
 export interface HubTokenCreated { token: string; record: HubToken }
 export interface HubCall { token_id: string; tool: string; args_sha256: string; ok: boolean; error: string | null; duration_ms: number; at_ms: number }
 export interface HubCallsQuery { token?: string; tool?: string; limit?: number }
+
+export const acpApi = {
+  sessions: () => get<AcpSession[]>('/v1/acp/sessions'),
+};
 
 export const hubMcpApi = {
   status: () => get<HubMcpStatus>('/v1/hub-mcp'),

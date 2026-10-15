@@ -250,6 +250,11 @@ pub fn serve(workspace: &Workspace, name: &str, args: &Value) -> Result<String, 
     }
 }
 
+/// True when [`serve`] runs a tool called `name`.
+pub fn serves(name: &str) -> bool {
+    TOOLS.iter().any(|tool| tool.name == name)
+}
+
 /// `echo`: says back the text it is given.
 fn echo(_workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
     match args.get("text").and_then(Value::as_str) {

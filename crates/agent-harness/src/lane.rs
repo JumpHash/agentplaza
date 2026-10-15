@@ -11,10 +11,11 @@
 //! and not run. By then the hub's `tell` has timed out and reported a failure, so running it would
 //! land a write the owner was told did not happen.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -69,10 +70,56 @@ pub struct OperatorCall {
     pub received: Instant,
 }
 
-/// The state both lanes share: the one writer, the transcript log, and the session's counters.
+/// The nested calls a running tool has out with the host. An ACP engine's own requests (its
+/// permission checks) carry ids such as `<call>.e<n>`, and the host's decisions on them must reach
+/// the tool that waits for them, not the agent loop: the agent loop is blocked on that same tool.
+/// A tool registers each id before it sends the request and unregisters it when it is done.
+#[derive(Default)]
+pub struct Nested {
+    waiters: Mutex<HashMap<String, Sender<HostMessage>>>,
+}
+
+impl Nested {
+    /// Registers `call`: the host's decisions for it go to the returned receiver from now on.
+    pub fn register(&self, call: &str) -> Receiver<HostMessage> {
+        let (tx, rx) = mpsc::channel();
+        locked(&self.waiters).insert(call.to_string(), tx);
+        rx
+    }
+
+    /// Forgets `call`. A decision for it that arrives later goes to the agent loop, as before.
+    pub fn unregister(&self, call: &str) {
+        locked(&self.waiters).remove(call);
+    }
+
+    /// Hands `message` to the tool registered for its call, when it is a decision for one. Gives
+    /// the message back when no tool waits for it, so the reader can pass it on as usual.
+    pub fn route(&self, message: HostMessage) -> Option<HostMessage> {
+        let call = match &message {
+            HostMessage::ToolDecision { call, .. }
+            | HostMessage::PermissionDecision { call, .. } => call.clone(),
+            _ => return Some(message),
+        };
+        let mut waiters = locked(&self.waiters);
+        let Some(tx) = waiters.get(&call) else {
+            return Some(message);
+        };
+        // The tool stopped waiting (its receiver is gone): the decision has no taker, so it is
+        // dropped and the id forgotten rather than sent to the agent loop by mistake.
+        if tx.send(message).is_err() {
+            waiters.remove(&call);
+        }
+        None
+    }
+}
+
+/// The state both lanes share: the one writer, the transcript log, the nested calls, and the
+/// session's counters. A running tool writes its own guest messages (its nested requests, its
+/// `engine_update`s) through [`Shared::say`], the same path the lanes use.
 pub struct Shared<'log, S, W> {
     writer: Mutex<Lines<S>>,
     log: Mutex<&'log mut W>,
+    nested: Nested,
     /// Operator tool calls answered so far.
     calls: AtomicU64,
     /// Set when the agent loop is done; the reader then stops reading.
@@ -84,6 +131,7 @@ impl<'log, S: Write, W: Write> Shared<'log, S, W> {
         Self {
             writer: Mutex::new(writer),
             log: Mutex::new(log),
+            nested: Nested::default(),
             calls: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         }
@@ -94,6 +142,11 @@ impl<'log, S: Write, W: Write> Shared<'log, S, W> {
         let mut writer = locked(&self.writer);
         let mut log = locked(&self.log);
         send(&mut writer, &mut **log, message)
+    }
+
+    /// The nested calls running tools have registered.
+    pub fn nested(&self) -> &Nested {
+        &self.nested
     }
 
     /// A transcript line.
@@ -163,6 +216,10 @@ pub fn read_host<S: Duplex, W: Write>(
                 }
             }
             Ok(message) => {
+                // A decision for a nested call a running tool waits on goes to that tool.
+                let Some(message) = shared.nested().route(message) else {
+                    continue;
+                };
                 if inbox.send(Inbound::Message(message)).is_err() {
                     return;
                 }
@@ -322,6 +379,101 @@ mod tests {
             json!({"type": "tool_result", "call": 2, "ok": false, "output": "expired"})
         );
         assert_eq!(shared.calls(), 2);
+    }
+
+    #[test]
+    fn a_nested_decision_reaches_the_tool_that_registered_it_and_others_reach_the_agent() {
+        let (mut guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        // The engine's request goes out on the shared writer, as a running tool sends it.
+        let request = GuestMessage::ToolRequest {
+            work: 2,
+            call: "toolu_1.e1".into(),
+            name: "engine.edit".into(),
+            input: json!({"engine": "claude"}),
+        };
+        shared.say(&request).expect("the request is written");
+        assert!(next(&mut host).contains(r#""call":"toolu_1.e1""#));
+
+        let nested = shared.nested().register("toolu_1.e1");
+        let (inbox_tx, inbox_rx) = mpsc::channel();
+        let (operator_tx, _operator_rx) = mpsc::channel();
+        let hub = thread::spawn(move || {
+            host.send(r#"{"type":"tool_decision","call":"toolu_1.e1","decision":"pending","approval":"a4"}"#)
+                .unwrap();
+            host.send(
+                r#"{"type":"permission_decision","work":2,"call":"toolu_1.e1","allow":true}"#,
+            )
+            .unwrap();
+            host.send(r#"{"type":"tool_decision","call":"toolu_2","decision":"allow"}"#)
+                .unwrap();
+            host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();
+        });
+        read_host(&mut guest, &shared, inbox_tx, operator_tx);
+        hub.join().unwrap();
+
+        assert!(matches!(
+            nested.try_recv(),
+            Ok(HostMessage::ToolDecision {
+                decision: apz_proto::wire::Decision::Pending,
+                ..
+            })
+        ));
+        assert!(matches!(
+            nested.try_recv(),
+            Ok(HostMessage::PermissionDecision { allow: true, .. })
+        ));
+        assert!(nested.try_recv().is_err(), "nothing else reached the tool");
+        // The unregistered call and the stop went to the agent loop, in order.
+        assert!(matches!(
+            inbox_rx.try_recv(),
+            Ok(Inbound::Message(HostMessage::ToolDecision { call, .. })) if call == "toolu_2"
+        ));
+        assert!(matches!(
+            inbox_rx.try_recv(),
+            Ok(Inbound::Message(HostMessage::Stop { .. }))
+        ));
+    }
+
+    #[test]
+    fn a_decision_for_an_unregistered_call_goes_to_the_agent_loop() {
+        let nested = Nested::default();
+        let decision = HostMessage::PermissionDecision {
+            work: 1,
+            call: "toolu_3.e2".into(),
+            allow: false,
+            reason: None,
+        };
+        // Nothing registered: the message is handed back for the agent loop.
+        let back = nested.route(decision.clone());
+        assert_eq!(back, Some(decision.clone()));
+        // Registered, then unregistered: the same.
+        let rx = nested.register("toolu_3.e2");
+        assert!(nested.route(decision.clone()).is_none());
+        assert_eq!(rx.try_recv().ok(), Some(decision.clone()));
+        nested.unregister("toolu_3.e2");
+        assert_eq!(nested.route(decision.clone()), Some(decision));
+        // A dropped receiver drops the decision and forgets the id.
+        let rx = nested.register("toolu_4.e1");
+        drop(rx);
+        let late = HostMessage::ToolDecision {
+            call: "toolu_4.e1".into(),
+            decision: apz_proto::wire::Decision::Allow,
+            output: String::new(),
+            is_error: false,
+            program: None,
+            approval: None,
+        };
+        assert!(nested.route(late.clone()).is_none());
+        assert_eq!(
+            nested.route(late.clone()),
+            Some(late),
+            "the id is forgotten"
+        );
     }
 
     #[test]

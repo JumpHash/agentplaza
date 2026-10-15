@@ -134,6 +134,8 @@ enum Command {
     /// The hub as an MCP server: turn it on, make tokens, and the stdio bridge for MCP clients.
     #[command(subcommand)]
     Mcp(cmd::mcp::Cmd),
+    /// The stdio agent editors start (Zed, JetBrains, Neovim); `acp sessions` lists the editor sessions on the hub.
+    Acp(cmd::acp::Args),
     /// Egress credentials: rules that add a vault secret to an agent's outbound HTTPS request, so the secret never enters the VM.
     #[command(subcommand)]
     Egress(cmd::egress::Cmd),
@@ -188,6 +190,9 @@ fn run(cli: Cli) -> Result<(), String> {
         };
         return cmd::mcp::run(cmd, globals);
     }
+    if let Command::Acp(args) = cli.command {
+        return cmd::acp::run(args, cli.hub, cli.token, cli.pin, cli.json);
+    }
     let terminal = rich::Terminal::from_env(cli.plain);
     let mut ctx = ctx::resolve(cli.hub, cli.token, cli.pin, cli.json)?;
     ctx.rich = rich::Mode::decide(&terminal, Some(ctx.client.base()));
@@ -230,6 +235,7 @@ fn run(cli: Cli) -> Result<(), String> {
         | Command::Node(_)
         | Command::Workstation(_)
         | Command::Mcp(_)
+        | Command::Acp(_)
         | Command::Setup(_) => {
             unreachable!("handled above")
         }

@@ -16,6 +16,15 @@
 //!         decision=deny  → `output` is the reason; the model sees an error result
 //!   guest work_done{work,status,summary}
 //!   host cancel{work} aborts the work item; host profile{profile} replaces the profile
+//! v4  ACP engines (inside a v3 session; hello carries `caps`, the harness's own features):
+//!   guest hello{…,caps:["acp"]} → a harness that can host an ACP engine says so
+//!   guest tool_request{work,call:"<call>.e<n>",name:"engine.<kind>"} from the engine's session
+//!     → host tool_decision{decision:pending{approval}} when the owner must decide; the request
+//!       stays open, and when the owner decides the host pushes
+//!       host permission_decision{work,call,allow,reason?} (a push, not an answer to a line)
+//!     → host tool_decision{decision:allow|deny} otherwise, as in v3
+//!   guest engine_update{work,call,engine,session,seq,update} streams one ACP session update
+//!     (the payload as the engine sent it); the hub records some of them and publishes all
 //! ```
 //!
 //! The guest's identity is never taken from a line: the hub binds every
@@ -46,6 +55,9 @@ pub enum GuestMessage {
         role: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keepalive: Option<bool>,
+        /// v4: the features this harness has (see [`CAP_ACP`]). An older harness omits it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
     },
     /// v1: the guest asks the host to run a diagnostic tool.
     ToolCall {
@@ -87,6 +99,17 @@ pub enum GuestMessage {
         call: String,
         ok: bool,
         output: String,
+    },
+    /// v4: one session update from an ACP engine for work item `work`, under call `call` (the
+    /// `code_engine` call's id, or the nested id of a request the engine made). `update` is the
+    /// ACP session update as the engine sent it; `seq` counts the updates of `session`.
+    EngineUpdate {
+        work: u64,
+        call: String,
+        engine: String,
+        session: String,
+        seq: u64,
+        update: Value,
     },
     /// v3: the work item is over.
     WorkDone {
@@ -193,6 +216,19 @@ pub enum HostMessage {
         /// built-in tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         program: Option<Program>,
+        /// v4: with `decision: pending`, the approval the owner decides; the answer follows as a
+        /// [`HostMessage::PermissionDecision`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
+    },
+    /// v4: the owner decided a call held for approval (`decision: pending`). Pushed by the hub,
+    /// not sent in answer to a line.
+    PermissionDecision {
+        work: u64,
+        call: String,
+        allow: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// v3: abort work item `work` after the current step.
     Cancel { work: u64, reason: String },
@@ -235,6 +271,10 @@ pub struct AgentProfile {
     /// when compressing; older ones are folded into a summary.
     #[serde(default)]
     pub keep_recent: u32,
+    /// v4: which ACP version the engines are offered: empty (ACP v1) or `acp2` (the v2 draft). Every
+    /// engine streams as an ACP session with every action checked by the hub.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub engine_transport: String,
     /// v4: the hub's egress CA certificate (PEM), present when the owner gave this agent's role an
     /// egress credential rule. The hub's egress proxy terminates TLS only for hosts with such a rule
     /// (to add the credential the guest never sees) and signs their certificates with this CA, so
@@ -271,8 +311,13 @@ pub enum Decision {
     Allow,
     Deny,
     Done,
+    /// v4: held until the owner decides; the decision's `approval` names it.
+    Pending,
 }
 
+/// The `caps` entry a harness with ACP engine support sends in its hello. The hub answers an ACP
+/// engine's held call with `pending` only to a harness that sent it.
+pub const CAP_ACP: &str = "acp";
 /// What the host tells a guest in its welcome about the world outside the VM (see
 /// [`HostMessage::Welcome`]'s `host`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +424,7 @@ mod tests {
             guest_cid: 3,
             role: None,
             keepalive: None,
+            caps: Vec::new(),
         };
         assert_eq!(
             hello.to_line().unwrap(),
@@ -405,6 +451,7 @@ mod tests {
             guest_cid: 7,
             role: None,
             keepalive: Some(true),
+            caps: Vec::new(),
         };
         assert_eq!(
             keepalive.to_line().unwrap(),
@@ -500,11 +547,123 @@ mod tests {
             output: String::new(),
             is_error: false,
             program: None,
+            approval: None,
         };
         assert_eq!(
             HostMessage::from_line(&decision.to_line().unwrap()).unwrap(),
             decision
         );
+    }
+
+    #[test]
+    fn v4_lines_round_trip() {
+        let engine = GuestMessage::EngineUpdate {
+            work: 4,
+            call: "toolu_9".into(),
+            engine: "claude".into(),
+            session: "s-1".into(),
+            seq: 12,
+            update: json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}}),
+        };
+        let line = engine.to_line().unwrap();
+        assert!(
+            line.starts_with(r#"{"type":"engine_update","work":4,"#),
+            "{line}"
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), engine);
+
+        let decision = HostMessage::PermissionDecision {
+            work: 4,
+            call: "toolu_9.e1".into(),
+            allow: false,
+            reason: Some("not today".into()),
+        };
+        let line = decision.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"permission_decision","work":4,"call":"toolu_9.e1","allow":false,"reason":"not today"}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), decision);
+        let bare = HostMessage::PermissionDecision {
+            work: 4,
+            call: "toolu_9.e1".into(),
+            allow: true,
+            reason: None,
+        };
+        assert_eq!(
+            bare.to_line().unwrap(),
+            r#"{"type":"permission_decision","work":4,"call":"toolu_9.e1","allow":true}"#
+        );
+
+        let pending = HostMessage::ToolDecision {
+            call: "toolu_9.e1".into(),
+            decision: Decision::Pending,
+            output: "waiting for the owner's approval (a7)".into(),
+            is_error: false,
+            program: None,
+            approval: Some("a7".into()),
+        };
+        let line = pending.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"tool_decision","call":"toolu_9.e1","decision":"pending","output":"waiting for the owner's approval (a7)","is_error":false,"approval":"a7"}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), pending);
+    }
+
+    #[test]
+    fn hello_carries_caps_and_an_old_hello_still_parses() {
+        let acp = GuestMessage::Hello {
+            vm: 0,
+            guest_cid: 3,
+            role: Some("builder".into()),
+            keepalive: Some(true),
+            caps: vec![CAP_ACP.to_string()],
+        };
+        let line = acp.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder","keepalive":true,"caps":["acp"]}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), acp);
+
+        // A harness from before v4 omits caps: it parses with none, and its line is unchanged.
+        let old = r#"{"type":"hello","vm":0,"guest_cid":3,"role":"builder","keepalive":true}"#;
+        match GuestMessage::from_line(old).unwrap() {
+            GuestMessage::Hello { caps, role, .. } => {
+                assert!(caps.is_empty());
+                assert_eq!(role.as_deref(), Some("builder"));
+            }
+            other => panic!("not a hello: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_old_tool_decision_without_approval_parses_as_before() {
+        let old = r#"{"type":"tool_decision","call":"toolu_1","decision":"allow"}"#;
+        match HostMessage::from_line(old).unwrap() {
+            HostMessage::ToolDecision {
+                decision,
+                approval,
+                output,
+                ..
+            } => {
+                assert_eq!(decision, Decision::Allow);
+                assert_eq!(approval, None);
+                assert!(output.is_empty());
+            }
+            other => panic!("not a tool decision: {other:?}"),
+        }
+        // The v3 decision lines are byte-stable: no approval key appears on them.
+        let deny = HostMessage::ToolDecision {
+            call: "toolu_1".into(),
+            decision: Decision::Deny,
+            output: "no".into(),
+            is_error: true,
+            program: None,
+            approval: None,
+        };
+        assert!(!deny.to_line().unwrap().contains("approval"));
     }
 
     #[test]

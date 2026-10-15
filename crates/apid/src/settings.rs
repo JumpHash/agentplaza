@@ -119,6 +119,20 @@ pub struct Settings {
     /// The owner's pauses of the board's deliveries (`owner_board.rs`). The pause route sets them;
     /// a settings save keeps the ones in force.
     pub board_pauses: BoardPauses,
+    /// The coding engines the owner has enabled. A `code_engine` call names one of these, and the
+    /// offer lists only these. Never empty, never repeated.
+    pub engines_enabled: Vec<String>,
+    /// How the engines run: always `acp` (the Agent Client Protocol). The field stays so a saved value
+    /// still loads; see [`ENGINE_MODE`].
+    pub engines_mode: String,
+    /// Whether editors may connect to the hub's ACP server (`/v1/acp`). Off until the owner turns it on.
+    pub acp_enabled: bool,
+    /// Whether an editor may apply a pull request its agent opened to the editor's project, when the
+    /// owner says yes in the editor. Off until the owner turns it on; the agent never writes the project itself.
+    pub acp_write_back: bool,
+    /// Whether editors may speak the ACP v2 draft to the hub, next to v1 (`/v1/acp`): an editor that asks
+    /// for protocol 2 gets it, and every other editor keeps v1. Off until the owner turns it on.
+    pub acp_v2: bool,
     /// Minutes an agent must be idle before the sweeper puts it to sleep (its VM snapshotted and
     /// stopped, `sleep.rs`). 0: agents never sleep on their own.
     pub idle_sleep_min: u32,
@@ -151,6 +165,19 @@ impl BoardPauses {
 /// The default for `review_timeout_minutes`: half an hour.
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
 
+/// The coding engines a `code_engine` call may name.
+pub const ENGINE_IDS: [&str; 12] = [
+    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose", "kimi",
+    "auggie", "vibe",
+];
+
+/// The engines enabled out of the box. Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot, Goose,
+/// Kimi Code, Auggie and Mistral Vibe are named but off until the owner enables them.
+pub const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// The one transport the engines run over, the Agent Client Protocol: the only `engines_mode`. The
+/// headless run is gone, so a saved `headless` loads as this (see `repair`).
+pub const ENGINE_MODE: &str = "acp";
 /// The default for `idle_sleep_min`: ten minutes.
 pub const DEFAULT_IDLE_SLEEP_MIN: u32 = 10;
 
@@ -220,6 +247,11 @@ impl Default for Settings {
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
             workstation_recordings: RecordingDefaults::default(),
             board_pauses: BoardPauses::default(),
+            engines_enabled: DEFAULT_ENGINE_IDS.map(String::from).to_vec(),
+            engines_mode: ENGINE_MODE.into(),
+            acp_enabled: false,
+            acp_write_back: false,
+            acp_v2: false,
             idle_sleep_min: DEFAULT_IDLE_SLEEP_MIN,
             sleep_never_roles: vec![ORCHESTRATOR_ROLE.into()],
             role_volumes: BTreeMap::new(),
@@ -547,6 +579,33 @@ fn allowed_under(
 /// The checks every settings value passes: on save and restore (`Store::put`, `Store::restore`),
 /// and on load (`repair`'s last look). The model rules are those of [`allowed_under`] against the
 /// policy this value carries.
+/// The engine settings' rules: the enabled engines are known, at least one, and none twice; the mode is known.
+fn check_engines(new: &Settings) -> Result<(), String> {
+    if let Some(bad) = new
+        .engines_enabled
+        .iter()
+        .find(|id| !ENGINE_IDS.contains(&id.as_str()))
+    {
+        return Err(format!(
+            "unknown engine {bad:?}; expected one of {}",
+            ENGINE_IDS.join(", ")
+        ));
+    }
+    if new.engines_enabled.is_empty() {
+        return Err("engines_enabled needs at least one engine".into());
+    }
+    if new.engines_enabled.iter().collect::<BTreeSet<_>>().len() != new.engines_enabled.len() {
+        return Err("engines_enabled lists an engine twice".into());
+    }
+    if new.engines_mode != ENGINE_MODE {
+        return Err(format!(
+            "unknown engines_mode {:?}; expected {ENGINE_MODE}",
+            new.engines_mode
+        ));
+    }
+    Ok(())
+}
+
 fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     if !new.allow_training_models {
         // A contributor model trains Meta's future models on what it is sent: never a default, a role
@@ -577,6 +636,7 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     if !(1..=200).contains(&new.max_turns) {
         return Err(format!("max_turns must be 1..=200, got {}", new.max_turns));
     }
+    check_engines(new)?;
     if new.idle_sleep_min > MAX_IDLE_SLEEP_MIN {
         return Err(format!(
             "idle_sleep_min must be 0..={MAX_IDLE_SLEEP_MIN}, got {}",
@@ -779,6 +839,32 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
         d.max_turns,
         (1..=200).contains(&s.max_turns),
     );
+    // An unknown or repeated engine is dropped; a list left with no engine is the defaults.
+    let mut kept: Vec<String> = Vec::new();
+    for id in std::mem::take(&mut s.engines_enabled) {
+        if ENGINE_IDS.contains(&id.as_str()) && !kept.contains(&id) {
+            kept.push(id);
+        } else {
+            notes.push(format!(
+                "dropped engines_enabled entry {id:?}: not an engine, or listed twice"
+            ));
+        }
+    }
+    if kept.is_empty() {
+        notes.push(format!(
+            "engines_enabled names no engine; using {}",
+            d.engines_enabled.join(", ")
+        ));
+        kept = d.engines_enabled.clone();
+    }
+    s.engines_enabled = kept;
+    if s.engines_mode != ENGINE_MODE {
+        notes.push(format!(
+            "engines_mode {:?} is not a mode; using {}",
+            s.engines_mode, d.engines_mode
+        ));
+        s.engines_mode = d.engines_mode.clone();
+    }
     s.idle_sleep_min = or_default(
         &mut notes,
         "idle_sleep_min",
@@ -1457,6 +1543,80 @@ mod tests {
         let set: Settings =
             serde_json::from_value(serde_json::json!({"review_timeout_minutes": 5})).unwrap();
         assert_eq!(set.review_timeout_minutes, 5);
+    }
+
+    #[test]
+    fn engines_default_to_all_three_over_acp_and_refusals_are_named() {
+        let mut s = Settings::default();
+        assert_eq!(s.engines_enabled, ["claude", "codex", "opencode"]);
+        assert_eq!(s.engines_mode, "acp");
+        assert!(check_engines(&s).is_ok());
+
+        s.engines_enabled = vec!["gemini".into()];
+        assert!(check_engines(&s).is_ok(), "Gemini CLI may be enabled");
+        s.engines_enabled = vec!["qwen".into(), "kilo".into(), "cline".into()];
+        assert!(
+            check_engines(&s).is_ok(),
+            "Qwen Code, Kilo Code and Cline may be enabled"
+        );
+        s.engines_enabled = vec!["bash".into()];
+        assert!(check_engines(&s).unwrap_err().contains("bash"));
+        s.engines_enabled = Vec::new();
+        assert!(check_engines(&s).unwrap_err().contains("at least one"));
+        s.engines_enabled = vec!["claude".into(), "claude".into()];
+        assert!(check_engines(&s).unwrap_err().contains("twice"));
+
+        s.engines_enabled = vec!["codex".into()];
+        s.engines_mode = "pipes".into();
+        assert!(check_engines(&s).unwrap_err().contains("pipes"));
+        s.engines_mode = "headless".into();
+        assert!(check_engines(&s).unwrap_err().contains("headless"));
+        s.engines_mode = ENGINE_MODE.into();
+        assert!(check_engines(&s).is_ok());
+    }
+
+    #[test]
+    fn acp_v2_is_off_by_default_and_old_settings_keep_v1() {
+        assert!(!Settings::default().acp_v2);
+        // Settings saved before the draft existed carry no key: editors keep speaking v1.
+        let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
+        assert!(!old.acp_v2);
+        let on: Settings = serde_json::from_str("{\"acp_v2\": true}").unwrap();
+        assert!(on.acp_v2);
+        assert!(
+            !on.acp_write_back,
+            "the other ACP switches keep their defaults"
+        );
+    }
+
+    #[test]
+    fn engines_repair_on_load_and_old_settings_load_the_defaults() {
+        // Settings saved before the engines existed carry neither key: they load the defaults.
+        let old: Settings = serde_json::from_str("{\"max_turns\": 24}").unwrap();
+        assert_eq!(old.engines_enabled, DEFAULT_ENGINE_IDS);
+        assert_eq!(old.engines_mode, "acp");
+
+        // A hand-edited file: an unknown or repeated id is dropped, a bad mode is reset.
+        let mut s = Settings::default();
+        s.engines_enabled = vec!["claude".into(), "bash".into(), "claude".into()];
+        s.engines_mode = "pipes".into();
+        let (fixed, notes) = repair(s, false);
+        assert_eq!(fixed.engines_enabled, ["claude"]);
+        assert_eq!(fixed.engines_mode, "acp");
+        assert!(notes.iter().any(|n| n.contains("bash")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("pipes")), "{notes:?}");
+
+        // The headless run is gone: a file saved under it loads as ACP, with a note.
+        let saved: Settings = serde_json::from_str("{\"engines_mode\": \"headless\"}").unwrap();
+        let (fixed, notes) = repair(saved, false);
+        assert_eq!(fixed.engines_mode, "acp");
+        assert!(notes.iter().any(|n| n.contains("headless")), "{notes:?}");
+
+        // A list with no engine left is the defaults.
+        let mut none = Settings::default();
+        none.engines_enabled = vec!["bash".into()];
+        let (fixed, _) = repair(none, false);
+        assert_eq!(fixed.engines_enabled, DEFAULT_ENGINE_IDS);
     }
 
     #[test]

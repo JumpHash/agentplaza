@@ -16,6 +16,7 @@
     allow(linker_messages)
 )]
 
+mod acp;
 mod agent_proposals;
 mod agents;
 mod api;
@@ -31,6 +32,7 @@ mod e2b_net;
 mod e2b_obs;
 mod e2b_tpl;
 mod egress_inject;
+mod engine_feed;
 mod events;
 mod fleet;
 mod foundry;
@@ -79,6 +81,7 @@ mod unfurl;
 mod upstream;
 mod usage;
 mod vault;
+mod vendor_relay;
 mod vm_snapshots;
 
 use std::process::ExitCode;

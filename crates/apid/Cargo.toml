@@ -10,6 +10,7 @@ publish = false
 apz-prompt = { path = "../apz-prompt" }
 apz-skill = { path = "../apz-skill" }
 jhrl = { path = "../jhrl" }
+apz-acp = { path = "../apz-acp" }
 apz-proto.workspace = true
 apz-http = { path = "../apz-http" }
 apz-gateway = { path = "../apz-gateway" }

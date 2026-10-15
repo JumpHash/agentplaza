@@ -9,6 +9,7 @@ import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
 import { tierChoices } from './agent-detail';
+import { DEFAULT_ENGINES, ENGINES, toggleEngine } from './engines-model';
 
 type Tier = 'orchestrator' | 'worker';
 type Price = { input: number; output: number };
@@ -56,7 +57,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
 
   function render(): void {
     errors.clear();
-    replace(body, policyCard(), defaultsCard(), limitsCard(), sleepCard(), pricesCard());
+    replace(body, policyCard(), defaultsCard(), limitsCard(), enginesCard(), sleepCard(), pricesCard());
     sync();
   }
 
@@ -243,6 +244,40 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         field('Max tokens (0 = provider default)', tokens),
         field('Effort', effort),
         field('Fetch blocklist (every other host is allowed)', block),
+      ),
+    );
+  }
+
+  /** The coding engines an agent may run, and how they run. At least one engine stays on (the last box is locked). */
+  function enginesCard(): HTMLElement {
+    // A hub from before the engine settings sends neither field: it runs the three engines over ACP.
+    copy.engines_enabled ??= [...DEFAULT_ENGINES];
+    const enabled = copy.engines_enabled;
+    const boxes = ENGINES.map((engine) => {
+      const on = enabled.includes(engine.value);
+      const box = input({ type: 'checkbox', style: 'width:auto' });
+      box.checked = on;
+      box.disabled = on && enabled.length === 1;
+      box.title = box.disabled ? 'At least one engine stays on' : '';
+      box.addEventListener('change', () => {
+        copy.engines_enabled = toggleEngine(copy.engines_enabled, engine.value, box.checked);
+        render();
+      });
+      return h(
+        'label',
+        { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' },
+        box,
+        h('span', null, engine.label),
+        h('span.mono.faint', null, engine.value),
+      );
+    });
+    return card(
+      'Engines',
+      h(
+        'div.stack',
+        null,
+        h('p.faint', null, 'The coding engines an agent may run. At least one stays on. Every engine runs over ACP: a live stream, with every action checked by the laws.'),
+        h('div.stack', null, ...boxes),
       ),
     );
   }

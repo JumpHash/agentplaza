@@ -16,7 +16,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,12 +30,13 @@ use apz_proto::wire::{
 };
 use serde_json::{Value, json};
 
+use crate::acp::hub::HubLink;
 use crate::bash;
 use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tools;
-use crate::{checkpoints, engines, library, plan, search_tools, shells};
+use crate::{checkpoints, library, plan, search_tools, shells};
 
 /// A chat thread whose history serializes past this is closed: its next work
 /// starts a new conversation, opened with the thread's last summary.
@@ -120,6 +123,12 @@ struct Agent<'a, 'l, S, W> {
     compressed_size: u64,
     /// Model calls the operator allowed beyond the profile's turn budget.
     extra_turns: u32,
+    /// Set while a local tool runs, once the work item is cancelled or the agent is stopping: an
+    /// engine session reads it and stops at once, instead of at the tool's end.
+    tool_cancel: Arc<AtomicBool>,
+    /// A stop that arrived while a local tool ran. The loop takes it at its next wait, as it
+    /// would have taken the line had it arrived then.
+    stopping: Option<String>,
 }
 
 /// Serves one keepalive connection's agent loop until the host's `stop`, then
@@ -166,6 +175,8 @@ pub fn serve<S: Duplex, W: Write + Send>(
             compress_requested: false,
             compressed_size: 0,
             extra_turns: 0,
+            tool_cancel: Arc::new(AtomicBool::new(false)),
+            stopping: None,
         };
         agent.clock = agent
             .threads
@@ -183,7 +194,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
     Ok(calls)
 }
 
-impl<S: Write, W: Write> Agent<'_, '_, S, W> {
+impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
     /// The agent loop: runs queued work and waits for the host, until the host stops it.
     fn run(&mut self) -> Result<(), SessionError> {
         loop {
@@ -241,6 +252,9 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
     /// due. The messages the loop owns are acted on here; anything else is returned
     /// for a waiting caller.
     fn pump(&mut self) -> Result<Incoming, SessionError> {
+        if let Some(reason) = self.stopping.take() {
+            return Ok(Incoming::Stop(reason));
+        }
         let wait = self.next_beat.saturating_duration_since(Instant::now());
         let message = match self.inbox.recv_timeout(wait) {
             Ok(Inbound::Message(message)) => message,
@@ -253,6 +267,11 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 return Ok(Incoming::Beat);
             }
         };
+        self.take(message)
+    }
+
+    /// Acts on one host message the loop owns; anything else is returned for a waiting caller.
+    fn take(&mut self, message: HostMessage) -> Result<Incoming, SessionError> {
         Ok(match message {
             HostMessage::Stop { reason } => Incoming::Stop(reason),
             HostMessage::Work {
@@ -323,15 +342,18 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         }
     }
 
-    /// Runs a local tool on its own thread, beating beside it. A panicking tool
-    /// is an error result, not a dead session.
+    /// Runs a local tool on its own thread, beating beside it and taking the
+    /// host's messages meanwhile. A panicking tool is an error result, not a dead
+    /// session.
     fn run_local(&mut self, job: impl FnOnce() -> Outcome + Send) -> Result<Outcome, SessionError> {
+        self.tool_cancel.store(false, Ordering::SeqCst);
         thread::scope(|scope| -> Result<Outcome, SessionError> {
             let handle = scope.spawn(job);
             while !handle.is_finished() {
                 if Instant::now() >= self.next_beat {
                     self.beat()?;
                 }
+                self.hear_during_tool()?;
                 thread::sleep(LOCAL_POLL);
             }
             Ok(handle
@@ -340,11 +362,45 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
         })
     }
 
+    /// Takes the host's messages that arrived while a local tool runs, without
+    /// waiting for them. A cancel of the work item reaches the tool through
+    /// `tool_cancel`; a stop is kept for the loop's next wait, so the tool's result
+    /// is still reported first.
+    fn hear_during_tool(&mut self) -> Result<(), SessionError> {
+        loop {
+            let message = match self.inbox.try_recv() {
+                Ok(Inbound::Message(message)) => message,
+                Err(TryRecvError::Empty) => return Ok(()),
+                Ok(Inbound::Closed) | Err(TryRecvError::Disconnected) => {
+                    self.tool_cancel.store(true, Ordering::SeqCst);
+                    return Err(SessionError::HostClosed);
+                }
+                Ok(Inbound::Failed(err)) => {
+                    self.tool_cancel.store(true, Ordering::SeqCst);
+                    return Err(SessionError::Io(err));
+                }
+            };
+            match self.take(message)? {
+                Incoming::Stop(reason) => {
+                    self.tool_cancel.store(true, Ordering::SeqCst);
+                    self.stopping = Some(reason);
+                }
+                Incoming::Message(other) => {
+                    let kind = kind_of(&other);
+                    self.shared
+                        .note(&format!("agent-harness: ignoring {kind} while a tool runs"));
+                }
+                Incoming::Beat | Incoming::Handled => {}
+            }
+        }
+    }
+
     /// `cancel`: the work item in progress stops after its current step; a
     /// queued one is finished as stopped without running.
     fn cancel(&mut self, work: u64, reason: String) -> Result<(), SessionError> {
         if self.current == Some(work) {
             self.cancelled = Some(reason);
+            self.tool_cancel.store(true, Ordering::SeqCst);
         } else if let Some(at) = self.queue.iter().position(|job| job.work == work) {
             self.queue.remove(at);
             self.finish(work, WorkStatus::Stopped, &reason)?;
@@ -707,6 +763,7 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                     output,
                     is_error,
                     program,
+                    ..
                 } if call == id => Ok((decision, output, is_error, program)),
                 other => Err(other),
             })?;
@@ -717,6 +774,24 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 let outcome = match program {
                     Some(program) => {
                         self.run_local(move || library::run(workspace, &program, input))?
+                    }
+                    // An engine runs as an ACP session whose every action the hub checks.
+                    None if name == "code_engine" => {
+                        let shared = self.shared;
+                        let cancel = Arc::clone(&self.tool_cancel);
+                        let call = id.to_string();
+                        // The engine's MCP server offers the profile's plaza tools, through the hub.
+                        let tools = self
+                            .profile
+                            .as_ref()
+                            .map_or_else(Vec::new, |profile| profile.tools.clone());
+                        let protocol = self.profile.as_ref().map_or(1, |profile| {
+                            crate::acp::run::protocol_offer(&profile.engine_transport)
+                        });
+                        self.run_local(move || {
+                            let link = HubLink::new(shared, work, call, &cancel, tools);
+                            crate::acp::run::run(workspace, input, &link, protocol)
+                        })?
                     }
                     None => self.run_local(move || run_guest_tool(workspace, name, input))?,
                 };
@@ -745,6 +820,12 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 Ok((output, !ok))
             }
             Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
+            // Held for the owner (only an ACP engine's requests are held, and those wait on their own
+            // nested ids). A model's call that comes back held is an error it can retry later.
+            Decision::Pending => Ok((
+                "the owner has not decided this tool call yet; try again later".to_string(),
+                true,
+            )),
             Decision::Deny if output.is_empty() => {
                 Ok(("the host denied this tool call".to_string(), true))
             }
@@ -768,6 +849,33 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
     None
 }
 
+/// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
+const GUEST_TOOLS: [&str; 17] = [
+    "bash",
+    "install_packages",
+    "multi_edit",
+    "glob",
+    "grep",
+    "bash_start",
+    "bash_output",
+    "bash_kill",
+    "todo_write",
+    "code_engine",
+    "tool_package",
+    "deliver_file",
+    "share_file",
+    "checkpoint_diff",
+    "checkpoint_restore",
+    "checkpoint_list",
+    "edit_file",
+];
+
+/// True for a tool the harness runs itself, so the VM's own tools: the ones an engine's plaza MCP
+/// server must not offer, since the engine has its own through ACP.
+pub(crate) fn is_guest_tool(name: &str) -> bool {
+    GUEST_TOOLS.contains(&name) || tools::serves(name)
+}
+
 /// Runs a tool the host allowed, under the names the model knows. `edit_file`
 /// takes `old` and `new` from the model, which the file tool calls `find` and
 /// `replace`.
@@ -782,7 +890,6 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "bash_output" => shells::output(workspace, input),
         "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
-        "code_engine" => engines::run(workspace, input),
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
         "share_file" => library::share(workspace, input),
@@ -1484,6 +1591,34 @@ mod tests {
             .unwrap();
             expect_type(host, "tool_request");
             host.send(&decision("c1", "allow", "", false)).unwrap();
+            expect_type(host, "tool_report");
+            let done = expect_type(host, "work_done");
+            assert_eq!(
+                (done["status"].clone(), done["summary"].clone()),
+                (json!("stopped"), json!("operator stop"))
+            );
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_cancel_that_arrives_while_a_tool_runs_stops_the_work_before_its_next_model_call() {
+        let workspace = scratch("cancel-in-tool");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "run it")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use("c1", "bash", json!({"command": "sleep 1"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_request");
+            host.send(&decision("c1", "allow", "", false)).unwrap();
+            // Sent while the tool runs: the loop takes it beside the tool, not after it.
+            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
+                .unwrap();
             expect_type(host, "tool_report");
             let done = expect_type(host, "work_done");
             assert_eq!(

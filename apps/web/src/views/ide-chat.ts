@@ -3,7 +3,19 @@
 
 import css from '../styles/ide-chat.css';
 import { api, type Entry } from '../api';
-import { buildChat, formatMs, stepLabel, type ChatItem, type Step } from '../ide/view';
+import {
+  buildChat,
+  formatMs,
+  stepLabel,
+  type ChatItem,
+  type EngineCheck,
+  type EngineContent,
+  type EngineStatus,
+  type EngineTool,
+  type PlanEntry,
+  type Step,
+  type ToolStatus,
+} from '../ide/view';
 import { on } from '../store';
 import { attempt, button, toast } from '../ui/components';
 import type { EmbedContext } from '../ui/embeds';
@@ -41,6 +53,84 @@ const OUTCOME_WORD: Record<'ok' | 'failed' | 'running' | 'mixed', string> = {
   mixed: 'mixed',
 };
 
+type EngineBlock = Extract<ChatItem, { kind: 'engine' }>;
+
+const ENGINE_WORD: Record<EngineStatus, string> = { running: 'running', ok: 'done', failed: 'failed', denied: 'denied' };
+const TOOL_WORD: Record<ToolStatus, string> = { pending: 'pending', in_progress: 'running', completed: 'done', failed: 'failed' };
+const PLAN_MARK: Record<PlanEntry['status'], string> = { pending: '○', in_progress: '◐', completed: '✓' };
+/** One glyph per ACP tool kind; a kind not listed gets the bullet. */
+const KIND_GLYPH: Record<string, string> = { read: '◫', edit: '✎', delete: '✕', move: '↦', search: '⌕', execute: '▸', think: '…', fetch: '↓', switch_mode: '⇄' };
+/** A diff or a text result shows this many lines in its block; the rest is counted. */
+const PREVIEW_LINES = 20;
+
+interface PreviewLine { cls: 'add' | 'del' | ''; text: string }
+
+function splitLines(text: string, cls: PreviewLine['cls']): PreviewLine[] {
+  return text ? text.split('\n').map((t) => ({ cls, text: t })) : [];
+}
+
+/** A tool call's content: a diff as its removed then its added lines, text as plain lines, a terminal by its id. */
+function contentBlock(c: EngineContent): HTMLElement {
+  if (c.type === 'terminal') return h('div.ide-chat-engine-more', null, `Terminal ${c.terminalId}`);
+  const lines = c.type === 'diff' ? [...splitLines(c.oldText, 'del'), ...splitLines(c.newText, 'add')] : splitLines(c.text, '');
+  const shown = lines.slice(0, PREVIEW_LINES);
+  const more = lines.length - shown.length;
+  return h(
+    'div.ide-chat-engine-body',
+    null,
+    c.type === 'diff' ? h('div.ide-chat-engine-diff-path', null, c.path) : null,
+    h(
+      'div.ide-chat-engine-pre',
+      null,
+      shown.map((l) => h('div', { class: l.cls ? `ide-chat-engine-line ${l.cls}` : 'ide-chat-engine-line' }, l.text || ' ')),
+    ),
+    more > 0 ? h('div.ide-chat-engine-more', null, `${more} more lines`) : null,
+  );
+}
+
+/** One tool call: its kind glyph, title and status, its places as links, and its content. */
+function toolRow(tool: EngineTool, embeds: EmbedContext): HTMLElement {
+  const places = tool.locations.map((loc) => {
+    const label = loc.line !== null ? `${loc.path}:${loc.line}` : loc.path;
+    if (!embeds.openPath) return h('span.ide-chat-engine-loc', null, label);
+    return button(label, () => embeds.openPath?.(loc.path, loc.line), { kind: 'ghost', size: 'sm' });
+  });
+  return h(
+    'li.ide-chat-engine-tool',
+    { 'data-status': tool.status },
+    h(
+      'div.ide-chat-engine-tool-head',
+      null,
+      h('span.ide-chat-engine-glyph', { 'aria-hidden': 'true' }, KIND_GLYPH[tool.kind] ?? '•'),
+      h('span.ide-chat-engine-tool-title', null, tool.title),
+      h('span.ide-chat-engine-tool-status', null, TOOL_WORD[tool.status]),
+    ),
+    places.length ? h('div.ide-chat-engine-locs', null, places) : null,
+    tool.content.map((c) => contentBlock(c)),
+  );
+}
+
+/** A check the engine asked for; while held, the owner's Approve and Deny decide its approval. */
+function checkRow(check: EngineCheck): HTMLElement {
+  const word = check.decision === 'allow' ? 'allowed' : check.decision === 'deny' ? 'denied' : 'waiting';
+  const id = check.approval;
+  return h(
+    'li.ide-chat-engine-check',
+    { 'data-decision': check.decision },
+    h('span.ide-chat-engine-tool-title', null, check.title),
+    h('span.ide-chat-engine-check-name', null, check.name),
+    h('span.ide-chat-engine-tool-status', null, word),
+    check.decision === 'pending' && id
+      ? h(
+          'div.ide-chat-engine-decide',
+          null,
+          button('Deny', () => void attempt(() => api.decideApproval(id, false), 'Denied'), { kind: 'danger' }),
+          button('Approve', () => void attempt(() => api.decideApproval(id, true), 'Approved'), { kind: 'primary' }),
+        )
+      : null,
+  );
+}
+
 function injectStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
@@ -62,6 +152,10 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
   let stopping = false;
   /** Which steps disclosures the owner has opened, keyed by item position, so a reload keeps them open. */
   const openSteps = new Set<string>();
+  /** The engine text that streamed in and is not yet in the transcript, per code_engine call. */
+  const liveText = new Map<string, string>();
+  /** The live text node of each running engine block in the current render, per call. */
+  const liveEls = new Map<string, HTMLElement>();
 
   const column = h('div.ide-chat-column');
   const log = h('div.ide-chat-log', { role: 'log', 'aria-live': 'polite', 'aria-label': `Conversation with ${opts.agentName}` }, column);
@@ -184,6 +278,54 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     return d;
   }
 
+  /** A coding engine's run under its code_engine call: header, message, tools, plan, checks and summary. */
+  function engineBlock(item: EngineBlock, embeds: EmbedContext): HTMLElement {
+    const live = h('div.ide-chat-engine-live');
+    if (item.status === 'running') {
+      liveEls.set(item.call, live);
+      live.textContent = liveText.get(item.call) ?? '';
+    }
+    const head = h(
+      'div.ide-chat-engine-head',
+      null,
+      h('span.ide-chat-engine-badge', null, item.engine),
+      item.session ? h('span.ide-chat-engine-session', { title: item.session }, item.session.slice(0, 8)) : null,
+      h('span.ide-chat-engine-status', { 'data-status': item.status }, ENGINE_WORD[item.status]),
+    );
+    const section = (label: string, body: HTMLElement): HTMLElement =>
+      h('section.ide-chat-engine-section', null, h('div.ide-chat-engine-label', null, label), body);
+    return h(
+      'section.ide-chat-engine',
+      { 'data-status': item.status, 'aria-label': `${item.engine} run` },
+      head,
+      item.prompt ? h('div.ide-chat-engine-prompt', { title: item.prompt }, item.prompt) : null,
+      item.message ? h('div.ide-chat-engine-message', null, renderMarkdown(item.message, { embeds })) : null,
+      live,
+      item.tools.length ? section('Tools', h('ul.ide-chat-engine-tools', null, item.tools.map((t) => toolRow(t, embeds)))) : null,
+      item.plan.length
+        ? section(
+            'Plan',
+            h(
+              'ul.ide-chat-engine-plan',
+              null,
+              item.plan.map((p) =>
+                h('li', { 'data-status': p.status }, h('span.ide-chat-engine-mark', { 'aria-hidden': 'true' }, PLAN_MARK[p.status]), h('span', null, p.content)),
+              ),
+            ),
+          )
+        : null,
+      item.checks.length ? section('Checks', h('ul.ide-chat-engine-checks', null, item.checks.map((c) => checkRow(c)))) : null,
+      item.summary
+        ? h(
+            'details.ide-chat-engine-summary',
+            null,
+            h('summary', null, 'Summary'),
+            h('div.ide-chat-engine-summary-body', null, renderMarkdown(item.summary, { embeds })),
+          )
+        : null,
+    );
+  }
+
   function renderItem(item: ChatItem, index: number, embeds: EmbedContext): HTMLElement {
     switch (item.kind) {
       case 'owner':
@@ -192,6 +334,8 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
         return h('div.ide-chat-agent', null, renderMarkdown(item.text, { embeds }));
       case 'steps':
         return stepsBlock(item, `${item.at}:${index}`);
+      case 'engine':
+        return engineBlock(item, embeds);
       case 'working':
         return h(
           'div.ide-chat-working',
@@ -207,6 +351,9 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
   function render(): void {
     const items = buildChat(entries, opts.working());
     const embeds = opts.embeds();
+    // A finished engine's live text is in the transcript now; the live nodes belong to this render.
+    for (const item of items) if (item.kind === 'engine' && item.status !== 'running') liveText.delete(item.call);
+    liveEls.clear();
     replace(
       column,
       items.length ? items.map((item, index) => renderItem(item, index, embeds)) : h('div.ide-chat-empty', null, `No messages with ${opts.agentName} yet.`),
@@ -241,7 +388,32 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     syncComposer();
     schedule();
   };
-  const offs = [on('transcript', onFrame), on('work', onFrame)];
+  // A coding engine's text streams as `engine` frames ahead of the transcript. It shows in its block until the
+  // transcript holds it: a tool call or a mode change flushes the message so far, which the transcript then carries.
+  const onEngine = (raw: unknown): void => {
+    const f = raw as { cid?: unknown; call?: unknown; update?: unknown } | null;
+    if (f?.cid !== opts.cid || typeof f.call !== 'string') return;
+    const call = f.call;
+    const update = (f.update && typeof f.update === 'object' ? f.update : {}) as Record<string, unknown>;
+    if (update.sessionUpdate === 'agent_message_chunk') {
+      const text = (update.content as { text?: unknown } | undefined)?.text;
+      if (typeof text !== 'string') return;
+      liveText.set(call, (liveText.get(call) ?? '') + text);
+    } else if (
+      update.sessionUpdate === 'tool_call' ||
+      update.sessionUpdate === 'current_mode_update' ||
+      (update.sessionUpdate === 'tool_call_update' && 'status' in update)
+    ) {
+      liveText.delete(call);
+    } else {
+      return;
+    }
+    const el = liveEls.get(call);
+    if (!el) return;
+    el.textContent = liveText.get(call) ?? '';
+    if (pinned) log.scrollTop = log.scrollHeight;
+  };
+  const offs = [on('transcript', onFrame), on('work', onFrame), on('engine', onEngine)];
 
   function dispose(): void {
     alive = false;

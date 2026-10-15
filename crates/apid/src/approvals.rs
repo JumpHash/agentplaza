@@ -13,6 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_proto::wire::HostMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -42,6 +43,38 @@ pub enum State {
     Withdrawn,
 }
 
+/// An engine call the harness is waiting on for an owner's decision: the work item it runs under
+/// and the call's id in the harness (`<call>.e<n>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waiting {
+    pub work: u64,
+    pub call: String,
+}
+
+/// What a held call comes with: the thread of its work item, and, from a harness that can hold a
+/// call open (an ACP engine's request), the call the harness is waiting on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+    pub thread: Option<String>,
+    pub waiting: Option<Waiting>,
+}
+
+/// The gate's answer for one call.
+#[derive(Debug)]
+pub enum Gate {
+    /// The call may run.
+    Run,
+    /// The call is refused; the reason is what the agent sees.
+    Refused(String),
+    /// The call waits for the owner. `approval` is the item it waits on, `refusal` what the agent
+    /// sees, and `created` the item this call queued (None when it joined one already pending).
+    Held {
+        approval: String,
+        refusal: String,
+        created: Option<Approval>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Approval {
     pub id: String,
@@ -61,6 +94,14 @@ pub struct Approval {
     /// The structured detail. For a tool approval, the input.
     #[serde(default)]
     pub detail: Value,
+    /// The thread of the work item the call ran under: the decision's follow-up is queued there.
+    /// None when no work item was at hand, or for an approval recorded before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    /// The engine calls waiting on this decision; each gets a `permission_decision` when the owner
+    /// decides. Empty for every other approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<Waiting>,
 }
 
 fn tool_kind() -> String {
@@ -150,26 +191,19 @@ impl Store {
         saved
     }
 
-    /// The gate for one call. `class` is the tool's risk class. Returns the
-    /// refusal the agent sees (None lets the call run) and the approval this
-    /// call just queued, if one was created, so the caller can publish it.
-    pub fn gate(
-        &self,
-        cid: u64,
-        tool: &str,
-        class: &str,
-        input: &Value,
-    ) -> (Option<String>, Option<Approval>) {
+    /// The gate for one call. `class` is the tool's risk class. A held call is
+    /// recorded with `held`: its thread, and the harness call waiting on the owner
+    /// (a second identical call that joins a pending item adds its waiter to it).
+    pub fn gate(&self, cid: u64, tool: &str, class: &str, input: &Value, held: &Held) -> Gate {
         if class == "read" {
-            return (None, None);
+            return Gate::Run;
         }
         let mut inner = self.lock();
         match inner.modes.get(&cid).copied().unwrap_or_default() {
-            Mode::Autonomous => (None, None),
-            Mode::ReadOnly => (
-                Some(format!("this agent is read-only: {tool} is not allowed")),
-                None,
-            ),
+            Mode::Autonomous => Gate::Run,
+            Mode::ReadOnly => {
+                Gate::Refused(format!("this agent is read-only: {tool} is not allowed"))
+            }
             Mode::Ask => {
                 if let Some(a) = inner.queue.iter_mut().find(|a| {
                     a.cid == cid
@@ -178,22 +212,38 @@ impl Store {
                         && a.input == *input
                 }) {
                     a.state = State::Used;
-                    return (None, None);
+                    return Gate::Run;
                 }
-                if let Some(a) = inner.queue.iter().find(|a| {
+                if let Some(a) = inner.queue.iter_mut().find(|a| {
                     a.cid == cid && a.tool == tool && a.state == State::Pending && a.input == *input
                 }) {
-                    return (
-                        Some(format!("still waiting for the owner's approval ({})", a.id)),
-                        None,
-                    );
+                    if let Some(waiter) = &held.waiting {
+                        a.waiting.push(waiter.clone());
+                    }
+                    let approval = a.id.clone();
+                    return Gate::Held {
+                        refusal: format!("still waiting for the owner's approval ({approval})"),
+                        approval,
+                        created: None,
+                    };
                 }
-                let item = push_pending(&mut inner, cid, "tool", tool, input.clone());
+                let mut item = push_pending(&mut inner, cid, "tool", tool, input.clone());
+                item.thread = held.thread.clone();
+                item.waiting = held.waiting.iter().cloned().collect();
+                // push_pending appends, so the item just queued is the last one.
+                if let Some(stored) = inner.queue.last_mut() {
+                    stored.thread = item.thread.clone();
+                    stored.waiting = item.waiting.clone();
+                }
                 let refusal = format!(
                     "waiting for the owner's approval ({}); you'll be told when it is decided, then run the same call again",
                     item.id
                 );
-                (Some(refusal), Some(item))
+                Gate::Held {
+                    approval: item.id.clone(),
+                    refusal,
+                    created: Some(item),
+                }
             }
         }
     }
@@ -274,6 +324,8 @@ fn push_pending(inner: &mut Inner, cid: u64, kind: &str, subject: &str, detail: 
         kind: kind.to_string(),
         subject: subject.to_string(),
         detail,
+        thread: None,
+        waiting: Vec::new(),
     };
     inner.queue.push(item.clone());
     if inner.queue.len() > QUEUE_CAP {
@@ -283,16 +335,20 @@ fn push_pending(inner: &mut Inner, cid: u64, kind: &str, subject: &str, detail: 
     item
 }
 
-/// Called on the tool path before a call runs. Publishes a newly queued
-/// approval and returns the reason the call is held, or None to let it run.
-pub fn gate(app: &App, cid: u64, tool: &str, input: &Value) -> Option<String> {
-    let (refusal, created) = app
+/// Called on the tool path before a call runs. Publishes a newly queued approval and
+/// returns the gate's answer.
+pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate {
+    let gate = app
         .approvals
-        .gate(cid, tool, crate::laws::risk_class(tool), input);
-    if let Some(item) = created {
-        app.bus.publish("approval", &item);
+        .gate(cid, tool, crate::laws::risk_class(tool), input, held);
+    if let Gate::Held {
+        created: Some(item),
+        ..
+    } = &gate
+    {
+        app.bus.publish("approval", item);
     }
-    refusal
+    gate
 }
 
 /// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
@@ -351,29 +407,86 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
             );
         }
     };
-    let approve = body.approve;
-    let item = match app.approvals.decide(id, approve, body.reason) {
+    match decide_approval(app, id, body.approve, body.reason, body.action.as_deref()) {
+        Ok(item) => Response::json(200, &item),
+        Err((code, message)) => Response::error(code, &message),
+    }
+}
+
+/// Records the owner's decision on approval `id`, then does what its kind needs. The approvals API and
+/// the editors' ACP both decide this way. The error is the status and message for the caller.
+pub(crate) fn decide_approval(
+    app: &App,
+    id: &str,
+    approve: bool,
+    reason: Option<String>,
+    action: Option<&str>,
+) -> Result<Value, (u16, String)> {
+    let item = match app.approvals.decide(id, approve, reason) {
         Ok(item) => item,
-        Err(DecideError::NotFound) => return Response::error(404, "no such approval"),
+        Err(DecideError::NotFound) => return Err((404, "no such approval".to_string())),
         Err(DecideError::NotPending) => {
-            return Response::error(409, "this approval is already decided");
+            return Err((409, "this approval is already decided".to_string()));
         }
     };
     app.bus.publish("approval", &item);
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "sanction" => crate::sanctions::decided(app, &item, approve, body.action.as_deref()),
+        "sanction" => crate::sanctions::decided(app, &item, approve, action),
         "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::scheduler::review_decided(app, &item, approve),
         _ => {
-            tell_agent(app, &item);
+            // A held engine call gets the decision pushed to it. The agent is told in chat only when
+            // no call is waiting, or the push did not reach it (the decision must not be lost).
+            if item.waiting.is_empty()
+                || push_decisions(&item, |cid, line| send_to_agent(app, cid, line)).is_err()
+            {
+                tell_agent(app, &item);
+            }
             Ok(())
         }
     };
     match applied {
-        Ok(()) => Response::json(200, &item),
-        Err(e) => Response::error(409, &e),
+        Ok(()) => Ok(serde_json::to_value(&item).unwrap_or(Value::Null)),
+        Err(e) => Err((409, e)),
     }
+}
+
+/// Sends each engine call waiting on `item` its `permission_decision`: the owner's verdict and note,
+/// pushed to the agent that runs the call. `send` is the gateway path in production. Stops at the
+/// first failure and returns it, so the caller can tell the agent another way.
+pub(crate) fn push_decisions(
+    item: &Approval,
+    send: impl Fn(u64, &HostMessage) -> Result<(), String>,
+) -> Result<(), String> {
+    let allow = item.state == State::Approved;
+    for waiter in &item.waiting {
+        let line = HostMessage::PermissionDecision {
+            work: waiter.work,
+            call: waiter.call.clone(),
+            allow,
+            reason: item.reason.clone(),
+        };
+        send(item.cid, &line)?;
+    }
+    Ok(())
+}
+
+/// One line to agent `cid` through its gateway (`/v1/agents/{cid}/send`).
+fn send_to_agent(app: &App, cid: u64, line: &HostMessage) -> Result<(), String> {
+    match crate::fleet::send(app, cid, &json!({ "message": line })) {
+        Ok((code, _)) if (200..300).contains(&code) => Ok(()),
+        Ok((code, _)) => Err(format!("the agent's gateway answered {code}")),
+        Err(err) => Err(err),
+    }
+}
+
+/// The thread a decision's follow-up is queued on: the work item's own thread, so the agent hears
+/// it where the call was made. `op-<cid>` when none was recorded.
+pub(crate) fn tell_thread(item: &Approval) -> String {
+    item.thread
+        .clone()
+        .unwrap_or_else(|| format!("op-{}", item.cid))
 }
 
 /// Tells the agent a tool approval was decided, as a chat message.
@@ -397,7 +510,7 @@ fn tell_agent(app: &App, item: &Approval) {
         app,
         item.cid,
         apz_proto::wire::WorkKind::Chat,
-        format!("op-{}", item.cid),
+        tell_thread(item),
         text,
         crate::scheduler::Origin::default(),
     );
@@ -478,6 +591,25 @@ impl Store {
 mod tests {
     use super::*;
 
+    impl Store {
+        /// The gate as the chat-path tests read it: the refusal the agent sees, and the item queued.
+        fn gate_plain(
+            &self,
+            cid: u64,
+            tool: &str,
+            class: &str,
+            input: &Value,
+        ) -> (Option<String>, Option<Approval>) {
+            match self.gate(cid, tool, class, input, &Held::default()) {
+                Gate::Run => (None, None),
+                Gate::Refused(reason) => (Some(reason), None),
+                Gate::Held {
+                    refusal, created, ..
+                } => (Some(refusal), created),
+            }
+        }
+    }
+
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("apid-approvals-{tag}-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -506,13 +638,13 @@ mod tests {
         store.set_mode(1, Mode::Ask).unwrap();
         let input = json!({ "path": "/x", "body": "y" });
 
-        let (held, created) = store.gate(1, "write_thing", "write", &input);
+        let (held, created) = store.gate_plain(1, "write_thing", "write", &input);
         let item = created.expect("a pending approval is queued");
         assert_eq!(item.state, State::Pending);
         assert!(held.unwrap().contains(&item.id));
 
         // The same call while still pending is held again, with no new item.
-        let (again, none) = store.gate(1, "write_thing", "write", &input);
+        let (again, none) = store.gate_plain(1, "write_thing", "write", &input);
         assert!(again.unwrap().starts_with("still waiting"));
         assert!(none.is_none());
 
@@ -524,10 +656,15 @@ mod tests {
         ));
 
         // The matching call passes exactly once.
-        assert_eq!(store.gate(1, "write_thing", "write", &input).0, None);
+        assert_eq!(store.gate_plain(1, "write_thing", "write", &input).0, None);
         let used = store.list().into_iter().find(|a| a.id == item.id).unwrap();
         assert_eq!(used.state, State::Used);
-        assert!(store.gate(1, "write_thing", "write", &input).0.is_some());
+        assert!(
+            store
+                .gate_plain(1, "write_thing", "write", &input)
+                .0
+                .is_some()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -536,7 +673,7 @@ mod tests {
         let dir = scratch("ro");
         let store = Store::load(&dir);
         store.set_mode(2, Mode::ReadOnly).unwrap();
-        let (refusal, created) = store.gate(2, "write_thing", "write", &json!({}));
+        let (refusal, created) = store.gate_plain(2, "write_thing", "write", &json!({}));
         assert_eq!(
             refusal.unwrap(),
             "this agent is read-only: write_thing is not allowed"
@@ -551,7 +688,7 @@ mod tests {
         let store = Store::load(&dir);
         for (cid, mode) in [(1, Mode::Autonomous), (2, Mode::Ask), (3, Mode::ReadOnly)] {
             store.set_mode(cid, mode).unwrap();
-            let (refusal, created) = store.gate(cid, "read_thing", "read", &json!({}));
+            let (refusal, created) = store.gate_plain(cid, "read_thing", "read", &json!({}));
             assert!(
                 refusal.is_none() && created.is_none(),
                 "{mode:?} must pass reads"
@@ -559,7 +696,7 @@ mod tests {
         }
         assert!(store.list().is_empty());
         // An autonomous agent's write passes straight through, nothing queued.
-        let (refusal, created) = store.gate(1, "write_thing", "write", &json!({}));
+        let (refusal, created) = store.gate_plain(1, "write_thing", "write", &json!({}));
         assert!(
             refusal.is_none() && created.is_none(),
             "autonomous writes run"
@@ -572,7 +709,7 @@ mod tests {
         let dir = scratch("snap");
         let store = Store::load(&dir);
         store.set_mode(5, Mode::Ask).unwrap();
-        let (_, created) = store.gate(5, "write_thing", "write", &json!({ "a": 1 }));
+        let (_, created) = store.gate_plain(5, "write_thing", "write", &json!({ "a": 1 }));
         let id = created.unwrap().id;
 
         let other_dir = scratch("snap-other");
@@ -603,7 +740,7 @@ mod tests {
         assert_eq!(store.list()[0].id, item.id);
         // Gate and submit share one id counter: the held call gets the next id.
         store.set_mode(7, Mode::Ask).unwrap();
-        let (_, held) = store.gate(7, "write_thing", "write", &json!({}));
+        let (_, held) = store.gate_plain(7, "write_thing", "write", &json!({}));
         let held = held.expect("a held call queues an item");
         let next: u64 = item.id[1..].parse::<u64>().unwrap() + 1;
         assert_eq!(held.id, format!("a{next}"));
@@ -644,5 +781,176 @@ mod tests {
         // Newest first: the five oldest were dropped.
         assert_eq!(list[0].subject, format!("pay {}", QUEUE_CAP + 4));
         assert_eq!(list[QUEUE_CAP - 1].subject, "pay 5");
+    }
+
+    #[test]
+    fn a_held_engine_call_keeps_its_thread_and_waiter_and_joins_a_pending_item() {
+        let dir = scratch("held");
+        let store = Store::load(&dir);
+        store.set_mode(8, Mode::Ask).unwrap();
+        let input = json!({ "engine": "claude", "title": "edit" });
+        let first = Held {
+            thread: Some("acp-s1".into()),
+            waiting: Some(Waiting {
+                work: 3,
+                call: "toolu_1.e1".into(),
+            }),
+        };
+        let Gate::Held {
+            approval,
+            created: Some(item),
+            ..
+        } = store.gate(8, "engine.edit", "write", &input, &first)
+        else {
+            panic!("the first call is held and queued");
+        };
+        assert_eq!(item.id, approval);
+        assert_eq!(item.thread.as_deref(), Some("acp-s1"));
+        assert_eq!(
+            item.waiting,
+            first.waiting.iter().cloned().collect::<Vec<_>>()
+        );
+
+        // The same call from another engine request joins the pending item: no new item.
+        let second = Held {
+            thread: Some("acp-s1".into()),
+            waiting: Some(Waiting {
+                work: 3,
+                call: "toolu_1.e2".into(),
+            }),
+        };
+        match store.gate(8, "engine.edit", "write", &input, &second) {
+            Gate::Held {
+                approval: again,
+                created: None,
+                ..
+            } => assert_eq!(again, approval),
+            other => panic!("expected a join, got {other:?}"),
+        }
+        let stored = store.list().into_iter().find(|a| a.id == approval).unwrap();
+        assert_eq!(stored.waiting.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_decision_is_pushed_to_each_waiter_and_a_failed_push_is_reported() {
+        let dir = scratch("push");
+        let store = Store::load(&dir);
+        store.set_mode(4, Mode::Ask).unwrap();
+        let input = json!({ "path": "/w/x" });
+        let held = Held {
+            thread: None,
+            waiting: Some(Waiting {
+                work: 9,
+                call: "toolu_7.e1".into(),
+            }),
+        };
+        let Gate::Held { approval, .. } = store.gate(4, "engine.edit", "write", &input, &held)
+        else {
+            panic!("held");
+        };
+        let joined = Held {
+            thread: None,
+            waiting: Some(Waiting {
+                work: 9,
+                call: "toolu_7.e2".into(),
+            }),
+        };
+        store.gate(4, "engine.edit", "write", &input, &joined);
+        let item = store
+            .decide(&approval, true, Some("go ahead".into()))
+            .unwrap();
+
+        let sent = std::cell::RefCell::new(Vec::new());
+        push_decisions(&item, |cid, line| {
+            sent.borrow_mut().push((cid, line.clone()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            sent.into_inner(),
+            vec![
+                (
+                    4,
+                    HostMessage::PermissionDecision {
+                        work: 9,
+                        call: "toolu_7.e1".into(),
+                        allow: true,
+                        reason: Some("go ahead".into()),
+                    }
+                ),
+                (
+                    4,
+                    HostMessage::PermissionDecision {
+                        work: 9,
+                        call: "toolu_7.e2".into(),
+                        allow: true,
+                        reason: Some("go ahead".into()),
+                    }
+                ),
+            ]
+        );
+
+        // A refused push stops at the failure, which the caller sees.
+        let refused = push_decisions(&item, |_, _| Err("the gateway answered 409".into()));
+        assert_eq!(refused, Err("the gateway answered 409".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_denial_is_pushed_as_a_denial() {
+        let item = Approval {
+            id: "a1".into(),
+            cid: 2,
+            tool: "engine.edit".into(),
+            input: json!({}),
+            created_ms: 0,
+            state: State::Denied,
+            reason: None,
+            kind: "tool".into(),
+            subject: "engine.edit".into(),
+            detail: json!({}),
+            thread: None,
+            waiting: vec![Waiting {
+                work: 1,
+                call: "toolu_2.e1".into(),
+            }],
+        };
+        let sent = std::cell::RefCell::new(Vec::new());
+        push_decisions(&item, |_, line| {
+            sent.borrow_mut().push(line.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            sent.into_inner(),
+            vec![HostMessage::PermissionDecision {
+                work: 1,
+                call: "toolu_2.e1".into(),
+                allow: false,
+                reason: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_follow_up_goes_to_the_work_thread_or_to_op_cid() {
+        let mut item = Approval {
+            id: "a2".into(),
+            cid: 5,
+            tool: "write_thing".into(),
+            input: json!({}),
+            created_ms: 0,
+            state: State::Approved,
+            reason: None,
+            kind: "tool".into(),
+            subject: "write_thing".into(),
+            detail: json!({}),
+            thread: None,
+            waiting: Vec::new(),
+        };
+        assert_eq!(tell_thread(&item), "op-5");
+        item.thread = Some("acp-s9".into());
+        assert_eq!(tell_thread(&item), "acp-s9");
     }
 }

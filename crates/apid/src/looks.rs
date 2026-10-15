@@ -399,6 +399,7 @@ mod tests {
             usage: Usage::default(),
             species: String::new(),
             kind: "llm".into(),
+            caps: Vec::new(),
         }
     }
 

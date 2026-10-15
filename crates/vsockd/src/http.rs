@@ -224,6 +224,9 @@ fn send(surface: &Surface, cid: u32, request: &Request) -> Response {
         HostMessage::Welcome { .. } => {
             return Response::error(400, "the session's handshake is the hub's");
         }
+        // Everything else is pushed as it is: the agent loop's decisions, work, profiles and
+        // stops, and a v4 `permission_decision`, which apid sends when the owner decides a held
+        // engine call.
         _ => {}
     }
     match surface.hub.send(cid, message, SESSION_WAIT) {
@@ -425,6 +428,11 @@ mod tests {
             (
                 "/v1/agents/10/send",
                 r#"{"message":{"type":"cancel","work":1,"reason":"x"}}"#,
+                409,
+            ),
+            (
+                "/v1/agents/10/send",
+                r#"{"message":{"type":"permission_decision","work":1,"call":"toolu_1.e1","allow":true}}"#,
                 409,
             ),
             (

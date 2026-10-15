@@ -339,14 +339,21 @@ pub fn ago(now_ms: u64, then_ms: u64) -> String {
 
 // ---- The transcript: steps and activity ------------------------------------------------------
 
-/// A row of the chat: one transcript entry, or a run of tool steps collapsed into one line.
+/// A row of the chat: one transcript entry, a run of tool steps collapsed into one line, or a coding engine's
+/// call drawn as one block (see `engine_view`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Entry(usize),
+    /// The run is the entries `first..end`.
     Steps {
         first: usize,
+        end: usize,
         count: usize,
         summary: String,
+    },
+    Engine {
+        first: usize,
+        call: String,
     },
 }
 
@@ -405,12 +412,60 @@ pub fn steps_label(count: usize, names: &[String]) -> String {
     }
 }
 
-/// The chat's rows: each entry as it is, except that a run of tool steps becomes one `Steps` row. The run is
-/// counted by the calls its model turns make; a run that names no tool (only requests) is counted by its entries.
+/// The call a `code_engine` request makes; None for any other entry.
+fn engine_start(entry: &Value) -> Option<String> {
+    let data = entry.get("data")?;
+    if entry.get("kind")?.as_str()? != "tool_request"
+        || data.get("name")?.as_str()? != "code_engine"
+    {
+        return None;
+    }
+    data.get("call")?.as_str().map(str::to_string)
+}
+
+/// The code_engine call an entry's call id belongs to: a nested check's id is `<call>.e<n>`, its engine's call
+/// with the check's number after it.
+fn engine_of(call: &str) -> &str {
+    match call.rsplit_once(".e") {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => call,
+    }
+}
+
+/// Whether an entry belongs to one of the `engines` calls: its request, decision, result or stream item. Such
+/// entries are drawn in the engine's block, never as tool steps.
+fn in_engine(entry: &Value, engines: &BTreeSet<String>) -> bool {
+    let kind = entry.get("kind").and_then(Value::as_str);
+    if !matches!(
+        kind,
+        Some("tool_request" | "tool_decision" | "tool_result" | "engine_update")
+    ) {
+        return false;
+    }
+    entry
+        .get("data")
+        .and_then(|d| d.get("call"))
+        .and_then(Value::as_str)
+        .is_some_and(|call| engines.contains(engine_of(call)))
+}
+
+/// The chat's rows: each entry as it is, except that a run of tool steps becomes one `Steps` row, and a coding
+/// engine's call (its request and everything that belongs to it) one `Engine` row. The run is counted by the calls
+/// its model turns make; a run that names no tool (only requests) is counted by its entries.
 pub fn rows(entries: &[Value]) -> Vec<Row> {
+    let engines: BTreeSet<String> = entries.iter().filter_map(engine_start).collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < entries.len() {
+        if let Some(call) = engine_start(&entries[i]) {
+            out.push(Row::Engine { first: i, call });
+            i += 1;
+            continue;
+        }
+        if in_engine(&entries[i], &engines) {
+            i += 1;
+            continue;
+        }
         if !is_step(&entries[i]) {
             out.push(Row::Entry(i));
             i += 1;
@@ -419,7 +474,7 @@ pub fn rows(entries: &[Value]) -> Vec<Row> {
         let first = i;
         let mut calls = Vec::new();
         let mut requests = Vec::new();
-        while i < entries.len() && is_step(&entries[i]) {
+        while i < entries.len() && is_step(&entries[i]) && !in_engine(&entries[i], &engines) {
             match entries[i].get("kind").and_then(Value::as_str) {
                 Some("model_response") => calls.extend(calls_of(&entries[i])),
                 Some("tool_request") => requests.extend(
@@ -442,11 +497,225 @@ pub fn rows(entries: &[Value]) -> Vec<Row> {
         };
         out.push(Row::Steps {
             first,
+            end: i,
             count,
             summary: steps_label(count, &names),
         });
     }
     out
+}
+
+/// One tool a coding engine has called, as its stream reports it. `id` is the engine's tool call id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineTool {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub status: String,
+    /// Where the tool works: `path` or `path:line`.
+    pub locations: Vec<String>,
+}
+
+/// One step of the engine's plan, and whether it is done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnginePlanItem {
+    pub content: String,
+    pub done: bool,
+}
+
+/// A check the engine holds for the owner's approval: what it is, and the approval's id (what Approve and Deny
+/// decide). The id is empty when the decision did not name one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnginePending {
+    pub title: String,
+    pub approval: String,
+}
+
+/// A code_engine call as the chat draws it: the engine and session it runs, its status, what it has said, the
+/// tools and plan it reports, and the checks waiting for the owner.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineView {
+    pub engine: String,
+    pub session: String,
+    /// "running", "waiting for approval", "done" or "failed".
+    pub status: String,
+    /// The engine's messages, in order.
+    pub message: String,
+    pub tools: Vec<EngineTool>,
+    pub plan: Vec<EnginePlanItem>,
+    pub pending: Vec<EnginePending>,
+    /// "claude · 3f9a2c1b · done": the header line.
+    pub summary: String,
+}
+
+/// A nested check of an engine call: its request's title and its latest decision.
+#[derive(Debug, Default)]
+struct Check {
+    call: String,
+    title: String,
+    decision: String,
+    output: String,
+}
+
+/// The text at `key` of a value, or "".
+fn text_of<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Sets `slot` to the string at `key` of `v`, when there is one: an update changes only what it names.
+fn put(slot: &mut String, v: &Value, key: &str) {
+    if let Some(s) = v.get(key).and_then(Value::as_str) {
+        *slot = s.to_string();
+    }
+}
+
+/// The approval id a pending decision names: "waiting for the owner's approval (ap_1)".
+fn approval_id(output: &str) -> String {
+    match (output.rfind('('), output.rfind(')')) {
+        (Some(open), Some(close)) if open < close => output[open + 1..close].trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A location as the view shows it: a bare path, or `path:line`.
+fn location(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return Some(s.to_string());
+    }
+    let path = v.get("path")?.as_str()?;
+    Some(match v.get("line").and_then(Value::as_u64) {
+        Some(line) => format!("{path}:{line}"),
+        None => path.to_string(),
+    })
+}
+
+/// Folds one `engine_update` into the view. A message item's text is appended; a plan item replaces the plan; a
+/// tool call or status item sets the tool it names. The payload is the entry's `update`, or the entry itself.
+fn apply_update(
+    data: &Value,
+    text: &mut String,
+    plan: &mut Vec<EnginePlanItem>,
+    tools: &mut Vec<EngineTool>,
+) {
+    let upd = data.get("update").filter(|u| !u.is_null()).unwrap_or(data);
+    match text_of(data, "item") {
+        "message" => text.push_str(text_of(upd, "text")),
+        "plan" => {
+            *plan = upd
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|e| EnginePlanItem {
+                    content: text_of(e, "content").to_string(),
+                    done: text_of(e, "status") == "completed",
+                })
+                .collect();
+        }
+        "tool_call" | "tool_status" => {
+            let id = text_of(upd, "toolCallId");
+            let i = match tools.iter().position(|t| t.id == id) {
+                Some(i) => i,
+                None => {
+                    tools.push(EngineTool {
+                        id: id.to_string(),
+                        ..Default::default()
+                    });
+                    tools.len() - 1
+                }
+            };
+            let tool = &mut tools[i];
+            put(&mut tool.title, upd, "title");
+            put(&mut tool.kind, upd, "kind");
+            put(&mut tool.status, upd, "status");
+            if let Some(locs) = upd.get("locations").and_then(Value::as_array) {
+                tool.locations = locs.iter().filter_map(location).collect();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The short form of a session id, for the header line.
+fn short_session(session: &str) -> String {
+    session.chars().take(8).collect()
+}
+
+/// What a code_engine call shows, folded from the transcript: its request (the engine and session), its nested
+/// checks (the ones still pending are the approvals it waits for), its stream (`engine_update`), and its result.
+/// Entries of other calls are ignored.
+pub fn engine_view(entries: &[Value], call: &str) -> EngineView {
+    let mut view = EngineView::default();
+    let mut result: Option<bool> = None;
+    let mut checks: Vec<Check> = Vec::new();
+    let mut tools: Vec<EngineTool> = Vec::new();
+    for entry in entries {
+        let data = entry.get("data").unwrap_or(&Value::Null);
+        let own = text_of(data, "call");
+        if engine_of(own) != call {
+            continue;
+        }
+        let nested = own != call;
+        let kind = text_of(entry, "kind");
+        let index = |checks: &mut Vec<Check>| match checks.iter().position(|c| c.call == own) {
+            Some(i) => i,
+            None => {
+                checks.push(Check {
+                    call: own.to_string(),
+                    ..Default::default()
+                });
+                checks.len() - 1
+            }
+        };
+        match kind {
+            "tool_request" if !nested => {
+                let input = data.get("input").unwrap_or(&Value::Null);
+                view.engine = text_of(input, "engine").to_string();
+                view.session = text_of(input, "session").to_string();
+            }
+            "tool_request" => {
+                let i = index(&mut checks);
+                let input = data.get("input").unwrap_or(&Value::Null);
+                checks[i].title = text_of(input, "title").to_string();
+            }
+            "tool_decision" if nested => {
+                let i = index(&mut checks);
+                checks[i].decision = text_of(data, "decision").to_string();
+                checks[i].output = text_of(data, "output").to_string();
+            }
+            "tool_result" if !nested => {
+                result = Some(data.get("ok").and_then(Value::as_bool).unwrap_or(false));
+            }
+            "engine_update" => apply_update(data, &mut view.message, &mut view.plan, &mut tools),
+            _ => {}
+        }
+    }
+    view.pending = checks
+        .iter()
+        .filter(|c| c.decision == "pending")
+        .map(|c| EnginePending {
+            title: if c.title.is_empty() {
+                "a check".to_string()
+            } else {
+                c.title.clone()
+            },
+            approval: approval_id(&c.output),
+        })
+        .collect();
+    view.tools = tools;
+    view.status = match result {
+        Some(true) => "done",
+        Some(false) => "failed",
+        None if !view.pending.is_empty() => "waiting for approval",
+        None => "running",
+    }
+    .to_string();
+    let short = short_session(&view.session);
+    view.summary = [view.engine.as_str(), short.as_str(), view.status.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    view
 }
 
 /// Where an agent's time went: thinking (the model's turns) and tools, with each tool call and its duration.
@@ -529,6 +798,119 @@ pub fn filter(labels: &[String], query: &str) -> Vec<usize> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A code_engine call as the plaza records it: a request, a check held for approval, the engine's stream,
+    /// then its result and a closing message.
+    fn engine_run(decision: &str) -> Vec<Value> {
+        vec![
+            json!({"kind": "model_response", "data": {"content": [{"type": "tool_use", "name": "code_engine"}]}}),
+            json!({"kind": "tool_request", "data": {"call": "c1", "name": "code_engine",
+                "input": {"engine": "claude", "prompt": "fix it", "session": "sess-0123456789"}}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "message", "text": "Looking"}}),
+            json!({"kind": "tool_request", "data": {"call": "c1.e1", "name": "engine.edit",
+                "input": {"engine": "claude", "title": "Edit lib.rs", "locations": [], "raw": {}}}}),
+            json!({"kind": "tool_decision", "data": {"call": "c1.e1", "decision": decision,
+                "output": "waiting for the owner's approval (ap_9)"}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "tool_call",
+                "update": {"toolCallId": "t1", "title": "Read main.rs", "kind": "read", "status": "pending",
+                    "locations": [{"path": "src/main.rs", "line": 3}]}}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "tool_status",
+                "update": {"toolCallId": "t1", "status": "completed"}}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "plan",
+                "update": [{"content": "Read", "status": "completed"}, {"content": "Edit", "status": "in_progress"}]}}),
+            json!({"kind": "tool_result", "data": {"call": "c1", "ok": true, "output": "done"}}),
+            json!({"kind": "model_response", "data": {"content": [{"type": "text", "text": "Done."}]}}),
+        ]
+    }
+
+    #[test]
+    fn a_code_engine_call_is_one_block_and_its_checks_and_stream_are_not_steps() {
+        let entries = engine_run("pending");
+        assert_eq!(
+            rows(&entries),
+            vec![
+                Row::Steps {
+                    first: 0,
+                    end: 1,
+                    count: 1,
+                    summary: "1 step · code_engine".into(),
+                },
+                Row::Engine {
+                    first: 1,
+                    call: "c1".into(),
+                },
+                Row::Entry(9),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_engine_view_has_its_tools_plan_message_and_result() {
+        let view = engine_view(&engine_run("allow"), "c1");
+        assert_eq!(view.engine, "claude");
+        assert_eq!(view.session, "sess-0123456789");
+        assert_eq!(view.status, "done");
+        assert_eq!(view.message, "Looking");
+        assert_eq!(view.summary, "claude · sess-012 · done");
+        assert_eq!(
+            view.tools,
+            vec![EngineTool {
+                id: "t1".into(),
+                title: "Read main.rs".into(),
+                kind: "read".into(),
+                status: "completed".into(),
+                locations: vec!["src/main.rs:3".into()],
+            }]
+        );
+        assert_eq!(
+            view.plan,
+            vec![
+                EnginePlanItem {
+                    content: "Read".into(),
+                    done: true,
+                },
+                EnginePlanItem {
+                    content: "Edit".into(),
+                    done: false,
+                },
+            ]
+        );
+        assert!(view.pending.is_empty(), "an allowed check is not waiting");
+    }
+
+    #[test]
+    fn a_check_still_pending_is_the_approval_the_engine_waits_for() {
+        let entries = engine_run("pending");
+        // Before the result the engine is waiting; the pending check names the approval to decide.
+        let view = engine_view(&entries[..8], "c1");
+        assert_eq!(view.status, "waiting for approval");
+        assert_eq!(
+            view.pending,
+            vec![EnginePending {
+                title: "Edit lib.rs".into(),
+                approval: "ap_9".into(),
+            }]
+        );
+        // The engine's result ends the wait even when the check was never decided in the chat.
+        assert_eq!(engine_view(&entries, "c1").status, "done");
+    }
+
+    #[test]
+    fn a_failed_result_is_failed_and_an_undecided_engine_is_running() {
+        let mut entries = engine_run("allow");
+        entries[8] =
+            json!({"kind": "tool_result", "data": {"call": "c1", "ok": false, "output": "boom"}});
+        assert_eq!(engine_view(&entries, "c1").status, "failed");
+        assert_eq!(engine_view(&entries[..2], "c1").status, "running");
+    }
+
+    #[test]
+    fn a_call_id_belongs_to_its_engine_only_through_a_numbered_check_suffix() {
+        assert_eq!(engine_of("c1.e2"), "c1");
+        assert_eq!(engine_of("c1.e"), "c1.e", "no check number, no owner");
+        assert_eq!(engine_of("c1.ex"), "c1.ex");
+        assert_eq!(engine_of("c10"), "c10");
+    }
 
     fn agent(cid: u64, status: &str) -> AgentRow {
         AgentRow {
@@ -711,6 +1093,7 @@ mod tests {
                 Row::Entry(0),
                 Row::Steps {
                     first: 1,
+                    end: 5,
                     count: 3,
                     summary: "3 steps · board_read, bash".into()
                 },

@@ -150,6 +150,24 @@ The button and the entry points below still hold.
 - Keys: Cmd/Ctrl+S save, Cmd/Ctrl+P quick open (phase 2), Cmd/Ctrl+F find, Escape back to the origin screen.
 - Review mode replaces the centre with the diff view. A task or an approval opens in review mode.
 
+## 5a. The coding engine block (built)
+
+When an agent runs `code_engine` over ACP, the IDE's agent chat shows the engine's work
+inline, live (`apps/web/src/views/ide-chat.ts`, `apps/web/src/ide/view.ts`; the desktop
+shows the same stream):
+
+- the engine's text as it streams, its thoughts muted, and the final message of each message;
+- its tool calls as rows: the title, the places touched, the output, and the status
+  (`running`, `ok`, `failed`, `denied`);
+- the diffs its tool calls carry, for the files it edited;
+- its plan as a checklist, the latest plan replacing the one before;
+- its checks that need the owner (`pending`, with an approval) inline in the row; the
+  owner's Approve and Deny decide the approval there.
+
+Live updates come from the `engine` bus events. Reopening the agent replays what the
+transcript kept of the turn (`engine_update` entries), so the block reads the same after
+a reload.
+
 ## 6. Architecture
 
 ### 6.1 Shared model

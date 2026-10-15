@@ -64,6 +64,7 @@ pub fn router() -> Router<App> {
                 .proxy("DELETE", &format!("/v1/templates/{}", p.get("key")), b"")
         });
     let router = events::routes(router);
+    let router = crate::acp::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);
     let router = decisions::routes(router);
@@ -75,6 +76,7 @@ pub fn router() -> Router<App> {
     let router = crate::connectors::routes(router);
     let router = crate::mcp::routes::routes(router);
     let router = crate::llm_proxy::routes(router);
+    let router = crate::vendor_relay::routes(router);
     let router = crate::approvals::routes(router);
     let router = crate::sanctions::routes(router);
     let router = crate::vault::routes::routes(router);

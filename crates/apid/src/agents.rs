@@ -49,6 +49,9 @@ pub struct Agent {
     pub species: String,
     /// "llm" for a VM agent, "model" for a promoted model (see foundry/registry.rs).
     pub kind: String,
+    /// The features its harness advertised in its hello (`acp`, see `apz_proto::wire::CAP_ACP`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caps: Vec<String>,
 }
 
 /// The roster: the agents by CID, in memory. With a database, every change to a durable field (name,
@@ -411,6 +414,13 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         keep_recent: limits
             .keep_recent
             .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
+        // Every engine runs over ACP. With the owner's `acp_v2` on, the engines are offered the ACP v2
+        // draft first (`acp2`); v1 is the default.
+        engine_transport: if app.settings.get().acp_v2 {
+            "acp2".into()
+        } else {
+            String::new()
+        },
         egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
     }
 }
@@ -571,8 +581,9 @@ pub(crate) fn role_on_hello(spawned_role: Option<String>) -> String {
     spawned_role.unwrap_or_default()
 }
 
-/// A session said hello: register the agent (idle) and return its profile.
-pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
+/// A session said hello: register the agent (idle) and return its profile. `caps` are the
+/// harness's features from its hello; an older harness sends none.
+pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Option<AgentProfile> {
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
@@ -599,6 +610,7 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32) -> Option<AgentProfile> {
             .unwrap_or_default(),
         species,
         kind: "llm".into(),
+        caps: caps.to_vec(),
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
@@ -666,7 +678,7 @@ fn reconcile_once(app: &App) {
                     .get(cid)
                     .is_some_and(|agent| !matches!(agent.status, Status::Offline | Status::Asleep));
                 if !known_online {
-                    hello(app, cid, role, 0);
+                    hello(app, cid, role, 0, &[]);
                 }
             }
             for agent in app.agents.list() {
@@ -1275,6 +1287,7 @@ mod route_tests {
             usage: Usage::default(),
             species: String::new(),
             kind: "llm".into(),
+            caps: Vec::new(),
         }
     }
 

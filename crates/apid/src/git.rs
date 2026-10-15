@@ -6,6 +6,8 @@
 //! - Agents use `plaza_git` for the forge itself: repos, pull requests, reviews, merges — apid
 //!   calls Forgejo's API as the admin with `Sudo: <agent user>`, so every act is the agent's.
 //! - The console's git pages call `/v1/git/...`, which apid answers from Forgejo as the admin.
+//! - The owner's `git push` and `git fetch` (`agentplaza acp --repo`) go through the hub to
+//!   `/v1/git/smart/<repo>/...`; apid forwards git's smart-HTTP as the admin, like the agents' relay.
 //!
 //! Every agent has a Forgejo user `agent-<cid>` (full name = its plaza name) in the org
 //! `agentplaza`, whose team "agents" can write to every repo. Projects get a repo when opened.
@@ -27,6 +29,10 @@ use crate::state::App;
 
 /// The org every plaza repo lives in.
 pub const ORG: &str = "agentplaza";
+
+/// The forge's admin user: the FORGEJO_TOKEN belongs to it (apz-setup creates the token for `plaza`). Git's
+/// smart-HTTP takes the token as the Basic password, so the admin's relay names this user.
+const FORGE_ADMIN: &str = "plaza";
 
 /// One agent's Forgejo identity. The token is the agent's own access token, used only by apid
 /// for the git relay; it never leaves the host.
@@ -95,6 +101,12 @@ impl Forge {
             (Some(base), Some(token)) => Ok((base, token)),
             _ => Err("the git host is not configured (FORGEJO_URL, FORGEJO_TOKEN)".into()),
         }
+    }
+
+    /// The admin's `Basic` authorization for git's smart-HTTP (the admin's token is the password).
+    fn admin_basic(&self) -> Result<String, String> {
+        let (_, token) = self.creds()?;
+        Ok(basic(FORGE_ADMIN, token))
     }
 
     /// One Forgejo API call as the admin, or as `sudo` (a Forgejo user name). `path` starts with
@@ -361,19 +373,13 @@ impl ForgeApi for Forge {
 
 /// The relay for git's smart-HTTP from an agent's VM: `GET .../info/refs?service=...`,
 /// `POST .../git-upload-pack`, `POST .../git-receive-pack`, forwarded to
-/// `<FORGEJO_URL>/<owner>/<repo>/...` with the agent's basic auth; the reply's status, content
-/// type and body come back as they are. A request with no Content-Length (chunked) is refused
-/// with a hint to set `git config --global http.postBuffer 524288000`.
+/// `<FORGEJO_URL>/<owner>/<repo>/...` with the agent's basic auth (see `forward`).
 fn relay(app: &App, req: &Request, cid: u64, owner: &str, repo: &str, tail: &str) -> Response {
     if let Err(e) = app.forge.creds() {
         return Response::error(503, &e);
     }
-    // A push without a length cannot be replayed to Forgejo, so git must send one (a small pack does).
-    if req.method == "POST" && (req.body.is_empty() || req.header("content-length").is_none()) {
-        return Response::error(
-            411,
-            "set `git config --global http.postBuffer 524288000` and retry",
-        );
+    if let Some(refusal) = unreplayable(req) {
+        return refusal;
     }
     let name = match app.agents.get(cid) {
         Some(agent) if !agent.name.is_empty() => agent.name,
@@ -384,24 +390,121 @@ fn relay(app: &App, req: &Request, cid: u64, owner: &str, repo: &str, tail: &str
         Ok(identity) => identity,
         Err(e) => return Response::error(502, &e),
     };
+    forward(
+        app,
+        req,
+        owner,
+        repo,
+        tail,
+        &basic(&identity.user, &identity.token),
+    )
+}
+
+/// The owner's git through the hub: `git push` and `git fetch` of a plaza repository, signed as the forge
+/// admin. `repo` is the plaza name with or without its `.git` suffix. The owner is not an agent, so no law
+/// is checked for the push.
+fn owner_relay(app: &App, req: &Request, repo: &str, tail: &str) -> Response {
+    let name = match smart_repo(repo) {
+        Ok(name) => name,
+        Err(f) => return Response::error(f.status, &f.message),
+    };
+    if let Some(refusal) = unreplayable(req) {
+        return refusal;
+    }
+    let authorization = match app.forge.admin_basic() {
+        Ok(authorization) => authorization,
+        Err(e) => return Response::error(503, &e),
+    };
+    forward(app, req, ORG, &name, tail, &authorization)
+}
+
+/// Sends one smart-HTTP request to `<FORGEJO_URL>/<owner>/<repo>/<tail>` under `authorization`, and answers
+/// with the reply's status, content type and body as they come.
+fn forward(
+    app: &App,
+    req: &Request,
+    owner: &str,
+    repo: &str,
+    tail: &str,
+    authorization: &str,
+) -> Response {
     let (base, _) = match app.forge.creds() {
         Ok(creds) => creds,
         Err(e) => return Response::error(503, &e),
     };
-    let mut url = format!("{}/{owner}/{repo}/{tail}", base.trim_end_matches('/'));
-    if !req.query.is_empty() {
-        url.push('?');
-        url.push_str(&req.query);
+    let url = upstream_url(base, owner, repo, tail, &req.query);
+    let headers = upstream_headers(authorization, req);
+    match send(&req.method, &url, &headers, req.body.clone()) {
+        Ok((status, content_type, bytes)) => Response::new(status, &content_type, bytes),
+        Err(e) => Response::error(502, &e),
     }
-    let mut headers = vec![("Authorization", basic(&identity.user, &identity.token))];
-    for key in ["Content-Type", "Accept", "Git-Protocol"] {
+}
+
+/// The Forgejo URL of one smart-HTTP request: the repository's path with the request's query, when it has one.
+fn upstream_url(base: &str, owner: &str, repo: &str, tail: &str, query: &str) -> String {
+    let mut url = format!("{}/{owner}/{repo}/{tail}", base.trim_end_matches('/'));
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(query);
+    }
+    url
+}
+
+/// The headers that go to Forgejo: the authorization, and the request's Content-Type, Accept, Git-Protocol and
+/// Content-Encoding when it sent them. Content-Encoding matters: git gzips a large upload-pack request, and the
+/// body is forwarded as it came, so the forge needs to know it is compressed. Nothing else of the caller's
+/// reaches the forge.
+fn upstream_headers(authorization: &str, req: &Request) -> Vec<(&'static str, String)> {
+    let mut headers = vec![("Authorization", authorization.to_string())];
+    for key in ["Content-Type", "Accept", "Git-Protocol", "Content-Encoding"] {
         if let Some(value) = req.header(key) {
             headers.push((key, value.to_string()));
         }
     }
-    match send(&req.method, &url, &headers, req.body.clone()) {
-        Ok((status, content_type, bytes)) => Response::new(status, &content_type, bytes),
-        Err(e) => Response::error(502, &e),
+    headers
+}
+
+/// The refusal for a push that cannot be replayed to Forgejo: a POST with no body or no Content-Length
+/// (chunked). git must send a length, and a small pack does.
+fn unreplayable(req: &Request) -> Option<Response> {
+    let chunked =
+        req.method == "POST" && (req.body.is_empty() || req.header("content-length").is_none());
+    chunked.then(|| {
+        Response::error(
+            411,
+            "set `git config --global http.postBuffer 524288000` and retry",
+        )
+    })
+}
+
+/// The plaza repository a smart-HTTP route names: `foo`, or `foo.git` (git adds the suffix to the URL it
+/// clones). The suffix goes once, and the name is checked as [`plain_name`] checks it.
+fn smart_repo(raw: &str) -> Result<String, Failure> {
+    plain_name(raw.strip_suffix(".git").unwrap_or(raw))
+}
+
+/// The owner and the repository an agent's smart-HTTP route names, each checked as [`smart_repo`] checks
+/// the owner's repository. The agent's relay forwards them to the forge's path, so a bad name is refused here.
+fn agent_names(owner: &str, repo: &str) -> Result<(String, String), Failure> {
+    Ok((plain_name(owner)?, smart_repo(repo)?))
+}
+
+/// A name a route puts into the upstream path: not blank, no `/`, only letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`. So no `%`, no control character and no path segment that climbs out of the forge's tree.
+fn plain_name(name: &str) -> Result<String, Failure> {
+    let plain = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if plain {
+        Ok(name.to_string())
+    } else {
+        Err(Failure::new(
+            400,
+            "name is required (a plain repository name)",
+        ))
     }
 }
 
@@ -529,6 +632,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/git/repos/{repo}/pulls/{n}/state", state_route)
         .post("/v1/git/repos/{repo}/pulls/{n}/review", review_route)
         .post("/v1/git/repos/{repo}/pulls/{n}/merge", merge_route)
+        // The owner's git through the hub (behind its front door, as the other `/v1` routes).
+        .get("/v1/git/smart/{repo}/info/refs", |app, req, p| {
+            owner_relay(app, req, p.get("repo"), "info/refs")
+        })
+        .post("/v1/git/smart/{repo}/git-upload-pack", |app, req, p| {
+            owner_relay(app, req, p.get("repo"), "git-upload-pack")
+        })
+        .post("/v1/git/smart/{repo}/git-receive-pack", |app, req, p| {
+            owner_relay(app, req, p.get("repo"), "git-receive-pack")
+        })
 }
 
 /// Checks the internal token and the cid as the other gateway routes do, then relays.
@@ -555,7 +668,11 @@ fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
                 return Ok(Response::error(403, &why));
             }
         }
-        Ok(relay(app, req, cid, p.get("owner"), p.get("repo"), tail))
+        let (owner, repo) = match agent_names(p.get("owner"), p.get("repo")) {
+            Ok(names) => names,
+            Err(f) => return Ok(Response::error(f.status, &f.message)),
+        };
+        Ok(relay(app, req, cid, &owner, &repo, tail))
     })
 }
 
@@ -1776,5 +1893,181 @@ mod tests {
         assert_eq!(page_args(Some("0"), Some("500")), (1, 50));
         assert_eq!(page_args(Some("x"), Some("-1")), (1, 50));
         assert_eq!(page_args(None, Some("0")), (1, 1));
+    }
+
+    fn request(method: &str, headers: &[(&str, &str)], body: Vec<u8>) -> Request {
+        Request {
+            method: method.into(),
+            path: String::new(),
+            query: String::new(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+                .collect(),
+            body,
+            peer: None,
+        }
+    }
+
+    #[test]
+    fn smart_repo_strips_the_git_suffix_once_and_keeps_the_plain_name() {
+        assert_eq!(smart_repo("foo").ok(), Some("foo".to_string()));
+        assert_eq!(smart_repo("foo.git").ok(), Some("foo".to_string()));
+        assert_eq!(
+            smart_repo("my-repo_2.v1.git").ok(),
+            Some("my-repo_2.v1".to_string())
+        );
+        assert_eq!(smart_repo("foo.git.git").ok(), Some("foo.git".to_string()));
+    }
+
+    #[test]
+    fn smart_repo_refuses_names_that_are_not_plain() {
+        for raw in [
+            "",
+            ".git",
+            ".",
+            "..",
+            "..git",
+            "foo/bar",
+            "foo/../bar",
+            "foo bar",
+            "foo%2Fbar",
+            "foo?x",
+            "foo.git/",
+            "foo\n",
+            "fóo",
+        ] {
+            assert_eq!(status(smart_repo(raw)), Some(400), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn upstream_url_is_the_forge_path_of_the_repo_with_the_query() {
+        assert_eq!(
+            upstream_url(
+                "http://127.0.0.1:3300/",
+                ORG,
+                "foo",
+                "info/refs",
+                "service=git-receive-pack"
+            ),
+            "http://127.0.0.1:3300/agentplaza/foo/info/refs?service=git-receive-pack"
+        );
+        assert_eq!(
+            upstream_url("http://f", "agentplaza", "foo", "git-upload-pack", ""),
+            "http://f/agentplaza/foo/git-upload-pack"
+        );
+    }
+
+    #[test]
+    fn upstream_headers_carry_the_authorization_and_only_the_git_headers() {
+        let req = request(
+            "POST",
+            &[
+                ("Content-Type", "application/x-git-upload-pack-request"),
+                ("Content-Encoding", "gzip"),
+                ("Cookie", "session=secret"),
+                ("Git-Protocol", "version=2"),
+            ],
+            b"pack".to_vec(),
+        );
+        assert_eq!(
+            upstream_headers("Basic abc", &req),
+            vec![
+                ("Authorization", "Basic abc".to_string()),
+                (
+                    "Content-Type",
+                    "application/x-git-upload-pack-request".to_string()
+                ),
+                ("Git-Protocol", "version=2".to_string()),
+                ("Content-Encoding", "gzip".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gzipped_upload_pack_keeps_its_content_encoding_to_the_forge() {
+        // git gzips a large fetch's request body; the body goes on unchanged, so the header must too.
+        let req = request(
+            "POST",
+            &[
+                ("Content-Type", "application/x-git-upload-pack-request"),
+                ("Content-Encoding", "gzip"),
+                ("Content-Length", "4"),
+            ],
+            vec![0x1f, 0x8b, 0x08, 0x00],
+        );
+        let headers = upstream_headers("Basic abc", &req);
+        assert!(headers.contains(&("Content-Encoding", "gzip".to_string())));
+        assert_eq!(req.body, vec![0x1f, 0x8b, 0x08, 0x00]);
+    }
+
+    #[test]
+    fn an_agents_route_names_plain_owner_and_repository_only() {
+        assert_eq!(
+            agent_names(ORG, "foo.git").ok(),
+            Some((ORG.to_string(), "foo".to_string()))
+        );
+        assert_eq!(
+            agent_names(ORG, "foo").ok(),
+            Some((ORG.to_string(), "foo".to_string()))
+        );
+        for (owner, repo) in [
+            ("", "foo"),
+            (".", "foo"),
+            ("..", "foo"),
+            ("org/x", "foo"),
+            ("a%2Fb", "foo"),
+            ("a b", "foo"),
+            ("org\n", "foo"),
+            (ORG, ""),
+            (ORG, "."),
+            (ORG, ".."),
+            (ORG, "../x"),
+            (ORG, "foo/bar"),
+            (ORG, "foo%2Fbar"),
+            (ORG, "foo\t"),
+        ] {
+            assert_eq!(
+                status(agent_names(owner, repo)),
+                Some(400),
+                "{owner:?}/{repo:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_push_without_a_length_is_refused_and_a_sized_one_or_a_read_is_not() {
+        let sized = request("POST", &[("Content-Length", "4")], b"pack".to_vec());
+        assert_eq!(unreplayable(&sized).map(|r| r.status), None);
+        let chunked = request(
+            "POST",
+            &[("Transfer-Encoding", "chunked")],
+            b"pack".to_vec(),
+        );
+        assert_eq!(unreplayable(&chunked).map(|r| r.status), Some(411));
+        let empty = request("POST", &[("Content-Length", "0")], Vec::new());
+        assert_eq!(unreplayable(&empty).map(|r| r.status), Some(411));
+        let read = request("GET", &[], Vec::new());
+        assert_eq!(unreplayable(&read).map(|r| r.status), None);
+    }
+
+    #[test]
+    fn the_admin_signs_git_as_plaza_with_the_forge_token() {
+        let env = BTreeMap::from([
+            (
+                "FORGEJO_URL".to_string(),
+                "http://127.0.0.1:3300".to_string(),
+            ),
+            ("FORGEJO_TOKEN".to_string(), "tok".to_string()),
+        ]);
+        let forge = Forge::load(Path::new("/nonexistent-apz-git-test"), &env);
+        // base64("plaza:tok")
+        assert_eq!(
+            forge.admin_basic().ok(),
+            Some("Basic cGxhemE6dG9r".to_string())
+        );
+        let unset = Forge::load(Path::new("/nonexistent-apz-git-test"), &BTreeMap::new());
+        assert!(unset.admin_basic().is_err());
     }
 }

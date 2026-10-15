@@ -225,11 +225,49 @@ pub fn client_variables(workspace: &Workspace) -> Vec<(&'static str, PathBuf)> {
     ]
 }
 
+/// The variables for a coding engine's process, which runs as its own user and cannot read the
+/// plaza's files: once [`install`] has added the egress CA, they name the system store, which holds
+/// it (it is public), instead of the bundle in `.plaza/`. None before that, as for any command.
+pub fn engine_variables(workspace: &Workspace) -> Vec<(&'static str, PathBuf)> {
+    if !workspace.plaza_dir().join(CA_BUNDLE_FILE).is_file() {
+        return Vec::new();
+    }
+    let store = PathBuf::from(SYSTEM_STORE);
+    [
+        "SSL_CERT_FILE",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "NODE_EXTRA_CA_CERTS",
+    ]
+    .into_iter()
+    .map(|key| (key, store.clone()))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const CA: &str = "-----BEGIN CERTIFICATE-----\nQUJD\nREVG\n-----END CERTIFICATE-----";
+
+    #[test]
+    fn an_engine_is_pointed_at_the_system_store_and_only_once_the_ca_is_installed() {
+        let dir = std::env::temp_dir().join(format!("apz-trust-engine-{}", std::process::id()));
+        let workspace = Workspace::at(dir.clone());
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(workspace.plaza_dir()).expect("the plaza folder");
+        assert!(
+            engine_variables(&workspace).is_empty(),
+            "no bundle, no variables"
+        );
+        fs::write(workspace.plaza_dir().join(CA_BUNDLE_FILE), "pem").expect("a bundle");
+        let vars = engine_variables(&workspace);
+        assert_eq!(vars.len(), 5);
+        assert!(vars.iter().all(|(_, path)| path == Path::new(SYSTEM_STORE)));
+        assert!(vars.iter().any(|(key, _)| *key == "NODE_EXTRA_CA_CERTS"));
+        let _ = fs::remove_dir_all(&dir);
+    }
     const OTHER_CA: &str = "-----BEGIN CERTIFICATE-----\nR0hJ\n-----END CERTIFICATE-----\n";
 
     /// A scratch workspace and system material: a missing first bundle, a present second bundle

@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 use apz_proto::line::Lines;
-use apz_proto::wire::{AgentProfile, GuestMessage, HostMessage, WELCOME_ECHO};
+use apz_proto::wire::{AgentProfile, CAP_ACP, GuestMessage, HostMessage, WELCOME_ECHO};
 
 use crate::files::Workspace;
 use crate::lane::Duplex;
@@ -97,6 +97,8 @@ fn handshake<S: Read + Write, W: Write>(
         guest_cid: identity.guest_cid,
         role: role.map(str::to_string),
         keepalive: Some(true),
+        // This harness runs ACP engines, so the hub may hold their permission requests for the owner.
+        caps: vec![CAP_ACP.to_string()],
     };
     send(lines, log, &hello)?;
     let accepted = await_host(lines, log, "welcome", |message| match message {
@@ -208,7 +210,7 @@ mod tests {
         let (result, log) = run_session(&Workspace::default(), Some("builder"), |mut host| {
             assert_eq!(
                 next(&mut host),
-                r#"{"type":"hello","vm":4,"guest_cid":104,"role":"builder","keepalive":true}"#
+                r#"{"type":"hello","vm":4,"guest_cid":104,"role":"builder","keepalive":true,"caps":["acp"]}"#
             );
             host.send(WELCOME).unwrap();
             for seq in 1..=3 {

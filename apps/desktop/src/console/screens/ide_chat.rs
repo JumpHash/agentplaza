@@ -6,7 +6,7 @@
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
 use super::{ide_chat, ide_chrome};
-use crate::console::Ctx;
+use crate::console::{Ctx, client};
 use apz_ide::state::Panel;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -15,7 +15,7 @@ use apz_ide::EntryKind;
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Space, Stack, column, container, operation, row, text_editor};
 use iced::{Alignment, Element, Length, Padding, Task};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::ide::{self, Centre, Msg, State};
 use super::ide_model::{self, Row};
@@ -44,6 +44,9 @@ pub enum ChatMsg {
     Cancelled(Result<(), String>),
     Scrolled(Viewport),
     JumpToNewest,
+    /// Approve (true) or deny (false) an approval a coding engine waits for; the same call the approvals screen makes.
+    Decide(String, bool),
+    Decided(Result<(), String>),
 }
 
 /// What the chat does when its transcript changes (see `decide`).
@@ -341,8 +344,14 @@ fn entry_view<'a>(
     })
 }
 
-/// A run of tool steps: one line, which opens to show each call and its decision.
-fn steps_view(entries: &[Value], first: usize, summary: &str, open: bool) -> Element<'static, Msg> {
+/// A run of tool steps (the entries `first..end`): one line, which opens to show each call and its decision.
+fn steps_view(
+    entries: &[Value],
+    first: usize,
+    end: usize,
+    summary: &str,
+    open: bool,
+) -> Element<'static, Msg> {
     let p = theme::palette();
     let mut col = column![ui::disclosure(
         summary.to_string(),
@@ -353,10 +362,7 @@ fn steps_view(entries: &[Value], first: usize, summary: &str, open: bool) -> Ele
     .spacing(6);
     if open {
         let mut lines = column![].spacing(3);
-        for entry in entries[first..]
-            .iter()
-            .take_while(|e| ide_model::is_step(e))
-        {
+        for entry in &entries[first..end] {
             let data = entry.get("data").unwrap_or(&Value::Null);
             let line: Option<Element<'static, Msg>> =
                 match entry.get("kind").and_then(Value::as_str).unwrap_or("") {
@@ -395,6 +401,80 @@ fn steps_view(entries: &[Value], first: usize, summary: &str, open: bool) -> Ele
     col.into()
 }
 
+/// A coding engine's call as one block: its header, what it said, its tools and plan, and the checks it holds for
+/// the owner, each with Approve and Deny. Status is a bracketed mark in the mono face, as the plan's checklist is.
+fn engine_block<'a>(
+    view: &ide_model::EngineView,
+    rctx: &rich::RichCtx,
+    cards: &rich::Cards,
+) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let indent = Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+        left: 14.0,
+    };
+    let mut col = column![ui::mono(view.summary.clone(), 11.5, p.ink_2)].spacing(6);
+    if !view.message.trim().is_empty() {
+        col = col.push(prose(view.message.trim(), rctx, cards));
+    }
+    if !view.tools.is_empty() {
+        let mut tools = column![].spacing(3);
+        for tool in &view.tools {
+            let mark = match tool.status.as_str() {
+                "completed" => "[x]",
+                "failed" => "[!]",
+                "in_progress" => "[~]",
+                _ => "[ ]",
+            };
+            let kind = if tool.kind.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", tool.kind)
+            };
+            tools = tools.push(ui::mono(
+                format!("{mark} {}{kind}", tool.title),
+                11.5,
+                p.ink,
+            ));
+            for location in &tool.locations {
+                tools = tools.push(ui::mono(format!("      {location}"), 11.5, p.ink_3));
+            }
+        }
+        col = col.push(container(tools).padding(indent));
+    }
+    if !view.plan.is_empty() {
+        let mut plan = column![].spacing(3);
+        for item in &view.plan {
+            let (mark, tone) = if item.done {
+                ("[x]", p.ink_3)
+            } else {
+                ("[ ]", p.ink)
+            };
+            plan = plan.push(ui::mono(format!("{mark} {}", item.content), 11.5, tone));
+        }
+        col = col.push(container(plan).padding(indent));
+    }
+    for check in &view.pending {
+        // A check the plaza named no approval for has nothing to decide, so its buttons stay off.
+        let decide = |approve: bool| {
+            (!check.approval.is_empty())
+                .then(|| Msg::Chat(ChatMsg::Decide(check.approval.clone(), approve)))
+        };
+        col = col.push(
+            row![
+                ui::faint(format!("Waiting for approval: {}", check.title)),
+                ui::btn("Approve", None, Kind::Primary, decide(true)),
+                ui::btn("Deny", None, Kind::Danger, decide(false)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+    col.into()
+}
+
 /// The transcript as rows, then the working line and any error.
 fn transcript(st: &State) -> Element<'_, Msg> {
     let entries = &st.panels.entries;
@@ -414,13 +494,23 @@ fn transcript(st: &State) -> Element<'_, Msg> {
                     col = col.push(view);
                 }
             }
-            Row::Steps { first, summary, .. } => {
+            Row::Steps {
+                first,
+                end,
+                summary,
+                ..
+            } => {
                 col = col.push(steps_view(
                     entries,
                     first,
+                    end,
                     &summary,
                     st.steps_open.contains(&first),
                 ));
+            }
+            Row::Engine { call, .. } => {
+                let view = ide_model::engine_view(entries, &call);
+                col = col.push(engine_block(&view, &rctx, &st.cards));
             }
         }
     }
@@ -643,10 +733,71 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The path a decision is posted to: the approval id is one path segment, percent-encoded.
+fn decision_path(id: &str) -> String {
+    format!("/v1/approvals/{}", enc(id))
+}
+
+/// The decisions a coding engine's block sends: an approval is decided as the approvals screen decides it, and a
+/// refused send is said in the notice (the transcript shows the decision once the plaza records it).
+pub(super) fn decision_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        ChatMsg::Decide(id, approve) => {
+            let c = ctx.client.clone();
+            let path = decision_path(&id);
+            let body = json!({ "approve": approve });
+            client::task(
+                move || c.post::<Value>(&path, &body).map(|_| ()),
+                |res| Msg::Chat(ChatMsg::Decided(res)),
+            )
+        }
+        ChatMsg::Decided(res) => {
+            if let Err(e) = res {
+                st.notice = Some(format!("The decision was not sent: {e}"));
+            }
+            Task::none()
+        }
+        _ => Task::none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_decision_names_its_approval_as_one_encoded_segment() {
+        assert_eq!(decision_path("a7"), "/v1/approvals/a7");
+        assert_eq!(decision_path("a7/../x y"), "/v1/approvals/a7%2F..%2Fx%20y");
+    }
+
+    #[test]
+    fn an_engine_block_draws_its_tools_plan_and_pending_checks_with_their_decisions() {
+        let entries = vec![
+            json!({"kind": "tool_request", "data": {"call": "c1", "name": "code_engine",
+                "input": {"engine": "claude", "prompt": "fix it"}}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "tool_call",
+                "update": {"toolCallId": "t1", "title": "Read main.rs", "kind": "read", "status": "in_progress"}}}),
+            json!({"kind": "engine_update", "data": {"call": "c1", "item": "plan",
+                "update": [{"content": "Read", "status": "completed"}]}}),
+            json!({"kind": "tool_request", "data": {"call": "c1.e1", "name": "engine.edit",
+                "input": {"engine": "claude", "title": "Edit lib.rs"}}}),
+            json!({"kind": "tool_decision", "data": {"call": "c1.e1", "decision": "pending",
+                "output": "waiting for the owner's approval (ap_9)"}}),
+        ];
+        let view = ide_model::engine_view(&entries, "c1");
+        let (rctx, cards) = (
+            rich::context(&rich::Cards::default(), None, None, None),
+            rich::Cards::default(),
+        );
+        // The block draws with a check to decide, and with no check and no approval id it still draws.
+        let _waiting = engine_block(&view, &rctx, &cards);
+        let mut unnamed = view.clone();
+        unnamed.pending[0].approval.clear();
+        let _unnamed = engine_block(&unnamed, &rctx, &cards);
+        assert_eq!(view.pending[0].approval, "ap_9");
+    }
 
     #[test]
     fn a_tool_step_run_opens_to_its_calls_only_while_its_first_entry_is_open() {
@@ -656,8 +807,8 @@ mod tests {
             json!({"kind": "tool_decision", "data": {"call": "c", "decision": "allow"}}),
         ];
         // Closed: the one line is all. Open: the call and its decision are drawn after it.
-        let _closed = steps_view(&entries, 0, "1 step · bash", false);
-        let _open = steps_view(&entries, 0, "1 step · bash", true);
+        let _closed = steps_view(&entries, 0, entries.len(), "1 step · bash", false);
+        let _open = steps_view(&entries, 0, entries.len(), "1 step · bash", true);
         assert!(ide_model::is_step(&entries[2]));
     }
 

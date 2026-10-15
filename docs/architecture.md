@@ -61,9 +61,13 @@ apid closes the work item ◀── vsockd ◀─┘ (task finished, artifact no
 
 The wire is `apz_proto::wire` (one JSON object per line, tagged by `type`).
 Guest lines: `hello`, `tool_call` (v1), `tool_result` (v2), `heartbeat`, `bye`,
-and in v3 `model_call`, `tool_request`, `tool_report`, `work_done`, `compressed`.
+and in v3 `model_call`, `tool_request`, `tool_report`, `work_done`, `compressed`,
+and in v4 (ACP engines) `engine_update`; `hello` carries `caps`, and `"acp"` in it
+says the harness can host an engine.
 Host lines: `welcome`, `tool_result`, `tool_call`, `stop`, `work`, `model_result`,
-`tool_decision`, `cancel`, `profile`, `control`. The relay stamps the CID (from
+`tool_decision` (`allow`, `deny`, or `pending` with the `approval` the owner must
+decide), `cancel`, `profile`, `control`, and in v4 `permission_decision`, pushed
+when the owner decides a pending engine request. The relay stamps the CID (from
 the socket path, never from the line) and forwards every v3 guest line to
 `apid`; `apid`'s reply (if any) is written back to the guest. Model calls can
 take minutes: the relay runs each forward on a worker thread and keeps reading
@@ -106,10 +110,108 @@ model calls; three identical failing tool calls in a row (stuck); a `cancel` or
 `stop` from the host; a refusal. A conversation past `compress_at` is summarised
 (the `compressed` line records it), keeping the recent messages.
 
-**Coding engines.** Claude Code, Codex and OpenCode run inside an agent's VM
-with their base URL at `plaza.gateway`. The hub relays each request to
-`/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`), so the
-same keys, model policy and metering apply, and no key enters the VM.
+**Coding engines over ACP.** `code_engine` runs twelve coding engines as an ACP agent (the Agent Client
+Protocol) inside the agent's VM: Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Kilo Code, Cline,
+GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe (`ENGINES` in `catalog.rs`). The harness is the
+ACP client (`crates/agent-harness/src/acp`), and the engine's adapter runs as a child
+process on its stdio. Each engine is pinned to one version, never `latest`, and is installed in the VM
+on first use and checked before it runs. There are three ways to install one:
+
+- npm: `npm pack` fetches the exact version, and its tarball must match the registry's sha512
+  `dist.integrity`. The engines are `@agentclientprotocol/claude-agent-acp` 0.84.0,
+  `@agentclientprotocol/codex-acp` 2.0.1, `opencode-ai` 1.18.34 (`opencode acp`), `@google/gemini-cli`
+  0.62.0 (`gemini --acp`), `@qwen-code/qwen-code` 0.24.7 (`qwen --acp`), `@kilocode/cli` 7.8.1
+  (`kilo acp`), `cline` 3.0.67 (`cline --acp`), `@github/copilot` 1.0.90 (`copilot --acp --stdio`),
+  `@moonshot-ai/kimi-code` 2.1.1 (`kimi acp`) and `@augmentcode/auggie` 0.36.0 (`auggie --acp`). They are
+  installed under `/workspace/.npm-global`. Kimi Code needs Node 22.19 or later, which the harness checks
+  on the VM's `node` before it installs.
+- Release archive: Goose 1.52.0 (`goose acp`) is downloaded for the VM's architecture (`x86_64` or
+  `aarch64`), checked against that architecture's sha256, and extracted. Its binary is linked into the
+  same npm prefix's `bin`, beside the others.
+- PyPI wheel: Mistral Vibe 2.25.0 (`vibe-acp`). `pip download --no-deps` fetches the exact wheel, which must
+  match its sha256, and it is installed into its own venv under `/workspace/.engines/vibe-2.25.0` (the VM's
+  Python must be 3.12 or later); its binary is linked into the same `bin`. Before each call the harness
+  writes Vibe's `$VIBE_HOME/config.toml` (under the engine's home, `/workspace/.engines/home/vibe/vibe`):
+  one provider pointing at the gateway (`openai`, `openrouter` or `opencode`; Mistral's own models go as
+  `openrouter/mistralai/<model>`), the call's model, and `bypass_tool_permissions = false`.
+
+**Who the engine is.** In a root VM an engine runs as `apz-engine` (uid and gid 1100, added to
+`/etc/passwd` and `/etc/group` by the harness), with `HOME` its own folder `/workspace/.engines/home/<id>`
+(`crates/agent-harness/src/acp/layout.rs`). It can write only its job folder and that home. `.plaza`
+(the harness's state, mode 0700) and the installed engines (`/workspace/.npm-global` and
+`/workspace/.engines/<id>-<version>`, root-owned and read-only to it) are out of its reach, and the
+workspace root is sticky (mode 1777) so it cannot rename them. Installs run as the engine user into a
+folder it owns only for the install, and root takes that folder back afterwards, so no install script
+runs as root. Root's walks over those folders never follow a link and never hand the engine a file
+with another hard link, and an engine process left behind is killed before the folders are prepared,
+after an install and when a session ends. The root tests of this layout run in a user namespace with
+`scripts/test-harness-root.sh`. The engine's own tools (its built-in edit and shell tools) never ask the client, so these
+permissions are what bound them; the actions it routes through ACP (`session/request_permission`,
+`fs/*`, `terminal/*`) still pass the per-action gate.
+
+The engine's model still comes from the hub: each
+request goes to `/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`),
+so the same keys, model policy and metering apply, and no key enters the VM. Gemini CLI
+calls `/gateway/gemini/v1beta/models/<model>:generateContent`, `:streamGenerateContent` and
+`:countTokens`, and lists its models at `GET /gateway/gemini/v1beta/models`. The gateway
+puts the hub's Gemini key in `x-goog-api-key` and meters each call from `usageMetadata`.
+
+Qwen Code, Kilo Code and Cline are set up against the gateway as well. Qwen Code reads its
+OpenAI-compatible endpoint and key from the environment, which points at the gateway; Kilo Code
+gets the same from an OpenCode-style inline config in `KILO_CONFIG_CONTENT`; Cline's provider
+settings are written with `cline auth` before each call (`engines::setup_args`). Their model
+calls through the gateway are metered under their work item, as the other engines' are, so an
+editor's `usage_update` includes them (`crates/apid/src/usage.rs`).
+
+GitHub Copilot CLI runs in its bring-your-own-key mode: the harness sets `COPILOT_OFFLINE=true` and a
+provider at the gateway (`COPILOT_PROVIDER_*`, `COPILOT_MODEL`). No GitHub credential is given to it, and
+the harness never sets `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` or `COPILOT_ALLOW_ALL`. Goose
+takes its model and provider from the environment and runs with `GOOSE_MODE=approve`. Kimi Code reads an
+env provider (`KIMI_MODEL_*`) that points at the gateway.
+
+**Vendor relay.** An engine whose vendor needs its own account runs without that credential in its VM.
+The VM sends its calls to `plaza.gateway/vendor/<vendor>/…`, which reaches the hub as
+`/internal/v1/agents/{cid}/gateway/vendor/<vendor>/…`. The hub relays each call to the vendor's own base
+URL with the owner's credential, read from the vault for the agent's binding (Augment:
+`AUGMENT_SESSION_AUTH`, bound to `engine:auggie`), and streams the answer back
+(`crates/apid/src/vendor_relay.rs`). The relay sends only to the vendor's own https hosts, only for an
+engine the owner has enabled, and only for an agent whose role may run engines. The Auggie VM holds only a
+placeholder session that points at `http://plaza.gateway/vendor/augment/`; the credential never enters the
+VM.
+
+Every action an engine takes is a nested `tool_request` named `engine.read`,
+`engine.edit`, `engine.exec`, `engine.fetch` or `engine.other`, decided by the laws,
+grants, sanctions and approvals like any other tool. Each permission request the
+engine raises and each client call (`fs/*`, `terminal/create`) is one such request.
+The harness never picks an `always` option, so the hub decides every action and the
+engine caches nothing. The engine's file calls stay inside `/workspace`, and the
+workspace is checkpointed before the turn's first write (label `engine <id>`).
+
+An engine also reaches the plaza's own tools (the board, tasks, messages, memory and the
+library: the hub-run tools the agent's role grants) through an MCP server the harness
+offers in `session/new`: `agent-harness --plaza-mcp <socket>`, a unix socket under
+`.engines/run/`, outside `.plaza/`, which the engine cannot enter. In a root guest the socket is the
+engine user's, mode 0600. The server holds no state. Each `tools/call` is a nested request through the
+hub's gate, the same as the agent's own calls (`crates/agent-harness/src/acp/mcp.rs`).
+
+In ask mode the engine is held open: the hub answers the request `tool_decision`
+`pending` with an `approval`, and the harness waits until the owner's answer comes
+back as `permission_decision`. A cancel reaches a running engine at once
+(`session/cancel`, and the process group is killed after a short grace).
+
+The engine's stream goes to the hub as `engine_update` lines. The hub publishes each
+one live as an `engine` event, and keeps in the transcript what explains the turn:
+tool calls and their status changes, the final message of each message, the latest
+plan and usage, and mode changes. Text chunks are not kept, and a turn keeps at most
+400 entries (`crates/apid/src/engine_feed.rs`). A call can continue an earlier
+session (`session`, kept in `<workspace>/.plaza/engine-sessions.json`), and `model`
+and `mode` are session options. Bypass modes are refused whatever the engine offers.
+
+The owner's settings choose the engines. `engines_enabled` lists their ids (`claude`, `codex`,
+`opencode`, `gemini`, `qwen`, `kilo`, `cline`, `copilot`, `goose`, `kimi`, `auggie`), and the offer shows
+only the enabled ones. Claude, Codex and OpenCode are on by default (`DEFAULT_ENGINE_IDS`); the other
+eight are off until the owner adds them. Every engine runs over ACP: there is no other transport, and no
+engine is started with a permission bypass.
 
 **Internet access goes through the hub.** The harness runs a proxy on the
 guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools
@@ -203,6 +305,92 @@ Two directions, both off until the owner turns them on.
   `/v1/hub-mcp`, `/v1/hub-mcp/tokens` and `/v1/hub-mcp/calls`
   (`crates/apid/src/hub_mcp`). The `observe` tools include read-only views of the
   treasury and the laws; the owner decides which scopes a token holds.
+
+## ACP for editors
+
+Editors that speak the Agent Client Protocol (Zed, JetBrains IDEs, Neovim, others)
+drive plaza agents through `agentplaza acp`, a stdio agent the editor starts. The CLI
+sends each line the editor writes as one text frame to the hub's `GET /v1/acp`
+WebSocket (subprotocol `apz.acp.v1`), and sends each frame back as one line on
+stdout. It speaks no protocol of its own: the hub answers every method
+(`crates/apid/src/acp`). `agentplaza acp sessions` lists the editor sessions
+(`GET /v1/acp/sessions`). The route admits the owner (loopback or the owner token) and
+hub MCP tokens of the `operate` or `govern` scope; an observe token is refused. It is off
+until the owner sets `acp_enabled`.
+
+| ACP | Plaza |
+|---|---|
+| `initialize` | protocol 1; `loadSession`; prompts take text and embedded resources |
+| `session/new` | a session on the connection's agent: `agentplaza acp --agent <name>`, else `_meta.agentplaza.agent`, else the orchestrator |
+| `session/prompt` | a chat work item on the session's thread; `stopReason` is `end_turn`, or `cancelled` |
+| `session/cancel` | cancels the session's work: the item in progress and any queued behind it |
+| `session/load`, `session/resume`, `session/close` | replays the work items then continues; resumes without replay; ends the session |
+| `session/list` | the editor's sessions |
+| `session/set_mode` | the agent's approval mode: `autonomous`, `ask` or `read_only` |
+| `session/set_config_option` | `model`: the agent's model, within its tier |
+
+Each editor session is a thread of its own on the agent (`acp-<id>`), so it never
+mixes with the owner's console chat. The sessions are kept with the rest of the plaza
+state (`acp_sessions` in the state snapshot), so an editor can list, load and resume
+them after the hub restarts. The agent's work streams back as `session/update`s: its
+text and thoughts, its tool calls (the kind follows the law's operation), a coding
+engine's own tool calls and plan under its `code_engine` call, and the plan from
+`todo_write`. An approval the work waits on is sent as `session/request_permission`,
+and it is decided for the owner "from the editor", the same decision the approval
+route takes.
+
+The hub also sends `session_info_update` (the session's title, set from its first prompt),
+`usage_update` (the agent's own model calls; a coding engine's calls are metered by the
+gateway) and `available_commands_update`, which offers the plaza's commands: `/compress`
+summarises the conversation, `/steer <note>` steers the work in progress, `/extend-turns <n>`
+allows more model calls for the work, and `/stop` stops it. These run on the agent at once
+instead of queuing as chat.
+
+**Access.** The owner's credentials, or a hub MCP token. An `operate` token drives the
+sessions and the work of the agents its `acp:<agent>` allowlist entries name (every agent
+when there are none), but the approvals, the mode and the model stay with the owner. A
+`govern` token also answers approvals and changes the mode and the model. Each message a
+token sends is rate limited and audited as `acp/<method>`.
+
+**Containment.** The agent works in its own VM, as it always does. The editor's MCP
+servers are not connected (the session says so), and the hub never calls the editor's
+`fs/*` or `terminal/*`: nothing reaches the owner's machine through the editor. An
+editor can prompt, watch and approve; it is not a host an agent can reach.
+
+**Repository mirror.** `agentplaza acp --repo <name>` mirrors the editor's project to a plaza
+repository before each session and each prompt, on branch `editor/<branch>` (`editor/detached-<sha>`
+for a detached HEAD). It pushes the committed HEAD only, and the session is told when the editor had
+uncommitted changes. The CLI sends the link as `_meta.agentplaza.repo` on `session/new`,
+`session/load`, `session/resume` and `session/prompt`. Git's push goes through a relay the CLI runs
+on loopback (`apps/cli/src/cmd/acp_git.rs`): it answers only under a random path prefix and only for
+that one repository, and it forwards each request on the CLI's own pinned client, so git never holds
+the owner token. The hub's owner routes `GET/POST /v1/git/smart/<repo>/{info/refs,git-upload-pack,git-receive-pack}`
+relay the smart-HTTP to the forge as its admin (`crates/apid/src/git.rs`). The agent works on
+`acp/<session>` cloned from that branch and opens a pull request into `editor/<branch>`; the pull
+request comes back to the editor as a `tool_call` of diffs.
+
+**Write-back.** Off by default: the owner sets `acp_write_back` in `/v1/settings`
+(`crates/apid/src/settings.rs`). With it on, and only for a caller that may govern, an editor that
+advertised `fs.writeTextFile` is asked after the pull request's `tool_call` whether to apply its files
+(`session/request_permission`, id `apply-pr-<n>`, 10 minutes to answer). On apply the editor gets one
+`fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`. Deleted files are
+left for the owner. The agent never writes the project itself.
+
+### ACP v2 (draft)
+
+The hub and the harness speak ACP v1 by default. The owner can turn on the ACP v2 draft with the `acp_v2`
+setting, which the desktop console exposes (`apps/desktop/src/console/screens/models.rs`). With it on, an
+editor that asks for protocol 2 in `initialize` gets v2, and so does a coding engine that answers v2; the
+harness offers v2 to engines first only then. Otherwise both get v1.
+
+`apz_acp::compat` translates between the two as pure JSON at the connection's edge
+(`crates/apz-acp/src/compat.rs`). On v2, `session/prompt` answers `{messageId}` at once, and the turn
+follows as `state_update`s, ending with an idle one that carries the stop reason and the usage. Tool calls
+are `tool_call_update`s, and plans have ids. v2 has no client `fs` or `terminal` methods, so the hub does
+not offer write-back on a v2 connection, and a v2 engine does its own file and command work after asking
+permission through the hub's gate. `session/load` and `session/set_mode` are method not found on v2.
+
+v1 stays the default because v2 is a draft that still changes.
 
 ## The Lab (Foundry)
 
@@ -334,8 +522,9 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | library, skills, prompts, toolbox | `/v1/library` (`/{name}/{version}`, `/files`, `/review`), `/v1/skills` (import, GitHub, export, `/{id}` versions, bindings, publish), `/v1/prompts` (versions, publish, diff, rules, `/check`), `/v1/toolbox` (`/{id}`, `/flag`) |
 | connectors and MCP | `/v1/connectors` (`/{id}`, `/secret`, `/test`, `/proposals`), `/v1/mcp/catalog`, `/v1/mcp/servers` (`/{id}`, `/start`, `/stop`, `/test`, `/tools`, `/logs`) |
 | hub as MCP server | `/v1/hub-mcp`, `/v1/hub-mcp/tokens`, `/v1/hub-mcp/calls`; the MCP endpoint itself is `POST /mcp` (bearer token) |
+| editors (ACP) | `GET /v1/acp` (WebSocket, subprotocol `apz.acp.v1`, owner or operate/govern token route, off until `acp_enabled`), `GET /v1/acp/sessions` |
 | vault | `/v1/vault` (`/seal`, `/unseal`, `/recovery`, `/rekey`, `/import`), `/v1/vault/secrets` (`/{id}`, `/value`, `/test`, `/rollback`), `/v1/vault/slots`, `/v1/vault/consumers`, `/v1/vault/audit` |
-| git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`) |
+| git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`), `/v1/git/smart/{repo}/{info/refs,git-upload-pack,git-receive-pack}` (the smart-HTTP of the ACP repository mirror, owner only) |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
 | workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults`, `/v1/workstations` (VMs on nodes, proxied to `noded`) |
@@ -354,14 +543,16 @@ before the upgrade. The kinds include `agent`, `transcript`, `delta` (`{cid, wor
 req, delta}`: live model output, not stored), `task`, `treasury`, `agora`, `board`,
 `conversation`, `motion`, `provider`, `approval`, `sanction`, `station`,
 `station_takeover`, `lease_granted`, `lease_released`, `loop`, `project`, `skill`,
-`prompt`, `toolbox`, `usage`, `training`, `ide`, and noded's `run`, `vm` and
+`prompt`, `toolbox`, `usage`, `training`, `ide`, `engine` (an ACP engine's stream:
+`{cid, work, call, engine, update}`), and noded's `run`, `vm` and
 `serial` relayed unchanged. A new subscriber gets no backlog: read the REST views,
 then apply events.
 
 **Transcript entry**: `{seq, at_ms, cid, work, kind, data}` with `kind` one of
 `work_start`, `model_request`, `model_response`, `tool_request`,
 `tool_decision`, `tool_result`, `work_end`, `error`, plus `egress` (a connection
-the relay made for the guest) and `control` (an owner's action on the agent).
+the relay made for the guest), `control` (an owner's action on the agent) and
+`engine_update` (an ACP engine's update that the transcript keeps; see "Coding engines over ACP").
 `model_response.data` carries the full `ChatResponse` (content, stop, usage, model).
 
 ### Internal endpoints (relay and nodes to `apid`)
@@ -379,7 +570,8 @@ from a remote node are signed with the node's key instead (`crates/apid/src/node
 | `/internal/egress/check` | the egress proxy asks before it dials a host for an agent: the fetch blocklist and the laws | the answer |
 | `/internal/egress/cert`, `/internal/egress/inject` | the node's egress proxy, for an intercepted host: `{cid, host}` → the host's leaf certificate and key; `{cid, host, port, method, path}` → the header to add to that request, or `{}` | `{cert_pem, key_pem}`; `{header, value, rule}` or `{}` |
 | `GET /internal/e2b/sandboxes/{id}` | the E2B gateway (`vsockd`): the sandbox's CID and its envd access token | the sandbox |
-| `/internal/v1/agents/{cid}/gateway/...` | the model gateway (`anthropic`, `openai`, `openrouter`, `opencode` routes), `files`, `decisions`, and `git` for the plaza repositories | the provider's reply, streamed |
+| `/internal/v1/agents/{cid}/gateway/...` | the model gateway (`anthropic`, `openai`, `openrouter`, `opencode` routes, and `gemini/v1beta/models/<model>:generateContent|streamGenerateContent|countTokens` and `gemini/v1beta/models`), `files`, `decisions`, and `git` for the plaza repositories | the provider's reply, streamed |
+| `/internal/v1/agents/{cid}/gateway/vendor/<vendor>/...` | a vendor's API for an engine that needs its own account (Augment, for Auggie): relayed with the owner's vaulted credential, to the vendor's https hosts only (`crates/apid/src/vendor_relay.rs`) | the vendor's answer, streamed |
 | `/internal/v1/agents/{cid}/stations/{id}/leases` (`/{lease}`) | the agent's own lease on a workstation: `POST {task?, kind}` → the lease; `DELETE` releases it | the lease |
 
 ## Hub HTTP (`vsockd`, `127.0.0.1:19080`)

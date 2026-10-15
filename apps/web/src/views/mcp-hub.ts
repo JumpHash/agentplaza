@@ -4,7 +4,10 @@
 
 import '../styles/mcp-hub.css';
 import {
+  acpApi,
+  api,
   hubMcpApi,
+  type AcpSession,
   type HubAuthMode,
   type HubBind,
   type HubCall,
@@ -12,10 +15,11 @@ import {
   type HubMcpStatus,
   type HubToken,
 } from '../api';
-import { ago, attempt, badge, button, card, clip, empty, field, input, modal, select } from '../ui/components';
+import { ago, attempt, badge, button, card, clip, empty, field, input, modal, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { agents } from '../store';
 import type { Cleanup } from './index';
-import { HUB_SCOPES, HUB_TOOLS, scopePermits, setupSnippets, type HubScope } from './hub-mcp-snippets';
+import { HUB_SCOPES, HUB_TOOLS, acpSnippets, scopePermits, setupSnippets, type HubScope } from './hub-mcp-snippets';
 import { errorText } from './vault-common';
 
 const BIND_OPTIONS: { value: HubBind; label: string }[] = [
@@ -34,6 +38,9 @@ const TOOL_SCOPE = new Map<string, HubScope>(
   (Object.keys(HUB_TOOLS) as HubScope[]).flatMap((scope) => HUB_TOOLS[scope].map((name) => [name, scope] as const)),
 );
 const ALL_TOOLS = Array.from(TOOL_SCOPE.keys());
+
+/** The editor setup text (Zed, JetBrains, Neovim). It holds no token, so it is built once. */
+const ACP_SNIPPETS = acpSnippets();
 
 /** A small confirm dialog, as the servers tab has: a message, Cancel, and the action in the danger tone. */
 function confirmDialog(title: string, text: string, label: string, onConfirm: () => void): void {
@@ -658,9 +665,172 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     callsSlot,
   ]);
 
+  // ---- Editors (ACP) ---------------------------------------------------------------------------------------------
+
+  // The switches save at once, as the strict permits switch does: the whole settings document is read, the one
+  // field changed, and saved back. A failed save puts the switch back where it was. Both wait while either save is
+  // on its way, since each save reads the whole document and two at once could overwrite each other.
+  const acpBox = input({ type: 'checkbox' });
+  const writeBackBox = input({ type: 'checkbox' });
+  const v2Box = input({ type: 'checkbox' });
+  const boxes = { acp_enabled: acpBox, acp_write_back: writeBackBox, acp_v2: v2Box };
+  let acpSaving = false;
+  // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the pull request.
+  // The v2 switch is not greyed out by Editors: the engines inside the VMs speak v2 too.
+  const drawAcpSwitches = (): void => {
+    acpBox.disabled = acpSaving;
+    writeBackBox.disabled = acpSaving || !acpBox.checked;
+    v2Box.disabled = acpSaving;
+  };
+  const saveAcpFlag = async (
+    field: 'acp_enabled' | 'acp_write_back' | 'acp_v2',
+    on: boolean,
+    success: string,
+  ): Promise<void> => {
+    const box = boxes[field];
+    acpSaving = true;
+    drawAcpSwitches();
+    const saved = await attempt(async () => {
+      const current = await api.settings();
+      return api.saveSettings({ ...current, [field]: on });
+    }, success);
+    if (!saved && alive) box.checked = !on;
+    acpSaving = false;
+    if (alive) drawAcpSwitches();
+  };
+  acpBox.addEventListener('change', () =>
+    void saveAcpFlag('acp_enabled', acpBox.checked, acpBox.checked ? 'Editors may prompt agents' : 'Editors are off'),
+  );
+  writeBackBox.addEventListener('change', () =>
+    void saveAcpFlag(
+      'acp_write_back',
+      writeBackBox.checked,
+      writeBackBox.checked ? 'The editor will offer to apply pull requests' : 'The editor will not offer to apply pull requests',
+    ),
+  );
+  v2Box.addEventListener('change', () =>
+    void saveAcpFlag(
+      'acp_v2',
+      v2Box.checked,
+      v2Box.checked ? 'Editors and engines that ask for protocol 2 get the ACP v2 draft' : 'Editors and engines are back on the stable v1',
+    ),
+  );
+  drawAcpSwitches();
+
+  const loadAcpSwitch = async (): Promise<void> => {
+    try {
+      const current = await api.settings();
+      if (!alive) return;
+      acpBox.checked = current.acp_enabled === true;
+      writeBackBox.checked = current.acp_write_back === true;
+      v2Box.checked = current.acp_v2 === true;
+      drawAcpSwitches();
+    } catch (err) {
+      if (alive) toast(errorText(err), 'error');
+    }
+  };
+
+  const sessionsSlot = h('div', null, h('p.mcp-loading', null, 'Loading...'));
+  let sessions: AcpSession[] = [];
+  let sessionsError: unknown = null;
+
+  const agentName = (cid: number): string => agents.get().find((a) => a.cid === cid)?.name ?? `agent ${cid}`;
+
+  const sessionRow = (s: AcpSession): HTMLElement =>
+    h(
+      'tr',
+      null,
+      h('td', { 'data-label': 'Title' }, h('strong.mcp-name', null, s.title || 'untitled')),
+      h('td', { 'data-label': 'Agent' }, agentName(s.cid)),
+      h('td', { 'data-label': 'Client' }, s.client || 'unknown'),
+      h('td', { 'data-label': 'Folder' }, h('span.mcp-mono', null, clip(s.cwd, 60))),
+      h('td', { 'data-label': 'Updated' }, ago(s.updated_ms)),
+      h('td', { 'data-label': 'State' }, s.closed ? badge('closed', 'muted') : badge('open', 'ok')),
+    );
+
+  const drawSessions = (): void => {
+    if (sessionsError) {
+      replace(sessionsSlot, empty('alert', 'Could not load the sessions', errorText(sessionsError)));
+      return;
+    }
+    replace(
+      sessionsSlot,
+      sessions.length
+        ? h(
+            'div.mcp-table-wrap',
+            null,
+            h(
+              'table.mcp-table',
+              null,
+              h(
+                'thead',
+                null,
+                h(
+                  'tr',
+                  null,
+                  h('th', null, 'Title'),
+                  h('th', null, 'Agent'),
+                  h('th', null, 'Client'),
+                  h('th', null, 'Folder'),
+                  h('th', null, 'Updated'),
+                  h('th', null, 'State'),
+                ),
+              ),
+              h('tbody', null, sessions.map(sessionRow)),
+            ),
+          )
+        : empty('terminal', 'No editor sessions', 'Sessions appear here once an editor prompts a plaza agent.'),
+    );
+  };
+
+  const loadSessions = async (): Promise<void> => {
+    try {
+      const r = await acpApi.sessions();
+      if (!alive) return;
+      sessions = [...r].sort((a, b) => b.updated_ms - a.updated_ms);
+      sessionsError = null;
+    } catch (err) {
+      if (!alive) return;
+      sessionsError = err;
+    }
+    drawSessions();
+  };
+
+  const editorsCard = card(
+    'Editors (ACP)',
+    [
+      h('label.hub-switch', null, acpBox, h('span', null, 'Let editors prompt a plaza agent')),
+      h(
+        'p.mcp-muted',
+        null,
+        "Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine: the editor's MCP servers and files stay local.",
+      ),
+      h('label.hub-switch', null, writeBackBox, h('span', null, "Offer to apply an agent's pull request to the editor's project")),
+      h(
+        'p.mcp-muted',
+        null,
+        'With ',
+        h('code', null, 'agentplaza acp --repo'),
+        ', the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
+      ),
+      h('label.hub-switch', null, v2Box, h('span', null, 'Speak the ACP v2 draft')),
+      h(
+        'p.mcp-muted',
+        null,
+        "Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.",
+      ),
+      snippet('Zed', ACP_SNIPPETS.zed, 'Add this to the settings.json of Zed. It runs the default plaza agent.'),
+      snippet('Zed, one agent', ACP_SNIPPETS.zedAgent, "The same, pinned to one plaza agent. Replace <name> with the agent's name."),
+      snippet('JetBrains IDEs', ACP_SNIPPETS.jetbrains, 'AI Assistant › ACP agents: enter the command and the arguments.'),
+      snippet('Neovim (CodeCompanion)', ACP_SNIPPETS.neovim, 'Under the adapters of the CodeCompanion setup.'),
+      h('div.hub-group', null, h('span.hub-label', null, 'Editor sessions'), sessionsSlot),
+    ],
+    { actions: [button('Refresh', () => void loadSessions(), { kind: 'ghost', size: 'sm' })] },
+  );
+
   // ---- Mount ------------------------------------------------------------------------------------------------------
 
-  replace(root, h('div.hub-page', null, enableCard, formCard, tokensCard, callsCard));
+  replace(root, h('div.hub-page', null, enableCard, formCard, tokensCard, callsCard, editorsCard));
   drawOrigins();
   drawEffective();
   drawTls();
@@ -669,6 +839,8 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   void loadStatus();
   void loadTokens();
   void loadCalls();
+  void loadAcpSwitch();
+  void loadSessions();
 
   return () => {
     alive = false;

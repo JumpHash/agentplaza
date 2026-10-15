@@ -227,43 +227,19 @@ impl Plaza for App {
             .find(|agent| agent.role == "orchestrator")
             .map(|agent| agent.cid)
             .ok_or_else(|| "no orchestrator is on the roster".to_string())?;
-        // The same work the owner's chat route queues: the owner's thread, with the owner's origin.
-        let origin = crate::scheduler::Origin {
-            owner: true,
-            mcp: true,
-            ..Default::default()
-        };
-        let work = self.work.enqueue(
-            self,
-            cid,
-            apz_proto::wire::WorkKind::Chat,
-            format!("op-{cid}"),
-            text.to_string(),
-            origin,
-        );
-        Ok(json!({ "work": work, "cid": cid }))
+        Ok(queue_owner_chat(self, cid, text))
     }
 
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String> {
-        // The owner's message, queued as a chat turn on the agent's operator thread (the gateway's
-        // `/tell` runs a named tool, not a message). Queuing also wakes a sleeping agent.
-        if self.agents.get(cid).is_none() {
-            return Err(format!("no agent {cid} on the roster"));
+        crate::agents::check_chat_text(text)?;
+        let agent = self
+            .agents
+            .get(cid)
+            .ok_or_else(|| format!("no agent {cid}"))?;
+        if let Some(refusal) = chat_refusal(&agent.kind, agent.status) {
+            return Err(refusal.to_string());
         }
-        let origin = crate::scheduler::Origin {
-            owner: true,
-            mcp: true,
-            ..Default::default()
-        };
-        let work = self.work.enqueue(
-            self,
-            cid,
-            apz_proto::wire::WorkKind::Chat,
-            format!("op-{cid}"),
-            text.to_string(),
-            origin,
-        );
-        Ok(json!({ "work": work, "cid": cid }))
+        Ok(queue_owner_chat(self, cid, text))
     }
 
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String> {
@@ -490,6 +466,36 @@ fn response_json(resp: Response) -> Result<Value, String> {
     } else {
         Err(String::from_utf8_lossy(resp.bytes()).into_owned())
     }
+}
+
+/// Why an agent of `kind` in `status` cannot take the owner's chat, if it cannot.
+fn chat_refusal(kind: &str, status: crate::agents::Status) -> Option<&'static str> {
+    if kind == "model" {
+        Some("a model agent has no chat")
+    } else if status == crate::agents::Status::Offline {
+        Some("agent is offline")
+    } else {
+        None
+    }
+}
+
+/// Queues `text` as the owner's chat on agent `cid`: the work the owner's chat route queues,
+/// on the owner's thread, with the owner's origin.
+fn queue_owner_chat(app: &App, cid: u64, text: &str) -> Value {
+    let origin = crate::scheduler::Origin {
+        owner: true,
+        mcp: true,
+        ..Default::default()
+    };
+    let work = app.work.enqueue(
+        app,
+        cid,
+        apz_proto::wire::WorkKind::Chat,
+        format!("op-{cid}"),
+        text.to_string(),
+        origin,
+    );
+    json!({ "work": work, "cid": cid })
 }
 
 /// A gateway call's answer: the body on success, or the node's refusal.
@@ -1370,5 +1376,25 @@ impl Tool for SearchLibrary {
             "{} library packages match.",
             out["packages"].as_array().map_or(0, Vec::len)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::Status;
+
+    #[test]
+    fn chat_is_refused_for_a_model_agent_and_an_offline_one_only() {
+        assert_eq!(
+            chat_refusal("model", Status::Idle),
+            Some("a model agent has no chat")
+        );
+        assert_eq!(
+            chat_refusal("llm", Status::Offline),
+            Some("agent is offline")
+        );
+        assert_eq!(chat_refusal("llm", Status::Idle), None);
+        assert_eq!(chat_refusal("llm", Status::Working), None);
     }
 }

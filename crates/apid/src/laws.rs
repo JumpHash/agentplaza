@@ -1268,6 +1268,12 @@ const GUEST_EXEC: &[&str] = &[
     "tool_package",
     "deliver_file",
     "checkpoint_restore",
+    // An ACP engine's own edits, commands and fetches act in the VM as `code_engine` does;
+    // `engine.read` only looks, so it is checked as a tool call alone.
+    "engine.edit",
+    "engine.exec",
+    "engine.fetch",
+    "engine.other",
 ];
 
 /// The town every agent and task of this plaza belongs to, as the laws read it (`principal.town`).
@@ -1497,7 +1503,7 @@ pub(crate) fn risk_class(tool: &str) -> &'static str {
         | "plaza_agents" | "memory_read" | "memory_search" | "memory_list"
         | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
         | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search"
-        | "station_list" | "station_app_list" => "read",
+        | "station_list" | "station_app_list" | "engine.read" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => {
             crate::connectors::risk_of(t).unwrap_or("write")
@@ -1801,6 +1807,31 @@ mod tests {
             &json!({"path": "notes/today.md"}),
         );
         assert!(verdict.forbid.is_empty(), "{verdict:?}");
+    }
+
+    #[test]
+    fn an_acp_engines_own_actions_are_checked_one_by_one() {
+        let laws = Laws::load(&scratch("engine"));
+        // A read is a tool call alone; an edit also runs in the VM, so the sandbox is checked too.
+        let read = laws.check("7", "builder", "engine.read", &json!({}));
+        assert!(!read.unpermitted && read.forbid.is_empty(), "{read:?}");
+        assert!(!read.requested.iter().any(|o| o == "tool.exec"), "{read:?}");
+        let edit = laws.check("7", "builder", "engine.edit", &json!({}));
+        assert!(!edit.unpermitted && edit.forbid.is_empty(), "{edit:?}");
+        assert!(edit.requested.iter().any(|o| o == "tool.exec"), "{edit:?}");
+        // An unknown name under `engine.` is no tool any law names.
+        assert!(
+            laws.check("7", "builder", "engine.bogus", &json!({}))
+                .unpermitted
+        );
+    }
+
+    #[test]
+    fn an_acp_engines_actions_have_their_risk_classes() {
+        assert_eq!(risk_class("engine.read"), "read");
+        for name in ["engine.edit", "engine.exec", "engine.fetch", "engine.other"] {
+            assert_eq!(risk_class(name), "write", "{name}");
+        }
     }
 
     #[test]

@@ -5,11 +5,12 @@
 use apz_gateway::Caller;
 use apz_http::{Request, Response, Router};
 use apz_proto::chat::{ChatRequest, Message, Role};
-use apz_proto::wire::{Decision, GuestMessage, HostMessage, cap_output};
+use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, cap_output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, model_of, profile};
+use crate::approvals;
 use crate::laws::Laws;
 use crate::settings::tier_of;
 use crate::state::App;
@@ -28,6 +29,9 @@ struct Hello {
     role: String,
     #[serde(default)]
     vm: u32,
+    /// The harness's features (`acp`); absent from a harness from before v4.
+    #[serde(default)]
+    caps: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,7 +83,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 let hello: Hello = req
                     .json()
                     .map_err(|e| Response::error(400, &e.to_string()))?;
-                let profile = crate::agents::hello(app, cid, &hello.role, hello.vm);
+                let profile = crate::agents::hello(app, cid, &hello.role, hello.vm, &hello.caps);
                 Ok(Response::json(200, &json!({ "profile": profile })))
             })
         })
@@ -349,6 +353,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 output: "unknown agent".to_string(),
                 is_error: true,
                 program: None,
+                approval: None,
             }),
             _ => None,
         };
@@ -391,6 +396,34 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             );
             None
         }
+        GuestMessage::EngineUpdate {
+            work,
+            call,
+            engine,
+            session,
+            seq,
+            update,
+        } => {
+            // Recorded as the feed decides (the text waits for the message's end); published live.
+            let entries = app.engine_feed.absorb(cid, work, &call, &update);
+            app.bus.publish(
+                "engine",
+                &json!({
+                    "cid": cid,
+                    "work": work,
+                    "call": call,
+                    "engine": engine,
+                    "session": session,
+                    "seq": seq,
+                    "update": update,
+                }),
+            );
+            for entry in entries {
+                app.transcripts
+                    .record(&app.bus, cid, work, "engine_update", entry);
+            }
+            None
+        }
         GuestMessage::WorkDone {
             work,
             status,
@@ -415,6 +448,11 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 )
                 .to_lowercase();
                 let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
+            }
+            // The engine calls under this work item end with it: their buffered text, plan and usage.
+            for entry in app.engine_feed.finish(cid, work) {
+                app.transcripts
+                    .record(&app.bus, cid, work, "engine_update", entry);
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
@@ -624,22 +662,42 @@ fn tool_request(
     let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input)
         .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err));
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
-    // or ungranted call never waits in the approvals queue.
+    // or ungranted call never waits in the approvals queue. An ACP engine's own request may wait
+    // open for the owner (see `holds_for_owner`); the held call keeps its work's thread.
+    let holds = holds_for_owner(&agent.caps, name);
+    let held = approvals::Held {
+        thread: app
+            .work
+            .current(cid)
+            .filter(|item| item.id == work)
+            .map(|item| item.thread),
+        waiting: holds.then(|| approvals::Waiting {
+            work,
+            call: call.clone(),
+        }),
+    };
     let gate = if verdict.is_ok() {
-        crate::approvals::gate(app, cid, name, input)
+        crate::approvals::gate(app, cid, name, input, &held)
     } else {
-        None
+        approvals::Gate::Run
     };
     // An allowed call that may not be undone starts only after its VM is checkpointed (`vm_snapshots`).
-    if verdict.is_ok() && gate.is_none() {
+    if verdict.is_ok() && matches!(gate, approvals::Gate::Run) {
         crate::vm_snapshots::auto_checkpoint(app, cid, name);
     }
     let mut program = None;
-    let (decision, output, is_error) = match verdict {
-        _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
-        Err(reason) => (Decision::Deny, reason, true),
+    let mut approval = None;
+    let (decision, output, is_error) = match (gate, verdict) {
+        (approvals::Gate::Refused(reason), _) => (Decision::Deny, reason, true),
+        (approvals::Gate::Held { approval: id, .. }, _) if holds => {
+            let output = format!("waiting for the owner's approval ({id})");
+            approval = Some(id);
+            (Decision::Pending, output, false)
+        }
+        (approvals::Gate::Held { refusal, .. }, _) => (Decision::Deny, refusal, true),
+        (approvals::Gate::Run, Err(reason)) => (Decision::Deny, reason, true),
         // An agent-made tool from the library: allowed with its program, which the guest runs.
-        Ok(Runs::Guest) if name.starts_with(crate::library::PREFIX) => {
+        (approvals::Gate::Run, Ok(Runs::Guest)) if name.starts_with(crate::library::PREFIX) => {
             match crate::library::program(app, cid, name) {
                 Some(found) => {
                     program = Some(found);
@@ -648,21 +706,23 @@ fn tool_request(
                 None => (Decision::Deny, "no such library tool".to_string(), true),
             }
         }
-        Ok(Runs::Guest) => {
+        (approvals::Gate::Run, Ok(Runs::Guest)) => {
             if name == "tool_package" {
                 crate::library::remember_package_call(cid, &call);
             }
             // The engine's model is checked against the tier before the VM runs it: a bad one is a
             // tool error here, not a gateway refusal later.
             match name {
-                "code_engine" => match crate::tools::code_engine_model(app, &agent.role, input) {
+                "code_engine" => match crate::tools::code_engine_model(app, &agent.role, input)
+                    .and_then(|_| crate::tools::code_engine_enabled(app, input))
+                {
                     Ok(_) => (Decision::Allow, String::new(), false),
                     Err(reason) => (Decision::Deny, reason, true),
                 },
                 _ => (Decision::Allow, String::new(), false),
             }
         }
-        Ok(Runs::Host) => {
+        (approvals::Gate::Run, Ok(Runs::Host)) => {
             let (is_error, output) = run_host(app, agent, work, name, input);
             (Decision::Done, output, is_error)
         }
@@ -684,7 +744,15 @@ fn tool_request(
         output,
         is_error,
         program,
+        approval,
     }
+}
+
+/// Whether a held call may wait open for the owner's decision: an ACP engine's own request
+/// (`engine.*`) from a harness that advertised `acp`. Any other held call is refused, as it always
+/// was, and its decision reaches the agent as a chat follow-up.
+pub(crate) fn holds_for_owner(caps: &[String], name: &str) -> bool {
+    name.starts_with("engine.") && caps.iter().any(|cap| cap == CAP_ACP)
 }
 
 /// The law gate and the grant for one tool request, decided before anything runs: `Ok(where)` when
@@ -701,12 +769,31 @@ pub(crate) fn gate_call(
     if let Some(refused) = laws.refusal(cid, role, name, input) {
         return Err(refused);
     }
-    decide(granted, name, runs(name)).map_err(str::to_string)
+    decide(granted, name, engine_runs(name).or_else(|| runs(name))).map_err(str::to_string)
 }
 
-/// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not.
+/// The requests an ACP engine makes of its own (`engine.*`), sent as nested tool requests while
+/// `code_engine` runs. They act in the agent's VM, so they run in the guest like `code_engine` does.
+const ENGINE_TOOLS: &[&str] = &[
+    "engine.read",
+    "engine.edit",
+    "engine.exec",
+    "engine.fetch",
+    "engine.other",
+];
+
+/// Where an engine request runs: the guest, for the five names the engine may make; `None` for any
+/// other name under `engine.`.
+fn engine_runs(name: &str) -> Option<Runs> {
+    ENGINE_TOOLS.contains(&name).then_some(Runs::Guest)
+}
+
+/// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not. An engine
+/// request is granted with `code_engine` (it is the engine's own action inside that run), so an
+/// unknown `engine.*` name is granted and then refused as unknown.
 fn decide(granted: &[String], name: &str, runs: Option<Runs>) -> Result<Runs, &'static str> {
-    if !granted.iter().any(|g| g == name) {
+    let engine = name.starts_with("engine.") && granted.iter().any(|g| g == "code_engine");
+    if !engine && !granted.iter().any(|g| g == name) {
         return Err("not granted to this agent");
     }
     runs.ok_or("unknown tool")
@@ -756,6 +843,40 @@ mod tests {
             decide(&granted, "read", None),
             Err("unknown tool")
         ));
+    }
+
+    #[test]
+    fn an_engine_request_is_granted_with_code_engine_and_runs_in_the_guest() {
+        let with_engine = vec!["read".to_string(), "code_engine".to_string()];
+        let without = vec!["read".to_string()];
+        for name in [
+            "engine.read",
+            "engine.edit",
+            "engine.exec",
+            "engine.fetch",
+            "engine.other",
+        ] {
+            assert!(
+                matches!(
+                    decide(&with_engine, name, engine_runs(name).or_else(|| runs(name))),
+                    Ok(Runs::Guest)
+                ),
+                "{name} with code_engine"
+            );
+            assert!(
+                matches!(
+                    decide(&without, name, engine_runs(name).or_else(|| runs(name))),
+                    Err("not granted to this agent")
+                ),
+                "{name} without code_engine"
+            );
+        }
+        // Anything else under `engine.` is granted with code_engine and then unknown.
+        assert!(matches!(
+            decide(&with_engine, "engine.bogus", engine_runs("engine.bogus")),
+            Err("unknown tool")
+        ));
+        assert_eq!(engine_runs("engine.bogus"), None);
     }
 
     #[test]
@@ -1039,5 +1160,22 @@ mod law_gate_tests {
             gate_call(&removed, 7, "builder", &granted, "read_file", &input),
             Ok(Runs::Guest)
         );
+    }
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_engine_request_from_an_acp_harness_is_held_for_the_owner() {
+        let acp = vec![CAP_ACP.to_string()];
+        assert!(holds_for_owner(&acp, "engine.edit"));
+        assert!(holds_for_owner(&acp, "engine.exec"));
+        // The harness did not advertise acp (an older one): refused as before.
+        assert!(!holds_for_owner(&[], "engine.edit"));
+        // Not an engine call, even from an ACP harness: the plaza's own tools behave as they did.
+        assert!(!holds_for_owner(&acp, "write_file"));
+        assert!(!holds_for_owner(&acp, "code_engine"));
     }
 }

@@ -3,20 +3,26 @@
 //!
 //! `/bin/sh -c <command>` runs in the workspace root with a cleared environment
 //! (`HOME` the workspace, `PATH` the system bins), stdin closed and its own
-//! process group. A root guest drops to uid and gid 1000 first. Stdout and
-//! stderr are captured together and capped; the result ends with `exit <code>`.
+//! process group. A root guest drops to uid and gid 1000 first. A coding engine's
+//! process (see [`Privilege::Engine`]) runs as `apz-engine`, uid and gid 1100, with
+//! its own home, so Unix permissions bound what the engine's own tools can do. Stdout
+//! and stderr are captured together and capped; the result ends with `exit <code>`.
 //!
 //! A command that outlives its timeout is killed with its whole process group (the
 //! shell and everything it started), through kill(1) since the crate forbids `unsafe`.
+//! A root guest also kills every engine process still alive (see [`kill_engine_processes`]),
+//! since one that left its process group would outlive its turn.
 
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::wire::{MAX_TOOL_OUTPUT, cap_output};
+use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 
 use crate::files::Workspace;
@@ -45,6 +51,11 @@ pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 /// The uid and gid a root guest runs commands as.
 pub(crate) const UNPRIVILEGED: u32 = 1000;
+/// The user a coding engine runs as in a root guest: uid and gid 1100, named `apz-engine`
+/// in `/etc/passwd` and `/etc/group` by [`ensure_engine_user`].
+pub(crate) const ENGINE_UID: u32 = 1100;
+const ENGINE_PASSWD: &str = "apz-engine:x:1100:1100:plaza coding engine:/nonexistent:/sbin/nologin";
+const ENGINE_GROUP: &str = "apz-engine:x:1100:";
 /// The most output kept; past it the rest is drained and dropped.
 const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Room kept under the tool cap for the `exit` line.
@@ -129,11 +140,15 @@ fn package_name_ok(name: &str) -> bool {
         })
 }
 
-/// Who a command runs as: the agent (uid 1000 in a root guest), or root for package installs.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Who a command runs as: the agent (uid 1000 in a root guest), root for package installs, or a
+/// coding engine. An engine's process runs as `apz-engine` (uid and gid [`ENGINE_UID`]) when the
+/// harness is root, so an install script it runs never runs as root; `HOME` is the engine's own
+/// folder, given by the caller. Not `Copy`, because the engine's home is a path.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Privilege {
     Agent,
     Root,
+    Engine(PathBuf),
 }
 
 /// The command `program args` in `dir` as `privilege`: a cleared environment (the proxy
@@ -161,10 +176,13 @@ pub(crate) fn environment(
 ) -> Result<(), String> {
     builder.current_dir(dir);
     let env = match privilege {
-        Privilege::Root => with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)),
-        Privilege::Agent => agent_env(dir)?,
+        Privilege::Root => with_trust(with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)), dir),
+        Privilege::Agent => with_trust(agent_env(dir)?, dir),
+        // An engine cannot read the plaza's files, so its trust variables name the system store
+        // instead (see `coding_engine_env`).
+        Privilege::Engine(home) => coding_engine_env(&home)?,
     };
-    with_trust(env, dir).apply(builder);
+    env.apply(builder);
     Ok(())
 }
 
@@ -176,6 +194,76 @@ fn with_trust(env: apz_ops::Env, dir: &std::path::Path) -> apz_ops::Env {
         .fold(env, |env, (key, path)| {
             env.with_var(key, path.display().to_string())
         })
+}
+
+/// The environment of a coding engine's process, with `home` (its own folder, see
+/// `acp::layout::engine_home`) as its `HOME`: the agent's PATH and the egress proxy. A root
+/// harness drops the process to [`ENGINE_UID`]; otherwise (tests, dev) nothing is dropped.
+pub(crate) fn coding_engine_env(home: &Path) -> Result<apz_ops::Env, String> {
+    let uid = if runs_as_root()? {
+        Some(ENGINE_UID)
+    } else {
+        None
+    };
+    let env = with_proxy(apz_ops::Env::new(home, AGENT_PATH)).with_uid(uid);
+    // `home` is `<workspace>/.engines/home/<id>`: the trust bundle is the workspace's.
+    let trust = home
+        .ancestors()
+        .nth(3)
+        .map(|root| trust::engine_variables(&Workspace::at(root)))
+        .unwrap_or_default();
+    Ok(trust.into_iter().fold(env, |env, (key, path)| {
+        env.with_var(key, path.display().to_string())
+    }))
+}
+
+/// Makes sure `/etc/passwd` and `/etc/group` name the engine user, as root only and idempotently:
+/// a missing line is appended, and a file is replaced through a rename so a reader sees one or the other.
+/// Then, best effort, the kernel refuses hard and symbolic links that the linking user could not
+/// make on its own (a link from the agent's commands to a root file would otherwise reach the engine).
+pub(crate) fn ensure_engine_user() -> Result<(), String> {
+    if !runs_as_root()? {
+        return Ok(());
+    }
+    ensure_line(Path::new("/etc/passwd"), ENGINE_PASSWD)?;
+    ensure_line(Path::new("/etc/group"), ENGINE_GROUP)?;
+    for knob in ["protected_hardlinks", "protected_symlinks"] {
+        let _ = std::fs::write(format!("/proc/sys/fs/{knob}"), "1");
+    }
+    Ok(())
+}
+
+fn ensure_line(path: &Path, line: &str) -> Result<(), String> {
+    let current = std::fs::read_to_string(path)
+        .map_err(|err| format!("unavailable: cannot read {}: {err}", path.display()))?;
+    let Some(updated) = with_line(&current, line) else {
+        return Ok(());
+    };
+    let tmp = PathBuf::from(format!("{}.apz-tmp", path.display()));
+    let result = std::fs::write(&tmp, updated).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|err| format!("unavailable: cannot update {}: {err}", path.display()))
+}
+
+/// `current` with `line` appended, or `None` when a line of the same name (the text before the
+/// first `:`) is already there.
+fn with_line(current: &str, line: &str) -> Option<String> {
+    let name = line.split(':').next().unwrap_or(line);
+    if current
+        .lines()
+        .any(|known| known.split(':').next() == Some(name))
+    {
+        return None;
+    }
+    let mut text = current.to_string();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(line);
+    text.push('\n');
+    Some(text)
 }
 
 /// The environment of an agent's command, with `home` as its `HOME`: the agent's PATH and the egress
@@ -313,6 +401,70 @@ pub(crate) fn runs_as_root() -> Result<bool, String> {
     }
 }
 
+/// How many rounds the engine kill makes at most, and the pause between two of them.
+const KILL_ROUNDS: usize = 20;
+const KILL_PAUSE: Duration = Duration::from_millis(50);
+
+/// Kills every engine process on the guest until a scan finds none (root only; a no-op otherwise).
+/// A turn's engine dies with its process group, but one that left the group (`setsid`) outlives
+/// the turn, and it could swap a folder the harness is about to walk or install into. Engine
+/// processes are those with [`ENGINE_UID`] as any of their uids.
+pub(crate) fn kill_engine_processes() -> Result<(), String> {
+    if !runs_as_root()? {
+        return Ok(());
+    }
+    for _ in 0..KILL_ROUNDS {
+        let pids = engine_pids()?;
+        if pids.is_empty() {
+            return Ok(());
+        }
+        for pid in pids {
+            // A process that exits before this signal is no longer ours to stop.
+            if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+                let _ = kill_process(pid, Signal::KILL);
+            }
+        }
+        thread::sleep(KILL_PAUSE);
+    }
+    if engine_pids()?.is_empty() {
+        return Ok(());
+    }
+    Err("unavailable: engine processes are still running after the kill".to_string())
+}
+
+/// The pids of the live engine processes on the guest, the harness's own excepted. A process
+/// that vanishes during the scan is not one.
+pub(crate) fn engine_pids() -> Result<Vec<u32>, String> {
+    let me = std::process::id();
+    let procs = std::fs::read_dir("/proc")
+        .map_err(|err| format!("unavailable: cannot list the processes: {err}"))?;
+    Ok(procs
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+            (pid != me && is_live_engine(&status)).then_some(pid)
+        })
+        .collect())
+}
+
+/// Whether a `/proc/<pid>/status` is a live engine process: [`ENGINE_UID`] as one of its real,
+/// effective, saved or filesystem uids, and not a zombie (a zombie is dead and only its parent
+/// can reap it).
+fn is_live_engine(status: &str) -> bool {
+    let engine = status.lines().any(|line| {
+        line.strip_prefix("Uid:").is_some_and(|ids| {
+            ids.split_whitespace()
+                .any(|id| id.parse::<u32>() == Ok(ENGINE_UID))
+        })
+    });
+    let zombie = status.lines().any(|line| {
+        line.strip_prefix("State:")
+            .is_some_and(|state| state.trim_start().starts_with('Z'))
+    });
+    engine && !zombie
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +594,25 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_user_lines_are_appended_once() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\n";
+        let added = with_line(passwd, ENGINE_PASSWD).expect("missing, so appended");
+        assert_eq!(added, format!("{passwd}{ENGINE_PASSWD}\n"));
+        assert_eq!(with_line(&added, ENGINE_PASSWD), None);
+        assert_eq!(
+            with_line("root:x:0:", ENGINE_GROUP),
+            Some(format!("root:x:0:\n{ENGINE_GROUP}\n"))
+        );
+    }
+
+    #[test]
+    fn a_coding_engine_runs_with_its_own_home_and_the_agent_path() {
+        let home = Path::new("/workspace/.engines/home/goose");
+        let env = coding_engine_env(home).expect("an environment");
+        assert_eq!(env.home(), home);
+    }
+
+    #[test]
     fn package_names_follow_apks_shape() {
         for good in [
             "python3",
@@ -466,6 +637,75 @@ mod tests {
         ] {
             assert!(!package_name_ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_engine_process_is_one_with_its_uid_in_any_field_and_not_a_zombie() {
+        assert!(is_live_engine(
+            "Name:\tsleep\nState:\tS (sleeping)\nUid:\t0\t1100\t0\t0\n"
+        ));
+        assert!(is_live_engine(
+            "Uid:\t1100\t1100\t1100\t1100\nState:\tS (sleeping)\n"
+        ));
+        assert!(!is_live_engine(
+            "Uid:\t1000\t1000\t1000\t1000\nState:\tS (sleeping)\n"
+        ));
+        assert!(!is_live_engine(
+            "Uid:\t1100\t1100\t1100\t1100\nState:\tZ (zombie)\n"
+        ));
+    }
+
+    /// A folder for a root test, removed by the test before it returns.
+    fn root_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-root-bash-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        dir
+    }
+
+    #[test]
+    #[ignore = "needs root: scripts/test-harness-root.sh"]
+    fn root_a_coding_engine_command_runs_as_uid_1100() {
+        assert!(
+            runs_as_root().expect("the uid"),
+            "needs root: run scripts/test-harness-root.sh"
+        );
+        let dir = root_scratch("uid");
+        let output = command("id", &["-u"], &dir, Privilege::Engine(dir.join("home")))
+            .expect("the command")
+            .output()
+            .expect("it runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1100");
+    }
+
+    #[test]
+    #[ignore = "needs root: scripts/test-harness-root.sh"]
+    fn root_kill_engine_processes_stops_a_setsid_sleep() {
+        assert!(
+            runs_as_root().expect("the uid"),
+            "needs root: run scripts/test-harness-root.sh"
+        );
+        let dir = root_scratch("kill");
+        // The shell ends and its `setsid sleep` stays behind, as an engine that left its group does.
+        let shell = command(
+            "/bin/sh",
+            &["-c", "setsid sleep 60 </dev/null >/dev/null 2>&1 &"],
+            &dir,
+            Privilege::Engine(dir.join("home")),
+        )
+        .expect("the command")
+        .status()
+        .expect("the shell runs");
+        assert!(shell.success());
+        assert!(
+            !engine_pids().expect("the scan").is_empty(),
+            "the sleep runs"
+        );
+        kill_engine_processes().expect("the kill");
+        let left = engine_pids().expect("the scan");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(left.is_empty(), "{left:?}");
     }
 }
 

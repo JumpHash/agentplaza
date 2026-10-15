@@ -58,7 +58,8 @@ pub struct HubMcp {
     pub tokens: Box<dyn TokenStore>,
     pub audit: Box<dyn Audit>,
     sessions: Sessions,
-    limiter: RateLimiter,
+    /// Shared with the editors' socket (`acp`), so a token's calls count one window whichever surface it uses.
+    pub limiter: RateLimiter,
     clock: Clock,
 }
 

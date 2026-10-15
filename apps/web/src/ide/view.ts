@@ -35,10 +35,58 @@ export interface Step {
   outcome: 'ok' | 'failed' | 'denied' | 'running';
 }
 
+export type EngineStatus = 'running' | 'ok' | 'failed' | 'denied';
+export type ToolStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+export type EngineContent =
+  | { type: 'diff'; path: string; oldText: string; newText: string }
+  | { type: 'text'; text: string }
+  | { type: 'terminal'; terminalId: string };
+/** One tool call a coding engine made, as ACP reports it: the latest title, status, places and content. */
+export interface EngineTool {
+  id: string;
+  title: string;
+  kind: string;
+  status: ToolStatus;
+  locations: { path: string; line: number | null }[];
+  content: EngineContent[];
+}
+export interface PlanEntry { content: string; status: 'pending' | 'in_progress' | 'completed'; priority: string }
+/** A check the engine asked the plaza to run for it; `approval` is set while the owner has to decide. */
+export interface EngineCheck { title: string; name: string; decision: 'allow' | 'deny' | 'pending'; approval?: string }
+
 export type ChatItem =
   | { kind: 'owner' | 'agent' | 'system'; at: number; text: string }
   | { kind: 'steps'; at: number; steps: Step[]; last: string; outcome: 'ok' | 'failed' | 'running' | 'mixed' }
+  | {
+      kind: 'engine';
+      at: number;
+      /** The code_engine call's id: the key its updates and live stream arrive under. */
+      call: string;
+      engine: string;
+      session?: string;
+      prompt: string;
+      status: EngineStatus;
+      /** The engine's final text, the messages of the turn joined in order. */
+      message: string;
+      tools: EngineTool[];
+      plan: PlanEntry[];
+      checks: EngineCheck[];
+      summary?: string;
+    }
   | { kind: 'working'; at: number };
+
+type EngineItem = Extract<ChatItem, { kind: 'engine' }>;
+
+/** A nested check's call id is its code_engine call's id with `.e<n>` added. */
+const NESTED_CHECK = /\.e\d+$/;
+/** The approval id in a held check's output: "waiting for the owner's approval (<id>)". The hub makes ids as `a` and a counter (crates/apid/src/approvals.rs). */
+const APPROVAL_ID = /approval \((a\d+)\)/;
+/** The approval id a held check's output names, when it has the hub's shape. */
+export function approvalIdIn(output: string): string | undefined {
+  return APPROVAL_ID.exec(output)?.[1];
+}
+const TOOL_STATUSES: readonly ToolStatus[] = ['pending', 'in_progress', 'completed', 'failed'];
+const CHECK_DECISIONS: readonly EngineCheck['decision'][] = ['allow', 'deny', 'pending'];
 
 function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
@@ -100,6 +148,8 @@ interface Tracker { open: OpenCall[] }
 function track(t: Tracker, e: Entry): { step: Step; fresh: boolean } | null {
   const d = e.data;
   const key = `${e.cid}:${e.work}`;
+  // A nested check of an engine is not one of the plaza's own tool calls: it goes into its engine block.
+  if (typeof d.call === 'string' && NESTED_CHECK.test(d.call)) return null;
   if (e.kind === 'tool_request') {
     const step: Step = { at: e.at_ms, name: toolName(d), detail: detailOf(toolInput(d)), ms: null, outcome: 'running' };
     t.open.push({ step, id: callId(d), key, reqAt: e.at_ms });
@@ -146,15 +196,196 @@ function groupOutcome(steps: Step[]): 'ok' | 'failed' | 'running' | 'mixed' {
 
 type Draft = Exclude<ChatItem, { kind: 'steps' }> | { kind: 'steps'; at: number; steps: Step[] };
 
+function pick<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+}
+
+function locationsOf(v: unknown): EngineTool['locations'] {
+  if (!Array.isArray(v)) return [];
+  const out: EngineTool['locations'] = [];
+  for (const l of v) {
+    const rec = l as Record<string, unknown> | null;
+    const path = str(rec?.path);
+    if (path) out.push({ path, line: typeof rec?.line === 'number' ? rec.line : null });
+  }
+  return out;
+}
+
+function contentOf(v: unknown): EngineContent[] {
+  if (!Array.isArray(v)) return [];
+  const out: EngineContent[] = [];
+  for (const c of v) {
+    const rec = c as Record<string, unknown> | null;
+    if (rec?.type === 'diff') {
+      const path = str(rec.path);
+      if (path) {
+        out.push({
+          type: 'diff',
+          path,
+          oldText: typeof rec.oldText === 'string' ? rec.oldText : '',
+          newText: typeof rec.newText === 'string' ? rec.newText : '',
+        });
+      }
+    } else if (rec?.type === 'content') {
+      const inner = rec.content as Record<string, unknown> | null | undefined;
+      if (inner?.type === 'text' && typeof inner.text === 'string') out.push({ type: 'text', text: inner.text });
+    } else if (rec?.type === 'terminal') {
+      const terminalId = str(rec.terminalId);
+      if (terminalId) out.push({ type: 'terminal', terminalId });
+    }
+  }
+  return out;
+}
+
+/** A tool call's ACP fields, as a row; a missing field takes its default. */
+function toolOf(u: Record<string, unknown>): EngineTool {
+  return {
+    id: str(u.toolCallId) ?? '',
+    title: str(u.title) ?? 'tool',
+    kind: str(u.kind) ?? 'other',
+    status: pick(u.status, TOOL_STATUSES, 'pending'),
+    locations: locationsOf(u.locations),
+    content: contentOf(u.content),
+  };
+}
+
+/** Adds a tool call, or updates the row of the same id with the fields the update carries. */
+function mergeTool(tools: EngineTool[], u: Record<string, unknown>): void {
+  const id = str(u.toolCallId) ?? '';
+  const cur = id ? tools.find((t) => t.id === id) : undefined;
+  if (!cur) {
+    tools.push(toolOf(u));
+    return;
+  }
+  const fresh = toolOf(u);
+  if (str(u.title)) cur.title = fresh.title;
+  if (str(u.kind)) cur.kind = fresh.kind;
+  if (u.status !== undefined) cur.status = fresh.status;
+  if (Array.isArray(u.locations)) cur.locations = fresh.locations;
+  if (Array.isArray(u.content)) cur.content = fresh.content;
+}
+
+function planOf(v: unknown): PlanEntry | null {
+  const rec = v as Record<string, unknown> | null;
+  const content = str(rec?.content);
+  if (!content) return null;
+  return {
+    content,
+    status: pick(rec?.status, ['pending', 'in_progress', 'completed'] as const, 'pending'),
+    priority: str(rec?.priority) ?? 'medium',
+  };
+}
+
+/** Applies one engine_update entry (an ACP update of the engine's own stream) to its engine block. */
+function applyEngineUpdate(block: EngineItem, d: Record<string, unknown>): void {
+  const update = d.update && typeof d.update === 'object' ? (d.update as Record<string, unknown>) : {};
+  switch (d.item) {
+    case 'message': {
+      const text = str(d.text);
+      if (text) block.message = block.message ? `${block.message}\n\n${text}` : text;
+      return;
+    }
+    case 'tool_call':
+    case 'tool_status':
+      mergeTool(block.tools, update);
+      return;
+    case 'plan': {
+      // The plan arrives as the ACP update (`{entries}`) or as its bare entries.
+      const entries: unknown[] = Array.isArray(update) ? update : Array.isArray(update.entries) ? update.entries : [];
+      block.plan = entries.map(planOf).filter((p): p is PlanEntry => p !== null);
+      return;
+    }
+    default:
+      return; // usage, mode and the truncation marker are not shown
+  }
+}
+
+/** Fills a nested check from its request or its decision; a held decision carries the approval id. */
+function applyCheck(check: EngineCheck, e: Entry): void {
+  if (e.kind === 'tool_decision') {
+    check.decision = pick(e.data.decision, CHECK_DECISIONS, check.decision);
+    const found = approvalIdIn(str(e.data.output) ?? '');
+    if (found) check.approval = found;
+    else delete check.approval;
+  }
+}
+
+/**
+ * Routes the entries of a code_engine call: the call itself opens an engine block, its updates
+ * and its nested checks fill it. Returns 'none' for entries that are not engine entries (the tool
+ * tracker takes those), 'handled' for ones that only fill a block, and the block a new call opened.
+ */
+function feedEngine(e: Entry, engines: Map<string, EngineItem>, checks: Map<string, EngineCheck>): 'none' | 'handled' | EngineItem {
+  const d = e.data;
+  const call = str(d.call);
+  if (call === null) return 'none';
+  const key = `${e.cid}:${e.work}:${call}`;
+  const kind: string = e.kind;
+  if (kind === 'engine_update') {
+    const block = engines.get(key);
+    if (block) applyEngineUpdate(block, d);
+    return 'handled';
+  }
+  if (NESTED_CHECK.test(call)) {
+    const block = engines.get(`${e.cid}:${e.work}:${call.replace(NESTED_CHECK, '')}`);
+    if (e.kind === 'tool_request' && block) {
+      const input = (d.input && typeof d.input === 'object' ? d.input : {}) as Record<string, unknown>;
+      const check: EngineCheck = {
+        title: str(input.title) ?? str(d.name) ?? 'check',
+        name: str(d.name) ?? 'other',
+        decision: 'pending',
+      };
+      checks.set(key, check);
+      block.checks.push(check);
+    } else {
+      const check = checks.get(key);
+      if (check) applyCheck(check, e);
+    }
+    return 'handled';
+  }
+  if (e.kind === 'tool_request' && str(d.name) === 'code_engine') {
+    const input = (d.input && typeof d.input === 'object' ? d.input : {}) as Record<string, unknown>;
+    const block: EngineItem = {
+      kind: 'engine',
+      at: e.at_ms,
+      call,
+      engine: str(input.engine) ?? 'engine',
+      prompt: str(input.prompt) ?? '',
+      status: 'running',
+      message: '',
+      tools: [],
+      plan: [],
+      checks: [],
+    };
+    const session = str(input.session);
+    if (session) block.session = session;
+    engines.set(key, block);
+    return block;
+  }
+  const block = engines.get(key);
+  if (!block) return 'none';
+  if (e.kind === 'tool_decision' && d.decision === 'deny') {
+    block.status = 'denied';
+    block.summary = str(d.output) ?? block.summary;
+  } else if (e.kind === 'tool_result') {
+    block.status = d.ok === false || d.is_error === true ? 'failed' : 'ok';
+    block.summary = str(d.output) ?? block.summary;
+  }
+  return 'handled';
+}
+
 /**
  * The transcript as chat items, oldest first. Owner prompts (chat or message work from the
  * owner) and model prose become single items; the tool calls between two pieces of prose
- * collapse into one 'steps' item. A 'working' item is appended while the agent is working.
+ * collapse into one 'steps' item. A code_engine call becomes one 'engine' item, with its
+ * nested checks inside it. A 'working' item is appended while the agent is working.
  */
 export function buildChat(entries: Entry[], working: boolean): ChatItem[] {
   const drafts: Draft[] = [];
   const tracker: Tracker = { open: [] };
   const pending = { steps: [] as Step[], at: 0 };
+  const engines = new Map<string, EngineItem>();
+  const checks = new Map<string, EngineCheck>();
   const flush = (): void => {
     if (pending.steps.length > 0) drafts.push({ kind: 'steps', at: pending.at, steps: pending.steps });
     pending.steps = [];
@@ -176,6 +407,13 @@ export function buildChat(entries: Entry[], working: boolean): ChatItem[] {
         flush();
         drafts.push({ kind: 'agent', at: e.at_ms, text });
       }
+      continue;
+    }
+    const engine = feedEngine(e, engines, checks);
+    if (engine === 'handled') continue;
+    if (engine !== 'none') {
+      flush();
+      drafts.push(engine);
       continue;
     }
     const t = track(tracker, e);

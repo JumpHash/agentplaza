@@ -198,7 +198,7 @@ impl Workspace {
     /// outside the workspace (see the module docs). The returned path is the
     /// joined one — inside the workspace by construction — and the label is
     /// always relative, so no absolute (host or guest) path crosses the wire.
-    fn resolve(&self, raw: &str) -> Result<(PathBuf, String), ToolError> {
+    pub(crate) fn resolve(&self, raw: &str) -> Result<(PathBuf, String), ToolError> {
         let parts = relative_parts(raw)?;
         let root = self.canonical_root()?;
         let mut path = root.clone();
@@ -214,12 +214,22 @@ impl Workspace {
         let landed = loop {
             match fs::canonicalize(ancestor) {
                 Ok(resolved) => break resolved,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => match ancestor.parent() {
-                    Some(parent) => ancestor = parent,
-                    None => {
-                        return Err(denied(format!("path {raw:?} cannot be resolved")));
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    // A dangling link has no target to canonicalize, so the walk
+                    // would pass it and a write would then create whatever it
+                    // names, outside the workspace or in `.plaza`. Refuse it.
+                    if fs::symlink_metadata(ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
+                        return Err(denied(format!(
+                            "path {raw:?} passes through a symlink with no target; a write never follows one"
+                        )));
                     }
-                },
+                    match ancestor.parent() {
+                        Some(parent) => ancestor = parent,
+                        None => {
+                            return Err(denied(format!("path {raw:?} cannot be resolved")));
+                        }
+                    }
+                }
                 Err(err) => {
                     return Err(io_tool_error(err, format!("cannot resolve {raw:?}")));
                 }
@@ -230,6 +240,11 @@ impl Workspace {
                 "path {raw:?} resolves to {} outside the workspace",
                 landed.display()
             )));
+        }
+        // The lexical check above refuses `.plaza` by name; this is the same
+        // refusal for a link that lands in it (`p -> .plaza`).
+        if names_plaza(&landed, &root) {
+            return Err(plaza_refusal(raw));
         }
         Ok((path, label_of(&parts)))
     }
@@ -257,11 +272,7 @@ fn relative_parts(raw: &str) -> Result<Vec<String>, ToolError> {
     for component in Path::new(raw).components() {
         match component {
             Component::Normal(part) => match part.to_str() {
-                Some(PLAZA_DIR) => {
-                    return Err(denied(format!(
-                        "path {raw:?} names the harness's own state; the model's tools do not reach it"
-                    )));
-                }
+                Some(PLAZA_DIR) => return Err(plaza_refusal(raw)),
                 Some(part) => parts.push(part.to_string()),
                 None => return Err(invalid(format!("path {raw:?} is not valid UTF-8"))),
             },
@@ -288,6 +299,22 @@ fn label_of(parts: &[String]) -> String {
     } else {
         parts.join("/")
     }
+}
+
+/// The refusal for a path that names the harness's own state. The lexical
+/// check and the check on the landed path both return it, so they read alike.
+fn plaza_refusal(raw: &str) -> ToolError {
+    denied(format!(
+        "path {raw:?} names the harness's own state; the model's tools do not reach it"
+    ))
+}
+
+/// Whether the canonical `landed` path sits inside `.plaza` under `root`.
+pub(crate) fn names_plaza(landed: &Path, root: &Path) -> bool {
+    matches!(
+        landed.strip_prefix(root).ok().and_then(|rest| rest.components().next()),
+        Some(Component::Normal(first)) if first == PLAZA_DIR
+    )
 }
 
 /// A required string argument.
@@ -1320,6 +1347,10 @@ fn walk(dir: &Path, label: &str, depth: usize, scan: &mut Scan<'_>) -> Result<()
                 continue;
             }
         };
+        // The harness's state directory is not the model's to search, as `list` does not show it.
+        if label == "." && name == PLAZA_DIR {
+            continue;
+        }
         children.push((name, entry.path(), file_type.is_dir(), file_type.is_file()));
     }
     children.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1587,6 +1618,70 @@ mod tests {
         );
         // Nothing was written outside.
         assert!(!outside.join("new.txt").exists());
+    }
+
+    #[test]
+    fn a_symlink_into_plaza_is_refused_by_every_tool() {
+        // `resolve` checked the lexical path for `.plaza` but not the path a
+        // link lands on, so `p -> .plaza` reached the harness's state.
+        let (workspace, _outside) = scratch("symlink-plaza");
+        write_inside(&workspace, ".plaza/state.txt", b"harness state\n");
+        symlink(workspace.root().join(".plaza"), workspace.root().join("p"))
+            .expect("a link to the state directory");
+        symlink(
+            workspace.root().join(".plaza/state.txt"),
+            workspace.root().join("state"),
+        )
+        .expect("a link to a state file");
+
+        for (tool, args) in [
+            ("read_file", json!({ "path": "p/state.txt" })),
+            ("read_file", json!({ "path": "state" })),
+            ("list", json!({ "path": "p" })),
+            ("write_file", json!({ "path": "p/new.txt", "content": "x" })),
+            (
+                "append_file",
+                json!({ "path": "p/state.txt", "content": "x" }),
+            ),
+            (
+                "edit_file",
+                json!({ "path": "state", "find": "harness", "replace": "y" }),
+            ),
+        ] {
+            let err = refused(&workspace, tool, args);
+            assert!(matches!(err, ToolError::Denied { .. }), "{tool}: {err:?}");
+            assert!(
+                err.to_string().contains("harness's own state"),
+                "{tool}: {err}"
+            );
+        }
+        // Search does not walk into it through the link either.
+        let result = served(&workspace, "search", json!({ "pattern": "harness" }));
+        assert_eq!(
+            result["matches"].as_array().map(Vec::len),
+            Some(0),
+            "{result}"
+        );
+        assert_eq!(read_back(&workspace, ".plaza/state.txt"), "harness state\n");
+        assert!(!workspace.root().join(".plaza/new.txt").exists());
+    }
+
+    #[test]
+    fn a_dangling_link_on_the_way_is_refused_before_a_write_creates_its_target() {
+        // `d` names a directory that does not exist yet; the walk cannot
+        // canonicalize it, and `create_dir_all` would then make the target.
+        let (workspace, outside) = scratch("symlink-dangling-dir");
+        symlink(outside.join("missing"), workspace.root().join("d"))
+            .expect("a dangling directory link");
+
+        let err = refused(
+            &workspace,
+            "write_file",
+            json!({ "path": "d/x.txt", "content": "x" }),
+        );
+        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(!outside.join("missing").exists());
     }
 
     #[test]
