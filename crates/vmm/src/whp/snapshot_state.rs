@@ -12,20 +12,20 @@
 //! the file back into freshly allocated memory.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::vstate::snapshot::{
+    read_memory_file as read_memory, write_memory_file as write_memory,
+};
+
 use super::ioapic::IoApic;
 use crate::devices::virtio::mmio::MmioDeviceState;
 use crate::vstate::snapshot::{
-    MEMORY_FILE, RegionMeta, STATE_FILE, SerialRegisters, SnapshotError, SnapshotMeta,
-    check_compatible,
+    STATE_FILE, SerialRegisters, SnapshotError, SnapshotMeta, check_compatible,
 };
-
-/// The page size the memory file skips zeros by.
-const PAGE: usize = 4096;
 
 /// One vCPU's state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,72 +84,13 @@ pub fn read_state(dir: &Path) -> Result<WhpSnapshot, SnapshotError> {
     Ok(snapshot)
 }
 
-/// Writes the guest's RAM regions (`(guest address, bytes)`) to [`MEMORY_FILE`] in `dir`, one after
-/// another, leaving out pages that are all zero. Returns each region's place in the file and the
-/// bytes written.
-pub fn write_memory(
-    dir: &Path,
-    regions: &[(u64, &[u8])],
-) -> Result<(Vec<RegionMeta>, u64), SnapshotError> {
-    let path = dir.join(MEMORY_FILE);
-    let mut file = File::create(&path).map_err(|err| io_error(&path, err))?;
-    let mut metas = Vec::with_capacity(regions.len());
-    let mut offset = 0u64;
-    let mut written = 0u64;
-    for (guest_addr, bytes) in regions {
-        metas.push(RegionMeta {
-            guest_addr: *guest_addr,
-            len: bytes.len() as u64,
-            offset,
-        });
-        for (index, page) in bytes.chunks(PAGE).enumerate() {
-            if page.iter().all(|byte| *byte == 0) {
-                continue;
-            }
-            file.seek(SeekFrom::Start(offset + (index * PAGE) as u64))
-                .and_then(|_| file.write_all(page))
-                .map_err(|err| io_error(&path, err))?;
-            written += page.len() as u64;
-        }
-        offset += bytes.len() as u64;
-    }
-    file.set_len(offset)
-        .and_then(|()| file.sync_all())
-        .map_err(|err| io_error(&path, err))?;
-    Ok((metas, written))
-}
-
-/// Reads [`MEMORY_FILE`] in `dir` back into the guest's RAM regions (`(guest address, bytes)`), which
-/// must be the regions the snapshot's meta lists, in its order.
-pub fn read_memory(
-    dir: &Path,
-    metas: &[RegionMeta],
-    regions: &mut [(u64, &mut [u8])],
-) -> Result<(), SnapshotError> {
-    if metas.len() != regions.len()
-        || metas
-            .iter()
-            .zip(regions.iter())
-            .any(|(meta, (addr, bytes))| meta.guest_addr != *addr || meta.len != bytes.len() as u64)
-    {
-        return Err(SnapshotError::Mismatch(
-            "the guest memory layout is not the snapshot's".to_string(),
-        ));
-    }
-    let path = dir.join(MEMORY_FILE);
-    let mut file = File::open(&path).map_err(|err| io_error(&path, err))?;
-    for (meta, (_, bytes)) in metas.iter().zip(regions.iter_mut()) {
-        file.seek(SeekFrom::Start(meta.offset))
-            .and_then(|_| file.read_exact(bytes))
-            .map_err(|err| io_error(&path, err))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::spawner::SnapshotKind;
+    use crate::vstate::snapshot::MEMORY_FILE;
+
+    const PAGE: usize = 4096;
     use crate::vstate::snapshot::meta_now;
 
     fn scratch(name: &str) -> std::path::PathBuf {

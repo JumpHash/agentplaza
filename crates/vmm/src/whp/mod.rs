@@ -50,6 +50,8 @@
 pub mod boot_state;
 pub mod ioapic;
 pub mod kernel;
+// The WHP state's devices (the vsock transport) are not built on macOS.
+#[cfg(any(target_os = "linux", windows))]
 pub mod snapshot_state;
 pub mod zero_page;
 

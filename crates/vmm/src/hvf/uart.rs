@@ -126,6 +126,50 @@ impl SerialDevice {
         }
     }
 
+    /// The UART's registers, as a snapshot keeps them.
+    pub fn registers(&self) -> crate::vstate::snapshot::SerialRegisters {
+        let state = self.uart.state();
+        crate::vstate::snapshot::SerialRegisters {
+            baud_divisor_low: state.baud_divisor_low,
+            baud_divisor_high: state.baud_divisor_high,
+            interrupt_enable: state.interrupt_enable,
+            interrupt_identification: state.interrupt_identification,
+            line_control: state.line_control,
+            line_status: state.line_status,
+            modem_control: state.modem_control,
+            modem_status: state.modem_status,
+            scratch: state.scratch,
+            in_buffer: state.in_buffer,
+        }
+    }
+
+    /// The console with the registers a snapshot kept (see [`SerialDevice::new`] for `capture` and
+    /// `line`).
+    pub fn from_registers(
+        registers: &crate::vstate::snapshot::SerialRegisters,
+        capture: Arc<Mutex<Vec<u8>>>,
+        line: &Arc<dyn ConsoleLine>,
+    ) -> Result<Self, String> {
+        let state = vm_superio::serial::SerialState {
+            baud_divisor_low: registers.baud_divisor_low,
+            baud_divisor_high: registers.baud_divisor_high,
+            interrupt_enable: registers.interrupt_enable,
+            interrupt_identification: registers.interrupt_identification,
+            line_control: registers.line_control,
+            line_status: registers.line_status,
+            modem_control: registers.modem_control,
+            modem_status: registers.modem_status,
+            scratch: registers.scratch,
+            in_buffer: registers.in_buffer.clone(),
+        };
+        let trigger = GicTrigger {
+            line: Arc::downgrade(line),
+        };
+        let uart = Serial::from_state(&state, trigger, NoEvents, SharedSink::new(capture))
+            .map_err(|err| format!("the serial console: {err:?}"))?;
+        Ok(Self { uart })
+    }
+
     /// Queues `data` as console input for the guest to read from the UART's
     /// data register, raising the console's received-data interrupt.
     ///

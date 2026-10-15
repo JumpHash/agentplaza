@@ -61,8 +61,10 @@
 //   * `whp::{sys,vm,vcpu,snapshot}` and `pal::windows` (Windows only) — the WHP and
 //     WinSock FFI, the guest memory allocation, the exit-context reads, and a
 //     snapshot's register unions and guest-memory slices.
-//   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
-//     declarations, the framework calls, and the exit-structure reads.
+//   * `hvf::{sys,vm,vcpu,snapshot}` (macOS only) — the Hypervisor.framework FFI
+//     declarations, the framework calls, the exit-structure reads, the call of
+//     `hv_vcpu_set_simd_fp_reg` (a NEON vector argument, by inline assembly),
+//     and a snapshot's guest-memory slices.
 //   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
 //     set `no_new_privs` and hand the kernel the BPF program. See [`jail`] for
 //     the allowlist, where it is armed, and the `APZ_VMM_JAIL=kill|log|off`

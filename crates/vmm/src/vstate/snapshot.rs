@@ -305,6 +305,84 @@ pub fn check_compatible(meta: &SnapshotMeta) -> Result<(), SnapshotError> {
     Ok(())
 }
 
+/// The page size a full memory file skips zero pages by.
+const ZERO_PAGE: usize = 4096;
+
+fn file_error(path: &std::path::Path, source: io::Error) -> SnapshotError {
+    SnapshotError::State(format!("{}: {source}", path.display()))
+}
+
+// The full memory file of a backend without a dirty-page log or a file-backed guest memory (WHP,
+// Hypervisor.framework): every page that is not zero, written from and read into the guest's RAM
+// as plain byte slices. Portable; the KVM backend's sparse, diff-capable file is
+// `vstate::snapshot_memory`'s.
+
+/// Writes the guest's RAM regions (`(guest address, bytes)`) to [`MEMORY_FILE`] in `dir`, one after
+/// another, leaving out pages that are all zero. Returns each region's place in the file and the
+/// bytes written.
+pub fn write_memory_file(
+    dir: &std::path::Path,
+    regions: &[(u64, &[u8])],
+) -> Result<(Vec<RegionMeta>, u64), SnapshotError> {
+    use std::fs::File;
+    use std::io::{Seek, SeekFrom, Write};
+    let path = dir.join(MEMORY_FILE);
+    let mut file = File::create(&path).map_err(|err| file_error(&path, err))?;
+    let mut metas = Vec::with_capacity(regions.len());
+    let mut offset = 0u64;
+    let mut written = 0u64;
+    for (guest_addr, bytes) in regions {
+        metas.push(RegionMeta {
+            guest_addr: *guest_addr,
+            len: bytes.len() as u64,
+            offset,
+        });
+        for (index, page) in bytes.chunks(ZERO_PAGE).enumerate() {
+            if page.iter().all(|byte| *byte == 0) {
+                continue;
+            }
+            file.seek(SeekFrom::Start(offset + (index * ZERO_PAGE) as u64))
+                .and_then(|_| file.write_all(page))
+                .map_err(|err| file_error(&path, err))?;
+            written += page.len() as u64;
+        }
+        offset += bytes.len() as u64;
+    }
+    file.set_len(offset)
+        .and_then(|()| file.sync_all())
+        .map_err(|err| file_error(&path, err))?;
+    Ok((metas, written))
+}
+
+/// Reads [`MEMORY_FILE`] in `dir` back into the guest's RAM regions (`(guest address, bytes)`), which
+/// must be the regions the snapshot's meta lists, in its order.
+pub fn read_memory_file(
+    dir: &std::path::Path,
+    metas: &[RegionMeta],
+    regions: &mut [(u64, &mut [u8])],
+) -> Result<(), SnapshotError> {
+    use std::fs::File;
+    use std::io::{Read, Seek, SeekFrom};
+    if metas.len() != regions.len()
+        || metas
+            .iter()
+            .zip(regions.iter())
+            .any(|(meta, (addr, bytes))| meta.guest_addr != *addr || meta.len != bytes.len() as u64)
+    {
+        return Err(SnapshotError::Mismatch(
+            "the guest memory layout is not the snapshot's".to_string(),
+        ));
+    }
+    let path = dir.join(MEMORY_FILE);
+    let mut file = File::open(&path).map_err(|err| file_error(&path, err))?;
+    for (meta, (_, bytes)) in metas.iter().zip(regions.iter_mut()) {
+        file.seek(SeekFrom::Start(meta.offset))
+            .and_then(|_| file.read_exact(bytes))
+            .map_err(|err| file_error(&path, err))?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 /// Creates `dir` (and its parents) with mode 0700 for the leaf.
 pub fn create_private_dir(dir: &Path) -> Result<(), SnapshotError> {
