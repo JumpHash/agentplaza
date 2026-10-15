@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Derived from Firecracker src/vmm/src/arch/aarch64/gic/regs.rs (trimmed: the
-// serde derives and the ITS register state belong to the snapshot format, which
-// this port does not have).
+// ITS register state is dropped; the state types derive serde so a VM snapshot
+// can carry them).
 
 // KVM-device boundary (see the allowlist in `lib.rs`): `kvm-ioctls` declares
 // `DeviceFd::get_device_attr` as an `unsafe fn` because the caller owns the
@@ -19,23 +19,24 @@ use std::ops::Range;
 
 use kvm_bindings::kvm_device_attr;
 use kvm_ioctls::DeviceFd;
+use serde::{Deserialize, Serialize};
 
 use crate::arch::aarch64::gic::GicError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GicRegState<T> {
     pub(crate) chunks: Vec<T>,
 }
 
 /// Structure for serializing the state of the Vgic ICC regs
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VgicSysRegsState {
     pub main_icc_regs: Vec<GicRegState<u64>>,
     pub ap_icc_regs: Vec<Option<GicRegState<u64>>>,
 }
 
 /// Structure holding the state of the GIC registers.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GicState {
     /// The state of the distributor registers.
     pub dist: Vec<GicRegState<u32>>,
@@ -44,7 +45,7 @@ pub struct GicState {
 }
 
 /// Structure holding the state of the GIC registers for a specific vCPU.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GicVcpuState {
     pub rdist: Vec<GicRegState<u32>>,
     pub icc: VgicSysRegsState,

@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Derived from Firecracker src/vmm/src/arch/aarch64/vm.rs (trimmed: the
-// snapshot state (`VmState`, `KvmVm::save_state`/`restore_state`), the
 // `KVM_CAP_ARM_WRITABLE_IMP_ID_REGS` capability (it only matters for CPU
 // templates that rewrite the implementation ID registers), the
-// `resource_allocator` restore path and the direct-ioctl helpers are dropped;
+// `resource_allocator` and guest-memory parts of the snapshot, and the
+// direct-ioctl helpers are dropped; the VM state is the GIC state alone.
 // `setup_irqchip` takes the GIC version the caller selected through
 // `VmSpec::gic`).
 
-use crate::arch::aarch64::gic::{GICDevice, GICVersion, GicError, create_gic};
+use crate::arch::aarch64::gic::{GICDevice, GICVersion, GicError, GicState, create_gic};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::vm::{VmCommon, VmError};
 
@@ -32,6 +32,12 @@ pub enum KvmVmError {
     /// Error creating the global interrupt controller: {0}
     #[error("Error creating the global interrupt controller: {0}")]
     VmCreateGIC(GicError),
+    /// Failed to save the state of the global interrupt controller: {0}
+    #[error("Failed to save the state of the global interrupt controller: {0}")]
+    SaveGic(GicError),
+    /// Failed to restore the state of the global interrupt controller: {0}
+    #[error("Failed to restore the state of the global interrupt controller: {0}")]
+    RestoreGic(GicError),
 }
 
 impl KvmVm {
@@ -90,21 +96,28 @@ impl KvmVm {
     }
 }
 
-/// The state of an aarch64 VM in a snapshot (Firecracker's `VmState`): the GIC's state (the
-/// existing `gic::GicState`), keyed by the vCPUs' MPIDRs.
+/// The state of an aarch64 VM in a snapshot (Firecracker's `VmState`): the GIC's state, keyed by
+/// the vCPUs' MPIDRs.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct VmState {}
+pub struct VmState {
+    /// The GIC's distributor, redistributor and CPU interface registers.
+    pub gic: GicState,
+}
 
 impl KvmVm {
     /// Saves the VM's state. Its vCPUs must be paused; `mpidrs` are theirs, in index order.
     pub fn save_state(&self, mpidrs: &[u64]) -> Result<VmState, KvmVmError> {
-        let _ = mpidrs;
-        todo!("aarch64 VM save")
+        let gic = self
+            .get_irqchip()
+            .save_device(mpidrs)
+            .map_err(KvmVmError::SaveGic)?;
+        Ok(VmState { gic })
     }
 
     /// Restores a state [`KvmVm::save_state`] produced, after the vCPUs and the GIC exist.
     pub fn restore_state(&mut self, mpidrs: &[u64], state: &VmState) -> Result<(), KvmVmError> {
-        let _ = (mpidrs, state);
-        todo!("aarch64 VM restore")
+        self.get_irqchip()
+            .restore_device(mpidrs, &state.gic)
+            .map_err(KvmVmError::RestoreGic)
     }
 }

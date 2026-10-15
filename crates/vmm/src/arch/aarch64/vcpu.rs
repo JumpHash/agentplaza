@@ -7,11 +7,13 @@
 //
 // Derived from Firecracker src/vmm/src/arch/aarch64/vcpu.rs (trimmed: the
 // CPU-template machinery (`VcpuConfig`, `CpuConfiguration`,
-// `RegisterValueFilter`, `VcpuFeatures`), SVE finalization, the snapshot state
-// (`VcpuState`, the full register dump and its restore path, `get_mpstate` /
-// `set_mpstate`), the pvtime (steal-time) support, the metrics/logger crates
-// and the `Peripherals` methods that need them are dropped; only
-// `/dev/kvm`-free tests are kept, so this module has no tests).
+// `RegisterValueFilter`, `VcpuFeatures`), SVE finalization, the pvtime
+// (steal-time) support, the metrics/logger crates and the `Peripherals` methods
+// that need them are dropped. The snapshot state keeps the MP state, every
+// register `KVM_GET_REG_LIST` lists (as plain byte vectors, not Firecracker's
+// packed `Aarch64RegisterVec`), the MPIDR and the init features; with no
+// templates or SVE, nothing else needs saving. Only `/dev/kvm`-free tests are
+// kept, so this module has no tests that need a VM.
 
 use std::mem::offset_of;
 use std::sync::Arc;
@@ -22,7 +24,9 @@ use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
 use super::EntryPoint;
 use super::get_fdt_addr;
 use super::kvm::OptionalCapabilities;
-use super::regs::{KVM_REG_ARM_PTIMER_CNT, MPIDR_EL1, PSTATE_FAULT_BITS_64, arm64_core_reg_id};
+use super::regs::{
+    KVM_REG_ARM_PTIMER_CNT, MPIDR_EL1, PSTATE_FAULT_BITS_64, arm64_core_reg_id, reg_size,
+};
 use crate::vstate::bus::Bus;
 use crate::vstate::memory::{Address, GuestMemoryMmap};
 use crate::vstate::vcpu::{VcpuEmulation, VcpuError};
@@ -37,6 +41,21 @@ pub enum VcpuArchError {
     /// Failed to set register {0:#x} to value {1}: {2}
     #[error("Failed to set register {0:#x} to value {1}: {2}")]
     SetOneReg(u64, String, kvm_ioctls::Error),
+    /// Failed to retrieve list of registers: {0}
+    #[error("Failed to retrieve list of registers: {0}")]
+    GetRegList(kvm_ioctls::Error),
+    /// Failed to get multiprocessor state: {0}
+    #[error("Failed to get multiprocessor state: {0}")]
+    GetMp(kvm_ioctls::Error),
+    /// Failed to set multiprocessor state: {0}
+    #[error("Failed to set multiprocessor state: {0}")]
+    SetMp(kvm_ioctls::Error),
+    /// Failed to allocate the register list: {0}
+    #[error("Failed to allocate the register list: {0}")]
+    Fam(vmm_sys_util::fam::Error),
+    /// Register {0:#x} holds {1} bytes, but its ID encodes {2}
+    #[error("Register {0:#x} holds {1} bytes, but its ID encodes {2}")]
+    InvalidRegisterSize(u64, usize, usize),
 }
 
 /// Errors associated with the wrappers over KVM ioctls.
@@ -54,6 +73,15 @@ pub enum KvmVcpuError {
     /// Error initializing the vcpu: {0}
     #[error("Error initializing the vcpu: {0}")]
     Init(kvm_ioctls::Error),
+    /// Failed to save the state of the vcpu: {0}
+    #[error("Failed to save the state of the vcpu: {0}")]
+    SaveState(VcpuArchError),
+    /// Failed to restore the state of the vcpu: {0}
+    #[error("Failed to restore the state of the vcpu: {0}")]
+    RestoreState(VcpuArchError),
+    /// Found unsupported KVM_ARM_VCPU_PMU_V3 bit set in vcpu features.
+    #[error("Found unsupported KVM_ARM_VCPU_PMU_V3 bit set in vcpu features.")]
+    UnsupportedPmuV3,
 }
 
 /// Error type for [`KvmVcpu::configure`] (upstream aliases the two types).
@@ -255,21 +283,201 @@ impl Peripherals {
     }
 }
 
+/// One register of a vCPU snapshot: its KVM ID and the bytes `KVM_GET_ONE_REG` returned for it.
+/// The length is the size the ID encodes ([`reg_size`]); restore checks it, because KVM reads
+/// exactly that many bytes from the buffer it is given.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VcpuRegister {
+    /// The KVM register ID.
+    pub id: u64,
+    /// The register's value, little-endian as KVM stores it.
+    pub data: Vec<u8>,
+}
+
 /// The state of one aarch64 vCPU in a snapshot (Firecracker's `VcpuState`): the MP state, every
 /// register KVM lists for the vCPU (`KVM_GET_REG_LIST`), its MPIDR and the KVM vCPU init features.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct VcpuState {}
+pub struct VcpuState {
+    /// The multiprocessing state (`KVM_GET_MP_STATE`).
+    pub mp_state: kvm_mp_state,
+    /// Every register `KVM_GET_REG_LIST` lists for the vCPU.
+    pub regs: Vec<VcpuRegister>,
+    /// The vCPU's MPIDR. The VM state keys the GIC's per-vCPU registers by it.
+    pub mpidr: u64,
+    /// The `KVM_ARM_VCPU_INIT` features the vCPU is restored with.
+    pub kvi: kvm_vcpu_init,
+}
 
 impl KvmVcpu {
     /// Saves this vCPU's state. The vCPU must be paused (out of `KVM_RUN`).
     pub fn save_state(&self) -> Result<VcpuState, KvmVcpuError> {
-        todo!("aarch64 vCPU save")
+        let mp_state = self
+            .fd
+            .get_mp_state()
+            .map_err(|err| KvmVcpuError::SaveState(VcpuArchError::GetMp(err)))?;
+        let regs = self.get_all_registers().map_err(KvmVcpuError::SaveState)?;
+        let mpidr = self.get_mpidr().map_err(KvmVcpuError::SaveState)?;
+
+        // The power-off bit only parks a secondary vCPU during the boot. A snapshot is taken
+        // after that, and the kernel has already turned the vCPU on, so restoring it powered
+        // off would stop a running vCPU.
+        let mut kvi = self.kvi;
+        kvi.features[0] &= !(1 << KVM_ARM_VCPU_POWER_OFF);
+
+        Ok(VcpuState {
+            mp_state,
+            regs,
+            mpidr,
+            kvi,
+        })
     }
 
-    /// Restores a state [`KvmVcpu::save_state`] produced, before the vCPU first runs (after
-    /// `KVM_ARM_VCPU_INIT` with the saved features).
+    /// Restores a state [`KvmVcpu::save_state`] produced.
+    ///
+    /// This performs `KVM_ARM_VCPU_INIT` itself, with the saved features, so the vCPU must not
+    /// have been initialized yet, and it must run this before it first runs. The registers and
+    /// the MP state are written after the initialization, in the order the snapshot lists them.
     pub fn restore_state(&mut self, state: &VcpuState) -> Result<(), KvmVcpuError> {
-        let _ = state;
-        todo!("aarch64 vCPU restore")
+        // Everything that can refuse the snapshot is checked before the vCPU is initialized, so
+        // a bad snapshot leaves the vCPU untouched.
+        for reg in &state.regs {
+            check_register_size(reg).map_err(KvmVcpuError::RestoreState)?;
+        }
+        if (state.kvi.features[0] & (1 << KVM_ARM_VCPU_PMU_V3)) != 0 {
+            return Err(KvmVcpuError::UnsupportedPmuV3);
+        }
+
+        self.kvi = state.kvi;
+        self.init()?;
+
+        for reg in &state.regs {
+            self.set_register(reg).map_err(KvmVcpuError::RestoreState)?;
+        }
+        self.fd
+            .set_mp_state(state.mp_state)
+            .map_err(|err| KvmVcpuError::RestoreState(VcpuArchError::SetMp(err)))?;
+
+        Ok(())
+    }
+
+    /// Reads every register `KVM_GET_REG_LIST` lists for this vCPU.
+    fn get_all_registers(&self) -> Result<Vec<VcpuRegister>, VcpuArchError> {
+        // A register is at most 2048 bits wide (the SVE vector slices), so 256 bytes hold any.
+        let mut value = [0_u8; 256];
+        let mut regs = Vec::new();
+        for id in self.get_all_registers_ids()? {
+            let size = self
+                .fd
+                .get_one_reg(id, &mut value)
+                .map_err(|err| VcpuArchError::GetOneReg(id, err))?;
+            regs.push(VcpuRegister {
+                id,
+                data: value[..size].to_vec(),
+            });
+        }
+        Ok(regs)
+    }
+
+    /// Returns the IDs of all registers the vCPU has, core and system registers included.
+    fn get_all_registers_ids(&self) -> Result<Vec<u64>, VcpuArchError> {
+        // `KVM_GET_REG_LIST` fails with `E2BIG` when the list does not fit, and then writes the
+        // number of entries it needs into `n`, so one retry at that size is enough. For ARMv8
+        // there are fewer than 500 registers, so the first attempt almost always fits.
+        let mut reg_list = RegList::new(500).map_err(VcpuArchError::Fam)?;
+        match self.fd.get_reg_list(&mut reg_list) {
+            Ok(()) => Ok(reg_list.as_slice().to_vec()),
+            Err(err) if err.errno() == libc::E2BIG => {
+                let size = usize::try_from(reg_list.as_fam_struct_ref().n)
+                    .map_err(|_| VcpuArchError::GetRegList(err))?;
+                reg_list = RegList::new(size).map_err(VcpuArchError::Fam)?;
+                self.fd
+                    .get_reg_list(&mut reg_list)
+                    .map_err(VcpuArchError::GetRegList)?;
+                Ok(reg_list.as_slice().to_vec())
+            }
+            Err(err) => Err(VcpuArchError::GetRegList(err)),
+        }
+    }
+
+    /// Writes one register back with `KVM_SET_ONE_REG`.
+    fn set_register(&self, reg: &VcpuRegister) -> Result<(), VcpuArchError> {
+        self.fd
+            .set_one_reg(reg.id, &reg.data)
+            .map_err(|err| VcpuArchError::SetOneReg(reg.id, reg_value_str(&reg.data), err))?;
+        Ok(())
+    }
+}
+
+/// Checks that a register's data is exactly as wide as its ID encodes.
+fn check_register_size(reg: &VcpuRegister) -> Result<(), VcpuArchError> {
+    let expected = reg_size(reg.id);
+    if reg.data.len() != expected {
+        return Err(VcpuArchError::InvalidRegisterSize(
+            reg.id,
+            reg.data.len(),
+            expected,
+        ));
+    }
+    Ok(())
+}
+
+/// Formats a register value as a hex number, reading its little-endian bytes from the top.
+fn reg_value_str(data: &[u8]) -> String {
+    let hex: String = data
+        .iter()
+        .rev()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("0x{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A register whose data is not as wide as its ID encodes is refused, since KVM would read
+    /// past the buffer it is given.
+    #[test]
+    fn register_data_must_match_the_width_its_id_encodes() {
+        let full = VcpuRegister {
+            id: MPIDR_EL1,
+            data: vec![0; 8],
+        };
+        assert!(check_register_size(&full).is_ok());
+
+        let short = VcpuRegister {
+            id: MPIDR_EL1,
+            data: vec![0; 4],
+        };
+        assert!(matches!(
+            check_register_size(&short),
+            Err(VcpuArchError::InvalidRegisterSize(MPIDR_EL1, 4, 8))
+        ));
+    }
+
+    /// The snapshot survives serde, including the KVM structures it carries.
+    #[test]
+    fn vcpu_state_round_trips_through_serde() {
+        let mut kvi = kvm_vcpu_init::default();
+        kvi.features[0] = 1 << KVM_ARM_VCPU_PSCI_0_2;
+        let state = VcpuState {
+            mp_state: kvm_mp_state::default(),
+            regs: vec![VcpuRegister {
+                id: MPIDR_EL1,
+                data: 0x8000_0000_u64.to_le_bytes().to_vec(),
+            }],
+            mpidr: 0x8000_0000,
+            kvi,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: VcpuState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, state);
+    }
+
+    /// The hex form reads the little-endian bytes from the most significant end.
+    #[test]
+    fn register_value_string_is_big_endian_hex() {
+        assert_eq!(reg_value_str(&[0x78, 0x56, 0x34, 0x12]), "0x12345678");
     }
 }
