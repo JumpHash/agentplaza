@@ -127,34 +127,38 @@ mod tests {
     }
 
     #[test]
-    fn a_long_string_is_cut_with_a_marker_and_a_short_one_is_kept() {
-        let update = json!({
-            "sessionUpdate": "tool_call_update",
-            "rawOutput": "abcdefghijklmnopqrstuvwxyz0123456789",
-            "content": [{"type": "text", "text": "xy"}],
-        });
-        // 16 bytes: "tool_call_update" is exactly that long, so it is kept.
-        let capped = cap_update(update, 16);
-        assert_eq!(
-            capped["rawOutput"],
-            json!("abcdefghijklmnop… [truncated 20 bytes]")
-        );
-        assert_eq!(capped["content"][0]["text"], json!("xy"));
-        assert_eq!(capped["sessionUpdate"], json!("tool_call_update"));
-    }
+    fn cap_update_cuts_long_strings_and_keeps_other_values() {
+        // A long string is cut with a marker; a short one is kept.
+        {
+            let update = json!({
+                "sessionUpdate": "tool_call_update",
+                "rawOutput": "abcdefghijklmnopqrstuvwxyz0123456789",
+                "content": [{"type": "text", "text": "xy"}],
+            });
+            // 16 bytes: "tool_call_update" is exactly that long, so it is kept.
+            let capped = cap_update(update, 16);
+            assert_eq!(
+                capped["rawOutput"],
+                json!("abcdefghijklmnop… [truncated 20 bytes]")
+            );
+            assert_eq!(capped["content"][0]["text"], json!("xy"));
+            assert_eq!(capped["sessionUpdate"], json!("tool_call_update"));
+        }
 
-    #[test]
-    fn the_cut_lands_on_a_character_boundary() {
-        // "é" is two bytes: a cut at byte 1 must step back to 0.
-        let capped = cap_update(json!("é"), 1);
-        assert_eq!(capped, json!("… [truncated 2 bytes]"));
-        let capped = cap_update(json!("aé"), 2);
-        assert_eq!(capped, json!("a… [truncated 2 bytes]"));
-    }
+        // A cut lands on a character boundary.
+        {
+            // "é" is two bytes: a cut at byte 1 must step back to 0.
+            let capped = cap_update(json!("é"), 1);
+            assert_eq!(capped, json!("… [truncated 2 bytes]"));
+            let capped = cap_update(json!("aé"), 2);
+            assert_eq!(capped, json!("a… [truncated 2 bytes]"));
+        }
 
-    #[test]
-    fn non_text_values_pass_through_unchanged() {
-        let value = json!({"n": 12345678901234u64, "flag": true, "nothing": null, "list": [1, 2]});
-        assert_eq!(cap_update(value.clone(), 0), value);
+        // Non-text values pass through unchanged.
+        {
+            let value =
+                json!({"n": 12345678901234u64, "flag": true, "nothing": null, "list": [1, 2]});
+            assert_eq!(cap_update(value.clone(), 0), value);
+        }
     }
 }
