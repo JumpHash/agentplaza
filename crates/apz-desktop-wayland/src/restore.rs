@@ -86,19 +86,41 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_token_loads_as_none() {
-        let scratch = Scratch::new("missing");
-        assert_eq!(RestoreToken::in_dir(&scratch.0).load(), None);
-    }
-
-    #[test]
-    fn a_saved_token_loads_back_and_a_second_save_replaces_it() {
-        let scratch = Scratch::new("round-trip");
-        let store = RestoreToken::in_dir(&scratch.0);
-        store.save("first-token").expect("saves");
-        assert_eq!(store.load().as_deref(), Some("first-token"));
-        store.save("second-token").expect("saves again");
-        assert_eq!(store.load().as_deref(), Some("second-token"));
+    fn a_restore_token_loads_back_trimmed_or_as_none() {
+        // A missing token loads as none.
+        {
+            let scratch = Scratch::new("missing");
+            assert_eq!(RestoreToken::in_dir(&scratch.0).load(), None);
+        }
+        // A saved token loads back, and a second save replaces it.
+        {
+            let scratch = Scratch::new("round-trip");
+            let store = RestoreToken::in_dir(&scratch.0);
+            store.save("first-token").expect("saves");
+            assert_eq!(store.load().as_deref(), Some("first-token"));
+            store.save("second-token").expect("saves again");
+            assert_eq!(store.load().as_deref(), Some("second-token"));
+        }
+        // An empty or blank token is refused and loads as none.
+        {
+            let scratch = Scratch::new("empty");
+            let store = RestoreToken::in_dir(&scratch.0);
+            assert!(store.save("").is_err());
+            assert!(store.save("   \n").is_err());
+            fs::create_dir_all(&scratch.0).expect("makes the directory");
+            fs::write(scratch.0.join(FILE), "  \n").expect("writes a blank file");
+            assert_eq!(store.load(), None);
+        }
+        // A token is read without the newline an editor left.
+        {
+            let scratch = Scratch::new("trim");
+            fs::create_dir_all(&scratch.0).expect("makes the directory");
+            fs::write(scratch.0.join(FILE), "abc123\n").expect("writes");
+            assert_eq!(
+                RestoreToken::in_dir(&scratch.0).load().as_deref(),
+                Some("abc123")
+            );
+        }
     }
 
     #[test]
@@ -111,27 +133,5 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn an_empty_or_blank_token_is_refused_and_loads_as_none() {
-        let scratch = Scratch::new("empty");
-        let store = RestoreToken::in_dir(&scratch.0);
-        assert!(store.save("").is_err());
-        assert!(store.save("   \n").is_err());
-        fs::create_dir_all(&scratch.0).expect("makes the directory");
-        fs::write(scratch.0.join(FILE), "  \n").expect("writes a blank file");
-        assert_eq!(store.load(), None);
-    }
-
-    #[test]
-    fn a_token_is_read_without_the_newline_an_editor_left() {
-        let scratch = Scratch::new("trim");
-        fs::create_dir_all(&scratch.0).expect("makes the directory");
-        fs::write(scratch.0.join(FILE), "abc123\n").expect("writes");
-        assert_eq!(
-            RestoreToken::in_dir(&scratch.0).load().as_deref(),
-            Some("abc123")
-        );
     }
 }
