@@ -33,6 +33,7 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    (default /tmp/plaza-vsock on Linux and macOS, the state directory's
                    vsock on Windows; VM i's muxer binds DIR/vm{cid})
   --snapshot-dir DIR keep VM snapshots in DIR (default: DIR/snapshots of --persist-dir; none without either)
+  --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
@@ -216,6 +217,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
+            "--no-warm-templates" => config.warm_templates = false,
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
             "--agents-cid-base" => {
                 config.agents_cid_base = value("--agents-cid-base")?

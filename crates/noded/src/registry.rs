@@ -931,6 +931,9 @@ pub struct Registry {
     /// Where VM snapshots are kept (`--snapshot-dir`), or `None` for a node that keeps none: every
     /// snapshot operation is then refused with [`VmOpError::NoSnapshots`].
     snapshots: Option<SnapshotStore>,
+    /// Warm templates (`crate::templates`): a new keepalive agent VM starts by restoring one instead
+    /// of booting. `None` boots every VM cold.
+    templates: Option<Arc<crate::templates::Templates>>,
     /// When this daemon started, in milliseconds since the Unix epoch: part of
     /// a run's workspace-directory name, because run ids restart with the
     /// daemon (a bare `run-{id}` would collide with the previous daemon's
@@ -960,6 +963,7 @@ impl Registry {
             uds_dir,
             persist_dir: None,
             snapshots: None,
+            templates: None,
             epoch_ms: now_ms(),
             events,
             cids: Arc::new(CidBook::default()),
@@ -982,6 +986,83 @@ impl Registry {
     pub fn with_snapshots(mut self, store: Option<SnapshotStore>) -> Self {
         self.snapshots = store;
         self
+    }
+
+    /// Starts new keepalive agent VMs from warm templates kept in `templates` (see
+    /// [`crate::templates`]); `None` boots every VM cold.
+    pub fn with_templates(mut self, templates: Option<crate::templates::Templates>) -> Self {
+        self.templates = templates.map(Arc::new);
+        self
+    }
+
+    /// The node's warm templates, when it keeps them.
+    pub fn templates(&self) -> Option<&crate::templates::Templates> {
+        self.templates.as_deref()
+    }
+
+    /// For each planned VM of a keepalive run on a node with templates and persistent workspaces:
+    /// the template to restore it from, when the VM is new (it has no persistent workspace yet), its
+    /// template could be had, and its workspace was laid down as a copy of the template's disk. A VM
+    /// that already has a workspace (an agent coming back after a restart of the node) boots cold
+    /// from its own disk; a template that cannot be built is logged and the VM boots cold too.
+    fn template_starts(
+        &self,
+        meta: &RunMeta,
+        plans: &[VmPlan],
+        vcpus: u8,
+        memory_mib: usize,
+    ) -> Vec<Option<PathBuf>> {
+        let (Some(templates), Some(base), Some(persist)) =
+            (&self.templates, &self.images.workspace, &self.persist_dir)
+        else {
+            return vec![None; plans.len()];
+        };
+        if !meta.keepalive {
+            return vec![None; plans.len()];
+        }
+        plans
+            .iter()
+            .map(|plan| {
+                let image = persistent_workspace_path(persist, plan.vsock_cid);
+                if image.exists() {
+                    return None;
+                }
+                let shape = crate::templates::Shape {
+                    kernel: self.images.kernel.clone(),
+                    initrd: Some(self.images.initrd.clone()),
+                    workspace_base: base.clone(),
+                    vcpus,
+                    memory_mib,
+                    balloon: meta.balloon_usable_mib,
+                    cmdline: plan.cmdline.clone(),
+                };
+                let template = match templates.get_or_build(&shape) {
+                    Ok(template) => template,
+                    Err(err) => {
+                        eprintln!(
+                            "noded: no warm template for cid {} ({err}); booting it cold",
+                            plan.vsock_cid
+                        );
+                        return None;
+                    }
+                };
+                let laid = image
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| vmm::clonefile::clone_file(&template.workspace, &image));
+                match laid {
+                    Ok(_) => Some(template.snapshot),
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&image);
+                        eprintln!(
+                            "noded: cannot copy the template disk for cid {} ({err}); booting it cold",
+                            plan.vsock_cid
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
     }
 
     /// Draws the runs' CIDs (those whose create request names none) from
@@ -1124,6 +1205,10 @@ impl Registry {
         let memory_mib =
             spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
         let vms = plans.len();
+        // New agent VMs start from a warm template where the node keeps them: their workspace is
+        // laid down here as a copy of the template's disk, which `prepare_persistent_workspace`
+        // below then finds in place.
+        let starts = self.template_starts(&meta, &plans, vcpus, memory_mib);
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
         // directory under the daemon's UDS root. The directory is created
@@ -1197,8 +1282,13 @@ impl Registry {
             .collect();
         let run = self.insert(id, meta);
         // `spawn_each` calls this exactly `vms` times with the ids `0..vms`, and
-        // `specs` has `vms` entries: the index is in range.
-        let boot = spawner::spawn_each(vms, |i| specs[i as usize].clone());
+        // `specs` has `vms` entries: the index is in range. A VM with a template start is restored
+        // from it; the spec kept in its slot stays the cold one, so a restart boots it as usual.
+        let boot = spawner::spawn_each(vms, |i| {
+            let mut spec = specs[i as usize].clone();
+            spec.restore = starts[i as usize].clone();
+            spec
+        });
         match boot {
             Ok(handles) => {
                 let mut inner = run.lock();

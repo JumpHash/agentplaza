@@ -91,6 +91,9 @@ pub struct Config {
     /// Where VM snapshots are kept (`--snapshot-dir`, by default `DIR/snapshots` under the persist
     /// directory); `None` keeps none, and every snapshot operation is refused.
     pub snapshot_dir: Option<PathBuf>,
+    /// Start new keepalive agent VMs from warm templates kept under `<snapshot_dir>/templates`
+    /// (`--no-warm-templates` turns it off). Needs a snapshot dir.
+    pub warm_templates: bool,
     /// The roles manifest whose fleet boots at start.
     pub agents: Option<PathBuf>,
     pub agents_cid_base: u64,
@@ -116,6 +119,7 @@ impl Default for Config {
             workspace: None,
             persist_dir: None,
             snapshot_dir: None,
+            warm_templates: true,
             agents: None,
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
@@ -189,6 +193,13 @@ impl Node {
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
                 .with_persist_dir(config.persist_dir)
+                .with_templates(
+                    config
+                        .snapshot_dir
+                        .as_ref()
+                        .filter(|_| config.warm_templates)
+                        .map(|dir| crate::templates::Templates::new(dir.join("templates"))),
+                )
                 .with_snapshots(config.snapshot_dir.map(snapshots::SnapshotStore::new))
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
@@ -1682,6 +1693,22 @@ fn router() -> Router<Node> {
             )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
+        // Warm templates: the ones built, and removing one (a VM restored from it keeps running).
+        .get("/v1/templates", |node, _, _| {
+            match node.registry().templates() {
+                Some(templates) => Response::json(200, &templates.list()),
+                None => Response::json(200, &Vec::<crate::templates::TemplateView>::new()),
+            }
+        })
+        .delete("/v1/templates/{key}", |node, _, params| {
+            match node.registry().templates() {
+                Some(templates) => match templates.remove(params.get("key")) {
+                    Ok(()) => Response::json(200, &serde_json::json!({ "removed": true })),
+                    Err(err) => Response::error(400, &err.to_string()),
+                },
+                None => Response::error(409, "this node keeps no warm templates"),
+            }
+        })
         .get("/v1/runs", |node, _, _| list_runs(node))
         .post("/v1/runs", |node, request, _| {
             create_run(node, &request.body)
