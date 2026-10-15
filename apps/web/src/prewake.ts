@@ -9,9 +9,12 @@ const MIN_GAP_MS = 15_000;
 
 const lastCall = new Map<number, number>();
 
-/** Queues a wake of the agent when its status is asleep or not known. At most one call per agent per 15 s. */
+/**
+ * Queues a wake of the agent when its status is asleep, dozing (asleep, light) or not known. At most one call per
+ * agent per 15 s.
+ */
 export function prewake(cid: number, status?: string): void {
-  if (status && status !== 'asleep') return;
+  if (status && status !== 'asleep' && status !== 'dozing') return;
   const now = Date.now();
   const last = lastCall.get(cid);
   if (last !== undefined && now - last < MIN_GAP_MS) return;

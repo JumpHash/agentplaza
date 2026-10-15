@@ -132,7 +132,7 @@ export function profileCard(a: Agent): { el: HTMLElement; update: (a: Agent) => 
 
   const render = (): void => {
     replace(pic, avatar(agent, 168), h('span.profile-stamp', null, agent.tier === 'orchestrator' ? 'ORCHESTRATOR' : 'CITIZEN'));
-    const status = agent.status === 'working' ? badge('Working', 'info', true) : agent.status === 'idle' ? badge('Idle', 'ok', true) : agent.status === 'asleep' ? badge('Asleep', 'muted', true) : badge('Offline', 'muted', true);
+    const status = agent.status === 'working' ? badge('Working', 'info', true) : agent.status === 'idle' ? badge('Idle', 'ok', true) : agent.status === 'asleep' ? badge('Asleep', 'muted', true) : agent.status === 'dozing' ? badge('Asleep (light)', 'muted', true) : badge('Offline', 'muted', true);
     replace(
       ident,
       h('div.profile-name', null, h('h1', null, agentName(agent)), status),

@@ -566,7 +566,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         null,
         button('Open workspace', () => { prewake(cid, a.status); openIde(`agent:${cid}`); }, { icon: 'square-code', title: "Open this agent's workspace in the IDE" }),
         a.status === 'working' ? button('Cancel work', () => void act(() => attempt(() => api.cancel(cid), 'Cancelled')), { icon: 'ban', disabled: busy }) : null,
-        a.status === 'asleep'
+        a.status === 'asleep' || a.status === 'dozing'
           ? button('Wake', () => wakeAgent(), { icon: 'sun', disabled: busy })
           : button('Sleep', () => sleepAgent(), { icon: 'moon', title: 'Pause the VM until a chat or task wakes it', disabled: busy || offline || a.status === 'working' }),
         button('Fork…', () => fork(a), { icon: 'copy', disabled: busy }),
@@ -888,11 +888,15 @@ function conductCard(cid: number): { el: HTMLElement; destroy: () => void } {
 }
 
 /** Time left until `untilMs`, as "2h 5m left". */
-/** The status word in the head. Asleep is muted, not a warning: the agent is paused on purpose and wakes on a chat or task. */
+/**
+ * The status word in the head. Asleep is muted, not a warning: the agent is paused on purpose and wakes on a chat
+ * or task. A dozing agent reads as asleep (light): paused after a short idle, and it wakes in a moment.
+ */
 function statusBadge(status: AgentStatus): HTMLElement {
   if (status === 'working') return badge('Working', 'info', true);
   if (status === 'idle') return badge('Idle', 'ok', true);
   if (status === 'asleep') return badge('Asleep', 'muted', true);
+  if (status === 'dozing') return badge('Asleep (light)', 'muted', true);
   return badge('Offline', 'muted', true);
 }
 

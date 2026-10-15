@@ -25,15 +25,23 @@ import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import '../styles/agents.css';
 
-const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted', asleep: 'muted' };
+const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted', asleep: 'muted', dozing: 'muted' };
 const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted', motion: 'warn' };
 
 /**
  * The status pill: the dot in the status's tone, and a word for the states the dot alone does not tell apart
- * (asleep and offline are both muted, so asleep also reads its word). The word is calm: a muted badge.
+ * (asleep and offline are both muted, so asleep also reads its word). A dozing agent is asleep too, the light kind.
+ * The word is calm: a muted badge.
  */
 export function statusPill(status: AgentStatus): { tone: Tone; word: string | null } {
-  return { tone: STATUS_TONE[status], word: status === 'asleep' ? 'Asleep' : null };
+  return { tone: STATUS_TONE[status], word: sleepWord(status) };
+}
+
+/** The word for a napping status (asleep, or dozing as "asleep (light)"); null for the others. */
+export function sleepWord(status: AgentStatus): string | null {
+  if (status === 'asleep') return 'Asleep';
+  if (status === 'dozing') return 'Asleep (light)';
+  return null;
 }
 
 function pillWord(a: Agent): HTMLElement | null {
@@ -147,7 +155,9 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       return;
     }
     const rows = list.filter(
-      (a) => (roleFilter === '' || a.role === roleFilter) && (statusFilter === 'all' || a.status === statusFilter),
+      (a) =>
+        (roleFilter === '' || a.role === roleFilter) &&
+        (statusFilter === 'all' || a.status === statusFilter || (statusFilter === 'asleep' && a.status === 'dozing')),
     );
     if (!rows.length) {
       replace(body, empty('search', 'No agents match', 'Clear the filters to see the roster.', button('Clear filters', clearFilters, { kind: 'ghost' })));
