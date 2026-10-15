@@ -88,6 +88,9 @@ pub struct Config {
     /// Where keepalive agents' workspace images persist across restarts
     /// (`DIR/workspaces/cid-<guest_cid>.ext4`); `None` keeps per-run copies.
     pub persist_dir: Option<PathBuf>,
+    /// Where VM snapshots are kept (`--snapshot-dir`, by default `DIR/snapshots` under the persist
+    /// directory); `None` keeps none, and every snapshot operation is refused.
+    pub snapshot_dir: Option<PathBuf>,
     /// The roles manifest whose fleet boots at start.
     pub agents: Option<PathBuf>,
     pub agents_cid_base: u64,
@@ -112,6 +115,7 @@ impl Default for Config {
             uds_dir: apz_os::dirs::vsock_sockets(),
             workspace: None,
             persist_dir: None,
+            snapshot_dir: None,
             agents: None,
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
@@ -185,6 +189,7 @@ impl Node {
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
                 .with_persist_dir(config.persist_dir)
+                .with_snapshots(config.snapshot_dir.map(snapshots::SnapshotStore::new))
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
@@ -1731,6 +1736,70 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| {
             stop_vm(node, params.get("id"), params.get("index"))
         })
+        // One VM's snapshots: pause and resume it; sleep it to a snapshot and wake it from there;
+        // take checkpoints, restore one, delete one; fork the VM into new single-VM runs.
+        .post("/v1/runs/{id}/vms/{index}/pause", |node, _, params| {
+            vm_op(
+                node,
+                params.get("id"),
+                params.get("index"),
+                Registry::pause_vm,
+            )
+        })
+        .post("/v1/runs/{id}/vms/{index}/resume", |node, _, params| {
+            vm_op(
+                node,
+                params.get("id"),
+                params.get("index"),
+                Registry::resume_vm,
+            )
+        })
+        .post("/v1/runs/{id}/vms/{index}/sleep", |node, _, params| {
+            sleep_vm(node, params.get("id"), params.get("index"))
+        })
+        .post("/v1/runs/{id}/vms/{index}/wake", |node, _, params| {
+            vm_op(
+                node,
+                params.get("id"),
+                params.get("index"),
+                Registry::wake_vm,
+            )
+        })
+        .get(
+            "/v1/runs/{id}/vms/{index}/checkpoints",
+            |node, _, params| checkpoint_list(node, params.get("id"), params.get("index")),
+        )
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints",
+            |node, request, params| {
+                checkpoint_create(node, params.get("id"), params.get("index"), &request.body)
+            },
+        )
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}/restore",
+            |node, _, params| {
+                checkpoint_restore(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                )
+            },
+        )
+        .delete(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}",
+            |node, _, params| {
+                checkpoint_delete(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                )
+            },
+        )
+        .post("/v1/runs/{id}/vms/{index}/fork", |node, request, params| {
+            fork_vm(node, params.get("id"), params.get("index"), &request.body)
+        })
         // Trainer jobs: a container per job (or the native runner on macOS); see `train`.
         .get("/v1/train", |node, _, _| train::list(node))
         .post("/v1/train", |node, request, _| {
@@ -1766,6 +1835,132 @@ fn wipe_vm(node: &Node, id: &str, index: &str) -> Response {
 /// other VMs; a keepalive VM stopped this way is not brought back).
 fn stop_vm(node: &Node, id: &str, index: &str) -> Response {
     vm_op(node, id, index, Registry::stop_vm)
+}
+
+/// A VM index from a route, or the 404 an index that is not a number gets, like an unknown VM.
+fn vm_index(id: &str, index: &str) -> Result<u32, Response> {
+    index
+        .parse::<u32>()
+        .map_err(|_| Response::error(404, &format!("no VM {index} in run {id}")))
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/sleep` → 200 with `{"run": <summary>, "snapshot": <view>}`: the
+/// VM is snapshotted to its sleep snapshot and stopped, and waits there until it is woken.
+fn sleep_vm(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().sleep_vm(id, vm) {
+        Ok((run, snapshot)) => Response::json(
+            200,
+            &serde_json::json!({"run": run.view(Detail::Summary), "snapshot": snapshot}),
+        ),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `GET /v1/runs/{id}/vms/{index}/checkpoints` → 200 with `{"checkpoints": [<view>, ...]}`, newest first.
+fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().checkpoints(id, vm) {
+        Ok(checkpoints) => Response::json(200, &serde_json::json!({"checkpoints": checkpoints})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The `POST .../checkpoints` body: a label for the checkpoint's name (optional).
+#[derive(Debug, Default, Deserialize)]
+struct CheckpointRequest {
+    #[serde(default)]
+    label: String,
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints` → 201 with the checkpoint's view. The body is
+/// optional; `{"label": "..."}` names the checkpoint.
+fn checkpoint_create(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let label = if body.iter().all(u8::is_ascii_whitespace) {
+        String::new()
+    } else {
+        match serde_json::from_slice::<CheckpointRequest>(body) {
+            Ok(request) => request.label,
+            Err(err) => {
+                return Response::error(400, &format!("invalid checkpoint request: {err}"));
+            }
+        }
+    };
+    match node.registry().checkpoint_vm(id, vm, &label) {
+        Ok(view) => Response::json(201, &view),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/restore` → 200 with
+/// `{"run": <summary>, "snapshot": <view>}`, where `snapshot` is the `before-restore` checkpoint
+/// taken first.
+fn checkpoint_restore(node: &Node, id: &str, index: &str, name: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().restore_checkpoint(id, vm, name) {
+        Ok((run, snapshot)) => Response::json(
+            200,
+            &serde_json::json!({"run": run.view(Detail::Summary), "snapshot": snapshot}),
+        ),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `DELETE /v1/runs/{id}/vms/{index}/checkpoints/{name}` → 200 with `{"deleted": name}`.
+fn checkpoint_delete(node: &Node, id: &str, index: &str, name: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().delete_checkpoint(id, vm, name) {
+        Ok(()) => Response::json(200, &serde_json::json!({"deleted": name})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The `POST .../fork` body: how many forks to make (1 to 8).
+#[derive(Debug, Deserialize)]
+struct ForkRequest {
+    n: u32,
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/fork` → 201 with `{"forks": [{"run": id, "cid": n}, ...],
+/// "checkpoint": name}`: a checkpoint of the VM, and one new single-VM run per fork.
+fn fork_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let request: ForkRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid fork request: {err}")),
+    };
+    match node.registry().fork_vm(id, vm, request.n) {
+        Ok((checkpoint, forks)) => {
+            let forks: Vec<serde_json::Value> = forks
+                .iter()
+                .map(|(run, cid)| serde_json::json!({"run": run.id(), "cid": cid}))
+                .collect();
+            Response::json(
+                201,
+                &serde_json::json!({"forks": forks, "checkpoint": checkpoint.name}),
+            )
+        }
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
 }
 
 /// Runs one per-VM operation on VM `index` of run `id`. An index that is not a
@@ -1924,9 +2119,64 @@ fn delete_run(node: &Node, id: &str) -> Response {
     match node.registry().find(id) {
         Some(run) => {
             run.kill();
+            // A deleted run's VMs take their snapshots with them.
+            node.registry().drop_snapshots(&run);
             Response::json(200, &run.view(Detail::Full))
         }
         None => Response::error(404, &format!("no run with id {id}")),
+    }
+}
+
+#[cfg(test)]
+mod snapshot_route_tests {
+    use super::*;
+
+    /// A node that keeps its snapshots under `snapshot_dir` (none when `None`).
+    fn node(snapshot_dir: Option<PathBuf>) -> Node {
+        Node::new(Config {
+            snapshot_dir,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn a_node_with_no_snapshot_dir_refuses_every_snapshot_route_with_409() {
+        let node = node(None);
+        assert_eq!(sleep_vm(&node, "r1", "0").status, 409);
+        assert_eq!(checkpoint_list(&node, "r1", "0").status, 409);
+        assert_eq!(checkpoint_create(&node, "r1", "0", b"").status, 409);
+        assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
+        assert_eq!(checkpoint_delete(&node, "r1", "0", "cp-1-x").status, 409);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 2}"#).status, 409);
+    }
+
+    #[test]
+    fn a_vm_index_that_is_not_a_number_is_a_404() {
+        let node = node(None);
+        assert_eq!(sleep_vm(&node, "r1", "x").status, 404);
+        assert_eq!(checkpoint_list(&node, "r1", "x").status, 404);
+        assert_eq!(checkpoint_create(&node, "r1", "x", b"").status, 404);
+        assert_eq!(fork_vm(&node, "r1", "x", br#"{"n": 1}"#).status, 404);
+    }
+
+    #[test]
+    fn a_malformed_snapshot_body_is_a_400() {
+        let dir = std::env::temp_dir().join(format!("apz-noded-routes-{}", std::process::id()));
+        let node = node(Some(dir));
+        assert_eq!(checkpoint_create(&node, "r1", "0", b"{").status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", b"not json").status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 0}"#).status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 9}"#).status, 400);
+    }
+
+    #[test]
+    fn a_snapshot_route_on_an_unknown_run_is_a_404() {
+        let dir = std::env::temp_dir().join(format!("apz-noded-unknown-{}", std::process::id()));
+        let node = node(Some(dir));
+        assert_eq!(sleep_vm(&node, "r9", "0").status, 404);
+        assert_eq!(checkpoint_list(&node, "r9", "0").status, 404);
+        assert_eq!(checkpoint_restore(&node, "r9", "0", "cp-1-x").status, 404);
+        assert_eq!(checkpoint_delete(&node, "r9", "0", "cp-1-x").status, 404);
     }
 }
 

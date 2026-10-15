@@ -30,7 +30,8 @@
 //! keepalive agent of that role, booted exactly as the role fleet boots its VMs.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,10 +40,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::fleet::{Fleet, agent_flags};
+use crate::snapshots::{self, SnapshotStore, SnapshotView};
+use vmm::clonefile::clone_file;
 use vmm::spawner::{
-    self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
-    VsockConfig,
+    self, MAX_GUEST_CID, MIN_GUEST_CID, SnapshotInfo, SnapshotKind, SpawnError, VmExit, VmHandle,
+    VmRuntime, VmSpec, VsockConfig,
 };
+
+/// The most forks one `fork` request may make.
+pub const MAX_FORKS: u32 = 8;
+
+/// The states a VM may be in while a restart, wipe or stop operates on it: every state but asleep,
+/// which has no process to stop.
+const AWAKE: [VmState; 4] = [
+    VmState::Running,
+    VmState::Paused,
+    VmState::Exited,
+    VmState::Killed,
+];
 
 /// The most VMs one run may have (`n`).
 pub const MAX_VMS: u32 = 64;
@@ -541,6 +556,10 @@ impl std::error::Error for RefusedTransition {}
 pub enum VmState {
     /// The VM is up.
     Running,
+    /// The VM is up but paused: its vCPUs and devices are stopped, its process is not.
+    Paused,
+    /// The VM is stopped with a sleep snapshot, and wakes from it (see [`Registry::wake_vm`]).
+    Asleep,
     /// The VM stopped by itself (a guest shutdown, reset or fault).
     Exited,
     /// The VM was stopped by the host.
@@ -552,6 +571,8 @@ impl VmState {
     pub fn as_str(self) -> &'static str {
         match self {
             VmState::Running => "running",
+            VmState::Paused => "paused",
+            VmState::Asleep => "asleep",
             VmState::Exited => "exited",
             VmState::Killed => "killed",
         }
@@ -809,6 +830,96 @@ fn replace_workspace(base: &std::path::Path, image: &std::path::Path) -> std::io
     std::fs::rename(&partial, image)
 }
 
+/// A VM's control handle, and what an operation on the VM needs, taken out of its slot so the
+/// operation runs outside the run's lock. The slot is seated again by the operation's end.
+struct Held {
+    handle: VmHandle,
+    /// The spec the VM was booted from (its cold command line and its workspace image).
+    spec: VmSpec,
+    /// The snapshot directory the VM was restored from: the base its next snapshot is a diff over.
+    restored_from: Option<PathBuf>,
+    /// The state the VM was in when it was taken.
+    state: VmState,
+}
+
+/// A fork's VM, booted but not yet a run: it is registered only once every fork has booted.
+struct PreparedFork {
+    /// The fork run's id.
+    id: String,
+    cid: u64,
+    handle: VmHandle,
+    spec: VmSpec,
+    /// The fork's own workspace image.
+    workspace: PathBuf,
+    /// The fork's diff base (see [`SnapshotStore::stage_base`]).
+    base: PathBuf,
+}
+
+/// The state a VM is in once an operation that paused it is over: a running VM is resumed (a
+/// snapshot leaves its VM paused), a paused one stays paused.
+fn thaw(state: VmState, handle: &VmHandle) -> VmState {
+    match state {
+        VmState::Running => match handle.resume() {
+            Ok(()) => VmState::Running,
+            Err(err) => {
+                eprintln!("noded: a VM did not resume after its snapshot: {err}");
+                VmState::Paused
+            }
+        },
+        other => other,
+    }
+}
+
+/// Writes a snapshot of a VM into `dir` (created). A VM restored from a snapshot always writes a
+/// diff, over the memory it was restored from, so that memory is copied into `dir` first: `base` is
+/// the directory holding it.
+fn write_snapshot(
+    handle: &VmHandle,
+    base: Option<&Path>,
+    dir: &Path,
+) -> Result<SnapshotInfo, VmOpError> {
+    if let Some(base) = base {
+        snapshots::private_dir(dir)
+            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
+        clone_file(
+            &base.join(snapshots::MEMORY_FILE),
+            &dir.join(snapshots::MEMORY_FILE),
+        )
+        .map_err(|err| {
+            VmOpError::Failed(format!(
+                "cannot copy the memory the VM was restored from: {err}"
+            ))
+        })?;
+    }
+    handle
+        .snapshot(dir, SnapshotKind::Diff)
+        .map_err(|err| VmOpError::Failed(format!("the VM did not snapshot: {err}")))
+}
+
+/// Boots a VM from the checkpoint directory `snapshot`, with its workspace copied back from it, and
+/// returns the VM with the diff base its next snapshot is written over (staged from `snapshot`'s
+/// memory). Used by a restore (and its fallback) and by a fork.
+fn boot_from(
+    store: &SnapshotStore,
+    cid: u64,
+    spec: &VmSpec,
+    snapshot: &Path,
+) -> Result<(VmHandle, PathBuf), String> {
+    if let Some(workspace) = &spec.workspace {
+        clone_file(&snapshot.join(snapshots::WORKSPACE_FILE), workspace)
+            .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
+    }
+    let base = store
+        .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+        .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
+    let handle = spawner::spawn(VmSpec {
+        restore: Some(snapshot.to_path_buf()),
+        ..spec.clone()
+    })
+    .map_err(|err| err.to_string())?;
+    Ok((handle, base))
+}
+
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
@@ -817,6 +928,9 @@ pub struct Registry {
     /// Where keepalive runs' workspace images persist (`--persist-dir`), or
     /// `None` for the per-run copies.
     persist_dir: Option<PathBuf>,
+    /// Where VM snapshots are kept (`--snapshot-dir`), or `None` for a node that keeps none: every
+    /// snapshot operation is then refused with [`VmOpError::NoSnapshots`].
+    snapshots: Option<SnapshotStore>,
     /// When this daemon started, in milliseconds since the Unix epoch: part of
     /// a run's workspace-directory name, because run ids restart with the
     /// daemon (a bare `run-{id}` would collide with the previous daemon's
@@ -845,6 +959,7 @@ impl Registry {
             images,
             uds_dir,
             persist_dir: None,
+            snapshots: None,
             epoch_ms: now_ms(),
             events,
             cids: Arc::new(CidBook::default()),
@@ -860,6 +975,12 @@ impl Registry {
     /// own directory.
     pub fn with_persist_dir(mut self, persist_dir: Option<PathBuf>) -> Self {
         self.persist_dir = persist_dir;
+        self
+    }
+
+    /// Keeps VM snapshots in `store` (see [`crate::snapshots`]); `None` keeps none.
+    pub fn with_snapshots(mut self, store: Option<SnapshotStore>) -> Self {
+        self.snapshots = store;
         self
     }
 
@@ -1117,6 +1238,7 @@ impl Registry {
                         // The capture was empty at boot (the serial delta
                         // ticker starts at the first byte the guest writes).
                         serial_seen: 0,
+                        restored_from: None,
                     })
                     .collect();
                 // The run is `running` and every VM with it: published under
@@ -1188,13 +1310,499 @@ impl Registry {
     /// the run's other VMs carry on. Nothing boots it again.
     pub fn stop_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
-        let (mut handle, _spec) = run.take_vm(vm)?;
+        let mut handle = run.take_vm(vm, &AWAKE)?.handle;
         if let Err(err) = handle.kill() {
             run.return_vm(vm, handle);
             return Err(VmOpError::Refused(err.to_string()));
         }
         run.set_vm_killed(vm, handle);
         Ok(run)
+    }
+
+    /// Pauses VM `vm` of run `run`: its vCPUs and devices stop, its process stays. Only a running VM
+    /// pauses; [`Registry::resume_vm`] lets it run again.
+    pub fn pause_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Running])?;
+        if let Err(err) = held.handle.pause() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        run.return_vm_in(vm, held.handle, VmState::Paused);
+        Ok(run)
+    }
+
+    /// Lets paused VM `vm` of run `run` run again.
+    pub fn resume_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Paused])?;
+        if let Err(err) = held.handle.resume() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        run.return_vm_in(vm, held.handle, VmState::Running);
+        Ok(run)
+    }
+
+    /// Puts VM `vm` of run `run` to sleep: its state goes to the sleep snapshot, its process stops,
+    /// and it waits as `asleep` until [`Registry::wake_vm`]. A paused VM is snapshotted as it is; a
+    /// running one is paused for the snapshot. The sleep snapshot is written beside the old one and
+    /// renamed over it once the VM is stopped (see [`crate::snapshots`]).
+    pub fn sleep_vm(&self, run: &str, vm: u32) -> Result<(Arc<Run>, SnapshotView), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        if held.spec.workspace.is_none() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Unsupported(format!(
+                "VM {vm} has no workspace volume, so it cannot sleep"
+            )));
+        }
+        let Held {
+            mut handle,
+            restored_from,
+            state,
+            ..
+        } = held;
+        let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
+        let _ = fs::remove_dir_all(&partial);
+        let info = match write_snapshot(&handle, restored_from.as_deref(), &partial) {
+            Ok(info) => info,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&partial);
+                let state = thaw(state, &handle);
+                run.return_vm_in(vm, handle, state);
+                return Err(err);
+            }
+        };
+        if let Err(err) = handle.kill() {
+            let _ = fs::remove_dir_all(&partial);
+            let state = thaw(state, &handle);
+            run.return_vm_in(vm, handle, state);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        if let Err(err) = store.install(cid, &partial, snapshots::SLEEP) {
+            run.set_vm_killed(vm, handle);
+            return Err(VmOpError::Failed(format!(
+                "VM {vm} stopped, but its sleep snapshot could not be kept: {err}"
+            )));
+        }
+        run.return_vm_in(vm, handle, VmState::Asleep);
+        let Some(mut view) = store.view(cid, snapshots::SLEEP) else {
+            return Err(VmOpError::Failed(format!(
+                "VM {vm} is asleep, but its sleep snapshot cannot be read"
+            )));
+        };
+        view.paused_ms = info.paused_ms;
+        Ok((run, view))
+    }
+
+    /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
+    /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
+    /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
+    pub fn wake_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let Held {
+            handle: killed,
+            spec,
+            ..
+        } = run.take_vm(vm, &[VmState::Asleep])?;
+        let sleep = store.dir(cid, snapshots::SLEEP);
+        let woken = match spawner::spawn(VmSpec {
+            restore: Some(sleep.clone()),
+            ..spec.clone()
+        }) {
+            Ok(fresh) => Ok((fresh, Some(sleep))),
+            Err(err) => {
+                eprintln!(
+                    "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
+                    run.id
+                );
+                match spawner::spawn(spec) {
+                    Ok(fresh) => Ok((fresh, None)),
+                    Err(cold) => Err(VmOpError::Failed(format!(
+                        "VM {vm} did not wake ({err}) and did not boot ({cold})"
+                    ))),
+                }
+            }
+        };
+        match woken {
+            Ok((fresh, base)) => {
+                run.seat_vm(vm, killed, fresh, base);
+                Ok(run)
+            }
+            Err(err) => {
+                run.return_vm(vm, killed);
+                Err(err)
+            }
+        }
+    }
+
+    /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
+    /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
+    pub fn checkpoint_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        label: &str,
+    ) -> Result<SnapshotView, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let taken = Self::checkpoint_held(store, cid, &held, label);
+        let state = thaw(held.state, &held.handle);
+        run.return_vm_in(vm, held.handle, state);
+        let view = taken?;
+        store.prune(cid);
+        Ok(view)
+    }
+
+    /// The checkpoints of VM `vm` of run `run`, newest first.
+    pub fn checkpoints(&self, run: &str, vm: u32) -> Result<Vec<SnapshotView>, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        Ok(store.checkpoints(run.vm_cid(vm)?))
+    }
+
+    /// Deletes checkpoint `name` of VM `vm` of run `run`. The sleep snapshot is not a checkpoint and
+    /// is not deleted this way.
+    pub fn delete_checkpoint(&self, run: &str, vm: u32, name: &str) -> Result<(), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        if !snapshots::is_checkpoint_name(name) || store.view(cid, name).is_none() {
+            return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+        }
+        store
+            .remove(cid, name)
+            .map_err(|err| VmOpError::Failed(format!("cannot delete checkpoint {name}: {err}")))
+    }
+
+    /// Restores VM `vm` of run `run` to checkpoint `name`: the VM is checkpointed first (the
+    /// `before-restore` checkpoint, returned), then stopped and booted from `name` with its workspace
+    /// copied back. If the restore fails, the VM is put back on the `before-restore` checkpoint (or
+    /// booted cold, if that fails too) and the restore's error is returned.
+    pub fn restore_checkpoint(
+        &self,
+        run: &str,
+        vm: u32,
+        name: &str,
+    ) -> Result<(Arc<Run>, SnapshotView), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        if !snapshots::is_checkpoint_name(name) || store.view(cid, name).is_none() {
+            return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+        }
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let safety = match Self::checkpoint_held(store, cid, &held, "before-restore") {
+            Ok(view) => view,
+            Err(err) => {
+                let state = thaw(held.state, &held.handle);
+                run.return_vm_in(vm, held.handle, state);
+                return Err(err);
+            }
+        };
+        let Held {
+            mut handle,
+            spec,
+            state,
+            ..
+        } = held;
+        if let Err(err) = handle.kill() {
+            let state = thaw(state, &handle);
+            run.return_vm_in(vm, handle, state);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        let snapshot = store.dir(cid, name);
+        match boot_from(store, cid, &spec, &snapshot) {
+            Ok((fresh, base)) => {
+                run.seat_vm(vm, handle, fresh, Some(base));
+                store.prune(cid);
+                Ok((run, safety))
+            }
+            Err(err) => {
+                let before = store.dir(cid, &safety.name);
+                let (fresh, base, back) = match boot_from(store, cid, &spec, &before) {
+                    Ok((fresh, base)) => (fresh, Some(base), safety.name.clone()),
+                    Err(back) => match spawner::spawn(spec.clone()) {
+                        Ok(fresh) => {
+                            eprintln!(
+                                "noded: run {}: VM {vm} did not return to {} ({back}); booted it cold",
+                                run.id, safety.name
+                            );
+                            (fresh, None, "a cold boot".to_string())
+                        }
+                        Err(cold) => {
+                            run.set_vm_killed(vm, handle);
+                            return Err(VmOpError::Failed(format!(
+                                "cannot restore checkpoint {name} ({err}), and VM {vm} did not start again ({back}; {cold})"
+                            )));
+                        }
+                    },
+                };
+                run.seat_vm(vm, handle, fresh, base);
+                Err(VmOpError::Failed(format!(
+                    "cannot restore checkpoint {name}: {err}; VM {vm} runs again from {back}"
+                )))
+            }
+        }
+    }
+
+    /// Forks VM `vm` of run `run` into `n` new single-VM runs: a checkpoint of the VM is taken, and each
+    /// fork boots from it with a CID of its own and a copy of its workspace. The forks are all made or
+    /// none is: a fork that cannot boot takes the ones made before it down. Returns the checkpoint and
+    /// each fork's run and CID.
+    pub fn fork_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        n: u32,
+    ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
+        if !(1..=MAX_FORKS).contains(&n) {
+            return Err(VmOpError::Invalid(format!(
+                "n must be between 1 and {MAX_FORKS}"
+            )));
+        }
+        let store = self.snapshot_store()?;
+        let source = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = source.vm_cid(vm)?;
+        let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let meta = source.meta(held.spec.balloon);
+        let taken = Self::checkpoint_held(store, cid, &held, "fork");
+        let state = thaw(held.state, &held.handle);
+        source.return_vm_in(vm, held.handle, state);
+        let checkpoint = taken?;
+        store.prune(cid);
+        let snapshot = store.dir(cid, &checkpoint.name);
+        let mut forks = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            match self.boot_fork(store, &meta, &snapshot) {
+                Ok(fork) => forks.push(fork),
+                Err(err) => {
+                    self.discard_forks(store, forks);
+                    return Err(err);
+                }
+            }
+        }
+        let made = forks
+            .into_iter()
+            .map(|fork| {
+                let cid = fork.cid;
+                (self.adopt_fork(fork, &meta), cid)
+            })
+            .collect();
+        Ok((checkpoint, made))
+    }
+
+    /// The store, or [`VmOpError::NoSnapshots`] when the node keeps none.
+    fn snapshot_store(&self) -> Result<&SnapshotStore, VmOpError> {
+        self.snapshots.as_ref().ok_or(VmOpError::NoSnapshots)
+    }
+
+    /// Removes the snapshots of every VM of `run`: what deleting the run does with them.
+    pub fn drop_snapshots(&self, run: &Run) {
+        let Some(store) = &self.snapshots else {
+            return;
+        };
+        let cids: Vec<u64> = run
+            .lock()
+            .vms
+            .iter()
+            .filter_map(|slot| slot.guest_cid)
+            .collect();
+        for cid in cids {
+            if let Err(err) = store.remove_all(cid) {
+                eprintln!(
+                    "noded: run {}: cannot remove VM CID {cid}'s snapshots: {err}",
+                    run.id
+                );
+            }
+        }
+    }
+
+    /// Takes a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
+    /// workspace. The VM is left paused; the caller resumes it.
+    fn checkpoint_held(
+        store: &SnapshotStore,
+        cid: u64,
+        held: &Held,
+        label: &str,
+    ) -> Result<SnapshotView, VmOpError> {
+        if held.spec.workspace.is_none() {
+            return Err(VmOpError::Unsupported(
+                "this VM has no workspace volume, so it cannot be checkpointed".to_string(),
+            ));
+        }
+        store.prepare(cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
+        })?;
+        let name = SnapshotStore::checkpoint_name(label, now_ms());
+        let dir = store.dir(cid, &name);
+        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir) {
+            Ok(info) => info,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(err);
+            }
+        };
+        if let Some(workspace) = &held.spec.workspace {
+            if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(VmOpError::Failed(format!(
+                    "cannot copy the workspace into checkpoint {name}: {err}"
+                )));
+            }
+        }
+        let mut view = store
+            .view(cid, &name)
+            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))?;
+        view.paused_ms = info.paused_ms;
+        Ok(view)
+    }
+
+    /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and a
+    /// copy of the checkpoint's workspace. Nothing is registered until every fork has booted.
+    fn boot_fork(
+        &self,
+        store: &SnapshotStore,
+        meta: &RunMeta,
+        snapshot: &Path,
+    ) -> Result<PreparedFork, VmOpError> {
+        let id = self.reserve_run_id();
+        let cid = self.cids.allocate(&id, 1).map_err(VmOpError::Failed)?;
+        let workspace = self.fork_workspace(&id, cid, meta.keepalive);
+        match self.boot_fork_vm(store, meta, snapshot, cid, &workspace) {
+            Ok((handle, spec, base)) => Ok(PreparedFork {
+                id,
+                cid,
+                handle,
+                spec,
+                workspace,
+                base,
+            }),
+            Err(err) => {
+                self.cids.release(&id);
+                let _ = fs::remove_file(&workspace);
+                let _ = fs::remove_dir_all(store.dir(cid, snapshots::BASE));
+                Err(err)
+            }
+        }
+    }
+
+    /// The VM of a fork: restored from `snapshot`, with its workspace copied from it.
+    fn boot_fork_vm(
+        &self,
+        store: &SnapshotStore,
+        meta: &RunMeta,
+        snapshot: &Path,
+        cid: u64,
+        workspace: &Path,
+    ) -> Result<(VmHandle, VmSpec, PathBuf), VmOpError> {
+        if let Some(parent) = workspace.parent() {
+            snapshots::private_dir(parent).map_err(|err| {
+                VmOpError::Failed(format!("cannot create {}: {err}", parent.display()))
+            })?;
+        }
+        // The fork's spec is the one a restart would boot it from: the cold command line, no restore.
+        let request = CreateRun {
+            n: 1,
+            vcpus: meta.vcpus,
+            memory_mib: meta.memory_mib,
+            beats: meta.beats,
+            vsock_cid: None,
+            role: meta.role.clone(),
+            keepalive: Some(meta.keepalive),
+            balloon_usable_mib: meta.balloon_usable_mib,
+        };
+        let spec = VmSpec {
+            kernel: self.images.kernel.clone(),
+            cmdline: request.vm_cmdline(0, meta.keepalive),
+            vcpus: spawner_vcpus(meta.vcpus).map_err(VmOpError::Failed)?,
+            memory_mib: spawner_memory_mib(meta.memory_mib).map_err(VmOpError::Failed)?,
+            initrd: Some(self.images.initrd.clone()),
+            gic: None,
+            vsock: Some(VsockConfig {
+                guest_cid: cid,
+                uds_path: self.uds_dir.join(format!("vm{cid}")),
+            }),
+            workspace: Some(workspace.to_path_buf()),
+            balloon: meta.balloon_usable_mib,
+            restore: None,
+        };
+        let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
+        Ok((handle, spec, base))
+    }
+
+    /// The workspace image of a fork on `cid`: the CID's persistent image for a keepalive run on a
+    /// node with `--persist-dir` when none exists yet (so the image persists like any keepalive
+    /// agent's), otherwise a file in the fork's run directory. A persistent image that already exists
+    /// belongs to an earlier agent on that CID, and is never overwritten.
+    fn fork_workspace(&self, id: &str, cid: u64, keepalive: bool) -> PathBuf {
+        if let (Some(persist), true) = (&self.persist_dir, keepalive) {
+            let image = persistent_workspace_path(persist, cid);
+            if !image.exists() {
+                return image;
+            }
+        }
+        self.run_dir(id).join(format!("fork-{cid}.ext4"))
+    }
+
+    /// Registers a fork as a run: `starting`, then `running` with its one VM, watched like any run.
+    fn adopt_fork(&self, fork: PreparedFork, meta: &RunMeta) -> Arc<Run> {
+        let PreparedFork {
+            id,
+            cid,
+            handle,
+            spec,
+            base,
+            ..
+        } = fork;
+        let run = self.insert(id, meta.clone());
+        let mut inner = run.lock();
+        if let Err(refused) = inner.transition(RunState::Running) {
+            eprintln!("noded: run {}: {refused}", run.id);
+        }
+        inner.vms = vec![VmSlot {
+            id: 0,
+            guest_cid: Some(cid),
+            role: meta.role.clone(),
+            runtime: handle.runtime(),
+            handle: Some(handle),
+            spec: Some(spec),
+            state: VmState::Running,
+            serial_seen: 0,
+            restored_from: Some(base),
+        }];
+        run.events.publish(Event::Run {
+            id: run.id.clone(),
+            state: RunState::Running.as_str(),
+        });
+        run.events.publish(Event::Vm {
+            run: run.id.clone(),
+            vm: 0,
+            state: VmState::Running.as_str(),
+        });
+        drop(inner);
+        watch(Arc::clone(&run));
+        run
+    }
+
+    /// Stops and removes forks that were booted before a later one failed: their VMs stop, their CIDs
+    /// go back to the book and their workspace copies and bases are removed.
+    fn discard_forks(&self, store: &SnapshotStore, forks: Vec<PreparedFork>) {
+        for mut fork in forks {
+            if let Err(err) = fork.handle.kill() {
+                eprintln!("noded: fork {}: VM did not stop: {err}", fork.id);
+            }
+            self.cids.release(&fork.id);
+            let _ = fs::remove_file(&fork.workspace);
+            let _ = fs::remove_dir_all(store.dir(fork.cid, snapshots::BASE));
+        }
     }
 
     /// The restart and wipe of one VM: stops it, resets its workspace when
@@ -1205,7 +1813,11 @@ impl Registry {
             (true, Some(base)) => Some(base.clone()),
             (false, _) => None,
         };
-        let (mut killed, spec) = run.take_vm(vm)?;
+        let Held {
+            handle: mut killed,
+            spec,
+            ..
+        } = run.take_vm(vm, &AWAKE)?;
         if let Err(err) = killed.kill() {
             run.return_vm(vm, killed);
             return Err(VmOpError::Refused(err.to_string()));
@@ -1220,7 +1832,7 @@ impl Registry {
         }
         match spawner::spawn(spec) {
             Ok(fresh) => {
-                run.seat_vm(vm, killed, fresh);
+                run.seat_vm(vm, killed, fresh, None);
                 Ok(())
             }
             Err(err) => {
@@ -1355,16 +1967,34 @@ pub enum VmOpError {
     Refused(String),
     /// The VM could not be prepared or booted again.
     Failed(String),
+    /// The node keeps no snapshots (no `--snapshot-dir` and no `--persist-dir`).
+    NoSnapshots,
+    /// The VM has no snapshot of that name.
+    UnknownCheckpoint(String),
+    /// The request asks for something the node cannot do (an out-of-range count).
+    Invalid(String),
+    /// The VM is in a state the operation does not apply to (a paused VM cannot be paused again).
+    WrongState { vm: u32, state: VmState },
+    /// The VM has no vsock CID or no workspace volume, which the snapshot operation needs.
+    Unsupported(String),
 }
 
 impl VmOpError {
-    /// The HTTP status this error is reported as: 404 for a run or VM the node
-    /// does not have, 409 for one whose state refuses the operation now, 500
-    /// when the VM itself could not be stopped or booted.
+    /// The HTTP status this error is reported as: 404 for a run, VM or checkpoint the node does
+    /// not have, 400 for a request out of range, 409 for one whose state refuses the operation
+    /// now, 500 when the VM itself could not be stopped or booted.
     pub fn status(&self) -> u16 {
         match self {
-            VmOpError::UnknownRun | VmOpError::UnknownVm(_) => 404,
-            VmOpError::RunEnded(_) | VmOpError::Busy(_) | VmOpError::NoBaseImage => 409,
+            VmOpError::UnknownRun | VmOpError::UnknownVm(_) | VmOpError::UnknownCheckpoint(_) => {
+                404
+            }
+            VmOpError::Invalid(_) => 400,
+            VmOpError::RunEnded(_)
+            | VmOpError::Busy(_)
+            | VmOpError::NoBaseImage
+            | VmOpError::NoSnapshots
+            | VmOpError::WrongState { .. }
+            | VmOpError::Unsupported(_) => 409,
             VmOpError::Refused(_) | VmOpError::Failed(_) => 500,
         }
     }
@@ -1394,6 +2024,20 @@ impl std::fmt::Display for VmOpError {
             }
             VmOpError::Refused(reason) => write!(formatter, "VM did not stop: {reason}"),
             VmOpError::Failed(reason) => write!(formatter, "{reason}"),
+            VmOpError::NoSnapshots => write!(
+                formatter,
+                "this node keeps no snapshots: start it with --snapshot-dir or --persist-dir"
+            ),
+            VmOpError::UnknownCheckpoint(name) => {
+                write!(formatter, "the VM has no snapshot named {name}")
+            }
+            VmOpError::Invalid(reason) => write!(formatter, "{reason}"),
+            VmOpError::WrongState { vm, state } => write!(
+                formatter,
+                "VM {vm} is {}, so this operation does not apply to it",
+                state.as_str()
+            ),
+            VmOpError::Unsupported(reason) => write!(formatter, "{reason}"),
         }
     }
 }
@@ -1453,6 +2097,10 @@ struct VmSlot {
     /// (read and written under the run's lock): the serial-delta ticker's
     /// bookmark.
     serial_seen: usize,
+    /// The snapshot directory holding the memory this VM was restored from (its
+    /// wake's sleep snapshot, or its restore's staged base): the base its next
+    /// snapshot is written as a diff over. `None` for a VM booted cold.
+    restored_from: Option<PathBuf>,
 }
 
 impl RunInner {
@@ -1478,9 +2126,12 @@ impl RunInner {
         }
     }
 
-    /// Whether every VM of the run has stopped.
+    /// Whether every VM of the run has stopped. A paused or asleep VM has not: it is the run's
+    /// to wake or resume, so its run goes on.
     fn all_vms_stopped(&self) -> bool {
-        self.vms.iter().all(|slot| slot.state != VmState::Running)
+        self.vms
+            .iter()
+            .all(|slot| matches!(slot.state, VmState::Exited | VmState::Killed))
     }
 }
 
@@ -1617,8 +2268,10 @@ impl Run {
             .iter_mut()
             .enumerate()
             .filter_map(|(index, slot)| match slot.state {
-                VmState::Running => slot.handle.take().map(|handle| (index, handle)),
-                VmState::Exited | VmState::Killed => None,
+                VmState::Running | VmState::Paused => {
+                    slot.handle.take().map(|handle| (index, handle))
+                }
+                VmState::Asleep | VmState::Exited | VmState::Killed => None,
             })
             .collect();
         drop(inner);
@@ -1629,6 +2282,18 @@ impl Run {
         }
 
         let mut inner = self.lock();
+        // A sleeping VM has no process to stop: its sleep snapshot is its whole life, and the kill
+        // ends it.
+        for slot in inner.vms.iter_mut() {
+            if slot.state == VmState::Asleep {
+                slot.state = VmState::Killed;
+                self.events.publish(Event::Vm {
+                    run: self.id.clone(),
+                    vm: slot.id,
+                    state: VmState::Killed.as_str(),
+                });
+            }
+        }
         for (index, outcome, handle) in stopped {
             let Some(slot) = inner.vms.get_mut(index) else {
                 continue;
@@ -1669,7 +2334,7 @@ impl Run {
     /// booted from, so the VM can be stopped outside the run's lock. The slot
     /// keeps its state; the watcher skips a slot with no handle until
     /// [`Run::seat_vm`] or [`Run::set_vm_killed`] puts one back.
-    fn take_vm(&self, vm: u32) -> Result<(VmHandle, VmSpec), VmOpError> {
+    fn take_vm(&self, vm: u32, allowed: &[VmState]) -> Result<Held, VmOpError> {
         let mut inner = self.lock();
         if inner.state != RunState::Running {
             return Err(VmOpError::RunEnded(inner.state));
@@ -1679,11 +2344,47 @@ impl Run {
             .iter_mut()
             .find(|slot| slot.id == vm)
             .ok_or(VmOpError::UnknownVm(vm))?;
+        if !allowed.contains(&slot.state) {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
         let spec = slot.spec.clone().ok_or_else(|| {
             VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from"))
         })?;
         let handle = slot.handle.take().ok_or(VmOpError::Busy(vm))?;
-        Ok((handle, spec))
+        Ok(Held {
+            handle,
+            spec,
+            restored_from: slot.restored_from.clone(),
+            state: slot.state,
+        })
+    }
+
+    /// The guest CID of VM `vm`: the key of its snapshots.
+    fn vm_cid(&self, vm: u32) -> Result<u64, VmOpError> {
+        let inner = self.lock();
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        slot.guest_cid.ok_or_else(|| {
+            VmOpError::Unsupported(format!("VM {vm} has no vsock CID, so it has no snapshots"))
+        })
+    }
+
+    /// The run's shape as a run booted from it would be: what a fork of one of its VMs shares.
+    fn meta(&self, balloon_usable_mib: Option<u32>) -> RunMeta {
+        RunMeta {
+            vcpus: self.vcpus,
+            memory_mib: self.memory_mib,
+            beats: self.beats,
+            role: self.role.clone(),
+            keepalive: self.keepalive,
+            balloon_usable_mib,
+        }
     }
 
     /// Puts back the handle of a VM whose stop was refused: it is still running.
@@ -1691,6 +2392,23 @@ impl Run {
         let mut inner = self.lock();
         if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
             slot.handle = Some(handle);
+        }
+    }
+
+    /// Puts back the handle of VM `vm` and sets its state to `state` (a paused VM, a resumed one).
+    fn return_vm_in(&self, vm: u32, handle: VmHandle, state: VmState) {
+        let mut inner = self.lock();
+        let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) else {
+            return;
+        };
+        slot.handle = Some(handle);
+        if slot.state != state {
+            slot.state = state;
+            self.events.publish(Event::Vm {
+                run: self.id.clone(),
+                vm,
+                state: state.as_str(),
+            });
         }
     }
 
@@ -1719,7 +2437,13 @@ impl Run {
     /// Seats a restarted VM: `fresh` becomes the slot's running VM, and
     /// `killed` (the handle of the VM it replaces) stays with the slot as a
     /// stopped VM. A run that ended while the VM was booting takes it back down.
-    fn seat_vm(&self, vm: u32, killed: VmHandle, mut fresh: VmHandle) {
+    fn seat_vm(
+        &self,
+        vm: u32,
+        killed: VmHandle,
+        mut fresh: VmHandle,
+        restored_from: Option<PathBuf>,
+    ) {
         let mut inner = self.lock();
         if inner.state != RunState::Running {
             drop(inner);
@@ -1735,6 +2459,7 @@ impl Run {
             slot.handle = Some(fresh);
             slot.state = VmState::Running;
             slot.serial_seen = 0;
+            slot.restored_from = restored_from;
             self.events.publish(Event::Vm {
                 run: self.id.clone(),
                 vm,
@@ -1803,7 +2528,8 @@ fn watch_run(run: &Run) {
                 // capture one last time, and that last stretch is exactly
                 // what the run's transcript wants.
                 publish_serial_delta(&run.events, &run.id, slot);
-                if slot.state != VmState::Running {
+                // A paused VM's process is still there to exit, so it is watched too.
+                if !matches!(slot.state, VmState::Running | VmState::Paused) {
                     continue;
                 }
                 let Some(handle) = slot.handle.as_mut() else {
@@ -2140,6 +2866,7 @@ mod tests {
                     handle: None,
                     state: vm_state,
                     serial_seen: 0,
+                    restored_from: None,
                 }],
             }),
         })
@@ -2666,6 +3393,164 @@ mod tests {
         let stopped = run.set_memory(0, 256).expect_err("the VM has no handle");
         assert_eq!(stopped, MemoryError::Stopped(0));
         assert_eq!(stopped.status(), 409);
+    }
+
+    /// A registry holding run `r1` with one stand-in VM in `state` (no handle, no spec), with the
+    /// snapshot store at `store` when given.
+    fn registry_with_run(state: VmState, store: Option<SnapshotStore>) -> (Registry, Arc<Run>) {
+        let registry =
+            Registry::new(images(), PathBuf::from("uds"), EventBus::new()).with_snapshots(store);
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            state,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        registry.lock().runs.push(Arc::clone(&run));
+        (registry, run)
+    }
+
+    #[test]
+    fn the_snapshot_states_and_refusals_have_their_api_names() {
+        assert_eq!(VmState::Paused.as_str(), "paused");
+        assert_eq!(VmState::Asleep.as_str(), "asleep");
+        let refused = VmOpError::NoSnapshots;
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "this node keeps no snapshots: start it with --snapshot-dir or --persist-dir"
+        );
+        assert_eq!(VmOpError::UnknownCheckpoint("cp-1".into()).status(), 404);
+        assert_eq!(VmOpError::Invalid("n".into()).status(), 400);
+    }
+
+    #[test]
+    fn snapshot_operations_are_refused_on_a_node_with_no_snapshot_dir() {
+        let (registry, _run) = registry_with_run(VmState::Running, None);
+        let none = Some(VmOpError::NoSnapshots);
+        assert_eq!(registry.checkpoints("r1", 0).err(), none);
+        assert_eq!(registry.checkpoint_vm("r1", 0, "x").err(), none);
+        assert_eq!(registry.sleep_vm("r1", 0).err(), none);
+        assert_eq!(registry.wake_vm("r1", 0).err(), none);
+        assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
+        assert_eq!(registry.delete_checkpoint("r1", 0, "cp-1").err(), none);
+        assert_eq!(registry.fork_vm("r1", 0, 2).err(), none);
+    }
+
+    #[test]
+    fn a_snapshot_operation_on_an_unknown_run_vm_or_checkpoint_is_a_404() {
+        let dir = scratch("unknown");
+        let (registry, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        assert_eq!(
+            registry.pause_vm("r9", 0).err(),
+            Some(VmOpError::UnknownRun)
+        );
+        assert_eq!(
+            registry.sleep_vm("r1", 3).err(),
+            Some(VmOpError::UnknownVm(3))
+        );
+        let missing = VmOpError::UnknownCheckpoint("cp-1-nope".into());
+        assert_eq!(missing.status(), 404);
+        assert_eq!(
+            registry.restore_checkpoint("r1", 0, "cp-1-nope").err(),
+            Some(missing.clone())
+        );
+        assert_eq!(
+            registry.delete_checkpoint("r1", 0, "cp-1-nope").err(),
+            Some(missing)
+        );
+        assert_eq!(
+            registry.restore_checkpoint("r1", 0, "sleep").err(),
+            Some(VmOpError::UnknownCheckpoint("sleep".into()))
+        );
+        assert_eq!(registry.checkpoints("r1", 0).ok(), Some(Vec::new()));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fork_count_out_of_range_is_a_400_and_takes_no_checkpoint() {
+        let dir = scratch("fork-count");
+        let (registry, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        for n in [0, MAX_FORKS + 1] {
+            let refused = registry.fork_vm("r1", 0, n).err().expect("out of range");
+            assert_eq!(refused.status(), 400);
+        }
+        assert!(
+            registry
+                .checkpoints("r1", 0)
+                .ok()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_vm_in_the_wrong_state_is_refused_with_that_state() {
+        let dir = scratch("wrong-state");
+        let (asleep, _run) =
+            registry_with_run(VmState::Asleep, Some(SnapshotStore::new(dir.clone())));
+        let state = VmState::Asleep;
+        let wrong = Some(VmOpError::WrongState { vm: 0, state });
+        assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.sleep_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.checkpoint_vm("r1", 0, "x").err(), wrong);
+
+        let (running, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        let state = VmState::Running;
+        assert_eq!(
+            running.wake_vm("r1", 0).err(),
+            Some(VmOpError::WrongState { vm: 0, state })
+        );
+        assert_eq!(
+            running.resume_vm("r1", 0).err(),
+            Some(VmOpError::WrongState { vm: 0, state })
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_paused_or_asleep_vm_keeps_its_run_going() {
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Paused,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        assert!(!run.lock().all_vms_stopped());
+        run.lock().vms[0].state = VmState::Asleep;
+        assert!(!run.lock().all_vms_stopped());
+        run.lock().vms[0].state = VmState::Exited;
+        assert!(run.lock().all_vms_stopped());
+    }
+
+    #[test]
+    fn a_fork_takes_the_cids_persistent_image_only_when_none_exists() {
+        let dir = scratch("fork-workspace");
+        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new())
+            .with_persist_dir(Some(dir.clone()));
+        let image = persistent_workspace_path(&dir, 40);
+        assert_eq!(registry.fork_workspace("r7", 40, true), image);
+        fs::create_dir_all(image.parent().expect("the workspaces directory"))
+            .expect("the workspaces directory");
+        fs::write(&image, b"an earlier agent's files").expect("the earlier image");
+        let fallback = registry.fork_workspace("r7", 40, true);
+        assert_ne!(
+            fallback, image,
+            "an earlier agent's image is never overwritten"
+        );
+        assert!(fallback.starts_with(registry.run_dir("r7")));
+        assert_eq!(
+            registry.fork_workspace("r7", 40, false),
+            registry.run_dir("r7").join("fork-40.ext4")
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }
 

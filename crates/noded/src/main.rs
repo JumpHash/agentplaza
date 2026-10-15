@@ -32,6 +32,7 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    --workspace, for the runs' image copies
                    (default /tmp/plaza-vsock on Linux and macOS, the state directory's
                    vsock on Windows; VM i's muxer binds DIR/vm{cid})
+  --snapshot-dir DIR keep VM snapshots in DIR (default: DIR/snapshots of --persist-dir; none without either)
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
@@ -214,6 +215,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
+            "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
             "--agents-cid-base" => {
                 config.agents_cid_base = value("--agents-cid-base")?
@@ -250,6 +252,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+    // Snapshots live with the persistent state unless the flag names another directory.
+    if config.snapshot_dir.is_none() {
+        config.snapshot_dir = config.persist_dir.as_ref().map(|dir| dir.join("snapshots"));
     }
     Ok(config)
 }
