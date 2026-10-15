@@ -717,7 +717,7 @@ impl Queues {
         match dispatch_step(status, app.control.paused()) {
             DispatchStep::Hold => return,
             DispatchStep::Wake => {
-                crate::sleep::wake(app, cid);
+                crate::sleep::wake_with(app, cid, crate::sleep::WakePriority::Background);
                 return;
             }
             DispatchStep::Send => {}

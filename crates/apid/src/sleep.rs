@@ -15,9 +15,8 @@
 //! POST /v1/agents/{cid}/sleep → {ok}      (the owner puts it to sleep now)
 //! POST /v1/agents/{cid}/wake  → {ok}      (the owner wakes it)
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::mpsc::{SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, Router};
@@ -107,8 +106,15 @@ pub fn touch(app: &App, cid: u64) {
     book().touched.insert(cid, apz_plaza::now_ms());
 }
 
-/// Starts waking `cid` if it is asleep (returns at once; idempotent while a wake is in flight).
+/// Starts waking `cid` if it is asleep (returns at once; idempotent while a wake is in flight). An
+/// interactive wake: a person or a tool call is waiting for the agent.
 pub fn wake(app: &App, cid: u64) {
+    wake_with(app, cid, WakePriority::Interactive);
+}
+
+/// Starts waking `cid` if it is asleep, in `priority`'s lane (returns at once; idempotent while a
+/// wake is in flight).
+pub fn wake_with(app: &App, cid: u64, priority: WakePriority) {
     if app
         .agents
         .get(cid)
@@ -143,7 +149,7 @@ pub fn wake(app: &App, cid: u64) {
         eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
         return;
     }
-    if wake_queue().try_send(cid).is_err() {
+    if !enqueue(cid, priority) {
         book().waking.remove(&cid);
         forget_wake(cid);
         crate::metrics::WAKES_REFUSED.inc();
@@ -159,38 +165,165 @@ const WAKE_WORKERS: usize = 8;
 /// the next request or dispatch asks again.
 const WAKE_QUEUE: usize = 4096;
 
-/// The queue of agents to wake, drained by the wake workers. Started on first use.
-static WAKES: OnceLock<SyncSender<u64>> = OnceLock::new();
+/// How many wakes may run against one node at a time. A node restores its VMs a few at a time; a
+/// wake beyond this waits, and the wakes for the other nodes go ahead.
+const WAKES_PER_NODE: usize = 4;
 
-/// The wake queue's sender. The first call starts [`WAKE_WORKERS`] named worker threads.
-fn wake_queue() -> &'static SyncSender<u64> {
-    WAKES.get_or_init(|| {
-        let (tx, rx) = sync_channel::<u64>(WAKE_QUEUE);
-        let rx = Arc::new(Mutex::new(rx));
-        for i in 0..WAKE_WORKERS {
-            let rx = Arc::clone(&rx);
-            std::thread::Builder::new()
-                .name(format!("apid-wake-{i}"))
-                .spawn(move || {
-                    loop {
-                        let cid = {
-                            let queue = rx.lock().unwrap_or_else(PoisonError::into_inner);
-                            match queue.recv() {
-                                Ok(cid) => cid,
-                                Err(_) => break,
-                            }
-                        };
-                        run_wake(cid);
-                    }
-                })
-                .expect("apid: cannot start a wake worker");
-        }
-        tx
-    })
+/// How urgent a wake is. An interactive wake (the owner, a chat, a tool call waiting on the agent)
+/// is taken before a background one (the scheduler's dispatch of queued work nobody is waiting on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WakePriority {
+    Interactive,
+    Background,
 }
 
-/// Runs one wake on a worker: noded restores `cid`'s VM, then the wake is recorded.
-fn run_wake(cid: u64) {
+/// The wakes waiting for a worker, in two FIFO lanes, and how many wakes run against each node.
+/// Pure: [`WAKES`] wraps it in a lock, and the tests drive it directly.
+struct WakeQueue {
+    capacity: usize,
+    interactive: VecDeque<u64>,
+    background: VecDeque<u64>,
+    /// Wakes running per node. A node with none has no entry.
+    running: BTreeMap<String, usize>,
+}
+
+impl WakeQueue {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            interactive: VecDeque::new(),
+            background: VecDeque::new(),
+            running: BTreeMap::new(),
+        }
+    }
+
+    fn queued(&self) -> usize {
+        self.interactive.len() + self.background.len()
+    }
+
+    /// Queues `cid` in its lane. False when the queue is full: the wake is refused.
+    fn push(&mut self, cid: u64, priority: WakePriority) -> bool {
+        if self.queued() >= self.capacity {
+            return false;
+        }
+        match priority {
+            WakePriority::Interactive => self.interactive.push_back(cid),
+            WakePriority::Background => self.background.push_back(cid),
+        }
+        true
+    }
+
+    /// Takes the next wake a worker may run: the first in the interactive lane whose node has a free
+    /// slot, else the first in the background lane, each lane in arrival order. A wake whose node is
+    /// full stays where it is, so it keeps its place at the front. Returns the agent and its node;
+    /// the node's slot is held until [`WakeQueue::finish`].
+    fn admit(&mut self, node_of: &dyn Fn(u64) -> String) -> Option<(u64, String)> {
+        admit_from(&mut self.interactive, &mut self.running, node_of)
+            .or_else(|| admit_from(&mut self.background, &mut self.running, node_of))
+    }
+
+    /// Gives back the slot a finished wake held on `node`.
+    fn finish(&mut self, node: &str) {
+        if let Some(n) = self.running.get_mut(node) {
+            *n -= 1;
+            if *n == 0 {
+                self.running.remove(node);
+            }
+        }
+    }
+}
+
+/// The first wake in `lane` whose node has a free slot, taken out of the lane and counted against
+/// that node.
+fn admit_from(
+    lane: &mut VecDeque<u64>,
+    running: &mut BTreeMap<String, usize>,
+    node_of: &dyn Fn(u64) -> String,
+) -> Option<(u64, String)> {
+    let (pos, node) = lane.iter().enumerate().find_map(|(pos, &cid)| {
+        let node = node_of(cid);
+        (running.get(&node).copied().unwrap_or(0) < WAKES_PER_NODE).then_some((pos, node))
+    })?;
+    let cid = lane.remove(pos)?;
+    *running.entry(node.clone()).or_insert(0) += 1;
+    Some((cid, node))
+}
+
+/// The wakes waiting for a worker. Locked for a push, an admission or a finish, never across a noded call.
+static WAKES: Mutex<WakeQueue> = Mutex::new(WakeQueue::new(WAKE_QUEUE));
+/// Signalled when a wake is queued or a node's slot frees, so an idle worker looks again.
+static WAKE_READY: Condvar = Condvar::new();
+/// Set once the wake workers have started.
+static WORKERS: OnceLock<()> = OnceLock::new();
+
+fn wakes() -> MutexGuard<'static, WakeQueue> {
+    WAKES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Queues `cid` in `priority`'s lane; false when the queue is full. The first call starts the workers.
+fn enqueue(cid: u64, priority: WakePriority) -> bool {
+    WORKERS.get_or_init(|| {
+        for i in 0..WAKE_WORKERS {
+            std::thread::Builder::new()
+                .name(format!("apid-wake-{i}"))
+                .spawn(wake_worker)
+                .expect("apid: cannot start a wake worker");
+        }
+    });
+    let pushed = wakes().push(cid, priority);
+    if pushed {
+        WAKE_READY.notify_all();
+    }
+    pushed
+}
+
+/// The wakes waiting for a worker, by lane: (interactive, background). Read by `GET /v1/metrics`.
+pub fn queued_by_lane() -> (usize, usize) {
+    let queue = wakes();
+    (queue.interactive.len(), queue.background.len())
+}
+
+/// A wake a worker has admitted. It holds its node's slot until it is dropped.
+struct Admitted {
+    cid: u64,
+    node: String,
+}
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        wakes().finish(&self.node);
+        WAKE_READY.notify_all();
+    }
+}
+
+/// Waits until a wake can run (its node has a free slot), then takes it. The node is resolved from
+/// the roster now, the same way the noded call that follows will find it.
+fn next_wake(app: &App) -> Admitted {
+    let node_of = |cid: u64| crate::fleet::node_of(app, cid);
+    let mut queue = wakes();
+    loop {
+        if let Some((cid, node)) = queue.admit(&node_of) {
+            return Admitted { cid, node };
+        }
+        queue = WAKE_READY
+            .wait(queue)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+/// A wake worker: runs admitted wakes, one at a time, for the life of the process.
+fn wake_worker() {
+    let Some(hub) = HUB.get().and_then(Weak::upgrade) else {
+        return;
+    };
+    loop {
+        let admitted = next_wake(&hub);
+        run_wake(admitted.cid, &admitted.node);
+    }
+}
+
+/// Runs one wake on a worker, against `node`: noded restores `cid`'s VM, then the wake is recorded.
+fn run_wake(cid: u64, node: &str) {
     let dequeued = std::time::Instant::now();
     if let Some(times) = book().wake_started.get_mut(&cid) {
         times.dequeued = Some(dequeued);
@@ -202,7 +335,7 @@ fn run_wake(cid: u64) {
         return;
     };
     let started = std::time::Instant::now();
-    let result = noded_post(&hub, cid, "wake");
+    let result = noded_post(&hub, node, cid, "wake");
     crate::metrics::WAKE_NODE.observe(started.elapsed());
     book().waking.remove(&cid);
     match result {
@@ -450,7 +583,7 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
         return Err(Response::error(409, &format!("agent {cid} has work")));
     }
     let started = std::time::Instant::now();
-    let result = noded_post(app, cid, "sleep");
+    let result = noded_post(app, &crate::fleet::node_of(app, cid), cid, "sleep");
     let elapsed = started.elapsed();
     book().sleeping.remove(&cid);
     match result {
@@ -494,13 +627,13 @@ fn publish(app: &App, cid: u64) {
     }
 }
 
-/// Asks noded to run `action` (`sleep` or `wake`) on the agent's VM; the answer's body on success.
-/// This calls noded directly rather than through `lifecycle::noded_call`, which discards the body
-/// (the snapshot) and gives no text to log when noded refuses.
-fn noded_post(app: &App, cid: u64, action: &str) -> Result<Value, String> {
+/// Asks noded on `node` to run `action` (`sleep` or `wake`) on the agent's VM; the answer's body on
+/// success. This calls noded directly rather than through `lifecycle::noded_call`, which discards the
+/// body (the snapshot) and gives no text to log when noded refuses.
+fn noded_post(app: &App, node: &str, cid: u64, action: &str) -> Result<Value, String> {
     let (run, vm) = place(app, cid).map_err(|_| format!("agent {cid} has no VM on this node"))?;
     let path = format!("/v1/runs/{run}/vms/{vm}/{action}");
-    match crate::fleet::noded_for(app, cid, "POST", &path, Some(&json!({}))) {
+    match crate::fleet::noded(app, node, "POST", &path, Some(&json!({}))) {
         Ok((code, body)) if (200..300).contains(&code) => Ok(body),
         Ok((code, body)) => Err(format!("noded {action} answered {code}: {body}")),
         Err(err) => Err(format!("noded unreachable: {err}")),
@@ -549,9 +682,56 @@ fn wake_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 
 #[cfg(test)]
 mod tests {
+    /// The node of each agent in the queue tests: cid 6 is on "b", the others on "a".
+    fn node_a_b(cid: u64) -> String {
+        if cid == 6 { "b" } else { "a" }.to_string()
+    }
+
     #[test]
-    fn wake_queue_is_one_shared_sender() {
-        assert!(std::ptr::eq(super::wake_queue(), super::wake_queue()));
+    fn interactive_wakes_are_taken_before_background_ones() {
+        let mut queue = WakeQueue::new(8);
+        assert!(queue.push(1, WakePriority::Background));
+        assert!(queue.push(2, WakePriority::Background));
+        assert!(queue.push(3, WakePriority::Interactive));
+        let order: Vec<u64> =
+            std::iter::from_fn(|| queue.admit(&node_a_b).map(|(cid, _)| cid)).collect();
+        assert_eq!(order, vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn a_wake_beyond_the_bound_is_refused() {
+        let mut queue = WakeQueue::new(2);
+        assert!(queue.push(1, WakePriority::Background));
+        assert!(queue.push(2, WakePriority::Interactive));
+        assert!(
+            !queue.push(3, WakePriority::Interactive),
+            "full: interactive is refused too"
+        );
+        assert!(!queue.push(4, WakePriority::Background));
+        assert_eq!(queue.queued(), 2);
+        // Taking one out makes room again.
+        assert_eq!(queue.admit(&node_a_b), Some((2, "a".to_string())));
+        assert!(queue.push(5, WakePriority::Background));
+    }
+
+    #[test]
+    fn a_full_nodes_wake_waits_while_another_nodes_goes_ahead() {
+        let mut queue = WakeQueue::new(16);
+        for cid in 1..=5 {
+            assert!(queue.push(cid, WakePriority::Interactive));
+        }
+        assert!(queue.push(6, WakePriority::Background));
+        // Four wakes take node a's slots. The fifth (cid 5) waits, and node b's background wake goes
+        // ahead of it.
+        for expected in [1, 2, 3, 4] {
+            assert_eq!(queue.admit(&node_a_b).map(|(cid, _)| cid), Some(expected));
+        }
+        assert_eq!(queue.admit(&node_a_b), Some((6, "b".to_string())));
+        assert_eq!(queue.admit(&node_a_b), None, "node a is full: cid 5 waits");
+        assert_eq!(queue.queued(), 1);
+        // A finished wake frees its slot, and cid 5 is taken.
+        queue.finish("a");
+        assert_eq!(queue.admit(&node_a_b), Some((5, "a".to_string())));
     }
 
     use super::*;

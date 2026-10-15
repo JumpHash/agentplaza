@@ -55,8 +55,18 @@ pub fn routes(router: Router<App>) -> Router<App> {
             &SLEEP,
         ]);
         text.push_str(&agents_by_status(app));
+        text.push_str(&wakes_queued());
         Response::new(200, "text/plain; version=0.0.4", text)
     })
+}
+
+/// `apz_hub_wakes_queued{lane}`: the wakes waiting for a worker, by lane, counted at scrape time.
+fn wakes_queued() -> String {
+    let (interactive, background) = crate::sleep::queued_by_lane();
+    format!(
+        "# HELP apz_hub_wakes_queued Agent wakes waiting for a worker, by lane\n# TYPE apz_hub_wakes_queued gauge\n\
+         apz_hub_wakes_queued{{lane=\"interactive\"}} {interactive}\napz_hub_wakes_queued{{lane=\"background\"}} {background}\n"
+    )
 }
 
 /// `apz_hub_agents{status="..."}`: the roster by status, counted at scrape time.
