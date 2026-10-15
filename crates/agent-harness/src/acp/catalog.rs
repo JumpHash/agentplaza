@@ -36,7 +36,8 @@ pub struct Entry {
     pub refused_modes: &'static [&'static str],
 }
 
-/// Every engine the harness knows, in the order they are listed to the model.
+/// Every engine the harness knows, in the order they are listed to the model. (Gemini CLI speaks ACP
+/// too, `gemini --acp`, but the gateway does not relay Gemini models yet, so it is not listed.)
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -67,16 +68,6 @@ pub const ENGINES: &[Entry] = &[
         args: &["acp"],
         model: ModelVia::ConfigOption,
         refused_modes: &[],
-    },
-    Entry {
-        id: "gemini",
-        package: "@google/gemini-cli",
-        version: "0.62.0",
-        integrity: "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww==",
-        binary: "gemini",
-        args: &["--acp"],
-        model: ModelVia::Flag("--model"),
-        refused_modes: &["yolo"],
     },
 ];
 
