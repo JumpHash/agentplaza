@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -25,7 +26,8 @@ use super::{
 use crate::devices::virtio::VirtioError;
 use crate::devices::virtio::ack_feature_page;
 use crate::devices::virtio::mmio::{
-    QueueConfig, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtioDevice,
+    DeviceSnapshot, QueueConfig, QueuePosition, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
+    VirtioDevice,
 };
 use crate::devices::virtio::queue::{DescriptorChain, Queue};
 use crate::vstate::memory::{Bytes, GuestAddress, GuestMemoryMmap};
@@ -255,6 +257,61 @@ impl VirtioDevice for VirtioBalloon {
         Ok(())
     }
 
+    fn acked_features(&self) -> u64 {
+        self.acked_features
+    }
+
+    fn save_device_state(&self) -> DeviceSnapshot {
+        // The host's target and the guest's `actual` are host-side state, kept
+        // before activation too; the rings have positions only once activated.
+        let extra = BalloonSnapshot {
+            num_pages: self.num_pages,
+            actual: self.actual,
+            stats: self
+                .stats
+                .iter()
+                .map(|(tag, value)| (*tag, *value))
+                .collect(),
+            stats_held: self.stats_held,
+        };
+        DeviceSnapshot {
+            queues: if self.mem.is_some() {
+                self.rings.iter().map(queue_position).collect()
+            } else {
+                Vec::new()
+            },
+            // The struct holds only integers and a list of pairs, which always
+            // serializes to JSON.
+            extra: serde_json::to_value(extra).expect("balloon snapshot state serializes"),
+        }
+    }
+
+    fn restore_device_state(&mut self, state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        let expected = if self.mem.is_some() {
+            BALLOON_QUEUE_NUM
+        } else {
+            0
+        };
+        if state.queues.len() != expected {
+            return Err(BalloonError::SnapshotQueueCount {
+                expected,
+                got: state.queues.len(),
+            }
+            .into());
+        }
+        let extra: BalloonSnapshot =
+            serde_json::from_value(state.extra.clone()).map_err(BalloonError::from)?;
+        self.num_pages = extra.num_pages;
+        self.actual = extra.actual;
+        self.stats = extra.stats.into_iter().collect();
+        self.stats_held = extra.stats_held;
+        for (ring, position) in self.rings.iter_mut().zip(&state.queues) {
+            ring.next_avail = Wrapping(position.next_avail);
+            ring.next_used = Wrapping(position.next_used);
+        }
+        Ok(())
+    }
+
     fn write_config(&mut self, offset: u64, data: &[u8]) {
         VirtioBalloon::write_config(self, offset, data);
     }
@@ -402,6 +459,15 @@ impl VirtioDevice for SharedBalloon {
     fn notify_queue(&mut self, index: u32) -> Result<(), VirtioError> {
         self.lock().notify_queue(index)
     }
+    fn acked_features(&self) -> u64 {
+        self.lock().acked_features
+    }
+    fn save_device_state(&self) -> DeviceSnapshot {
+        self.lock().save_device_state()
+    }
+    fn restore_device_state(&mut self, state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        self.lock().restore_device_state(state)
+    }
     fn reset(&mut self) {
         let regs = {
             let mut balloon = self.lock();
@@ -409,6 +475,27 @@ impl VirtioDevice for SharedBalloon {
             balloon.queue_regs
         };
         self.queue_regs = regs;
+    }
+}
+
+/// The balloon's host-side state, as the snapshot's `extra` carries it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BalloonSnapshot {
+    /// The host's target size, in pages.
+    num_pages: u32,
+    /// The size the guest has given back, in pages.
+    actual: u32,
+    /// The latest stats value per tag.
+    stats: Vec<(u16, u64)>,
+    /// The stats buffer the guest filled and the host has not yet asked to refresh.
+    stats_held: Option<u16>,
+}
+
+/// A queue's position, as the snapshot carries it.
+fn queue_position(queue: &Queue) -> QueuePosition {
+    QueuePosition {
+        next_avail: queue.next_avail.0,
+        next_used: queue.next_used.0,
     }
 }
 
@@ -604,6 +691,94 @@ mod tests {
         mem.write_slice(data, GuestAddress(BUFFER)).unwrap();
         vq.set_desc(head, BUFFER, data.len() as u32, 0, 0);
         vq.publish(head);
+    }
+
+    /// The balloon's four queues, one page apart, as guest-side virtqueues.
+    fn balloon_queues(mem: &GuestMemoryMmap) -> Vec<VirtQueue<'_>> {
+        (0..BALLOON_QUEUE_NUM as u64)
+            .map(|index| VirtQueue::new(GuestAddress(index * PAGE_SIZE as u64), mem, 16))
+            .collect()
+    }
+
+    /// Programs the driver's registers for `vqs` and activates `balloon` over `mem`.
+    fn activate_over(balloon: &mut VirtioBalloon, mem: &GuestMemoryMmap, vqs: &[VirtQueue]) {
+        for (regs, vq) in balloon.queues_mut().iter_mut().zip(vqs) {
+            regs.size = 16;
+            regs.ready = true;
+            regs.desc = vq.desc_table_addr().0;
+            regs.avail = vq.avail_ring_addr().0;
+            regs.used = vq.used_ring_addr().0;
+        }
+        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        balloon
+            .activate(mem, &irq)
+            .expect("the balloon activates against guest memory");
+    }
+
+    #[test]
+    fn a_snapshot_restores_queue_positions_and_host_state() {
+        let mem = default_mem();
+        let vqs = balloon_queues(&mem);
+        let features = VirtioBalloon::new().features();
+
+        let mut source = VirtioBalloon::new();
+        source.set_target_pages(0x1234);
+        source.write_config(4, &9u32.to_le_bytes());
+        source
+            .ack_features_by_page(0, features as u32)
+            .expect("the offered features acknowledge");
+        source
+            .ack_features_by_page(1, (features >> 32) as u32)
+            .expect("the offered features acknowledge");
+        activate_over(&mut source, &mem, &vqs);
+        // Positions as served buffers leave them, a stats value and a held buffer.
+        source.rings[STATS_QUEUE].next_avail = Wrapping(3);
+        source.rings[STATS_QUEUE].next_used = Wrapping(2);
+        source.stats.insert(STAT_TOTAL_MEMORY, 4096);
+        source.stats_held = Some(7);
+        let saved = source.save_device_state();
+        assert_eq!(saved.queues.len(), BALLOON_QUEUE_NUM);
+
+        let mut restored = VirtioBalloon::new();
+        activate_over(&mut restored, &mem, &vqs);
+        restored
+            .restore_device_state(&saved)
+            .expect("the snapshot restores onto the activated balloon");
+        assert_eq!(restored.save_device_state(), saved);
+        assert_eq!(restored.target_pages(), 0x1234);
+        assert_eq!(restored.actual_pages(), 9);
+    }
+
+    #[test]
+    fn a_balloon_saves_no_queue_positions_before_activation() {
+        let mut balloon = VirtioBalloon::new();
+        balloon.set_target_pages(42);
+        let saved = balloon.save_device_state();
+        assert!(saved.queues.is_empty());
+        assert_eq!(saved.extra["num_pages"], 42);
+
+        let mut restored = VirtioBalloon::new();
+        restored
+            .restore_device_state(&saved)
+            .expect("an inactive balloon restores an inactive snapshot");
+        assert_eq!(restored.target_pages(), 42);
+    }
+
+    #[test]
+    fn restore_refuses_a_snapshot_with_the_wrong_queue_count() {
+        let mem = default_mem();
+        let vqs = balloon_queues(&mem);
+        let mut balloon = VirtioBalloon::new();
+        activate_over(&mut balloon, &mem, &vqs);
+        let mut state = balloon.save_device_state();
+        state.queues.pop();
+        assert!(matches!(
+            balloon.restore_device_state(&state),
+            Err(VirtioError::Balloon(BalloonError::SnapshotQueueCount {
+                expected: 4,
+                got: 3
+            }))
+        ));
     }
 
     #[test]

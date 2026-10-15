@@ -471,7 +471,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::pal::{AsRawFd, RawFd};
 
     use super::*;
@@ -485,7 +485,7 @@ mod tests {
     /// pre-staged headers and records every TX packet's header+payload it is
     /// handed. This is the shape the real muxer backend will fill in.
     #[derive(Debug, Default)]
-    struct FakeBackend {
+    pub(crate) struct FakeBackend {
         pending_rx: bool,
         rx_len: u32,
         rx_op: u16,

@@ -318,6 +318,11 @@ impl VirtioBlock {
         self.config_space.as_bytes()
     }
 
+    /// The request queue, read by the snapshot for its positions.
+    pub fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
     /// The request queue, for the transport to program the driver's registers
     /// into before activation.
     pub fn queue_mut(&mut self) -> &mut Queue {
