@@ -122,6 +122,15 @@ pub enum MemoryError {
     /// Memory region has zero size
     #[error("Memory region has zero size")]
     ZeroSize,
+    /// A file-backed memory region's offset or length is not a multiple of the host page size
+    #[error("File-backed memory region at offset {offset} of length {len} is not page aligned")]
+    UnalignedFileRegion { offset: u64, len: u64 },
+    /// The backing file is shorter than the regions laid out in it
+    #[error("Backing file of {file_len} bytes is shorter than the {needed} bytes its regions need")]
+    FileTooShort { file_len: u64, needed: u64 },
+    /// Cannot read the length of the backing file
+    #[error("Cannot read the backing file's length: {0}")]
+    FileLength(std::io::Error),
     /// Failed to allocate guest memory with VirtualAlloc
     #[cfg(windows)]
     #[error("failed to allocate guest memory: {0}")]
@@ -542,8 +551,102 @@ pub fn map_private(
     file: &std::fs::File,
     regions: &[crate::vstate::snapshot::RegionMeta],
 ) -> Result<Vec<GuestRegionMmap>, MemoryError> {
-    let _ = (file, regions);
-    todo!("private file-backed guest memory")
+    let page = usize_to_u64(host_page_size());
+    let file_len = file.metadata().map_err(MemoryError::FileLength)?.len();
+    regions
+        .iter()
+        .map(|region| {
+            // `mmap` takes page-aligned offsets and maps whole pages, so a region that is not
+            // page-aligned could only be mapped with its tail silently rounded into the next
+            // region. Refuse it instead.
+            if region.len == 0 {
+                return Err(MemoryError::ZeroSize);
+            }
+            if region.len % page != 0 || region.offset % page != 0 {
+                return Err(MemoryError::UnalignedFileRegion {
+                    offset: region.offset,
+                    len: region.len,
+                });
+            }
+            let needed = region
+                .offset
+                .checked_add(region.len)
+                .ok_or(MemoryError::OffsetTooLarge)?;
+            if needed > file_len {
+                return Err(MemoryError::FileTooShort { file_len, needed });
+            }
+            map_file_region(
+                GuestAddress(region.guest_addr),
+                file,
+                region.offset,
+                region.len,
+            )
+        })
+        .collect()
+}
+
+/// Maps `len` bytes of `file` from `offset` privately (copy-on-write) at a host address of its own,
+/// wrapped the way [`GuestRegionMmap::allocate`] wraps an anonymous mapping. The caller has checked
+/// that `offset` and `len` are page multiples and that the file covers them.
+#[cfg(target_os = "linux")]
+fn map_file_region(
+    guest_base: GuestAddress,
+    file: &std::fs::File,
+    offset: u64,
+    len: u64,
+) -> Result<GuestRegionMmap, MemoryError> {
+    use std::os::fd::AsRawFd;
+
+    let size = u64_to_usize(len);
+    let file_offset = libc::off_t::try_from(offset).map_err(|_| MemoryError::OffsetTooLarge)?;
+    // SAFETY: a new mapping at a kernel-chosen address (no fixed address, so it overlaps nothing)
+    // of `size` bytes of `file` from `file_offset`. The file covers the range, which the caller
+    // checked, so no access beyond its end can fault with SIGBUS. `MAP_PRIVATE` makes the guest's
+    // writes copy-on-write, so the file itself is never modified. The returned address is owned by
+    // `RawGuestRegionMmap`, which unmaps it on drop.
+    let addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+            file.as_raw_fd(),
+            file_offset,
+        )
+    };
+    if addr == libc::MAP_FAILED {
+        return Err(MemoryError::MmapRegionError(
+            vm_memory::mmap::MmapRegionError::Mmap(std::io::Error::last_os_error()),
+        ));
+    }
+    // From here on `region` owns the mapping: if the wrapping below fails, dropping it unmaps.
+    let region = RawGuestRegionMmap {
+        mmap_address: addr.cast::<u8>(),
+        mmap_size: size,
+    };
+
+    let mut builder = vm_memory::mmap::MmapRegionBuilder::new(size)
+        .with_mmap_prot(libc::PROT_READ | libc::PROT_WRITE)
+        .with_mmap_flags(libc::MAP_PRIVATE | libc::MAP_NORESERVE);
+
+    // SAFETY: `region.mmap_address` is the start of the `size`-byte mapping made above, which
+    // `region` owns and outlives the `MmapRegion` built from it, and the flags passed to the
+    // builder are the ones it was mapped with.
+    unsafe {
+        builder = builder.with_raw_mmap_pointer(region.mmap_address);
+    }
+
+    let mmap_region = builder.build().map_err(MemoryError::MmapRegionError)?;
+    // Same checks as `GuestRegionMmap::allocate`: the mapping is not owned by the `MmapRegion`,
+    // and both name the same address.
+    assert!(!mmap_region.owned());
+    assert_eq!(region.mmap_address, mmap_region.as_ptr());
+
+    Ok(GuestRegionMmap {
+        _region: region,
+        proxy: vm_memory::GuestRegionMmap::new(mmap_region, guest_base)
+            .ok_or(MemoryError::VmMemoryError)?,
+    })
 }
 
 #[cfg(test)]
