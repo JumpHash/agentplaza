@@ -11,12 +11,19 @@
 //!   the web test suite checks its own formatter against the same file.
 //! * [`tabs`] — the tab list, groups and which tabs apply to a scope kind.
 //! * [`compare`] — comparison overlays and change percentages.
+//! * [`source`] — what the composers read ([`source::Source`]); the hub implements it over its store.
+//! * [`compose`] — one composer per tab, the shared panel helpers, and "what changed around then".
+//! * [`fixture`] — a [`source::Source`] of generated data: the design review fixture (`?fixture=1`) and the
+//!   composers' tests.
 
 #![forbid(unsafe_code)]
 
 pub mod compare;
+pub mod compose;
+pub mod fixture;
 pub mod format;
 pub mod model;
+pub mod source;
 pub mod tabs;
 
 pub use apz_metrics::catalog::Unit;

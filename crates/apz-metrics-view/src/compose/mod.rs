@@ -5,9 +5,9 @@
 //! (a read becomes a chart with its comparison overlay and annotations), [`Ctx::tile`], [`Ctx::spark`],
 //! [`panel`], and the window maths.
 
+use apz_metrics::Event;
 use apz_metrics::catalog::Unit;
 use apz_metrics::query::AggFn;
-use apz_metrics::Event;
 
 use crate::compare::{Compare, change_pct};
 use crate::format::{format, time_label};
@@ -69,12 +69,20 @@ pub struct Ctx {
 
 /// The range in ms of a range name (24 h for an unknown one).
 pub fn range_ms(range: &str) -> u64 {
-    RANGES.iter().find(|r| r.0 == range).map(|r| r.1).unwrap_or(86_400_000)
+    RANGES
+        .iter()
+        .find(|r| r.0 == range)
+        .map(|r| r.1)
+        .unwrap_or(86_400_000)
 }
 
 /// Points per series of a range name.
 pub fn range_points(range: &str) -> u32 {
-    POINTS.iter().find(|r| r.0 == range).map(|r| r.1).unwrap_or(144)
+    POINTS
+        .iter()
+        .find(|r| r.0 == range)
+        .map(|r| r.1)
+        .unwrap_or(144)
 }
 
 impl Ctx {
@@ -82,13 +90,18 @@ impl Ctx {
     pub fn new(q: &ViewQuery, src: &dyn Source) -> Ctx {
         let now = src.now_ms();
         let range = range_ms(&q.range);
-        let end = if q.shift < 0 { now.saturating_sub(range * q.shift.unsigned_abs() as u64) } else { now };
+        let end = if q.shift < 0 {
+            now.saturating_sub(range * q.shift.unsigned_abs() as u64)
+        } else {
+            now
+        };
         let start = end.saturating_sub(range);
         let points = range_points(&q.range) as u64;
         let (from, to) = match q.zoom {
-            Some((a, b)) if b > a && (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b) => {
-                (start + (a * range as f64) as u64, start + (b * range as f64) as u64)
-            }
+            Some((a, b)) if b > a && (0.0..=1.0).contains(&a) && (0.0..=1.0).contains(&b) => (
+                start + (a * range as f64) as u64,
+                start + (b * range as f64) as u64,
+            ),
             _ => (start, end),
         };
         let step = ((to - from) / points.max(1)).max(10_000);
@@ -104,7 +117,11 @@ impl Ctx {
         let annotations = src
             .events("global", from, to, apz_metrics::ANNOTATION_KINDS, 50)
             .into_iter()
-            .map(|e| Annotation { t_ms: e.t_ms, kind: e.kind.clone(), label: annotation_label(&e) })
+            .map(|e| Annotation {
+                t_ms: e.t_ms,
+                kind: e.kind.clone(),
+                label: annotation_label(&e),
+            })
             .collect();
         Ctx {
             kind: scope.kind.clone(),
@@ -146,14 +163,30 @@ impl Ctx {
 
     /// The same read over the comparison window and scope.
     pub fn cmp_read(&self, r: &Read) -> Read {
-        Read { scope: self.cmp_scope.clone(), from_ms: self.cmp_from_ms, to_ms: self.cmp_to_ms, ..r.clone() }
+        Read {
+            scope: self.cmp_scope.clone(),
+            from_ms: self.cmp_from_ms,
+            to_ms: self.cmp_to_ms,
+            ..r.clone()
+        }
     }
 
     /// A chart of a read: one series per group in chart colours, a dashed comparison overlay (the stacked total,
     /// or the first two series), and the view's annotations.
-    pub fn chart(&self, src: &dyn Source, read: &Read, unit: Unit, stacked: bool, height: u16) -> Chart {
+    pub fn chart(
+        &self,
+        src: &dyn Source,
+        read: &Read,
+        unit: Unit,
+        stacked: bool,
+        height: u16,
+    ) -> Chart {
         let groups = src.series(read);
-        let series: Vec<Series> = groups.iter().enumerate().map(|(i, g)| series_of(g, Tone::chart(i))).collect();
+        let series: Vec<Series> = groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| series_of(g, Tone::chart(i)))
+            .collect();
         let mut ghosts = Vec::new();
         if self.comparing() && !groups.is_empty() {
             let before = src.series(&self.cmp_read(read));
@@ -209,7 +242,10 @@ impl Ctx {
 
     /// The time axis of the view.
     pub fn x(&self) -> XAxis {
-        XAxis::Time { start_ms: self.from_ms, step_ms: self.step_ms }
+        XAxis::Time {
+            start_ms: self.from_ms,
+            step_ms: self.step_ms,
+        }
     }
 
     /// A stat tile: the value of a metric over the window (formatted), its change against the comparison, and a
@@ -228,7 +264,13 @@ impl Ctx {
     ) -> Tile {
         let now = src.scalar(metric, &self.q.scope, self.from_ms, self.to_ms, agg);
         let before = if self.comparing() {
-            src.scalar(metric, &self.cmp_scope, self.cmp_from_ms, self.cmp_to_ms, agg)
+            src.scalar(
+                metric,
+                &self.cmp_scope,
+                self.cmp_from_ms,
+                self.cmp_to_ms,
+                agg,
+            )
         } else {
             None
         };
@@ -260,7 +302,11 @@ impl Ctx {
             group: GroupBy::All,
             top: None,
         };
-        src.series(&read).into_iter().next().map(|g| g.values.iter().map(|v| v.unwrap_or(0.0)).collect()).unwrap_or_default()
+        src.series(&read)
+            .into_iter()
+            .next()
+            .map(|g| g.values.iter().map(|v| v.unwrap_or(0.0)).collect())
+            .unwrap_or_default()
     }
 
     /// A time in the console's zone: "14:20" (or "Oct 16 14:20" when not today).
@@ -287,7 +333,14 @@ pub fn panel(id: &str, title: &str, sub: &str, span: u8, body: Body) -> Panel {
 
 /// A chart series of a group.
 pub fn series_of(g: &Group, tone: Tone) -> Series {
-    Series { name: g.name.clone(), tone, dash: false, values: g.values.clone(), gap_reason: None, scope: g.scope.clone() }
+    Series {
+        name: g.name.clone(),
+        tone,
+        dash: false,
+        values: g.values.clone(),
+        gap_reason: None,
+        scope: g.scope.clone(),
+    }
 }
 
 /// The status of a fraction against warn and crit thresholds.
@@ -308,7 +361,11 @@ pub fn empty(text: &str) -> Body {
 
 /// What an annotation reads as.
 pub fn annotation_label(e: &Event) -> String {
-    if e.detail.is_empty() { e.kind.replace('_', " ") } else { e.detail.clone() }
+    if e.detail.is_empty() {
+        e.kind.replace('_', " ")
+    } else {
+        e.detail.clone()
+    }
 }
 
 /// The scope info of an id: its kind, label, path from Global and its siblings, from the source's tree.
@@ -347,36 +404,41 @@ pub fn scope_info(id: &str, src: &dyn Source) -> ScopeInfo {
     }
     path.push(("Global".into(), "global".into()));
     path.reverse();
-    // Siblings: same kind, same parent (the node just above in the path).
-    let parent = path.len().checked_sub(2).map(|i| path[i].1.clone());
+    // Siblings: same kind, same group and the same parent.
+    let parent = parent_of(&tree, pos);
     let siblings = tree
         .iter()
         .enumerate()
-        .filter(|(_, n)| n.kind == me.kind && n.group == me.group && n.depth == me.depth)
-        .filter(|(i, _)| {
-            let mut d = me.depth;
-            let mut p = None;
-            for a in tree[..*i].iter().rev() {
-                if d == 0 {
-                    break;
-                }
-                if a.depth < d && a.group == me.group {
-                    p = Some(a.id.clone());
-                    d = a.depth;
-                    break;
-                }
-            }
-            me.depth == 0 || p == parent
-        })
+        .filter(|(i, n)| n.kind == me.kind && n.group == me.group && parent_of(&tree, *i) == parent)
         .map(|(_, n)| (n.label.clone(), n.id.clone()))
         .collect();
-    ScopeInfo { id: me.id.clone(), kind: me.kind.clone(), label: me.label.clone(), path, siblings }
+    ScopeInfo {
+        id: me.id.clone(),
+        kind: me.kind.clone(),
+        label: me.label.clone(),
+        path,
+        siblings,
+    }
+}
+
+/// The id of the nearest node before `i` in the same group with a smaller depth.
+fn parent_of(tree: &[ScopeNode], i: usize) -> Option<String> {
+    let me = &tree[i];
+    tree[..i]
+        .iter()
+        .rev()
+        .find(|n| n.group == me.group && n.depth < me.depth)
+        .map(|n| n.id.clone())
 }
 
 /// Composes a tab.
 pub fn compose(q: &ViewQuery, src: &dyn Source) -> View {
     let ctx = Ctx::new(q, src);
-    let tab = if crate::tabs::applies(&q.tab, &ctx.kind, &ctx.scope.id) { q.tab.as_str() } else { "overview" };
+    let tab = if crate::tabs::applies(&q.tab, &ctx.kind, &ctx.scope.id) {
+        q.tab.as_str()
+    } else {
+        "overview"
+    };
     let panels = match tab {
         "alerts" => alerts::panels(&ctx, src),
         "tokens" => tokens::panels(&ctx, src),
@@ -393,7 +455,18 @@ pub fn compose(q: &ViewQuery, src: &dyn Source) -> View {
         "dash" => dash::panels(&ctx, src),
         _ => overview::panels(&ctx, src),
     };
-    let firing = src.alerts().subjects.iter().filter(|s| matches!(s.2, apz_metrics::alerts::State::Firing { .. } | apz_metrics::alerts::State::Clearing { .. })).count() as u32;
+    let firing = src
+        .alerts()
+        .subjects
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.2,
+                apz_metrics::alerts::State::Firing { .. }
+                    | apz_metrics::alerts::State::Clearing { .. }
+            )
+        })
+        .count() as u32;
     let (level, stepped) = src.level();
     let tabs = crate::tabs::TABS
         .iter()
@@ -415,9 +488,16 @@ pub fn compose(q: &ViewQuery, src: &dyn Source) -> View {
         from_ms: ctx.from_ms,
         to_ms: ctx.to_ms,
         step_ms: ctx.step_ms,
-        tier: if live && q.range == "15m" { format!("live 2 s stream + {}", tier.words()) } else { tier.words().into() },
+        tier: if live && q.range == "15m" {
+            format!("live 2 s stream + {}", tier.words())
+        } else {
+            tier.words().into()
+        },
         points: ctx.points as u32,
-        level: serde_json::to_value(level).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
+        level: serde_json::to_value(level)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default(),
         stepped_down: stepped,
         live,
         firing,

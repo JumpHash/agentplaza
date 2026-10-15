@@ -164,16 +164,37 @@ pub trait Source {
     fn series(&self, read: &Read) -> Vec<Group>;
 
     /// One number for a metric within a scope over a window.
-    fn scalar(&self, metric: &str, scope: &str, from_ms: u64, to_ms: u64, agg: AggFn) -> Option<f64>;
+    fn scalar(
+        &self,
+        metric: &str,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+        agg: AggFn,
+    ) -> Option<f64>;
 
     /// The merged distribution of a histogram metric within a scope over a window.
     fn hist(&self, metric: &str, scope: &str, from_ms: u64, to_ms: u64) -> HistSnapshot;
 
     /// One merged distribution per step (the latency heatmap).
-    fn hist_steps(&self, metric: &str, scope: &str, from_ms: u64, to_ms: u64, step_ms: u64) -> Vec<HistSnapshot>;
+    fn hist_steps(
+        &self,
+        metric: &str,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+        step_ms: u64,
+    ) -> Vec<HistSnapshot>;
 
     /// Events in a scope and window, newest first. `kinds` empty means every kind.
-    fn events(&self, scope: &str, from_ms: u64, to_ms: u64, kinds: &[&str], limit: usize) -> Vec<Event>;
+    fn events(
+        &self,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+        kinds: &[&str],
+        limit: usize,
+    ) -> Vec<Event>;
 
     /// The scope tree, in order.
     fn scopes(&self) -> Vec<ScopeNode>;
