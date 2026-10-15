@@ -119,11 +119,17 @@ fn generation(cid: u32) -> u64 {
     generations.get(&cid).copied().unwrap_or(0)
 }
 
-/// The two sockets of a tunnel, cloned so either pump can hang both up, and
-/// the flag that tells the other pump to stop. The flag is what ends the other
+/// The two sockets of a tunnel, so either pump can hang both up, and the flag
+/// that tells the other pump to stop. The flag is what ends the other
 /// direction: its reads wake every [`PUMP_POLL`] to check it, so no pump
 /// depends on a shutdown waking a read blocked in another thread (which
 /// WinSock does not do).
+///
+/// The guest socket is a clone; the upstream is the tunnel's own TCP handle,
+/// which both pumps read and write through (`&TcpStream`). Not a `try_clone`:
+/// on Windows a clone is a `WSADuplicateSocketW` handle whose shutdown now and
+/// then fails with WSAENOTCONN, so the upstream would not see the tunnel end,
+/// and [`sys::wake_readers`] cancels only the reads issued on the handle it is given.
 struct Hangup {
     guest: UnixStream,
     upstream: TcpStream,
@@ -465,11 +471,11 @@ fn proxy(
     // leaves the guest an error answer rather than half a tunnel.
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
-    let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
     let hangup = Arc::new(Hangup::new(
         guest.try_clone().map_err(|_| Stop::Unreachable)?,
-        upstream.try_clone().map_err(|_| Stop::Unreachable)?,
+        upstream,
     ));
+    let mut upstream = &hangup.upstream;
 
     let mut sent = 0u64;
     let mut guest_write = guest_write;
@@ -479,18 +485,18 @@ fn proxy(
         }
         Head::Absolute { method, path, .. } => {
             let out = origin_head(&method, &path, &head);
-            upstream_write
+            upstream
                 .write_all(out.as_bytes())
                 .map_err(|_| Stop::Unreachable)?;
             sent += out.len() as u64;
         }
     }
-    if upstream_write.write_all(&rest).is_ok() {
+    if upstream.write_all(&rest).is_ok() {
         sent += rest.len() as u64;
     }
 
     let up_hangup = Arc::clone(&hangup);
-    let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
+    let up = thread::spawn(move || pump(guest_read, &up_hangup.upstream, &up_hangup));
     let down = pump(upstream, guest_write, &hangup);
     audit.down = down;
     audit.up = sent + up.join().unwrap_or(0);
@@ -527,7 +533,7 @@ fn gateway(
         None
     };
     let token = apid.token().map_err(|_| Stop::Unreachable)?;
-    let mut upstream = apid
+    let upstream = apid
         .connect(CONNECT_TIMEOUT)
         .map_err(|_| Stop::Unreachable)?;
     guest
@@ -539,18 +545,18 @@ fn gateway(
 
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
-    let mut upstream_write = upstream.try_clone().map_err(|_| Stop::Unreachable)?;
     let hangup = Arc::new(Hangup::new(
         guest.try_clone().map_err(|_| Stop::Unreachable)?,
-        upstream.try_clone().map_err(|_| Stop::Unreachable)?,
+        upstream,
     ));
+    let mut upstream = &hangup.upstream;
 
     let out = gateway_head(method, cid, path, head, &token, upgrade);
-    upstream_write
+    upstream
         .write_all(out.as_bytes())
         .map_err(|_| Stop::Unreachable)?;
     let mut sent = out.len() as u64;
-    if upstream_write.write_all(&rest).is_ok() {
+    if upstream.write_all(&rest).is_ok() {
         sent += rest.len() as u64;
     }
     audit.allowed = true;
@@ -579,7 +585,8 @@ fn gateway(
         let clock = Arc::new(WsClock::new());
         let up_clock = Arc::clone(&clock);
         let up_hangup = Arc::clone(&hangup);
-        let up = thread::spawn(move || pump_ws(guest_read, upstream_write, &up_clock, &up_hangup));
+        let up =
+            thread::spawn(move || pump_ws(guest_read, &up_hangup.upstream, &up_clock, &up_hangup));
         audit.down = answered + pump_ws(upstream, guest_write, &clock, &hangup);
         audit.up = sent + up.join().unwrap_or(0);
         return Ok(());
@@ -592,7 +599,7 @@ fn gateway(
         .set_read_timeout(Some(PUMP_POLL))
         .map_err(|_| Stop::Unreachable)?;
     let up_hangup = Arc::clone(&hangup);
-    let up = thread::spawn(move || pump(guest_read, upstream_write, &up_hangup));
+    let up = thread::spawn(move || pump(guest_read, &up_hangup.upstream, &up_hangup));
     audit.down = answered + pump(upstream, guest_write, &hangup);
     audit.up = sent + up.join().unwrap_or(0);
     Ok(())
