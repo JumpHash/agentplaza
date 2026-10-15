@@ -522,54 +522,56 @@ mod tests {
     }
 
     #[test]
-    fn answer_replies_to_the_handshake_and_ping_and_leaves_notifications_unanswered() {
-        let init = answer(
-            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#,
-            |_| panic!("initialize is not forwarded"),
-        )
-        .expect("a reply");
-        let init: Value = serde_json::from_str(&init).expect("json");
-        assert_eq!(init["id"], 0);
-        assert_eq!(init["result"]["protocolVersion"], PROTOCOL_VERSION);
-        assert_eq!(init["result"]["capabilities"], json!({"tools": {}}));
-        assert_eq!(init["result"]["serverInfo"]["name"], "plaza");
+    fn answer_replies_forwards_and_refuses_as_the_protocol_asks() {
+        // Checked: answer replies to the handshake and ping and leaves notifications unanswered.
+        {
+            let init = answer(
+                r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#,
+                |_| panic!("initialize is not forwarded"),
+            )
+            .expect("a reply");
+            let init: Value = serde_json::from_str(&init).expect("json");
+            assert_eq!(init["id"], 0);
+            assert_eq!(init["result"]["protocolVersion"], PROTOCOL_VERSION);
+            assert_eq!(init["result"]["capabilities"], json!({"tools": {}}));
+            assert_eq!(init["result"]["serverInfo"]["name"], "plaza");
 
-        let ping = answer(r#"{"jsonrpc":"2.0","id":"p","method":"ping"}"#, |_| {
-            panic!("ping is not forwarded")
-        })
-        .expect("a reply");
-        assert_eq!(
-            serde_json::from_str::<Value>(&ping).expect("json")["result"],
-            json!({})
-        );
+            let ping = answer(r#"{"jsonrpc":"2.0","id":"p","method":"ping"}"#, |_| {
+                panic!("ping is not forwarded")
+            })
+            .expect("a reply");
+            assert_eq!(
+                serde_json::from_str::<Value>(&ping).expect("json")["result"],
+                json!({})
+            );
 
-        let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        assert_eq!(answer(initialized, |_| panic!("not forwarded")), None);
-    }
+            let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+            assert_eq!(answer(initialized, |_| panic!("not forwarded")), None);
+        }
+        // Checked: answer forwards the tool requests and refuses what it does not know.
+        {
+            let mut forwarded = Vec::new();
+            let reply = answer(
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"board_list"}}"#,
+                |request| {
+                    forwarded.push(request["method"].clone());
+                    json!({"jsonrpc": "2.0", "id": 3, "result": {"isError": false}})
+                },
+            )
+            .expect("a reply");
+            assert_eq!(forwarded, [json!("tools/call")]);
+            assert!(reply.contains(r#""isError":false"#), "{reply}");
 
-    #[test]
-    fn answer_forwards_the_tool_requests_and_refuses_what_it_does_not_know() {
-        let mut forwarded = Vec::new();
-        let reply = answer(
-            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"board_list"}}"#,
-            |request| {
-                forwarded.push(request["method"].clone());
-                json!({"jsonrpc": "2.0", "id": 3, "result": {"isError": false}})
-            },
-        )
-        .expect("a reply");
-        assert_eq!(forwarded, [json!("tools/call")]);
-        assert!(reply.contains(r#""isError":false"#), "{reply}");
+            let unknown = answer(
+                r#"{"jsonrpc":"2.0","id":4,"method":"resources/list"}"#,
+                |_| panic!("not forwarded"),
+            )
+            .expect("a reply");
+            assert!(unknown.contains(r#""code":-32601"#), "{unknown}");
 
-        let unknown = answer(
-            r#"{"jsonrpc":"2.0","id":4,"method":"resources/list"}"#,
-            |_| panic!("not forwarded"),
-        )
-        .expect("a reply");
-        assert!(unknown.contains(r#""code":-32601"#), "{unknown}");
-
-        let broken = answer("{not json", |_| panic!("not forwarded")).expect("a reply");
-        assert!(broken.contains(r#""code":-32700"#), "{broken}");
+            let broken = answer("{not json", |_| panic!("not forwarded")).expect("a reply");
+            assert!(broken.contains(r#""code":-32700"#), "{broken}");
+        }
     }
 
     #[test]

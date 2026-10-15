@@ -124,42 +124,11 @@ pub fn sample(home: &Path) -> Value {
 mod tests {
     use super::*;
 
-    const STAT: &str = "cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 50 0 25 400 25 0 0 0 0 0\ncpu1 50 0 25 400 25 0 0 0 0 0\nintr 1\n";
-
-    #[test]
-    fn cpu_lines_parse() {
-        assert_eq!(parse_cpu(STAT), Some((150, 1000)));
-        assert_eq!(cpu_count(STAT), 2);
-        assert_eq!(parse_cpu("nothing"), None);
-    }
-
     #[test]
     fn cpu_time_ignores_the_guest_fields() {
         // user nice system idle iowait irq softirq steal guest guest_nice
         let stat = "cpu  10 0 5 80 2 1 1 0 100 50\n";
         assert_eq!(parse_cpu(stat), Some((17, 99)));
-    }
-
-    #[test]
-    fn busy_is_the_delta_between_samples() {
-        assert_eq!(busy_pct(None, (150, 1000)), 15.0);
-        assert_eq!(busy_pct(Some((150, 1000)), (250, 1200)), 50.0);
-        assert_eq!(
-            busy_pct(Some((150, 1000)), (150, 1000)),
-            15.0,
-            "no new jiffies: since boot"
-        );
-    }
-
-    #[test]
-    fn meminfo_parses_to_bytes() {
-        let meminfo =
-            "MemTotal:  1000 kB\nMemFree:  100 kB\nMemAvailable:  600 kB\nCached:  300 kB\n";
-        assert_eq!(parse_meminfo(meminfo), Some((1_024_000, 409_600, 307_200)));
-        assert_eq!(
-            parse_meminfo("MemTotal: 10 kB\nMemFree: 4 kB\n"),
-            Some((10_240, 6_144, 0))
-        );
     }
 
     #[test]

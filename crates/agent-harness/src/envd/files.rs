@@ -402,33 +402,37 @@ mod tests {
     const MULTIPART: &str = "multipart/form-data; boundary=\"XyZ\"";
 
     #[test]
-    fn multipart_parts_are_split_on_crlf_delimiters() {
-        let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"b.bin\"\r\n\r\n\x00\x01\r\n2\r\n--XyZ--\r\n";
-        let parts = parse_multipart(body, "XyZ").unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].file_name.as_deref(), Some("a.txt"));
-        assert_eq!(parts[0].data, b"hello");
-        assert_eq!(parts[1].file_name.as_deref(), Some("b.bin"));
-        assert_eq!(parts[1].data, b"\x00\x01\r\n2");
-    }
+    fn multipart_parsing_splits_parts_and_refuses_bad_bodies() {
+        // CRLF-delimited parts split; file names and CRLF inside the data are kept.
+        {
+            let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"b.bin\"\r\n\r\n\x00\x01\r\n2\r\n--XyZ--\r\n";
+            let parts = parse_multipart(body, "XyZ").unwrap();
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0].file_name.as_deref(), Some("a.txt"));
+            assert_eq!(parts[0].data, b"hello");
+            assert_eq!(parts[1].file_name.as_deref(), Some("b.bin"));
+            assert_eq!(parts[1].data, b"\x00\x01\r\n2");
+        }
 
-    #[test]
-    fn multipart_skips_preamble_and_keeps_plain_fields_without_a_file_name() {
-        let body = b"preamble\r\n--b\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nnot a file\r\n--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"c.txt\"\r\n\r\nc\r\n--b--\r\n";
-        let parts = parse_multipart(body, "b").unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].file_name, None);
-        assert_eq!(parts[1].file_name.as_deref(), Some("c.txt"));
-        assert_eq!(parts[1].data, b"c");
-    }
+        // a preamble is skipped; a plain field has no file name.
+        {
+            let body = b"preamble\r\n--b\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nnot a file\r\n--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"c.txt\"\r\n\r\nc\r\n--b--\r\n";
+            let parts = parse_multipart(body, "b").unwrap();
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0].file_name, None);
+            assert_eq!(parts[1].file_name.as_deref(), Some("c.txt"));
+            assert_eq!(parts[1].data, b"c");
+        }
 
-    #[test]
-    fn multipart_accepts_an_empty_part_and_rejects_a_truncated_body() {
-        let body = b"--b\r\nContent-Disposition: form-data; filename=\"e\"\r\n\r\n\r\n--b--\r\n";
-        let parts = parse_multipart(body, "b").unwrap();
-        assert_eq!(parts[0].data, b"");
-        assert!(parse_multipart(b"--b\r\nContent-Disposition: x\r\n\r\nno end", "b").is_err());
-        assert!(parse_multipart(b"no boundary here", "b").is_err());
+        // an empty part parses; a truncated body and a body without a boundary are errors.
+        {
+            let body =
+                b"--b\r\nContent-Disposition: form-data; filename=\"e\"\r\n\r\n\r\n--b--\r\n";
+            let parts = parse_multipart(body, "b").unwrap();
+            assert_eq!(parts[0].data, b"");
+            assert!(parse_multipart(b"--b\r\nContent-Disposition: x\r\n\r\nno end", "b").is_err());
+            assert!(parse_multipart(b"no boundary here", "b").is_err());
+        }
     }
 
     #[test]
@@ -468,74 +472,77 @@ mod tests {
     }
 
     #[test]
-    fn multipart_upload_into_a_directory_writes_each_file() {
-        let scratch = Scratch::new("upload-dir");
-        let ctx = scratch.ctx();
-        fs::create_dir(scratch.0.join("uploads")).unwrap();
-        let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"one.txt\"\r\n\r\n1\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"nested/two.txt\"\r\n\r\n22\r\n--XyZ--\r\n";
-        let (status, answer) = json_answer(handle(
-            &request("POST", "path=uploads/", Some(MULTIPART), body),
-            &ctx,
-        ));
-        assert_eq!(status, 200);
-        let entries = answer.as_array().unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[1]["name"], "two.txt");
-        assert_eq!(entries[1]["type"], "file");
-        assert_eq!(fs::read(scratch.0.join("uploads/one.txt")).unwrap(), b"1");
-        assert_eq!(fs::read(scratch.0.join("uploads/two.txt")).unwrap(), b"22");
-        // Only the two files: no temporary sibling is left behind.
-        assert_eq!(fs::read_dir(scratch.0.join("uploads")).unwrap().count(), 2);
-    }
+    fn uploads_write_the_bodies_and_refuse_ambiguous_targets() {
+        // a multipart upload into a directory writes each file, leaving no temporary sibling.
+        {
+            let scratch = Scratch::new("upload-dir");
+            let ctx = scratch.ctx();
+            fs::create_dir(scratch.0.join("uploads")).unwrap();
+            let body = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"one.txt\"\r\n\r\n1\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"nested/two.txt\"\r\n\r\n22\r\n--XyZ--\r\n";
+            let (status, answer) = json_answer(handle(
+                &request("POST", "path=uploads/", Some(MULTIPART), body),
+                &ctx,
+            ));
+            assert_eq!(status, 200);
+            let entries = answer.as_array().unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[1]["name"], "two.txt");
+            assert_eq!(entries[1]["type"], "file");
+            assert_eq!(fs::read(scratch.0.join("uploads/one.txt")).unwrap(), b"1");
+            assert_eq!(fs::read(scratch.0.join("uploads/two.txt")).unwrap(), b"22");
+            // Only the two files: no temporary sibling is left behind.
+            assert_eq!(fs::read_dir(scratch.0.join("uploads")).unwrap().count(), 2);
+        }
 
-    #[test]
-    fn multipart_upload_to_a_file_path_writes_one_file_and_refuses_several() {
-        let scratch = Scratch::new("upload-file");
-        let ctx = scratch.ctx();
-        let one = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"ignored.txt\"\r\n\r\nbody\r\n--XyZ--\r\n";
-        let (status, _) = json_answer(handle(
-            &request("POST", "path=sub/deep/named.txt", Some(MULTIPART), one),
-            &ctx,
-        ));
-        assert_eq!(status, 200);
-        assert_eq!(
-            fs::read(scratch.0.join("sub/deep/named.txt")).unwrap(),
-            b"body"
-        );
-        assert!(!scratch.0.join("sub/deep/ignored.txt").exists());
+        // a multipart upload to a file path writes one file; several parts are refused.
+        {
+            let scratch = Scratch::new("upload-file");
+            let ctx = scratch.ctx();
+            let one = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"ignored.txt\"\r\n\r\nbody\r\n--XyZ--\r\n";
+            let (status, _) = json_answer(handle(
+                &request("POST", "path=sub/deep/named.txt", Some(MULTIPART), one),
+                &ctx,
+            ));
+            assert_eq!(status, 200);
+            assert_eq!(
+                fs::read(scratch.0.join("sub/deep/named.txt")).unwrap(),
+                b"body"
+            );
+            assert!(!scratch.0.join("sub/deep/ignored.txt").exists());
 
-        let two = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a\"\r\n\r\na\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"b\"\r\n\r\nb\r\n--XyZ--\r\n";
-        let (status, _) = json_answer(handle(
-            &request("POST", "path=sub/deep/named.txt", Some(MULTIPART), two),
-            &ctx,
-        ));
-        assert_eq!(status, 400);
-    }
+            let two = b"--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a\"\r\n\r\na\r\n--XyZ\r\nContent-Disposition: form-data; name=\"file\"; filename=\"b\"\r\n\r\nb\r\n--XyZ--\r\n";
+            let (status, _) = json_answer(handle(
+                &request("POST", "path=sub/deep/named.txt", Some(MULTIPART), two),
+                &ctx,
+            ));
+            assert_eq!(status, 400);
+        }
 
-    #[test]
-    fn raw_upload_writes_the_body_and_creates_parents() {
-        let scratch = Scratch::new("upload-raw");
-        let ctx = scratch.ctx();
-        let (status, answer) = json_answer(handle(
-            &request(
-                "POST",
-                "path=deep/er/raw.bin",
-                Some("application/octet-stream"),
-                &[0, 1, 2, 255],
-            ),
-            &ctx,
-        ));
-        assert_eq!(status, 200);
-        assert_eq!(answer[0]["name"], "raw.bin");
-        assert_eq!(
-            fs::read(scratch.0.join("deep/er/raw.bin")).unwrap(),
-            [0, 1, 2, 255]
-        );
-        let (status, _) = json_answer(handle(
-            &request("POST", "path=deep/", Some("application/octet-stream"), b"x"),
-            &ctx,
-        ));
-        assert_eq!(status, 400);
+        // a raw upload writes the body and creates parents; a directory path is refused.
+        {
+            let scratch = Scratch::new("upload-raw");
+            let ctx = scratch.ctx();
+            let (status, answer) = json_answer(handle(
+                &request(
+                    "POST",
+                    "path=deep/er/raw.bin",
+                    Some("application/octet-stream"),
+                    &[0, 1, 2, 255],
+                ),
+                &ctx,
+            ));
+            assert_eq!(status, 200);
+            assert_eq!(answer[0]["name"], "raw.bin");
+            assert_eq!(
+                fs::read(scratch.0.join("deep/er/raw.bin")).unwrap(),
+                [0, 1, 2, 255]
+            );
+            let (status, _) = json_answer(handle(
+                &request("POST", "path=deep/", Some("application/octet-stream"), b"x"),
+                &ctx,
+            ));
+            assert_eq!(status, 400);
+        }
     }
 
     #[test]

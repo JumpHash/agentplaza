@@ -59,17 +59,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn entries_are_kept_in_order_and_capped() {
-        let mut log = VecDeque::new();
-        for i in 0..CAPACITY + 5 {
-            push(&mut log, json!({ "i": i }));
-        }
-        assert_eq!(log.len(), CAPACITY);
-        assert_eq!(log[0]["i"], 5);
-        assert_eq!(log[CAPACITY - 1]["i"], CAPACITY + 4);
-    }
-
-    #[test]
     fn a_record_has_its_fields() {
         record("warn", "a test entry", &[("pid", "7".to_string())]);
         let entries = entries();

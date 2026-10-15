@@ -1497,191 +1497,197 @@ mod tests {
     // --- path discipline: the refusals every tool shares -------------------
 
     #[test]
-    fn an_absolute_path_is_denied_with_its_reason() {
-        let (workspace, _outside) = scratch("absolute");
-        for name in [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
-            "search",
-        ] {
-            let mut args = json!({ "path": "/etc/passwd" });
-            if name == "write_file" || name == "append_file" {
-                args["content"] = json!("x");
-            }
-            if name == "edit_file" {
-                args["find"] = json!("x");
-                args["replace"] = json!("y");
-            }
-            if name == "search" {
-                args["pattern"] = json!("x");
-            }
-            let err = refused(&workspace, name, args);
-            assert!(
-                matches!(
-                    err,
-                    ToolError::Denied { .. } | ToolError::InvalidInput { .. }
-                ),
-                "{name}: {err:?}"
-            );
-            assert!(err.to_string().contains("absolute"), "{name}: {err}");
-        }
-    }
-
-    #[test]
-    fn a_parent_component_is_denied_however_it_is_spelled() {
-        let (workspace, _outside) = scratch("parent");
-        write_inside(&workspace, "notes.txt", b"inside\n");
-        for path in ["../notes.txt", "a/../../notes.txt", "./../x", "a/..", ".."] {
-            let err = refused(&workspace, "read_file", json!({ "path": path }));
-            assert!(matches!(err, ToolError::Denied { .. }), "{path}: {err:?}");
-            assert!(err.to_string().contains("\"..\""), "{path}: {err}");
-        }
-    }
-
-    #[test]
-    fn a_dangling_symlink_target_is_refused_by_every_write() {
-        // The escape the security review found: `resolve` canonicalizes the
-        // deepest EXISTING ancestor, so a link whose target does not exist yet
-        // passes the walk — and `open` would then create the target outside
-        // the workspace. Every mutating tool must refuse a symlink target.
-        let (workspace, outside) = scratch("symlink-dangling");
-        let target = outside.join("planted.txt");
-        symlink(&target, workspace.root().join("esc")).expect("a dangling symlink");
-
-        for (tool, args) in [
-            (
-                "append_file",
-                json!({ "path": "esc", "content": "escaped\n" }),
-            ),
-            (
+    fn path_discipline_denies_absolute_and_parent_paths() {
+        // An absolute path is denied with its reason, by every path-taking tool.
+        {
+            let (workspace, _outside) = scratch("absolute");
+            for name in [
+                "read_file",
                 "write_file",
-                json!({ "path": "esc", "content": "escaped\n" }),
-            ),
-            (
                 "edit_file",
-                json!({ "path": "esc", "find": "x", "replace": "y" }),
-            ),
-        ] {
-            let err = refused(&workspace, tool, args);
-            assert!(
-                matches!(err, ToolError::Denied { .. }),
-                "{tool} through a dangling link: {err:?}"
-            );
-            assert!(err.to_string().contains("symlink"), "{tool}: {err}");
-        }
-        assert!(
-            !target.exists(),
-            "no write may have created the link's target"
-        );
-    }
-
-    #[test]
-    fn a_symlink_that_leaves_the_workspace_is_denied() {
-        let (workspace, outside) = scratch("symlink-out");
-        fs::write(outside.join("secret.txt"), b"host data\n").expect("the outside file");
-        symlink(
-            outside.join("secret.txt"),
-            workspace.root().join("link.txt"),
-        )
-        .expect("a symlink to outside");
-        symlink(&outside, workspace.root().join("outsidedir"))
-            .expect("a symlink to an outside dir");
-
-        // Reading through the link, or listing it, resolves outside.
-        let err = refused(&workspace, "read_file", json!({ "path": "link.txt" }));
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        assert!(err.to_string().contains("outside the workspace"), "{err}");
-        let err = refused(&workspace, "list", json!({ "path": "outsidedir" }));
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        // Writing through it too, and through a link *inside* a path.
-        let err = refused(
-            &workspace,
-            "write_file",
-            json!({ "path": "outsidedir/new.txt", "content": "x" }),
-        );
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        let err = refused(
-            &workspace,
-            "append_file",
-            json!({ "path": "outsidedir/new.txt", "content": "x" }),
-        );
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        // And search does not follow one out either.
-        let result = served(&workspace, "search", json!({ "pattern": "host" }));
-        assert_eq!(
-            result["matches"].as_array().map(Vec::len),
-            Some(0),
-            "{result}"
-        );
-        // Nothing was written outside.
-        assert!(!outside.join("new.txt").exists());
-    }
-
-    #[test]
-    fn a_symlink_into_plaza_is_refused_by_every_tool() {
-        // `resolve` checked the lexical path for `.plaza` but not the path a
-        // link lands on, so `p -> .plaza` reached the harness's state.
-        let (workspace, _outside) = scratch("symlink-plaza");
-        write_inside(&workspace, ".plaza/state.txt", b"harness state\n");
-        symlink(workspace.root().join(".plaza"), workspace.root().join("p"))
-            .expect("a link to the state directory");
-        symlink(
-            workspace.root().join(".plaza/state.txt"),
-            workspace.root().join("state"),
-        )
-        .expect("a link to a state file");
-
-        for (tool, args) in [
-            ("read_file", json!({ "path": "p/state.txt" })),
-            ("read_file", json!({ "path": "state" })),
-            ("list", json!({ "path": "p" })),
-            ("write_file", json!({ "path": "p/new.txt", "content": "x" })),
-            (
                 "append_file",
-                json!({ "path": "p/state.txt", "content": "x" }),
-            ),
-            (
-                "edit_file",
-                json!({ "path": "state", "find": "harness", "replace": "y" }),
-            ),
-        ] {
-            let err = refused(&workspace, tool, args);
-            assert!(matches!(err, ToolError::Denied { .. }), "{tool}: {err:?}");
-            assert!(
-                err.to_string().contains("harness's own state"),
-                "{tool}: {err}"
-            );
+                "list",
+                "search",
+            ] {
+                let mut args = json!({ "path": "/etc/passwd" });
+                if name == "write_file" || name == "append_file" {
+                    args["content"] = json!("x");
+                }
+                if name == "edit_file" {
+                    args["find"] = json!("x");
+                    args["replace"] = json!("y");
+                }
+                if name == "search" {
+                    args["pattern"] = json!("x");
+                }
+                let err = refused(&workspace, name, args);
+                assert!(
+                    matches!(
+                        err,
+                        ToolError::Denied { .. } | ToolError::InvalidInput { .. }
+                    ),
+                    "{name}: {err:?}"
+                );
+                assert!(err.to_string().contains("absolute"), "{name}: {err}");
+            }
         }
-        // Search does not walk into it through the link either.
-        let result = served(&workspace, "search", json!({ "pattern": "harness" }));
-        assert_eq!(
-            result["matches"].as_array().map(Vec::len),
-            Some(0),
-            "{result}"
-        );
-        assert_eq!(read_back(&workspace, ".plaza/state.txt"), "harness state\n");
-        assert!(!workspace.root().join(".plaza/new.txt").exists());
+        // A parent component is denied however it is spelled.
+        {
+            let (workspace, _outside) = scratch("parent");
+            write_inside(&workspace, "notes.txt", b"inside\n");
+            for path in ["../notes.txt", "a/../../notes.txt", "./../x", "a/..", ".."] {
+                let err = refused(&workspace, "read_file", json!({ "path": path }));
+                assert!(matches!(err, ToolError::Denied { .. }), "{path}: {err:?}");
+                assert!(err.to_string().contains("\"..\""), "{path}: {err}");
+            }
+        }
     }
 
     #[test]
-    fn a_dangling_link_on_the_way_is_refused_before_a_write_creates_its_target() {
-        // `d` names a directory that does not exist yet; the walk cannot
-        // canonicalize it, and `create_dir_all` would then make the target.
-        let (workspace, outside) = scratch("symlink-dangling-dir");
-        symlink(outside.join("missing"), workspace.root().join("d"))
-            .expect("a dangling directory link");
+    fn dangling_links_are_refused_before_any_write_creates_their_target() {
+        // A dangling symlink target is refused by every write.
+        {
+            // The escape the security review found: `resolve` canonicalizes the
+            // deepest EXISTING ancestor, so a link whose target does not exist yet
+            // passes the walk — and `open` would then create the target outside
+            // the workspace. Every mutating tool must refuse a symlink target.
+            let (workspace, outside) = scratch("symlink-dangling");
+            let target = outside.join("planted.txt");
+            symlink(&target, workspace.root().join("esc")).expect("a dangling symlink");
 
-        let err = refused(
-            &workspace,
-            "write_file",
-            json!({ "path": "d/x.txt", "content": "x" }),
-        );
-        assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
-        assert!(err.to_string().contains("symlink"), "{err}");
-        assert!(!outside.join("missing").exists());
+            for (tool, args) in [
+                (
+                    "append_file",
+                    json!({ "path": "esc", "content": "escaped\n" }),
+                ),
+                (
+                    "write_file",
+                    json!({ "path": "esc", "content": "escaped\n" }),
+                ),
+                (
+                    "edit_file",
+                    json!({ "path": "esc", "find": "x", "replace": "y" }),
+                ),
+            ] {
+                let err = refused(&workspace, tool, args);
+                assert!(
+                    matches!(err, ToolError::Denied { .. }),
+                    "{tool} through a dangling link: {err:?}"
+                );
+                assert!(err.to_string().contains("symlink"), "{tool}: {err}");
+            }
+            assert!(
+                !target.exists(),
+                "no write may have created the link's target"
+            );
+        }
+        // A dangling link on the way is refused before a write creates its target.
+        {
+            // `d` names a directory that does not exist yet; the walk cannot
+            // canonicalize it, and `create_dir_all` would then make the target.
+            let (workspace, outside) = scratch("symlink-dangling-dir");
+            symlink(outside.join("missing"), workspace.root().join("d"))
+                .expect("a dangling directory link");
+
+            let err = refused(
+                &workspace,
+                "write_file",
+                json!({ "path": "d/x.txt", "content": "x" }),
+            );
+            assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+            assert!(err.to_string().contains("symlink"), "{err}");
+            assert!(!outside.join("missing").exists());
+        }
+    }
+
+    #[test]
+    fn symlinks_out_of_the_workspace_or_into_plaza_are_refused() {
+        // A symlink that leaves the workspace is denied by every tool that follows it.
+        {
+            let (workspace, outside) = scratch("symlink-out");
+            fs::write(outside.join("secret.txt"), b"host data\n").expect("the outside file");
+            symlink(
+                outside.join("secret.txt"),
+                workspace.root().join("link.txt"),
+            )
+            .expect("a symlink to outside");
+            symlink(&outside, workspace.root().join("outsidedir"))
+                .expect("a symlink to an outside dir");
+
+            // Reading through the link, or listing it, resolves outside.
+            let err = refused(&workspace, "read_file", json!({ "path": "link.txt" }));
+            assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+            assert!(err.to_string().contains("outside the workspace"), "{err}");
+            let err = refused(&workspace, "list", json!({ "path": "outsidedir" }));
+            assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+            // Writing through it too, and through a link *inside* a path.
+            let err = refused(
+                &workspace,
+                "write_file",
+                json!({ "path": "outsidedir/new.txt", "content": "x" }),
+            );
+            assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+            let err = refused(
+                &workspace,
+                "append_file",
+                json!({ "path": "outsidedir/new.txt", "content": "x" }),
+            );
+            assert!(matches!(err, ToolError::Denied { .. }), "{err:?}");
+            // And search does not follow one out either.
+            let result = served(&workspace, "search", json!({ "pattern": "host" }));
+            assert_eq!(
+                result["matches"].as_array().map(Vec::len),
+                Some(0),
+                "{result}"
+            );
+            // Nothing was written outside.
+            assert!(!outside.join("new.txt").exists());
+        }
+        // A symlink into the harness's own state is refused by every tool.
+        {
+            // `resolve` checked the lexical path for `.plaza` but not the path a
+            // link lands on, so `p -> .plaza` reached the harness's state.
+            let (workspace, _outside) = scratch("symlink-plaza");
+            write_inside(&workspace, ".plaza/state.txt", b"harness state\n");
+            symlink(workspace.root().join(".plaza"), workspace.root().join("p"))
+                .expect("a link to the state directory");
+            symlink(
+                workspace.root().join(".plaza/state.txt"),
+                workspace.root().join("state"),
+            )
+            .expect("a link to a state file");
+
+            for (tool, args) in [
+                ("read_file", json!({ "path": "p/state.txt" })),
+                ("read_file", json!({ "path": "state" })),
+                ("list", json!({ "path": "p" })),
+                ("write_file", json!({ "path": "p/new.txt", "content": "x" })),
+                (
+                    "append_file",
+                    json!({ "path": "p/state.txt", "content": "x" }),
+                ),
+                (
+                    "edit_file",
+                    json!({ "path": "state", "find": "harness", "replace": "y" }),
+                ),
+            ] {
+                let err = refused(&workspace, tool, args);
+                assert!(matches!(err, ToolError::Denied { .. }), "{tool}: {err:?}");
+                assert!(
+                    err.to_string().contains("harness's own state"),
+                    "{tool}: {err}"
+                );
+            }
+            // Search does not walk into it through the link either.
+            let result = served(&workspace, "search", json!({ "pattern": "harness" }));
+            assert_eq!(
+                result["matches"].as_array().map(Vec::len),
+                Some(0),
+                "{result}"
+            );
+            assert_eq!(read_back(&workspace, ".plaza/state.txt"), "harness state\n");
+            assert!(!workspace.root().join(".plaza/new.txt").exists());
+        }
     }
 
     #[test]
@@ -1695,80 +1701,81 @@ mod tests {
     // --- read_file ---------------------------------------------------------
 
     #[test]
-    fn read_file_numbers_its_lines_like_cat_n() {
-        let (workspace, _outside) = scratch("read-numbered");
-        write_inside(&workspace, "ab.txt", b"a\nb\n");
-        let result = served(&workspace, "read_file", json!({ "path": "ab.txt" }));
-        assert_eq!(result["content"], "     1\ta\n     2\tb\n");
-        assert_eq!(result["truncated"], false);
-        // Past the default window of 2000 lines it says what it showed.
-        let long: String = (1..=2500).map(|n| format!("{n}\n")).collect();
-        write_inside(&workspace, "many.txt", long.as_bytes());
-        let result = served(&workspace, "read_file", json!({ "path": "many.txt" }));
-        let content = result["content"].as_str().expect("content");
-        assert!(content.contains("  2000\t2000\n"), "{content:?}");
-        assert!(!content.contains("  2001\t"), "{content:?}");
-        assert!(
-            content.ends_with("[showing lines 1-2000 of 2500; pass offset to read more]\n"),
-            "{content:?}"
-        );
-        assert_eq!(result["truncated"], true);
-    }
-
-    #[test]
-    fn read_file_serves_a_line_window_and_says_when_lines_remain() {
-        let (workspace, _outside) = scratch("read-lines");
-        write_inside(&workspace, "notes.txt", b"one\ntwo\nthree\nfour\n");
-        let window = |args: Value| served(&workspace, "read_file", args);
-        // `offset` is the 0-based first line, and `limit` counts lines.
-        let second = window(json!({ "path": "notes.txt", "offset": 1, "limit": 2 }));
-        assert_eq!(
-            second["content"],
-            "     2\ttwo\n     3\tthree\n[showing lines 2-3 of 4; pass offset to read more]\n"
-        );
-        assert_eq!(second["truncated"], true);
-        let tail = window(json!({ "path": "notes.txt", "offset": 2 }));
-        assert_eq!(tail["content"], "     3\tthree\n     4\tfour\n");
-        assert_eq!(tail["truncated"], false);
-        let past = window(json!({ "path": "notes.txt", "offset": 99 }));
-        assert!(
-            past["content"]
-                .as_str()
-                .expect("content")
-                .contains("past the end"),
-            "{past}"
-        );
-        assert!(matches!(
-            refused(
+    fn read_file_numbers_lines_and_serves_windows_and_cuts_long_lines() {
+        // Lines are numbered like cat -n, and a read past the default window says what it showed.
+        {
+            let (workspace, _outside) = scratch("read-numbered");
+            write_inside(&workspace, "ab.txt", b"a\nb\n");
+            let result = served(&workspace, "read_file", json!({ "path": "ab.txt" }));
+            assert_eq!(result["content"], "     1\ta\n     2\tb\n");
+            assert_eq!(result["truncated"], false);
+            // Past the default window of 2000 lines it says what it showed.
+            let long: String = (1..=2500).map(|n| format!("{n}\n")).collect();
+            write_inside(&workspace, "many.txt", long.as_bytes());
+            let result = served(&workspace, "read_file", json!({ "path": "many.txt" }));
+            let content = result["content"].as_str().expect("content");
+            assert!(content.contains("  2000\t2000\n"), "{content:?}");
+            assert!(!content.contains("  2001\t"), "{content:?}");
+            assert!(
+                content.ends_with("[showing lines 1-2000 of 2500; pass offset to read more]\n"),
+                "{content:?}"
+            );
+            assert_eq!(result["truncated"], true);
+        }
+        // `offset` and `limit` serve a line window and say when lines remain.
+        {
+            let (workspace, _outside) = scratch("read-lines");
+            write_inside(&workspace, "notes.txt", b"one\ntwo\nthree\nfour\n");
+            let window = |args: Value| served(&workspace, "read_file", args);
+            // `offset` is the 0-based first line, and `limit` counts lines.
+            let second = window(json!({ "path": "notes.txt", "offset": 1, "limit": 2 }));
+            assert_eq!(
+                second["content"],
+                "     2\ttwo\n     3\tthree\n[showing lines 2-3 of 4; pass offset to read more]\n"
+            );
+            assert_eq!(second["truncated"], true);
+            let tail = window(json!({ "path": "notes.txt", "offset": 2 }));
+            assert_eq!(tail["content"], "     3\tthree\n     4\tfour\n");
+            assert_eq!(tail["truncated"], false);
+            let past = window(json!({ "path": "notes.txt", "offset": 99 }));
+            assert!(
+                past["content"]
+                    .as_str()
+                    .expect("content")
+                    .contains("past the end"),
+                "{past}"
+            );
+            assert!(matches!(
+                refused(
+                    &workspace,
+                    "read_file",
+                    json!({ "path": "notes.txt", "limit": 0 })
+                ),
+                ToolError::InvalidInput { .. }
+            ));
+            assert!(matches!(
+                refused(
+                    &workspace,
+                    "read_file",
+                    json!({ "path": "notes.txt", "offset": -1 })
+                ),
+                ToolError::InvalidInput { .. }
+            ));
+        }
+        // A line over 2000 characters is cut and marked.
+        {
+            let (workspace, _outside) = scratch("read-long-line");
+            write_inside(
                 &workspace,
-                "read_file",
-                json!({ "path": "notes.txt", "limit": 0 })
-            ),
-            ToolError::InvalidInput { .. }
-        ));
-        assert!(matches!(
-            refused(
-                &workspace,
-                "read_file",
-                json!({ "path": "notes.txt", "offset": -1 })
-            ),
-            ToolError::InvalidInput { .. }
-        ));
-    }
-
-    #[test]
-    fn read_file_cuts_a_line_over_2000_characters_and_marks_it() {
-        let (workspace, _outside) = scratch("read-long-line");
-        write_inside(
-            &workspace,
-            "long.txt",
-            format!("{}\nshort\n", "x".repeat(2500)).as_bytes(),
-        );
-        let result = served(&workspace, "read_file", json!({ "path": "long.txt" }));
-        let content = result["content"].as_str().expect("content");
-        let first = format!("     1\t{}…\n", "x".repeat(2000));
-        assert!(content.starts_with(&first), "{content:?}");
-        assert!(content.ends_with("     2\tshort\n"), "{content:?}");
+                "long.txt",
+                format!("{}\nshort\n", "x".repeat(2500)).as_bytes(),
+            );
+            let result = served(&workspace, "read_file", json!({ "path": "long.txt" }));
+            let content = result["content"].as_str().expect("content");
+            let first = format!("     1\t{}…\n", "x".repeat(2000));
+            assert!(content.starts_with(&first), "{content:?}");
+            assert!(content.ends_with("     2\tshort\n"), "{content:?}");
+        }
     }
 
     #[test]
@@ -2009,148 +2016,154 @@ mod tests {
     // --- edit_file ---------------------------------------------------------
 
     #[test]
-    fn edit_file_refuses_zero_and_many_matches() {
-        let (workspace, _outside) = scratch("edit-ambiguous");
-        write_inside(&workspace, "code.txt", b"x = 1\nx = 1\n");
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "old": "x = 1", "new": "x = 2" }),
-        );
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert!(err.to_string().contains("appears 2 times"), "{err}");
-        assert!(err.to_string().contains("replace_all"), "{err}");
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "find": "nope", "replace": "x" }),
-        );
-        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
-        assert!(err.to_string().contains("does not appear"), "{err}");
-        // The file is untouched by either refusal.
-        assert_eq!(
-            served(&workspace, "read_file", json!({ "path": "code.txt" }))["content"],
-            "     1\tx = 1\n     2\tx = 1\n"
-        );
-        // An empty needle is refused: it would match everywhere.
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "find": "", "replace": "x" }),
-        );
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+    fn edit_file_refuses_ambiguous_missing_and_empty_needles() {
+        // Zero or many matches are refused, and the file is untouched.
+        {
+            let (workspace, _outside) = scratch("edit-ambiguous");
+            write_inside(&workspace, "code.txt", b"x = 1\nx = 1\n");
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "code.txt", "old": "x = 1", "new": "x = 2" }),
+            );
+            assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+            assert!(err.to_string().contains("appears 2 times"), "{err}");
+            assert!(err.to_string().contains("replace_all"), "{err}");
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "code.txt", "find": "nope", "replace": "x" }),
+            );
+            assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
+            assert!(err.to_string().contains("does not appear"), "{err}");
+            // The file is untouched by either refusal.
+            assert_eq!(
+                served(&workspace, "read_file", json!({ "path": "code.txt" }))["content"],
+                "     1\tx = 1\n     2\tx = 1\n"
+            );
+            // An empty needle is refused: it would match everywhere.
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "code.txt", "find": "", "replace": "x" }),
+            );
+            assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+        }
+        // A missing text names the closest line.
+        {
+            let (workspace, _outside) = scratch("edit-closest");
+            write_inside(
+                &workspace,
+                "code.txt",
+                b"fn main() {\n    let total = 1;\n}\n",
+            );
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "code.txt", "old": "let total = 1;\n    return;", "new": "x" }),
+            );
+            assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
+            assert!(err.to_string().contains("closest line is 2"), "{err}");
+            assert!(err.to_string().contains("let total = 1;"), "{err}");
+        }
     }
 
     #[test]
-    fn edit_file_replaces_one_unambiguous_match_and_shows_a_snippet() {
-        let (workspace, _outside) = scratch("edit-ok");
-        write_inside(&workspace, "code.txt", b"one\ntwo\nthree\nfour\nfive\n");
-        let result = served(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "old": "three", "new": "THREE" }),
-        );
-        assert_eq!(result["replacements"], 1);
-        assert_eq!(
-            result["snippet"],
-            "     2\ttwo\n     3\tTHREE\n     4\tfour\n"
-        );
-        assert_eq!(
-            read_back(&workspace, "code.txt"),
-            "one\ntwo\nTHREE\nfour\nfive\n"
-        );
-    }
-
-    #[test]
-    fn edit_file_names_the_closest_line_when_the_text_is_missing() {
-        let (workspace, _outside) = scratch("edit-closest");
-        write_inside(
-            &workspace,
-            "code.txt",
-            b"fn main() {\n    let total = 1;\n}\n",
-        );
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "code.txt", "old": "let total = 1;\n    return;", "new": "x" }),
-        );
-        assert!(matches!(err, ToolError::NotFound { .. }), "{err:?}");
-        assert!(err.to_string().contains("closest line is 2"), "{err}");
-        assert!(err.to_string().contains("let total = 1;"), "{err}");
-    }
-
-    #[test]
-    fn edit_file_replace_all_replaces_every_match_and_refuses_a_no_op() {
-        let (workspace, _outside) = scratch("edit-all");
-        write_inside(&workspace, "a.txt", b"x\nx\nx\n");
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "a.txt", "old": "x", "new": "y" }),
-        );
-        assert!(err.to_string().contains("appears 3 times"), "{err}");
-        let result = served(
-            &workspace,
-            "edit_file",
-            json!({ "path": "a.txt", "old": "x", "new": "y", "replace_all": true }),
-        );
-        assert_eq!(result["replacements"], 3);
-        assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
-        // An edit that changes nothing is refused and writes nothing.
-        let err = refused(
-            &workspace,
-            "edit_file",
-            json!({ "path": "a.txt", "old": "y", "new": "y" }),
-        );
-        assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
-        assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
+    fn edit_file_replaces_one_or_every_match_and_refuses_a_no_op() {
+        // One unambiguous match is replaced and shown as a snippet.
+        {
+            let (workspace, _outside) = scratch("edit-ok");
+            write_inside(&workspace, "code.txt", b"one\ntwo\nthree\nfour\nfive\n");
+            let result = served(
+                &workspace,
+                "edit_file",
+                json!({ "path": "code.txt", "old": "three", "new": "THREE" }),
+            );
+            assert_eq!(result["replacements"], 1);
+            assert_eq!(
+                result["snippet"],
+                "     2\ttwo\n     3\tTHREE\n     4\tfour\n"
+            );
+            assert_eq!(
+                read_back(&workspace, "code.txt"),
+                "one\ntwo\nTHREE\nfour\nfive\n"
+            );
+        }
+        // replace_all replaces every match, and an edit that changes nothing is refused.
+        {
+            let (workspace, _outside) = scratch("edit-all");
+            write_inside(&workspace, "a.txt", b"x\nx\nx\n");
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "a.txt", "old": "x", "new": "y" }),
+            );
+            assert!(err.to_string().contains("appears 3 times"), "{err}");
+            let result = served(
+                &workspace,
+                "edit_file",
+                json!({ "path": "a.txt", "old": "x", "new": "y", "replace_all": true }),
+            );
+            assert_eq!(result["replacements"], 3);
+            assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
+            // An edit that changes nothing is refused and writes nothing.
+            let err = refused(
+                &workspace,
+                "edit_file",
+                json!({ "path": "a.txt", "old": "y", "new": "y" }),
+            );
+            assert!(matches!(err, ToolError::InvalidInput { .. }), "{err:?}");
+            assert_eq!(read_back(&workspace, "a.txt"), "y\ny\ny\n");
+        }
     }
 
     // --- multi_edit --------------------------------------------------------
 
     #[test]
-    fn multi_edit_applies_in_order_and_writes_once() {
-        let (workspace, _outside) = scratch("multi-ok");
-        write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
-        let out = multi_edit(
-            &workspace,
-            &json!({
-                "path": "a.txt",
-                "edits": [
-                    { "old": "alpha", "new": "gamma" },
-                    { "old": "gamma", "new": "delta", "replace_all": false },
-                    { "old": "beta", "new": "BETA" },
-                ],
-            }),
-        )
-        .expect("the edits apply");
-        let result: Value = serde_json::from_str(&out).expect("JSON");
-        assert_eq!(result["edits"], 3);
-        assert_eq!(result["replacements"], 3);
-        assert_eq!(read_back(&workspace, "a.txt"), "delta\nBETA\n");
-    }
-
-    #[test]
-    fn multi_edit_writes_nothing_when_any_edit_fails() {
-        let (workspace, _outside) = scratch("multi-fail");
-        write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
-        let err = multi_edit(
-            &workspace,
-            &json!({
-                "path": "a.txt",
-                "edits": [
-                    { "old": "alpha", "new": "gamma" },
-                    { "old": "missing", "new": "x" },
-                ],
-            }),
-        )
-        .expect_err("edit 1 should be refused");
-        assert!(err.contains("edit 1"), "{err}");
-        assert_eq!(read_back(&workspace, "a.txt"), "alpha\nbeta\n");
-        // An empty edit list is refused before the file is touched.
-        let err =
-            multi_edit(&workspace, &json!({ "path": "a.txt", "edits": [] })).expect_err("no edits");
-        assert!(err.contains("at least one edit"), "{err}");
+    fn multi_edit_applies_in_order_or_writes_nothing_on_failure() {
+        // The edits apply in order and the file is written once.
+        {
+            let (workspace, _outside) = scratch("multi-ok");
+            write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
+            let out = multi_edit(
+                &workspace,
+                &json!({
+                    "path": "a.txt",
+                    "edits": [
+                        { "old": "alpha", "new": "gamma" },
+                        { "old": "gamma", "new": "delta", "replace_all": false },
+                        { "old": "beta", "new": "BETA" },
+                    ],
+                }),
+            )
+            .expect("the edits apply");
+            let result: Value = serde_json::from_str(&out).expect("JSON");
+            assert_eq!(result["edits"], 3);
+            assert_eq!(result["replacements"], 3);
+            assert_eq!(read_back(&workspace, "a.txt"), "delta\nBETA\n");
+        }
+        // A failing edit writes nothing, and an empty edit list is refused.
+        {
+            let (workspace, _outside) = scratch("multi-fail");
+            write_inside(&workspace, "a.txt", b"alpha\nbeta\n");
+            let err = multi_edit(
+                &workspace,
+                &json!({
+                    "path": "a.txt",
+                    "edits": [
+                        { "old": "alpha", "new": "gamma" },
+                        { "old": "missing", "new": "x" },
+                    ],
+                }),
+            )
+            .expect_err("edit 1 should be refused");
+            assert!(err.contains("edit 1"), "{err}");
+            assert_eq!(read_back(&workspace, "a.txt"), "alpha\nbeta\n");
+            // An empty edit list is refused before the file is touched.
+            let err = multi_edit(&workspace, &json!({ "path": "a.txt", "edits": [] }))
+                .expect_err("no edits");
+            assert!(err.contains("at least one edit"), "{err}");
+        }
     }
 
     // --- list --------------------------------------------------------------

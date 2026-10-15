@@ -503,99 +503,101 @@ mod tests {
     }
 
     #[test]
-    fn the_job_root_hands_the_engine_its_entries_but_never_the_root_or_the_harness_folders() {
-        let steps = plan(Path::new(ROOT), "goose", "1.52.0", Path::new(ROOT));
-        let job = steps
-            .iter()
-            .find(|step| step.owner == Owner::Engine && step.tree && step.path == Path::new(ROOT))
-            .expect("the job tree");
-        assert!(
-            !job.itself,
-            "the root stays root's: its owner could rename .plaza"
-        );
-        assert_eq!(
-            job.skip,
-            vec![
-                PathBuf::from("/workspace/.plaza"),
-                PathBuf::from("/workspace/.npm-global"),
-                PathBuf::from("/workspace/.engines"),
-            ]
-        );
-        let sticky = steps
-            .iter()
-            .find(|step| step.owner == Owner::Root && step.path == Path::new(ROOT))
-            .expect("the root's own step");
-        assert_eq!(sticky.mode, Some(0o1777));
-        assert!(!sticky.tree);
-    }
-
-    #[test]
-    fn a_subfolder_job_is_the_engines_alone_with_nothing_skipped() {
-        let steps = plan(
-            Path::new(ROOT),
-            "goose",
-            "1.52.0",
-            Path::new("/workspace/app"),
-        );
-        let job = step_at(&steps, "/workspace/app");
-        assert_eq!(job.owner, Owner::Engine);
-        assert!(job.tree && job.itself && job.skip.is_empty() && job.mode.is_none());
-        let root = step_at(&steps, ROOT);
-        assert_eq!(
-            (root.owner, root.tree, root.mode),
-            (Owner::Root, false, Some(0o755)),
-            "the root is closed to the engine again"
-        );
-    }
-
-    #[test]
-    fn the_harness_state_and_the_installed_engines_stay_root_read_only() {
-        let steps = plan(
-            Path::new(ROOT),
-            "goose",
-            "1.52.0",
-            Path::new("/workspace/app"),
-        );
-        let plaza = step_at(&steps, "/workspace/.plaza");
-        assert_eq!(
-            (plaza.owner, plaza.mode, plaza.tree),
-            (Owner::Root, Some(0o700), false)
-        );
-        let npm = step_at(&steps, "/workspace/.npm-global");
-        assert_eq!(
-            (npm.owner, npm.mode, npm.tree),
-            (Owner::Root, Some(0o755), true)
-        );
-        let installed = step_at(&steps, "/workspace/.engines/goose-1.52.0");
-        assert_eq!(
-            (installed.owner, installed.mode, installed.tree),
-            (Owner::Root, Some(0o755), true)
-        );
-        let engines = step_at(&steps, "/workspace/.engines");
-        assert_eq!((engines.owner, engines.tree), (Owner::Root, false));
-    }
-
-    #[test]
-    fn each_engine_has_a_private_home_of_its_own() {
-        let steps = plan(
-            Path::new(ROOT),
-            "goose",
-            "1.52.0",
-            Path::new("/workspace/app"),
-        );
-        let home = step_at(&steps, "/workspace/.engines/home/goose");
-        assert_eq!(
-            (home.owner, home.mode, home.tree),
-            (Owner::Engine, Some(0o700), true)
-        );
-        assert_eq!(
-            install_cache(&home_in(Path::new(ROOT), "goose")),
-            PathBuf::from("/workspace/.engines/home/goose/install-cache")
-        );
-        assert_ne!(
-            home_in(Path::new(ROOT), "goose"),
-            home_in(Path::new(ROOT), "vibe")
-        );
+    fn the_engine_plan_hands_each_owner_its_own_folders() {
+        // Checked: the job root hands the engine its entries but never the root or the harness folders.
+        {
+            let steps = plan(Path::new(ROOT), "goose", "1.52.0", Path::new(ROOT));
+            let job = steps
+                .iter()
+                .find(|step| {
+                    step.owner == Owner::Engine && step.tree && step.path == Path::new(ROOT)
+                })
+                .expect("the job tree");
+            assert!(
+                !job.itself,
+                "the root stays root's: its owner could rename .plaza"
+            );
+            assert_eq!(
+                job.skip,
+                vec![
+                    PathBuf::from("/workspace/.plaza"),
+                    PathBuf::from("/workspace/.npm-global"),
+                    PathBuf::from("/workspace/.engines"),
+                ]
+            );
+            let sticky = steps
+                .iter()
+                .find(|step| step.owner == Owner::Root && step.path == Path::new(ROOT))
+                .expect("the root's own step");
+            assert_eq!(sticky.mode, Some(0o1777));
+            assert!(!sticky.tree);
+        }
+        // Checked: a subfolder job is the engine's alone with nothing skipped.
+        {
+            let steps = plan(
+                Path::new(ROOT),
+                "goose",
+                "1.52.0",
+                Path::new("/workspace/app"),
+            );
+            let job = step_at(&steps, "/workspace/app");
+            assert_eq!(job.owner, Owner::Engine);
+            assert!(job.tree && job.itself && job.skip.is_empty() && job.mode.is_none());
+            let root = step_at(&steps, ROOT);
+            assert_eq!(
+                (root.owner, root.tree, root.mode),
+                (Owner::Root, false, Some(0o755)),
+                "the root is closed to the engine again"
+            );
+        }
+        // Checked: the harness state and the installed engines stay root read-only.
+        {
+            let steps = plan(
+                Path::new(ROOT),
+                "goose",
+                "1.52.0",
+                Path::new("/workspace/app"),
+            );
+            let plaza = step_at(&steps, "/workspace/.plaza");
+            assert_eq!(
+                (plaza.owner, plaza.mode, plaza.tree),
+                (Owner::Root, Some(0o700), false)
+            );
+            let npm = step_at(&steps, "/workspace/.npm-global");
+            assert_eq!(
+                (npm.owner, npm.mode, npm.tree),
+                (Owner::Root, Some(0o755), true)
+            );
+            let installed = step_at(&steps, "/workspace/.engines/goose-1.52.0");
+            assert_eq!(
+                (installed.owner, installed.mode, installed.tree),
+                (Owner::Root, Some(0o755), true)
+            );
+            let engines = step_at(&steps, "/workspace/.engines");
+            assert_eq!((engines.owner, engines.tree), (Owner::Root, false));
+        }
+        // Checked: each engine has a private home of its own.
+        {
+            let steps = plan(
+                Path::new(ROOT),
+                "goose",
+                "1.52.0",
+                Path::new("/workspace/app"),
+            );
+            let home = step_at(&steps, "/workspace/.engines/home/goose");
+            assert_eq!(
+                (home.owner, home.mode, home.tree),
+                (Owner::Engine, Some(0o700), true)
+            );
+            assert_eq!(
+                install_cache(&home_in(Path::new(ROOT), "goose")),
+                PathBuf::from("/workspace/.engines/home/goose/install-cache")
+            );
+            assert_ne!(
+                home_in(Path::new(ROOT), "goose"),
+                home_in(Path::new(ROOT), "vibe")
+            );
+        }
     }
 
     #[test]

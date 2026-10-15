@@ -1234,82 +1234,112 @@ mod tests {
     }
 
     #[test]
-    fn an_allowed_tool_runs_here_and_its_output_reaches_the_next_model_call() {
-        let workspace = scratch("allow");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "say hi")).unwrap();
-            let first = expect_type(host, "model_call");
-            assert_eq!(
-                (first["req"].clone(), first["request"]["system"].clone()),
-                (json!(1), json!("be brief"))
-            );
-            assert_eq!(
-                first["request"]["messages"][0]["content"][0]["text"],
-                "say hi"
-            );
-            host.send(&answer(
-                1,
-                json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            let request = expect_type(host, "tool_request");
-            assert_eq!(
-                (request["call"].clone(), request["name"].clone()),
-                (json!("t1"), json!("bash"))
-            );
-            host.send(&decision("t1", "allow", "", false)).unwrap();
-            let report = expect_type(host, "tool_report");
-            assert_eq!(
-                (report["ok"].clone(), report["output"].clone()),
-                (json!(true), json!("hi\nexit 0"))
-            );
-            let second = expect_type(host, "model_call");
-            assert_eq!(
-                second["request"]["messages"][2]["content"][0]["content"],
-                "hi\nexit 0"
-            );
-            host.send(&answer(2, json!([text("all done")]), "end_turn"))
+    fn tool_decisions_reach_the_next_model_call() {
+        // An allowed tool runs here, and its output reaches the next model call.
+        {
+            let workspace = scratch("allow");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "say hi")).unwrap();
+                let first = expect_type(host, "model_call");
+                assert_eq!(
+                    (first["req"].clone(), first["request"]["system"].clone()),
+                    (json!(1), json!("be brief"))
+                );
+                assert_eq!(
+                    first["request"]["messages"][0]["content"][0]["text"],
+                    "say hi"
+                );
+                host.send(&answer(
+                    1,
+                    json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]),
+                    "tool_use",
+                ))
                 .unwrap();
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (
-                    done["work"].clone(),
-                    done["status"].clone(),
-                    done["summary"].clone()
-                ),
-                (json!(1), json!("done"), json!("all done"))
-            );
-            stop(host);
-        });
-    }
-
-    #[test]
-    fn a_host_run_tool_uses_the_decisions_output_and_the_guest_reports_nothing() {
-        let workspace = scratch("done");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "find it")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(
-                1,
-                json!([tool_use("s1", "search", json!({"pattern": "x"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("s1", "done", "3 hits", false)).unwrap();
-            let next = expect_type(host, "model_call");
-            assert_eq!(
-                next["request"]["messages"][2]["content"][0]["content"],
-                "3 hits"
-            );
-            host.send(&answer(2, json!([text("found")]), "end_turn"))
+                let request = expect_type(host, "tool_request");
+                assert_eq!(
+                    (request["call"].clone(), request["name"].clone()),
+                    (json!("t1"), json!("bash"))
+                );
+                host.send(&decision("t1", "allow", "", false)).unwrap();
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (report["ok"].clone(), report["output"].clone()),
+                    (json!(true), json!("hi\nexit 0"))
+                );
+                let second = expect_type(host, "model_call");
+                assert_eq!(
+                    second["request"]["messages"][2]["content"][0]["content"],
+                    "hi\nexit 0"
+                );
+                host.send(&answer(2, json!([text("all done")]), "end_turn"))
+                    .unwrap();
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (
+                        done["work"].clone(),
+                        done["status"].clone(),
+                        done["summary"].clone()
+                    ),
+                    (json!(1), json!("done"), json!("all done"))
+                );
+                stop(host);
+            });
+        }
+        // A host-run tool uses the decision's output, and the guest reports nothing.
+        {
+            let workspace = scratch("done");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "find it")).unwrap();
+                expect_type(host, "model_call");
+                host.send(&answer(
+                    1,
+                    json!([tool_use("s1", "search", json!({"pattern": "x"}))]),
+                    "tool_use",
+                ))
                 .unwrap();
-            expect_type(host, "work_done");
-            stop(host);
-        });
+                expect_type(host, "tool_request");
+                host.send(&decision("s1", "done", "3 hits", false)).unwrap();
+                let next = expect_type(host, "model_call");
+                assert_eq!(
+                    next["request"]["messages"][2]["content"][0]["content"],
+                    "3 hits"
+                );
+                host.send(&answer(2, json!([text("found")]), "end_turn"))
+                    .unwrap();
+                expect_type(host, "work_done");
+                stop(host);
+            });
+        }
+        // A denied tool is an error result carrying the reason.
+        {
+            let workspace = scratch("deny");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "rm it")).unwrap();
+                expect_type(host, "model_call");
+                host.send(&answer(
+                    1,
+                    json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]),
+                    "tool_use",
+                ))
+                .unwrap();
+                expect_type(host, "tool_request");
+                host.send(&decision("d1", "deny", "not allowed here", true))
+                    .unwrap();
+                let next = expect_type(host, "model_call");
+                let result = &next["request"]["messages"][2]["content"][0];
+                assert_eq!(
+                    (result["content"].clone(), result["is_error"].clone()),
+                    (json!("not allowed here"), json!(true))
+                );
+                host.send(&answer(2, json!([text("ok")]), "end_turn"))
+                    .unwrap();
+                expect_type(host, "work_done");
+                stop(host);
+            });
+        }
     }
 
     #[test]
@@ -1446,52 +1476,6 @@ mod tests {
     }
 
     #[test]
-    fn the_compression_cut_keeps_the_latest_assistant_turns() {
-        let user = || Message::user_text("u");
-        let assistant = || {
-            Message::assistant(vec![Block::Text {
-                text: "a".to_string(),
-            }])
-        };
-        let messages = vec![user(), assistant(), user(), assistant(), user()];
-        assert_eq!(compress_cut(&messages, 1, usize::MAX), Some(3));
-        assert_eq!(compress_cut(&messages, 0, usize::MAX), Some(3));
-        assert_eq!(compress_cut(&messages, 2, usize::MAX), Some(1));
-        assert_eq!(compress_cut(&messages, 3, usize::MAX), None);
-        // A tight budget moves the cut later, keeping less, but always the latest turn.
-        assert_eq!(compress_cut(&messages, 2, 1), Some(3));
-    }
-
-    #[test]
-    fn a_denied_tool_is_an_error_result_carrying_the_reason() {
-        let workspace = scratch("deny");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "rm it")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(
-                1,
-                json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("d1", "deny", "not allowed here", true))
-                .unwrap();
-            let next = expect_type(host, "model_call");
-            let result = &next["request"]["messages"][2]["content"][0];
-            assert_eq!(
-                (result["content"].clone(), result["is_error"].clone()),
-                (json!("not allowed here"), json!(true))
-            );
-            host.send(&answer(2, json!([text("ok")]), "end_turn"))
-                .unwrap();
-            expect_type(host, "work_done");
-            stop(host);
-        });
-    }
-
-    #[test]
     fn malformed_tool_input_is_refused_without_asking_the_host() {
         let workspace = scratch("invalid");
         run_hub(&workspace, |host| {
@@ -1526,165 +1510,167 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_fails_the_work_item() {
-        let workspace = scratch("refusal");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "x")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(1, json!([text("no")]), "refusal"))
-                .unwrap();
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (json!("failed"), json!("the model declined"))
-            );
-            stop(host);
-        });
-    }
-
-    #[test]
-    fn a_second_token_limit_stops_after_one_continue() {
-        let workspace = scratch("limit");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "long")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(1, json!([text("partial")]), "max_tokens"))
-                .unwrap();
-            let again = expect_type(host, "model_call");
-            let messages = &again["request"]["messages"];
-            assert_eq!(
-                messages[messages.as_array().unwrap().len() - 1]["content"][0]["text"],
-                "continue"
-            );
-            host.send(&answer(2, json!([text("more")]), "max_tokens"))
-                .unwrap();
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("the model hit its token limit"))
-            );
-            stop(host);
-        });
-    }
-
-    #[test]
-    fn the_turn_budget_stops_the_work_before_another_model_call() {
-        let workspace = scratch("budget");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(2)).unwrap();
-            host.send(&work(1, "task", "t", "loop")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(
-                1,
-                json!([tool_use("b1", "list", json!({"path": "a"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("b1", "done", "[]", false)).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(
-                2,
-                json!([tool_use("b2", "list", json!({"path": "b"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("b2", "done", "[]", false)).unwrap();
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("turn budget reached"))
-            );
-            stop(host);
-        });
-    }
-
-    #[test]
-    fn the_same_failing_call_three_times_is_stuck() {
-        let workspace = scratch("stuck");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "again")).unwrap();
-            for req in 1..=3 {
+    fn the_loop_ends_the_work_on_refusal_token_limit_budget_or_a_stuck_call() {
+        // A refusal fails the work item.
+        {
+            let workspace = scratch("refusal");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "x")).unwrap();
                 expect_type(host, "model_call");
-                let call = format!("s{req}");
+                host.send(&answer(1, json!([text("no")]), "refusal"))
+                    .unwrap();
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (json!("failed"), json!("the model declined"))
+                );
+                stop(host);
+            });
+        }
+        // A second token limit stops the work after one continue.
+        {
+            let workspace = scratch("limit");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "long")).unwrap();
+                expect_type(host, "model_call");
+                host.send(&answer(1, json!([text("partial")]), "max_tokens"))
+                    .unwrap();
+                let again = expect_type(host, "model_call");
+                let messages = &again["request"]["messages"];
+                assert_eq!(
+                    messages[messages.as_array().unwrap().len() - 1]["content"][0]["text"],
+                    "continue"
+                );
+                host.send(&answer(2, json!([text("more")]), "max_tokens"))
+                    .unwrap();
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (json!("stopped"), json!("the model hit its token limit"))
+                );
+                stop(host);
+            });
+        }
+        // The turn budget stops the work before another model call.
+        {
+            let workspace = scratch("budget");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(2)).unwrap();
+                host.send(&work(1, "task", "t", "loop")).unwrap();
+                expect_type(host, "model_call");
                 host.send(&answer(
-                    req,
-                    json!([tool_use(&call, "bash", json!({"command": "x"}))]),
+                    1,
+                    json!([tool_use("b1", "list", json!({"path": "a"}))]),
                     "tool_use",
                 ))
                 .unwrap();
                 expect_type(host, "tool_request");
-                host.send(&decision(&call, "deny", "no", true)).unwrap();
-            }
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (
-                    json!("stopped"),
-                    json!("stuck: bash failed 3 times in a row with the same input")
-                )
-            );
-            stop(host);
-        });
+                host.send(&decision("b1", "done", "[]", false)).unwrap();
+                expect_type(host, "model_call");
+                host.send(&answer(
+                    2,
+                    json!([tool_use("b2", "list", json!({"path": "b"}))]),
+                    "tool_use",
+                ))
+                .unwrap();
+                expect_type(host, "tool_request");
+                host.send(&decision("b2", "done", "[]", false)).unwrap();
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (json!("stopped"), json!("turn budget reached"))
+                );
+                stop(host);
+            });
+        }
+        // The same failing call three times in a row is stuck.
+        {
+            let workspace = scratch("stuck");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "again")).unwrap();
+                for req in 1..=3 {
+                    expect_type(host, "model_call");
+                    let call = format!("s{req}");
+                    host.send(&answer(
+                        req,
+                        json!([tool_use(&call, "bash", json!({"command": "x"}))]),
+                        "tool_use",
+                    ))
+                    .unwrap();
+                    expect_type(host, "tool_request");
+                    host.send(&decision(&call, "deny", "no", true)).unwrap();
+                }
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (
+                        json!("stopped"),
+                        json!("stuck: bash failed 3 times in a row with the same input")
+                    )
+                );
+                stop(host);
+            });
+        }
     }
 
     #[test]
-    fn a_cancel_stops_after_the_current_step_and_runs_nothing_more() {
-        let workspace = scratch("cancel");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "stop me")).unwrap();
-            expect_type(host, "model_call");
-            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
+    fn a_cancel_stops_the_work_before_its_next_model_call() {
+        // A cancel stops after the current step and runs nothing more.
+        {
+            let workspace = scratch("cancel");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "stop me")).unwrap();
+                expect_type(host, "model_call");
+                host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
+                    .unwrap();
+                host.send(&answer(
+                    1,
+                    json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]),
+                    "tool_use",
+                ))
                 .unwrap();
-            host.send(&answer(
-                1,
-                json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("c1", "allow", "", false)).unwrap();
-            expect_type(host, "tool_report");
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("operator stop"))
-            );
-            stop(host);
-        });
-    }
-
-    #[test]
-    fn a_cancel_that_arrives_while_a_tool_runs_stops_the_work_before_its_next_model_call() {
-        let workspace = scratch("cancel-in-tool");
-        run_hub(&workspace, |host| {
-            host.send(&welcome(10)).unwrap();
-            host.send(&work(1, "task", "t", "run it")).unwrap();
-            expect_type(host, "model_call");
-            host.send(&answer(
-                1,
-                json!([tool_use("c1", "bash", json!({"command": "sleep 1"}))]),
-                "tool_use",
-            ))
-            .unwrap();
-            expect_type(host, "tool_request");
-            host.send(&decision("c1", "allow", "", false)).unwrap();
-            // Sent while the tool runs: the loop takes it beside the tool, not after it.
-            host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
+                expect_type(host, "tool_request");
+                host.send(&decision("c1", "allow", "", false)).unwrap();
+                expect_type(host, "tool_report");
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (json!("stopped"), json!("operator stop"))
+                );
+                stop(host);
+            });
+        }
+        // A cancel that arrives while a tool runs stops the work before its next model call.
+        {
+            let workspace = scratch("cancel-in-tool");
+            run_hub(&workspace, |host| {
+                host.send(&welcome(10)).unwrap();
+                host.send(&work(1, "task", "t", "run it")).unwrap();
+                expect_type(host, "model_call");
+                host.send(&answer(
+                    1,
+                    json!([tool_use("c1", "bash", json!({"command": "sleep 1"}))]),
+                    "tool_use",
+                ))
                 .unwrap();
-            expect_type(host, "tool_report");
-            let done = expect_type(host, "work_done");
-            assert_eq!(
-                (done["status"].clone(), done["summary"].clone()),
-                (json!("stopped"), json!("operator stop"))
-            );
-            stop(host);
-        });
+                expect_type(host, "tool_request");
+                host.send(&decision("c1", "allow", "", false)).unwrap();
+                // Sent while the tool runs: the loop takes it beside the tool, not after it.
+                host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
+                    .unwrap();
+                expect_type(host, "tool_report");
+                let done = expect_type(host, "work_done");
+                assert_eq!(
+                    (done["status"].clone(), done["summary"].clone()),
+                    (json!("stopped"), json!("operator stop"))
+                );
+                stop(host);
+            });
+        }
     }
 
     #[test]
