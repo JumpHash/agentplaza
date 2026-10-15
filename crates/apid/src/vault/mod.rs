@@ -1375,7 +1375,6 @@ impl Store {
     }
 
     /// Removes every registration of `binding` (a removed provider, connector or MCP server). Returns how many went.
-    #[allow(dead_code)] // the provider and MCP removals call it (their owners' change)
     pub fn unregister_consumer(&self, binding: &str) -> usize {
         let mut inner = self.lock();
         let before = inner.consumers.len();

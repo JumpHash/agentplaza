@@ -438,7 +438,24 @@ fn new_id() -> String {
 static STORE: OnceLock<Store> = OnceLock::new();
 
 fn store(app: &App) -> &'static Store {
-    STORE.get_or_init(|| Store::load(&app.config.state_dir))
+    STORE.get_or_init(|| {
+        let store = Store::load(&app.config.state_dir);
+        register_consumers(app, &store);
+        store
+    })
+}
+
+/// Tells the vault which secrets the egress rules read, so its screen shows each as wanted by
+/// "Egress credential for <host>" (and which node lacks it). Called whenever the rules change.
+fn register_consumers(app: &App, store: &Store) {
+    app.vault.unregister_consumer(BINDING);
+    for rule in store.list() {
+        app.vault.register_consumer(
+            BINDING,
+            &format!("Egress credential for {}", rule.host),
+            &rule.secret,
+        );
+    }
 }
 
 /// Whether the vault has an entry of `name` bound to the egress consumer.
@@ -725,7 +742,10 @@ fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Err(e) => return Response::error(400, &e.to_string()),
     };
     match store(app).create(rule, apz_plaza::now_ms(), bound_in_vault(app)) {
-        Ok(rule) => Response::json(200, &rule),
+        Ok(rule) => {
+            register_consumers(app, store(app));
+            Response::json(200, &rule)
+        }
         Err((status, why)) => Response::error(status, &why),
     }
 }
@@ -735,14 +755,20 @@ fn update_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return Response::error(400, "the body must be a JSON object");
     };
     match store(app).update(p.get("id"), patch, bound_in_vault(app)) {
-        Ok(rule) => Response::json(200, &rule),
+        Ok(rule) => {
+            register_consumers(app, store(app));
+            Response::json(200, &rule)
+        }
         Err((status, why)) => Response::error(status, &why),
     }
 }
 
 fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match store(app).remove(p.get("id")) {
-        Ok(()) => Response::json(200, &json!({ "ok": true })),
+        Ok(()) => {
+            register_consumers(app, store(app));
+            Response::json(200, &json!({ "ok": true }))
+        }
         Err((status, why)) => Response::error(status, &why),
     }
 }
