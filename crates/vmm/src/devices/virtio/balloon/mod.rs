@@ -92,4 +92,15 @@ pub enum BalloonError {
     /// The device interrupt could not be created: {0}
     #[error("cannot create the balloon interrupt: {0}")]
     Irq(#[from] io::Error),
+    /// A snapshot carries {got} queue positions; the balloon has {expected} (none before activation)
+    #[error("snapshot has {got} queue positions; the balloon has {expected}")]
+    SnapshotQueueCount {
+        /// The queue positions the device expects.
+        expected: usize,
+        /// The queue positions the snapshot carries.
+        got: usize,
+    },
+    /// The balloon's snapshot state is malformed: {0}
+    #[error("malformed balloon snapshot state: {0}")]
+    SnapshotState(#[from] serde_json::Error),
 }

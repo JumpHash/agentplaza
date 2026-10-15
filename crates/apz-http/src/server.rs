@@ -1,11 +1,11 @@
 //! The threaded server.
 
 use std::io::{self, BufReader, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
@@ -13,6 +13,15 @@ use crate::{Limits, Request, Response, host_is_loopback, ws};
 
 /// The most connections served at once; the next one is answered 503.
 const MAX_CONNECTIONS: usize = 256;
+
+/// What a node's relay (noded's `ws_relay`) writes first on a connection it relays from a VM to a hub
+/// on its own machine. The VM is not this machine's own caller, so a loopback connection that opens
+/// with it is served as a caller from elsewhere: [`Request::peer`] is `0.0.0.0`, never loopback, and
+/// it gets no loopback trust. Writing it can only lower a caller's trust.
+pub const RELAY_PREFACE: &[u8] = b"APZ-RELAY/1\r\n";
+
+/// How long a loopback connection that has begun the preface may take to finish it.
+const PREFACE_WAIT: Duration = Duration::from_secs(2);
 
 /// Every connection's read and write timeout; it also bounds how long an SSE
 /// client may stall a write, and how long a TLS client may stall a handshake
@@ -113,7 +122,10 @@ where
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(TIMEOUT));
     let _ = stream.set_write_timeout(Some(TIMEOUT));
-    let peer = stream.peer_addr().ok().map(|addr| addr.ip());
+    let mut peer = stream.peer_addr().ok().map(|addr| addr.ip());
+    if peer.is_some_and(|peer| peer.is_loopback()) && relayed(&stream) {
+        peer = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
     let Some(config) = tls else {
         return serve_connection(stream, peer, handler, limits);
     };
@@ -128,6 +140,28 @@ where
         }
     }
     serve_connection(tls, peer, handler, limits);
+}
+
+/// Whether a loopback connection opens with [`RELAY_PREFACE`]; the preface is consumed when it does.
+/// A connection whose first bytes are not the preface's is left untouched.
+fn relayed(stream: &TcpStream) -> bool {
+    let mut buf = [0u8; RELAY_PREFACE.len()];
+    let deadline = Instant::now() + PREFACE_WAIT;
+    loop {
+        let Ok(seen) = stream.peek(&mut buf) else {
+            return false;
+        };
+        if seen == 0 || buf[..seen] != RELAY_PREFACE[..seen] {
+            return false;
+        }
+        if seen == buf.len() {
+            return (&*stream).read_exact(&mut buf).is_ok();
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// One request, one response, close. `peer` is the connection's remote address. An upgrade keeps
@@ -280,6 +314,44 @@ mod tests {
         assert_eq!(
             *seen.lock().expect("lock"),
             Some(("/x".to_string(), Some(loopback)))
+        );
+    }
+
+    #[test]
+    fn a_relayed_loopback_connection_is_served_as_one_from_elsewhere() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let handle = Server::bind(0)
+            .expect("bind")
+            .spawn(move |request: &Request| {
+                sink.lock().expect("lock").push(request.peer);
+                Response::text(200, "ok")
+            })
+            .expect("spawn");
+        let send = |bytes: &[&[u8]]| {
+            let mut stream = TcpStream::connect(("127.0.0.1", handle.port())).expect("connect");
+            for part in bytes {
+                stream.write_all(part).expect("send");
+                thread::sleep(Duration::from_millis(20));
+            }
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).expect("read");
+            reply
+        };
+        let get = b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n".as_slice();
+        // The preface whole, then in two writes: either way it is consumed.
+        assert!(send(&[RELAY_PREFACE, get]).starts_with("HTTP/1.1 200"));
+        let (head, tail) = RELAY_PREFACE.split_at(4);
+        assert!(send(&[head, tail, get]).starts_with("HTTP/1.1 200"));
+        // A relayed caller may name any host, as a caller from another machine may.
+        let other = b"GET /x HTTP/1.1\r\nHost: hub\r\n\r\n".as_slice();
+        assert!(send(&[RELAY_PREFACE, other]).starts_with("HTTP/1.1 200"));
+        assert!(send(&[get]).starts_with("HTTP/1.1 200"));
+        let unspecified = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let loopback = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            [unspecified, unspecified, unspecified, loopback]
         );
     }
 

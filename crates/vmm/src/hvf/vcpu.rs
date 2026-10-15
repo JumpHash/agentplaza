@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use crate::hvf::exit::{Exception, MmioAccess, Wait};
 use crate::hvf::gic::{self, Gic, GicMmio};
 use crate::hvf::psci::{self, Action, Machine};
+use crate::hvf::snapshot_state::HvfVcpuState;
 use crate::hvf::sys::{self, HvfError};
 use crate::hvf::uart::SerialDevice;
 use crate::hvf::vm::HvfVm;
@@ -109,6 +110,80 @@ pub struct BootParams {
     pub entry: u64,
     /// The address of the device tree blob.
     pub fdt: u64,
+}
+
+/// The general registers a snapshot keeps: X0..X30, PC, FPCR, FPSR and CPSR.
+const SNAPSHOT_REGS: std::ops::RangeInclusive<sys::hv_reg_t> = sys::HV_REG_X0..=sys::HV_REG_CPSR;
+// FPCR and FPSR sit between PC and CPSR, so the range carries them.
+const _: () = assert!(
+    sys::HV_REG_PC < sys::HV_REG_FPCR
+        && sys::HV_REG_FPCR < sys::HV_REG_FPSR
+        && sys::HV_REG_FPSR < sys::HV_REG_CPSR
+);
+
+/// The system registers a snapshot keeps, written back in this order: the EL1 translation and
+/// exception state, the thread pointers and stack pointers, the pointer-authentication keys, and
+/// the virtual timer. The identification registers and `MPIDR_EL1` are not here: `configure` sets
+/// them on every start.
+const SNAPSHOT_SYS_REGS: &[sys::hv_sys_reg_t] = &[
+    sys::HV_SYS_REG_SCTLR_EL1,
+    sys::HV_SYS_REG_CPACR_EL1,
+    sys::HV_SYS_REG_TTBR0_EL1,
+    sys::HV_SYS_REG_TTBR1_EL1,
+    sys::HV_SYS_REG_TCR_EL1,
+    sys::HV_SYS_REG_MAIR_EL1,
+    sys::HV_SYS_REG_AMAIR_EL1,
+    sys::HV_SYS_REG_CONTEXTIDR_EL1,
+    sys::HV_SYS_REG_VBAR_EL1,
+    sys::HV_SYS_REG_SPSR_EL1,
+    sys::HV_SYS_REG_ELR_EL1,
+    sys::HV_SYS_REG_ESR_EL1,
+    sys::HV_SYS_REG_FAR_EL1,
+    sys::HV_SYS_REG_AFSR0_EL1,
+    sys::HV_SYS_REG_AFSR1_EL1,
+    sys::HV_SYS_REG_PAR_EL1,
+    sys::HV_SYS_REG_SP_EL0,
+    sys::HV_SYS_REG_SP_EL1,
+    sys::HV_SYS_REG_TPIDR_EL0,
+    sys::HV_SYS_REG_TPIDRRO_EL0,
+    sys::HV_SYS_REG_TPIDR_EL1,
+    sys::HV_SYS_REG_MDSCR_EL1,
+    sys::HV_SYS_REG_CNTKCTL_EL1,
+    sys::HV_SYS_REG_APIAKEYLO_EL1,
+    sys::HV_SYS_REG_APIAKEYHI_EL1,
+    sys::HV_SYS_REG_APIBKEYLO_EL1,
+    sys::HV_SYS_REG_APIBKEYHI_EL1,
+    sys::HV_SYS_REG_APDAKEYLO_EL1,
+    sys::HV_SYS_REG_APDAKEYHI_EL1,
+    sys::HV_SYS_REG_APDBKEYLO_EL1,
+    sys::HV_SYS_REG_APDBKEYHI_EL1,
+    sys::HV_SYS_REG_APGAKEYLO_EL1,
+    sys::HV_SYS_REG_APGAKEYHI_EL1,
+    sys::HV_SYS_REG_CNTV_CVAL_EL0,
+    sys::HV_SYS_REG_CNTV_CTL_EL0,
+];
+
+/// The pause the snapshot control asks for: honoured by each vCPU at the top of its loop, where it
+/// also reads its own state when the pause is for a snapshot (`take`).
+#[derive(Debug, Default)]
+struct Pause {
+    requested: bool,
+    take: bool,
+    parked: usize,
+    states: Vec<Option<HvfVcpuState>>,
+}
+
+/// What a restored VM starts from (see [`SharedVm::new`]).
+#[derive(Debug)]
+pub struct Restore {
+    /// The virtual-timer offset that makes the guest's counter go on from the snapshot's.
+    pub vtimer_offset: u64,
+    /// Which vCPUs were powered on.
+    pub running: Vec<bool>,
+    /// The interrupt controller.
+    pub gic: Gic,
+    /// Each vCPU's state, applied on its thread before it first runs.
+    pub vcpus: Vec<HvfVcpuState>,
 }
 
 /// A vCPU handle.
@@ -245,6 +320,51 @@ impl HvfVcpu {
         sys::hv_try!(hv_vm_config_get_default_ipa_size(&mut ipa_size))?;
         let id_aa64mmfr0 = (host_mmfr0 & !0xf) | u64::from(parange_for_ipa_size(ipa_size));
         self.set_sys_reg(sys::HV_SYS_REG_ID_AA64MMFR0_EL1, id_aa64mmfr0)?;
+        Ok(())
+    }
+
+    /// Reads this vCPU's state for a snapshot (on its own thread, out of `hv_vcpu_run`).
+    fn save_state(&self) -> Result<HvfVcpuState, HvfError> {
+        let regs = SNAPSHOT_REGS
+            .clone()
+            .map(|reg| Ok((reg, self.get_reg(reg)?)))
+            .collect::<Result<Vec<_>, HvfError>>()?;
+        let simd = (0..32)
+            .map(|q| {
+                let mut value = sys::SimdFp::default();
+                sys::hv_try!(hv_vcpu_get_simd_fp_reg(self.id, q, &mut value))?;
+                Ok(value.0)
+            })
+            .collect::<Result<Vec<_>, HvfError>>()?;
+        let sys_regs = SNAPSHOT_SYS_REGS
+            .iter()
+            .map(|&reg| Ok((reg, self.get_sys_reg(reg)?)))
+            .collect::<Result<Vec<_>, HvfError>>()?;
+        Ok(HvfVcpuState {
+            regs,
+            simd,
+            sys_regs,
+            vtimer_masked: self.vtimer_masked,
+        })
+    }
+
+    /// Writes back a state [`HvfVcpu::save_state`] read, after [`HvfVcpu::configure`] and before the
+    /// vCPU first runs.
+    fn restore_state(&mut self, state: &HvfVcpuState) -> Result<(), HvfError> {
+        for &(reg, value) in &state.regs {
+            self.set_reg(reg, value)?;
+        }
+        for (q, value) in (0..).zip(&state.simd) {
+            sys::check(
+                "hv_vcpu_set_simd_fp_reg",
+                sys::set_simd_fp_reg(self.id, q, sys::SimdFp(*value)),
+            )?;
+        }
+        for &(reg, value) in &state.sys_regs {
+            self.set_sys_reg(reg, value)?;
+        }
+        sys::hv_try!(hv_vcpu_set_vtimer_mask(self.id, state.vtimer_masked))?;
+        self.vtimer_masked = state.vtimer_masked;
         Ok(())
     }
 
@@ -450,6 +570,11 @@ mod host_clock {
     }
 }
 
+/// The host's counter now (what a restore's virtual-timer offset is computed from).
+pub(crate) fn host_now() -> u64 {
+    host_clock::now()
+}
+
 /// The host's virtual counter, in the VM's time base.
 ///
 /// `hv_vcpu_set_vtimer_offset` shifts the guest's view of `CNTVCT_EL0` by the
@@ -516,6 +641,11 @@ pub struct SharedVm {
     started_wake: Condvar,
     /// The address the guest starts at.
     boot: BootParams,
+    /// The snapshot control's pause, and its wake-ups.
+    pause: Mutex<Pause>,
+    paused: Condvar,
+    /// The states a restored VM's vCPUs apply before they first run (taken by each vCPU's thread).
+    restored: Mutex<Vec<Option<HvfVcpuState>>>,
 }
 
 impl std::fmt::Debug for SharedVm {
@@ -542,27 +672,38 @@ impl SharedVm {
         runtime: Arc<VmRuntime>,
         vcpu_count: usize,
         boot: BootParams,
+        restore: Option<Restore>,
     ) -> Arc<Self> {
         // The guest's counter starts where the VM does; the framework
         // subtracts this offset from the host counter it reports as
         // `CNTVCT_EL0`, so the guest sees a small counter after boot instead
-        // of one that has been running since the host started.
-        let vtimer_offset = host_clock::now();
+        // of one that has been running since the host started. A restored
+        // guest's counter goes on from the snapshot's.
+        let vtimer_offset = restore
+            .as_ref()
+            .map_or_else(host_clock::now, |restore| restore.vtimer_offset);
         let slots = (0..vcpu_count)
             .map(|index| {
+                // Only the boot CPU starts running; the others wait for a
+                // PSCI CPU_ON (or are as the snapshot left them).
+                let running = restore.as_ref().map_or(index == 0, |restore| {
+                    restore.running.get(index) == Some(&true)
+                });
                 Arc::new(VcpuSlot {
                     id: AtomicU64::new(0),
-                    // Only the boot CPU starts running; the others wait for a
-                    // PSCI CPU_ON.
-                    wait: WaitSlot::new(index == 0),
+                    wait: WaitSlot::new(running),
                 })
             })
             .collect();
+        let (gic, restored) = match restore {
+            Some(restore) => (restore.gic, restore.vcpus.into_iter().map(Some).collect()),
+            None => (Gic::new(vcpu_count), Vec::new()),
+        };
         Arc::new(Self {
             vm,
             memory,
             runtime,
-            interrupts: Mutex::new(Gic::new(vcpu_count)),
+            interrupts: Mutex::new(gic),
             serial: Mutex::new(None),
             vtimer_offset,
             slots,
@@ -571,7 +712,146 @@ impl SharedVm {
             started: Mutex::new(false),
             started_wake: Condvar::new(),
             boot,
+            pause: Mutex::new(Pause::default()),
+            paused: Condvar::new(),
+            restored: Mutex::new(restored),
         })
+    }
+
+    /// The guest memory.
+    pub(crate) fn memory(&self) -> &GuestMemoryMmap {
+        &self.memory
+    }
+
+    /// The guest's virtual counter now.
+    pub(crate) fn guest_counter(&self) -> u64 {
+        guest_counter(self.vtimer_offset)
+    }
+
+    /// Which vCPUs are powered on.
+    pub(crate) fn running(&self) -> Vec<bool> {
+        self.slots
+            .iter()
+            .map(|slot| slot.wait.is_running())
+            .collect()
+    }
+
+    /// The interrupt controller's state.
+    pub(crate) fn gic_state(&self) -> crate::hvf::gic::GicState {
+        self.gic().state()
+    }
+
+    /// The console's registers.
+    pub(crate) fn serial_registers(&self) -> Option<crate::vstate::snapshot::SerialRegisters> {
+        lock(&self.serial).as_ref().map(SerialDevice::registers)
+    }
+
+    fn pause_requested(&self) -> bool {
+        lock(&self.pause).requested
+    }
+
+    /// Pauses every vCPU: each leaves its run (or its wait) and parks at the top of its loop; with
+    /// `take`, each first reads its own state, which the call returns in vCPU order. Waits up to
+    /// `limit`; a VM that stops meanwhile, or a vCPU that does not park, lifts the pause.
+    pub(crate) fn pause_vcpus(
+        &self,
+        take: bool,
+        limit: Duration,
+    ) -> Result<Vec<HvfVcpuState>, String> {
+        let count = self.slots.len();
+        {
+            let mut pause = lock(&self.pause);
+            pause.requested = true;
+            if take {
+                pause.take = true;
+                pause.states = vec![None; count];
+            }
+        }
+        // Already parked vCPUs re-check for a `take`.
+        self.paused.notify_all();
+        let deadline = Instant::now() + limit;
+        loop {
+            for index in 0..count {
+                self.wake(index);
+            }
+            let mut pause = lock(&self.pause);
+            let all_taken = !take || pause.states.iter().all(Option::is_some);
+            if pause.parked == count && all_taken {
+                pause.take = false;
+                return Ok(std::mem::take(&mut pause.states)
+                    .into_iter()
+                    .flatten()
+                    .collect());
+            }
+            let parked = pause.parked;
+            if self.stop_requested() || Instant::now() >= deadline {
+                pause.requested = false;
+                pause.take = false;
+                drop(pause);
+                self.paused.notify_all();
+                return Err(if self.stop_requested() {
+                    "the VM has stopped".to_string()
+                } else {
+                    format!("{parked} of {count} vCPUs paused")
+                });
+            }
+            let _ = self
+                .paused
+                .wait_timeout(pause, Duration::from_millis(10))
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Lifts a pause: the parked vCPUs run again.
+    pub(crate) fn resume_vcpus(&self) {
+        let mut pause = lock(&self.pause);
+        pause.requested = false;
+        pause.take = false;
+        drop(pause);
+        self.paused.notify_all();
+    }
+
+    /// Parks the calling vCPU while a pause is requested, reading its state first when the pause is
+    /// for a snapshot.
+    fn park_if_paused(&self, index: usize, vcpu: &HvfVcpu) -> Result<(), HvfError> {
+        let mut pause = lock(&self.pause);
+        if !pause.requested {
+            return Ok(());
+        }
+        pause.parked += 1;
+        self.paused.notify_all();
+        while pause.requested && !self.stop_requested() {
+            if pause.take && pause.states.get(index).is_some_and(Option::is_none) {
+                drop(pause);
+                let state = vcpu.save_state();
+                pause = lock(&self.pause);
+                match state {
+                    Ok(state) => {
+                        if let Some(slot) = pause.states.get_mut(index) {
+                            *slot = Some(state);
+                        }
+                    }
+                    Err(err) => {
+                        pause.parked -= 1;
+                        return Err(err);
+                    }
+                }
+                self.paused.notify_all();
+                continue;
+            }
+            pause = self
+                .paused
+                .wait_timeout(pause, Duration::from_millis(50))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        pause.parked -= 1;
+        Ok(())
+    }
+
+    /// The state a restored vCPU applies before it first runs, if this VM was restored.
+    fn take_restored(&self, index: usize) -> Option<HvfVcpuState> {
+        lock(&self.restored).get_mut(index).and_then(Option::take)
     }
 
     /// Installs the console. Called once, before any vCPU runs.
@@ -935,11 +1215,16 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
     let mut vcpu = HvfVcpu::create()?;
     shared.publish(index, vcpu.id());
     vcpu.configure(index, shared.vtimer_offset)?;
-    if index == 0 {
+    match shared.take_restored(index) {
+        // A restored vCPU goes on from its snapshot.
+        Some(state) => vcpu.restore_state(&state)?,
         // The boot CPU starts at the kernel entry point with the device tree
         // in X0, as the arm64 boot protocol specifies.
-        vcpu.set_reg(sys::HV_REG_PC, shared.boot.entry)?;
-        vcpu.set_reg(sys::HV_REG_X0, shared.boot.fdt)?;
+        None if index == 0 => {
+            vcpu.set_reg(sys::HV_REG_PC, shared.boot.entry)?;
+            vcpu.set_reg(sys::HV_REG_X0, shared.boot.fdt)?;
+        }
+        None => {}
     }
 
     let slot = match shared.slots.get(index) {
@@ -957,13 +1242,21 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
         if shared.stop_requested() {
             return Ok(());
         }
+        // A pause (the snapshot control's) parks every vCPU here, the
+        // powered-off and halted ones too: they are woken out of their waits.
+        shared.park_if_paused(index, &vcpu)?;
 
         // A vCPU that is powered off (a secondary CPU at boot, or one that
         // executed CPU_OFF) waits here for a PSCI CPU_ON. Register state is
         // applied on this thread, because Hypervisor.framework only accepts
         // register access from the vCPU's own thread.
-        match slot.wait.wait_for_start(|| shared.stop_requested()) {
-            Start::Stopped => return Ok(()),
+        match slot
+            .wait
+            .wait_for_start(|| shared.stop_requested() || shared.pause_requested())
+        {
+            Start::Stopped if shared.stop_requested() => return Ok(()),
+            // Woken for a pause: park at the top of the loop, then wait again.
+            Start::Stopped => continue,
             Start::Running => {}
             Start::At { entry, context_id } => {
                 // A freshly powered-on core presents reset register state, as
@@ -1022,7 +1315,9 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
                 // interrupt raised, or a stop requested, while this vCPU is
                 // deciding to sleep is not missed.
                 slot.wait.halt(sleep, || {
-                    shared.stop_requested() || shared.gic().irq_line(index)
+                    shared.stop_requested()
+                        || shared.pause_requested()
+                        || shared.gic().irq_line(index)
                 });
             }
             Outcome::Park => {

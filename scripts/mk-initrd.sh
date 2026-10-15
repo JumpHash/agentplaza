@@ -59,13 +59,20 @@
 # `virtio_mmio.device=` entry exists per virtio-mmio device: the vsock device's
 # and, when the VMM was given one, the block device's.
 #
-# The workspace volume: the VMM's second virtio-mmio device is a virtio-blk
-# device backed by a host file (the writable workspace image). When the guest
-# sees it, init mounts it (ext4) at /workspace and says so on the console; the
-# `wspace <text>` serial command appends a line to /workspace/notes.txt and
-# prints the file back, which is the guest-side proof that the volume is
-# writable and survives the VM. A guest with no such device has an empty
-# /workspace directory (not a volume), and `wspace` says so.
+# The workspace volume: one of the VMM's virtio-blk devices is backed by a host
+# file (the writable workspace image) and has an empty virtio id. init finds it
+# among /dev/vda..vdh, mounts it (ext4) at /workspace and says so on the
+# console; the `wspace <text>` serial command appends a line to
+# /workspace/notes.txt and prints the file back, which is the guest-side proof
+# that the volume is writable and survives the VM. A guest with no such device
+# has an empty /workspace directory (not a volume), and `wspace` says so.
+#
+# The shared data volumes: any other virtio-blk device whose virtio id (the
+# `serial` attribute the kernel exposes as /sys/block/<dev>/serial) is a volume
+# name: 1-20 characters of a-z, 0-9 and '-'. init mounts each read-only (ext4,
+# nosuid, nodev) at /data/<name>, and the agent sees /data as it sees
+# /workspace. The device letters are not fixed, so init reads every disk's id
+# rather than assuming an order.
 #
 # The agent's shell: busybox (the host's /usr/lib/initcpio/busybox, dynamically
 # linked, so its ELF interpreter and libraries are copied in at their absolute
@@ -398,10 +405,12 @@ cat > "$out_dir/init.c" <<'EOF'
 // loop, so this init never reboots such a guest - it reports the harness's end
 // and keeps the VM up, inspectable and killable.
 //
-// The same module load carries the workspace volume's transport: when the VMM
-// gave the VM a workspace image, its virtio-blk device appears as /dev/vda and
-// init mounts it (ext4) at /workspace. `wspace <text>` proves the volume is
-// writable from the guest's side.
+// The same module load carries the disks' transport: the workspace image's
+// virtio-blk device (the disk with an empty id) and any shared read-only data
+// volumes. init mounts the workspace (ext4) at /workspace and each data volume
+// at /data/<name>. `wspace <text>` proves the workspace is writable from the
+// guest's side.
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <net/if.h>
@@ -599,11 +608,12 @@ static void do_cpu(void)
 // is above it because it is the guest's console protocol.
 static void workspace_show(void);
 static void workspace_append(const char *text);
+static void data_show(void);
 
 static void do_command(const char *cmd)
 {
     if (!strcmp(cmd, "help")) {
-        put("commands: help, echo <text>, uname, uptime, mem, cpu, interrupts, wspace [text], sync, poweroff, reboot, halt\n");
+        put("commands: help, echo <text>, uname, uptime, mem, cpu, interrupts, wspace [text], data, sync, poweroff, reboot, halt\n");
     } else if (!strcmp(cmd, "interrupts")) {
         do_interrupts();
     } else if (!strcmp(cmd, "sync")) {
@@ -612,6 +622,8 @@ static void do_command(const char *cmd)
         workspace_append(cmd + 7);
     } else if (!strcmp(cmd, "wspace")) {
         workspace_show();
+    } else if (!strcmp(cmd, "data")) {
+        data_show();
     } else if (!strncmp(cmd, "echo ", 5)) {
         put(cmd + 5);
         put("\n");
@@ -773,29 +785,85 @@ static void load_guest_modules(int verbose)
 
 // --- workspace: the writable volume the block device carries -----------------
 
+// The block devices: vda..vdh, in no guaranteed order. A disk's virtio id is the
+// `serial` attribute the kernel exposes under /sys/block/<dev>: empty for the
+// workspace disk, a volume name for a shared data volume. A missing attribute
+// reads as empty.
+#define BLOCK_DEVS 8
+
+// Names slot `slot` (0..7) "vda".."vdh"; `out` needs 4 bytes.
+static void block_name(int slot, char *out)
+{
+    out[0] = 'v';
+    out[1] = 'd';
+    out[2] = (char)('a' + slot);
+    out[3] = '\0';
+}
+
+// Reads /sys/block/<dev>/serial into `out` (cap bytes) with the trailing
+// whitespace stripped. A missing or unreadable attribute leaves `out` empty.
+static void block_serial(const char *dev, char *out, size_t cap)
+{
+    char path[64];
+    out[0] = '\0';
+    snprintf(path, sizeof path, "/sys/block/%s/serial", dev);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return;
+    ssize_t n = read(fd, out, cap - 1);
+    close(fd);
+    if (n <= 0)
+        return;
+    out[n] = '\0';
+    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' ||
+                     out[n - 1] == ' ' || out[n - 1] == '\t'))
+        out[--n] = '\0';
+}
+
+// The workspace disk: the first of vda..vdh that exists and has an empty id.
+// Names it in `dev` (4 bytes) and returns 1, or returns 0 when none is there.
+static int find_workspace_dev(char *dev)
+{
+    for (int slot = 0; slot < BLOCK_DEVS; slot++) {
+        char name[4];
+        char path[16];
+        char serial[64];
+        block_name(slot, name);
+        snprintf(path, sizeof path, "/dev/%s", name);
+        if (access(path, F_OK) != 0)
+            continue;
+        block_serial(name, serial, sizeof serial);
+        if (serial[0] == '\0') {
+            memcpy(dev, name, sizeof name);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Mounts the workspace volume at /workspace, if the VM has one.
 //
-// The volume is a virtio-blk device on a virtio-mmio transport, so it appears
-// as /dev/vda once the driver probed it - the module load above is
-// synchronous, and the disk node exists by the time finit_module(2) returns,
-// but a short poll costs nothing and covers a deferred probe. A VM with no
-// block device (no `virtio_mmio.device=` for one) simply has no /workspace:
-// the guest is still a valid guest, so a missing device is not an error.
-// Set once the volume is mounted at /workspace (workspace_ready reads it).
+// The disks are virtio-blk devices on virtio-mmio transports. The module load
+// above is synchronous, so their nodes exist by the time finit_module(2)
+// returns, but a short poll costs nothing and covers a deferred probe. A VM
+// with no workspace disk (no `virtio_mmio.device=` for one) simply has no
+// /workspace: the guest is still a valid guest, so a missing device is not an
+// error. Set once the volume is mounted at /workspace (workspace_ready reads it).
 static int workspace_mounted;
 
 static void mount_workspace(void)
 {
-    int fd = -1;
-    for (int attempt = 0; attempt < 200; attempt++) {
-        fd = open("/dev/vda", O_RDONLY | O_CLOEXEC);
-        if (fd >= 0)
-            break;
-        usleep(10000);
+    char dev[4];
+    int found = 0;
+    for (int attempt = 0; attempt < 200 && !found; attempt++) {
+        found = find_workspace_dev(dev);
+        if (!found)
+            usleep(10000);
     }
-    if (fd < 0)
+    if (!found)
         return;
-    close(fd);
+    char devpath[16];
+    snprintf(devpath, sizeof devpath, "/dev/%s", dev);
 
     if (mkdir("/workspace", 0755) < 0 && errno != EEXIST) {
         put("plaza guest: cannot create /workspace: ");
@@ -803,11 +871,11 @@ static void mount_workspace(void)
         put("\n");
         return;
     }
-    if (mount("/dev/vda", "/workspace", "ext4", 0, "") < 0) {
+    if (mount(devpath, "/workspace", "ext4", 0, "") < 0) {
         char msg[160];
         int len = snprintf(msg, sizeof msg,
-                           "plaza guest: cannot mount /dev/vda on /workspace: %s\n",
-                           strerror(errno));
+                           "plaza guest: cannot mount %s on /workspace: %s\n",
+                           devpath, strerror(errno));
         write_all(1, msg, (size_t)len);
         return;
     }
@@ -819,6 +887,118 @@ static void mount_workspace(void)
     char msg[128];
     int len = snprintf(msg, sizeof msg, "plaza guest: /workspace mounted (ext4, %lu MiB)\n", mib);
     write_all(1, msg, (size_t)len);
+}
+
+// Whether a volume name is valid: 1-20 characters of a-z, 0-9 and '-'.
+static int volume_name_ok(const char *name)
+{
+    size_t len = strlen(name);
+    if (len == 0 || len > 20)
+        return 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+            return 0;
+    }
+    return 1;
+}
+
+// Mounts the shared data volumes: every block device whose id is a volume name,
+// at /data/<name>. The workspace disk has an empty id and is skipped here. Each
+// volume mounts read-only (ext4, nosuid, nodev): the agent reads it, it cannot
+// write it or run setuid files from it. /data always exists (empty when no
+// volume is given), so the agent's root can bind it either way.
+static void mount_volumes(void)
+{
+    if (mkdir("/data", 0755) < 0 && errno != EEXIST) {
+        put("plaza guest: cannot create /data: ");
+        put(strerror(errno));
+        put("\n");
+        return;
+    }
+    for (int slot = 0; slot < BLOCK_DEVS; slot++) {
+        char dev[4];
+        char devpath[16];
+        char name[64];
+        char target[96];
+        block_name(slot, dev);
+        snprintf(devpath, sizeof devpath, "/dev/%s", dev);
+        if (access(devpath, F_OK) != 0)
+            continue;
+        block_serial(dev, name, sizeof name);
+        if (name[0] == '\0')
+            continue;
+        if (!volume_name_ok(name)) {
+            char msg[96];
+            int len = snprintf(msg, sizeof msg,
+                               "plaza guest: %s: id is not a volume name; not mounted\n",
+                               devpath);
+            write_all(1, msg, (size_t)len);
+            continue;
+        }
+        snprintf(target, sizeof target, "/data/%s", name);
+        if ((mkdir(target, 0755) < 0 && errno != EEXIST)
+            || mount(devpath, target, "ext4", MS_RDONLY | MS_NOSUID | MS_NODEV, "") < 0) {
+            char msg[192];
+            int len = snprintf(msg, sizeof msg,
+                               "plaza guest: cannot mount %s on %s: %s\n",
+                               devpath, target, strerror(errno));
+            write_all(1, msg, (size_t)len);
+            continue;
+        }
+        char msg[96];
+        int len = snprintf(msg, sizeof msg, "plaza guest: %s mounted (read-only)\n", target);
+        write_all(1, msg, (size_t)len);
+    }
+}
+
+// `data`: every shared volume under /data with the names at its root, and whether a write there
+// is refused (it must be: the device is read-only and the mount is too).
+static void data_show(void)
+{
+    DIR *data = opendir("/data");
+    if (!data) {
+        put("data: no /data\n");
+        return;
+    }
+    int volumes = 0;
+    struct dirent *entry;
+    while ((entry = readdir(data))) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char path[96];
+        snprintf(path, sizeof path, "/data/%s", entry->d_name);
+        put("data ");
+        put(entry->d_name);
+        put(":");
+        DIR *volume = opendir(path);
+        if (volume) {
+            struct dirent *file;
+            while ((file = readdir(volume))) {
+                if (file->d_name[0] == '.' || !strcmp(file->d_name, "lost+found"))
+                    continue;
+                put(" ");
+                put(file->d_name);
+            }
+            closedir(volume);
+        }
+        char probe[128];
+        snprintf(probe, sizeof probe, "%s/.plaza-write-probe", path);
+        int fd = open(probe, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        if (fd >= 0) {
+            close(fd);
+            unlink(probe);
+            put(" (WRITABLE)\n");
+        } else {
+            put(" (write refused: ");
+            put(strerror(errno));
+            put(")\n");
+        }
+        volumes++;
+    }
+    closedir(data);
+    if (!volumes)
+        put("data: no volumes\n");
 }
 
 // The agent's shell runs as uid 1000 in /workspace, so that directory must
@@ -912,14 +1092,17 @@ static int prepare_sysroot(void)
         put("plaza guest: cannot install the harness in the Alpine root\n");
         return 0;
     }
-    const char *dirs[] = { SYSROOT "/dev", SYSROOT "/proc", SYSROOT "/sys", SYSROOT "/workspace", SYSROOT "/tmp" };
+    const char *dirs[] = { SYSROOT "/dev", SYSROOT "/proc", SYSROOT "/sys", SYSROOT "/workspace", SYSROOT "/data", SYSROOT "/tmp" };
     for (size_t i = 0; i < sizeof dirs / sizeof dirs[0]; i++)
         mkdir(dirs[i], 0755);
     chmod(SYSROOT "/tmp", 01777);
+    // /data holds the shared data volumes, mounted by init: a recursive bind
+    // carries their read-only mounts into the agent's root with it.
     if (mount("/dev", SYSROOT "/dev", NULL, MS_BIND | MS_REC, NULL) < 0
         || mount("proc", SYSROOT "/proc", "proc", 0, "") < 0
         || mount("sysfs", SYSROOT "/sys", "sysfs", 0, "") < 0
-        || mount("/workspace", SYSROOT "/workspace", NULL, MS_BIND, NULL) < 0) {
+        || mount("/workspace", SYSROOT "/workspace", NULL, MS_BIND, NULL) < 0
+        || mount("/data", SYSROOT "/data", NULL, MS_BIND | MS_REC, NULL) < 0) {
         put("plaza guest: cannot bind the Alpine root's mounts: ");
         put(strerror(errno));
         put("\n");
@@ -1120,10 +1303,11 @@ int main(void)
     // The virtio modules carry every virtio-mmio device this VM has: the vsock
     // device and/or the block device of its workspace volume.
     load_guest_modules((int)harness);
-    // The workspace volume, if this VM was given one: mounted before anything
-    // the harness does, so its sessions (and the serial `wspace` command) can
-    // use it.
+    // The workspace volume, if this VM was given one, and the read-only data
+    // volumes: mounted before anything the harness does, so its sessions (and
+    // the serial `wspace` command) can use them.
     mount_workspace();
+    mount_volumes();
     own_workspace();
     if (harness)
         harness_pid = start_harness(prepare_sysroot());

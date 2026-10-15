@@ -27,6 +27,11 @@ mod control;
 mod db;
 mod decisions;
 mod deliverables;
+mod e2b;
+mod e2b_net;
+mod e2b_obs;
+mod e2b_tpl;
+mod egress_inject;
 mod engine_feed;
 mod events;
 mod fleet;
@@ -50,6 +55,7 @@ mod node_link;
 mod nodes;
 mod owner_board;
 mod payments;
+mod placement;
 mod plaza;
 mod prices;
 mod projects;
@@ -62,6 +68,7 @@ mod sanctions;
 mod scheduler;
 mod settings;
 mod skills;
+mod sleep;
 mod society;
 mod spawned;
 mod state;
@@ -75,6 +82,7 @@ mod upstream;
 mod usage;
 mod vault;
 mod vendor_relay;
+mod vm_snapshots;
 
 use std::process::ExitCode;
 
@@ -106,6 +114,7 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
   --vault-key FILE   the vault's key file (default: the config directory's vault.key); created on
                      first start, refused when group or world readable
   --mcp-proxy-port PORT  the MCP egress proxy's port on 127.0.0.1 (default 19128)
+  --e2b-gateway-port PORT  vsockd's E2B gateway on 127.0.0.1 (default 49982)
   --dev-models       relax the model policy (mock and local models; tests only)";
 
 fn main() -> ExitCode {
@@ -118,6 +127,13 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    let args = match e2b::take_gateway_port(args) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("apid: {err}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
     let config = match Config::from_args(args) {
         Ok(config) => config,
         Err(err) => {

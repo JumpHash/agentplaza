@@ -271,6 +271,9 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
                     "5000",
                     "--http-port",
                     "19080",
+                    // The E2B gateway runs with the hub: the hub apid's default `--e2b-gateway-port`.
+                    "--e2b-port",
+                    "49982",
                     "--apid",
                     "http://127.0.0.1:7700",
                     "--internal-token-file",

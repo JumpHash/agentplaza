@@ -43,6 +43,8 @@
 //   * `vstate::vcpu` — `dup(2)` of the KVM fd and `create_vcpu_from_rawfd`.
 //   * `vstate::vm` — `KVM_SET_USER_MEMORY_REGION` (a raw-pointer ioctl).
 //   * `arch::x86_64::xstate` — `arch_prctl(2)` for dynamic XSAVE features.
+//   * `arch::x86_64::vcpu` — `KVM_GET_XSAVE2`/`KVM_SET_XSAVE` (raw-pointer ioctls in `kvm-ioctls`)
+//     and the XSAVE area's flexible-array header, for the vCPU's snapshot state.
 //   * `arch::x86_64::mptable` — the upstream `ByteValued` impls for the `mpspec`
 //     tables (upstream-copied, unchanged).
 //   * `arch::aarch64::gic::regs` — `KVM_GET_DEVICE_ATTR`, which `kvm-ioctls`
@@ -56,10 +58,13 @@
 //   * `devices::virtio::vsock::packet` — the `ByteValued` packet header and the
 //     descriptor-chain loads into it.
 //   * `devices::virtio::vhost` — the `/dev/vhost-vsock` ioctl family.
-//   * `whp::{sys,vm,vcpu}` and `pal::windows` (Windows only) — the WHP and
-//     WinSock FFI, the guest memory allocation and the exit-context reads.
-//   * `hvf::{sys,vm,vcpu}` (macOS only) — the Hypervisor.framework FFI
-//     declarations, the framework calls, and the exit-structure reads.
+//   * `whp::{sys,vm,vcpu,snapshot}` and `pal::windows` (Windows only) — the WHP and
+//     WinSock FFI, the guest memory allocation, the exit-context reads, and a
+//     snapshot's register unions and guest-memory slices.
+//   * `hvf::{sys,vm,vcpu,snapshot}` (macOS only) — the Hypervisor.framework FFI
+//     declarations, the framework calls, the exit-structure reads, the call of
+//     `hv_vcpu_set_simd_fp_reg` (a NEON vector argument, by inline assembly),
+//     and a snapshot's guest-memory slices.
 //   * `jail::sys` — the seccomp-bpf install path: the two `prctl(2)` calls that
 //     set `no_new_privs` and hand the kernel the BPF program. See [`jail`] for
 //     the allowlist, where it is armed, and the `APZ_VMM_JAIL=kill|log|off`
@@ -78,6 +83,17 @@ pub mod builder;
 #[cfg(target_os = "linux")]
 mod sys;
 
+/// cgroup v2 limits for the per-VM processes of [`spawner::SpawnMode::Process`]:
+/// one cgroup per VM, sized from its shape. Set with [`spawner::set_cgroup_root`].
+pub mod cgroup;
+/// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`).
+pub mod clonefile;
+/// Pausing, resuming and snapshotting a running in-process VM (the builder installs it).
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub mod control;
 pub mod devices;
 /// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
 /// serves. See the allowlist above.

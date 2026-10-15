@@ -407,6 +407,9 @@ pub enum Msg {
     /// Ask to delete a VM (by id), and the confirmed delete.
     AskRemoveVm(String),
     RemoveVm,
+    /// Put a plaza VM to sleep, or wake it, by id; its answer comes back as `Acted` (which reloads the list).
+    SleepVm(String),
+    WakeVm(String),
     Live(live::Msg),
     Rec(rec::Msg),
     Files(files::Msg),
@@ -996,12 +999,30 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move |r| Msg::Acted(r, notice.clone()),
             )
         }
+        Msg::SleepVm(id) => power_vm(state, ctx, id, "sleep", "is asleep"),
+        Msg::WakeVm(id) => power_vm(state, ctx, id, "wake", "woke"),
         Msg::CloseDialog => {
             state.dialog = None;
             state.error = None;
             Task::none()
         }
     }
+}
+
+/// Sleep or wake a workstation VM: the hub answers with the node's view, and `Acted` shows the line or the error and reloads.
+fn power_vm(state: &State, ctx: &Ctx, id: String, verb: &str, said: &str) -> Task<Msg> {
+    let name = match &state.vms {
+        Load::Ready(list) => list.iter().find(|vm| vm.id == id).map(|vm| vm.name.clone()),
+        _ => None,
+    }
+    .unwrap_or_else(|| id.clone());
+    let path = format!("/v1/stations/vms/{id}/{verb}");
+    let notice = format!("{name} {said}");
+    let client = ctx.client.clone();
+    client::task(
+        move || client.call("POST", &path, None),
+        move |r| Msg::Acted(r, notice.clone()),
+    )
 }
 
 /// The bus frames the screen reloads on: a workstation changed, one of its leases did, or its takeover or work folder did.

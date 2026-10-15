@@ -174,6 +174,53 @@ impl SerialDevice {
         Ok(SerialDevice { serial })
     }
 
+    /// The UART's registers, as a snapshot keeps them.
+    pub fn registers(&self) -> crate::vstate::snapshot::SerialRegisters {
+        let state = self.serial.state();
+        crate::vstate::snapshot::SerialRegisters {
+            baud_divisor_low: state.baud_divisor_low,
+            baud_divisor_high: state.baud_divisor_high,
+            interrupt_enable: state.interrupt_enable,
+            interrupt_identification: state.interrupt_identification,
+            line_control: state.line_control,
+            line_status: state.line_status,
+            modem_control: state.modem_control,
+            modem_status: state.modem_status,
+            scratch: state.scratch,
+            in_buffer: state.in_buffer,
+        }
+    }
+
+    /// A UART with the registers a snapshot kept, writing to `serial_out`, with new interrupt events.
+    pub fn from_registers(
+        registers: &crate::vstate::snapshot::SerialRegisters,
+        serial_out: SerialOut,
+    ) -> Result<Self, String> {
+        let fresh = || {
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK)
+                .map(EventFdTrigger::new)
+                .map_err(|err| format!("the serial console: {err}"))
+        };
+        let state = vm_superio::serial::SerialState {
+            baud_divisor_low: registers.baud_divisor_low,
+            baud_divisor_high: registers.baud_divisor_high,
+            interrupt_enable: registers.interrupt_enable,
+            interrupt_identification: registers.interrupt_identification,
+            line_control: registers.line_control,
+            line_status: registers.line_status,
+            modem_control: registers.modem_control,
+            modem_status: registers.modem_status,
+            scratch: registers.scratch,
+            in_buffer: registers.in_buffer.clone(),
+        };
+        let events = SerialEventsWrapper {
+            buffer_ready_event_fd: Some(fresh()?),
+        };
+        let serial = Serial::from_state(&state, fresh()?, events, serial_out)
+            .map_err(|err| format!("the serial console: {err:?}"))?;
+        Ok(SerialDevice { serial })
+    }
+
     /// Queues `data` as console input for the guest to read from the UART's
     /// data register, raising the console's received-data interrupt.
     ///

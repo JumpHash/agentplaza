@@ -75,6 +75,9 @@ impl Destination {
         self.port
     }
 
+    /// Connects to the hub. A hub on this machine is told first that the connection is a VM's
+    /// ([`apz_http::RELAY_PREFACE`]), so it gives the VM none of the trust a caller on its own
+    /// machine has: without it every byte the guest sends would arrive from loopback.
     fn dial(&self) -> io::Result<TcpStream> {
         let mut last = io::Error::new(
             io::ErrorKind::NotFound,
@@ -82,7 +85,12 @@ impl Destination {
         );
         for addr in (self.host.as_str(), self.port).to_socket_addrs()? {
             match TcpStream::connect_timeout(&addr, DIAL_TIMEOUT) {
-                Ok(stream) => return Ok(stream),
+                Ok(mut stream) => {
+                    if addr.ip().is_loopback() {
+                        stream.write_all(apz_http::RELAY_PREFACE)?;
+                    }
+                    return Ok(stream);
+                }
                 Err(err) => last = err,
             }
         }
@@ -687,6 +695,10 @@ mod tests {
             let (mut conn, _) = hub.accept().expect("the relay dials the hub");
             conn.set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("timeout");
+            // A hub on this machine is told first that the connection is a VM's.
+            let mut preface = vec![0u8; apz_http::RELAY_PREFACE.len()];
+            conn.read_exact(&mut preface).expect("the relay's preface");
+            assert_eq!(preface, apz_http::RELAY_PREFACE);
             let mut got = [0u8; 5];
             conn.read_exact(&mut got).expect("the guest's bytes");
             conn.write_all(b"pong").expect("the reply");

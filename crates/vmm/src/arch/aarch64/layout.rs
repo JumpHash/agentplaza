@@ -175,3 +175,12 @@ pub const WORKSPACE_MMIO_START: u64 = VSOCK_MMIO_START + MMIO_LEN;
 /// a GSI to the SPI of the same name, and the device tree node declares that
 /// number as its interrupt.
 pub const WORKSPACE_GSI: u32 = GSI_LEGACY_START + 2;
+
+/// Guest-physical MMIO window of the first shared data volume's `virtio-mmio` transport. One slot past
+/// the workspace's is left free (where `x86_64` has its balloon); volume `i` (up to
+/// [`crate::spawner::MAX_DATA_VOLUMES`]) is at `DATA_MMIO_START + i * MMIO_LEN`, each with a device
+/// tree node of its own.
+pub const DATA_MMIO_START: u64 = WORKSPACE_MMIO_START + 2 * MMIO_LEN;
+
+/// The first data volume's GSI; volume `i` has `DATA_GSI_START + i`.
+pub const DATA_GSI_START: u32 = GSI_LEGACY_START + 8;

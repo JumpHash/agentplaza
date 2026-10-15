@@ -136,6 +136,18 @@ enum Command {
     Mcp(cmd::mcp::Cmd),
     /// The stdio agent editors start (Zed, JetBrains, Neovim); `acp sessions` lists the editor sessions on the hub.
     Acp(cmd::acp::Args),
+    /// Egress credentials: rules that add a vault secret to an agent's outbound HTTPS request, so the secret never enters the VM.
+    #[command(subcommand)]
+    Egress(cmd::egress::Cmd),
+    /// The hub's E2B-compatible sandbox API: its keys for the E2B SDKs, and the sandboxes on the hub.
+    #[command(subcommand)]
+    E2b(cmd::e2b::Cmd),
+    /// The hub machine's warm templates: new agents and sandboxes restore one instead of booting.
+    #[command(subcommand)]
+    Templates(cmd::templates::Cmd),
+    /// The hub's shared read-only data volumes, which each role's agents mount when spawned.
+    #[command(subcommand)]
+    Volumes(cmd::volumes::Cmd),
 }
 
 fn main() {
@@ -210,6 +222,10 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Machines(c) => cmd::machines::run(&ctx, c),
         Command::Nodes(c) => cmd::nodes::run(&ctx, c),
         Command::Stations(c) => cmd::stations::run(&ctx, c),
+        Command::Egress(c) => cmd::egress::run(&ctx, c),
+        Command::E2b(c) => cmd::e2b::run(&ctx, c),
+        Command::Templates(c) => cmd::templates::run(&ctx, c),
+        Command::Volumes(c) => cmd::volumes::run(&ctx, c),
         Command::Plaza(c) => cmd::plaza::run(&ctx, c),
         Command::Unfurl(a) => cmd::unfurl::run(&ctx, a),
         Command::Decide(a) => cmd::decide::run(&ctx, a),
@@ -228,12 +244,22 @@ fn run(cli: Cli) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     /// Clap checks a command definition (clashing flags, bad defaults) only in debug builds; CI tests in release, so
     /// this asks for the check on the whole command tree, every subcommand included.
     #[test]
     fn the_command_tree_is_valid() {
         super::Cli::command().debug_assert();
+    }
+
+    /// The new command groups are reachable under their names: `egress` and `e2b`, with `e2b keys` below.
+    #[test]
+    fn egress_and_e2b_are_registered_under_their_names() {
+        let cli = super::Cli::try_parse_from(["agentplaza", "egress", "list"]).unwrap();
+        assert!(matches!(cli.command, super::Command::Egress(_)));
+        let cli = super::Cli::try_parse_from(["agentplaza", "e2b", "keys", "list"]).unwrap();
+        assert!(matches!(cli.command, super::Command::E2b(_)));
+        assert!(super::Cli::try_parse_from(["agentplaza", "e2b"]).is_err());
     }
 }

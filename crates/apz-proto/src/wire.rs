@@ -167,6 +167,12 @@ pub enum HostMessage {
         /// v3: present when the plaza runs a model for this agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile: Option<AgentProfile>,
+        /// v4: the host's clock and fresh entropy. A guest restored from a snapshot (woken, forked,
+        /// started from a template) resumes with the clock and the random state it had when the
+        /// snapshot was taken; the harness sets its clock and mixes the entropy in before it does
+        /// anything else, so no two restored guests share a random stream.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<HostFacts>,
     },
     /// v1: the answer to a guest [`GuestMessage::ToolCall`].
     ToolResult { call: u64, ok: bool, output: String },
@@ -269,6 +275,12 @@ pub struct AgentProfile {
     /// engine streams as an ACP session with every action checked by the hub.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub engine_transport: String,
+    /// v4: the hub's egress CA certificate (PEM), present when the owner gave this agent's role an
+    /// egress credential rule. The hub's egress proxy terminates TLS only for hosts with such a rule
+    /// (to add the credential the guest never sees) and signs their certificates with this CA, so
+    /// the harness adds it to the guest's trust store. Every other host stays an opaque tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_ca: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +318,35 @@ pub enum Decision {
 /// The `caps` entry a harness with ACP engine support sends in its hello. The hub answers an ACP
 /// engine's held call with `pending` only to a harness that sent it.
 pub const CAP_ACP: &str = "acp";
+/// What the host tells a guest in its welcome about the world outside the VM (see
+/// [`HostMessage::Welcome`]'s `host`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostFacts {
+    /// The host's wall clock, in milliseconds since the Unix epoch.
+    pub time_ms: u64,
+    /// 32 bytes from the host's CSPRNG, hex-encoded, for the guest to mix into its own pool.
+    pub entropy: String,
+}
+
+impl HostFacts {
+    /// The facts as of now: the host clock and 32 bytes of `/dev/urandom` (none when it cannot be
+    /// read, which leaves the guest's pool as it is).
+    pub fn now() -> Self {
+        use std::io::Read;
+        let time_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
+        let mut bytes = [0u8; 32];
+        let entropy =
+            match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
+                Ok(()) => bytes.iter().map(|b| format!("{b:02x}")).collect(),
+                Err(_) => String::new(),
+            };
+        Self { time_ms, entropy }
+    }
+}
 
 impl GuestMessage {
     pub fn from_line(line: &str) -> serde_json::Result<Self> {
@@ -336,7 +377,16 @@ impl HostMessage {
             role,
             keepalive,
             profile,
+            host: None,
         }
+    }
+
+    /// The same welcome carrying `facts` (see [`HostFacts`]).
+    pub fn with_host(mut self, facts: HostFacts) -> Self {
+        if let HostMessage::Welcome { host, .. } = &mut self {
+            *host = Some(facts);
+        }
+        self
     }
 }
 

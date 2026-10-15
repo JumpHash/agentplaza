@@ -104,8 +104,15 @@ pub const HV_MEMORY_EXEC: hv_memory_flags_t = 1 << 2;
 pub const HV_REG_X0: hv_reg_t = 0;
 /// `HV_REG_PC`.
 pub const HV_REG_PC: hv_reg_t = 31;
+/// `HV_REG_FPCR`.
+pub const HV_REG_FPCR: hv_reg_t = 32;
+/// `HV_REG_FPSR`.
+pub const HV_REG_FPSR: hv_reg_t = 33;
 /// `HV_REG_CPSR`: PSTATE.
 pub const HV_REG_CPSR: hv_reg_t = 34;
+
+/// `hv_simd_fp_reg_t`: `HV_SIMD_FP_REG_Q0` .. `Q31` are 0..31.
+pub type hv_simd_fp_reg_t = u32;
 
 // System registers, in the encoding of `exit::sysreg`. Each value is asserted
 // against the system header's by the tests below.
@@ -129,6 +136,34 @@ sys_reg!(HV_SYS_REG_FAR_EL1, 3, 0, 6, 0, 0);
 sys_reg!(HV_SYS_REG_VBAR_EL1, 3, 0, 12, 0, 0);
 sys_reg!(HV_SYS_REG_CNTV_CTL_EL0, 3, 3, 14, 3, 1);
 sys_reg!(HV_SYS_REG_CNTV_CVAL_EL0, 3, 3, 14, 3, 2);
+// The rest of the EL0/EL1 state a snapshot keeps.
+sys_reg!(HV_SYS_REG_MDSCR_EL1, 2, 0, 0, 2, 2);
+sys_reg!(HV_SYS_REG_CPACR_EL1, 3, 0, 1, 0, 2);
+sys_reg!(HV_SYS_REG_TTBR0_EL1, 3, 0, 2, 0, 0);
+sys_reg!(HV_SYS_REG_TTBR1_EL1, 3, 0, 2, 0, 1);
+sys_reg!(HV_SYS_REG_TCR_EL1, 3, 0, 2, 0, 2);
+sys_reg!(HV_SYS_REG_APIAKEYLO_EL1, 3, 0, 2, 1, 0);
+sys_reg!(HV_SYS_REG_APIAKEYHI_EL1, 3, 0, 2, 1, 1);
+sys_reg!(HV_SYS_REG_APIBKEYLO_EL1, 3, 0, 2, 1, 2);
+sys_reg!(HV_SYS_REG_APIBKEYHI_EL1, 3, 0, 2, 1, 3);
+sys_reg!(HV_SYS_REG_APDAKEYLO_EL1, 3, 0, 2, 2, 0);
+sys_reg!(HV_SYS_REG_APDAKEYHI_EL1, 3, 0, 2, 2, 1);
+sys_reg!(HV_SYS_REG_APDBKEYLO_EL1, 3, 0, 2, 2, 2);
+sys_reg!(HV_SYS_REG_APDBKEYHI_EL1, 3, 0, 2, 2, 3);
+sys_reg!(HV_SYS_REG_APGAKEYLO_EL1, 3, 0, 2, 3, 0);
+sys_reg!(HV_SYS_REG_APGAKEYHI_EL1, 3, 0, 2, 3, 1);
+sys_reg!(HV_SYS_REG_SP_EL0, 3, 0, 4, 1, 0);
+sys_reg!(HV_SYS_REG_AFSR0_EL1, 3, 0, 5, 1, 0);
+sys_reg!(HV_SYS_REG_AFSR1_EL1, 3, 0, 5, 1, 1);
+sys_reg!(HV_SYS_REG_PAR_EL1, 3, 0, 7, 4, 0);
+sys_reg!(HV_SYS_REG_MAIR_EL1, 3, 0, 10, 2, 0);
+sys_reg!(HV_SYS_REG_AMAIR_EL1, 3, 0, 10, 3, 0);
+sys_reg!(HV_SYS_REG_CONTEXTIDR_EL1, 3, 0, 13, 0, 1);
+sys_reg!(HV_SYS_REG_TPIDR_EL1, 3, 0, 13, 0, 4);
+sys_reg!(HV_SYS_REG_CNTKCTL_EL1, 3, 0, 14, 1, 0);
+sys_reg!(HV_SYS_REG_TPIDR_EL0, 3, 3, 13, 0, 2);
+sys_reg!(HV_SYS_REG_TPIDRRO_EL0, 3, 3, 13, 0, 3);
+sys_reg!(HV_SYS_REG_SP_EL1, 3, 4, 4, 1, 0);
 
 /// The feature register holding ID_AA64PFR0_EL1, for
 /// [`hv_vcpu_config_get_feature_reg`].
@@ -213,6 +248,19 @@ unsafe extern "C" {
     pub fn hv_vcpus_exit(vcpus: *const hv_vcpu_t, vcpu_count: u32) -> hv_return_t;
     /// Sets whether the virtual timer is masked for the vCPU.
     pub fn hv_vcpu_set_vtimer_mask(vcpu: hv_vcpu_t, masked: bool) -> hv_return_t;
+
+    /// Reads a SIMD/FP register (`Q<n>`) of the calling thread's vCPU into the 16 bytes at
+    /// `value` (an `hv_simd_fp_uchar16_t`).
+    pub fn hv_vcpu_get_simd_fp_reg(
+        vcpu: hv_vcpu_t,
+        reg: hv_simd_fp_reg_t,
+        value: *mut SimdFp,
+    ) -> hv_return_t;
+
+    /// `hv_vcpu_set_simd_fp_reg`, declared without its arguments only for its address: its last
+    /// argument is a NEON vector passed by value, which a stable Rust `extern` block cannot declare.
+    /// Called through [`set_simd_fp_reg`].
+    fn hv_vcpu_set_simd_fp_reg();
     /// Sets the virtual timer's offset, i.e. where the guest's view of the
     /// virtual counter starts.
     pub fn hv_vcpu_set_vtimer_offset(vcpu: hv_vcpu_t, offset: u64) -> hv_return_t;
@@ -284,6 +332,38 @@ pub fn check(call: &'static str, ret: hv_return_t) -> Result<(), HvfError> {
             hint: hint(ret),
         })
     }
+}
+
+/// One SIMD/FP register's 16 bytes, aligned as the vector type the framework's header uses.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SimdFp(pub [u8; 16]);
+
+/// Writes SIMD/FP register `reg` of the calling thread's vCPU.
+///
+/// `hv_vcpu_set_simd_fp_reg(vcpu, reg, value)` takes `value` as a NEON vector by value, which the
+/// AArch64 procedure call standard passes in `v0` (the vCPU in `x0`, the register in `w1`). Stable
+/// Rust cannot declare such a parameter in an `extern` block, so the call is made here with those
+/// argument registers loaded directly and every caller-saved register marked clobbered.
+pub fn set_simd_fp_reg(vcpu: hv_vcpu_t, reg: hv_simd_fp_reg_t, value: SimdFp) -> hv_return_t {
+    let target = hv_vcpu_set_simd_fp_reg as unsafe extern "C" fn();
+    let result: u64;
+    // SAFETY: the call follows the C signature the framework exports: x0 = the vCPU handle,
+    // w1 = the register, q0 = the 16-byte vector (loaded from `value`, which outlives the call),
+    // the result in w0. `clobber_abi("C")` tells the compiler every caller-saved register,
+    // general and vector, may be changed by the callee.
+    unsafe {
+        std::arch::asm!(
+            "ldr q0, [{value}]",
+            "blr {target}",
+            value = in(reg) value.0.as_ptr(),
+            target = in(reg) target,
+            inlateout("x0") vcpu => result,
+            in("x1") u64::from(reg),
+            clobber_abi("C"),
+        );
+    }
+    result as hv_return_t
 }
 
 /// Runs a Hypervisor.framework call and turns a failure into an error that

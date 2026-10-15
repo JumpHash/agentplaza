@@ -1,9 +1,10 @@
 # Rust build output (every workspace in this tree)
 target/
 
-# The web console's dependencies — its dist/ IS tracked deliberately: the node
-# daemon serves it, and the committed bundle is the deployed artifact.
+# The web console's dependencies and its build (apps/web/dist): CI builds the console once per commit
+# (.github/workflows/console.yml) and every package restores that build.
 node_modules/
+apps/web/dist/
 
 # Harness / runtime scratch
 .omp/
@@ -27,8 +28,6 @@ __pycache__/
 # web build staging (build.mjs swaps dist.next into dist)
 apps/web/dist.next/
 apps/web/dist.old/
-# apz-pack writes .br and .gz siblings into dist; the .br ones are committed, the .gz ones rebuilt
-apps/web/dist/*.gz
 
 # Local secrets (API keys); never committed.
 .env

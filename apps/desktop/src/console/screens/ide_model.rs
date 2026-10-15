@@ -300,12 +300,12 @@ impl Dot {
     }
 }
 
-/// The dot for an agent from the hub's status (`working`, `idle`, `offline`) and the outcome of its last work
+/// The dot for an agent from the hub's status (`working`, `idle`, `asleep`, `offline`) and the outcome of its last work
 /// (`done`, `failed`, `error`, or none when the transcript does not say).
 pub fn dot(status: &str, last_outcome: Option<&str>) -> Dot {
     match status {
         "working" => Dot::Working,
-        "offline" => Dot::Sleeping,
+        "offline" | "asleep" => Dot::Sleeping,
         _ => match last_outcome {
             Some("failed" | "error") => Dot::Failed,
             Some("done") => Dot::Done,

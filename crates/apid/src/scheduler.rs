@@ -710,16 +710,17 @@ impl Queues {
         }
     }
 
-    /// Sends the next waiting item to `cid` if it is reachable and idle.
+    /// Sends the next waiting item to `cid` if it is reachable and idle. An asleep agent is woken
+    /// first and its work stays queued until its hello (`dispatch_idle`).
     fn dispatch(&self, app: &App, cid: u64) {
-        // Held by STOP ALL: queued work waits until the owner resumes.
-        if app.control.paused()
-            || app
-                .agents
-                .get(cid)
-                .is_none_or(|a| a.status == Status::Offline)
-        {
-            return;
+        let status = app.agents.get(cid).map(|a| a.status);
+        match dispatch_step(status, app.control.paused()) {
+            DispatchStep::Hold => return,
+            DispatchStep::Wake => {
+                crate::sleep::wake(app, cid);
+                return;
+            }
+            DispatchStep::Send => {}
         }
         let Some(item) = self.locked().start_next(cid, apz_plaza::now_ms()) else {
             return;
@@ -753,6 +754,27 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": item.id, "state": "started" }),
         );
+        crate::sleep::touch(app, cid);
+    }
+}
+
+/// What `dispatch` does with an agent's waiting work, decided before anything moves.
+#[derive(Debug, PartialEq, Eq)]
+enum DispatchStep {
+    /// Keep it queued: STOP ALL holds the plaza, or the agent is gone (or unknown).
+    Hold,
+    /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
+    Wake,
+    /// Send the next item now.
+    Send,
+}
+
+fn dispatch_step(status: Option<Status>, paused: bool) -> DispatchStep {
+    match status {
+        _ if paused => DispatchStep::Hold,
+        None | Some(Status::Offline) => DispatchStep::Hold,
+        Some(Status::Asleep) => DispatchStep::Wake,
+        Some(Status::Idle | Status::Working) => DispatchStep::Send,
     }
 }
 
@@ -1290,6 +1312,36 @@ mod tests {
             .expect("kept");
         assert_eq!(kept.state, ApprovalState::Pending);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dispatch_on_an_asleep_agent_wakes_it_and_keeps_the_work_queued() {
+        assert_eq!(
+            dispatch_step(Some(Status::Asleep), false),
+            DispatchStep::Wake
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Asleep), true),
+            DispatchStep::Hold,
+            "STOP ALL holds even a wake"
+        );
+        assert_eq!(dispatch_step(None, false), DispatchStep::Hold);
+        assert_eq!(
+            dispatch_step(Some(Status::Offline), false),
+            DispatchStep::Hold
+        );
+        assert_eq!(dispatch_step(Some(Status::Idle), false), DispatchStep::Send);
+        assert_eq!(
+            dispatch_step(Some(Status::Working), false),
+            DispatchStep::Send
+        );
+
+        // A wake sends nothing: the item waits in the lane, not in flight, until the agent is idle.
+        let mut lanes = Lanes::default();
+        lanes.push(item(1, 7, None));
+        assert_eq!(lanes.queued(7).len(), 1);
+        assert!(lanes.current(7).is_none());
+        assert_eq!(lanes.start_next(7, 0).map(|i| i.id), Some(1));
     }
 
     #[test]

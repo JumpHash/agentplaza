@@ -42,7 +42,8 @@ pub struct Request {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     /// The connection's remote address; `None` when the request was read
-    /// from a plain buffer rather than a connection.
+    /// from a plain buffer rather than a connection, and `0.0.0.0` when a
+    /// node relayed it from a VM (see [`crate::RELAY_PREFACE`]).
     pub peer: Option<IpAddr>,
 }
 

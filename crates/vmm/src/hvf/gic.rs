@@ -358,6 +358,72 @@ impl CpuInterface {
     }
 }
 
+/// One agent's interrupts as a snapshot keeps them (plain vectors: the model's fixed arrays are
+/// longer than serde's derive takes).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InterruptsState {
+    pub config: Vec<u8>,
+    pub group1: Vec<bool>,
+    pub enabled: Vec<bool>,
+    pub pending: Vec<bool>,
+    pub active: Vec<bool>,
+    pub priority: Vec<u8>,
+}
+
+impl<const N: usize> Interrupts<N> {
+    fn state(&self) -> InterruptsState {
+        InterruptsState {
+            config: self.config.to_vec(),
+            group1: self.group1.to_vec(),
+            enabled: self.enabled.to_vec(),
+            pending: self.pending.to_vec(),
+            active: self.active.to_vec(),
+            priority: self.priority.to_vec(),
+        }
+    }
+
+    fn from_state(state: &InterruptsState) -> Result<Self, String> {
+        fn take<T: Copy, const N: usize>(what: &str, from: &[T]) -> Result<[T; N], String> {
+            <[T; N]>::try_from(from)
+                .map_err(|_| format!("{what}: {} entries, the model has {N}", from.len()))
+        }
+        Ok(Self {
+            config: take("config", &state.config)?,
+            group1: take("group1", &state.group1)?,
+            enabled: take("enabled", &state.enabled)?,
+            pending: take("pending", &state.pending)?,
+            active: take("active", &state.active)?,
+            priority: take("priority", &state.priority)?,
+        })
+    }
+}
+
+/// One CPU interface as a snapshot keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CpuInterfaceState {
+    pub private: InterruptsState,
+    pub sre: u64,
+    pub pmr: u8,
+    pub ctlr: u32,
+    pub bpr0: u32,
+    pub bpr1: u32,
+    pub igrpen0: bool,
+    pub igrpen1: bool,
+    pub ap0r: [u32; 4],
+    pub ap1r: [u32; 4],
+    pub running_priority: u8,
+    pub waker: u32,
+}
+
+/// The whole controller as a snapshot keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GicState {
+    pub ctlr: u32,
+    pub spis: InterruptsState,
+    pub route: Vec<usize>,
+    pub cpus: Vec<CpuInterfaceState>,
+}
+
 /// The userspace GICv3: a distributor, one redistributor per vCPU, and the
 /// routing state that ties SPIs to vCPUs.
 #[derive(Debug, Clone)]
@@ -463,6 +529,75 @@ impl Gic {
             route: [0; NUM_INTIDS],
             cpus,
         }
+    }
+
+    /// The controller's state, for a snapshot.
+    pub fn state(&self) -> GicState {
+        GicState {
+            ctlr: self.ctlr,
+            spis: self.spis.state(),
+            route: self.route.to_vec(),
+            cpus: self
+                .cpus
+                .iter()
+                .map(|cpu| CpuInterfaceState {
+                    private: cpu.private.state(),
+                    sre: cpu.sre,
+                    pmr: cpu.pmr,
+                    ctlr: cpu.ctlr,
+                    bpr0: cpu.bpr0,
+                    bpr1: cpu.bpr1,
+                    igrpen0: cpu.igrpen0,
+                    igrpen1: cpu.igrpen1,
+                    ap0r: cpu.ap0r,
+                    ap1r: cpu.ap1r,
+                    running_priority: cpu.running_priority,
+                    waker: cpu.waker,
+                })
+                .collect(),
+        }
+    }
+
+    /// A controller in the state a snapshot kept, for `vcpu_count` vCPUs.
+    pub fn from_state(state: &GicState, vcpu_count: usize) -> Result<Self, String> {
+        if state.cpus.len() != vcpu_count {
+            return Err(format!(
+                "the snapshot's controller serves {} vCPUs, not {vcpu_count}",
+                state.cpus.len()
+            ));
+        }
+        let route = <[usize; NUM_INTIDS]>::try_from(state.route.as_slice()).map_err(|_| {
+            format!(
+                "route: {} entries, the model has {NUM_INTIDS}",
+                state.route.len()
+            )
+        })?;
+        let cpus = state
+            .cpus
+            .iter()
+            .map(|cpu| {
+                Ok(CpuInterface {
+                    private: Interrupts::from_state(&cpu.private)?,
+                    sre: cpu.sre,
+                    pmr: cpu.pmr,
+                    ctlr: cpu.ctlr,
+                    bpr0: cpu.bpr0,
+                    bpr1: cpu.bpr1,
+                    igrpen0: cpu.igrpen0,
+                    igrpen1: cpu.igrpen1,
+                    ap0r: cpu.ap0r,
+                    ap1r: cpu.ap1r,
+                    running_priority: cpu.running_priority,
+                    waker: cpu.waker,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            ctlr: state.ctlr,
+            spis: Interrupts::from_state(&state.spis)?,
+            route,
+            cpus,
+        })
     }
 
     /// The number of vCPUs this controller was built for.
@@ -1222,6 +1357,25 @@ mod tests {
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
     use super::*;
+
+    #[test]
+    fn the_controller_state_round_trips() {
+        let mut gic = Gic::new(2);
+        gic.dist_write(GICD_CTLR, 4, 0x13);
+        gic.raise_spi(40);
+        gic.raise_virtual_timer(1);
+        let state = gic.state();
+        let back = Gic::from_state(&state, 2).expect("restores");
+        assert_eq!(back.state(), state);
+        assert_eq!(back.irq_line(1), gic.irq_line(1));
+        let json = serde_json::to_string(&state).expect("serialises");
+        let parsed: GicState = serde_json::from_str(&json).expect("parses");
+        assert_eq!(parsed, state);
+        assert!(
+            Gic::from_state(&state, 3).is_err(),
+            "another vCPU count is refused"
+        );
+    }
 
     /// Locks a mutex, recovering from a peer thread's panic the way the rest
     /// of this tree does.

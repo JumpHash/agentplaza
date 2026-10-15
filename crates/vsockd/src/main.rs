@@ -16,6 +16,8 @@
 #[cfg(any(target_os = "linux", windows))]
 mod apid;
 #[cfg(any(target_os = "linux", windows))]
+mod e2b;
+#[cfg(any(target_os = "linux", windows))]
 mod egress;
 #[cfg(any(target_os = "linux", windows))]
 mod http;
@@ -31,14 +33,18 @@ use std::process::ExitCode;
 #[cfg(any(target_os = "linux", windows))]
 use apz_uds::{UnixListener, UnixStream};
 #[cfg(any(target_os = "linux", windows))]
+use std::collections::BTreeMap;
+#[cfg(any(target_os = "linux", windows))]
+use std::net::TcpListener;
+#[cfg(any(target_os = "linux", windows))]
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "linux", windows))]
 use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex, MutexGuard, PoisonError,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 #[cfg(any(target_os = "linux", windows))]
-use std::thread;
+use std::thread::{self, JoinHandle};
 #[cfg(any(target_os = "linux", windows))]
 use std::time::{Duration, Instant};
 
@@ -119,6 +125,7 @@ impl Drop for SessionGuard {
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
+              [--e2b-port P]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
                     %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
@@ -129,12 +136,16 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid U
                     extra destination ports the proxy may reach beyond 80 and 443
                     (default none); private and loopback addresses are always refused
   --http-port P     the HTTP surface on 127.0.0.1 (default 19080): GET /v1/status,
-                    GET /healthz, POST /v1/agents/{cid}/{send,tell,stop}
+                    GET /healthz, POST and DELETE /v1/cids/{cid} (serve or stop serving
+                    a guest CID at run time), POST /v1/agents/{cid}/{send,tell,stop}
   --apid URL        apid's internal surface, http://127.0.0.1:PORT (default
                     http://127.0.0.1:7700)
   --internal-token-file PATH
                     the token apid's internal surface requires (re-read on every
                     call); without it the v3 agent loop is not forwarded
+  --e2b-port P      the E2B gateway on 127.0.0.1:P (default off): the SDKs' sandbox
+                    requests, relayed to the sandbox's port 49983 through its VM's
+                    muxer; needs --internal-token-file, since apid names the sandbox
   -h, --help        print this help
 
 Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
@@ -186,6 +197,7 @@ struct Config {
     internal_token_file: Option<PathBuf>,
     egress: bool,
     egress_ports: Vec<u16>,
+    e2b_port: Option<u16>,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -200,6 +212,7 @@ impl Default for Config {
             internal_token_file: None,
             egress: true,
             egress_ports: Vec::new(),
+            e2b_port: None,
         }
     }
 }
@@ -245,6 +258,13 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                             .map_err(|err| format!("--egress-ports: invalid port {part}: {err}"))
                     })
                     .collect::<Result<_, _>>()?;
+            }
+            "--e2b-port" => {
+                let port: u16 = value?.parse().map_err(|err| format!("--e2b-port: {err}"))?;
+                if port == 0 {
+                    return Err("--e2b-port: port 0 is not a port to listen on".to_string());
+                }
+                config.e2b_port = Some(port);
             }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
             "--http-port" => {
@@ -294,16 +314,41 @@ fn run(config: Config) -> Result<(), String> {
             config.uds_dir.display()
         )
     })?;
+    // The E2B gateway looks sandboxes up in apid, which needs the internal token: without it the
+    // gateway would refuse every request, so it is not started.
+    if config.e2b_port.is_some() && !apid.enabled() {
+        return Err("--e2b-port needs --internal-token-file: apid names the sandboxes".to_string());
+    }
+    let e2b_gateway = config
+        .e2b_port
+        .map(|_| Arc::new(e2b::Gateway::new(apid.clone(), config.uds_dir.clone())));
     let egress_apid = apid.clone();
     let hub = Arc::new(Hub::new(Arc::new(StdoutLog), apid));
+    let egress_setup = config.egress.then(|| {
+        (
+            Arc::new(egress::Policy::new(config.egress_ports.clone())),
+            egress_apid,
+        )
+    });
+    let registry = Arc::new(Registry::new(
+        config.uds_dir.clone(),
+        config.port,
+        egress_setup,
+        Arc::clone(&hub),
+    ));
     let facts = http::NodeFacts {
-        cids: config.cids.clone(),
         port: config.port,
         started: Instant::now(),
         max_sessions: MAX_SESSIONS,
         keepalive_idle_s: KEEPALIVE_IDLE_SECS,
     };
-    let http = http::serve(config.http_port, Arc::clone(&hub), facts).map_err(|err| {
+    let http = http::serve(
+        config.http_port,
+        Arc::clone(&hub),
+        Arc::clone(&registry),
+        facts,
+    )
+    .map_err(|err| {
         format!(
             "cannot listen on 127.0.0.1:{} for HTTP: {err}",
             config.http_port
@@ -311,69 +356,254 @@ fn run(config: Config) -> Result<(), String> {
     })?;
     println!("vsockd: http on http://127.0.0.1:{}", http.port());
 
+    // The E2B listener is bound with the others, so a taken port fails the daemon before anything
+    // is served.
+    let e2b_listener = match config.e2b_port {
+        Some(port) => {
+            let listener = TcpListener::bind(("127.0.0.1", port))
+                .map_err(|err| format!("cannot listen on 127.0.0.1:{port} for E2B: {err}"))?;
+            println!("vsockd: e2b gateway on 127.0.0.1:{port}");
+            Some(listener)
+        }
+        None => None,
+    };
+
     // Every listener is bound before any is served: a taken path fails the
     // daemon rather than half-serving.
-    let mut listeners = Vec::new();
-    let mut egress_listeners = Vec::new();
+    let mut bound = Vec::new();
     for &cid in &config.cids {
-        let path = config.uds_dir.join(format!("vm{cid}_{}", config.port));
-        let listener = bind_listener(&path, cid)?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
-        println!(
-            "vsockd: listening on {} for guest CID {cid}",
-            path.display()
-        );
-        listeners.push((cid, path, listener));
-        if config.egress {
-            let path = config
-                .uds_dir
-                .join(format!("vm{cid}_{}", egress::EGRESS_PORT));
-            let listener = bind_listener(&path, cid)?;
-            listener
-                .set_nonblocking(true)
-                .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
-            println!(
-                "vsockd: egress proxy listening on {} for guest CID {cid}",
-                path.display()
-            );
-            egress_listeners.push((cid, path, listener));
-        }
+        bound.push(registry.bind(cid)?);
     }
-    let limiter = Arc::new(SessionLimiter::new(MAX_SESSIONS));
-    let mut paths = Vec::new();
-    let mut loops = Vec::new();
-    for (cid, path, listener) in listeners {
-        paths.push(path);
-        let (limiter, hub) = (Arc::clone(&limiter), Arc::clone(&hub));
-        loops.push(thread::spawn(move || {
-            accept_loop(cid, listener, limiter, hub)
-        }));
+    for listeners in bound {
+        registry.start(listeners);
     }
-    let policy = Arc::new(egress::Policy::new(config.egress_ports.clone()));
-    for (cid, path, listener) in egress_listeners {
-        paths.push(path);
-        let (policy, egress_apid) = (Arc::clone(&policy), egress_apid.clone());
-        loops.push(thread::spawn(move || {
-            egress::accept_loop(cid, listener, policy, egress_apid)
-        }));
-    }
-    for accept in loops {
-        let _ = accept.join();
+    let e2b_thread = e2b_listener
+        .zip(e2b_gateway)
+        .map(|(listener, gateway)| thread::spawn(move || e2b::serve(listener, gateway)));
+
+    // The accept loops serve until a stop request; run-time CIDs stop with them.
+    while !sys::shutdown_requested() {
+        thread::sleep(Duration::from_millis(ACCEPT_POLL_MS as u64));
     }
     println!("vsockd: stop requested, closing the listeners");
     drop(http);
-    // The socket files outlive their listeners; a stale one would fail the
-    // next start's bind.
-    for path in &paths {
+    registry.close();
+    if let Some(handle) = e2b_thread {
+        // The E2B accept loop checks for the stop request within one poll.
+        let _ = handle.join();
+    }
+    Ok(())
+}
+
+/// The guest CIDs this daemon serves. Built at start from `--cids`, then changed at run time by
+/// `POST`/`DELETE /v1/cids/{cid}`. A served CID has the same listeners however it was added: its
+/// session socket and, with egress on, its egress socket.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) struct Registry {
+    uds_dir: PathBuf,
+    port: u32,
+    /// The egress proxy's policy and apid; `None` when egress is off.
+    egress: Option<(Arc<egress::Policy>, apid::Apid)>,
+    hub: Arc<Hub>,
+    limiter: Arc<SessionLimiter>,
+    served: Mutex<BTreeMap<u32, Served>>,
+}
+
+/// One served CID and the threads that accept for it.
+#[cfg(any(target_os = "linux", windows))]
+struct Served {
+    /// Stops the session accept loop; checked on every poll.
+    stop: Arc<AtomicBool>,
+    session: JoinHandle<()>,
+    /// Present only when egress is on; it stops on the same request as the session loop.
+    egress: Option<JoinHandle<()>>,
+    paths: Vec<PathBuf>,
+}
+
+/// Listeners bound for one CID and not yet accepting.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) struct Bound {
+    cid: u32,
+    session: (PathBuf, UnixListener),
+    egress: Option<(PathBuf, UnixListener)>,
+}
+
+/// Why a CID cannot be removed at run time.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RemoveError {
+    /// No listener serves the CID.
+    NotServed,
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl Registry {
+    pub(crate) fn new(
+        uds_dir: PathBuf,
+        port: u32,
+        egress: Option<(Arc<egress::Policy>, apid::Apid)>,
+        hub: Arc<Hub>,
+    ) -> Self {
+        Self {
+            uds_dir,
+            port,
+            egress,
+            hub,
+            limiter: Arc::new(SessionLimiter::new(MAX_SESSIONS)),
+            served: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<u32, Served>> {
+        self.served.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The served CIDs, ascending.
+    pub(crate) fn served_cids(&self) -> Vec<u32> {
+        self.lock().keys().copied().collect()
+    }
+
+    pub(crate) fn is_served(&self, cid: u32) -> bool {
+        self.lock().contains_key(&cid)
+    }
+
+    /// Serves `cid` unless it already is; `Ok(true)` when serving starts now.
+    pub(crate) fn serve(&self, cid: u32) -> Result<bool, String> {
+        let mut served = self.lock();
+        if served.contains_key(&cid) {
+            return Ok(false);
+        }
+        let bound = self.bind(cid)?;
+        served.insert(cid, self.spawn(bound));
+        Ok(true)
+    }
+
+    /// Binds the session listener of `cid` and, with egress on, its egress listener.
+    pub(crate) fn bind(&self, cid: u32) -> Result<Bound, String> {
+        let session = bind_nonblocking(self.uds_dir.join(format!("vm{cid}_{}", self.port)), cid)?;
+        println!(
+            "vsockd: listening on {} for guest CID {cid}",
+            session.0.display()
+        );
+        let egress = match self.egress {
+            Some(_) => {
+                let listener = bind_nonblocking(
+                    self.uds_dir
+                        .join(format!("vm{cid}_{}", egress::EGRESS_PORT)),
+                    cid,
+                )?;
+                println!(
+                    "vsockd: egress proxy listening on {} for guest CID {cid}",
+                    listener.0.display()
+                );
+                Some(listener)
+            }
+            None => None,
+        };
+        Ok(Bound {
+            cid,
+            session,
+            egress,
+        })
+    }
+
+    /// Starts accepting for listeners that [`Registry::bind`] returned.
+    pub(crate) fn start(&self, bound: Bound) {
+        let cid = bound.cid;
+        let served = self.spawn(bound);
+        self.lock().insert(cid, served);
+    }
+
+    fn spawn(&self, bound: Bound) -> Served {
+        let Bound {
+            cid,
+            session,
+            egress,
+        } = bound;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (session_path, session_listener) = session;
+        let mut paths = vec![session_path];
+        let session = {
+            let (stop, limiter, hub) = (
+                Arc::clone(&stop),
+                Arc::clone(&self.limiter),
+                Arc::clone(&self.hub),
+            );
+            thread::spawn(move || accept_loop(cid, session_listener, stop, limiter, hub))
+        };
+        let mut egress_loop = None;
+        if let (Some((path, listener)), Some((policy, apid))) = (egress, &self.egress) {
+            paths.push(path);
+            let (policy, apid, stop) = (Arc::clone(policy), apid.clone(), Arc::clone(&stop));
+            egress_loop = Some(thread::spawn(move || {
+                egress::accept_loop(cid, listener, policy, apid, stop)
+            }));
+        }
+        Served {
+            stop,
+            session,
+            egress: egress_loop,
+            paths,
+        }
+    }
+
+    /// Stops serving `cid`: the session accept loop stops, and its socket files go. Sessions the
+    /// CID already has run on to their own end. Refused, with nothing changed, when the CID has
+    /// an egress listener.
+    pub(crate) fn remove(&self, cid: u32) -> Result<(), RemoveError> {
+        let mut served = self.lock();
+        match served.remove(&cid) {
+            None => Err(RemoveError::NotServed),
+            Some(entry) => {
+                entry.stop_and_join();
+                Ok(())
+            }
+        }
+    }
+
+    /// Stops every served CID and removes its socket files, at shutdown.
+    pub(crate) fn close(&self) {
+        let entries = std::mem::take(&mut *self.lock());
+        for entry in entries.into_values() {
+            entry.stop_and_join();
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl Served {
+    /// Stops the session accept loop and joins it; with `egress` also joins the egress loop, which
+    /// only returns once the daemon stops, so only at shutdown. Then removes the socket files.
+    fn stop_and_join(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.session.join();
+        if let Some(loop_) = self.egress {
+            let _ = loop_.join();
+        }
+        remove_socket_files(&self.paths);
+    }
+}
+
+/// Binds `path` for `cid` and makes it non-blocking, as the accept loops poll it.
+#[cfg(any(target_os = "linux", windows))]
+fn bind_nonblocking(path: PathBuf, cid: u32) -> Result<(PathBuf, UnixListener), String> {
+    let listener = bind_listener(&path, cid)?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|err| format!("cannot make {} non-blocking: {err}", path.display()))?;
+    Ok((path, listener))
+}
+
+/// The socket files outlive their listeners; a stale one would fail the next start's bind.
+#[cfg(any(target_os = "linux", windows))]
+fn remove_socket_files(paths: &[PathBuf]) {
+    for path in paths {
         if let Err(err) = std::fs::remove_file(path)
             && err.kind() != std::io::ErrorKind::NotFound
         {
             println!("vsockd: warning: cannot remove {}: {err}", path.display());
         }
     }
-    Ok(())
 }
 
 /// Whether a failed probe of an existing socket path means nobody listens:
@@ -436,10 +666,17 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
     ))
 }
 
-/// Accepts sessions for one CID, each on its own thread, until a stop request.
+/// Accepts sessions for one CID, each on its own thread, until its stop flag or the daemon's stop
+/// request. Sessions already running are not touched by the stop flag.
 #[cfg(any(target_os = "linux", windows))]
-fn accept_loop(cid: u32, listener: UnixListener, limiter: Arc<SessionLimiter>, hub: Arc<Hub>) {
-    while !sys::shutdown_requested() {
+fn accept_loop(
+    cid: u32,
+    listener: UnixListener,
+    stop: Arc<AtomicBool>,
+    limiter: Arc<SessionLimiter>,
+    hub: Arc<Hub>,
+) {
+    while !stop.load(Ordering::SeqCst) && !sys::shutdown_requested() {
         if let Err(err) = sys::poll_readable(&listener, ACCEPT_POLL_MS) {
             eprintln!("vsockd: poll failed: {err}");
         }
@@ -562,6 +799,8 @@ mod tests {
             "off",
             "--egress-ports",
             "8080,8443",
+            "--e2b-port",
+            "49990",
         ])
         .unwrap();
         let expected = Config {
@@ -573,6 +812,7 @@ mod tests {
             internal_token_file: Some("t.token".into()),
             egress: false,
             egress_ports: vec![8080, 8443],
+            e2b_port: Some(49990),
         };
         assert_eq!(config, expected);
         assert!(
@@ -587,6 +827,8 @@ mod tests {
             &["--roles", "r.json"],
             &["--egress", "maybe"],
             &["--egress-ports", "70000"],
+            &["--e2b-port", "0"],
+            &["--e2b-port", "70000"],
         ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
@@ -657,5 +899,72 @@ mod tests {
         assert!(limiter.try_acquire().is_none());
         drop(first);
         assert!(limiter.try_acquire().is_some());
+    }
+
+    #[test]
+    fn a_cid_added_at_run_time_serves_a_guest_hello_and_its_removal_takes_the_socket_away() {
+        use std::io::Write;
+        use std::net::Shutdown;
+        let dir = scratch("runtime-cid");
+        create_uds_dir(&dir).unwrap();
+        let registry = Registry::new(
+            dir.clone(),
+            DEFAULT_PORT,
+            None,
+            Arc::new(crate::hub::tests::hub_with(None).1),
+        );
+        assert_eq!(registry.serve(40), Ok(true));
+        let path = dir.join(format!("vm40_{DEFAULT_PORT}"));
+        assert!(path.exists(), "the run-time CID has its socket file");
+
+        let mut guest = UnixStream::connect(&path).expect("the socket accepts");
+        writeln!(guest, r#"{{"type":"hello","vm":0,"guest_cid":40}}"#).unwrap();
+        guest.shutdown(Shutdown::Write).unwrap();
+        let answer = String::from_utf8(read_until_closed(&guest, Duration::from_secs(10))).unwrap();
+        assert!(answer.contains("welcome"), "a hello is answered: {answer}");
+        drop(guest);
+
+        assert_eq!(registry.remove(40), Ok(()));
+        assert!(
+            !path.exists(),
+            "removing the CID takes its socket file away"
+        );
+        let refused = UnixStream::connect(&path).expect_err("a removed CID refuses a new connect");
+        assert_eq!(refused.kind(), std::io::ErrorKind::NotFound, "{refused}");
+        assert!(!registry.is_served(40));
+        assert_eq!(registry.remove(40), Err(RemoveError::NotServed));
+        registry.close();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_registry_starts_the_start_up_cids_and_serving_a_served_one_again_changes_nothing() {
+        let dir = scratch("registry");
+        create_uds_dir(&dir).unwrap();
+        let registry = Registry::new(
+            dir.clone(),
+            DEFAULT_PORT,
+            None,
+            Arc::new(crate::hub::tests::hub_with(None).1),
+        );
+        let bound = registry.bind(3).expect("binds");
+        registry.start(bound);
+        assert_eq!(registry.served_cids(), vec![3]);
+        assert_eq!(registry.serve(41), Ok(true));
+        assert_eq!(registry.serve(41), Ok(false), "idempotent");
+        assert_eq!(registry.served_cids(), vec![3, 41]);
+        assert_eq!(registry.remove(41), Ok(()));
+        assert_eq!(registry.served_cids(), vec![3]);
+        assert_eq!(registry.remove(41), Err(RemoveError::NotServed));
+        assert!(
+            registry.bind(3).is_err(),
+            "a served start-up CID's path is taken by a live listener"
+        );
+        registry.close();
+        assert!(
+            !dir.join(format!("vm3_{DEFAULT_PORT}")).exists(),
+            "closing removes the start-up socket files too"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

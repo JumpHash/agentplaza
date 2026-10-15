@@ -664,7 +664,9 @@ pub fn connect(
 
 /// [`connect`] over a stream the caller already connected, such as a vsock stream to a node's relay. TLS runs on it
 /// when `tls` names the server, pinned by `target.pin` (required: a stream with no host name cannot be verified any
-/// other way); the name is the SNI and the Host header. With `tls: None` the handshake goes over the stream as it is.
+/// other way); the name is the SNI. The Host header is `localhost`: the stream names no host, and a hub on the node's
+/// own machine sees the relayed connection come from loopback, where its server takes only a loopback Host. With
+/// `tls: None` the handshake goes over the stream as it is.
 /// The stream's read timeout bounds the handshake, so the caller sets one. `target.base` is not dialled.
 pub fn connect_over<S: Duplex + 'static>(
     stream: S,
@@ -674,7 +676,7 @@ pub fn connect_over<S: Duplex + 'static>(
     protocol: Option<&str>,
     limits: Limits,
 ) -> io::Result<Socket> {
-    let host_header = tls.unwrap_or("localhost").to_string();
+    let host_header = "localhost".to_string();
     let key = STANDARD.encode(apz_trust::random::<16>());
     let head = handshake_head(&host_header, &key, target, path, protocol)?;
     let io: Box<dyn Duplex> = match tls {

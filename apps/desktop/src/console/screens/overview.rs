@@ -351,6 +351,7 @@ fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
     let (status, tone, filled) = match orch.status.as_str() {
         "working" => ("Working", INFO, false),
         "idle" => ("Idle", crate::theme::palette().ok, true),
+        "asleep" => ("Asleep", crate::theme::palette().ink_2, false),
         _ => ("Offline", crate::theme::palette().ink_2, false),
     };
     let head = row![
@@ -524,6 +525,7 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
     let sub = match &a.work {
         Some(w) => clip(&w.prompt, 60),
         None if a.status == "offline" => "offline".to_string(),
+        None if a.status == "asleep" => "asleep".to_string(),
         None => a.role_label.clone(),
     };
     let body = column![

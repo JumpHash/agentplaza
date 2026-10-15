@@ -47,6 +47,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 /// Errors from `boot`.
 #[derive(Debug, thiserror::Error)]
 pub enum BootError {
+    /// The snapshot could not be read or does not fit the spec.
+    #[error("cannot restore the snapshot: {0}")]
+    Snapshot(String),
     /// No vCPUs were requested
     #[error("no vCPUs were requested")]
     NoVcpus,
@@ -115,6 +118,12 @@ pub enum BootError {
          device is implemented for that backend)"
     )]
     UnsupportedWorkspace,
+    /// Shared data volumes are virtio-mmio block devices too, which this backend does not have.
+    #[error(
+        "this VM asked for shared data volumes, which Hypervisor.framework VMs cannot carry yet \
+         (no block device is implemented for that backend)"
+    )]
+    UnsupportedVolumes,
     /// The VM did not start: {0}
     #[error("the VM did not start: {0}")]
     Startup(String),
@@ -122,10 +131,15 @@ pub enum BootError {
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
 pub fn boot(spec: &VmSpec, id: u32, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-    boot_inner(spec, id, &runtime).map_err(SpawnError::backend)
+    match &spec.restore {
+        Some(dir) => restore_inner(spec, dir, id, &runtime),
+        None => boot_inner(spec, id, &runtime),
+    }
+    .map_err(SpawnError::backend)
 }
 
-fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+/// Refuses what this backend cannot build, before anything is; returns the vCPU count.
+fn check_spec(spec: &VmSpec) -> Result<usize, BootError> {
     // A vsock device is what a VM with a job needs (it is the only way to reach
     // the orchestrator), so a spec that asks for one must not boot a VM that
     // cannot have it: this backend has no vhost-vsock (Hypervisor.framework
@@ -140,6 +154,9 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
     if spec.workspace.is_some() {
         return Err(BootError::UnsupportedWorkspace);
     }
+    if !spec.volumes.is_empty() {
+        return Err(BootError::UnsupportedVolumes);
+    }
 
     let vcpu_count = usize::from(spec.vcpus);
     if vcpu_count == 0 {
@@ -151,7 +168,11 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             max: MAX_VCPUS,
         });
     }
+    Ok(vcpu_count)
+}
 
+/// The guest memory, not yet mapped.
+fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
     // Guest memory: the aarch64 layout's DRAM regions (one for any size this
     // port boots, two only past the 64-bit MMIO hole). The regions are the
     // process's own pages, which is what `hv_vm_map` maps.
@@ -165,6 +186,12 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             })
             .collect(),
     )?;
+    Ok(memory)
+}
+
+fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
+    let vcpu_count = check_spec(spec)?;
+    let memory = guest_memory(spec)?;
 
     // The VM, and the guest memory mapped into its address space. A device
     // access is a load or store to an address this leaves unmapped: that is
@@ -226,9 +253,76 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             entry: entry_point.entry_addr.raw_value(),
             fdt: fdt_addr,
         },
+        None,
     );
+    run(spec, id, runtime, shared, None)
+}
+
+/// Restores the VM from the snapshot in `dir`: the guest memory read back before it is mapped, the
+/// interrupt controller, the UART and the vCPUs' power states put back, and each vCPU's registers
+/// written by its own thread before it first runs. The guest's virtual counter goes on from the
+/// snapshot's.
+fn restore_inner(
+    spec: &VmSpec,
+    dir: &std::path::Path,
+    id: u32,
+    runtime: &Arc<VmRuntime>,
+) -> Result<(), BootError> {
+    let vcpu_count = check_spec(spec)?;
+    let snapshot = crate::hvf::snapshot_state::read_state(dir)
+        .map_err(|err| BootError::Snapshot(err.to_string()))?;
+    if snapshot.vcpus.len() != vcpu_count || snapshot.meta.memory_mib != spec.memory_mib {
+        return Err(BootError::Snapshot(format!(
+            "the spec ({vcpu_count} vCPUs, {} MiB) is not the snapshot's machine ({} vCPUs, {} MiB)",
+            spec.memory_mib,
+            snapshot.vcpus.len(),
+            snapshot.meta.memory_mib
+        )));
+    }
+    let gic = gic::Gic::from_state(&snapshot.gic, vcpu_count).map_err(BootError::Snapshot)?;
+    let memory = guest_memory(spec)?;
+    crate::hvf::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
+    let mut vm = HvfVm::create()?;
+    vm.map_guest_memory(&memory)?;
+    let restore = crate::hvf::vcpu::Restore {
+        vtimer_offset: crate::hvf::snapshot_state::vtimer_offset_for(
+            crate::hvf::vcpu::host_now(),
+            snapshot.guest_counter,
+        ),
+        running: snapshot.running.clone(),
+        gic,
+        vcpus: snapshot.vcpus.clone(),
+    };
+    // The entry point and device tree are the boot's; a restored vCPU goes on from its registers.
+    let shared = SharedVm::new(
+        vm,
+        memory,
+        Arc::clone(runtime),
+        vcpu_count,
+        BootParams { entry: 0, fdt: 0 },
+        Some(restore),
+    );
+    run(spec, id, runtime, shared, Some(&snapshot.serial))
+}
+
+/// The rest of a boot or a restore, once the shared VM state exists: the console (new, or with the
+/// registers a snapshot kept), the input, stop and snapshot controls, and the vCPU threads.
+fn run(
+    spec: &VmSpec,
+    id: u32,
+    runtime: &Arc<VmRuntime>,
+    shared: Arc<SharedVm>,
+    serial: Option<&crate::vstate::snapshot::SerialRegisters>,
+) -> Result<(), BootError> {
+    let vcpu_count = usize::from(spec.vcpus);
     let console: Arc<dyn ConsoleLine> = shared.clone();
-    shared.install_serial(SerialDevice::new(Arc::clone(&runtime.serial), &console));
+    shared.install_serial(match serial {
+        Some(registers) => {
+            SerialDevice::from_registers(registers, Arc::clone(&runtime.serial), &console)
+                .map_err(BootError::Snapshot)?
+        }
+        None => SerialDevice::new(Arc::clone(&runtime.serial), &console),
+    });
 
     // The console's input side, the counterpart of the capture above: a
     // caller's bytes go to the UART, which queues them and raises the
@@ -253,6 +347,15 @@ fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), Bo
             shared.stop();
         }
     });
+
+    // The snapshot control, holding the VM weakly as the stop control does.
+    runtime.set_vm_control(Arc::new(crate::hvf::snapshot::HvfControl {
+        vm: Arc::downgrade(&shared),
+        vcpus: spec.vcpus,
+        memory_mib: spec.memory_mib,
+        busy: std::sync::Mutex::new(()),
+        paused: std::sync::atomic::AtomicBool::new(false),
+    }));
 
     for index in 0..vcpu_count {
         let shared = Arc::clone(&shared);

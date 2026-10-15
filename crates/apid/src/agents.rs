@@ -26,6 +26,9 @@ pub enum Status {
     Offline,
     Idle,
     Working,
+    /// The agent's VM was snapshotted and stopped while it had nothing to do; it is woken (restored
+    /// from that snapshot) as soon as work, a chat or the owner needs it (`crate::sleep`).
+    Asleep,
 }
 
 /// One agent. `cid` is its identity.
@@ -418,6 +421,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         } else {
             String::new()
         },
+        egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
     }
 }
 
@@ -610,18 +614,31 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
+    // Work queued while the agent was asleep (or offline) goes out now that it is idle.
+    app.work.dispatch_idle(app);
     Some(profile(app, &agent))
+}
+
+/// Whether a session ending takes an agent in `status` offline. An agent put to sleep ends its session
+/// on purpose: it is not offline, and its queued work waits for its wake.
+fn ends_offline(status: Status) -> bool {
+    status != Status::Asleep
 }
 
 /// A session ended: mark the agent offline and fail its work.
 pub fn gone(app: &App, cid: u64, reason: &str) {
     // contract
     let now = apz_plaza::now_ms();
+    let mut asleep = false;
     let changed = app.agents.update(cid, |agent| {
-        agent.status = Status::Offline;
-        agent.last_seen_ms = now;
+        if ends_offline(agent.status) {
+            agent.status = Status::Offline;
+            agent.last_seen_ms = now;
+        } else {
+            asleep = true;
+        }
     });
-    if !changed {
+    if !changed || asleep {
         return;
     }
     if let Some(agent) = app.agents.get(cid) {
@@ -655,16 +672,18 @@ fn reconcile_once(app: &App) {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
                 };
+                // A session on the gateway means the agent is awake: an asleep one is registered idle.
                 let known_online = app
                     .agents
                     .get(cid)
-                    .is_some_and(|agent| agent.status != Status::Offline);
+                    .is_some_and(|agent| !matches!(agent.status, Status::Offline | Status::Asleep));
                 if !known_online {
                     hello(app, cid, role, 0, &[]);
                 }
             }
             for agent in app.agents.list() {
-                if agent.status != Status::Offline
+                // An asleep agent has no session by design: it is not gone.
+                if !matches!(agent.status, Status::Offline | Status::Asleep)
                     && crate::fleet::node_of(app, agent.cid) == node
                     && !live.contains(&agent.cid)
                 {
@@ -874,8 +893,9 @@ fn spawn(app: &App, req: &Request) -> Response {
     }
 }
 
-/// Spawns `count` agents of `role` on `node` (default `n0`): checks the role, the count, the
-/// model's tier and that the node takes new agents, asks its noded for the runs and records them.
+/// Spawns `count` agents of `role` on `node` (default: the best node for the role, see
+/// `placement::choose_node`): checks the role, the count, the model's tier and that the node takes
+/// new agents, asks its noded for the runs and records them.
 /// Returns noded's reply; errors are the message for the caller.
 pub fn spawn_agents(
     app: &App,
@@ -884,7 +904,11 @@ pub fn spawn_agents(
     model: Option<&str>,
     node: Option<&str>,
 ) -> Result<Value, String> {
-    let node = node.unwrap_or(crate::fleet::LOCAL);
+    let node = match node {
+        Some(node) => node.to_string(),
+        None => crate::placement::choose_node(app, role),
+    };
+    let node = node.as_str();
     if node != crate::fleet::LOCAL {
         match app.nodes.get(node) {
             None => return Err(format!("no node {node}")),
@@ -903,7 +927,17 @@ pub fn spawn_agents(
         app.settings.allowed(tier_of(role), model)?;
     }
     // The same shape as the starting fleet (noded --agents-memory-mib defaults to 1024).
-    let payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
+    let mut payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
+    // The role's shared data volumes (settings `role_volumes`), mounted read-only by every agent.
+    if let Some(volumes) = app
+        .settings
+        .get()
+        .role_volumes
+        .get(role)
+        .filter(|v| !v.is_empty())
+    {
+        payload["volumes"] = json!(volumes);
+    }
     match crate::fleet::noded(app, node, "POST", "/v1/runs", Some(&payload)) {
         Ok((status, value)) => {
             if status >= 300 {
@@ -1020,6 +1054,9 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
     if let Err(e) = check_chat_text(&b.text) {
         return Response::error(400, &e);
     }
+    if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
+        return resp;
+    }
     let thread = format!("op-{}", agent.cid);
     let work = app.work.enqueue(
         app,
@@ -1097,6 +1134,12 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    // A tell wakes a sleeping agent first: the gateway has no session to deliver it to otherwise.
+    if action == "tell" {
+        if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
+            return resp;
+        }
+    }
     let body: Option<Value> = serde_json::from_slice(&req.body).ok();
     crate::fleet::respond(crate::fleet::gateway(
         app,
@@ -1209,6 +1252,26 @@ mod tests {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn a_session_ending_keeps_an_asleep_agent_and_takes_the_others_offline() {
+        assert!(!ends_offline(Status::Asleep));
+        assert!(ends_offline(Status::Idle));
+        assert!(ends_offline(Status::Working));
+        assert!(ends_offline(Status::Offline));
+
+        // The roster applies the same rule `gone` applies: the asleep agent stays asleep.
+        let roster = Roster::with_db(None);
+        let mut asleep = agent("builder");
+        asleep.status = Status::Asleep;
+        roster.upsert(asleep);
+        roster.update(42, |slot| {
+            if ends_offline(slot.status) {
+                slot.status = Status::Offline;
+            }
+        });
+        assert_eq!(roster.get(42).map(|a| a.status), Some(Status::Asleep));
+    }
 
     fn agent(role: &str) -> Agent {
         Agent {

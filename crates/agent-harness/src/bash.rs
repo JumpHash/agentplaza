@@ -26,6 +26,7 @@ use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 
 use crate::files::Workspace;
+use crate::trust;
 
 const DEFAULT_TIMEOUT_S: u64 = 60;
 const MAX_TIMEOUT_S: u64 = 300;
@@ -174,12 +175,25 @@ pub(crate) fn environment(
     privilege: Privilege,
 ) -> Result<(), String> {
     builder.current_dir(dir);
-    match privilege {
-        Privilege::Root => with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)).apply(builder),
-        Privilege::Agent => agent_env(dir)?.apply(builder),
-        Privilege::Engine(home) => coding_engine_env(&home)?.apply(builder),
-    }
+    let env = match privilege {
+        Privilege::Root => with_trust(with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)), dir),
+        Privilege::Agent => with_trust(agent_env(dir)?, dir),
+        // An engine cannot read the plaza's files, so its trust variables name the system store
+        // instead (see `coding_engine_env`).
+        Privilege::Engine(home) => coding_engine_env(&home)?,
+    };
+    env.apply(builder);
     Ok(())
+}
+
+/// The guest's TLS clients trust the hub's egress CA as well as their roots (see [`crate::trust`]):
+/// their variables point at the bundle, and are set only once the harness has written one.
+fn with_trust(env: apz_ops::Env, dir: &std::path::Path) -> apz_ops::Env {
+    trust::client_variables(&Workspace::at(dir))
+        .into_iter()
+        .fold(env, |env, (key, path)| {
+            env.with_var(key, path.display().to_string())
+        })
 }
 
 /// The environment of a coding engine's process, with `home` (its own folder, see
@@ -191,7 +205,16 @@ pub(crate) fn coding_engine_env(home: &Path) -> Result<apz_ops::Env, String> {
     } else {
         None
     };
-    Ok(with_proxy(apz_ops::Env::new(home, AGENT_PATH)).with_uid(uid))
+    let env = with_proxy(apz_ops::Env::new(home, AGENT_PATH)).with_uid(uid);
+    // `home` is `<workspace>/.engines/home/<id>`: the trust bundle is the workspace's.
+    let trust = home
+        .ancestors()
+        .nth(3)
+        .map(|root| trust::engine_variables(&Workspace::at(root)))
+        .unwrap_or_default();
+    Ok(trust.into_iter().fold(env, |env, (key, path)| {
+        env.with_var(key, path.display().to_string())
+    }))
 }
 
 /// Makes sure `/etc/passwd` and `/etc/group` name the engine user, as root only and idempotently:
@@ -257,7 +280,11 @@ pub(crate) fn agent_env(home: &std::path::Path) -> Result<apz_ops::Env, String> 
     } else {
         USER_PATH
     };
-    Ok(with_proxy(apz_ops::Env::new(home, path)).with_uid(uid))
+    // The egress CA's bundle reaches every command the same way, IDE runs and terminals included.
+    Ok(with_trust(
+        with_proxy(apz_ops::Env::new(home, path)).with_uid(uid),
+        home,
+    ))
 }
 
 /// The egress proxy's variables, which every guest command gets.
@@ -459,6 +486,67 @@ mod tests {
         assert_eq!(
             output,
             format!("{}\n{AGENT_PATH}\nhi\nexit 0", workspace.dir().display())
+        );
+    }
+
+    #[test]
+    fn the_tls_variables_are_set_only_once_the_trust_bundle_exists() {
+        use std::collections::HashMap;
+
+        let workspace = scratch("trust");
+        let plaza = workspace.plaza_dir();
+        let set = |privilege| -> HashMap<String, String> {
+            let mut builder = Command::new("true");
+            environment(&mut builder, workspace.dir(), privilege).expect("the environment");
+            builder
+                .get_envs()
+                .filter_map(|(key, value)| {
+                    Some((
+                        key.to_string_lossy().into_owned(),
+                        value?.to_string_lossy().into_owned(),
+                    ))
+                })
+                .collect()
+        };
+        for privilege in [Privilege::Agent, Privilege::Root] {
+            assert!(!set(privilege).contains_key("SSL_CERT_FILE"));
+        }
+
+        std::fs::create_dir_all(&plaza).expect("the plaza directory");
+        std::fs::write(plaza.join("ca-bundle.pem"), "bundle").expect("a bundle");
+        std::fs::write(plaza.join("egress-ca.pem"), "ca").expect("a CA");
+        for privilege in [Privilege::Agent, Privilege::Root] {
+            let env = set(privilege);
+            let bundle = plaza.join("ca-bundle.pem").display().to_string();
+            for key in [
+                "SSL_CERT_FILE",
+                "CURL_CA_BUNDLE",
+                "REQUESTS_CA_BUNDLE",
+                "GIT_SSL_CAINFO",
+            ] {
+                assert_eq!(env[key], bundle, "{key}");
+            }
+            assert_eq!(
+                env["NODE_EXTRA_CA_CERTS"],
+                plaza.join("egress-ca.pem").display().to_string()
+            );
+            assert_eq!(env["HTTPS_PROXY"], PROXY_URL, "the proxy stays set");
+        }
+    }
+
+    #[test]
+    fn a_command_sees_the_trust_bundle_path() {
+        let workspace = scratch("trust-run");
+        std::fs::create_dir_all(workspace.plaza_dir()).expect("the plaza directory");
+        std::fs::write(workspace.plaza_dir().join("ca-bundle.pem"), "bundle").expect("a bundle");
+        let output =
+            run(&workspace, &json!({ "command": "echo \"$SSL_CERT_FILE\"" })).expect("exit 0");
+        assert_eq!(
+            output,
+            format!(
+                "{}\nexit 0",
+                workspace.plaza_dir().join("ca-bundle.pem").display()
+            )
         );
     }
 

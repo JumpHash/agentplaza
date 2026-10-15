@@ -12,7 +12,7 @@ additionally from Firecracker's src/device_manager/legacy.rs (outside src/vmm),
 and adapted:
 
 - trimmed to the multi-VM spawner base: removed metrics, the in-crate logger,
-  seccomp, snapshots/persist, event-manager, mmds, pci, gdb, vhost-user,
+  seccomp, event-manager, mmds, pci, gdb, vhost-user,
   rate-limiter, balloon, block/net virtio devices and the api-server;
 - error types re-derived with thiserror; Firecracker-internal log and metric
   macros removed;
@@ -58,7 +58,8 @@ src/vmm crate in part, and written for this port in part:
   scatter/gather iovec buffers, the virtio-vsock packet model and the
   userspace vsock device frontend (the `VsockChannel`/`VsockEpollListener`/
   `VsockBackend` interface and `Vsock<B>`). Trimmed to this port's needs:
-  the event-manager and snapshot/persist support are dropped, `displaydoc`
+  the event-manager is dropped (the snapshot state is this port's own
+  `save_device_state`/`restore_device_state`, see the snapshot note below), `displaydoc`
   becomes explicit `thiserror` messages, the `memfd` crate becomes raw `libc`
   calls, and Firecracker's metrics become a local no-op atomic shim.
 
@@ -126,7 +127,8 @@ src/vmm crate in part, and written for this port in part:
 
   Local modifications, marked in the files' headers:
   * trimmed — the async io_uring engine (`io/async_io.rs`), the rate limiter,
-    the device metrics, the snapshot/persist support, the event-manager
+    the device metrics, upstream's persist module (the queue positions are saved
+    through this port's own device snapshot hooks instead), the event-manager
     subscriber and its queue/interrupt event fds, the PCI transport,
     multi-queue, read-only drives, `CacheType`, and DISCARD/WRITE_ZEROES
     execution (their `fallocate`/`BLKDISCARD` ioctls are `unsafe` and a writable
@@ -162,6 +164,18 @@ src/vmm crate in part, and written for this port in part:
   directory layout follows upstream's.
 
 The Apache License, Version 2.0 text is in crates/vmm/LICENSE.
+
+Snapshots are ported from Firecracker, not left out of this tree. The snapshot state of the VM, its vCPUs and its
+devices (`VmState`, `VcpuState` and the virtio transport and queue state, from Firecracker's `src/vmm/src/persist.rs`,
+`arch/*` and the device persist code) is Firecracker's, and so is the sequence of a snapshot: pause the vCPUs, save
+their state, the VM's and the devices', dump the memory, resume (`crates/vmm/src/control.rs`, from `create_snapshot`).
+The vCPU pause and resume run loop is Firecracker's too (`crates/vmm/src/vstate/vcpu.rs`). Both are Apache-2.0,
+Copyright 2018-2025 Amazon.com, Inc. or its affiliates. The on-disk layout (`crates/vmm/src/vstate/snapshot.rs`), the
+version and architecture checks, and the device gate are this port's own, Copyright 2026 AgentPlaza, Apache-2.0.
+
+The page selection for diffs (`crates/vmm/src/vstate/snapshot_memory.rs`) follows CubeSandbox's
+`hypervisor/vmm/src/pagemap_anon.rs` (Apache-2.0, Copyright Tencent): a diff writes the anonymous pages of a restored VM,
+found through `/proc/self/pagemap`. The code is this port's own; the selection rule is theirs.
 
 Files under crates/vmm/src/acpi.rs are derived from Firecracker's
 src/vmm/src/acpi/{mod.rs,x86_64.rs} (Apache-2.0, Copyright 2024 Amazon.com,

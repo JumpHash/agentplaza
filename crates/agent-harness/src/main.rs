@@ -59,6 +59,8 @@ mod egress;
 #[cfg(target_os = "linux")]
 mod engines;
 #[cfg(target_os = "linux")]
+mod envd;
+#[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
 mod ide;
@@ -71,6 +73,8 @@ mod library;
 #[cfg(target_os = "linux")]
 mod plan;
 #[cfg(target_os = "linux")]
+mod restore;
+#[cfg(target_os = "linux")]
 mod search_tools;
 #[cfg(target_os = "linux")]
 mod session;
@@ -80,6 +84,8 @@ mod shells;
 mod term;
 #[cfg(target_os = "linux")]
 mod tools;
+#[cfg(target_os = "linux")]
+mod trust;
 #[cfg(target_os = "linux")]
 mod vsock;
 
@@ -172,6 +178,8 @@ enum HarnessError {
     UnassignedCid(u32),
     /// The session did not complete: {0}
     Session(SessionError),
+    /// The sandbox daemon could not start: {0}
+    Sandbox(io::Error),
 }
 
 #[cfg(target_os = "linux")]
@@ -187,6 +195,7 @@ impl fmt::Display for HarnessError {
                 "the vsock device published no guest CID (it answered {cid}): the VM has no CID to report"
             ),
             Self::Session(err) => write!(f, "session failed: {err}"),
+            Self::Sandbox(err) => write!(f, "sandbox daemon failed: {err}"),
         }
     }
 }
@@ -208,11 +217,51 @@ fn run() -> Result<(), HarnessError> {
         config.vm, HOST_CID, config.port
     );
 
-    if config.keepalive {
+    if config.sandbox {
+        sandbox(&mut out, config.template)
+    } else if config.keepalive {
         keepalive(&config, &mut out)
     } else {
         one_shot(&config, &mut out)
     }
+}
+
+/// The sandbox's home, and the user its processes run as (E2B's default user).
+#[cfg(target_os = "linux")]
+const SANDBOX_HOME: &str = "/home/user";
+#[cfg(target_os = "linux")]
+const SANDBOX_USER: u32 = bash::UNPRIVILEGED;
+
+/// Serves the sandbox daemon (E2B's envd) on its vsock port, forever: no hub session. The egress
+/// shim runs as it does for an agent, so the sandbox's processes reach the internet the same way.
+/// `/home/user` is the workspace volume, linked in when the image does not have it.
+#[cfg(target_os = "linux")]
+fn sandbox(out: &mut (impl Write + Send), template: bool) -> Result<(), HarnessError> {
+    egress::spawn_shim();
+    // Best effort: a home that cannot be linked is reported by the first command that needs it
+    // (its working directory is then refused), not by the daemon failing to start.
+    let _ = fs::create_dir_all("/workspace");
+    if fs::symlink_metadata(SANDBOX_HOME).is_err() {
+        let _ = fs::create_dir_all("/home");
+        if let Err(err) = std::os::unix::fs::symlink("/workspace", SANDBOX_HOME) {
+            let _ = writeln!(
+                out,
+                "agent-harness: sandbox: cannot link {SANDBOX_HOME}: {err}"
+            );
+        }
+    }
+    let _ = writeln!(out, "agent-harness: sandbox: home {SANDBOX_HOME}");
+    let _ = out.flush();
+    let ctx = envd::Ctx {
+        home: SANDBOX_HOME.into(),
+        uid: SANDBOX_USER,
+        gid: SANDBOX_USER,
+        user_uid: SANDBOX_USER,
+        user_gid: SANDBOX_USER,
+        workdir: None,
+        env: Vec::new(),
+    };
+    envd::serve(envd::PORT, ctx, template).map_err(HarnessError::Sandbox)
 }
 
 /// Runs the frozen v1 session once and returns when it completed.
@@ -248,7 +297,15 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
     // The egress shim serves the guest's outbound HTTP for as long as the agent
     // runs; a bind failure is printed there, never fatal here.
     egress::spawn_shim();
+    if config.template {
+        // The host snapshots a template while it waits in the loop below; this line, on the
+        // serial console, is how the host knows the guest has reached it.
+        let _ = writeln!(out, "agent-harness: template ready");
+        let _ = out.flush();
+    }
     let mut failures = 0u32;
+    // Set by the first welcome the hub accepts. A template retries quickly only until then.
+    let mut welcomed = false;
     loop {
         match keepalive_once(config, out) {
             Ok(calls) => {
@@ -269,13 +326,22 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                 } else {
                     failures.saturating_add(1)
                 };
-                let delay = keepalive::backoff_delay(failures, jitter_nanos());
-                let _ = writeln!(
-                    out,
-                    "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
-                    delay.as_millis()
+                welcomed |= adopted;
+                let delay = keepalive::reconnect_delay(
+                    config.template && !welcomed,
+                    failures,
+                    jitter_nanos(),
                 );
-                let _ = out.flush();
+                // A template waiting for its restore retries every 25 ms: only its first failure
+                // is printed, so the serial console (and the template's memory) is not flooded.
+                if !(config.template && !welcomed) || failures == 1 {
+                    let _ = writeln!(
+                        out,
+                        "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
+                        delay.as_millis()
+                    );
+                    let _ = out.flush();
+                }
                 sleep(delay);
             }
         }

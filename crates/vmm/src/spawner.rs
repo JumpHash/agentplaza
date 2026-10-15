@@ -162,6 +162,71 @@ pub struct VmSpec {
     /// balloon; the guest has all of `memory_mib`. `x86_64` only for now: on
     /// other backends the VM boots without one, with a warning.
     pub balloon: Option<u32>,
+    /// Restore the VM from this snapshot directory (see [`crate::vstate::snapshot`]) instead of
+    /// booting `kernel`: the guest continues where the snapshot left it. The spec must describe the
+    /// same machine (vCPUs, memory, devices); `vsock` may name another CID and socket (the guest is
+    /// told through a transport reset and re-reads its CID), and `workspace` is the caller's copy of
+    /// the volume as it was when the snapshot was taken. `kernel`, `initrd` and `cmdline` are not used.
+    /// Linux/KVM only: other backends refuse it.
+    pub restore: Option<PathBuf>,
+    /// Shared data volumes, attached read-only after the workspace (at most [`MAX_DATA_VOLUMES`]).
+    /// Unlike a workspace, one image may back any number of VMs at once: the device refuses writes and
+    /// the guest mounts it read-only at `/data/<name>`. The guest tells the volumes apart by the
+    /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Linux/KVM only: other backends
+    /// refuse a spec with volumes.
+    pub volumes: Vec<DataVolume>,
+}
+
+/// The most shared data volumes one VM carries.
+pub const MAX_DATA_VOLUMES: usize = 4;
+
+/// One shared, read-only data volume of a VM (see [`VmSpec::volumes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataVolume {
+    /// The volume's name: what the guest sees as the device id and mounts it under. See
+    /// [`check_volume_name`].
+    pub name: String,
+    /// The ext4 image. It is opened read-only and never written.
+    pub image: PathBuf,
+}
+
+/// Whether `name` can name a data volume: 1 to 20 characters (the virtio-blk device id is 20 bytes)
+/// of `a-z`, `0-9` and `-`, starting with a letter or digit.
+pub fn check_volume_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 20 {
+        return Err(format!("a volume name has 1 to 20 characters: {name:?}"));
+    }
+    if bytes[0] == b'-'
+        || !bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+    {
+        return Err(format!(
+            "a volume name is lowercase letters, digits and '-', not starting with '-': {name:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks a spec's volumes: at most [`MAX_DATA_VOLUMES`], valid and distinct names.
+pub fn check_volumes(volumes: &[DataVolume]) -> Result<(), String> {
+    if volumes.len() > MAX_DATA_VOLUMES {
+        return Err(format!(
+            "a VM carries at most {MAX_DATA_VOLUMES} data volumes, not {}",
+            volumes.len()
+        ));
+    }
+    for (index, volume) in volumes.iter().enumerate() {
+        check_volume_name(&volume.name)?;
+        if volumes[..index]
+            .iter()
+            .any(|other| other.name == volume.name)
+        {
+            return Err(format!("data volume {:?} is given twice", volume.name));
+        }
+    }
+    Ok(())
 }
 
 impl Default for VmSpec {
@@ -176,8 +241,46 @@ impl Default for VmSpec {
             vsock: None,
             workspace: None,
             balloon: None,
+            restore: None,
+            volumes: Vec::new(),
         }
     }
+}
+
+/// What a snapshot holds of the guest memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotKind {
+    /// Every page the guest has touched.
+    Full,
+    /// Only the pages the guest changed since it was restored, written over a reflinked copy of the
+    /// memory it was restored from (the caller places that copy; see
+    /// [`crate::vstate::snapshot_memory`]). For a VM that was booted, not restored, the same as `Full`.
+    Diff,
+}
+
+/// A snapshot [`VmHandle::snapshot`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotInfo {
+    /// The snapshot directory.
+    pub dir: PathBuf,
+    pub kind: SnapshotKind,
+    /// Guest memory bytes written.
+    pub memory_written: u64,
+    /// How long the VM was paused for the snapshot, in milliseconds.
+    pub paused_ms: u64,
+}
+
+/// How the host pauses, resumes and snapshots a running VM: in-process, the VM's own vCPUs and
+/// devices; for a VM in its own process, a request over that process's control socket.
+pub trait VmControl: Send + Sync {
+    /// Stops the vCPUs (out of `KVM_RUN`, parked) and the devices' own threads. Idempotent.
+    fn pause(&self) -> Result<(), SpawnError>;
+    /// Lets a paused VM run again. Idempotent.
+    fn resume(&self) -> Result<(), SpawnError>;
+    /// Pauses the VM (if it is running), writes a snapshot into `dir`, and leaves it **paused**: the
+    /// caller resumes it, or stops it (to sleep or move it).
+    fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError>;
 }
 
 /// How a VM stopped.
@@ -236,6 +339,15 @@ pub enum SpawnError {
     /// The VM has no balloon, so its memory cannot be resized
     #[error("this VM has no balloon")]
     NoBalloon,
+    /// The VM cannot be paused or snapshotted (its backend has no snapshot support)
+    #[error("this VM cannot be paused or snapshotted on this backend")]
+    NoSnapshots,
+    /// Pausing, resuming, snapshotting or restoring the VM failed: {reason}
+    #[error("VM snapshot control failed: {reason}")]
+    Snapshot {
+        /// What failed.
+        reason: String,
+    },
     /// The VM's memory control refused a resize or could not be reached: {reason}
     #[error("the VM's memory control failed: {reason}")]
     MemoryControl {
@@ -405,6 +517,47 @@ pub fn set_child_binary(path: impl Into<PathBuf>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.into());
 }
 
+/// The cgroup root [`SpawnMode::Process`] places each VM's process under, or
+/// `None` (the default) for no limits. Process-wide, like the mode: a daemon
+/// that wants limits calls [`set_cgroup_root`] once, at start.
+static CGROUP_ROOT: Mutex<Option<crate::cgroup::CgroupRoot>> = Mutex::new(None);
+
+/// Sets the cgroup root per-VM processes are limited under. A daemon calls
+/// `set_cgroup_root(cgroup::CgroupRoot::detect())` once: `None` (no delegated
+/// hierarchy, the reason logged by `detect`) leaves the VMs unlimited.
+pub fn set_cgroup_root(root: Option<crate::cgroup::CgroupRoot>) {
+    *CGROUP_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = root;
+}
+
+/// The directory per-VM processes write their snapshots under (bound read-write into each VM's
+/// jail): a daemon that keeps snapshots elsewhere than beside the VMs' sockets names it once here.
+/// `None` keeps the default, the VM's socket directory.
+pub fn set_snapshot_root(root: Option<PathBuf>) {
+    *SNAPSHOT_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = root;
+}
+
+/// The snapshot root set by [`set_snapshot_root`], if any.
+pub fn snapshot_root() -> Option<PathBuf> {
+    SNAPSHOT_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+static SNAPSHOT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The cgroup root set by [`set_cgroup_root`], if any.
+pub fn cgroup_root() -> Option<crate::cgroup::CgroupRoot> {
+    CGROUP_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// The mode this process is set to: the programmatic one if [`set_spawn_mode`]
 /// was called, otherwise the environment's, otherwise
 /// [`SpawnMode::InProcess`]. An [`SPAWN_MODE_ENV`] value that names no mode is
@@ -559,6 +712,9 @@ pub struct VmRuntime {
     /// Memory control installed by the backend in `boot` when the VM has a
     /// balloon (see [`VmHandle::set_usable_memory_mib`]).
     memory: Mutex<Option<Arc<dyn MemoryControl>>>,
+    /// Pause/resume/snapshot control installed by a backend that supports snapshots (see
+    /// [`VmHandle::snapshot`]).
+    vm_control: Mutex<Option<Arc<dyn VmControl>>>,
     /// Whether the stop control has been invoked.
     stop_requested: AtomicBool,
     /// Whether the guest ended the VM itself.
@@ -600,6 +756,7 @@ impl VmRuntime {
             stop: Mutex::new(None),
             input: Mutex::new(None),
             memory: Mutex::new(None),
+            vm_control: Mutex::new(None),
             stop_requested: AtomicBool::new(false),
             guest_exited: AtomicBool::new(false),
             guest_reset: AtomicBool::new(false),
@@ -628,6 +785,22 @@ impl VmRuntime {
     /// The VM's memory control, `None` when it has no balloon.
     pub fn memory_control(&self) -> Option<Arc<dyn MemoryControl>> {
         self.memory
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Installs the VM's pause/resume/snapshot control (a backend with snapshot support, in `boot`).
+    pub fn set_vm_control(&self, control: Arc<dyn VmControl>) {
+        *self
+            .vm_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+    }
+
+    /// The VM's pause/resume/snapshot control, when its backend installed one.
+    pub fn vm_control(&self) -> Option<Arc<dyn VmControl>> {
+        self.vm_control
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -918,6 +1091,30 @@ impl VmHandle {
     pub fn memory_stats(&self) -> Option<MemoryStats> {
         self.runtime.memory_control().map(|control| control.stats())
     }
+
+    /// Pauses the VM (see [`VmControl::pause`]).
+    pub fn pause(&self) -> Result<(), SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .pause()
+    }
+
+    /// Resumes a paused VM (see [`VmControl::resume`]).
+    pub fn resume(&self) -> Result<(), SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .resume()
+    }
+
+    /// Writes a snapshot of the VM into `dir` and leaves it paused (see [`VmControl::snapshot`]).
+    pub fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .snapshot(dir, kind)
+    }
 }
 
 /// Boots one microVM.
@@ -1097,9 +1294,16 @@ const ZERO_BLOCK: usize = 64 << 10;
 #[cfg(unix)]
 pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
     let src = std::fs::File::open(from)?;
+    let dst = std::fs::File::create(to)?;
+    copy_sparse_open(&src, &dst)
+}
+
+/// [`copy_sparse`] between two files already open (`dst` writable and empty): the copy a jailed VMM
+/// makes from a descriptor it holds, where no path names the source any more.
+#[cfg(unix)]
+pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Result<u64> {
     let meta = src.metadata()?;
     let len = meta.len();
-    let dst = std::fs::File::create(to)?;
     dst.set_len(len)?;
     dst.set_permissions(meta.permissions())?;
     let mut buf = vec![0u8; COPY_CHUNK];
@@ -1111,6 +1315,17 @@ pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
     }
     copy_skipping_zero_blocks(&src, &dst, len, &mut buf)?;
     Ok(len)
+}
+
+/// [`copy_sparse`] between two open files on a platform without the sparse helpers: a plain copy.
+#[cfg(not(unix))]
+pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Result<u64> {
+    use std::io::{Seek, SeekFrom};
+    let mut from = src.try_clone()?;
+    from.seek(SeekFrom::Start(0))?;
+    let mut to = dst.try_clone()?;
+    to.set_len(0)?;
+    std::io::copy(&mut from, &mut to)
 }
 
 /// Copies the data extents of `src` into `dst`, found with `SEEK_DATA` and
@@ -1242,9 +1457,11 @@ fn write_fully_at(dst: &std::fs::File, mut data: &[u8], mut at: u64) -> std::io:
 /// hands each VM its path through [`VmSpec::workspace`]. The directory is
 /// created `0700` (see [`create_uds_dir`]): an agent's workspace is its private
 /// data, and under the default `/tmp` prefix a wider mode would let any local
-/// user read or rewrite it. [`copy_sparse`] keeps the base's holes as holes, so a copy costs the blocks
-/// its VM writes, not the image's length. The copies happen once per run, before
-/// its VMs boot.
+/// user read or rewrite it. [`crate::clonefile::clone_file`] makes each copy a reflink where the
+/// filesystem has them, so a copy costs nothing until its VM writes; elsewhere it
+/// is a [`copy_sparse`], which keeps the base's holes as holes, so a copy costs the
+/// blocks its VM writes, not the image's length. The copies happen once per run,
+/// before its VMs boot.
 pub fn materialize_workspaces(
     base: &Path,
     dir: &Path,
@@ -1257,7 +1474,7 @@ pub fn materialize_workspaces(
     (0..n)
         .map(|id| {
             let copy = dir.join(format!("workspace-{id}.ext4"));
-            copy_sparse(base, &copy).map_err(|source| WorkspaceError::Copy {
+            crate::clonefile::clone_file(base, &copy).map_err(|source| WorkspaceError::Copy {
                 base: base.to_path_buf(),
                 copy: copy.clone(),
                 source,

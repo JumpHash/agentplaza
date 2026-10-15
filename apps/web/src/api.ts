@@ -22,7 +22,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (!res.ok) {
     // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
     if (res.status === 401 && path !== '/v1/auth/session') window.dispatchEvent(new CustomEvent('apz-auth-required'));
-    const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
+    // The E2B routes answer `{code, message}` (E2B's own error shape), the rest `{error}`.
+    const reply = data as { error?: string; message?: string } | null;
+    const message = reply?.error ?? reply?.message ?? `${method} ${path}: ${res.status}`;
     throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? [], data);
   }
   return data as T;
@@ -56,7 +58,8 @@ const query = (params: Record<string, string | number | undefined>): string => {
 
 // ---- Types -----------------------------------------------------------------
 
-export type AgentStatus = 'offline' | 'idle' | 'working';
+/** A sleeping agent's VM is paused or stopped; a chat or a task wakes it. */
+export type AgentStatus = 'offline' | 'idle' | 'working' | 'asleep';
 export type Tier = 'orchestrator' | 'worker';
 export type WorkKind = 'task' | 'chat' | 'message' | 'motion';
 
@@ -173,6 +176,14 @@ export interface Settings {
   laws?: { strict_permits: boolean };
   /** Contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries. */
   allow_training_models?: boolean;
+  /** Minutes an idle agent waits before its VM sleeps; 0 = never. */
+  idle_sleep_min: number;
+  /** Roles whose agents never sleep when idle. */
+  sleep_never_roles: string[];
+  /** Shared read-only data volumes per role: agents of the role mount each one at /data/<name>. */
+  role_volumes: Record<string, string[]>;
+  /** Take a checkpoint of the agent's VM before each irreversible tool call. */
+  vm_auto_checkpoints: boolean;
   /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */
   acp_enabled: boolean;
   /** ACP: the editor offers to apply an agent's pull request to the editor's project (`agentplaza acp --repo`). */
@@ -188,6 +199,21 @@ export interface AcpSession {
   id: string; cid: number; cwd: string; client: string; title: string; works: number;
   created_ms: number; updated_ms: number; closed: boolean;
 }
+
+/** One saved state of an agent's VM (memory, disk and running processes). `diff` builds on the one before it. */
+export interface VmCheckpoint {
+  name: string; cid: number; label: string; kind: 'full' | 'diff'; taken_at_ms: number;
+  memory_written: number; disk_bytes: number; paused_ms: number;
+}
+
+export interface VmCheckpointList { checkpoints: VmCheckpoint[] }
+
+export interface ForkedAgent { cid: number; run: string; name: string }
+
+/** The forks made from one checkpoint of the agent's VM, which the forks start from. */
+export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
+
+export interface VmRestoreResult { ok: boolean; safety: VmCheckpoint }
 
 export interface Task {
   id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
@@ -681,6 +707,18 @@ export const api = {
   restartAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/restart`, {}),
   wipeAgent: (cid: number, opts: { memory?: boolean; transcript?: boolean; identity?: boolean }) => post<{ ok: boolean; wiped: string[] }>(`/v1/agents/${cid}/wipe`, opts),
   retireAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/retire`, {}),
+  /** Refused (409) while the agent works or has queued work. */
+  sleepAgent: (cid: number) => post<{ ok: boolean }>(`/v1/agents/${cid}/sleep`),
+  wakeAgent: (cid: number) => post<{ ok: boolean }>(`/v1/agents/${cid}/wake`),
+  /** The agent's VM checkpoints, newest first. */
+  vmCheckpoints: (cid: number) => get<VmCheckpointList>(`/v1/agents/${cid}/vm-checkpoints`),
+  takeVmCheckpoint: (cid: number, label?: string) => post<VmCheckpoint>(`/v1/agents/${cid}/vm-checkpoints`, label ? { label } : {}),
+  restoreVmCheckpoint: (cid: number, name: string) => post<VmRestoreResult>(`/v1/agents/${cid}/vm-checkpoints/${encodeURIComponent(name)}/restore`),
+  deleteVmCheckpoint: (cid: number, name: string) => del<{ ok: boolean }>(`/v1/agents/${cid}/vm-checkpoints/${encodeURIComponent(name)}`),
+  /** Forks the agent n times (1..8) from a fresh checkpoint of its VM. */
+  forkAgent: (cid: number, n: number) => post<ForkResult>(`/v1/agents/${cid}/fork`, { n }),
+  /** Moves the agent's VM to another node. 409 while it works or when the target is draining or revoked; it can take seconds. */
+  moveAgent: (cid: number, node: string) => post<MoveResult>(`/v1/agents/${cid}/move`, { node }),
   roles: () => get<RoleView[]>('/v1/roles'),
   saveRole: (def: RoleDef) => post<RoleDef>('/v1/roles', def),
   deleteRole: (id: string) => del<unknown>(`/v1/roles/${id}`),
@@ -755,6 +793,9 @@ export const api = {
   createStationVm: (body: StationVmBody) => post<StationVm>('/v1/stations/vms', body),
   /** Removes the VM from its node; the station it enrolled as is revoked. */
   deleteStationVm: (id: string) => del<StationVm>(`/v1/stations/vms/${seg(id)}`),
+  /** Keeps the plaza VM's memory and stops it; it wakes in a fraction of a second. */
+  sleepStationVm: (id: string) => post<{ state: string }>(`/v1/stations/vms/${seg(id)}/sleep`, {}),
+  wakeStationVm: (id: string) => post<{ state: string }>(`/v1/stations/vms/${seg(id)}/wake`, {}),
   /** A workstation's latest picture as an object URL (the caller revokes it), or null when it cannot be had. */
   stationThumbnailUrl: async (id: string): Promise<string | null> => {
     try {
@@ -1176,6 +1217,80 @@ export interface McpPreset {
   id: string; name: string; description: string; transport: 'stdio' | 'http'; image: string | null; command: string[];
   url: string | null; env: McpSpec[]; headers: McpSpec[]; docs: string; status: string; note: string;
 }
+
+/** `POST /v1/agents/{cid}/move`: the node the VM left and the one it reached; `bytes` moved and `ms` taken. */
+export interface MoveResult { ok: boolean; from: string; to: string; bytes: number; ms: number }
+
+// ---- Egress credentials and the E2B API (owner screens) ---------------------
+
+/**
+ * A rule the hub uses to add a header to the agent's HTTPS requests to `host`. The secret is a vault secret's name
+ * (bound to the consumer `egress`); the header value is `format` with `${SECRET}` replaced by the secret. The VM
+ * never sees the secret. Empty `roles` or `methods` mean every role or every method.
+ */
+export interface EgressRule {
+  id: string; roles: string[]; host: string; port: number; methods: string[]; path_prefix: string;
+  header: string; format: string; secret: string; enabled: boolean; created_ms: number;
+}
+/** What a new rule or a change to one carries. The server fills the defaults a body leaves out. */
+export type EgressRuleBody = Omit<EgressRule, 'id' | 'created_ms'>;
+
+export interface E2bKey { id: string; label: string; created_ms: number }
+/** A new key: `key` is shown once, in this answer only. */
+export interface E2bKeyCreated extends E2bKey { key: string }
+/**
+ * A sandbox on the hub's E2B gateway. `cid` and `run` say where it runs (the agent's VM, when it is one); the
+ * timestamps are RFC 3339 strings.
+ */
+export interface E2bSandbox {
+  sandboxID: string; templateID: string; state: 'running' | 'paused'; startedAt: string; endAt: string;
+  cpuCount: number; memoryMB: number; metadata: Record<string, string>; cid: number | null; run: string | null;
+  allowInternetAccess: boolean | null; autoPause: boolean;
+}
+
+/** The egress credential rules (`/v1/egress/inject`). `rules` returns the list; a failure throws an `ApiError`. */
+export const egressApi = {
+  rules: () => get<{ rules: EgressRule[] }>('/v1/egress/inject').then((r) => r.rules),
+  addRule: (rule: EgressRuleBody) => post<EgressRule>('/v1/egress/inject', rule),
+  patchRule: (id: string, change: Partial<EgressRuleBody>) => patch<EgressRule>(`/v1/egress/inject/${seg(id)}`, change),
+  deleteRule: (id: string) => del<{ ok: boolean }>(`/v1/egress/inject/${seg(id)}`),
+};
+
+/** The owner's E2B API: its keys (`/v1/e2b/keys`) and the sandboxes the gateway runs (`/v1/e2b/sandboxes`). */
+export type BuildStatus = 'waiting' | 'building' | 'ready' | 'error';
+
+/** One build of a template. The hub lists a template's builds newest first; `reason` is set when a build failed. */
+export interface E2bBuild {
+  buildID: string; status: BuildStatus; createdAt: string; finishedAt: string | null; cpuCount: number; memoryMB: number;
+  tags: string[]; reason: { message: string; step: string } | null;
+}
+/** A template on the hub's E2B gateway, with its builds (newest first). The timestamps are RFC 3339 strings. */
+export interface E2bTemplate { templateID: string; name: string; createdAt: string; updatedAt: string; builds: E2bBuild[] }
+
+export const e2bApi = {
+  keys: () => get<{ keys: E2bKey[] }>('/v1/e2b/keys').then((r) => r.keys),
+  createKey: (label: string) => post<E2bKeyCreated>('/v1/e2b/keys', { label }),
+  revokeKey: (id: string) => del<{ ok: boolean }>(`/v1/e2b/keys/${seg(id)}`),
+  sandboxes: () => get<{ sandboxes: E2bSandbox[] }>('/v1/e2b/sandboxes').then((r) => r.sandboxes),
+  /** Ends the sandbox (204). */
+  endSandbox: (id: string) => del<null>(`/v1/e2b/sandboxes/${seg(id)}`),
+  /** Pauses the sandbox (204). */
+  pauseSandbox: (id: string) => post<null>(`/v1/e2b/sandboxes/${seg(id)}/pause`, {}),
+  /** Resumes a paused sandbox (200 or 201). */
+  resumeSandbox: (id: string) => post<unknown>(`/v1/e2b/sandboxes/${seg(id)}/resume`, {}),
+  /** Every template built through the E2B API, newest change first. */
+  templates: () => get<{ templates: E2bTemplate[] }>('/v1/e2b/templates').then((r) => r.templates),
+  /** Deletes a template and its builds' snapshots (204; 409 while a build runs or starts from it). */
+  deleteTemplate: (id: string) => del<null>(`/v1/e2b/templates/${seg(id)}`),
+};
+
+/** A shared read-only data volume on the hub machine (`/v1/volumes`): agents of a role mount it at /data/<name>. */
+export interface DataVolume { name: string; size_bytes: number; created_ms: number; source: string; in_use: number[] }
+export const volumesApi = {
+  list: () => get<DataVolume[]>('/v1/volumes'),
+  create: (name: string, source: string) => post<DataVolume>('/v1/volumes', { name, source }),
+  remove: (name: string) => del<{ removed: boolean }>(`/v1/volumes/${seg(name)}`),
+};
 
 export const mcpApi = {
   catalog: () => get<McpPreset[]>('/v1/mcp/catalog'),

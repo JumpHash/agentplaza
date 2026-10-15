@@ -1,6 +1,8 @@
 //! `agentplaza stations vms`: the workstation VMs the plaza makes on its nodes (docs/design/workstations.md, section 10;
-//! the hub's side is `crates/apid/src/stations/vms.rs`). `create` makes one on a node and prints the station it will
-//! become; `delete` removes it, and the station it enrolled as is revoked.
+//! the hub's side is `crates/apid/src/stations/vms.rs`). Routes: `GET /v1/stations/vms` (list), `POST /v1/stations/vms`
+//! (create), `DELETE /v1/stations/vms/{id}` (delete), `POST /v1/stations/vms/{id}/sleep` and
+//! `POST /v1/stations/vms/{id}/wake`. `create` makes one on a node and prints the station it will become; `delete`
+//! removes it, and the station it enrolled as is revoked; `sleep` and `wake` act on a plaza VM only (a QEMU VM answers 409).
 
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
@@ -23,6 +25,16 @@ pub enum VmsCmd {
         /// Remove without asking.
         #[arg(long)]
         yes: bool,
+    },
+    /// Put a plaza workstation VM to sleep: its memory is kept and it wakes in a fraction of a second.
+    Sleep {
+        /// The VM's id (from `agentplaza stations vms list`).
+        id: String,
+    },
+    /// Wake a sleeping workstation VM from its memory.
+    Wake {
+        /// The VM's id (from `agentplaza stations vms list`).
+        id: String,
     },
 }
 
@@ -167,7 +179,21 @@ pub fn run(ctx: &Ctx, action: Option<VmsCmd>) -> Result<(), String> {
                 )
             });
         }
+        VmsCmd::Sleep { id } => power(ctx, &id, "sleep")?,
+        VmsCmd::Wake { id } => power(ctx, &id, "wake")?,
     }
+    Ok(())
+}
+
+/// `POST /v1/stations/vms/{id}/sleep` or `.../wake`: the answer is the VM's view, printed as `<id>: <state>`.
+fn power(ctx: &Ctx, id: &str, action: &str) -> Result<(), String> {
+    let view = ctx.client.post(
+        &format!("/v1/stations/vms/{}/{action}", seg(id)),
+        &json!({}),
+    )?;
+    ctx.out(&view, |v| {
+        println!("{}: {}", ctx::text(v, "id"), ctx::text(v, "state"));
+    });
     Ok(())
 }
 

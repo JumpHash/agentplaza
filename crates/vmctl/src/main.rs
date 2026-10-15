@@ -20,6 +20,8 @@
 //! stopped by the host — because it hit `--timeout-secs` or because a sibling
 //! failed to boot — makes the exit status 1.
 
+mod bench;
+
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -90,6 +92,8 @@ usage: vmctl --kernel PATH --cmdline STR [--initrd PATH] [-n N] [--vcpus V]
   --console          forward this tool's stdin to VM 0's serial console
   -h, --help         print this help
 
+`vmctl bench --help` describes the boot, snapshot, restore and density benchmark.
+
 The VMM appends `pci=off loglevel=7` to --cmdline unless the command line
 already sets those options itself (this port has no PCI device, and the
 guest's only console is the serial capture this tool prints).
@@ -120,6 +124,9 @@ no way to reach the host at all, which is the point of the option.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("bench") {
+        return bench::run(&args[1..]);
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("vmctl {}", apz_os::version());
         return ExitCode::SUCCESS;
@@ -295,6 +302,8 @@ fn run(config: Config) -> ExitCode {
         // Filled in per VM below, from the run's image copies.
         workspace: None,
         balloon: None,
+        restore: None,
+        volumes: Vec::new(),
     };
     // Every VM's vsock device carries its own CID and its own host Unix socket
     // path: VM `id` gets the base CID plus its id, and the muxer binds

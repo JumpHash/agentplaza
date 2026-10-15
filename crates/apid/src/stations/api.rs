@@ -354,7 +354,9 @@ fn join_route(app: &App, req: &Request) -> Response {
         Err(refusal) => return refusal,
     };
     // A workstation is another machine. A request from this host (loopback, or a peer nobody can name) is refused
-    // before the code is looked at, so a join from the hub's own machine never spends one.
+    // before the code is looked at, so a join from the hub's own machine never spends one. A workstation VM on the
+    // hub's own machine (node n0) is not this host: the local node's relay announces its connections
+    // (`apz_http::RELAY_PREFACE`), so they arrive as from elsewhere, and with no loopback trust.
     if req.peer.is_none_or(|peer| peer.is_loopback()) {
         return Response::error(
             403,

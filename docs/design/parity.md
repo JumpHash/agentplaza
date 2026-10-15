@@ -109,6 +109,26 @@ column is the CLI or TUI, which the owner's 1:1 rule does not cover, so its gaps
 | Rich content | Chips, hover cards, inline images, video and HTML cards, the unfurl | `apps/web/src/ui/rich.ts`, `ui/embeds.ts` | `apps/desktop/src/console/rich.rs` | `apps/cli/src/rich.rs` (short labels, terminal hyperlinks, plain text when piped); `agentplaza unfurl` | done (`3f00303`, `2212f74`, `7592dce`, `0f5c0e4`, `7b0cad8`); the desktop takes the plaza git host from the overview (`rich.rs`), so plaza git references are chips there too |
 | Board (owner actions) | Post with `@name` and `@all`, pause and resume deliveries, export a thread or the board | `apps/web/src/board/owner.ts` | `apps/desktop/src/console/screens/board.rs` | `agentplaza board post`, `comment`, `pause`, `export` | done (`ddc4951`) |
 
+## Fifth pass (2026-10-15): VM snapshots, egress credentials and E2B
+
+The owner surfaces the snapshot, sleep, egress credential and E2B work added. "Done" means the surface has the
+feature, in the file or command named.
+
+| Surface | Web | Desktop | CLI | State |
+|---|---|---|---|---|
+| Sleep and wake an agent | `apps/web/src/views/agent-detail.ts` (Sleep, Wake) | `apps/desktop/src/console/screens/agent.rs` (`Act::Sleep`, `Act::Wake`) | `agentplaza agents sleep`, `wake` (`apps/cli/src/cmd/agents/lifecycle.rs`) | Done in all three |
+| Machine checkpoints: list, take, restore, delete | `agent-detail.ts` (Machine checkpoints) | `agent.rs` (the checkpoints card) | `agentplaza agents checkpoints`, `checkpoint`, `rollback`, `checkpoint-delete` | Done in all three |
+| Fork an agent | `agent-detail.ts` (Fork…) | `agent.rs` (Fork) | `agentplaza agents fork` | Done in all three |
+| Move an agent to another node | `agent-detail.ts` (Move…) | `agent.rs` (Move…) | `agentplaza agents move` | Done in all three |
+| Drain and undrain a node | `apps/web/src/views/nodes.ts` | `apps/desktop/src/console/screens/nodes.rs` | `agentplaza nodes drain`, `undrain` | Done in all three |
+| Sleep and checkpoint settings: `idle_sleep_min`, `sleep_never_roles`, `vm_auto_checkpoints` | `apps/web/src/views/models-policy.ts` | `apps/desktop/src/console/screens/models.rs` (Limits) | `agentplaza models policy set --idle-sleep-min --sleep-never-roles --vm-auto-checkpoints` | Done in all three |
+| Egress credential rules: list, create, enable, delete | `apps/web/src/views/egress-credentials.ts` | `apps/desktop/src/console/screens/egress.rs` | `agentplaza egress list`, `add`, `enable`, `disable`, `rm` | Done in all three |
+| E2B keys, sandboxes and templates | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume`, `e2b templates`, `delete-template` | Done in all three |
+| Warm templates: list and remove | none | none | `agentplaza templates list`, `rm` | CLI and API (`GET/DELETE /v1/templates`): templates build and rebuild themselves; listing them is a diagnostic |
+| Data volumes: list, create, remove | `apps/web/src/views/volumes.ts` | `apps/desktop/src/console/screens/volumes.rs` | `agentplaza volumes ls`, `create`, `rm` | Done in all three (`GET/POST /v1/volumes`, `DELETE /v1/volumes/{name}`) |
+| Per-role volumes (`role_volumes`) | `volumes.ts` (Roles) | `volumes.rs` (Roles) | `agentplaza volumes roles`, `mount`, `unmount` | Done in all three |
+| Sleep and wake a workstation VM | apps/web/src/views/workstations-vms.ts (Sleep, Wake) | apps/desktop/src/console/screens/workstations_vms.rs (Sleep, Wake) | agentplaza stations vms sleep, wake | Done in all three (plaza VMs) |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

@@ -18,7 +18,9 @@
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use kvm_bindings::kvm_userspace_memory_region;
 use kvm_ioctls::VmFd;
@@ -35,7 +37,9 @@ use crate::vstate::bus::{Bus, lock};
 use crate::vstate::kvm::Kvm;
 use crate::vstate::memory::{GuestMemoryMmap, GuestRegionMmap, GuestRegionMmapExt, MemoryError};
 use crate::vstate::resources::ResourceAllocator;
-use crate::vstate::vcpu::{StartGate, StartThreadedError, Vcpu, VcpuError, VcpuEvent, VcpuHandle};
+use crate::vstate::vcpu::{
+    StartGate, StartThreadedError, Vcpu, VcpuError, VcpuEvent, VcpuHandle, VcpuResponse,
+};
 
 /// Error type for [`KvmVm::start_vcpus`].
 #[derive(Debug, thiserror::Error)]
@@ -126,7 +130,22 @@ pub enum VmError {
     /// MemoryError error: {0}
     #[error("MemoryError error: {0}")]
     MemoryError(#[from] MemoryError),
+    /// vCPU {vcpu} failed to {action}: {reason}
+    #[error("vCPU {vcpu} failed to {action}: {reason}")]
+    VcpuControl {
+        /// Index of the vCPU, in the order the VM started them.
+        vcpu: usize,
+        /// The request that failed, for example "pause".
+        action: &'static str,
+        /// Why: a timeout, an exited thread, a refusal or a failure reported by the vCPU.
+        reason: String,
+    },
 }
+
+/// How long a vCPU may take to answer a pause, resume or save request. A
+/// vCPU answers at its next `KVM_RUN` exit (the kick), or at once when it is
+/// already paused, so this only elapses when a vCPU is stuck.
+const VCPU_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Contains KvmVm functions that are usable across CPU architectures
 impl KvmVm {
@@ -299,6 +318,90 @@ impl KvmVm {
         handles.clear();
     }
 
+    /// Pauses every vCPU: each leaves `KVM_RUN` and blocks until it is resumed
+    /// or the VM finishes. Fails, naming the vCPU, if one does not answer in
+    /// time. On failure the vCPUs that did pause stay paused; the caller
+    /// resumes or finishes them.
+    pub fn pause_vcpus(&self) -> Result<(), VmError> {
+        for (vcpu, response) in self
+            .control_vcpus(VcpuEvent::Pause, "pause")?
+            .into_iter()
+            .enumerate()
+        {
+            match response {
+                VcpuResponse::Paused => {}
+                other => return Err(vcpu_failure(vcpu, "pause", other)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Resumes every paused vCPU. Fails, naming the vCPU, if one does not
+    /// answer in time.
+    pub fn resume_vcpus(&self) -> Result<(), VmError> {
+        for (vcpu, response) in self
+            .control_vcpus(VcpuEvent::Resume, "resume")?
+            .into_iter()
+            .enumerate()
+        {
+            match response {
+                VcpuResponse::Resumed => {}
+                other => return Err(vcpu_failure(vcpu, "resume", other)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Saves the state of every vCPU, in index order. The vCPUs must be paused:
+    /// a running vCPU refuses, and that refusal is the error returned.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    pub fn save_vcpu_states(&self) -> Result<Vec<crate::vstate::snapshot::VcpuState>, VmError> {
+        self.control_vcpus(VcpuEvent::SaveState, "save state")?
+            .into_iter()
+            .enumerate()
+            .map(|(vcpu, response)| match response {
+                VcpuResponse::SavedState(state) => Ok(*state),
+                other => Err(vcpu_failure(vcpu, "save state", other)),
+            })
+            .collect()
+    }
+
+    /// Sends `event` to every vCPU, then waits for each one's answer, in index
+    /// order.
+    ///
+    /// Every vCPU gets the request before any answer is awaited, so they act
+    /// at about the same time. The handles lock is held for the whole exchange,
+    /// so a concurrent shutdown cannot interleave with it.
+    fn control_vcpus(
+        &self,
+        event: VcpuEvent,
+        action: &'static str,
+    ) -> Result<Vec<VcpuResponse>, VmError> {
+        let mut handles = self.vcpus_handles();
+        // An answer that came after an earlier request timed out would otherwise be read as this
+        // request's answer: drop whatever is already waiting before asking again.
+        for handle in handles.iter() {
+            while handle.response_receiver().try_recv().is_ok() {}
+        }
+        for (vcpu, handle) in handles.iter_mut().enumerate() {
+            handle
+                .send_event(event.clone())
+                .map_err(|err| vcpu_error(vcpu, action, err.to_string()))?;
+        }
+        handles
+            .iter()
+            .enumerate()
+            .map(|(vcpu, handle)| {
+                await_response(
+                    vcpu,
+                    action,
+                    handle.response_receiver(),
+                    VCPU_RESPONSE_TIMEOUT,
+                )
+            })
+            .collect()
+    }
+
     /// Reserves the next `slot_cnt` contiguous kvm slot ids and returns the first one
     pub fn next_kvm_slot(&self, slot_cnt: u32) -> Option<u32> {
         let next = self
@@ -380,5 +483,101 @@ impl KvmVm {
     pub fn register_irq(&self, fd: &EventFd, gsi: u32) -> Result<(), errno::Error> {
         self.common.fd.register_irqfd(fd, gsi)?;
         Ok(())
+    }
+}
+
+fn vcpu_error(vcpu: usize, action: &'static str, reason: String) -> VmError {
+    VmError::VcpuControl {
+        vcpu,
+        action,
+        reason,
+    }
+}
+
+/// Waits for one vCPU's answer. A vCPU whose thread has exited disconnects its
+/// response channel, so that is reported as such rather than as a timeout.
+fn await_response(
+    vcpu: usize,
+    action: &'static str,
+    responses: &Receiver<VcpuResponse>,
+    timeout: Duration,
+) -> Result<VcpuResponse, VmError> {
+    responses.recv_timeout(timeout).map_err(|err| match err {
+        RecvTimeoutError::Timeout => {
+            vcpu_error(vcpu, action, format!("did not answer within {timeout:?}"))
+        }
+        RecvTimeoutError::Disconnected => vcpu_error(vcpu, action, "its thread exited".to_string()),
+    })
+}
+
+/// The error for a vCPU that answered a request with something other than its
+/// success answer: the vCPU's own reason when it gave one.
+fn vcpu_failure(vcpu: usize, action: &'static str, response: VcpuResponse) -> VmError {
+    let reason = match response {
+        VcpuResponse::Error(reason) | VcpuResponse::NotAllowed(reason) => reason,
+        other => format!("answered with an unexpected response: {other:?}"),
+    };
+    vcpu_error(vcpu, action, reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+
+    use super::*;
+
+    #[test]
+    fn a_vcpu_answer_is_read_from_its_own_channel() {
+        let (sender, receiver) = channel();
+        sender.send(VcpuResponse::Paused).unwrap();
+        let response = await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap();
+        assert!(matches!(response, VcpuResponse::Paused), "got {response:?}");
+    }
+
+    #[test]
+    fn a_silent_vcpu_times_out_and_is_named() {
+        // The sender is kept alive so the wait ends by timeout, not disconnect.
+        let (_sender, receiver) = channel::<VcpuResponse>();
+        let err = await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("vCPU 2") && msg.contains("pause"), "{msg}");
+        assert!(msg.contains("did not answer"), "{msg}");
+    }
+
+    #[test]
+    fn a_vcpu_whose_thread_exited_is_named_and_not_a_timeout() {
+        let (sender, receiver) = channel::<VcpuResponse>();
+        drop(sender);
+        let err = await_response(1, "save state", &receiver, Duration::from_secs(5)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("vCPU 1") && msg.contains("exited"), "{msg}");
+    }
+
+    #[test]
+    fn a_refusal_or_failure_from_a_vcpu_carries_its_reason() {
+        let refused = vcpu_failure(
+            0,
+            "save state",
+            VcpuResponse::NotAllowed("save/restore unavailable while running".into()),
+        );
+        let msg = refused.to_string();
+        assert!(
+            msg.contains("vCPU 0") && msg.contains("while running"),
+            "{msg}"
+        );
+
+        let failed = vcpu_failure(3, "save state", VcpuResponse::Error("boom".into()));
+        let msg = failed.to_string();
+        assert!(msg.contains("vCPU 3") && msg.contains("boom"), "{msg}");
+    }
+
+    #[test]
+    fn an_answer_of_the_wrong_kind_is_an_error_naming_the_vcpu() {
+        let err = vcpu_failure(1, "pause", VcpuResponse::Resumed);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("vCPU 1") && msg.contains("unexpected"),
+            "{msg}"
+        );
     }
 }

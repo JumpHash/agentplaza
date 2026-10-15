@@ -455,6 +455,7 @@ fn status_name(status: Status) -> &'static str {
         Status::Offline => "offline",
         Status::Idle => "idle",
         Status::Working => "working",
+        Status::Asleep => "asleep",
     }
 }
 
@@ -555,16 +556,16 @@ fn with_workspace(
     let host = Live(app);
     match parse_id(id)? {
         WorkspaceId::Agent(cid) => {
-            if !app
-                .agents
-                .get(cid)
-                .is_some_and(|agent| agent.run.is_some() && agent.vm.is_some())
-            {
+            // An agent spawned since the last reconcile is looked up on its node (`place`), so its
+            // workspace opens right away.
+            if crate::lifecycle::place(app, cid).is_err() {
                 return Err(Response::error(
                     404,
                     &format!("no workspace {}", workspace_of(cid)),
                 ));
             }
+            // Every agent workspace route comes through here: a sleeping agent wakes before its workspace is read.
+            crate::sleep::awake_or_503(app, cid)?;
             on_agent(&host, cid)
         }
         WorkspaceId::Repo { name, git_ref } => {

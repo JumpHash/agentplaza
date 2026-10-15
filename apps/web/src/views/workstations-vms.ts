@@ -80,7 +80,19 @@ export function vmsSection(): VmsSection {
           return badge(chip.label, chip.tone, true);
         },
       },
-      { label: '', cell: (vm) => button('Delete', () => confirmRemove(vm), { kind: 'danger', size: 'sm' }) },
+      {
+        label: '',
+        cell: (vm) =>
+          h(
+            'div.ws-buttons',
+            null,
+            vm.backend === 'plaza'
+              ? button('Sleep', () => void sleep(vm), { size: 'sm', title: 'Keep its memory and stop it; it wakes in a fraction of a second' })
+              : null,
+            vm.backend === 'plaza' ? button('Wake', () => void wake(vm), { size: 'sm' }) : null,
+            button('Delete', () => confirmRemove(vm), { kind: 'danger', size: 'sm' }),
+          ),
+      },
     ];
     replace(body, h('div.ws-scroll', null, table(columns, sortVms(vms))));
   };
@@ -117,6 +129,16 @@ export function vmsSection(): VmsSection {
 
   const remove = async (vm: StationVm): Promise<void> => {
     await attempt(() => api.deleteStationVm(vm.id), `${vm.name} deleted`);
+    void refresh();
+  };
+
+  const sleep = async (vm: StationVm): Promise<void> => {
+    await attempt(() => api.sleepStationVm(vm.id), `${vm.name} is asleep`);
+    void refresh();
+  };
+
+  const wake = async (vm: StationVm): Promise<void> => {
+    await attempt(() => api.wakeStationVm(vm.id), `${vm.name} woke`);
     void refresh();
   };
 
