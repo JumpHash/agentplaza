@@ -220,6 +220,13 @@ pub fn spawn_relays(app: Arc<App>) {
     std::thread::spawn(move || {
         let target = Target {
             base: format!("http://127.0.0.1:{}", app.noded.port),
+            headers: app
+                .noded
+                .token
+                .header()
+                .map(|(name, value)| (name.to_string(), value))
+                .into_iter()
+                .collect(),
             ..Default::default()
         };
         let mut backoff = Duration::from_secs(1);
