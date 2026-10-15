@@ -15,7 +15,7 @@
 // `SyncFileEngine`: seek plus a volatile transfer straight between the file and
 // guest memory, so nothing is copied through an intermediate buffer and nothing
 // is allocated per request), no rate limiter, no metrics, no snapshot support,
-// no multi-queue, no read-only drives, and no DISCARD (its `fallocate` /
+// no multi-queue, and no DISCARD (its `fallocate` /
 // `BLKDISCARD` ioctls are `unsafe` and a writable workspace does not need them),
 // and no `CacheType` (the device always fsyncs on a flush request: the
 // workspace is where an agent's work lives, so durability wins over the
@@ -47,14 +47,19 @@ const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 const VIRTIO_RING_F_EVENT_IDX: u64 = 1 << 29;
 /// `VIRTIO_BLK_F_FLUSH` (feature bit 9): the device honours a cache flush.
 const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
+/// `VIRTIO_BLK_F_RO` (feature bit 5): the volume is read-only. Offered only by
+/// a device opened with [`VirtioBlock::new_read_only`]; the device refuses every
+/// write-type request on such a volume.
+const VIRTIO_BLK_F_RO: u64 = 1 << 5;
 
-/// The features this device offers the driver: the modern-transport feature,
-/// notification suppression and the cache flush. It deliberately does **not**
-/// offer `VIRTIO_BLK_F_BLK_SIZE`/`TOPOLOGY`/`SEG_MAX`/`RO`/`DISCARD`/
+/// The features a writable volume's device offers the driver: the modern-transport
+/// feature, notification suppression and the cache flush. It deliberately does
+/// **not** offer `VIRTIO_BLK_F_BLK_SIZE`/`TOPOLOGY`/`SEG_MAX`/`DISCARD`/
 /// `WRITE_ZEROES`/`MQ`: every one of them would make the driver read a
 /// configuration field this device does not need to serve (512 bytes is the
 /// protocol's default logical block size), and a device that advertises support
-/// it does not implement is a bug, not a feature.
+/// it does not implement is a bug, not a feature. (`RO` is offered only by a
+/// read-only volume, on top of these.)
 pub(crate) const AVAIL_FEATURES: u64 =
     VIRTIO_F_VERSION_1 | VIRTIO_RING_F_EVENT_IDX | VIRTIO_BLK_F_FLUSH;
 
@@ -147,13 +152,17 @@ impl ConfigSpace {
 /// The device's backing file and the properties the driver is told about.
 #[derive(Debug)]
 pub struct DiskProperties {
-    /// The volume, opened read-write.
+    /// The volume, opened read-write (or read-only, for a shared data volume).
     file: File,
     /// The volume's capacity, in 512-byte sectors.
     nsectors: u64,
+    /// Whether the volume was opened read-only: every write-type request is
+    /// refused, and the device offers `VIRTIO_BLK_F_RO`.
+    read_only: bool,
     /// What a `VIRTIO_BLK_T_GET_ID` request returns.
     ///
-    /// Always zeroes: upstream builds it from the file's metadata (the backing
+    /// Zeroes for a writable volume, or the id a read-only volume was given
+    /// (see [`VirtioBlock::new_read_only`]). Otherwise upstream builds it from the file's metadata (the backing
     /// device's id, the filesystem's UUID), which is host information a guest
     /// has no business reading — and in this port the guest is untrusted by
     /// design (plaza invariant 2: nothing about the host or the node reaches a
@@ -168,9 +177,22 @@ impl DiskProperties {
     /// telling the VMM where the volume is, and a missing image fails the boot
     /// with the path in the error rather than booting a guest with no volume.
     pub fn new(path: &Path) -> Result<Self, VirtioBlockError> {
+        Self::open(path, false, [0; VIRTIO_BLK_ID_BYTES as usize])
+    }
+
+    /// Opens `path` as a volume, writable or read-only, reporting `image_id` to
+    /// a `GET_ID` request.
+    ///
+    /// A read-only volume is opened with `read(true)` alone, so the host file
+    /// cannot be written through this device even if a request reached it.
+    fn open(
+        path: &Path,
+        read_only: bool,
+        image_id: [u8; VIRTIO_BLK_ID_BYTES as usize],
+    ) -> Result<Self, VirtioBlockError> {
         let file = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(!read_only)
             .open(path)
             .map_err(|err| VirtioBlockError::BackingFile(err, path.display().to_string()))?;
         let size = file
@@ -182,7 +204,8 @@ impl DiskProperties {
             // A size that is not a whole number of sectors is truncated, as a
             // real block device's is.
             nsectors: size >> SECTOR_SHIFT,
-            image_id: [0; VIRTIO_BLK_ID_BYTES as usize],
+            read_only,
+            image_id,
         })
     }
 
@@ -191,10 +214,14 @@ impl DiskProperties {
         self.nsectors
     }
 
-    /// The device id a `GET_ID` request returns (always zeroes; see
-    /// [`DiskProperties::image_id`]).
+    /// The device id a `GET_ID` request returns (see [`DiskProperties::image_id`]).
     pub(super) fn image_id(&self) -> &[u8; VIRTIO_BLK_ID_BYTES as usize] {
         &self.image_id
+    }
+
+    /// Whether the volume was opened read-only.
+    pub(super) fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Reads `count` bytes at `offset` into the guest's buffer at `addr`.
@@ -273,6 +300,15 @@ pub struct VirtioBlock {
     irq: Option<EventFd>,
 }
 
+/// The device id a read-only volume reports: `id`'s bytes, cut to
+/// [`VIRTIO_BLK_ID_BYTES`] and zero-padded to that length.
+fn device_id(id: &str) -> [u8; VIRTIO_BLK_ID_BYTES as usize] {
+    let mut image_id = [0u8; VIRTIO_BLK_ID_BYTES as usize];
+    let len = id.len().min(image_id.len());
+    image_id[..len].copy_from_slice(&id.as_bytes()[..len]);
+    image_id
+}
+
 impl VirtioBlock {
     /// Opens `path` as the guest's writable workspace volume.
     ///
@@ -281,16 +317,37 @@ impl VirtioBlock {
     /// checked against the file's size before it is served.
     pub fn new(path: &Path) -> Result<VirtioBlock, VirtioBlockError> {
         let disk = DiskProperties::new(path)?;
+        Ok(Self::from_disk(disk, AVAIL_FEATURES))
+    }
+
+    /// Opens `path` as a read-only volume, such as a data volume shared between
+    /// VMs.
+    ///
+    /// The file is opened `O_RDONLY` and the device offers `VIRTIO_BLK_F_RO`.
+    /// Every write-type request is answered `VIRTIO_BLK_S_IOERR` without touching
+    /// the file; `GET_ID` returns `id`, cut to 20 bytes and zero-padded.
+    pub fn new_read_only(path: &Path, id: &str) -> Result<VirtioBlock, VirtioBlockError> {
+        let disk = DiskProperties::open(path, true, device_id(id))?;
+        Ok(Self::from_disk(disk, AVAIL_FEATURES | VIRTIO_BLK_F_RO))
+    }
+
+    /// Whether the volume is read-only (opened with [`VirtioBlock::new_read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.disk.is_read_only()
+    }
+
+    /// Builds the device over an opened volume, offering `avail_features`.
+    fn from_disk(disk: DiskProperties, avail_features: u64) -> VirtioBlock {
         let config_space = ConfigSpace::new(disk.nsectors());
-        Ok(VirtioBlock {
+        VirtioBlock {
             disk,
             config_space,
-            avail_features: AVAIL_FEATURES,
+            avail_features,
             acked_features: 0,
             queue: Queue::new(BLOCK_QUEUE_SIZE),
             mem: None,
             irq: None,
-        })
+        }
     }
 
     /// The features the device offers the driver.
@@ -458,7 +515,7 @@ mod tests {
     use super::super::request::{
         RequestHeader, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP,
         VIRTIO_BLK_T_DISCARD, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN,
-        VIRTIO_BLK_T_OUT,
+        VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
     };
     use super::*;
     use crate::devices::virtio::block::test_utils::RequestDescriptorChain;
@@ -775,5 +832,119 @@ mod tests {
         block
             .process_queue()
             .expect("an inactive device ignores the queue");
+    }
+
+    /// A read-only volume holding `contents`, served under the device id `id`.
+    fn read_only_volume(contents: &[u8], id: &str) -> (TempFile, VirtioBlock) {
+        let (file, _writable) = volume(contents);
+        let device = VirtioBlock::new_read_only(file.as_path(), id)
+            .expect("a read-only block device over the volume");
+        (file, device)
+    }
+
+    /// Serves one `GET_ID` request on `block` and returns the id the driver read.
+    fn get_id_of(block: &mut VirtioBlock) -> Vec<u8> {
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queue = vq.create_queue();
+        activate(block, &mem);
+
+        let chain = RequestDescriptorChain::new(&vq);
+        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_GET_ID, 0));
+        chain.set_data_len(VIRTIO_BLK_ID_BYTES);
+        chain.write_data(&[0xaa; VIRTIO_BLK_ID_BYTES as usize]);
+        chain.publish();
+
+        block.process_queue().expect("a well-formed ring drains");
+        assert_eq!(chain.status(), VIRTIO_BLK_S_OK);
+        chain.read_data(VIRTIO_BLK_ID_BYTES as usize)
+    }
+
+    /// A read-only device offers `VIRTIO_BLK_F_RO` on top of the writable
+    /// device's features and reports itself read-only; a writable device offers
+    /// no such bit.
+    #[test]
+    fn a_read_only_device_offers_the_read_only_feature() {
+        let (_file, block) = read_only_volume(&[0u8; 4096], "");
+        assert!(block.is_read_only());
+        assert_eq!(block.avail_features(), AVAIL_FEATURES | VIRTIO_BLK_F_RO);
+        assert_ne!(block.avail_features() & (1 << 5), 0, "VIRTIO_BLK_F_RO is bit 5");
+
+        let (_file, writable) = volume(&[0u8; 4096]);
+        assert!(!writable.is_read_only());
+        assert_eq!(writable.avail_features() & VIRTIO_BLK_F_RO, 0);
+    }
+
+    /// A write-type request on a read-only device (a write, a discard or a
+    /// write-zeroes) completes `VIRTIO_BLK_S_IOERR` and never reaches the file:
+    /// the image's bytes are unchanged afterwards.
+    #[test]
+    fn a_write_request_on_a_read_only_device_fails_and_leaves_the_image() {
+        let original: Vec<u8> = (0..4096u32).map(|byte| (byte % 241) as u8).collect();
+        for request_type in [
+            VIRTIO_BLK_T_OUT,
+            VIRTIO_BLK_T_DISCARD,
+            VIRTIO_BLK_T_WRITE_ZEROES,
+        ] {
+            let (file, mut block) = read_only_volume(&original, "");
+            let mem = default_mem();
+            let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+            block.queue = vq.create_queue();
+            activate(&mut block, &mem);
+
+            // A discard's data is a well-formed range (sector 0, one sector, no
+            // flags); the other write-type requests carry 512 bytes of data.
+            let data: Vec<u8> = if request_type == VIRTIO_BLK_T_DISCARD {
+                let mut range = [0u8; 16];
+                range[8..12].copy_from_slice(&1u32.to_le_bytes());
+                range.to_vec()
+            } else {
+                vec![0xee; 512]
+            };
+            let chain = RequestDescriptorChain::new(&vq);
+            chain.set_header(RequestHeader::new(request_type, 0));
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+            chain.set_data_len(data.len() as u32);
+            chain.write_data(&data);
+            chain.publish();
+
+            block.process_queue().expect("a well-formed ring drains");
+            assert_eq!(
+                chain.status(),
+                VIRTIO_BLK_S_IOERR,
+                "request type {request_type}"
+            );
+            assert_eq!(
+                vq.used_elem(0),
+                (0, 1),
+                "request type {request_type}: only the status byte is written"
+            );
+
+            let mut stored = vec![0u8; original.len()];
+            file.as_file()
+                .read_exact_at(&mut stored, 0)
+                .expect("a read of the volume");
+            assert_eq!(
+                stored, original,
+                "request type {request_type}: the image is unchanged"
+            );
+        }
+    }
+
+    /// `GET_ID` on a read-only device returns the id it was given, zero-padded
+    /// to `VIRTIO_BLK_ID_BYTES`.
+    #[test]
+    fn a_read_only_device_answers_get_id_with_its_id() {
+        let (_file, mut block) = read_only_volume(&[0u8; 4096], "ws-42");
+        let mut expected = b"ws-42".to_vec();
+        expected.resize(VIRTIO_BLK_ID_BYTES as usize, 0);
+        assert_eq!(get_id_of(&mut block), expected);
+    }
+
+    /// An id longer than `VIRTIO_BLK_ID_BYTES` is cut to that many bytes.
+    #[test]
+    fn a_device_id_longer_than_the_id_field_is_cut() {
+        let (_file, mut block) = read_only_volume(&[0u8; 4096], "0123456789abcdefghijKLMNOP");
+        assert_eq!(get_id_of(&mut block), b"0123456789abcdefghij".to_vec());
     }
 }
