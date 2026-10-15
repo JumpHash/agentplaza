@@ -91,10 +91,15 @@ pub const RUN_CID_END: u64 = 99;
 /// The guest's console device: the first flag of every run's command line.
 const CONSOLE: &str = "console=ttyS0";
 
-/// How often the run watcher looks at its VMs. The watcher sleeps for this
-/// long *outside* the run's lock, so its polls stay non-blocking and no other
-/// caller of the run can be starved by them.
-const WATCH_INTERVAL: Duration = Duration::from_millis(5);
+/// How soon the run watcher looks at its VMs again after something changed: the
+/// shortest it sleeps between passes. The watcher sleeps for its interval
+/// *outside* the run's lock, so its polls stay non-blocking and no other caller
+/// of the run can be starved by them.
+const WATCH_INTERVAL_MIN: Duration = Duration::from_millis(5);
+
+/// The longest the run watcher waits while nothing changes: a VM's exit or
+/// serial output is seen at most this late.
+const WATCH_INTERVAL_MAX: Duration = Duration::from_millis(250);
 
 /// The newest a snapshot may be for a recovery to boot from it, in milliseconds: a day. An older
 /// snapshot is a stale copy of an agent, so the recovery boots the VM cold instead.
@@ -3556,7 +3561,9 @@ fn watch(run: Arc<Run>) {
 }
 
 fn watch_run(run: &Arc<Run>) {
+    let mut interval = WATCH_INTERVAL_MIN;
     loop {
+        let mut changed = false;
         {
             let mut inner = run.lock();
             if inner.state != RunState::Running {
@@ -3567,7 +3574,9 @@ fn watch_run(run: &Arc<Run>) {
                 // state: a VM that stopped between two passes grew its
                 // capture one last time, and that last stretch is exactly
                 // what the run's transcript wants.
-                publish_serial_delta(&run.events, &run.id, slot);
+                if publish_serial_delta(&run.events, &run.id, slot) {
+                    changed = true;
+                }
                 // A paused VM's process is still there to exit, so it is watched too.
                 if !matches!(slot.state, VmState::Running | VmState::Paused) {
                     continue;
@@ -3581,7 +3590,11 @@ fn watch_run(run: &Arc<Run>) {
                 // A non-blocking look, so the run's lock is held for the check
                 // and nothing else: a GET or a kill of the run never waits
                 // behind the watcher.
-                match handle.wait_timeout(Duration::ZERO) {
+                let polled = handle.wait_timeout(Duration::ZERO);
+                if matches!(polled, Ok(Some(_)) | Err(_)) {
+                    changed = true;
+                }
+                match polled {
                     Ok(Some(exit)) => match (slot.spec.clone(), slot.guest_cid) {
                         // A keepalive agent or sandbox that stopped by itself is recovered, not
                         // left exited: its handle goes to the recovery, and the slot keeps its
@@ -3641,7 +3654,12 @@ fn watch_run(run: &Arc<Run>) {
         // other caller of the run (measured: a GET right after a run started
         // waited for the run's whole life), so the watcher gives the lock up
         // for longer than it holds it.
-        thread::sleep(WATCH_INTERVAL);
+        interval = if changed {
+            WATCH_INTERVAL_MIN
+        } else {
+            (interval * 2).min(WATCH_INTERVAL_MAX)
+        };
+        thread::sleep(interval);
     }
 }
 
@@ -3728,15 +3746,16 @@ fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) 
 /// Publishes the part of the VM's serial capture that grew since the last
 /// look, as a `serial` event whose `offset` is the capture byte the `text`
 /// starts at. The capture is bounded, and so are the events: once the capture
-/// stops growing, no further events fire for it.
-fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
+/// stops growing, no further events fire for it. Returns whether it published
+/// anything, that is, whether the capture grew since the last look.
+fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) -> bool {
     let buffer = slot
         .runtime
         .serial
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if buffer.len() <= slot.serial_seen {
-        return;
+        return false;
     }
     let offset = slot.serial_seen;
     let text = String::from_utf8_lossy(&buffer[offset..]).into_owned();
@@ -3748,6 +3767,7 @@ fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
         offset: offset as u64,
         text,
     });
+    true
 }
 
 /// The current time in milliseconds since the Unix epoch.
