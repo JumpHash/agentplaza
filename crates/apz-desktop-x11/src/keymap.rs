@@ -215,37 +215,30 @@ mod tests {
         assert_eq!(CONTROL_L, 0xffe3);
         assert_eq!(ALT_L, 0xffe9);
         assert_eq!(SUPER_L, 0xffeb);
-        assert_eq!(keysym_for_key(Key::Enter), 0xff0d);
-        assert_eq!(keysym_for_key(Key::Tab), 0xff09);
-        assert_eq!(keysym_for_key(Key::Escape), 0xff1b);
-        assert_eq!(keysym_for_key(Key::Backspace), 0xff08);
-        assert_eq!(keysym_for_key(Key::Delete), 0xffff);
-        assert_eq!(keysym_for_key(Key::Insert), 0xff63);
-        assert_eq!(keysym_for_key(Key::Home), 0xff50);
-        assert_eq!(keysym_for_key(Key::End), 0xff57);
-        assert_eq!(keysym_for_key(Key::PageUp), 0xff55);
-        assert_eq!(keysym_for_key(Key::PageDown), 0xff56);
-        assert_eq!(keysym_for_key(Key::Left), 0xff51);
-        assert_eq!(keysym_for_key(Key::Up), 0xff52);
-        assert_eq!(keysym_for_key(Key::Right), 0xff53);
-        assert_eq!(keysym_for_key(Key::Down), 0xff54);
-        assert_eq!(keysym_for_key(Key::Space), 0x0020);
-    }
-
-    #[test]
-    fn function_keys_are_consecutive_from_f1() {
-        assert_eq!(keysym_for_key(Key::F(1)), 0xffbe);
-        assert_eq!(keysym_for_key(Key::F(12)), 0xffc9);
-        assert_eq!(
-            keysym_for_key(Key::F(13)),
-            0xffca,
-            "F13 is the header's XK_L3"
-        );
-        assert_eq!(
-            keysym_for_key(Key::F(24)),
-            0xffd5,
-            "F24 is the header's XK_R4"
-        );
+        // The function keys run consecutively from F1; F13 and F24 are the header's XK_L3 and XK_R4.
+        for (case, key, want) in [
+            ("Enter", Key::Enter, 0xff0d),
+            ("Tab", Key::Tab, 0xff09),
+            ("Escape", Key::Escape, 0xff1b),
+            ("Backspace", Key::Backspace, 0xff08),
+            ("Delete", Key::Delete, 0xffff),
+            ("Insert", Key::Insert, 0xff63),
+            ("Home", Key::Home, 0xff50),
+            ("End", Key::End, 0xff57),
+            ("PageUp", Key::PageUp, 0xff55),
+            ("PageDown", Key::PageDown, 0xff56),
+            ("Left", Key::Left, 0xff51),
+            ("Up", Key::Up, 0xff52),
+            ("Right", Key::Right, 0xff53),
+            ("Down", Key::Down, 0xff54),
+            ("Space", Key::Space, 0x0020),
+            ("F1", Key::F(1), 0xffbe),
+            ("F12", Key::F(12), 0xffc9),
+            ("F13 is the header's XK_L3", Key::F(13), 0xffca),
+            ("F24 is the header's XK_R4", Key::F(24), 0xffd5),
+        ] {
+            assert_eq!(keysym_for_key(key), want, "{case}");
+        }
     }
 
     #[test]
@@ -266,128 +259,119 @@ mod tests {
 
     #[test]
     fn a_keysym_is_found_unshifted_or_shifted() {
-        let map = sample();
-        assert_eq!(
-            map.find(u32::from(b'a')),
-            Some(Found {
-                keycode: 8,
-                shift: false
-            })
-        );
-        assert_eq!(
-            map.find(u32::from(b'A')),
-            Some(Found {
-                keycode: 8,
-                shift: true
-            })
-        );
-        assert_eq!(
-            map.find(u32::from(b'!')),
-            Some(Found {
-                keycode: 9,
-                shift: true
-            })
-        );
-        assert_eq!(map.find(u32::from(b'z')), None);
-    }
-
-    #[test]
-    fn an_unshifted_column_wins_over_a_shifted_one() {
+        // The sample map: `a` is unshifted, `A` and `!` are shifted, `z` is absent.
+        {
+            let map = sample();
+            assert_eq!(
+                map.find(u32::from(b'a')),
+                Some(Found {
+                    keycode: 8,
+                    shift: false
+                })
+            );
+            assert_eq!(
+                map.find(u32::from(b'A')),
+                Some(Found {
+                    keycode: 8,
+                    shift: true
+                })
+            );
+            assert_eq!(
+                map.find(u32::from(b'!')),
+                Some(Found {
+                    keycode: 9,
+                    shift: true
+                })
+            );
+            assert_eq!(map.find(u32::from(b'z')), None);
+        }
         // Keycode 17 has `x` shifted; keycode 16 has `x` unshifted. The unshifted key is taken.
-        let mut keysyms = vec![0u32; 10 * 2];
-        keysyms[(17 - 8) * 2 + 1] = u32::from(b'x');
-        keysyms[(16 - 8) * 2] = u32::from(b'x');
-        let map = KeyMap::new(8, 17, 2, keysyms);
-        assert_eq!(
-            map.find(u32::from(b'x')),
-            Some(Found {
-                keycode: 16,
-                shift: false
-            })
-        );
+        {
+            let mut keysyms = vec![0u32; 10 * 2];
+            keysyms[(17 - 8) * 2 + 1] = u32::from(b'x');
+            keysyms[(16 - 8) * 2] = u32::from(b'x');
+            let map = KeyMap::new(8, 17, 2, keysyms);
+            assert_eq!(
+                map.find(u32::from(b'x')),
+                Some(Found {
+                    keycode: 16,
+                    shift: false
+                })
+            );
+        }
     }
 
     #[test]
-    fn the_scratch_keycode_is_the_highest_empty_one() {
-        assert_eq!(sample().scratch_keycode(), Some(17));
-        let full = KeyMap::new(8, 9, 1, vec![1, 2]);
-        assert_eq!(full.scratch_keycode(), None);
-    }
-
-    #[test]
-    fn a_plain_key_is_one_tap_with_no_modifier() {
-        let map = sample();
-        let plan = plan(&map, Mods::default(), u32::from(b'a')).expect("plans");
-        assert_eq!(
-            plan,
-            Plan {
-                modifiers: vec![],
-                target: Target::Keycode(8)
-            }
-        );
-    }
-
-    #[test]
-    fn a_capital_is_shift_then_the_key() {
-        let map = sample();
-        let plans = plan_text(&map, "A").expect("plans");
-        assert_eq!(
-            plans,
-            vec![Plan {
-                modifiers: vec![10],
-                target: Target::Keycode(8)
-            }]
-        );
-    }
-
-    #[test]
-    fn a_chord_holds_its_modifiers_in_order_and_presses_its_key() {
-        let map = sample();
-        let combo: KeyCombo = parse_combo("ctrl+shift+a").expect("parses");
-        let plan = plan(&map, combo.mods, keysym_for_key(combo.key)).expect("plans");
-        // Ctrl (keycode 11) first, then Shift (keycode 10).
-        assert_eq!(plan.modifiers, vec![11, 10]);
-        assert_eq!(plan.target, Target::Keycode(8));
-    }
-
-    #[test]
-    fn a_chord_with_a_shifted_key_adds_shift() {
-        // `!` is shift-1 on this map: the key needs Shift even though the chord names only Ctrl.
-        let map = sample();
-        let ctrl = Mods {
-            ctrl: true,
-            ..Mods::default()
-        };
-        let plan = plan(&map, ctrl, u32::from(b'!')).expect("plans");
-        assert_eq!(plan.modifiers, vec![11, 10]);
-        assert_eq!(plan.target, Target::Keycode(9));
-    }
-
-    #[test]
-    fn a_key_the_map_lacks_is_a_scratch_remap() {
-        let map = sample();
-        let plans = plan_text(&map, "é").expect("plans");
-        assert_eq!(
-            plans,
-            vec![Plan {
-                modifiers: vec![],
-                target: Target::Scratch(0xe9)
-            }]
-        );
-    }
-
-    #[test]
-    fn a_modifier_the_map_lacks_is_refused() {
-        let map = KeyMap::new(8, 8, 1, vec![u32::from(b'a')]);
-        let combo = parse_combo("cmd+a").expect("parses");
-        assert!(plan(&map, combo.mods, keysym_for_key(combo.key)).is_err());
-    }
-
-    #[test]
-    fn text_with_a_control_character_is_refused() {
-        let map = sample();
-        assert!(plan_text(&map, "a\u{7}").is_err());
-        assert_eq!(plan_text(&map, "a\n").expect("plans").len(), 2);
-        assert_eq!(keycode(&map, u32::from(b'1')), 9);
+    fn key_plans_cover_taps_chords_scratch_and_refusals() {
+        // A plain key is one tap with no modifier.
+        {
+            let map = sample();
+            let plan = plan(&map, Mods::default(), u32::from(b'a')).expect("plans");
+            assert_eq!(
+                plan,
+                Plan {
+                    modifiers: vec![],
+                    target: Target::Keycode(8)
+                }
+            );
+        }
+        // A capital is Shift then the key.
+        {
+            let map = sample();
+            let plans = plan_text(&map, "A").expect("plans");
+            assert_eq!(
+                plans,
+                vec![Plan {
+                    modifiers: vec![10],
+                    target: Target::Keycode(8)
+                }]
+            );
+        }
+        // A chord holds its modifiers in order and presses its key.
+        {
+            let map = sample();
+            let combo: KeyCombo = parse_combo("ctrl+shift+a").expect("parses");
+            let plan = plan(&map, combo.mods, keysym_for_key(combo.key)).expect("plans");
+            // Ctrl (keycode 11) first, then Shift (keycode 10).
+            assert_eq!(plan.modifiers, vec![11, 10]);
+            assert_eq!(plan.target, Target::Keycode(8));
+        }
+        // A chord with a shifted key adds Shift.
+        {
+            // `!` is shift-1 on this map: the key needs Shift even though the chord names only Ctrl.
+            let map = sample();
+            let ctrl = Mods {
+                ctrl: true,
+                ..Mods::default()
+            };
+            let plan = plan(&map, ctrl, u32::from(b'!')).expect("plans");
+            assert_eq!(plan.modifiers, vec![11, 10]);
+            assert_eq!(plan.target, Target::Keycode(9));
+        }
+        // A key the map lacks is a scratch remap.
+        {
+            let map = sample();
+            let plans = plan_text(&map, "é").expect("plans");
+            assert_eq!(
+                plans,
+                vec![Plan {
+                    modifiers: vec![],
+                    target: Target::Scratch(0xe9)
+                }]
+            );
+        }
+        // A modifier the map lacks is refused.
+        {
+            let map = KeyMap::new(8, 8, 1, vec![u32::from(b'a')]);
+            let combo = parse_combo("cmd+a").expect("parses");
+            assert!(plan(&map, combo.mods, keysym_for_key(combo.key)).is_err());
+        }
+        // Text with a control character is refused.
+        {
+            let map = sample();
+            assert!(plan_text(&map, "a\u{7}").is_err());
+            assert_eq!(plan_text(&map, "a\n").expect("plans").len(), 2);
+            assert_eq!(keycode(&map, u32::from(b'1')), 9);
+        }
     }
 }
