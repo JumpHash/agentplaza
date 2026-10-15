@@ -133,10 +133,19 @@ pub fn template_row(t: &Value) -> Vec<String> {
     let newest = newest_build(t);
     let status = newest.map(|b| ctx::text(b, "status")).unwrap_or_default();
     let size = newest
-        .map(|b| format!("{} vCPU, {} MiB", ctx::text(b, "cpuCount"), ctx::text(b, "memoryMB")))
+        .map(|b| {
+            format!(
+                "{} vCPU, {} MiB",
+                ctx::text(b, "cpuCount"),
+                ctx::text(b, "memoryMB")
+            )
+        })
         .unwrap_or_default();
     let mut tags: Vec<String> = Vec::new();
-    let builds = t["builds"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let builds = t["builds"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     for b in builds.iter().filter(|b| ctx::s(b, "status") == "ready") {
         for tag in b["tags"].as_array().map(Vec::as_slice).unwrap_or_default() {
             let tag = tag.as_str().unwrap_or_default();
@@ -279,7 +288,9 @@ fn delete_template(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
         println!("cancelled");
         return Ok(());
     }
-    let v = ctx.client.delete(&format!("/v1/e2b/templates/{}", seg(id)))?;
+    let v = ctx
+        .client
+        .delete(&format!("/v1/e2b/templates/{}", seg(id)))?;
     ctx.out(&v, |_| println!("deleted E2B template {id}"));
     Ok(())
 }
@@ -442,7 +453,10 @@ mod tests {
             Cmd::DeleteTemplate { yes, .. } => assert!(yes),
             other => panic!("not a delete-template: {other:?}"),
         }
-        assert!(parse(&["delete-template"]).is_err(), "a template needs an id");
+        assert!(
+            parse(&["delete-template"]).is_err(),
+            "a template needs an id"
+        );
     }
 
     #[test]
@@ -470,7 +484,11 @@ mod tests {
                 "2026-10-15T10:00:00Z"
             ]
         );
-        assert_eq!(template_reason(&t), None, "a ready template has no reason line");
+        assert_eq!(
+            template_reason(&t),
+            None,
+            "a ready template has no reason line"
+        );
     }
 
     #[test]
