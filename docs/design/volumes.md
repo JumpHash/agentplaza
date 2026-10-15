@@ -1,8 +1,8 @@
 # Shared read-only data volumes
 
 Status (2026-10-15): built on Linux x86_64 with KVM, tested end to end on that machine. The hub routes are in (apid and
-noded). The web, desktop and CLI surfaces are not built yet (see "Fifth pass" in `parity.md`). Hypervisor.framework
-and WHP refuse a VM with volumes.
+noded), and the web (Volumes), desktop (Volumes) and CLI (`agentplaza volumes`) surfaces cover them (see "Fifth
+pass" in `parity.md`). Hypervisor.framework and WHP refuse a VM with volumes.
 
 A data volume is a read-only disk that several VMs can mount at once. Agents use it for shared reference data, such as
 a corpus or a model cache. Nothing in a VM can write to it.
@@ -59,9 +59,8 @@ Volumes reach agents by role.
 
 | item | why |
 |---|---|
-| Hypervisor.framework and WHP | Neither refuses a VM with volumes today, so the VMM refuses it there. |
+| Hypervisor.framework and WHP | Neither backend has a block device yet, so the VMM refuses a VM with volumes there. |
 | E2B `volumeMounts` | Not mapped to volumes. |
-| Web, desktop and CLI | Not built. The planned CLI is `agentplaza volumes ls`, `create`, `rm`, `roles`, `mount` and `unmount`. |
 
 ## Verified
 
