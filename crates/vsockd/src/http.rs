@@ -15,11 +15,15 @@
 //! reaches the guest; an agent that does not answer in time is 504. A CID path
 //! segment below 3 is 400: CIDs 0 to 2 are the hypervisor, local and host, never
 //! a guest.
+//!
+//! With `--internal-token-file`, every route but `GET /healthz` needs the
+//! machine's internal token (`x-apz-internal`), as the node daemons' APIs do.
 
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use apz_http::auth::InternalToken;
 use apz_http::{Handle, Limits, Request, Response, Router, Server};
 use apz_proto::wire::{HostMessage, MAX_LINE_BYTES};
 use serde::{Deserialize, Serialize};
@@ -54,12 +58,14 @@ struct Surface {
     facts: NodeFacts,
 }
 
-/// Serves the surface until the handle is dropped.
+/// Serves the surface until the handle is dropped. `token` guards every route
+/// but `GET /healthz`, a liveness probe that reveals nothing.
 pub fn serve(
     port: u16,
     hub: Arc<Hub>,
     registry: Arc<Registry>,
     facts: NodeFacts,
+    token: InternalToken,
 ) -> io::Result<Handle> {
     let surface = Surface {
         hub,
@@ -67,12 +73,18 @@ pub fn serve(
         facts,
     };
     let router = router();
+    let guarded = token.guard(move |request| router.handle(&surface, request));
     Server::bind(port)?
         .limits(Limits {
             max_body: MAX_LINE_BYTES,
             ..Limits::default()
         })
-        .spawn(move |request| router.handle(&surface, request))
+        .spawn(move |request| {
+            if request.method == "GET" && request.path == "/healthz" {
+                return Response::text(200, "ok");
+            }
+            guarded(request)
+        })
 }
 
 fn router() -> Router<Surface> {
@@ -84,7 +96,6 @@ fn router() -> Router<Surface> {
                 status_json(surface, surface.facts.started.elapsed().as_secs()),
             )
         })
-        .get("/healthz", |_, _, _| Response::text(200, "ok"))
         .post("/v1/cids/{cid}", |surface, _, params| {
             serve_cid(surface, params.get("cid"))
         })
@@ -562,6 +573,7 @@ mod tests {
             Arc::clone(&surface.hub),
             Arc::clone(&surface.registry),
             surface.facts,
+            InternalToken::none(),
         )
         .expect("binds");
         let reply = apz_http::client::send(
@@ -577,5 +589,41 @@ mod tests {
             apz_http::client::get_json(handle.port(), "/v1/status", Duration::from_secs(5))
                 .unwrap();
         assert_eq!((status, body["sessions_active"].as_u64()), (200, Some(0)));
+    }
+
+    #[test]
+    fn with_a_token_file_every_route_but_healthz_needs_the_token() {
+        let path =
+            std::env::temp_dir().join(format!("plaza-vsockd-http-token-{}", std::process::id()));
+        std::fs::write(&path, "s3cret\n").expect("the token file");
+        let surface = surface(hub_with(None).1);
+        let handle = serve(
+            0,
+            Arc::clone(&surface.hub),
+            Arc::clone(&surface.registry),
+            surface.facts,
+            InternalToken::file(&path),
+        )
+        .expect("binds");
+        let port = handle.port();
+        let get = |headers: &[(&str, &str)]| {
+            apz_http::client::send_with(
+                port,
+                "GET",
+                "/v1/status",
+                headers,
+                None,
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .status
+        };
+        assert_eq!(get(&[]), 401);
+        assert_eq!(get(&[(apz_http::auth::HEADER, "wrong")]), 401);
+        assert_eq!(get(&[(apz_http::auth::HEADER, "s3cret")]), 200);
+        let healthz =
+            apz_http::client::send(port, "GET", "/healthz", None, Duration::from_secs(5)).unwrap();
+        assert_eq!(healthz.status, 200);
+        let _ = std::fs::remove_file(&path);
     }
 }
