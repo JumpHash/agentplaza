@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha512};
 
-use super::catalog::{self, Entry, ModelVia};
+use super::catalog::{self, Entry};
 use super::link::EngineLink;
 use super::session::{self, Options, Outcome};
 use crate::bash::{self, Privilege};
@@ -47,11 +47,8 @@ pub fn run(workspace: &Workspace, input: &Value, link: &dyn EngineLink) -> Resul
         entry,
         workspace,
         cwd: request.cwd.clone(),
-        argv: argv(entry, env, model.as_deref()),
-        model: match entry.model {
-            ModelVia::ConfigOption => model,
-            _ => None,
-        },
+        argv: argv(entry, env),
+        model,
         mode: request.mode.clone(),
         resume: request.resume.as_ref().map(|session| session.id.clone()),
         context: request
@@ -150,16 +147,13 @@ struct Session {
 }
 
 /// The program the ACP session starts: `/usr/bin/env` with the engine's pairs, the installed
-/// binary and its arguments. A model the engine takes as a flag goes
-/// there; a model the engine takes as a config option goes in the session instead.
-fn argv(entry: &Entry, mut env: Vec<String>, model: Option<&str>) -> Vec<String> {
+/// binary and its arguments. The model is not among them: every engine takes it as a session config
+/// option.
+fn argv(entry: &Entry, mut env: Vec<String>) -> Vec<String> {
     let mut argv = vec![engines::ENV_PROGRAM.to_string()];
     argv.append(&mut env);
     argv.push(npm_binary(entry).display().to_string());
     argv.extend(entry.args.iter().map(|arg| arg.to_string()));
-    if let (ModelVia::Flag(flag), Some(model)) = (entry.model, model) {
-        argv.extend([flag.to_string(), model.to_string()]);
-    }
     argv
 }
 
@@ -587,24 +581,16 @@ mod tests {
     }
 
     #[test]
-    fn the_adapter_starts_with_its_environment_and_binary_and_takes_a_flag_model() {
+    fn the_adapter_starts_with_its_environment_and_binary() {
         let entry = catalog::entry("opencode").expect("opencode");
         assert_eq!(
-            argv(entry, vec!["HOME=/workspace".to_string()], Some("m")),
+            argv(entry, vec!["HOME=/workspace".to_string()]),
             [
                 engines::ENV_PROGRAM,
                 "HOME=/workspace",
                 "/workspace/.npm-global/bin/opencode",
                 "acp"
             ]
-        );
-        let flagged = Entry {
-            model: ModelVia::Flag("--model"),
-            ..*entry
-        };
-        assert_eq!(
-            argv(&flagged, Vec::new(), Some("m"))[1..],
-            ["/workspace/.npm-global/bin/opencode", "acp", "--model", "m"]
         );
     }
 

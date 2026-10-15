@@ -113,13 +113,6 @@ impl<'a> Stream<'a> {
         &self.turn
     }
 
-    /// Starts a new turn's record (the stream and its `seq` continue).
-    pub fn next_turn(&mut self) {
-        // Text of the finished turn goes out now, so no buffered text carries into the next one.
-        self.flush();
-        self.turn = Turn::default();
-    }
-
     /// Appends a text chunk to the buffer when it continues the buffered stream (same kind and
     /// message); otherwise the buffer goes out and this chunk starts a new one.
     fn buffer_text(&mut self, update: Value, text: String) {
@@ -387,9 +380,6 @@ mod tests {
         );
         // Non-chunk updates go out at once.
         assert_eq!(link.updates().len(), 3);
-
-        stream.next_turn();
-        assert!(stream.turn().tool_calls.is_empty());
     }
 
     #[test]
