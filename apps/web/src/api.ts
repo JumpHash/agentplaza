@@ -775,6 +775,9 @@ export const api = {
   createStationVm: (body: StationVmBody) => post<StationVm>('/v1/stations/vms', body),
   /** Removes the VM from its node; the station it enrolled as is revoked. */
   deleteStationVm: (id: string) => del<StationVm>(`/v1/stations/vms/${seg(id)}`),
+  /** Keeps the plaza VM's memory and stops it; it wakes in a fraction of a second. */
+  sleepStationVm: (id: string) => post<{ state: string }>(`/v1/stations/vms/${seg(id)}/sleep`, {}),
+  wakeStationVm: (id: string) => post<{ state: string }>(`/v1/stations/vms/${seg(id)}/wake`, {}),
   /** A workstation's latest picture as an object URL (the caller revokes it), or null when it cannot be had. */
   stationThumbnailUrl: async (id: string): Promise<string | null> => {
     try {
