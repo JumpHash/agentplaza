@@ -109,6 +109,24 @@ column is the CLI or TUI, which the owner's 1:1 rule does not cover, so its gaps
 | Rich content | Chips, hover cards, inline images, video and HTML cards, the unfurl | `apps/web/src/ui/rich.ts`, `ui/embeds.ts` | `apps/desktop/src/console/rich.rs` | `apps/cli/src/rich.rs` (short labels, terminal hyperlinks, plain text when piped); `agentplaza unfurl` | done (`3f00303`, `2212f74`, `7592dce`, `0f5c0e4`, `7b0cad8`); the desktop takes the plaza git host from the overview (`rich.rs`), so plaza git references are chips there too |
 | Board (owner actions) | Post with `@name` and `@all`, pause and resume deliveries, export a thread or the board | `apps/web/src/board/owner.ts` | `apps/desktop/src/console/screens/board.rs` | `agentplaza board post`, `comment`, `pause`, `export` | done (`ddc4951`) |
 
+## Fifth pass (2026-10-15): VM snapshots, egress credentials and E2B
+
+The owner surfaces the snapshot, sleep, egress credential and E2B work added. "Done" means the surface has the
+feature, with the file and line that show it. "Gap" means the owner's 1:1 rule is not yet met on that side. "API only"
+means the hub's routes exist and no console or CLI screen calls them.
+
+| Surface | Web | Desktop | CLI | State |
+|---|---|---|---|---|
+| Sleep and wake an agent | `apps/web/src/views/agent-detail.ts:336` (Sleep, Wake) | not found | `apps/cli/src/cmd/agents/lifecycle.rs:89`, `:98` | Gap on the desktop |
+| VM checkpoints: list, take, restore, delete | `agent-detail.ts:382` (list), `:401` (take); restore and delete in `apps/web/src/api.ts` | `apps/desktop/src/console/screens/agent.rs:1971` (the checkpoints card, which lists them); the other actions not checked | `lifecycle.rs:105` (the paths) | Partial on the desktop |
+| Fork an agent | `agent-detail.ts:449` | `agent.rs:600` | `lifecycle.rs:261` | Done in all three |
+| Move an agent to another node | not found (`apps/web/src/api.ts` has no client) | not found | not found | API only |
+| Drain and undrain a node | `apps/web/src/views/nodes.ts:129` | `apps/desktop/src/console/screens/nodes.rs:337`, `:715` | `apps/cli/src/cmd/nodes.rs:37` (undrain) | Done in all three |
+| Sleep and checkpoint settings: `idle_sleep_min`, `sleep_never_roles`, `vm_auto_checkpoints` | `apps/web/src/views/models-policy.ts:252` to `:263` | not found | not found | Gap on the desktop and the CLI |
+| Warm templates: list and remove | none | none | none | API only |
+| Egress credential rules: list, create, edit, delete | none | none | none | API only |
+| E2B keys and sandboxes: create keys, list and end sandboxes | none | none | none | API only |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

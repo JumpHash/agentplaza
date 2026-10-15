@@ -48,3 +48,33 @@ Cargo workspace members (`Cargo.toml`), plus the non-Cargo parts.
 | [`packaging/`](../packaging) | Stage and package scripts for Linux, macOS, Windows and Raspberry Pi |
 | [`scripts/`](../scripts) | Guest kernel and initramfs builders, database test runner, migration checks, hooks |
 | [`docs/`](../docs) | Architecture, design notes, agent contracts and the red-team catalog (see [Documentation](../README.md#documentation)) |
+
+## Snapshot, egress and sandbox modules
+
+Modules inside the crates above that carry the VM snapshot, egress credential and E2B work. Each has a module
+documentation comment that is the reference for its contract.
+
+| Module | Crate | Purpose |
+|---|---|---|
+| `vstate/snapshot.rs` | `vmm` | The snapshot format: `vmstate.json` and `memory.img`, the version and architecture checks |
+| `vstate/snapshot_memory.rs` | `vmm` | Guest memory in snapshots: touched pages, and the anonymous-page diff of a restored VM |
+| `control.rs` | `vmm` | `VmControl`: pause, resume and snapshot of a running VM, behind the device gate |
+| `clonefile.rs` | `vmm` | Reflink copies of images, with a sparse copy as the fallback |
+| `cgroup.rs` | `vmm` | cgroup v2 limits for a VM in its own process |
+| `spawner.rs` | `vmm` | `VmSpec::restore`, `SnapshotKind`, the in-process and per-process boot modes |
+| `snapshots.rs` | `noded` | Where a node keeps its snapshots, per CID, and the snapshot views |
+| `templates.rs` | `noded` | Warm templates: built on first use, restored for new VMs of the same shape |
+| `migrate.rs` | `noded` | Export and import of a sleeping VM, in chunks, with zeros left as holes |
+| `sleep.rs` | `apid` | The idle rule, sleep, and waking before work is delivered |
+| `vm_snapshots.rs` | `apid` | Checkpoints, rollback with a safety checkpoint, forks, automatic checkpoints |
+| `placement.rs` | `apid` | Choosing a node for a new agent, moving an agent, draining a node |
+| `egress_inject.rs` | `apid` | Egress credential rules, the egress CA and leaves, the per-request decision |
+| `e2b.rs` | `apid` | The E2B-compatible sandbox API: keys, sandboxes, snapshots, the reaper |
+| `egress_tls.rs` | `vsockd` | TLS interception for hosts with a rule: header injection, framing, audit |
+| `e2b.rs` | `vsockd` | The E2B gateway: relays the SDK's requests into a sandbox's daemon |
+| `restore.rs` | `agent-harness` | Clock and entropy catch-up after a restore, from the hub's `HostFacts` |
+| `trust.rs` | `agent-harness` | The guest's trust in the egress CA: the file, the bundle and the system store |
+| `envd/` | `agent-harness` | The sandbox daemon, E2B's envd: `process`, `filesystem`, `files`, `/init` and `/health` |
+
+The design notes for these are [`design/vm-snapshots.md`](design/vm-snapshots.md),
+[`design/egress-credentials.md`](design/egress-credentials.md) and [`design/e2b.md`](design/e2b.md).
