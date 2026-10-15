@@ -166,6 +166,21 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        // vsockd's gateway asks for a sandbox's CID and envd access token by its id (`sb…`).
+        .get("/internal/e2b/sandboxes/{id}", |app, req, p| {
+            let presented = req
+                .header("x-apz-internal")
+                .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes()));
+            if !presented {
+                return Response::error(403, "missing or wrong internal token");
+            }
+            match crate::e2b::lookup(app, p.get("id")) {
+                Some((cid, access_token)) => {
+                    Response::json(200, &json!({"cid": cid, "access_token": access_token}))
+                }
+                None => Response::error(404, "no such sandbox"),
+            }
+        })
 }
 
 /// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal
@@ -193,6 +208,10 @@ pub(crate) fn authorized(
         .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes()))
     {
         return Response::error(403, "missing or wrong internal token");
+    }
+    // A sandbox's CID has no agent session: the agent routes refuse it (its egress routes still answer).
+    if req.path.starts_with("/internal/v1/") && crate::e2b::sandbox_by_cid(app, cid).is_some() {
+        return Response::error(403, "a sandbox has no agent session");
     }
     f(cid).unwrap_or_else(|response| response)
 }
@@ -266,11 +285,16 @@ pub(crate) fn egress_verdict(
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
-    let role = app
-        .agents
-        .get(cid)
-        .map(|agent| agent.role)
-        .unwrap_or_default();
+    // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
+    let sandbox = crate::e2b::sandbox_by_cid(app, cid);
+    let role = match &sandbox {
+        Some(_) => "sandbox".to_string(),
+        None => app
+            .agents
+            .get(cid)
+            .map(|agent| agent.role)
+            .unwrap_or_default(),
+    };
     let resource = jhrl::authz::Entity {
         ty: "Host".into(),
         id: host.into(),
@@ -283,9 +307,12 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
         .laws
         .refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
     let blocked = on_fetch_blocklist(&app.settings.get().fetch_block, host);
-    let verdict = egress_verdict(blocked, refusal, host);
+    let verdict = match &sandbox {
+        Some(sandbox) => crate::e2b::sandbox_verdict(sandbox, blocked, refusal, host),
+        None => egress_verdict(blocked, refusal, host),
+    };
     // Whether the proxy terminates this connection's TLS to add a credential (see egress_inject).
-    let intercept = crate::egress_inject::intercepts(app, cid, host, port);
+    let intercept = sandbox.is_none() && crate::egress_inject::intercepts(app, cid, host, port);
     json!({
         "allow": verdict.allow,
         "law": verdict.law,
