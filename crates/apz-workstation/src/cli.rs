@@ -253,78 +253,79 @@ mod tests {
     }
 
     #[test]
-    fn join_takes_the_hub_code_and_options() {
-        let parsed = parse(&words(
-            "join --hub https://hub.example:7443/ --code ABC-123 --name studio --account agent:agentws --state-dir /tmp/s",
-        ))
-        .unwrap();
-        assert_eq!(
-            parsed,
-            Command::Join(JoinArgs {
-                hub: "https://hub.example:7443".into(),
-                code: "ABC-123".into(),
-                from_node: None,
-                name: Some("studio".into()),
-                account: Some(AccountArg::Agent("agentws".into())),
-                pin: None,
-                state: Some(PathBuf::from("/tmp/s")),
-            })
-        );
-    }
-
-    #[test]
-    fn equals_signs_work_and_owner_is_an_account() {
-        let parsed = parse(&words(
-            "join --hub=http://127.0.0.1:7443 --code=X1 --account=owner",
-        ))
-        .unwrap();
-        match parsed {
-            Command::Join(args) => {
-                assert_eq!(args.hub, "http://127.0.0.1:7443");
-                assert_eq!(args.account, Some(AccountArg::Owner));
-            }
-            other => panic!("not a join: {other:?}"),
+    fn join_takes_its_options_and_refuses_a_missing_or_bad_hub_code_and_name() {
+        // join_takes_the_hub_code_and_options: the hub, code, name, account and state dir are read.
+        {
+            let parsed = parse(&words(
+                "join --hub https://hub.example:7443/ --code ABC-123 --name studio --account agent:agentws --state-dir /tmp/s",
+            ))
+            .unwrap();
+            assert_eq!(
+                parsed,
+                Command::Join(JoinArgs {
+                    hub: "https://hub.example:7443".into(),
+                    code: "ABC-123".into(),
+                    from_node: None,
+                    name: Some("studio".into()),
+                    account: Some(AccountArg::Agent("agentws".into())),
+                    pin: None,
+                    state: Some(PathBuf::from("/tmp/s")),
+                })
+            );
         }
-    }
-
-    #[test]
-    fn join_takes_a_vsock_hub_with_its_pin_or_the_node_alone() {
-        let parsed = parse(&words(
-            "join --hub vsock://2:5100 --code ABC --pin cGlu --state-dir /tmp/s",
-        ))
-        .unwrap();
-        match parsed {
-            Command::Join(args) => {
-                assert_eq!(args.hub, "vsock://2:5100");
-                assert_eq!(args.pin.as_deref(), Some("cGlu"));
-                assert_eq!(args.from_node, None);
+        // equals_signs_work_and_owner_is_an_account: the --opt=value form works and owner is an account.
+        {
+            let parsed = parse(&words(
+                "join --hub=http://127.0.0.1:7443 --code=X1 --account=owner",
+            ))
+            .unwrap();
+            match parsed {
+                Command::Join(args) => {
+                    assert_eq!(args.hub, "http://127.0.0.1:7443");
+                    assert_eq!(args.account, Some(AccountArg::Owner));
+                }
+                other => panic!("not a join: {other:?}"),
             }
-            other => panic!("not a join: {other:?}"),
         }
-
-        let parsed = parse(&words("join --from-node vsock://2:5101 --name studio")).unwrap();
-        match parsed {
-            Command::Join(args) => {
-                assert_eq!(args.from_node.as_deref(), Some("vsock://2:5101"));
-                assert!(args.hub.is_empty() && args.code.is_empty());
-                assert_eq!(args.name.as_deref(), Some("studio"));
+        // join_takes_a_vsock_hub_with_its_pin_or_the_node_alone: a vsock hub takes a pin, and a node
+        // alone takes no code or hub.
+        {
+            let parsed = parse(&words(
+                "join --hub vsock://2:5100 --code ABC --pin cGlu --state-dir /tmp/s",
+            ))
+            .unwrap();
+            match parsed {
+                Command::Join(args) => {
+                    assert_eq!(args.hub, "vsock://2:5100");
+                    assert_eq!(args.pin.as_deref(), Some("cGlu"));
+                    assert_eq!(args.from_node, None);
+                }
+                other => panic!("not a join: {other:?}"),
             }
-            other => panic!("not a join: {other:?}"),
-        }
-        // The node's config carries the code, so no code or hub may come with --from-node.
-        assert!(parse(&words("join --from-node vsock://2:5101 --code X")).is_err());
-        assert!(parse(&words("join --from-node vsock://2:5101 --hub https://h")).is_err());
-        assert!(parse(&words("join --from-node https://h")).is_err());
-        assert!(parse(&words("join --hub ftp://h --code X")).is_err());
-    }
 
-    #[test]
-    fn join_refuses_a_missing_or_bad_hub_code_and_name() {
-        assert!(parse(&words("join --code X")).is_err());
-        assert!(parse(&words("join --hub ftp://h --code X")).is_err());
-        assert!(parse(&words("join --hub https://h --code 'two words'")).is_err());
-        assert!(parse(&words("join --hub https://h --code X --name")).is_err());
-        assert!(parse(&words("join --hub https://h --code X --name ' '")).is_err());
+            let parsed = parse(&words("join --from-node vsock://2:5101 --name studio")).unwrap();
+            match parsed {
+                Command::Join(args) => {
+                    assert_eq!(args.from_node.as_deref(), Some("vsock://2:5101"));
+                    assert!(args.hub.is_empty() && args.code.is_empty());
+                    assert_eq!(args.name.as_deref(), Some("studio"));
+                }
+                other => panic!("not a join: {other:?}"),
+            }
+            // The node's config carries the code, so no code or hub may come with --from-node.
+            assert!(parse(&words("join --from-node vsock://2:5101 --code X")).is_err());
+            assert!(parse(&words("join --from-node vsock://2:5101 --hub https://h")).is_err());
+            assert!(parse(&words("join --from-node https://h")).is_err());
+            assert!(parse(&words("join --hub ftp://h --code X")).is_err());
+        }
+        // join_refuses_a_missing_or_bad_hub_code_and_name: a missing or bad hub, code or name is refused.
+        {
+            assert!(parse(&words("join --code X")).is_err());
+            assert!(parse(&words("join --hub ftp://h --code X")).is_err());
+            assert!(parse(&words("join --hub https://h --code 'two words'")).is_err());
+            assert!(parse(&words("join --hub https://h --code X --name")).is_err());
+            assert!(parse(&words("join --hub https://h --code X --name ' '")).is_err());
+        }
     }
 
     #[test]

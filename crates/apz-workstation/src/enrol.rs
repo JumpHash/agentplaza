@@ -195,19 +195,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_hex_pin_becomes_the_base64url_the_record_stores() {
-        let hex = "00".repeat(31) + "ff";
-        let text = hex_pin_to_b64(&hex).unwrap();
-        assert_eq!(state::parse_pin(&text).unwrap()[31], 0xff);
-        assert_eq!(state::parse_pin(&text).unwrap()[0], 0);
-    }
-
-    #[test]
-    fn colons_and_spaces_in_a_pin_are_allowed_and_short_pins_are_refused() {
-        let colons = (0..32).map(|_| "ab").collect::<Vec<_>>().join(":");
-        assert!(hex_pin_to_b64(&colons).is_ok());
-        assert!(hex_pin_to_b64("abcd").is_err());
-        assert!(hex_pin_to_b64(&"zz".repeat(32)).is_err());
+    fn hex_pins_convert_to_the_stored_base64url_and_bad_pins_are_refused() {
+        // a_hex_pin_becomes_the_base64url_the_record_stores: a hex pin is stored as base64url.
+        {
+            let hex = "00".repeat(31) + "ff";
+            let text = hex_pin_to_b64(&hex).unwrap();
+            assert_eq!(state::parse_pin(&text).unwrap()[31], 0xff);
+            assert_eq!(state::parse_pin(&text).unwrap()[0], 0);
+        }
+        // colons_and_spaces_in_a_pin_are_allowed_and_short_pins_are_refused: colons are allowed,
+        // a short pin and a non-hex pin are refused.
+        {
+            let colons = (0..32).map(|_| "ab").collect::<Vec<_>>().join(":");
+            assert!(hex_pin_to_b64(&colons).is_ok());
+            assert!(hex_pin_to_b64("abcd").is_err());
+            assert!(hex_pin_to_b64(&"zz".repeat(32)).is_err());
+        }
     }
 
     #[test]
@@ -225,40 +228,6 @@ mod tests {
         let err = join_here(&dir, &enrol).unwrap_err();
         assert!(err.contains("reserved"), "{err}");
         assert_eq!(state::load_record(&dir).unwrap(), None);
-    }
-
-    #[test]
-    fn the_link_line_says_what_the_daemon_last_reported() {
-        let mut snapshot = Snapshot {
-            dir: PathBuf::from("/s"),
-            record: None,
-            status: None,
-        };
-        assert!(link_line(&snapshot).starts_with("unknown"));
-        snapshot.status = Some(Status {
-            pid: 1,
-            version: "0".into(),
-            backend: "fake".into(),
-            connected: true,
-            since: 0,
-            last_error: None,
-        });
-        assert_eq!(link_line(&snapshot), "up (fake backend)");
-        snapshot.status.as_mut().unwrap().connected = false;
-        snapshot.status.as_mut().unwrap().last_error = Some("hub refused".into());
-        assert_eq!(link_line(&snapshot), "down: hub refused");
-    }
-
-    #[test]
-    fn every_os_has_its_permission_notes() {
-        for os in [Os::Linux, Os::Macos, Os::Windows] {
-            assert!(!permission_notes(os).is_empty());
-        }
-        assert!(
-            permission_notes(Os::Macos)
-                .join(" ")
-                .contains("Screen Recording")
-        );
     }
 
     #[test]

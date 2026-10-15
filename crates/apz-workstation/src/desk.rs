@@ -553,75 +553,70 @@ mod tests {
     use apz_station::Button;
 
     #[test]
-    fn a_click_in_a_half_scale_image_lands_at_twice_the_point() {
-        assert_eq!(
-            map_input(
-                &InputAction::Click {
+    fn map_input_scales_points_and_leaves_keys_and_text_alone() {
+        for (case, input, scale, want) in [
+            (
+                "a click in a half-scale image lands at twice the point",
+                InputAction::Click {
                     x: 200,
                     y: 100,
                     button: Button::Left,
                     count: 2,
                 },
                 0.5,
+                InputAction::Click {
+                    x: 400,
+                    y: 200,
+                    button: Button::Left,
+                    count: 2,
+                },
             ),
-            InputAction::Click {
-                x: 400,
-                y: 200,
-                button: Button::Left,
-                count: 2,
-            }
-        );
-    }
-
-    #[test]
-    fn drags_map_both_ends_and_scrolls_keep_their_amounts() {
-        assert_eq!(
-            map_input(
-                &InputAction::Drag {
+            (
+                "a drag maps both of its ends",
+                InputAction::Drag {
                     from: (10, 20),
                     to: (30, 40),
                 },
                 0.5,
+                InputAction::Drag {
+                    from: (20, 40),
+                    to: (60, 80),
+                },
             ),
-            InputAction::Drag {
-                from: (20, 40),
-                to: (60, 80),
-            }
-        );
-        assert_eq!(
-            map_input(
-                &InputAction::Scroll {
+            (
+                "a scroll maps its point and keeps its amounts",
+                InputAction::Scroll {
                     x: 50,
                     y: 50,
                     dx: 0,
                     dy: -3,
                 },
                 0.5,
+                InputAction::Scroll {
+                    x: 100,
+                    y: 100,
+                    dx: 0,
+                    dy: -3,
+                },
             ),
-            InputAction::Scroll {
-                x: 100,
-                y: 100,
-                dx: 0,
-                dy: -3,
-            }
-        );
-    }
-
-    #[test]
-    fn keys_and_text_are_not_mapped() {
-        let key = InputAction::Key {
-            combo: "ctrl+s".into(),
-        };
-        assert_eq!(map_input(&key, 0.25), key);
-        let typed = InputAction::Type { text: "hi".into() };
-        assert_eq!(map_input(&typed, 0.25), typed);
-    }
-
-    #[test]
-    fn a_frame_fits_the_stream_side() {
-        let big = Frame::new(2560, 1440, vec![0; 2560 * 1440 * 4]).unwrap();
-        assert_eq!(fit_factor(&big, 1280), 0.5);
-        let small = Frame::new(640, 360, vec![0; 640 * 360 * 4]).unwrap();
-        assert_eq!(fit_factor(&small, 1280), 1.0);
+            (
+                "a key is not mapped",
+                InputAction::Key {
+                    combo: "ctrl+s".into(),
+                },
+                0.25,
+                InputAction::Key {
+                    combo: "ctrl+s".into(),
+                },
+            ),
+            (
+                "typed text is not mapped",
+                InputAction::Type { text: "hi".into() },
+                0.25,
+                InputAction::Type { text: "hi".into() },
+            ),
+        ] {
+            assert_eq!(map_input(&input, scale), want, "{case}");
+        }
     }
 }

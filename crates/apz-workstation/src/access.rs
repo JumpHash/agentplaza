@@ -147,16 +147,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_owners_display_has_a_tree() {
-        let hook = OwnerUi::new(":1".into(), Access::with_bus(None));
-        assert!(hook.check(":1").is_ok());
-        assert!(hook.check(":7").is_err(), "a pixel display is refused");
-    }
-
-    #[test]
-    fn with_no_owner_display_nothing_has_a_tree() {
-        let hook = OwnerUi::new(String::new(), Access::with_bus(None));
-        assert!(hook.check("").is_err());
+    fn owner_ui_check_accepts_only_the_owners_display() {
+        // only_the_owners_display_has_a_tree: the owner's display gets a tree,
+        // a pixel display is refused.
+        {
+            let hook = OwnerUi::new(":1".into(), Access::with_bus(None));
+            assert!(hook.check(":1").is_ok());
+            assert!(hook.check(":7").is_err(), "a pixel display is refused");
+        }
+        // with_no_owner_display_nothing_has_a_tree: with no owner display,
+        // nothing has a tree.
+        {
+            let hook = OwnerUi::new(String::new(), Access::with_bus(None));
+            assert!(hook.check("").is_err());
+        }
     }
 
     #[test]
