@@ -125,6 +125,11 @@ pub(crate) fn validate(
     if rule.port == 0 {
         return Err("the port is 1 to 65535".into());
     }
+    // The proxy adds a credential only inside TLS it terminates: over plain HTTP the request would go
+    // out readable by anyone on the path (and to whoever answers for the host's DNS name).
+    if rule.port == 80 {
+        return Err("a credential is only added to HTTPS: the port cannot be 80".into());
+    }
     rule.roles = rule
         .roles
         .iter()
