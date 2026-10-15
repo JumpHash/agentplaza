@@ -12,13 +12,15 @@ use serde_json::{Value, json};
 static LAST_CPU: Mutex<Option<(u64, u64)>> = Mutex::new(None);
 
 /// The aggregate `cpu` line of `/proc/stat` as `(busy, all)` jiffies: everything but idle and
-/// iowait is busy.
+/// iowait is busy. Only the first eight numbers count (user nice system idle iowait irq softirq
+/// steal); guest and guest_nice are already inside user and nice.
 pub fn parse_cpu(stat: &str) -> Option<(u64, u64)> {
     let line = stat.lines().find(|line| line.starts_with("cpu "))?;
     let fields: Vec<u64> = line
         .split_whitespace()
         .skip(1)
         .filter_map(|field| field.parse().ok())
+        .take(8)
         .collect();
     if fields.len() < 4 {
         return None;
@@ -129,6 +131,13 @@ mod tests {
         assert_eq!(parse_cpu(STAT), Some((150, 1000)));
         assert_eq!(cpu_count(STAT), 2);
         assert_eq!(parse_cpu("nothing"), None);
+    }
+
+    #[test]
+    fn cpu_time_ignores_the_guest_fields() {
+        // user nice system idle iowait irq softirq steal guest guest_nice
+        let stat = "cpu  10 0 5 80 2 1 1 0 100 50\n";
+        assert_eq!(parse_cpu(stat), Some((17, 99)));
     }
 
     #[test]

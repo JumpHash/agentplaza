@@ -27,7 +27,8 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 /// Serves `GET` or `POST /files`.
 pub fn handle(request: &Request, ctx: &Ctx) -> Reply {
     let query = parse_query(&request.query);
-    let who = match Who::new(query.get("username").map(String::as_str), ctx) {
+    let name = super::named_user(request);
+    let who = match Who::new(name.as_deref(), ctx) {
         Ok(who) => who,
         Err(reply) => return reply,
     };
@@ -57,18 +58,18 @@ impl Who {
                 uid: ctx.uid,
                 gid: ctx.gid,
             }),
+            // The sandbox's user (E2B's default user) owns what it writes, whatever the default user
+            // is; it is never the default ids.
+            Some(E2B_DEFAULT_USER) => Ok(Self {
+                home: ctx.home.clone(),
+                uid: ctx.user_uid,
+                gid: ctx.user_gid,
+            }),
             Some(name) => match lookup_user(name) {
                 Some(user) => Ok(Self {
                     home: user.home,
                     uid: user.uid,
                     gid: user.gid,
-                }),
-                // E2B's templates name their default user `user`; a guest without one has its own
-                // default user, which is what the caller means.
-                None if name == E2B_DEFAULT_USER => Ok(Self {
-                    home: ctx.home.clone(),
-                    uid: ctx.uid,
-                    gid: ctx.gid,
                 }),
                 None => Err(error(
                     401,
@@ -253,7 +254,7 @@ fn parse_query(raw: &str) -> BTreeMap<String, String> {
     params
 }
 
-fn percent_decode(raw: &str) -> String {
+pub(crate) fn percent_decode(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

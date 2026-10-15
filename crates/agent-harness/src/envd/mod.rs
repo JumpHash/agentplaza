@@ -221,12 +221,14 @@ pub fn handle_connection<S: Read + Write>(stream: S, shared: &Shared) -> io::Res
                 write_reply(reader.get_mut(), &reply, keep_alive)?;
             } else if is_connect_stream(&request) {
                 let ctx = request_context(&request, shared);
-                return stream_rpc(reader.get_mut(), &request, &ctx, service, method);
+                return stream_rpc(reader.get_mut(), &request, ctx, service, method);
             } else {
-                let ctx = request_context(&request, shared);
-                let reply = match unary_body(&request.body) {
-                    Ok(message) => match rpc_unary(service, method, &message, &ctx) {
-                        Ok(value) => Reply::json(200, &value),
+                let reply = match request_context(&request, shared) {
+                    Ok(ctx) => match unary_body(&request.body) {
+                        Ok(message) => match rpc_unary(service, method, &message, &ctx) {
+                            Ok(value) => Reply::json(200, &value),
+                            Err(err) => error_reply(&err),
+                        },
                         Err(err) => error_reply(&err),
                     },
                     Err(err) => error_reply(&err),
@@ -324,6 +326,19 @@ fn init(request: &Request, shared: &Shared) -> Reply {
             ));
         }
     };
+    // Everything is checked above, before anything is applied: a refused `/init` changes nothing.
+    let clock = match body.get("timestamp").and_then(Value::as_str) {
+        None => None,
+        Some(timestamp) => match rfc3339_ms(timestamp) {
+            Some(ms) => Some(ms),
+            None => {
+                return error_reply(&RpcError::new(
+                    "invalid_argument",
+                    "timestamp must be an RFC 3339 time",
+                ));
+            }
+        },
+    };
     {
         let mut ctx = write_lock(shared);
         for (key, value) in vars {
@@ -339,8 +354,8 @@ fn init(request: &Request, shared: &Shared) -> Reply {
             ctx.workdir = workdir;
         }
     }
-    if let Some(timestamp) = body.get("timestamp").and_then(Value::as_str) {
-        if let Err(err) = set_clock(timestamp) {
+    if let Some(ms) = clock {
+        if let Err(err) = set_clock(ms) {
             return error_reply(&err);
         }
     }
@@ -355,11 +370,8 @@ fn init(request: &Request, shared: &Shared) -> Reply {
     Reply::empty(204)
 }
 
-/// Sets the system clock to `timestamp` with `date -u -s`. The text is checked to be a plain
-/// timestamp first, so nothing but digits and the RFC 3339 punctuation reaches the command.
-fn set_clock(timestamp: &str) -> Result<(), RpcError> {
-    let ms = rfc3339_ms(timestamp)
-        .ok_or_else(|| RpcError::new("invalid_argument", "timestamp must be an RFC 3339 time"))?;
+/// Sets the system clock to `ms` (milliseconds since the Unix epoch, from a checked timestamp).
+fn set_clock(ms: u64) -> Result<(), RpcError> {
     // Only a clock that is off is set (as for an agent's welcome): a sandbox that booted cold is
     // already right, and a restored one is off by however long its template or snapshot waited.
     let now = std::time::SystemTime::now()
@@ -460,24 +472,30 @@ fn is_connect_stream(request: &Request) -> bool {
 
 /// A snapshot of the context for one request. A request that names `root` or `user` (in a basic
 /// `Authorization` header, whose user it is, or a `username=` query) runs as that user; one that names
-/// neither runs as the default user.
-fn request_context(request: &Request, shared: &Shared) -> Ctx {
+/// neither runs as the default user. A name that is no user of the guest is refused.
+fn request_context(request: &Request, shared: &Shared) -> Result<Ctx, RpcError> {
     let mut ctx = read_lock(shared).clone();
     match named_user(request).as_deref() {
         Some("root") => (ctx.uid, ctx.gid) = (0, 0),
         Some("user") => (ctx.uid, ctx.gid) = (ctx.user_uid, ctx.user_gid),
-        _ => {}
+        Some(name) => match filesystem::lookup_user(name) {
+            Some(user) => (ctx.uid, ctx.gid) = (user.uid, user.gid),
+            None => return Err(RpcError::new("unauthenticated", format!("no user {name}"))),
+        },
+        None => {}
     }
-    ctx
+    Ok(ctx)
 }
 
+/// The user a request names: its `username=` query value (percent-decoded, as files.rs reads it), or
+/// else the user of a basic `Authorization` header.
 fn named_user(request: &Request) -> Option<String> {
     if let Some(name) = request
         .query
         .split('&')
         .find_map(|pair| pair.strip_prefix("username="))
     {
-        return Some(name.to_string());
+        return Some(files::percent_decode(name));
     }
     let encoded = request.header("authorization")?.strip_prefix("Basic ")?;
     let credentials = base64::engine::general_purpose::STANDARD
@@ -531,7 +549,7 @@ fn unary_body(body: &[u8]) -> Result<Value, RpcError> {
 fn stream_rpc<W: Write>(
     out: &mut W,
     request: &Request,
-    ctx: &Ctx,
+    ctx: Result<Ctx, RpcError>,
     service: &str,
     method: &str,
 ) -> io::Result<()> {
@@ -539,30 +557,44 @@ fn stream_rpc<W: Write>(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/connect+json\r\n\
           Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
     )?;
-    let result = if service == PROCESS_SERVICE && method == "StreamInput" {
-        stream_input_rpc(&mut *out, &request.body)?
-    } else {
-        match decode_one(&request.body) {
-            Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
-                Ok(message) => {
-                    let mut sink = EnvelopeSink { out: &mut *out };
-                    rpc_stream(service, method, &message, ctx, &mut sink)
-                }
-                Err(err) => Err(RpcError::new(
-                    "invalid_argument",
-                    format!("the message is not JSON: {err}"),
-                )),
-            },
-            Ok(_) => Err(RpcError::new(
-                "invalid_argument",
-                "a request envelope must be an uncompressed message",
-            )),
-            Err(reason) => Err(RpcError::new("invalid_argument", reason)),
-        }
+    let result = match ctx {
+        Ok(ctx) => stream_messages(out, request, &ctx, service, method)?,
+        Err(err) => Err(err),
     };
     write_chunk(out, &end_envelope(result.as_ref().err()))?;
     out.write_all(b"0\r\n\r\n")?;
     out.flush()
+}
+
+/// Runs a server-streaming call's request, writing its messages to `out`; the call's error, if any,
+/// is the result.
+fn stream_messages<W: Write>(
+    out: &mut W,
+    request: &Request,
+    ctx: &Ctx,
+    service: &str,
+    method: &str,
+) -> io::Result<Result<(), RpcError>> {
+    if service == PROCESS_SERVICE && method == "StreamInput" {
+        return stream_input_rpc(out, &request.body);
+    }
+    Ok(match decode_one(&request.body) {
+        Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
+            Ok(message) => {
+                let mut sink = EnvelopeSink { out: &mut *out };
+                rpc_stream(service, method, &message, ctx, &mut sink)
+            }
+            Err(err) => Err(RpcError::new(
+                "invalid_argument",
+                format!("the message is not JSON: {err}"),
+            )),
+        },
+        Ok(_) => Err(RpcError::new(
+            "invalid_argument",
+            "a request envelope must be an uncompressed message",
+        )),
+        Err(reason) => Err(RpcError::new("invalid_argument", reason)),
+    })
 }
 
 /// Answers `StreamInput`, the client-streaming call: the request's envelopes are its messages. On
@@ -685,6 +717,7 @@ pub fn status_of(code: &str) -> u16 {
         "not_found" => 404,
         "already_exists" => 409,
         "permission_denied" => 403,
+        "unauthenticated" => 401,
         "unimplemented" => 501,
         _ => 500,
     }
@@ -1353,6 +1386,50 @@ mod tests {
             assert!(reply.starts_with(b"HTTP/1.1 400"), "{bad}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_user_decodes_the_query_value() {
+        let request = Request {
+            query: "username=%72oot&path=x".to_string(),
+            ..Request::default()
+        };
+        assert_eq!(named_user(&request).as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn a_request_naming_an_unknown_user_is_refused() {
+        let shared = shared_of(&test_ctx());
+        let reply = exchange(
+            &shared,
+            &raw(
+                "POST",
+                "/process.Process/List?username=nobody2",
+                "application/json",
+                b"{}",
+            ),
+        );
+        assert!(reply.starts_with(b"HTTP/1.1 401"));
+        assert_eq!(json_body(&reply)["code"], "unauthenticated");
+    }
+
+    #[test]
+    fn init_refuses_a_bad_timestamp_before_it_applies_anything() {
+        let shared = shared_of(&test_ctx());
+        let uid = read_lock(&shared).uid;
+        let body = json!({
+            "defaultUser": "root",
+            "envVars": {"REFUSED": "yes"},
+            "timestamp": "yesterday",
+        })
+        .to_string();
+        let reply = exchange(
+            &shared,
+            &raw("POST", "/init", "application/json", body.as_bytes()),
+        );
+        assert!(reply.starts_with(b"HTTP/1.1 400"));
+        assert_eq!(read_lock(&shared).uid, uid);
+        assert!(read_lock(&shared).env.iter().all(|(key, _)| key != "REFUSED"));
     }
 
     #[test]

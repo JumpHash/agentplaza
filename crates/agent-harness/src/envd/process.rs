@@ -165,7 +165,12 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
     let cmd = shell_of(cmd, Path::exists);
     let args = string_list(process.get("args"), "process.args")?;
     let envs = string_map(process.get("envs"), "process.envs")?;
-    let base = ctx.workdir.as_ref().unwrap_or(&ctx.home);
+    // A workdir that has since been removed falls back to the home, as a process that names no
+    // directory would have started there.
+    let base = match ctx.workdir.as_ref() {
+        Some(workdir) if workdir.is_dir() => workdir,
+        _ => &ctx.home,
+    };
     let dir = match process.get("cwd").and_then(Value::as_str) {
         Some(cwd) if Path::new(cwd).is_absolute() => PathBuf::from(cwd),
         Some(cwd) => base.join(cwd),
