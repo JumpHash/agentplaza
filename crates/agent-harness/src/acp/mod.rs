@@ -11,6 +11,7 @@
 pub mod catalog;
 pub mod fs;
 pub mod gate;
+pub mod hub;
 pub mod link;
 pub mod run;
 pub mod session;
