@@ -343,6 +343,10 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     // The persist directory and the workspace image default to the node's own data directory, unless
     // `--no-workspace` keeps the node as it was: no volume and no persist directory. The image is made
     // at start (see `run`), not here, so parsing never touches the disk.
+    // Snapshots and data volumes stay where a node without `--persist-dir` always kept them (the
+    // state directory), so the default persist directory below never hides an installed node's
+    // checkpoints, sleeping agents, templates or volumes.
+    let explicit_persist = config.persist_dir.clone();
     if no_workspace {
         if config.workspace.is_some() {
             return Err("--no-workspace and --workspace cannot both be given".to_string());
@@ -364,12 +368,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     config.snapshot_dir = snapshot_dir(
         no_snapshots,
         config.snapshot_dir.take(),
-        config.persist_dir.as_deref(),
+        explicit_persist.as_deref(),
         &apz_os::dirs::state(),
     )?;
     // Data volumes live beside the snapshots unless the flag names a place.
     if config.volume_dir.is_none() {
-        config.volume_dir = Some(match config.persist_dir.as_deref() {
+        config.volume_dir = Some(match explicit_persist.as_deref() {
             Some(persist) => persist.join("volumes"),
             None => apz_os::dirs::state().join("volumes"),
         });
@@ -555,10 +559,16 @@ mod tests {
 
     #[test]
     fn the_snapshot_flags_parse_into_the_config() {
+        // With no flags the snapshots stay in the state directory, where an installed node keeps them,
+        // even though the persist directory (for workspaces) defaults to the data directory.
         let config = parse_args(Vec::new()).expect("no arguments is the default");
         assert_eq!(
             config.snapshot_dir,
-            Some(apz_os::dirs::data().join("node").join("snapshots"))
+            Some(apz_os::dirs::state().join("snapshots"))
+        );
+        assert_eq!(
+            config.volume_dir,
+            Some(apz_os::dirs::state().join("volumes"))
         );
         let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
         assert_eq!(
