@@ -10,9 +10,11 @@
 //! | `session/list`, `session/resume`, `session/close` | the sessions; resume without replay; close ends it |
 //! | `session/set_mode` | the agent's approval mode: `autonomous`, `ask`, `read_only` (`current_mode_update` follows) |
 //! | `session/set_config_option` | the agent's `model`, within its tier's list; the reply carries the options |
+//! | write-back | with the owner's `acp_write_back` on, the editor's `fs.writeTextFile`, and a caller that may govern: after the pull request's `tool_call`, `session/request_permission` asks to apply its files to the project (`apply-pr-<n>`, 10 minutes); on `apply` the editor gets one `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`; deleted files are left for the owner. The agent never writes the project itself |
 
 use std::collections::HashSet;
 use std::path::{Component, Path};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -70,6 +72,9 @@ pub trait Hub: Sync {
     /// files. None when there is none, or when the forge does not answer: the turn then reports no
     /// pull request rather than failing.
     fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull>;
+    /// Whether the owner has turned on write-back: an editor that can write files may apply a pull
+    /// request's files to its project, on the owner's yes in the editor.
+    fn write_back(&self) -> bool;
     fn now_ms(&self) -> u64;
 }
 
@@ -138,6 +143,8 @@ pub struct Conn<'h> {
     /// The editor's `clientInfo`, once `initialize` named it. The connection owns it; each call
     /// borrows it (the socket's handlers build a `Conn` per message over the connection's state).
     pub client: &'h Mutex<String>,
+    /// Whether the editor's `initialize` advertised `fs.writeTextFile`: it can apply a pull request's files.
+    pub editor_writes: &'h AtomicBool,
     pub caller: Caller,
 }
 
@@ -147,6 +154,10 @@ const POLL: Duration = Duration::from_millis(200);
 const APPROVALS_EVERY: Duration = Duration::from_secs(2);
 /// How long the editor has to answer an approval before its request is left pending.
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long the owner has to say, in the editor, whether to apply a pull request to the project.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How long the editor has to write one file of an applied pull request.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most attached file text one prompt carries; the rest of the files are left out.
 pub(crate) const PROMPT_BYTES: usize = 256 * 1024;
 /// Said before the reply to `session/new` when the editor offered MCP servers: they are not run.
@@ -218,6 +229,10 @@ fn initialize(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
     let name = params["clientInfo"]["name"].as_str().unwrap_or_default();
     let version = params["clientInfo"]["version"].as_str().unwrap_or_default();
     *lock(conn.client) = format!("{name} {version}").trim().to_string();
+    let writes = params["clientCapabilities"]["fs"]["writeTextFile"]
+        .as_bool()
+        .unwrap_or(false);
+    conn.editor_writes.store(writes, Ordering::Relaxed);
     Ok(json!({
         "protocolVersion": 1,
         "agentCapabilities": {
@@ -325,7 +340,9 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     report_usage(conn.hub, peer, &session.id, session.cid, work);
     // A pull request the work opened is reported whatever the end too: it is on the repository.
     if let Some(repo) = &session.repo {
-        report_repo_pull(conn.hub, peer, &session, repo);
+        if let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo) {
+            offer_write_back(conn, peer, &session, &pull);
+        }
     }
     result
 }
@@ -363,21 +380,22 @@ fn repo_context(session_id: &str, repo: &RepoLink) -> String {
 
 /// Shows the editor the pull request the session's work opened on its repository: a completed
 /// `tool_call` with each changed file's diff, and a message with the link. Nothing when there is none.
-fn report_repo_pull(hub: &dyn Hub, peer: &Peer, session: &Session, repo: &RepoLink) {
+/// Returns the pull request it showed, for the write-back.
+fn report_repo_pull(
+    hub: &dyn Hub,
+    peer: &Peer,
+    session: &Session,
+    repo: &RepoLink,
+) -> Option<RepoPull> {
     let head = format!("acp/{}", session.id);
-    let Some(pull) = hub.repo_pull(&repo.name, &head) else {
-        return;
-    };
-    // ACP wants absolute paths: the editor's project root is the repository's root. Files that would
-    // leave it, and a project root that is not absolute, are not shown.
-    let root = Path::new(&session.cwd);
+    let pull = hub.repo_pull(&repo.name, &head)?;
     let mut content = Vec::new();
     let mut locations = Vec::new();
     for file in &pull.files {
-        if !root.is_absolute() || !repo_relative(&file.path) {
+        // A file that would leave the project is not shown.
+        let Some(path) = project_path(&session.cwd, &file.path) else {
             continue;
-        }
-        let path = root.join(&file.path).to_string_lossy().into_owned();
+        };
         content.push(json!({
             "type": "diff",
             "path": path,
@@ -407,6 +425,16 @@ fn report_repo_pull(hub: &dyn Hub, peer: &Peer, session: &Session, repo: &RepoLi
             "content": {"type": "text", "text": format!("Pull request #{}: {}", pull.number, pull.url)},
         }),
     );
+    Some(pull)
+}
+
+/// The absolute path of a pull request's file in the editor's project. ACP wants absolute paths, and the
+/// project root is the repository's root. None for a file that would leave the project, and for a
+/// project root that is not absolute.
+fn project_path(cwd: &str, path: &str) -> Option<String> {
+    let root = Path::new(cwd);
+    (root.is_absolute() && repo_relative(path))
+        .then(|| root.join(path).to_string_lossy().into_owned())
 }
 
 /// Whether `path` names a file inside the repository: relative, with no `..`, root or prefix part.
@@ -416,6 +444,109 @@ fn repo_relative(path: &str) -> bool {
         && Path::new(path)
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Asks the editor whether to apply the pull request's changed files to the project, and writes them
+/// on the owner's yes. The editor does the writing (`fs/write_text_file`), file by file: the agent never
+/// touches the project. Nothing is asked unless write-back is on, the editor can write files, the caller
+/// may govern, and a changed file has new text. A deleted file is left for the owner to remove.
+fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &RepoPull) {
+    if !conn.hub.write_back()
+        || !conn.editor_writes.load(Ordering::Relaxed)
+        || !conn.caller.may_govern()
+    {
+        return;
+    }
+    let mut writes = Vec::new();
+    let mut deleted = Vec::new();
+    for file in &pull.files {
+        let Some(path) = project_path(&session.cwd, &file.path) else {
+            continue;
+        };
+        match &file.new_text {
+            Some(text) => writes.push((path, text.as_str())),
+            None => deleted.push(path),
+        }
+    }
+    if writes.is_empty() {
+        return;
+    }
+    let id = format!("apply-pr-{}", pull.number);
+    let locations: Vec<Value> = writes
+        .iter()
+        .map(|(path, _)| json!({"path": path}))
+        .collect();
+    let asked = peer.call(
+        CLIENT_METHOD_NAMES.session_request_permission,
+        json!({
+            "sessionId": session.id,
+            "toolCall": {
+                "toolCallId": id,
+                "title": format!(
+                    "Apply pull request #{} to your project ({} files)",
+                    pull.number,
+                    writes.len(),
+                ),
+                "kind": "edit",
+                "status": "pending",
+                "locations": locations,
+            },
+            "options": [
+                {"optionId": "apply", "name": "Apply to my project", "kind": "allow_once"},
+                {"optionId": "skip", "name": "Keep it on the branch", "kind": "reject_once"},
+            ],
+        }),
+        APPLY_TIMEOUT,
+    );
+    // A cancelled or failed ask writes nothing; the pull request stays on its branch.
+    let Ok(reply) = asked else {
+        return;
+    };
+    let outcome = &reply["outcome"];
+    if outcome["outcome"].as_str() != Some("selected")
+        || outcome["optionId"].as_str() != Some("apply")
+    {
+        return;
+    }
+    let mut applied = 0;
+    let mut failure = None;
+    for (path, text) in &writes {
+        let written = peer.call(
+            CLIENT_METHOD_NAMES.fs_write_text_file,
+            json!({"sessionId": session.id, "path": path, "content": text}),
+            WRITE_TIMEOUT,
+        );
+        if let Err(err) = written {
+            failure = Some(format!("{path}: {err}"));
+            break;
+        }
+        applied += 1;
+    }
+    let mut said = match &failure {
+        None => format!("Applied {applied} files"),
+        Some(failure) => format!(
+            "Applied {applied} of {} files; writing {failure} failed",
+            writes.len()
+        ),
+    };
+    if !deleted.is_empty() {
+        said.push_str(&format!(
+            "; {} deleted files were left for you to remove: {}",
+            deleted.len(),
+            deleted.join(", "),
+        ));
+    }
+    said.push('.');
+    notify_update(
+        peer,
+        &session.id,
+        json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": id,
+            "status": if failure.is_some() { "failed" } else { "completed" },
+            "content": [{"type": "content", "content": {"type": "text", "text": said}}],
+        }),
+    );
 }
 
 /// Runs a plaza command on the session's agent and answers with what the hub said, as the turn's
@@ -854,7 +985,8 @@ mod tests {
     use std::sync::mpsc::{self, Sender};
 
     use apz_acp::rpc;
-    use apz_acp::testing::{ClientConfig, FakeClient};
+    use apz_acp::testing::{ClientConfig, FakeClient, PermissionAnswer};
+    use apz_acp::types::PermissionOptionKind;
 
     use super::*;
 
@@ -864,6 +996,7 @@ mod tests {
         hub: FakeHub,
         sessions: Sessions,
         client: Mutex<String>,
+        editor_writes: AtomicBool,
         agent: Option<String>,
         caller: Caller,
     }
@@ -881,6 +1014,8 @@ mod tests {
         approvals: Mutex<Vec<Value>>,
         /// What `repo_pull` reports: the pull request the work opened, if any.
         pull: Mutex<Option<RepoPull>>,
+        /// What `write_back` reports: the owner's setting.
+        write_back: Mutex<bool>,
     }
 
     impl FakeHub {
@@ -982,6 +1117,10 @@ mod tests {
             lock(&self.pull).clone()
         }
 
+        fn write_back(&self) -> bool {
+            *lock(&self.write_back)
+        }
+
         fn now_ms(&self) -> u64 {
             1_700_000_000_123
         }
@@ -1017,9 +1156,11 @@ mod tests {
                 )),
                 approvals: Mutex::default(),
                 pull: Mutex::default(),
+                write_back: Mutex::new(false),
             },
             sessions: Sessions::default(),
             client: Mutex::default(),
+            editor_writes: AtomicBool::new(false),
             agent: agent.map(str::to_string),
             caller,
         });
@@ -1049,6 +1190,7 @@ mod tests {
             sessions: &plaza.sessions,
             agent: plaza.agent.clone(),
             client: &plaza.client,
+            editor_writes: &plaza.editor_writes,
             caller: plaza.caller.clone(),
         }
     }
@@ -1649,6 +1791,202 @@ mod tests {
         assert!(!repo_relative("a/../../x"));
         assert!(!repo_relative("/etc/passwd"));
         assert!(!repo_relative("a\\b"));
+    }
+
+    /// A pull request on repository `app`: a changed file, an added file, a deleted file, and a file that
+    /// leaves the project.
+    fn pull_with_changes() -> RepoPull {
+        let text = |s: &str| Some(s.to_string());
+        RepoPull {
+            url: "http://plaza.gateway/git/agentplaza/app/pulls/3".to_string(),
+            number: 3,
+            files: vec![
+                RepoFile {
+                    path: "src/lib.rs".to_string(),
+                    old_text: text("old\n"),
+                    new_text: text("new\n"),
+                },
+                RepoFile {
+                    path: "docs/new.txt".to_string(),
+                    old_text: None,
+                    new_text: text("hi\n"),
+                },
+                RepoFile {
+                    path: "old.txt".to_string(),
+                    old_text: text("bye\n"),
+                    new_text: None,
+                },
+                RepoFile {
+                    path: "../escape.txt".to_string(),
+                    old_text: None,
+                    new_text: text("out\n"),
+                },
+            ],
+        }
+    }
+
+    /// The editor's project root: absolute on every platform.
+    fn project_root() -> &'static str {
+        if cfg!(windows) {
+            r"C:\work\app"
+        } else {
+            "/work/app"
+        }
+    }
+
+    /// Runs one prompt of a session linked to repository `app`, in the project root; the work ends done.
+    /// Returns the session's id.
+    fn linked_turn(h: &Harness) -> String {
+        let mut params = repo_meta("app", "editor/main", "", false);
+        params["cwd"] = json!(project_root());
+        let created = h
+            .client
+            .peer()
+            .call("session/new", params, WAIT)
+            .expect("session/new");
+        let id = created["sessionId"]
+            .as_str()
+            .expect("a session id")
+            .to_string();
+        h.frames.send(work_end()).expect("the bus is open");
+        call_with(
+            h,
+            "session/prompt",
+            &id,
+            json!({"prompt": [{"type": "text", "text": "Add the docs"}]}),
+        );
+        id
+    }
+
+    /// The params of each question the agent asked the editor about applying pull request #3.
+    fn apply_asks(h: &Harness) -> Vec<Value> {
+        h.client
+            .agent_requests()
+            .into_iter()
+            .filter(|(method, params)| {
+                method == CLIENT_METHOD_NAMES.session_request_permission
+                    && params["toolCall"]["toolCallId"] == "apply-pr-3"
+            })
+            .map(|(_, params)| params)
+            .collect()
+    }
+
+    /// The params of each `fs/write_text_file` the agent made of the editor.
+    fn writes_of(h: &Harness) -> Vec<Value> {
+        h.client
+            .agent_requests()
+            .into_iter()
+            .filter(|(method, _)| method == CLIENT_METHOD_NAMES.fs_write_text_file)
+            .map(|(_, params)| params)
+            .collect()
+    }
+
+    #[test]
+    fn write_back_is_off_until_the_owner_turns_it_on() {
+        let h = harness(None);
+        *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
+        h.client.initialize().expect("initialize");
+        linked_turn(&h);
+        // The pull request is still shown; nothing asks the editor to apply it.
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(said.contains("\"toolCallId\":\"pr-3\""), "{said}");
+        assert!(apply_asks(&h).is_empty(), "{:?}", h.client.agent_requests());
+        assert!(writes_of(&h).is_empty());
+    }
+
+    #[test]
+    fn write_back_needs_an_editor_that_writes_files() {
+        let h = harness(None);
+        *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
+        *lock(&h.plaza.hub.write_back) = true;
+        // An editor whose initialize does not advertise fs.writeTextFile.
+        h.client
+            .peer()
+            .call(
+                "initialize",
+                json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"fs": {"readTextFile": true}},
+                    "clientInfo": {"name": "zed", "version": "0.200"},
+                }),
+                WAIT,
+            )
+            .expect("initialize");
+        linked_turn(&h);
+        assert!(apply_asks(&h).is_empty(), "{:?}", h.client.agent_requests());
+        assert!(writes_of(&h).is_empty());
+    }
+
+    #[test]
+    fn write_back_is_for_the_owner_or_a_govern_token() {
+        let h = harness_with(None, operate(), ClientConfig::default());
+        *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
+        *lock(&h.plaza.hub.write_back) = true;
+        h.client.initialize().expect("initialize");
+        linked_turn(&h);
+        assert!(apply_asks(&h).is_empty(), "{:?}", h.client.agent_requests());
+        assert!(writes_of(&h).is_empty());
+    }
+
+    #[test]
+    fn write_back_applies_the_files_when_the_owner_says_yes() {
+        let h = harness(None);
+        *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
+        *lock(&h.plaza.hub.write_back) = true;
+        h.client.initialize().expect("initialize");
+        let id = linked_turn(&h);
+        // The owner is asked once, about the two files that have new text.
+        let asks = apply_asks(&h);
+        assert_eq!(asks.len(), 1, "{:?}", h.client.agent_requests());
+        assert_eq!(asks[0]["sessionId"], json!(id));
+        let tool_call = &asks[0]["toolCall"];
+        assert_eq!(
+            tool_call["title"],
+            "Apply pull request #3 to your project (2 files)"
+        );
+        assert_eq!(tool_call["kind"], "edit");
+        assert_eq!(asks[0]["options"][0]["optionId"], "apply");
+        assert_eq!(asks[0]["options"][1]["optionId"], "skip");
+        // Each changed file is written at its absolute path with its new text; the deleted one is not.
+        let root = Path::new(project_root());
+        let lib = root.join("src/lib.rs").to_string_lossy().into_owned();
+        let new = root.join("docs/new.txt").to_string_lossy().into_owned();
+        let writes = writes_of(&h);
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        assert_eq!(writes[0]["sessionId"], json!(id));
+        assert_eq!(writes[0]["path"], json!(lib));
+        assert_eq!(writes[0]["content"], "new\n");
+        assert_eq!(writes[1]["path"], json!(new));
+        assert_eq!(writes[1]["content"], "hi\n");
+        assert_eq!(h.client.file(&lib).as_deref(), Some("new\n"));
+        assert_eq!(h.client.file(&new).as_deref(), Some("hi\n"));
+        // The update says the files are applied, and names the deleted one for the owner.
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(said.contains("\"toolCallId\":\"apply-pr-3\""), "{said}");
+        assert!(
+            said.contains("Applied 2 files; 1 deleted files were left for you to remove:"),
+            "{said}"
+        );
+        assert!(said.contains("\"status\":\"completed\""), "{said}");
+        assert!(!said.contains("escape.txt"), "{said}");
+    }
+
+    #[test]
+    fn write_back_skip_writes_nothing() {
+        let config = ClientConfig {
+            permission: PermissionAnswer::Kind(PermissionOptionKind::RejectOnce),
+            ..ClientConfig::default()
+        };
+        let h = harness_with(None, Caller::Owner, config);
+        *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
+        *lock(&h.plaza.hub.write_back) = true;
+        h.client.initialize().expect("initialize");
+        linked_turn(&h);
+        // The owner is asked and keeps the pull request on its branch: no write, no update for it.
+        assert_eq!(apply_asks(&h).len(), 1, "{:?}", h.client.agent_requests());
+        assert!(writes_of(&h).is_empty());
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(!said.contains("apply-pr-3"), "{said}");
     }
 
     #[test]

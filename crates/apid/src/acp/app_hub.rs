@@ -274,6 +274,10 @@ impl Hub for AppHub<'_> {
         Ok(())
     }
 
+    fn write_back(&self) -> bool {
+        self.app.settings.get().acp_write_back
+    }
+
     fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull> {
         let forge = &self.app.forge;
         let pr = open_pull_of(forge, name, head)?;

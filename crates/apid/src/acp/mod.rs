@@ -23,6 +23,7 @@ pub mod feed;
 pub mod store;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -56,6 +57,7 @@ struct ConnState {
     app: Arc<App>,
     agent: Option<String>,
     client: Mutex<String>,
+    editor_writes: AtomicBool,
     caller: Caller,
 }
 
@@ -163,6 +165,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
         app,
         agent,
         client: Mutex::new(String::new()),
+        editor_writes: AtomicBool::new(false),
         caller,
     });
     let on_request = {
@@ -174,6 +177,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
                 sessions: &state.app.acp_sessions,
                 agent: state.agent.clone(),
                 client: &state.client,
+                editor_writes: &state.editor_writes,
                 caller: state.caller.clone(),
             };
             metered(&state.app, &state.caller, method, params, |params| {
@@ -190,6 +194,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
                 sessions: &state.app.acp_sessions,
                 agent: state.agent.clone(),
                 client: &state.client,
+                editor_writes: &state.editor_writes,
                 caller: state.caller.clone(),
             };
             // A notification has no answer, so a refused one is only audited.

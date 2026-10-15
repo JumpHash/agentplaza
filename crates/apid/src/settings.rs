@@ -123,6 +123,9 @@ pub struct Settings {
     pub engines_mode: String,
     /// Whether editors may connect to the hub's ACP server (`/v1/acp`). Off until the owner turns it on.
     pub acp_enabled: bool,
+    /// Whether an editor may apply a pull request its agent opened to the editor's project, when the
+    /// owner says yes in the editor. Off until the owner turns it on; the agent never writes the project itself.
+    pub acp_write_back: bool,
 }
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
@@ -221,6 +224,7 @@ impl Default for Settings {
             engines_enabled: DEFAULT_ENGINE_IDS.map(String::from).to_vec(),
             engines_mode: ENGINE_MODES[0].into(),
             acp_enabled: false,
+            acp_write_back: false,
         }
     }
 }
