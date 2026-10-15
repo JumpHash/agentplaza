@@ -437,8 +437,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     return h(
       'tr',
       null,
-      h('td', { 'data-label': 'Template' }, t.name),
-      h('td', { 'data-label': 'ID' }, h('span.mcp-mono', null, t.templateID.slice(0, 8))),
+      h('td', { 'data-label': 'Template' }, t.name, h('span.mcp-mono', null, t.templateID.slice(0, 12))),
       h('td', { 'data-label': 'Build' }, latest ? badge(latest.status, BUILD_TONE[latest.status]) : '—'),
       h('td', { 'data-label': 'Tags' }, templateTags(t).join(', ') || '—'),
       h('td', { 'data-label': 'Size' }, latest ? `${latest.cpuCount} vCPU, ${memoryText(latest.memoryMB)}` : '—'),
@@ -473,7 +472,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
                 h(
                   'tr',
                   null,
-                  ['Template', 'ID', 'Build', 'Tags', 'Size', 'Updated', 'Failure', 'Actions'].map((c) => h('th', null, c)),
+                  ['Template', 'Build', 'Tags', 'Size', 'Updated', 'Failure', 'Actions'].map((c) => h('th', null, c)),
                 ),
               ),
               h('tbody', null, templates.map(templateRow)),
