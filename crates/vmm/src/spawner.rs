@@ -458,6 +458,28 @@ pub fn set_child_binary(path: impl Into<PathBuf>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path.into());
 }
 
+/// The cgroup root [`SpawnMode::Process`] places each VM's process under, or
+/// `None` (the default) for no limits. Process-wide, like the mode: a daemon
+/// that wants limits calls [`set_cgroup_root`] once, at start.
+static CGROUP_ROOT: Mutex<Option<crate::cgroup::CgroupRoot>> = Mutex::new(None);
+
+/// Sets the cgroup root per-VM processes are limited under. A daemon calls
+/// `set_cgroup_root(cgroup::CgroupRoot::detect())` once: `None` (no delegated
+/// hierarchy, the reason logged by `detect`) leaves the VMs unlimited.
+pub fn set_cgroup_root(root: Option<crate::cgroup::CgroupRoot>) {
+    *CGROUP_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = root;
+}
+
+/// The cgroup root set by [`set_cgroup_root`], if any.
+pub fn cgroup_root() -> Option<crate::cgroup::CgroupRoot> {
+    CGROUP_ROOT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// The mode this process is set to: the programmatic one if [`set_spawn_mode`]
 /// was called, otherwise the environment's, otherwise
 /// [`SpawnMode::InProcess`]. An [`SPAWN_MODE_ENV`] value that names no mode is

@@ -128,6 +128,8 @@
 //! pid namespace in the child (the jailer's stated gap, unchanged by this
 //! mode).
 
+use crate::cgroup::{VmCgroup, VmLimits};
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -190,6 +192,39 @@ struct SpawnRequest {
 /// parent *thread* outlive the caller that asked for the VM — see the module
 /// documentation for why that is required, not merely tidy.
 static SUPERVISOR: Mutex<Option<mpsc::Sender<SpawnRequest>>> = Mutex::new(None);
+
+/// Numbers the cgroups this process creates, so two VMs of one parent never
+/// share a name (the VM id alone repeats across boots of the same id).
+static CGROUP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// Kills a VM's cgroup, if it still has one. The waiter takes the cgroup once
+/// the child is reaped, so after that there is nothing to kill.
+fn kill_cgroup(cgroup: &Mutex<Option<VmCgroup>>) {
+    let guard = cgroup.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cgroup) = guard.as_ref()
+        && let Err(err) = cgroup.kill()
+    {
+        eprintln!(
+            "vmm: cannot kill the VM's cgroup {}: {err}",
+            cgroup.path().display()
+        );
+    }
+}
+
+/// Removes a VM's cgroup, if it still has one: kills what is left in it, waits
+/// briefly for it to empty, and `rmdir`s it. The `Drop` of the taken cgroup
+/// retries the same work if the removal failed.
+fn remove_cgroup(cgroup: &Mutex<Option<VmCgroup>>) {
+    let taken = cgroup.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(mut cgroup) = taken
+        && let Err(err) = cgroup.remove()
+    {
+        eprintln!(
+            "vmm: cannot remove the VM's cgroup {}: {err}",
+            cgroup.path().display()
+        );
+    }
+}
 
 /// The supervisor thread's loop: spawn each requested child and answer with
 /// it. A caller that vanished before the answer (its receiver dropped) leaves
@@ -272,11 +307,39 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             command.env(name, value);
         }
     }
+    // The VM's cgroup, when the host has one, is created before the child
+    // exists so its limits are in place for the child's first allocation; the
+    // child joins it right after the spawn.
+    let cgroup = match super::cgroup_root() {
+        Some(root) => {
+            let name = format!(
+                "vm-{}-{}-{}",
+                runtime.id,
+                std::process::id(),
+                CGROUP_SEQ.fetch_add(1, Ordering::SeqCst)
+            );
+            let limits = VmLimits {
+                vcpus: spec.vcpus,
+                memory_mib: spec.memory_mib,
+            };
+            Some(root.create(&name, limits).map_err(SpawnError::backend)?)
+        }
+        None => None,
+    };
     // The spawn runs on the supervisor thread, not here: the child's
     // parent-death signal watches the *thread* that created it (see the module
     // documentation), and this caller may be an ephemeral request thread.
     let mut child = spawn_supervised(command, &binary)?;
     let pid = child.id();
+    // The child joins its cgroup before anything waits on it. A child that
+    // cannot join is killed here rather than left running without its limits.
+    if let Some(cgroup) = &cgroup
+        && let Err(err) = cgroup.add_process(pid)
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(SpawnError::backend(err));
+    }
 
     // The three pipes are the whole interface. Missing one is not possible
     // after a successful `spawn` with all three requested, but it is reported
@@ -403,11 +466,15 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
     // The stop control: `SIGTERM`, then `SIGKILL` on a second request (the
     // spawner repeats a request that did not take). A child that has already
     // been reaped is not signalled again: its pid may have been reused.
+    // Shared by the stop control (which kills it on the escalation to `SIGKILL`)
+    // and the waiter (which removes it once the child is reaped).
+    let cgroup = Arc::new(Mutex::new(cgroup));
     let signals = Arc::new(AtomicUsize::new(0));
     let gone = Arc::new(AtomicBool::new(false));
     {
         let signals = Arc::clone(&signals);
         let gone = Arc::clone(&gone);
+        let cgroup = Arc::clone(&cgroup);
         runtime.set_stop_control(move || {
             if gone.load(Ordering::SeqCst) {
                 return;
@@ -425,6 +492,11 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
                     eprintln!("vmm: cannot signal the per-VM process {pid}: {err}");
                 }
             }
+            // The escalation ends the VM's whole cgroup, not only the child:
+            // `SIGTERM` was the guest's chance to stop, and this is the end.
+            if signal == libc::SIGKILL {
+                kill_cgroup(&cgroup);
+            }
         });
     }
 
@@ -436,6 +508,7 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
         let runtime = Arc::clone(&runtime);
         let gone = Arc::clone(&gone);
         let slot = Arc::clone(&slot);
+        let cgroup = Arc::clone(&cgroup);
         thread::Builder::new()
             .name(format!("apz_vm{}_child", runtime.id))
             .spawn(move || {
@@ -452,6 +525,9 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
                     // not stopped by its guest, so no guest exit is published.
                     _ => {}
                 }
+                // The child is reaped: its cgroup goes now, with whatever the
+                // VM left in it.
+                remove_cgroup(&cgroup);
             })
     };
     match waiter {
@@ -467,6 +543,7 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
                 let _ = child.kill();
                 let _ = child.wait();
             }
+            remove_cgroup(&cgroup);
             Err(SpawnError::Thread(source))
         }
     }

@@ -80,6 +80,9 @@ pub mod builder;
 #[cfg(target_os = "linux")]
 mod sys;
 
+/// cgroup v2 limits for the per-VM processes of [`spawner::SpawnMode::Process`]:
+/// one cgroup per VM, sized from its shape. Set with [`spawner::set_cgroup_root`].
+pub mod cgroup;
 /// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`).
 pub mod clonefile;
 /// Pausing, resuming and snapshotting a running in-process VM (the builder installs it).
