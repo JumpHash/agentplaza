@@ -311,7 +311,7 @@ impl Apid {
 
     /// Reads the token file again, keeps what it holds and returns it. An unreadable file is an
     /// `Err`, and the kept token stays as it was.
-    fn reload_token(&self) -> Result<String, String> {
+    pub(crate) fn reload_token(&self) -> Result<String, String> {
         let token = self.read_token_file()?;
         *self.cache() = Some(token.clone());
         Ok(token)

@@ -558,7 +558,9 @@ fn gateway(
     } else {
         None
     };
-    let token = apid.token().map_err(|_| Stop::Unreachable)?;
+    // This relay writes its own request and passes apid's answer through, so it cannot retry a refused
+    // token: it reads the file per connection, as every call did before the token was kept.
+    let token = apid.reload_token().map_err(|_| Stop::Unreachable)?;
     let upstream = apid
         .connect(CONNECT_TIMEOUT)
         .map_err(|_| Stop::Unreachable)?;
