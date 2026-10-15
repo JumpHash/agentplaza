@@ -10,6 +10,7 @@
 
 use std::time::Instant;
 
+use apz_proto::chat::ToolSpec;
 use serde_json::Value;
 
 /// The hub's final answer on one engine action.
@@ -40,4 +41,18 @@ pub trait EngineLink: Send + Sync {
     /// True once the work item was cancelled, or the agent is stopping: the engine session then
     /// sends `session/cancel`, answers its open requests `cancelled` and ends the turn.
     fn cancelled(&self) -> bool;
+
+    /// The plaza's tools an engine may call through its MCP server (see [`super::mcp::plaza_tools`]).
+    /// Empty where the link has none, so the engine is offered no MCP server.
+    fn plaza_tools(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+
+    /// Calls the plaza's tool `name` with `input` through the hub's gate, as the agent's own calls
+    /// are gated. `Ok` is the tool's output, `Err` its error or the reason it did not run. Blocks
+    /// until the hub's final answer, the `deadline` or a cancel, as [`EngineLink::decide`] does.
+    fn call(&self, name: &str, input: &Value, deadline: Instant) -> Result<String, String> {
+        let _ = (name, input, deadline);
+        Err("plaza tools are not available here".into())
+    }
 }

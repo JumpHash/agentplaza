@@ -21,6 +21,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -32,6 +33,7 @@ use serde_json::{Value, json};
 
 use super::catalog::{Entry, ModelVia};
 use super::link::{EngineLink, Verdict};
+use super::mcp::{self, Socket};
 use super::stream::{Stream, Turn};
 use super::terminal::Terminals;
 use super::{fs, gate};
@@ -129,7 +131,30 @@ pub fn prompt_turn(
         thread::spawn(move || read_stderr(stderr, &tail))
     };
 
-    let result = drive(&mut child, options, prompt, link, stdin, stdout);
+    // The plaza's tools reach the engine through an MCP server it starts from this binary: its
+    // socket is bound before the engine starts, and served while the turn runs.
+    let tools = link.plaza_tools();
+    let socket = Socket::bind(&options.workspace.plaza_dir(), &tools).map_err(|err| {
+        format!(
+            "cannot open the plaza's tools for the {} engine: {err}",
+            entry.id
+        )
+    })?;
+    let servers = mcp::servers(socket.as_ref().map(Socket::path)).map_err(|err| {
+        format!(
+            "cannot offer the plaza's tools to the {} engine: {err}",
+            entry.id
+        )
+    })?;
+    let stop = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        if let Some(socket) = &socket {
+            scope.spawn(|| socket.serve(&tools, link, options.deadline, &stop));
+        }
+        let result = drive(&mut child, options, prompt, link, &servers, stdin, stdout);
+        stop.store(true, AtomicOrdering::SeqCst);
+        result
+    });
     bash::kill_group(&mut child);
     let _ = child.wait();
     let _ = stderr_reader.join();
@@ -234,11 +259,13 @@ impl Ctx<'_> {
 }
 
 /// The handshake, the session, the prompt turn and its loop. The child is killed by the caller.
+/// `servers` are the `mcpServers` the session is opened with.
 fn drive(
     child: &mut Child,
     options: &Options,
     prompt: &str,
     link: &dyn EngineLink,
+    servers: &Value,
     stdin: ChildStdin,
     stdout: ChildStdout,
 ) -> Result<Outcome, String> {
@@ -271,17 +298,21 @@ fn drive(
             }
         },
     );
-    let result = run_turn(child, options, prompt, link, &peer, &events, &events_tx);
+    let result = run_turn(
+        child, options, prompt, link, servers, &peer, &events, &events_tx,
+    );
     peer.close();
     result
 }
 
 /// The protocol steps of [`drive`], over the connection.
+#[allow(clippy::too_many_arguments)]
 fn run_turn(
     child: &mut Child,
     options: &Options,
     prompt: &str,
     link: &dyn EngineLink,
+    servers: &Value,
     peer: &Peer,
     events: &Receiver<Event>,
     events_tx: &Sender<Event>,
@@ -329,7 +360,7 @@ fn run_turn(
                 None
             };
             method.and_then(|method| {
-                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
+                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": servers});
                 peer.call(method, params, START_TIMEOUT)
                     .ok()
                     .map(|reply| (id.to_string(), reply))
@@ -344,7 +375,7 @@ fn run_turn(
             let reply = peer
                 .call(
                     names.session_new,
-                    json!({"cwd": cwd, "mcpServers": []}),
+                    json!({"cwd": cwd, "mcpServers": servers}),
                     START_TIMEOUT,
                 )
                 .map_err(|err| rpc_failure("session/new", err))?;

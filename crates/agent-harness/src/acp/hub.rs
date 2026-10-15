@@ -9,10 +9,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use apz_proto::chat::ToolSpec;
 use apz_proto::wire::{Decision, GuestMessage, HostMessage};
 use serde_json::Value;
 
 use super::link::{EngineLink, Verdict};
+use super::mcp;
 use crate::lane::Shared;
 
 /// How long a decision wait sleeps between checks of the cancel flag.
@@ -32,6 +34,24 @@ pub struct HubLink<'a, 'l, S, W> {
     seq: AtomicU64,
     /// Set when the work item is cancelled or the agent is stopping.
     cancel: &'a AtomicBool,
+    /// The profile's tools, which the engine's plaza MCP server offers (see [`mcp::plaza_tools`]).
+    tools: Vec<ToolSpec>,
+}
+
+/// How a nested request ended, as the hub or the owner answered it.
+enum Settled {
+    /// The hub's final tool decision (`Allow`, `Done` or `Deny`) and the output it came with.
+    Final {
+        decision: Decision,
+        output: String,
+        is_error: bool,
+    },
+    /// The owner's answer to a request the hub held.
+    Owner { allow: bool, reason: Option<String> },
+    /// No answer before the deadline.
+    Deadline,
+    /// Cancelled, or the request was unregistered under the wait (only a dropped link does that).
+    Cancelled,
 }
 
 impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
@@ -40,6 +60,7 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
         work: u64,
         call: String,
         cancel: &'a AtomicBool,
+        tools: Vec<ToolSpec>,
     ) -> Self {
         Self {
             shared,
@@ -48,76 +69,141 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
             next: AtomicU64::new(0),
             seq: AtomicU64::new(0),
             cancel,
+            tools,
         }
     }
 
-    /// Waits for the hub's final answer to request `id`. A pending answer keeps the wait open
-    /// until the owner's `permission_decision` arrives.
-    fn wait(&self, id: &str, inbox: &Receiver<HostMessage>, deadline: Instant) -> Verdict {
-        loop {
-            if self.cancel.load(Ordering::SeqCst) {
-                return Verdict::Cancelled;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Verdict::Deny("no decision before the deadline".to_string());
-            }
-            match inbox.recv_timeout(DECISION_POLL.min(deadline.saturating_duration_since(now))) {
-                Ok(HostMessage::ToolDecision {
-                    decision,
-                    output,
-                    approval,
-                    ..
-                }) => match decision {
-                    Decision::Allow | Decision::Done => return Verdict::Allow,
-                    Decision::Deny if output.is_empty() => {
-                        return Verdict::Deny("denied by the hub".to_string());
-                    }
-                    Decision::Deny => return Verdict::Deny(output),
-                    Decision::Pending => self.shared.note(&format!(
-                        "agent-harness: {id} is held for the owner's approval {}",
-                        approval.as_deref().unwrap_or("(none named)")
-                    )),
-                },
-                Ok(HostMessage::PermissionDecision { allow: true, .. }) => return Verdict::Allow,
-                Ok(HostMessage::PermissionDecision {
-                    allow: false,
-                    reason,
-                    ..
-                }) => {
-                    return Verdict::Deny(
-                        reason.unwrap_or_else(|| "the owner denied it".to_string()),
-                    );
-                }
-                // Only decisions are routed to a waiting request; anything else is not for it.
-                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
-                // The request was unregistered under the wait, which only a dropped link does.
-                Err(RecvTimeoutError::Disconnected) => return Verdict::Cancelled,
-            }
-        }
-    }
-}
-
-impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
-    fn decide(&self, name: &str, input: &Value, deadline: Instant) -> Verdict {
-        if self.cancelled() {
-            return Verdict::Cancelled;
+    /// Sends one nested `tool_request` for `name` and waits for how it ends. Both [`EngineLink::decide`]
+    /// and [`EngineLink::call`] ask the hub this way, so the same gate decides both.
+    fn request(&self, name: &str, input: &Value, deadline: Instant) -> Settled {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Settled::Cancelled;
         }
         let n = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let id = format!("{}.e{n}", self.call);
         // Registered before the request goes out, so the hub's answer always finds its taker.
         let inbox = self.shared.nested().register(&id);
-        let verdict = match self.shared.say(&GuestMessage::ToolRequest {
+        let settled = match self.shared.say(&GuestMessage::ToolRequest {
             work: self.work,
             call: id.clone(),
             name: name.to_string(),
             input: input.clone(),
         }) {
             Ok(()) => self.wait(&id, &inbox, deadline),
-            Err(err) => Verdict::Deny(format!("cannot reach the hub: {err}")),
+            Err(err) => Settled::Final {
+                decision: Decision::Deny,
+                output: format!("cannot reach the hub: {err}"),
+                is_error: true,
+            },
         };
         self.shared.nested().unregister(&id);
-        verdict
+        settled
+    }
+
+    /// Waits for the hub's final answer to request `id`. A pending answer keeps the wait open
+    /// until the owner's `permission_decision` arrives.
+    fn wait(&self, id: &str, inbox: &Receiver<HostMessage>, deadline: Instant) -> Settled {
+        loop {
+            if self.cancel.load(Ordering::SeqCst) {
+                return Settled::Cancelled;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Settled::Deadline;
+            }
+            match inbox.recv_timeout(DECISION_POLL.min(deadline.saturating_duration_since(now))) {
+                Ok(HostMessage::ToolDecision {
+                    decision,
+                    output,
+                    is_error,
+                    approval,
+                    ..
+                }) => match decision {
+                    Decision::Allow | Decision::Done | Decision::Deny => {
+                        return Settled::Final {
+                            decision,
+                            output,
+                            is_error,
+                        };
+                    }
+                    Decision::Pending => self.shared.note(&format!(
+                        "agent-harness: {id} is held for the owner's approval {}",
+                        approval.as_deref().unwrap_or("(none named)")
+                    )),
+                },
+                Ok(HostMessage::PermissionDecision { allow, reason, .. }) => {
+                    return Settled::Owner { allow, reason };
+                }
+                // Only decisions are routed to a waiting request; anything else is not for it.
+                Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                // The request was unregistered under the wait, which only a dropped link does.
+                Err(RecvTimeoutError::Disconnected) => return Settled::Cancelled,
+            }
+        }
+    }
+}
+
+/// The reason a hub's denial carries, or the hub's own when it gave none.
+fn denial(output: String) -> String {
+    if output.is_empty() {
+        "denied by the hub".to_string()
+    } else {
+        output
+    }
+}
+
+impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
+    fn decide(&self, name: &str, input: &Value, deadline: Instant) -> Verdict {
+        match self.request(name, input, deadline) {
+            Settled::Final {
+                decision: Decision::Deny,
+                output,
+                ..
+            } => Verdict::Deny(denial(output)),
+            Settled::Final { .. } => Verdict::Allow,
+            Settled::Owner { allow: true, .. } => Verdict::Allow,
+            Settled::Owner { reason, .. } => {
+                Verdict::Deny(reason.unwrap_or_else(|| "the owner denied it".to_string()))
+            }
+            Settled::Deadline => Verdict::Deny("no decision before the deadline".to_string()),
+            Settled::Cancelled => Verdict::Cancelled,
+        }
+    }
+
+    fn call(&self, name: &str, input: &Value, deadline: Instant) -> Result<String, String> {
+        match self.request(name, input, deadline) {
+            Settled::Final {
+                decision: Decision::Done,
+                output,
+                is_error: false,
+            } => Ok(output),
+            Settled::Final {
+                decision: Decision::Done,
+                output,
+                is_error: true,
+            } => Err(output),
+            Settled::Final {
+                decision: Decision::Deny,
+                output,
+                ..
+            } => Err(denial(output)),
+            // The hub let the call run in the VM: only the harness's own tools are allowed that,
+            // and they are not offered through the plaza's MCP server.
+            Settled::Final { .. } => Err(format!(
+                "{name} runs in the VM, not through the plaza's MCP server"
+            )),
+            // The owner approved a held call: the engine calls it again to run it.
+            Settled::Owner { allow: true, .. } => Err("approved; call it again".to_string()),
+            Settled::Owner { reason, .. } => {
+                Err(reason.unwrap_or_else(|| "the owner denied it".to_string()))
+            }
+            Settled::Deadline => Err("no decision before the deadline".to_string()),
+            Settled::Cancelled => Err("the turn was cancelled".to_string()),
+        }
+    }
+
+    fn plaza_tools(&self) -> Vec<ToolSpec> {
+        mcp::plaza_tools(&self.tools)
     }
 
     fn update(&self, engine: &str, session: &str, update: &Value) {
@@ -166,7 +252,7 @@ mod tests {
             &mut log,
         );
         let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
         let verdict = thread::scope(|scope| {
             scope.spawn(|| {
                 let request = next(&mut host);
@@ -196,7 +282,7 @@ mod tests {
             &mut log,
         );
         let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
         let verdict = thread::scope(|scope| {
             scope.spawn(|| {
                 let _ = next(&mut host);
@@ -237,7 +323,7 @@ mod tests {
             &mut log,
         );
         let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
         let verdict = thread::scope(|scope| {
             scope.spawn(|| {
                 let _ = next(&mut host);
@@ -270,7 +356,7 @@ mod tests {
             &mut log,
         );
         let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
         let verdict = link.decide(
             "engine.fetch",
             &json!({}),
@@ -311,7 +397,7 @@ mod tests {
             &mut log,
         );
         let cancel = AtomicBool::new(false);
-        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
         let update = json!({"sessionUpdate": "agent_message_chunk"});
         link.update("claude", "s1", &update);
         link.update("claude", "s1", &update);
@@ -321,5 +407,132 @@ mod tests {
         assert!(first.contains(r#""session":"s1""#), "{first}");
         assert!(first.contains(r#""call":"toolu_1""#), "{first}");
         assert!(next(&mut host).contains(r#""seq":2"#));
+    }
+
+    fn tool_decision(call: &str, decision: Decision, output: &str, is_error: bool) -> HostMessage {
+        HostMessage::ToolDecision {
+            call: call.to_string(),
+            decision,
+            output: output.to_string(),
+            is_error,
+            program: None,
+            approval: None,
+        }
+    }
+
+    #[test]
+    fn a_plaza_call_the_hub_runs_returns_its_output_and_its_error_flag() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
+        let (first, second) = thread::scope(|scope| {
+            scope.spawn(|| {
+                let request = next(&mut host);
+                assert!(request.contains(r#""call":"toolu_1.e1""#), "{request}");
+                assert!(request.contains(r#""name":"board_list""#), "{request}");
+                assert!(
+                    request.contains(r#""input":{"column":"todo"}"#),
+                    "{request}"
+                );
+                shared.nested().route(tool_decision(
+                    "toolu_1.e1",
+                    Decision::Done,
+                    "two cards",
+                    false,
+                ));
+                let _ = next(&mut host);
+                shared.nested().route(tool_decision(
+                    "toolu_1.e2",
+                    Decision::Done,
+                    "no such card",
+                    true,
+                ));
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let first = link.call("board_list", &json!({"column": "todo"}), deadline);
+            let second = link.call("board_get", &json!({}), deadline);
+            (first, second)
+        });
+        assert_eq!(first, Ok("two cards".to_string()));
+        assert_eq!(second, Err("no such card".to_string()));
+    }
+
+    #[test]
+    fn a_plaza_call_the_hub_denies_is_an_error_with_the_hubs_reason() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
+        let verdict = thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = next(&mut host);
+                shared.nested().route(tool_decision(
+                    "toolu_1.e1",
+                    Decision::Deny,
+                    "the law forbids it",
+                    true,
+                ));
+            });
+            link.call(
+                "task_delete",
+                &json!({}),
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        assert_eq!(verdict, Err("the law forbids it".to_string()));
+    }
+
+    #[test]
+    fn a_plaza_call_the_hub_lets_run_in_the_vm_is_refused_here() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
+        let verdict = thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = next(&mut host);
+                shared
+                    .nested()
+                    .route(tool_decision("toolu_1.e1", Decision::Allow, "", false));
+            });
+            link.call("bash", &json!({}), Instant::now() + Duration::from_secs(5))
+        });
+        assert_eq!(
+            verdict,
+            Err("bash runs in the VM, not through the plaza's MCP server".to_string())
+        );
+    }
+
+    #[test]
+    fn plaza_tools_are_the_profiles_plaza_tools_only() {
+        let spec = |name: &str| ToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: json!({"type": "object"}),
+        };
+        let profile = vec![spec("board_list"), spec("bash"), spec("ide_read")];
+        let mut log = Vec::new();
+        let shared = Shared::new(Lines::new(std::io::empty()), &mut log);
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, profile);
+        let names: Vec<String> = link
+            .plaza_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(names, vec!["board_list".to_string()]);
     }
 }

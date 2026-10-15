@@ -783,8 +783,13 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                         let shared = self.shared;
                         let cancel = Arc::clone(&self.tool_cancel);
                         let call = id.to_string();
+                        // The engine's MCP server offers the profile's plaza tools, through the hub.
+                        let tools = self
+                            .profile
+                            .as_ref()
+                            .map_or_else(Vec::new, |profile| profile.tools.clone());
                         self.run_local(move || {
-                            let link = HubLink::new(shared, work, call, &cancel);
+                            let link = HubLink::new(shared, work, call, &cancel, tools);
                             crate::acp::run::run(workspace, input, &link)
                         })?
                     }
@@ -842,6 +847,33 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
         return Some("the arguments must be a JSON object");
     }
     None
+}
+
+/// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
+const GUEST_TOOLS: [&str; 17] = [
+    "bash",
+    "install_packages",
+    "multi_edit",
+    "glob",
+    "grep",
+    "bash_start",
+    "bash_output",
+    "bash_kill",
+    "todo_write",
+    "code_engine",
+    "tool_package",
+    "deliver_file",
+    "share_file",
+    "checkpoint_diff",
+    "checkpoint_restore",
+    "checkpoint_list",
+    "edit_file",
+];
+
+/// True for a tool the harness runs itself, so the VM's own tools: the ones an engine's plaza MCP
+/// server must not offer, since the engine has its own through ACP.
+pub(crate) fn is_guest_tool(name: &str) -> bool {
+    GUEST_TOOLS.contains(&name) || tools::serves(name)
 }
 
 /// Runs a tool the host allowed, under the names the model knows. `edit_file`

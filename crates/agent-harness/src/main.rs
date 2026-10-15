@@ -131,6 +131,20 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
+    // An engine's MCP server for the plaza's tools, started by the engine on its stdio: it is not
+    // the vsock session, and its stdout is the protocol, so it reports errors on stderr only.
+    let args: Vec<String> = std::env::args().collect();
+    if let [_, flag, socket] = args.as_slice()
+        && flag == "--plaza-mcp"
+    {
+        return match acp::mcp::run_stdio(std::path::Path::new(socket)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("agent-harness: the plaza's tools: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
