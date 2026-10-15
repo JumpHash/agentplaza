@@ -337,7 +337,8 @@ pub struct Snapshot {
 }
 
 /// One sandbox. Its envd access token is kept here because vsockd needs it after a hub restart; the
-/// file is mode 0600. Environment variables are not kept: they were given to the daemon at boot.
+/// file is mode 0600. Environment variables are kept too, so a cold resume can hand them to a fresh
+/// daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sandbox {
     /// `sb` and sixteen hex digits.
@@ -354,6 +355,12 @@ pub struct Sandbox {
     pub auto_pause: bool,
     pub allow_internet: bool,
     pub metadata: BTreeMap<String, String>,
+    /// The environment variables the sandbox was created with; a cold resume gives them to the new daemon.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_vars: BTreeMap<String, String>,
+    /// Paused without memory: it resumes by booting from disk, not from a memory image.
+    #[serde(default)]
+    pub cold: bool,
     /// The envd access token (`secure` sandboxes only).
     pub access_token: Option<String>,
     #[serde(default)]
@@ -520,7 +527,7 @@ fn reap(app: &App, now: u64) {
                 };
                 destroy(app, &sandbox, reason, "reaper")
             }
-            Reap::Pause => pause_sandbox(app, &sandbox, "reaper", "timeout"),
+            Reap::Pause => pause_sandbox(app, &sandbox, "reaper", "timeout", true),
         };
         // A failed kill stays on the list and the next pass tries again.
         if let Err(refused) = outcome {
@@ -954,8 +961,10 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         auto_pause: spec.auto_pause,
         allow_internet: spec.allow_internet,
         metadata: spec.metadata.clone(),
+        env_vars: spec.env_vars.clone(),
         access_token: access_token.clone(),
         snapshots: Vec::new(),
+        cold: false,
     };
     // The record comes first: vsockd finds the CID and the token by the sandbox's id on each gateway call.
     if let Err(refused) = sandboxes(app).insert(sandbox.clone()) {
@@ -1016,15 +1025,33 @@ fn destroy(app: &App, sandbox: &Sandbox, reason: &str, actor: &str) -> Result<()
     Ok(())
 }
 
-fn pause_sandbox(app: &App, sandbox: &Sandbox, actor: &str, reason: &str) -> Result<(), Refused> {
+/// noded's body for sleep and wake: `keep_memory` keeps the memory image, otherwise the sandbox is cold.
+fn memory_body(keep_memory: bool) -> Value {
+    if keep_memory {
+        json!({})
+    } else {
+        json!({"memory": false})
+    }
+}
+
+fn pause_sandbox(
+    app: &App,
+    sandbox: &Sandbox,
+    actor: &str,
+    reason: &str,
+    keep_memory: bool,
+) -> Result<(), Refused> {
     noded_ok(
         app,
         "POST",
         &vm_path(&sandbox.run, "sleep"),
-        &json!({}),
+        &memory_body(keep_memory),
         NODED_TIMEOUT,
     )?;
-    sandboxes(app).update(&sandbox.id, |s| s.phase = Phase::Paused)?;
+    sandboxes(app).update(&sandbox.id, |s| {
+        s.phase = Phase::Paused;
+        s.cold = !keep_memory;
+    })?;
     audit(
         app,
         sandbox,
@@ -1036,25 +1063,32 @@ fn pause_sandbox(app: &App, sandbox: &Sandbox, actor: &str, reason: &str) -> Res
     Ok(())
 }
 
-/// Wakes a paused sandbox for `timeout_s` from now.
-fn wake(app: &App, id: &str, timeout_s: u32, actor: &str) -> Result<Sandbox, Refused> {
+/// Wakes a paused sandbox for `timeout_s` from now. A cold wake (asked for, or a sandbox paused without
+/// memory) boots from disk and gives the daemon its environment again; a memory wake keeps the one set at boot.
+fn wake(app: &App, id: &str, timeout_s: u32, actor: &str, cold: bool) -> Result<Sandbox, Refused> {
     if app.control.paused() {
         return Err(held());
     }
     let sandbox = find(app, id)?;
+    let cold = cold || sandbox.cold;
     noded_ok(
         app,
         "POST",
         &vm_path(&sandbox.run, "wake"),
-        &json!({}),
+        &memory_body(!cold),
         NODED_TIMEOUT,
     )?;
     // A wake is a restore too: the daemon gets a fresh clock and entropy before the sandbox is handed
-    // out. Its environment was set at boot and is not sent again (an empty map leaves it as it is).
+    // out. An empty environment map leaves a memory-restored daemon's environment as it is.
+    let env = if cold {
+        sandbox.env_vars.clone()
+    } else {
+        BTreeMap::new()
+    };
     let reseeded = wait_healthy(id, sandbox.access_token.as_deref(), HEALTH_WAIT).and_then(|()| {
         init(
             id,
-            &init_body(&BTreeMap::new(), sandbox.access_token.as_deref()),
+            &init_body(&env, sandbox.access_token.as_deref()),
             sandbox.access_token.as_deref(),
         )
     });
@@ -1064,7 +1098,7 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str) -> Result<Sandbox, Ref
             app,
             "POST",
             &vm_path(&sandbox.run, "sleep"),
-            Some(&json!({})),
+            Some(&memory_body(!cold)),
             NODED_TIMEOUT,
         );
         return Err(Refused::new(503, "sandbox_create_failed", why));
@@ -1073,6 +1107,7 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str) -> Result<Sandbox, Ref
     let woken = sandboxes(app).update(id, |s| {
         s.phase = Phase::Running;
         s.end_ms = ends_at(now, timeout_s);
+        s.cold = false;
     })?;
     audit(
         app,
@@ -1085,29 +1120,52 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str) -> Result<Sandbox, Ref
     Ok(woken)
 }
 
-fn refuse_cold(memory: Option<bool>) -> Result<(), Refused> {
-    if memory == Some(false) {
-        return Err(invalid(
-            "a cold boot from disk is not supported yet; resume from memory",
-        ));
-    }
-    Ok(())
+/// The `metadata` filter of a list: the `key=value` pairs, joined by `&`, sent percent-encoded in the query
+/// (`metadata=k%3Dv%26k2%3Dv2`); each key and value is then decoded again (a space is `%2520`).
+fn metadata_filter(req: &Request) -> Result<Vec<(String, String)>, Refused> {
+    let Some(raw) = req.query_param("metadata") else {
+        return Ok(Vec::new());
+    };
+    parse_metadata_filter(&crate::plaza::percent_decode(raw))
 }
 
-fn list(app: &App) -> Response {
+fn parse_metadata_filter(text: &str) -> Result<Vec<(String, String)>, Refused> {
+    let mut pairs = Vec::new();
+    for part in text.split('&').filter(|part| !part.is_empty()) {
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(invalid(format!("metadata filter {part:?} is not key=value")));
+        };
+        pairs.push((
+            crate::plaza::percent_decode(key),
+            crate::plaza::percent_decode(value),
+        ));
+    }
+    Ok(pairs)
+}
+
+/// Whether the sandbox carries every `key=value` of the filter in its metadata.
+fn matches(sandbox: &Sandbox, filter: &[(String, String)]) -> bool {
+    filter
+        .iter()
+        .all(|(key, value)| sandbox.metadata.get(key) == Some(value))
+}
+
+fn list(app: &App, req: &Request) -> Result<Response, Refused> {
+    let filter = metadata_filter(req)?;
     let mut running: Vec<Sandbox> = sandboxes(app)
         .list()
         .into_iter()
-        .filter(|s| s.phase == Phase::Running)
+        .filter(|s| s.phase == Phase::Running && matches(s, &filter))
         .collect();
     running.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
-    Response::json(
+    Ok(Response::json(
         200,
         &running.iter().map(listed_view).collect::<Vec<Value>>(),
-    )
+    ))
 }
 
 fn list_v2(app: &App, req: &Request) -> Result<Response, Refused> {
+    let filter = metadata_filter(req)?;
     let phases = match req.query_param("state") {
         None => vec![Phase::Running],
         Some(text) => text
@@ -1122,7 +1180,7 @@ fn list_v2(app: &App, req: &Request) -> Result<Response, Refused> {
     let mut listed: Vec<Sandbox> = sandboxes(app)
         .list()
         .into_iter()
-        .filter(|s| phases.contains(&s.phase))
+        .filter(|s| phases.contains(&s.phase) && matches(s, &filter))
         .collect();
     listed.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
     Ok(Response::json(
@@ -1164,18 +1222,23 @@ fn refresh(app: &App, req: &Request, id: &str) -> Result<Response, Refused> {
     Ok(no_content())
 }
 
-fn pause(app: &App, id: &str, key: &str) -> Result<Response, Refused> {
+#[derive(Deserialize, Default)]
+struct PauseBody {
+    memory: Option<bool>,
+}
+
+fn pause(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
+    let body: PauseBody = body_or_default(req)?;
     let sandbox = find(app, id)?;
     if sandbox.phase == Phase::Paused {
         return Ok(no_content());
     }
-    pause_sandbox(app, &sandbox, key, "requested")?;
+    pause_sandbox(app, &sandbox, key, "requested", body.memory.unwrap_or(true))?;
     Ok(no_content())
 }
 
 fn resume(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
     let body: WakeBody = body_or_default(req)?;
-    refuse_cold(body.memory)?;
     let timeout = match body.timeout {
         None => DEFAULT_TIMEOUT_S,
         Some(t) => seconds(t, 0, MAX_TIMEOUT_S, "timeout")?,
@@ -1187,14 +1250,13 @@ fn resume(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Ref
             "the sandbox is running",
         ));
     }
-    let woken = wake(app, id, timeout, key)?;
+    let woken = wake(app, id, timeout, key, body.memory == Some(false))?;
     Ok(Response::json(201, &created_view(&woken)))
 }
 
 /// Connect: a paused sandbox wakes (201); a running one gets its time to live set (200).
 fn connect(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
     let body: WakeBody = body_or_default(req)?;
-    refuse_cold(body.memory)?;
     let Some(timeout) = body.timeout else {
         return Err(invalid("timeout is required"));
     };
@@ -1204,7 +1266,7 @@ fn connect(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Re
         let running = sandboxes(app).update(id, |s| s.end_ms = ends_at(now, timeout))?;
         return Ok(Response::json(200, &created_view(&running)));
     }
-    let woken = wake(app, id, timeout, key)?;
+    let woken = wake(app, id, timeout, key, body.memory == Some(false))?;
     Ok(Response::json(201, &created_view(&woken)))
 }
 
@@ -1391,8 +1453,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .delete("/v1/e2b/sandboxes/{id}", |app, _, p| {
             kill(app, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
-        .post("/v1/e2b/sandboxes/{id}/pause", |app, _, p| {
-            pause(app, p.get("id"), OWNER).unwrap_or_else(refuse)
+        .post("/v1/e2b/sandboxes/{id}/pause", |app, req, p| {
+            pause(app, req, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
         .post("/v1/e2b/sandboxes/{id}/resume", |app, req, p| {
             resume(app, req, p.get("id"), OWNER).unwrap_or_else(refuse)
@@ -1401,7 +1463,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             guard(app, req, |key| create(app, req, key))
         })
         .get("/e2b/sandboxes", |app, req, _| {
-            guard(app, req, |_| Ok(list(app)))
+            guard(app, req, |_| list(app, req))
         })
         .get("/e2b/v2/sandboxes", |app, req, _| {
             guard(app, req, |_| list_v2(app, req))
@@ -1419,7 +1481,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             guard(app, req, |_| refresh(app, req, p.get("id")))
         })
         .post("/e2b/sandboxes/{id}/pause", |app, req, p| {
-            guard(app, req, |key| pause(app, p.get("id"), key))
+            guard(app, req, |key| pause(app, req, p.get("id"), key))
         })
         .post("/e2b/sandboxes/{id}/resume", |app, req, p| {
             guard(app, req, |key| resume(app, req, p.get("id"), key))
@@ -1466,8 +1528,57 @@ mod tests {
             allow_internet,
             metadata: BTreeMap::from([("purpose".to_string(), "test".to_string())]),
             access_token: Some("token".into()),
+            env_vars: BTreeMap::new(),
+            cold: false,
             snapshots: Vec::new(),
         }
+    }
+
+    #[test]
+    fn metadata_filters_parse_and_match() {
+        let req = Request {
+            query: "metadata=purpose%3Dtest%26team%3Da%2520b".into(),
+            ..Default::default()
+        };
+        let Ok(filter) = metadata_filter(&req) else {
+            panic!("a two-pair filter parses");
+        };
+        assert_eq!(
+            filter,
+            vec![
+                ("purpose".to_string(), "test".to_string()),
+                ("team".to_string(), "a b".to_string()),
+            ]
+        );
+        let Ok(none) = metadata_filter(&Request::default()) else {
+            panic!("no filter parses");
+        };
+        assert!(none.is_empty());
+        assert!(parse_metadata_filter("purpose").is_err());
+
+        let sandbox = sample(false);
+        assert!(matches(&sandbox, &[("purpose".to_string(), "test".to_string())]));
+        assert!(matches(&sandbox, &[]));
+        assert!(!matches(&sandbox, &[("purpose".to_string(), "other".to_string())]));
+        assert!(!matches(&sandbox, &[("missing".to_string(), "x".to_string())]));
+    }
+
+    #[test]
+    fn sandbox_record_keeps_env_and_cold_state() {
+        let mut sandbox = sample(false);
+        sandbox.env_vars = BTreeMap::from([("K".to_string(), "V".to_string())]);
+        sandbox.cold = true;
+        let text = serde_json::to_string(&sandbox).unwrap();
+        let back: Sandbox = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.env_vars["K"], "V");
+        assert!(back.cold);
+
+        // A record written before these fields existed still parses, as warm with no environment.
+        let mut old = serde_json::to_value(sample(false)).unwrap();
+        old.as_object_mut().unwrap().remove("cold");
+        let old: Sandbox = serde_json::from_value(old).unwrap();
+        assert!(old.env_vars.is_empty());
+        assert!(!old.cold);
     }
 
     #[test]
