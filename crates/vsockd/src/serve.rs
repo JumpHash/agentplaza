@@ -46,6 +46,9 @@ impl SessionLog for StdoutLog {
     }
 }
 
+/// The longest a quiet keepalive session (a dozing VM: paused, silent) waits between passes.
+const QUIET_MAX_WAIT: Duration = Duration::from_secs(60);
+
 /// What deadlines are measured against; tests step it by hand.
 pub trait Clock: Send + Sync {
     fn now(&self) -> Instant;
@@ -415,9 +418,12 @@ impl Session<'_> {
                 if let Some(due) = next_hello {
                     until = until.min(due);
                 }
+                // A quiet (dozing) agent has no deadline to recheck: the flag's change, a hub command or an
+                // apid answer wakes the session, so it waits much longer between passes.
+                let cap = if quiet { QUIET_MAX_WAIT } else { max_wait };
                 let wait = until
                     .saturating_duration_since(clock.now())
-                    .clamp(Duration::from_millis(1), max_wait);
+                    .clamp(Duration::from_millis(1), cap);
                 let readable = lines.get_ref().wait_ready(&waker, wait)?;
                 waker.drain();
                 crate::metrics::SESSION_WAKEUPS.inc();
