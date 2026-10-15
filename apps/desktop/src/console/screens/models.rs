@@ -288,10 +288,10 @@ pub struct Settings {
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
-const ENGINE_IDS: [&str; 4] = ["claude", "codex", "opencode", "gemini"];
+const ENGINE_IDS: [&str; 6] = ["claude", "codex", "opencode", "gemini", "qwen", "kilo"];
 
-/// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI is off until the owner
-/// turns it on.
+/// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI, Qwen Code and
+/// Kilo Code are off until the owner turns them on.
 const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The name an engine's switch shows.
@@ -301,6 +301,8 @@ fn engine_label(id: &'static str) -> &'static str {
         "codex" => "Codex",
         "opencode" => "OpenCode",
         "gemini" => "Gemini CLI",
+        "qwen" => "Qwen Code",
+        "kilo" => "Kilo Code",
         other => other,
     }
 }
@@ -2702,13 +2704,19 @@ mod tests {
     }
 
     #[test]
-    fn gemini_is_named_but_off_by_default() {
+    fn acp_engines_are_named_but_off_by_default() {
         assert_eq!(default_engines(), ["claude", "codex", "opencode"]);
-        assert_eq!(
-            engines_after(&engines(&["claude"]), "gemini", true),
-            Some(engines(&["claude", "gemini"]))
-        );
-        assert_eq!(engine_label("gemini"), "Gemini CLI");
+        for (id, label) in [
+            ("gemini", "Gemini CLI"),
+            ("qwen", "Qwen Code"),
+            ("kilo", "Kilo Code"),
+        ] {
+            assert_eq!(
+                engines_after(&engines(&["claude"]), id, true),
+                Some(engines(&["claude", id]))
+            );
+            assert_eq!(engine_label(id), label);
+        }
     }
 
     #[test]

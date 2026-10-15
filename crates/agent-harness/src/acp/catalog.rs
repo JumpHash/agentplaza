@@ -32,8 +32,9 @@ pub struct Entry {
     pub refused_modes: &'static [&'static str],
 }
 
-/// Every engine the harness knows, in the order they are listed to the model. Gemini CLI is ACP
-/// only (`gemini --acp`): it has no headless run, and the owner enables it in `engines_enabled`.
+/// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code
+/// and Kilo Code are ACP only (`gemini --acp`, `qwen --acp`, `kilo acp`): they have no headless run,
+/// and the owner enables them in `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -76,6 +77,28 @@ pub const ENGINES: &[Entry] = &[
         // launch names no model for it (`engines::acp_launch`).
         model: ModelVia::ConfigOption,
         refused_modes: &["yolo"],
+    },
+    Entry {
+        id: "qwen",
+        package: "@qwen-code/qwen-code",
+        version: "0.24.7",
+        integrity: "sha512-NE+Ps9juMJS7DaHEVENIAJWCrzTiO/2bNq2TidmxmFc0ZbSMVKCfX3tlu2RY+CoP8xHFfUcy3MfQDQNszBJpJQ==",
+        binary: "qwen",
+        args: &["--acp"],
+        // Qwen Code takes its model from the environment (`OPENAI_MODEL`), not the session, so the
+        // launch names no model for it (`engines::acp_launch`).
+        model: ModelVia::ConfigOption,
+        refused_modes: &["yolo"],
+    },
+    Entry {
+        id: "kilo",
+        package: "@kilocode/cli",
+        version: "7.8.1",
+        integrity: "sha512-3dNWXhFhMxLkTXt8lMJ8fH1ZK8Ws7D6jEipMCmxejkaMNp9hd7FPnjCGUjK6zknnSJZokkA4+guFxoJQ+njYYw==",
+        binary: "kilo",
+        args: &["acp"],
+        model: ModelVia::ConfigOption,
+        refused_modes: &[],
     },
 ];
 
@@ -126,6 +149,34 @@ mod tests {
         assert_eq!(
             gemini.integrity,
             "sha512-A1rw0Tf2sHLpGncfYdaq5WaJIufKAP8il4BmHD5Yw4ewmB/Wo0vRQb2bEvx7OqyaPFPZCh0hVhcMKsICZyIBww=="
+        );
+    }
+
+    #[test]
+    fn qwen_is_the_cli_in_acp_mode_with_yolo_refused() {
+        let qwen = entry("qwen").expect("qwen");
+        assert_eq!(qwen.package, "@qwen-code/qwen-code");
+        assert_eq!(qwen.version, "0.24.7");
+        assert_eq!(qwen.binary, "qwen");
+        assert_eq!(qwen.args, ["--acp"]);
+        assert_eq!(qwen.refused_modes, ["yolo"]);
+        assert_eq!(
+            qwen.integrity,
+            "sha512-NE+Ps9juMJS7DaHEVENIAJWCrzTiO/2bNq2TidmxmFc0ZbSMVKCfX3tlu2RY+CoP8xHFfUcy3MfQDQNszBJpJQ=="
+        );
+    }
+
+    #[test]
+    fn kilo_is_the_cli_in_acp_mode_with_no_mode_refused() {
+        let kilo = entry("kilo").expect("kilo");
+        assert_eq!(kilo.package, "@kilocode/cli");
+        assert_eq!(kilo.version, "7.8.1");
+        assert_eq!(kilo.binary, "kilo");
+        assert_eq!(kilo.args, ["acp"]);
+        assert!(kilo.refused_modes.is_empty());
+        assert_eq!(
+            kilo.integrity,
+            "sha512-3dNWXhFhMxLkTXt8lMJ8fH1ZK8Ws7D6jEipMCmxejkaMNp9hd7FPnjCGUjK6zknnSJZokkA4+guFxoJQ+njYYw=="
         );
     }
 }

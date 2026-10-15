@@ -225,17 +225,23 @@ pub(crate) fn code_engine_model(
     Ok(Some(model.to_string()))
 }
 
-/// The provider a `gemini` engine's model must name: Gemini CLI reaches only the gateway's Gemini
-/// route, so `gemini/<model>` is the one shape it takes. The other engines keep their own routes.
+/// The provider an engine's model must name. Gemini CLI reaches only the gateway's Gemini route, so
+/// `gemini/<model>` is the one shape it takes. Qwen Code speaks chat completions and takes the three
+/// routes that serve them. Kilo Code takes what OpenCode takes, so it has no rule here (the route
+/// checks the provider's shape). The other engines keep their own routes.
 fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
-    if input.get("engine").and_then(Value::as_str) == Some("gemini")
-        && !model.starts_with("gemini/")
-    {
-        return Err(format!(
+    let provider = model.split_once('/').map(|(provider, _)| provider);
+    match input.get("engine").and_then(Value::as_str) {
+        Some("gemini") if !model.starts_with("gemini/") => Err(format!(
             "invalid input: \"model\" is {model:?}; Gemini CLI takes gemini/<model> models"
-        ));
+        )),
+        Some("qwen") if !matches!(provider, Some("openai" | "openrouter" | "opencode")) => {
+            Err(format!(
+                "invalid input: \"model\" is {model:?}; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
+            ))
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Refuses a `code_engine` call that names an engine the owner has not enabled (`engines_enabled`).
@@ -409,9 +415,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1322,6 +1328,28 @@ mod tests {
     }
 
     #[test]
+    fn code_engine_qwen_takes_the_chat_completions_providers() {
+        let ask = |model: &str| json!({"engine": "qwen", "prompt": "p", "model": model});
+        for model in [
+            "openai/gpt-5.6-terra",
+            "openrouter/x/y",
+            "opencode/deepseek-v4-pro",
+        ] {
+            assert!(engine_provider(&ask(model), model).is_ok(), "{model}");
+        }
+        for model in ["anthropic/claude-x", "bare-model"] {
+            let err = engine_provider(&ask(model), model).unwrap_err();
+            assert!(err.contains("Qwen Code takes openai/<model>"), "{err}");
+        }
+    }
+
+    #[test]
+    fn code_engine_kilo_has_no_provider_rule_of_its_own() {
+        let input = json!({"engine": "kilo", "prompt": "p", "model": "anthropic/x"});
+        assert!(engine_provider(&input, "anthropic/x").is_ok());
+    }
+
+    #[test]
     fn code_engine_model_absent_or_empty_is_the_default() {
         assert_eq!(model_input(&json!({"prompt": "p"})), Ok(None));
         assert_eq!(model_input(&json!({"model": "  "})), Ok(None));
@@ -1334,10 +1362,12 @@ mod tests {
         assert!(spec.description.contains("streams live"));
         assert!(spec.description.contains("`session`"));
         assert!(spec.description.contains("gemini = Gemini CLI"));
+        assert!(spec.description.contains("qwen = Qwen Code"));
+        assert!(spec.description.contains("kilo = Kilo Code"));
         let props = &spec.input_schema["properties"];
         assert_eq!(
             props["engine"]["enum"],
-            json!(["claude", "codex", "opencode", "gemini"])
+            json!(["claude", "codex", "opencode", "gemini", "qwen", "kilo"])
         );
         assert_eq!(props["session"]["type"], "string");
         assert_eq!(props["mode"]["type"], "string");

@@ -6,9 +6,11 @@ export const ENGINES: { value: string; label: string }[] = [
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
   { value: 'gemini', label: 'Gemini CLI' },
+  { value: 'qwen', label: 'Qwen Code' },
+  { value: 'kilo', label: 'Kilo Code' },
 ];
 
-/** The engines enabled out of the box: Gemini CLI is listed but off until the owner turns it on (apid's settings). */
+/** The engines enabled out of the box: Gemini CLI, Qwen Code and Kilo Code are listed but off until the owner turns them on (apid's settings). */
 export const DEFAULT_ENGINES = ['claude', 'codex', 'opencode'];
 
 /**

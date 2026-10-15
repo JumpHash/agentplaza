@@ -147,9 +147,10 @@ impl BoardPauses {
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
 
 /// The coding engines a `code_engine` call may name.
-pub const ENGINE_IDS: [&str; 4] = ["claude", "codex", "opencode", "gemini"];
+pub const ENGINE_IDS: [&str; 6] = ["claude", "codex", "opencode", "gemini", "qwen", "kilo"];
 
-/// The engines enabled out of the box. Gemini CLI is named but off until the owner enables it.
+/// The engines enabled out of the box. Gemini CLI, Qwen Code and Kilo Code are named but off until
+/// the owner enables them.
 pub const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The transports `engines_mode` may name: the Agent Client Protocol, or the headless engines.
@@ -1417,6 +1418,11 @@ mod tests {
 
         s.engines_enabled = vec!["gemini".into()];
         assert!(check_engines(&s).is_ok(), "Gemini CLI may be enabled");
+        s.engines_enabled = vec!["qwen".into(), "kilo".into()];
+        assert!(
+            check_engines(&s).is_ok(),
+            "Qwen Code and Kilo Code may be enabled"
+        );
         s.engines_enabled = vec!["bash".into()];
         assert!(check_engines(&s).unwrap_err().contains("bash"));
         s.engines_enabled = Vec::new();

@@ -73,9 +73,18 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            // Gemini CLI has no headless run: its ACP adapter is the only way it runs.
+            // Gemini CLI, Qwen Code and Kilo Code have no headless run: their ACP adapters are the
+            // only way they run.
             "gemini" => Err(
                 "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "qwen" => Err(
+                "invalid input: \"engine\" is qwen: Qwen Code runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "kilo" => Err(
+                "invalid input: \"engine\" is kilo: Kilo Code runs over ACP only; switch engines_mode to acp"
                     .to_string(),
             ),
             _ => Err(format!(
@@ -299,21 +308,72 @@ pub(crate) fn acp_launch(
     engine_id: &str,
     model: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), String> {
-    if engine_id == "gemini" {
-        // Gemini CLI reads its model from `GEMINI_MODEL`, so the session is given none.
-        return Ok((engine_env(workspace.dir(), &gemini_route(model)?), None));
+    let home = workspace.dir();
+    match engine_id {
+        // Gemini CLI and Qwen Code read their model from the environment, so the session is given none.
+        "gemini" => return Ok((engine_env(home, &gemini_route(model)?), None)),
+        "qwen" => return Ok((engine_env(home, &qwen_route(model)?), None)),
+        "opencode" => {
+            let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
+            return Ok((engine_env(home, &route), model_id));
+        }
+        "kilo" => {
+            let (route, model_id) = opencode_schema_launch("KILO_CONFIG_CONTENT", model)?;
+            return Ok((engine_env(home, &route), model_id));
+        }
+        _ => {}
     }
     let engine = Engine::parse(engine_id)?;
     let route = model_route(engine, model)?;
-    let model_id = match (engine, model) {
-        (Engine::OpenCode, Some(model)) => {
+    Ok((engine_env(home, &route), route.model.clone()))
+}
+
+/// The route for Qwen Code, which runs over ACP only and speaks chat completions: the placeholder
+/// key, the gateway route of the model's provider (`openai`, `openrouter` or `opencode`, as Codex's
+/// routes name them), and the model without its provider as `OPENAI_MODEL`. No model keeps the
+/// `openai` route and the engine's own default.
+fn qwen_route(model: Option<&str>) -> Result<Route, String> {
+    let (route, model_name) = match model {
+        None => ("openai", None),
+        Some(model) => {
             let (provider, rest) = split_model(model)?;
-            let (id, _, _) = opencode_provider_for(provider, rest);
-            Some(format!("{id}/{rest}"))
+            match provider {
+                "openai" | "openrouter" | "opencode" => (provider, Some(rest)),
+                _ => {
+                    return Err(format!(
+                        "invalid input: \"model\" is {model:?}; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
+                    ));
+                }
+            }
         }
-        _ => route.model.clone(),
     };
-    Ok((engine_env(workspace.dir(), &route), model_id))
+    let mut env = vec![
+        ("OPENAI_API_KEY".to_string(), "plaza".to_string()),
+        (
+            "OPENAI_BASE_URL".to_string(),
+            format!("{GATEWAY}/{route}/v1"),
+        ),
+    ];
+    if let Some(model_name) = model_name {
+        env.push(("OPENAI_MODEL".to_string(), model_name.to_string()));
+    }
+    Ok(Route { env, model: None })
+}
+
+/// The route and the session model of an engine that reads an OpenCode-schema config from `env_key`
+/// (OpenCode its `OPENCODE_CONFIG_CONTENT`, Kilo Code its `KILO_CONFIG_CONTENT`). The session names
+/// the model as its provider block's `<id>/<model>`. No model is the engine's own default.
+fn opencode_schema_launch(
+    env_key: &str,
+    model: Option<&str>,
+) -> Result<(Route, Option<String>), String> {
+    let Some(model) = model else {
+        return Ok((Route::default(), None));
+    };
+    let (provider, rest) = split_model(model)?;
+    let route = opencode_config_route(env_key, provider, rest)?;
+    let (id, _, _) = opencode_provider_for(provider, rest);
+    Ok((route, Some(format!("{id}/{rest}"))))
 }
 
 /// The route for Gemini CLI, which runs over ACP only: the gateway's Gemini route, the placeholder
@@ -469,34 +529,39 @@ fn model_route(engine: Engine, model: Option<&str>) -> Result<Route, String> {
                 "invalid input: \"model\" is {model:?}. Codex serves openai/... models and opencode gpt-, grok- or muse-spark- models"
             )),
         },
-        Engine::OpenCode => {
-            if !provider
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-            {
-                return Err(format!(
-                    "invalid input: \"model\" provider must be letters, digits and dashes, not {provider:?}"
-                ));
-            }
-            let (id, npm, base_url) = opencode_provider_for(provider, rest);
-            let config = json!({
-                "$schema": "https://opencode.ai/config.json",
-                "model": format!("{id}/{rest}"),
-                "provider": {
-                    id.clone(): {
-                        "npm": npm,
-                        "name": format!("AgentPlaza {provider}"),
-                        "options": { "baseURL": base_url, "apiKey": "plaza" },
-                        "models": { rest: {} }
-                    }
-                }
-            });
-            Ok(Route {
-                env: vec![("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string())],
-                model: None,
-            })
-        }
+        Engine::OpenCode => opencode_config_route("OPENCODE_CONFIG_CONTENT", provider, rest),
     }
+}
+
+/// The route of an engine that reads an OpenCode-schema config from `env_key`: one provider block
+/// at the gateway (see [`opencode_provider_for`]), with the model as its default. OpenCode and its
+/// fork Kilo Code share this config; only the variable that carries it differs.
+fn opencode_config_route(env_key: &str, provider: &str, rest: &str) -> Result<Route, String> {
+    if !provider
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(format!(
+            "invalid input: \"model\" provider must be letters, digits and dashes, not {provider:?}"
+        ));
+    }
+    let (id, npm, base_url) = opencode_provider_for(provider, rest);
+    let config = json!({
+        "$schema": "https://opencode.ai/config.json",
+        "model": format!("{id}/{rest}"),
+        "provider": {
+            id.clone(): {
+                "npm": npm,
+                "name": format!("AgentPlaza {provider}"),
+                "options": { "baseURL": base_url, "apiKey": "plaza" },
+                "models": { rest: {} }
+            }
+        }
+    });
+    Ok(Route {
+        env: vec![(env_key.to_string(), config.to_string())],
+        model: None,
+    })
 }
 
 /// Claude's `--output-format json` report: its `result`, then a footer with the turn
@@ -872,6 +937,85 @@ mod tests {
             err.contains("Gemini CLI runs over ACP only; switch engines_mode to acp"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn qwen_launch_follows_the_model_provider_to_its_gateway_route() {
+        let workspace = scratch("qwen-launch");
+        let (env, model) = acp_launch(&workspace, "qwen", None).expect("qwen");
+        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert!(env.contains(&"OPENAI_API_KEY=plaza".to_string()));
+        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openai/v1".to_string()));
+        assert!(!env.iter().any(|pair| pair.starts_with("OPENAI_MODEL=")));
+        assert_eq!(model, None);
+
+        let (env, model) =
+            acp_launch(&workspace, "qwen", Some("openrouter/anthropic/claude-x")).expect("a model");
+        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openrouter/v1".to_string()));
+        assert!(env.contains(&"OPENAI_MODEL=anthropic/claude-x".to_string()));
+        assert_eq!(model, None);
+
+        let (env, _) =
+            acp_launch(&workspace, "qwen", Some("opencode/deepseek-v4-pro")).expect("oc");
+        assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/opencode/v1".to_string()));
+        assert!(env.contains(&"OPENAI_MODEL=deepseek-v4-pro".to_string()));
+    }
+
+    #[test]
+    fn qwen_refuses_a_model_from_a_provider_it_cannot_reach() {
+        let workspace = scratch("qwen-refuse");
+        let err = acp_launch(&workspace, "qwen", Some("anthropic/claude-x")).expect_err("refused");
+        assert_eq!(
+            err,
+            "invalid input: \"model\" is \"anthropic/claude-x\"; Qwen Code takes openai/<model>, openrouter/<model> or opencode/<model> models"
+        );
+    }
+
+    #[test]
+    fn kilo_launch_names_the_provider_block_as_its_session_model() {
+        let workspace = scratch("kilo-launch");
+        let (env, model) = acp_launch(&workspace, "kilo", None).expect("kilo");
+        assert!(
+            !env.iter()
+                .any(|pair| pair.starts_with("KILO_CONFIG_CONTENT="))
+        );
+        assert_eq!(model, None);
+
+        let (env, model) =
+            acp_launch(&workspace, "kilo", Some("openrouter/anthropic/claude-x")).expect("a model");
+        assert_eq!(
+            model.as_deref(),
+            Some("plaza-openrouter/anthropic/claude-x")
+        );
+        assert!(
+            !env.iter()
+                .any(|pair| pair.starts_with("OPENCODE_CONFIG_CONTENT="))
+        );
+        let config = env
+            .iter()
+            .find_map(|pair| pair.strip_prefix("KILO_CONFIG_CONTENT="))
+            .expect("the Kilo config");
+        let config: Value = serde_json::from_str(config).expect("JSON");
+        assert_eq!(config["model"], "plaza-openrouter/anthropic/claude-x");
+        assert_eq!(
+            config["provider"]["plaza-openrouter"]["options"]["baseURL"],
+            "http://plaza.gateway/openrouter/v1"
+        );
+    }
+
+    #[test]
+    fn qwen_and_kilo_are_acp_only_under_the_headless_engines() {
+        let workspace = scratch("acp-only-headless");
+        for (engine, name) in [("qwen", "Qwen Code"), ("kilo", "Kilo Code")] {
+            let input = json!({"engine": engine, "prompt": "p"});
+            let err = Job::parse(&workspace, &input).err().expect("refused");
+            assert!(
+                err.contains(&format!(
+                    "{name} runs over ACP only; switch engines_mode to acp"
+                )),
+                "{err}"
+            );
+        }
     }
 
     #[test]
