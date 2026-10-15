@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::bash::{self, Privilege};
-use crate::files::Workspace;
+use crate::files::{Workspace, names_plaza};
 
 /// Terminals one engine session may have open at once.
 pub const MAX_TERMINALS: usize = 4;
@@ -295,11 +295,19 @@ impl Terminals {
         let real = std::fs::canonicalize(path).map_err(|_| refused())?;
         let real_root = std::fs::canonicalize(root)
             .map_err(|err| format!("internal: cannot open the workspace: {err}"))?;
-        if real.starts_with(&real_root) {
-            Ok(real)
-        } else {
-            Err(refused())
+        if !real.starts_with(&real_root) {
+            return Err(refused());
         }
+        // A command started in the harness's state would read and write it, and
+        // the terminal tools are not meant to reach it (see `files::PLAZA_DIR`).
+        // Checked on the canonical path, so a link to `.plaza` is refused too.
+        if names_plaza(&real, &real_root) {
+            return Err(
+                "invalid input: \"cwd\" names the harness's own state; terminals do not reach it"
+                    .to_string(),
+            );
+        }
+        Ok(real)
     }
 }
 
@@ -587,6 +595,28 @@ mod tests {
         );
         assert_eq!(wait(&terms, &id).unwrap()["exitCode"], 0);
         assert!(inside.join("marker").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cwd_cannot_be_the_harness_state_directory() {
+        let (ws, dir) = workspace("cwd-plaza");
+        let state = dir.join(crate::files::PLAZA_DIR);
+        std::fs::create_dir_all(state.join("nested")).unwrap();
+        std::os::unix::fs::symlink(&state, dir.join("link")).unwrap();
+        let terms = Terminals::new(ws);
+
+        // Named directly, named below, and reached through a link.
+        for cwd in [
+            state.display().to_string(),
+            state.join("nested").display().to_string(),
+            dir.join("link").display().to_string(),
+        ] {
+            let err = terms
+                .create(&json!({"command": "/bin/sh", "cwd": cwd}))
+                .unwrap_err();
+            assert!(err.contains("harness's own state"), "{cwd}: {err}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

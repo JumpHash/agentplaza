@@ -296,17 +296,32 @@ pub const ENGINES: &[Entry] = &[
     },
 ];
 
+/// Words every engine refuses in a mode or profile id, on top of its own lists. A bypass, yolo or
+/// allow-all mode approves every action, so none of them is selected whichever engine offers it; an
+/// engine's own list is not trusted to name every such mode.
+pub const REFUSED_MODES_EVERYWHERE: &[&str] = &[
+    "bypass",
+    "yolo",
+    "allow-all",
+    "allow_all",
+    "full-access",
+    "full_access",
+    "danger",
+    "autopilot",
+];
+
 impl Entry {
-    /// True when the harness must never select `mode`: its id contains one of the engine's refused
-    /// words, ignoring case, so `Allow-All` and `allow_all_tools` are refused like `allow-all`.
+    /// True when the harness must never select `mode`: its id contains one of the refused words, the
+    /// global ones or the engine's own, ignoring case, so `Allow-All` and `allow_all_tools` are refused
+    /// like `allow-all`.
     pub fn refuses(&self, mode: &str) -> bool {
         let mode = mode.to_ascii_lowercase();
         self.refused_exact_modes
             .iter()
             .any(|word| mode == word.to_ascii_lowercase())
-            || self
-                .refused_modes
+            || REFUSED_MODES_EVERYWHERE
                 .iter()
+                .chain(self.refused_modes)
                 .any(|word| mode.contains(&word.to_ascii_lowercase()))
     }
 }
@@ -466,6 +481,34 @@ mod tests {
         let claude = entry("claude").expect("claude");
         assert!(claude.refuses("bypassPermissions"));
         assert!(!claude.refuses("acceptEdits"));
+    }
+
+    #[test]
+    fn every_engine_refuses_the_global_bypass_words_and_keeps_its_ordinary_modes() {
+        // The global list applies whatever the engine's own list says: opencode, kilo and cline
+        // have none of their own, and still refuse these.
+        for engine in ENGINES {
+            for mode in [
+                "yolo",
+                "BypassPermissions",
+                "bypass",
+                "Full-Access",
+                "danger-full-access",
+                "autopilot",
+                "allow-all",
+            ] {
+                assert!(engine.refuses(mode), "{} must refuse {mode}", engine.id);
+            }
+            for mode in ["build", "plan", "default"] {
+                assert!(!engine.refuses(mode), "{} must accept {mode}", engine.id);
+            }
+        }
+        for id in ["opencode", "kilo", "cline"] {
+            let engine = entry(id).unwrap_or_else(|| panic!("{id} is an engine"));
+            assert!(engine.refuses("yolo"), "{id}");
+            assert!(engine.refuses("BypassPermissions"), "{id}");
+            assert!(!engine.refuses("build"), "{id}");
+        }
     }
 
     #[test]

@@ -359,11 +359,12 @@ pub(crate) fn acp_launch(
     Ok((engine_env(home, &route), route.model.clone()))
 }
 
-/// The folder Mistral Vibe keeps its config in: `<workspace>/.plaza/engines/vibe`. It sits under the
-/// harness's own state folder, which the engine's file methods refuse to write to, so the engine cannot
-/// rewrite the config that names its gateway route.
+/// The folder Mistral Vibe keeps its config in: `/workspace/.engines/vibe-home`, beside the installed
+/// engines. It must not sit under `.plaza`: Vibe reads and writes its home, so a home there would give
+/// the engine the harness's own state, which the model's tools are kept from. The config holds only
+/// the gateway route and a placeholder key.
 pub(crate) fn vibe_home(workspace: &Workspace) -> PathBuf {
-    workspace.plaza_dir().join("engines").join("vibe")
+    workspace.dir().join(".engines").join("vibe-home")
 }
 
 /// Writes Mistral Vibe's `config.toml` for the call's model, before the launch, so a new model takes
@@ -1271,10 +1272,12 @@ mod tests {
              alias = \"plaza\"\n"
         );
         assert!(config.contains("bypass_tool_permissions = false\n"));
+        // Beside the installed engines, and never under the harness's own state.
         assert_eq!(
             vibe_home(&workspace),
-            workspace.plaza_dir().join("engines").join("vibe")
+            workspace.dir().join(".engines").join("vibe-home")
         );
+        assert!(!vibe_home(&workspace).starts_with(workspace.plaza_dir()));
 
         let (env, model) = acp_launch(&workspace, "vibe", Some("openai/gpt-x")).expect("vibe");
         assert_eq!(model, None);
