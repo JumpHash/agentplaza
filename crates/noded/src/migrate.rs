@@ -88,6 +88,10 @@ pub struct ExportView {
 pub struct Chunk {
     pub data: String,
     pub eof: bool,
+    /// When the whole chunk is zeros (a hole of a sparse image, most of a VM's memory): how many
+    /// bytes, with `data` empty. The target leaves them unwritten, so its copy stays sparse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zeros: Option<u64>,
 }
 
 /// The reply to one import chunk: how many bytes of the file are now written.
@@ -335,9 +339,18 @@ pub fn read_export(
             .and_then(|_| handle.read_exact(&mut bytes))
             .map_err(|err| MigrateError::Failed(format!("cannot read {name}: {err}")))?;
     }
+    let eof = offset + want == size;
+    if bytes.iter().all(|byte| *byte == 0) {
+        return Ok(Chunk {
+            data: String::new(),
+            eof,
+            zeros: Some(want),
+        });
+    }
     Ok(Chunk {
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-        eof: offset + want == size,
+        eof,
+        zeros: None,
     })
 }
 
@@ -380,6 +393,13 @@ pub fn create_import(
     snapshots::private_dir(&staging).map_err(|err| {
         MigrateError::Failed(format!("cannot create {}: {err}", staging.display()))
     })?;
+    // Every file is laid down at its full length first, as a hole: chunks of zeros are never sent,
+    // so what no chunk writes stays a hole and reads back as the zeros it was.
+    for file in &files {
+        create_private(&staging.join(&file.name))
+            .and_then(|handle| handle.set_len(file.len))
+            .map_err(|err| MigrateError::Failed(format!("cannot stage {}: {err}", file.name)))?;
+    }
     state.imports.insert(
         id.clone(),
         Import {

@@ -73,6 +73,7 @@ pub fn router() -> Router<App> {
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
     let router = crate::sleep::routes(router);
+    let router = crate::placement::routes(router);
     let router = crate::vm_snapshots::routes(router);
     let router = crate::e2b::routes(router);
     let router = crate::egress_inject::routes(router);

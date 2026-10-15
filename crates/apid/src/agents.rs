@@ -881,8 +881,9 @@ fn spawn(app: &App, req: &Request) -> Response {
     }
 }
 
-/// Spawns `count` agents of `role` on `node` (default `n0`): checks the role, the count, the
-/// model's tier and that the node takes new agents, asks its noded for the runs and records them.
+/// Spawns `count` agents of `role` on `node` (default: the best node for the role, see
+/// `placement::choose_node`): checks the role, the count, the model's tier and that the node takes
+/// new agents, asks its noded for the runs and records them.
 /// Returns noded's reply; errors are the message for the caller.
 pub fn spawn_agents(
     app: &App,
@@ -891,7 +892,11 @@ pub fn spawn_agents(
     model: Option<&str>,
     node: Option<&str>,
 ) -> Result<Value, String> {
-    let node = node.unwrap_or(crate::fleet::LOCAL);
+    let node = match node {
+        Some(node) => node.to_string(),
+        None => crate::placement::choose_node(app, role),
+    };
+    let node = node.as_str();
     if node != crate::fleet::LOCAL {
         match app.nodes.get(node) {
             None => return Err(format!("no node {node}")),

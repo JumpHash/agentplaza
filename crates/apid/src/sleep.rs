@@ -92,6 +92,11 @@ pub fn wake(app: &App, cid: u64) {
     {
         return;
     }
+    // An agent being moved to another node is woken there by the move, not here: a wake now would
+    // restore it on the node it is leaving while its files are copied away.
+    if crate::placement::is_moving(cid) {
+        return;
+    }
     {
         let mut book = book();
         if book.sleeping.contains(&cid) || !book.waking.insert(cid) {

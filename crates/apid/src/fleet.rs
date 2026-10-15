@@ -15,11 +15,20 @@ pub const LOCAL: &str = "n0";
 /// How long a remote node has to answer one command.
 pub const REMOTE_WAIT_MS: u64 = 30_000;
 
-/// The node that hosts `cid`: `n0` unless a joined node's range holds it.
+/// The node that hosts `cid`: where it was moved to, else the node whose CID range holds it, else `n0`.
 pub fn node_of(app: &App, cid: u64) -> String {
-    app.nodes
-        .owner_of_cid(cid)
-        .map_or_else(|| LOCAL.to_string(), |node| node.id)
+    node_for(
+        app.nodes.override_of(cid),
+        app.nodes.owner_of_cid(cid).map(|node| node.id),
+    )
+}
+
+/// The host of a CID from what the store knows of it (pure): a recorded move wins over the CID
+/// ranges, and a CID in no range is on `n0`.
+pub fn node_for(moved_to: Option<String>, range_owner: Option<String>) -> String {
+    moved_to
+        .or(range_owner)
+        .unwrap_or_else(|| LOCAL.to_string())
 }
 
 /// A call to the agent gateway that serves `cid` (`/v1/agents/{cid}/send`, `/stop`, …).
@@ -30,11 +39,22 @@ pub fn gateway(
     path: &str,
     body: Option<&Value>,
 ) -> Result<(u16, Value), String> {
-    let node = node_of(app, cid);
+    hub_on(app, &node_of(app, cid), method, path, body)
+}
+
+/// A call to the agent gateway (vsockd) of `node`, whichever node that is. A move serves a CID on
+/// its target before the placement points there, so this takes the node itself.
+pub fn hub_on(
+    app: &App,
+    node: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, Value), String> {
     if node == LOCAL {
         return app.hub.call(method, path, body);
     }
-    remote(app, &node, "hub", method, path, body)
+    remote(app, node, "hub", method, path, body)
 }
 
 /// Pushes one message to agent `cid` (`POST /v1/agents/{cid}/send` on its gateway).

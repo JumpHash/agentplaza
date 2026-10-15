@@ -50,6 +50,7 @@ mod node_link;
 mod nodes;
 mod owner_board;
 mod payments;
+mod placement;
 mod plaza;
 mod prices;
 mod projects;
