@@ -247,11 +247,19 @@ fn vanished<T, E: Into<io::Error>>(result: Result<T, E>) -> io::Result<Option<T>
     }
 }
 
-fn changed(name: &CStr) -> io::Error {
-    io::Error::other(format!(
-        "{} changed while the walk was on it",
-        name.to_string_lossy()
-    ))
+/// `result` inside a walk, with an entry that is gone or became something else (a link where a folder
+/// was, a file where a folder was) read as nothing to do. The job's own processes keep working while
+/// the walk runs; an entry that changed under it is left alone, never followed.
+fn moved<T, E: Into<io::Error>>(result: Result<T, E>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(err) => {
+            let err = err.into();
+            let gone = err.kind() == io::ErrorKind::NotFound
+                || matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR));
+            if gone { Ok(None) } else { Err(err) }
+        }
+    }
 }
 
 /// Applies `step` to what is directly under the open folder `dir`, except the names in `skip`.
@@ -280,7 +288,7 @@ fn apply_entry(
     step: &Step,
     owned: bool,
 ) -> io::Result<()> {
-    let Some(st) = vanished(rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW))? else {
+    let Some(st) = moved(rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW))? else {
         return Ok(());
     };
     if dev.is_some_and(|dev| dev != st.st_dev) {
@@ -288,12 +296,13 @@ fn apply_entry(
     }
     let kind = FileType::from_raw_mode(st.st_mode);
     if kind == FileType::Directory {
-        let Some(dir) = vanished(rfs::openat(parent, name, dir_flags(), Mode::empty()))? else {
+        let Some(dir) = moved(rfs::openat(parent, name, dir_flags(), Mode::empty()))? else {
             return Ok(());
         };
         let opened = rfs::fstat(&dir)?;
         if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino) {
-            return Err(changed(name));
+            // Replaced since the stat: not the folder the walk decided on.
+            return Ok(());
         }
         if owned {
             own_folder(dir.as_fd(), step)?;
@@ -311,7 +320,7 @@ fn apply_entry(
     }
     // A link, a fifo or a device: its own owner, never followed and never a mode change.
     let (uid, gid) = step.owner.ids();
-    vanished(rfs::chownat(
+    moved(rfs::chownat(
         parent,
         name,
         uid,
@@ -337,14 +346,15 @@ fn own_folder(dir: BorrowedFd<'_>, step: &Step) -> io::Result<()> {
 fn own_file(parent: BorrowedFd<'_>, name: &CStr, st: &Stat, step: &Step) -> io::Result<()> {
     let flags =
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-    let Some(file) = vanished(rfs::openat(parent, name, flags, Mode::empty()))? else {
+    let Some(file) = moved(rfs::openat(parent, name, flags, Mode::empty()))? else {
         return Ok(());
     };
     let opened = rfs::fstat(&file)?;
     if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino)
         || FileType::from_raw_mode(opened.st_mode) != FileType::RegularFile
     {
-        return Err(changed(name));
+        // Replaced since the stat: not the file the walk decided on.
+        return Ok(());
     }
     let engine = step.owner == Owner::Engine;
     if engine && opened.st_nlink > 1 {
