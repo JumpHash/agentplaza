@@ -1244,6 +1244,14 @@ struct RegistryInner {
     runs: Vec<Arc<Run>>,
 }
 
+/// `spawner::spawn`, timed into `crate::metrics::SPAWN`.
+fn spawn_timed(spec: VmSpec) -> Result<VmHandle, SpawnError> {
+    let started = std::time::Instant::now();
+    let spawned = spawner::spawn(spec);
+    crate::metrics::SPAWN.observe(started.elapsed());
+    spawned
+}
+
 impl Registry {
     /// A registry with no runs that boots every run from `images`, lays the
     /// runs' vsock sockets out under `uds_dir`, and publishes every state
@@ -1920,10 +1928,33 @@ impl Registry {
         Ok((run, Some(view)))
     }
 
+    /// Wakes VM `vm` of run `run` (see `wake_vm_inner`), timed: one `timing op=wake` line and
+    /// `crate::metrics::WAKE`. The bool is true when the warm restore failed and the VM booted cold instead.
+    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<(Arc<Run>, bool), VmOpError> {
+        let mut phases = apz_metrics::Phases::start("wake", format!("{run}/{vm}"));
+        let result = self.wake_vm_inner(run, vm, cold);
+        phases.mark("spawn");
+        let fallback = matches!(result, Ok((_, true)));
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::WAKE)
+            } else {
+                None
+            },
+            &[("cold", &cold), ("fallback", &fallback), ("ok", &ok)],
+        );
+        if fallback {
+            crate::metrics::WAKE_COLD.inc();
+        }
+        result
+    }
+
     /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
     /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
     /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
-    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<Arc<Run>, VmOpError> {
+    /// The bool is true only when that cold boot after a failed warm restore happened.
+    fn wake_vm_inner(&self, run: &str, vm: u32, cold: bool) -> Result<(Arc<Run>, bool), VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
@@ -1934,13 +1965,13 @@ impl Registry {
         // A VM that arrived asleep from another node has never run here: there is no old handle to
         // swap out, only its spec.
         if let Some(spec) = run.take_unbooted(vm)? {
-            return match spawner::spawn(VmSpec {
+            return match spawn_timed(VmSpec {
                 restore: warm.clone(),
                 ..spec.clone()
             }) {
                 Ok(fresh) => {
                     run.seat_first(vm, spec, fresh, warm);
-                    Ok(run)
+                    Ok((run, false))
                 }
                 Err(err) => {
                     run.untake_unbooted(vm, spec);
@@ -1955,7 +1986,7 @@ impl Registry {
             spec,
             ..
         } = run.take_vm(vm, &[VmState::Asleep])?;
-        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawner::spawn(VmSpec {
+        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawn_timed(VmSpec {
             restore: None,
             ..spec
         }) {
@@ -1966,25 +1997,25 @@ impl Registry {
             })),
         };
         let woken = match warm {
-            Some(base) => match spawner::spawn(VmSpec {
+            Some(base) => match spawn_timed(VmSpec {
                 restore: Some(base.clone()),
                 ..spec.clone()
             }) {
-                Ok(fresh) => Ok((fresh, Some(base))),
+                Ok(fresh) => Ok((fresh, Some(base), false)),
                 Err(err) => {
                     eprintln!(
                         "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
                         run.id
                     );
-                    boot_cold(spec, Some(err.to_string()))
+                    boot_cold(spec, Some(err.to_string())).map(|(fresh, base)| (fresh, base, true))
                 }
             },
-            None => boot_cold(spec, None),
+            None => boot_cold(spec, None).map(|(fresh, base)| (fresh, base, false)),
         };
         match woken {
-            Ok((fresh, base)) => {
+            Ok((fresh, base, fallback)) => {
                 run.seat_vm(vm, killed, fresh, base);
-                Ok(run)
+                Ok((run, fallback))
             }
             Err(err) => {
                 run.return_vm(vm, killed);

@@ -2028,7 +2028,13 @@ fn wake_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
         Err(err) => return Response::error(400, &format!("invalid wake request: {err}")),
     };
     match node.registry().wake_vm(id, vm, cold) {
-        Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Ok((run, fallback)) => {
+            let mut body = serde_json::to_value(run.view(Detail::Summary)).unwrap_or_default();
+            if let Some(map) = body.as_object_mut() {
+                map.insert("cold_fallback".into(), serde_json::Value::Bool(fallback));
+            }
+            Response::json(200, &body)
+        }
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
