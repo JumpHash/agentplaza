@@ -1,5 +1,6 @@
 //! One module per console area; each owns its subcommands (`Cmd`) and `run`.
 
+pub mod acp;
 pub mod agents;
 pub mod approvals;
 pub mod board;
