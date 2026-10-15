@@ -9,6 +9,8 @@
 //! plaza.vm=<n>         this VM's index within the spawn (optional, default 0)
 //! plaza.role=<role>    the agent's role (optional, default none)
 //! plaza.keepalive=1    run the long-lived keepalive session (optional, default off)
+//! plaza.template=1    a warm template: announce readiness, then retry the hub every 25 ms
+//!                     until its first welcome (optional, default off)
 //! ```
 //!
 //! `plaza.harness=1` is consumed by the guest's `init`, not by the harness;
@@ -43,6 +45,9 @@ pub struct Config {
     /// Whether this guest runs the long-lived keepalive session
     /// (`plaza.keepalive=1`) instead of the frozen one-shot session.
     pub keepalive: bool,
+    /// Whether this guest is a warm template (`plaza.template=1`): one the host snapshots while
+    /// it waits for its first welcome, so it announces readiness and retries the hub quickly.
+    pub template: bool,
 }
 
 impl Default for Config {
@@ -52,6 +57,7 @@ impl Default for Config {
             vm: 0,
             role: None,
             keepalive: false,
+            template: false,
         }
     }
 }
@@ -120,6 +126,10 @@ impl Config {
             Some(value) => number("plaza.keepalive", value)? != 0,
             None => false,
         };
+        let template = match value_of("plaza.template=") {
+            Some(value) => number("plaza.template", value)? != 0,
+            None => false,
+        };
         let role = match value_of("plaza.role=") {
             // An empty value is "no role", not a role named "".
             Some("") => None,
@@ -131,6 +141,7 @@ impl Config {
             vm,
             role,
             keepalive,
+            template,
         })
     }
 }
@@ -173,10 +184,14 @@ mod tests {
                 port: 6000,
                 vm: 4,
                 role: Some("builder".to_string()),
-                keepalive: true
+                keepalive: true,
+                template: false,
             }
         );
         assert!(!Config::parse("plaza.keepalive=0").unwrap().keepalive);
+        assert!(Config::parse("plaza.template=1").unwrap().template);
+        assert!(!Config::parse("plaza.template=0").unwrap().template);
+        assert!(!Config::default().template);
         assert_eq!(Config::parse("plaza.role=").unwrap().role, None);
     }
 
@@ -200,6 +215,7 @@ mod tests {
             })
         );
         assert!(Config::parse("plaza.port=x").is_err());
+        assert!(Config::parse("plaza.template=yes").is_err());
         assert_eq!(
             Config::parse("plaza.role=ok\u{1b}[2K"),
             Err(ConfigError::BadRole {

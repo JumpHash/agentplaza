@@ -69,6 +69,8 @@ mod library;
 #[cfg(target_os = "linux")]
 mod plan;
 #[cfg(target_os = "linux")]
+mod restore;
+#[cfg(target_os = "linux")]
 mod search_tools;
 #[cfg(target_os = "linux")]
 mod session;
@@ -232,7 +234,15 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
     // The egress shim serves the guest's outbound HTTP for as long as the agent
     // runs; a bind failure is printed there, never fatal here.
     egress::spawn_shim();
+    if config.template {
+        // The host snapshots a template while it waits in the loop below; this line, on the
+        // serial console, is how the host knows the guest has reached it.
+        let _ = writeln!(out, "agent-harness: template ready");
+        let _ = out.flush();
+    }
     let mut failures = 0u32;
+    // Set by the first welcome the hub accepts. A template retries quickly only until then.
+    let mut welcomed = false;
     loop {
         match keepalive_once(config, out) {
             Ok(calls) => {
@@ -253,7 +263,12 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                 } else {
                     failures.saturating_add(1)
                 };
-                let delay = keepalive::backoff_delay(failures, jitter_nanos());
+                welcomed |= adopted;
+                let delay = keepalive::reconnect_delay(
+                    config.template && !welcomed,
+                    failures,
+                    jitter_nanos(),
+                );
                 let _ = writeln!(
                     out,
                     "agent-harness: keepalive: {reason}; reconnecting in {} ms (failure {failures})",
