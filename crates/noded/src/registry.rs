@@ -1861,13 +1861,36 @@ impl Registry {
         Ok(run)
     }
 
+    /// Puts VM `vm` of run `run` to sleep (see `sleep_vm_inner`), timed: one `timing op=sleep` line and
+    /// `crate::metrics::SLEEP`.
+    pub fn sleep_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        keep_memory: bool,
+    ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
+        let mut phases = apz_metrics::Phases::start("sleep", format!("{run}/{vm}"));
+        let result = self.sleep_vm_inner(run, vm, keep_memory);
+        phases.mark("snapshot_and_stop");
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::SLEEP)
+            } else {
+                None
+            },
+            &[("ok", &ok)],
+        );
+        result
+    }
+
     /// Puts VM `vm` of run `run` to sleep: its state goes to the sleep snapshot, its process stops,
     /// and it waits as `asleep` until [`Registry::wake_vm`]. A paused VM is snapshotted as it is; a
     /// running one is paused for the snapshot. The sleep snapshot is written beside the old one and
     /// renamed over it once the VM is stopped (see [`crate::snapshots`]). With `keep_memory` false
     /// the VM is stopped without a memory image, any sleep snapshot is removed, and it returns no
     /// snapshot: it wakes cold.
-    pub fn sleep_vm(
+    fn sleep_vm_inner(
         &self,
         run: &str,
         vm: u32,
@@ -2029,13 +2052,37 @@ impl Registry {
         }
     }
 
+    /// Takes checkpoint `label` of VM `vm` of run `run` (see `checkpoint_vm_inner`), timed: one
+    /// `timing op=checkpoint` line and `crate::metrics::CHECKPOINT`.
+    pub fn checkpoint_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        label: &str,
+        keep_memory: bool,
+    ) -> Result<SnapshotView, VmOpError> {
+        let mut phases = apz_metrics::Phases::start("checkpoint", format!("{run}/{vm}"));
+        let result = self.checkpoint_vm_inner(run, vm, label, keep_memory);
+        phases.mark("snapshot");
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::CHECKPOINT)
+            } else {
+                None
+            },
+            &[("memory", &keep_memory), ("ok", &ok)],
+        );
+        result
+    }
+
     /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
     /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
     /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
     /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
     /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
     /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
-    pub fn checkpoint_vm(
+    fn checkpoint_vm_inner(
         &self,
         run: &str,
         vm: u32,
@@ -2189,11 +2236,35 @@ impl Registry {
         }
     }
 
+    /// Forks VM `vm` of run `run` into `n` new single-VM runs (see `fork_vm_inner`), timed: one
+    /// `timing op=fork` line and `crate::metrics::FORK`.
+    pub fn fork_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        n: u32,
+        from: Option<&str>,
+    ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
+        let mut phases = apz_metrics::Phases::start("fork", format!("{run}/{vm}"));
+        let result = self.fork_vm_inner(run, vm, n, from);
+        phases.mark("boot");
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::FORK)
+            } else {
+                None
+            },
+            &[("copies", &n), ("ok", &ok)],
+        );
+        result
+    }
+
     /// Forks VM `vm` of run `run` into `n` new single-VM runs: a checkpoint of the VM is taken, and each
     /// fork boots from it with a CID of its own and a copy of its workspace. The forks are all made or
     /// none is: a fork that cannot boot takes the ones made before it down. Returns the checkpoint and
     /// each fork's run and CID.
-    pub fn fork_vm(
+    fn fork_vm_inner(
         &self,
         run: &str,
         vm: u32,
