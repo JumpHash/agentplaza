@@ -1127,3 +1127,14 @@ fn status_marks_only_the_slot_that_unsealed_the_vault() {
         "the key-file slot is no longer the one"
     );
 }
+
+/// The egress credential rules name their secret by the `egress` binding, so the vault takes it;
+/// other bare words are still refused.
+#[test]
+fn the_egress_binding_is_a_binding() {
+    assert!(super::valid_binding("egress"));
+    assert!(super::valid_binding("hf"));
+    assert!(super::valid_binding("provider:openai"));
+    assert!(!super::valid_binding("egres"));
+    assert!(!super::valid_binding("egress:x"));
+}
