@@ -75,6 +75,54 @@ struct SandboxList {
     sandboxes: Vec<Sandbox>,
 }
 
+/// A template, as `GET /v1/e2b/templates` lists it: its builds, newest first.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Template {
+    #[serde(rename = "templateID")]
+    pub template_id: String,
+    pub name: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    pub builds: Vec<Build>,
+}
+
+/// One build of a template. `status` is `waiting`, `building`, `ready` or `error`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Build {
+    #[serde(rename = "buildID")]
+    pub build_id: String,
+    pub status: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "finishedAt")]
+    pub finished_at: Option<String>,
+    #[serde(rename = "cpuCount")]
+    pub cpu_count: u64,
+    #[serde(rename = "memoryMB")]
+    pub memory_mb: u64,
+    pub tags: Vec<String>,
+    /// Why the build failed: the message, and the step it failed on. Null unless it failed.
+    pub reason: Option<Reason>,
+}
+
+/// A failed build's reason.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Reason {
+    pub message: String,
+    pub step: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct TemplateList {
+    templates: Vec<Template>,
+}
+
 /// The three lines that point an E2B SDK at this hub and this key, as the web's setup shows them. `hub` is the hub's
 /// base URL.
 pub fn setup_text(hub: &str, key: &str) -> String {
@@ -122,10 +170,40 @@ pub fn short_time(rfc3339: &str) -> String {
     }
 }
 
+/// The badge for a build's status: its words and its tone.
+pub fn build_badge(status: &str) -> (String, ui::Tone) {
+    let tone = match status {
+        "ready" => ui::Tone::Ok,
+        "building" | "waiting" => ui::Tone::Warn,
+        "error" => ui::Tone::Danger,
+        _ => ui::Tone::Muted,
+    };
+    (status.to_string(), tone)
+}
+
+/// The tags of a template's ready builds, each once, in the order the builds list them.
+pub fn ready_tags(builds: &[Build]) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for build in builds.iter().filter(|build| build.status == "ready") {
+        for tag in &build.tags {
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+    tags
+}
+
+/// A template's id, shortened to its first twelve characters for the list.
+pub fn short_id(id: &str) -> String {
+    id.chars().take(12).collect()
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     pub keys: Load<Vec<Key>>,
     pub sandboxes: Load<Vec<Sandbox>>,
+    pub templates: Load<Vec<Template>>,
     /// When the sandboxes last loaded. The screen's own poll reloads them every `POLL`; a load on the shell's tick
     /// reloads them only when that is due.
     pub sandboxes_at: Option<Instant>,
@@ -140,6 +218,8 @@ pub struct State {
     /// The key waiting for its revoke confirmation, and the sandbox waiting for its end confirmation.
     pub confirm_revoke: Option<String>,
     pub confirm_end: Option<String>,
+    /// The template waiting for its delete confirmation.
+    pub confirm_delete_template: Option<String>,
 }
 
 /// Drops the new key from the page. Called when the owner leaves the screen.
@@ -153,6 +233,7 @@ pub enum Msg {
     Go(Id),
     KeysLoaded(Result<Vec<Key>, String>),
     SandboxesLoaded(Result<Vec<Sandbox>, String>),
+    TemplatesLoaded(Result<Vec<Template>, String>),
     /// The screen's ten-second tick: the sandboxes reload.
     Poll,
     Label(String),
@@ -170,6 +251,10 @@ pub enum Msg {
     End(String),
     Pause(String),
     Resume(String),
+    AskDeleteTemplate(String),
+    CancelDeleteTemplate,
+    /// Deletes a template (its DELETE, then the reload that `Acted` runs).
+    DeleteTemplate(String),
     /// A write finished: its result and the line to confirm it with.
     Acted(Result<(), String>, String),
 }
@@ -208,9 +293,22 @@ fn sandboxes_task(ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Loads the keys, and the sandboxes when they are due (called when the screen opens and on the shell's tick).
+fn templates_task(ctx: &Ctx) -> Task<Msg> {
+    let client = ctx.client.clone();
+    client::task(
+        move || {
+            client
+                .get::<TemplateList>("/v1/e2b/templates")
+                .map(|list| list.templates)
+        },
+        Msg::TemplatesLoaded,
+    )
+}
+
+/// Loads the keys and the templates, and the sandboxes when they are due (called when the screen opens and on the
+/// shell's tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    let mut tasks = vec![keys_task(ctx)];
+    let mut tasks = vec![keys_task(ctx), templates_task(ctx)];
     if state.sandboxes_at.is_none_or(|at| at.elapsed() >= POLL) {
         tasks.push(sandboxes_task(ctx));
     }
@@ -237,6 +335,7 @@ fn act(
     state.busy = true;
     state.confirm_revoke = None;
     state.confirm_end = None;
+    state.confirm_delete_template = None;
     let client = ctx.client.clone();
     client::task(
         move || client.call(method, &path, body.as_ref()).map(|_| ()),
@@ -258,7 +357,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.sandboxes = settle(result);
             Task::none()
         }
-        Msg::Poll => sandboxes_task(ctx),
+        Msg::TemplatesLoaded(result) => {
+            state.templates = settle(result);
+            Task::none()
+        }
+        Msg::Poll => Task::batch(vec![sandboxes_task(ctx), templates_task(ctx)]),
         Msg::Label(text) => {
             state.label = text.chars().take(60).collect();
             Task::none()
@@ -351,6 +454,23 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(json!({})),
             "Sandbox resumed",
         ),
+        Msg::AskDeleteTemplate(id) => {
+            state.confirm_delete_template = Some(id);
+            state.error = None;
+            Task::none()
+        }
+        Msg::CancelDeleteTemplate => {
+            state.confirm_delete_template = None;
+            Task::none()
+        }
+        Msg::DeleteTemplate(id) => act(
+            state,
+            ctx,
+            "DELETE",
+            format!("/v1/e2b/templates/{id}"),
+            None,
+            "Template deleted",
+        ),
         Msg::Acted(result, notice) => {
             state.busy = false;
             match result {
@@ -394,6 +514,7 @@ pub fn view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
     }
     parts.push(ui::card("Keys", keys_card(state)));
     parts.push(ui::card("Sandboxes", sandboxes_view(state)));
+    parts.push(ui::card("Templates", templates_view(state)));
     let head = ui::view_head("E2B API", vec![]);
     ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
@@ -620,6 +741,112 @@ fn sandbox_actions<'a>(state: &State, sandbox: &Sandbox) -> Element<'a, Msg> {
     row(buttons).spacing(8).align_y(Alignment::Center).into()
 }
 
+/// The templates table, or its empty or failed state.
+fn templates_view(state: &State) -> Element<'_, Msg> {
+    match &state.templates {
+        Load::Pending => ui::loading(),
+        Load::Failed => ui::empty("alert", "Could not load the templates.", ""),
+        Load::Ready(list) if list.is_empty() => ui::empty(
+            "square-code",
+            "No templates yet",
+            "Templates are built with the E2B SDK's Template.build, then listed here.",
+        ),
+        Load::Ready(list) => table(
+            &[
+                (3, "Template"),
+                (3, "Newest build"),
+                (2, "Tags"),
+                (2, "Resources"),
+                (2, "Updated"),
+                (2, ""),
+            ],
+            list.iter()
+                .map(|template| template_row(state, template))
+                .collect(),
+        ),
+    }
+}
+
+fn template_row<'a>(state: &State, template: &Template) -> Element<'a, Msg> {
+    let name = if template.name.is_empty() {
+        "(no name)".to_string()
+    } else {
+        template.name.clone()
+    };
+    let newest = template.builds.first();
+    let build: Element<'a, Msg> = match newest {
+        None => ui::faint("No build yet").into(),
+        Some(build) => {
+            let (label, tone) = build_badge(&build.status);
+            let mut parts: Vec<Element<'a, Msg>> = vec![ui::badge(&label, tone)];
+            if let Some(reason) = build.reason.as_ref().filter(|_| build.status == "error") {
+                let text = if reason.step.is_empty() {
+                    reason.message.clone()
+                } else {
+                    format!("{}: {}", reason.step, reason.message)
+                };
+                parts.push(ui::faint(text).into());
+            }
+            column(parts).spacing(4).into()
+        }
+    };
+    let resources: Element<'a, Msg> = match newest {
+        Some(build) => ui::sans(
+            format!("{} CPU · {} MB", build.cpu_count, build.memory_mb),
+            12.0,
+            crate::theme::palette().ink,
+        )
+        .into(),
+        None => ui::faint("none").into(),
+    };
+    let tags = ready_tags(&template.builds);
+    let tag_text = if tags.is_empty() {
+        "none".to_string()
+    } else {
+        tags.join(", ")
+    };
+    cells(vec![
+        (
+            3,
+            column![
+                ui::mono(name, 12.0, crate::theme::palette().ink),
+                ui::faint(short_id(&template.template_id)),
+            ]
+            .spacing(2)
+            .into(),
+        ),
+        (3, build),
+        (2, ui::faint(tag_text).into()),
+        (2, resources),
+        (2, ui::faint(short_time(&template.updated_at)).into()),
+        (2, template_actions(state, &template.template_id)),
+    ])
+}
+
+/// A template's Delete button, which asks first: the confirm line with its Cancel and Delete.
+fn template_actions<'a>(state: &State, template_id: &str) -> Element<'a, Msg> {
+    let id = template_id.to_string();
+    if state.confirm_delete_template.as_deref() == Some(id.as_str()) {
+        let confirm: Vec<Element<'a, Msg>> = vec![
+            ui::faint("Delete it? This cannot be undone.").into(),
+            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDeleteTemplate)),
+            ui::btn_sm(
+                "Delete",
+                None,
+                ui::Kind::Danger,
+                gate(state.busy, Msg::DeleteTemplate(id)),
+            ),
+        ];
+        return row(confirm).spacing(8).align_y(Alignment::Center).into();
+    }
+    ui::btn_sm(
+        "Delete",
+        None,
+        ui::Kind::Danger,
+        gate(state.busy, Msg::AskDeleteTemplate(id)),
+    )
+}
+
 /// A table: a mono header row, then the rows, each under a hairline. Columns are proportional.
 fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     let heads: Vec<(u16, Element<'a, Msg>)> = head
@@ -749,6 +976,65 @@ mod tests {
         assert_eq!(short_time("2026-10-15T12:34:56Z"), "2026-10-15 12:34");
         assert_eq!(short_time(""), "");
         assert_eq!(short_time("soon"), "soon");
+    }
+
+    #[test]
+    fn e2b_templates_parse_with_their_builds() {
+        let list: TemplateList = serde_json::from_str(
+            r#"{"templates":[{"templateID":"tpl_1","name":"base","createdAt":"2026-10-14T09:00:00Z",
+                "updatedAt":"2026-10-15T12:34:56Z","builds":[
+                {"buildID":"b_2","status":"error","createdAt":"2026-10-15T12:00:00Z",
+                 "finishedAt":"2026-10-15T12:05:00Z","cpuCount":2,"memoryMB":512,"tags":["latest"],
+                 "reason":{"message":"out of disk","step":"RUN apt-get"}},
+                {"buildID":"b_1","status":"ready","createdAt":"2026-10-14T09:00:00Z",
+                 "finishedAt":null,"cpuCount":1,"memoryMB":256,"tags":["v1","latest"],"reason":null}]}]}"#,
+        )
+        .expect("the templates parse");
+        let template = &list.templates[0];
+        assert_eq!(template.template_id, "tpl_1");
+        assert_eq!(template.name, "base");
+        assert_eq!(template.builds.len(), 2);
+        let failed = &template.builds[0];
+        assert_eq!(failed.status, "error");
+        assert_eq!(failed.finished_at.as_deref(), Some("2026-10-15T12:05:00Z"));
+        assert_eq!(
+            failed.reason.as_ref().map(|reason| reason.step.as_str()),
+            Some("RUN apt-get")
+        );
+        assert_eq!(failed.memory_mb, 512);
+        let ready = &template.builds[1];
+        assert!(ready.finished_at.is_none());
+        assert!(ready.reason.is_none());
+    }
+
+    #[test]
+    fn e2b_templates_parse_without_reason_or_finish_time() {
+        let list: TemplateList = serde_json::from_str(
+            r#"{"templates":[{"templateID":"tpl_2","name":"slim","builds":[{"buildID":"b_3","status":"building","tags":[]}]}]}"#,
+        )
+        .expect("a template without the optional fields parses");
+        let build = &list.templates[0].builds[0];
+        assert_eq!(build.status, "building");
+        assert!(build.finished_at.is_none());
+        assert!(build.reason.is_none());
+        assert_eq!(list.templates[0].updated_at, "");
+    }
+
+    #[test]
+    fn e2b_ready_builds_name_the_tags_once() {
+        let build = |status: &str, tags: &[&str]| Build {
+            status: status.to_string(),
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            ..Build::default()
+        };
+        let builds = vec![
+            build("ready", &["latest", "v2"]),
+            build("error", &["broken"]),
+            build("ready", &["v2", "v1"]),
+            build("building", &["next"]),
+        ];
+        assert_eq!(ready_tags(&builds), vec!["latest", "v2", "v1"]);
+        assert!(ready_tags(&[]).is_empty());
     }
 
     #[test]
