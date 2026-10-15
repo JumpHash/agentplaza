@@ -108,7 +108,9 @@ editor shows that pull request as a tool call whose changes are diffs, with its 
 ## Applying the changes
 
 The agent never writes to your machine. Applying its pull request to the editor's project is
-off by default. The owner turns it on with `acp_write_back` in `/v1/settings`. With it on, the
+off by default. Turn it on in Setup › MCP › This hub as a server › **Offer to apply an agent's
+pull request to the editor's project** (the desktop app has the same switch; the setting is
+`acp_write_back`). With it on, the
 editor asks you each time an agent's pull request is ready to apply, and on yes it writes the
 changed files into the project. Deleted files are listed for you to remove yourself. Only the
 owner, or a token with the `govern` scope, is asked; an `operate` token sees the pull request
