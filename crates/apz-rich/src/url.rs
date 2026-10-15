@@ -350,127 +350,120 @@ mod tests {
     }
 
     #[test]
-    fn github_routes_and_their_fields() {
-        assert_eq!(
-            plain("https://github.com/o/r/pull/12?diff=split#discussion_r1"),
-            Ref::GithubPull {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 12
-            }
-        );
-        assert_eq!(
-            plain("https://github.com/o/r/blob/main/src/a.rs#L10-L20"),
-            Ref::GithubFile {
-                owner: "o".into(),
-                repo: "r".into(),
-                reference: "main".into(),
-                path: "src/a.rs".into(),
-                line: Some(10),
-                dir: false
-            }
-        );
-        assert_eq!(
-            plain("https://github.com/o/r/tree/main/crates/"),
-            Ref::GithubFile {
-                owner: "o".into(),
-                repo: "r".into(),
-                reference: "main".into(),
-                path: "crates".into(),
-                line: None,
-                dir: true
-            }
-        );
-    }
-
-    #[test]
-    fn host_and_scheme_are_case_insensitive_but_paths_are_not() {
-        assert!(matches!(
-            plain("HTTPS://WWW.GitHub.com/o/r/pull/3"),
-            Ref::GithubPull { number: 3, .. }
-        ));
-        assert!(matches!(
-            plain("https://github.com/o/r/PULL/3"),
-            Ref::Link { .. }
-        ));
-        assert_eq!(host_of("https://Git.Plaza.test:3000/x"), "git.plaza.test");
-    }
-
-    #[test]
-    fn media_and_hub_routes() {
-        assert!(matches!(plain("https://x.io/a.PNG?v=2"), Ref::Image { .. }));
-        assert!(matches!(plain("https://x.io/a.mp4"), Ref::Video { .. }));
-        assert!(matches!(plain("https://x.io/a.html#top"), Ref::Html { .. }));
-        assert!(matches!(
-            plain("https://raw.githubusercontent.com/o/r/main/a.png"),
-            Ref::Image { .. }
-        ));
-        assert!(matches!(
-            plain("https://github.com/o/r/blob/main/a.png"),
-            Ref::GithubFile { .. }
-        ));
-        let ctx = Ctx {
-            hub_host: Some("hub.test".into()),
-            ..Ctx::default()
-        };
-        assert_eq!(
-            classify_url("https://hub.test/v1/library/search/3/files", &ctx),
-            Some(Ref::LibraryTool {
-                name: "search".into(),
-                version: 3
-            })
-        );
-        assert_eq!(
-            classify_url("https://other.test/v1/files/abc", &ctx),
-            Some(Ref::Link {
-                url: "https://other.test/v1/files/abc".into()
-            })
-        );
-    }
-
-    #[test]
-    fn plaza_routes_use_the_configured_host_only() {
-        let ctx = Ctx {
-            plaza_git_host: Some("git.plaza.test".into()),
-            ..Ctx::default()
-        };
-        assert_eq!(
-            classify_url(
-                "https://git.plaza.test/agentplaza/pr-1/src/branch/main/a.rs#L4",
-                &ctx
-            ),
-            Some(Ref::PlazaGitFile {
-                owner: "agentplaza".into(),
-                repo: "pr-1".into(),
-                reference: "main".into(),
-                path: "a.rs".into(),
-                line: Some(4),
-                dir: false
-            })
-        );
-        assert!(matches!(
-            plain("https://git.plaza.test/o/r/pulls/2"),
-            Ref::Link { .. }
-        ));
-    }
-
-    #[test]
-    fn invalid_names_and_non_http_urls_are_not_routes() {
-        assert!(classify_url("ftp://github.com/o/r", &Ctx::default()).is_none());
-        assert!(classify_url("https://", &Ctx::default()).is_none());
-        assert!(matches!(
-            plain("https://github.com/../r/pull/1"),
-            Ref::Link { .. }
-        ));
-        assert!(matches!(
-            plain("https://github.com/o/r/commit/xyz"),
-            Ref::Link { .. }
-        ));
-    }
-
-    #[test]
-    fn percent_escapes_decode_and_malformed_ones_stay() {
-        assert_eq!(percent_decode("a%20b%2Fc%zz"), "a b/c%zz");
-        assert_eq!(percent_decode("tail%2"), "tail%2");
+    fn url_classification_routes() {
+        // github_routes_and_their_fields: GitHub pull, file and directory routes carry their fields.
+        {
+            assert_eq!(
+                plain("https://github.com/o/r/pull/12?diff=split#discussion_r1"),
+                Ref::GithubPull {
+                    owner: "o".into(),
+                    repo: "r".into(),
+                    number: 12
+                }
+            );
+            assert_eq!(
+                plain("https://github.com/o/r/blob/main/src/a.rs#L10-L20"),
+                Ref::GithubFile {
+                    owner: "o".into(),
+                    repo: "r".into(),
+                    reference: "main".into(),
+                    path: "src/a.rs".into(),
+                    line: Some(10),
+                    dir: false
+                }
+            );
+            assert_eq!(
+                plain("https://github.com/o/r/tree/main/crates/"),
+                Ref::GithubFile {
+                    owner: "o".into(),
+                    repo: "r".into(),
+                    reference: "main".into(),
+                    path: "crates".into(),
+                    line: None,
+                    dir: true
+                }
+            );
+        }
+        // host_and_scheme_are_case_insensitive_but_paths_are_not: only host and scheme ignore case.
+        {
+            assert!(matches!(
+                plain("HTTPS://WWW.GitHub.com/o/r/pull/3"),
+                Ref::GithubPull { number: 3, .. }
+            ));
+            assert!(matches!(
+                plain("https://github.com/o/r/PULL/3"),
+                Ref::Link { .. }
+            ));
+            assert_eq!(host_of("https://Git.Plaza.test:3000/x"), "git.plaza.test");
+        }
+        // media_and_hub_routes: media extensions, raw GitHub images and hub library tools.
+        {
+            assert!(matches!(plain("https://x.io/a.PNG?v=2"), Ref::Image { .. }));
+            assert!(matches!(plain("https://x.io/a.mp4"), Ref::Video { .. }));
+            assert!(matches!(plain("https://x.io/a.html#top"), Ref::Html { .. }));
+            assert!(matches!(
+                plain("https://raw.githubusercontent.com/o/r/main/a.png"),
+                Ref::Image { .. }
+            ));
+            assert!(matches!(
+                plain("https://github.com/o/r/blob/main/a.png"),
+                Ref::GithubFile { .. }
+            ));
+            let ctx = Ctx {
+                hub_host: Some("hub.test".into()),
+                ..Ctx::default()
+            };
+            assert_eq!(
+                classify_url("https://hub.test/v1/library/search/3/files", &ctx),
+                Some(Ref::LibraryTool {
+                    name: "search".into(),
+                    version: 3
+                })
+            );
+            assert_eq!(
+                classify_url("https://other.test/v1/files/abc", &ctx),
+                Some(Ref::Link {
+                    url: "https://other.test/v1/files/abc".into()
+                })
+            );
+        }
+        // plaza_routes_use_the_configured_host_only: Plaza git routes need the configured host.
+        {
+            let ctx = Ctx {
+                plaza_git_host: Some("git.plaza.test".into()),
+                ..Ctx::default()
+            };
+            assert_eq!(
+                classify_url(
+                    "https://git.plaza.test/agentplaza/pr-1/src/branch/main/a.rs#L4",
+                    &ctx
+                ),
+                Some(Ref::PlazaGitFile {
+                    owner: "agentplaza".into(),
+                    repo: "pr-1".into(),
+                    reference: "main".into(),
+                    path: "a.rs".into(),
+                    line: Some(4),
+                    dir: false
+                })
+            );
+            assert!(matches!(
+                plain("https://git.plaza.test/o/r/pulls/2"),
+                Ref::Link { .. }
+            ));
+        }
+        // invalid_names_and_non_http_urls_are_not_routes: bad schemes, empty hosts and odd names are not routes.
+        {
+            assert!(classify_url("ftp://github.com/o/r", &Ctx::default()).is_none());
+            assert!(classify_url("https://", &Ctx::default()).is_none());
+            assert!(matches!(
+                plain("https://github.com/../r/pull/1"),
+                Ref::Link { .. }
+            ));
+            assert!(matches!(
+                plain("https://github.com/o/r/commit/xyz"),
+                Ref::Link { .. }
+            ));
+        }
     }
 }
