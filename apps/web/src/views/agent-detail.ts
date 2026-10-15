@@ -1,17 +1,18 @@
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
-import { api, ApiError, isContributor, type Agent, type Block, type Delta, type Entry, type ModelInfo, type Sanction, type SanctionsView, type Settings, type Suspension } from '../api';
+import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type Sanction, type SanctionsView, type Settings, type Suspension, type VmCheckpoint } from '../api';
 import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { agentName } from '../roles';
-import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, clip, compact, empty, field, modal, tabs, textarea, toast, type Tone } from '../ui/components';
+import { agents, on, refreshAgents } from '../store';
+import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, tabs, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountMemory } from './memory';
 import { profileCard } from './agent-profile';
 import { harnessCard } from './agent-harness';
+import { bytesText } from './workstations-model';
 import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
 import { embedContextFromStore } from '../ui/embeds';
 import { renderMarkdown } from '../ui/markdown';
@@ -331,6 +332,150 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     );
   };
 
+  // A sleep or a wake changes the agent's status, so the roster is read again straight away.
+  const sleepAgent = (): void =>
+    void act(async () => {
+      await attempt(() => api.sleepAgent(cid), 'Agent asleep');
+      void refreshAgents();
+    });
+  const wakeAgent = (): void =>
+    void act(async () => {
+      await attempt(() => api.wakeAgent(cid), 'Agent awake');
+      void refreshAgents();
+    });
+
+  // The machine checkpoints: read on mount and after each change. While one request runs, every row action and the
+  // take button wait; a failed read says so instead of showing an empty list.
+  let checkpoints: VmCheckpoint[] | null = null;
+  let checkpointsFailed = false;
+  let checkpointBusy = false;
+  const checkpointHost = h('div.stack');
+  const checkpointLabel = input({ placeholder: 'Label (optional)', 'aria-label': 'Checkpoint label' });
+  const takeBtn = button('Take checkpoint', () => takeCheckpoint(), { icon: 'plus' });
+  const checkpointCard = card(
+    'Machine checkpoints',
+    h('div.stack', null, checkpointHost, h('div.row', null, checkpointLabel, takeBtn)),
+  );
+  checkpointLabel.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    takeCheckpoint();
+  });
+  // A checkpoint shows its label, or its name when it has none.
+  const checkpointName = (cp: VmCheckpoint): string => cp.label || cp.name;
+
+  const renderCheckpoints = (): void => {
+    takeBtn.disabled = checkpointBusy;
+    const list = checkpoints ?? [];
+    const body: Node =
+      checkpointsFailed
+        ? h('span.faint', null, 'Could not load the checkpoints')
+        : checkpoints === null
+          ? h('span.faint', null, 'Loading…')
+          : list.length === 0
+            ? h('span.faint', null, 'No checkpoints yet')
+            : h('div.stack', null, ...list.map(checkpointRow));
+    replace(checkpointHost, body);
+  };
+  const loadCheckpoints = async (): Promise<void> => {
+    try {
+      checkpoints = (await api.vmCheckpoints(cid)).checkpoints;
+      checkpointsFailed = false;
+    } catch {
+      checkpointsFailed = true;
+    }
+    if (alive) renderCheckpoints();
+  };
+  const checkpointAct = async (run: () => Promise<unknown>): Promise<void> => {
+    checkpointBusy = true;
+    renderCheckpoints();
+    try {
+      await run();
+    } finally {
+      checkpointBusy = false;
+      await loadCheckpoints();
+    }
+  };
+  const takeCheckpoint = (): void => {
+    void checkpointAct(async () => {
+      const made = await attempt(() => api.takeVmCheckpoint(cid, checkpointLabel.value.trim()), 'Checkpoint taken');
+      if (made) checkpointLabel.value = '';
+    });
+  };
+  const restoreCheckpoint = (cp: VmCheckpoint): void => {
+    if (!window.confirm(`Roll back ${checkpointName(cp)} to this checkpoint? Its VM — memory, disk and running processes — returns to that moment. A safety checkpoint is taken first, so you can undo this.`)) return;
+    void checkpointAct(() => attempt(() => api.restoreVmCheckpoint(cid, cp.name), 'Rolled back'));
+  };
+  const deleteCheckpoint = (cp: VmCheckpoint): void => {
+    if (!window.confirm(`Delete the checkpoint ${checkpointName(cp)}? It cannot be restored afterwards.`)) return;
+    void checkpointAct(() => attempt(() => api.deleteVmCheckpoint(cid, cp.name), 'Checkpoint deleted'));
+  };
+  const checkpointRow = (cp: VmCheckpoint): HTMLElement =>
+    h(
+      'div.stack.checkpoint',
+      { 'data-key': cp.name },
+      h('div.row', null, h('strong.truncate', { title: cp.name }, checkpointName(cp)), badge(cp.kind)),
+      h(
+        'span.faint',
+        null,
+        `${ago(cp.taken_at_ms)} · ${bytesText(cp.memory_written)} memory written · ${bytesText(cp.disk_bytes)} disk · paused ${cp.paused_ms} ms`,
+      ),
+      h(
+        'div.row',
+        null,
+        button('Restore', () => restoreCheckpoint(cp), { size: 'sm', icon: 'refresh', disabled: checkpointBusy }),
+        button('Delete', () => deleteCheckpoint(cp), { kind: 'danger', size: 'sm', icon: 'trash', disabled: checkpointBusy }),
+      ),
+    );
+
+  // A fork takes a fresh checkpoint and starts each new agent from it. The count is 1 to FORK_MAX, whole.
+  const FORK_MAX = 8;
+  const fork = (a: Agent): void => {
+    const count = input({ type: 'number', min: 1, max: FORK_MAX, step: 1, value: 1, 'aria-label': 'Number of forks' });
+    const forkCount = (): number | null => {
+      const n = Number(count.value);
+      return count.value.trim() !== '' && Number.isInteger(n) && n >= 1 && n <= FORK_MAX ? n : null;
+    };
+    const forkBtn = button('Fork', () => void run(), { kind: 'primary', icon: 'copy' });
+    const result = h('div.stack');
+    let close: () => void = () => {};
+    count.addEventListener('input', () => {
+      forkBtn.disabled = forkCount() === null;
+    });
+    const run = async (): Promise<void> => {
+      const n = forkCount();
+      if (n === null) return;
+      forkBtn.disabled = true;
+      const made = await attempt(() => api.forkAgent(cid, n), 'Forked');
+      forkBtn.disabled = forkCount() === null;
+      if (!made) return;
+      void refreshAgents();
+      void loadCheckpoints();
+      const links = made.forks.map((f) => {
+        const link = h('a', { href: href('agents', f.cid) }, f.name || `agent ${f.cid}`);
+        // The link opens the new agent's page, so the dialog closes with it.
+        link.addEventListener('click', () => close());
+        return h('div', null, link);
+      });
+      replace(
+        result,
+        h('p.muted', null, `${made.forks.length === 1 ? 'The new agent starts' : 'The new agents start'} from a checkpoint of ${agentName(a)}:`),
+        h('div.stack', null, ...links),
+      );
+    };
+    close = modal(
+      `Fork ${agentName(a)}`,
+      h(
+        'div.stack',
+        null,
+        h('p.muted', null, "Each fork gets a copy of this agent's VM, taken from a fresh checkpoint, and its own name. The forks then work apart from this agent and from each other."),
+        field(`Number of forks (1–${FORK_MAX})`, count),
+        h('div.row.modal-actions', null, forkBtn),
+        result,
+      ),
+    );
+  };
+
   const renderAgent = (): void => {
     const a = agent;
     if (!a) return;
@@ -343,12 +488,16 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     replace(
       head,
       h('a.back', { href: href('agents') }, 'Agents'),
-      h('div.agent-title', null),
+      h('div.agent-title', null, statusBadge(a.status)),
       h(
         'div.row.agent-actions',
         null,
         button('Open workspace', () => openIde(`agent:${cid}`), { icon: 'square-code', title: "Open this agent's workspace in the IDE" }),
         a.status === 'working' ? button('Cancel work', () => void act(() => attempt(() => api.cancel(cid), 'Cancelled')), { icon: 'ban', disabled: busy }) : null,
+        a.status === 'asleep'
+          ? button('Wake', () => wakeAgent(), { icon: 'sun', disabled: busy })
+          : button('Sleep', () => sleepAgent(), { icon: 'moon', title: 'Pause the VM until a chat or task wakes it', disabled: busy || offline || a.status === 'working' }),
+        button('Fork…', () => fork(a), { icon: 'copy', disabled: busy }),
         button('Restart', () => restart(a), { disabled: busy }),
         button('Stop', () => void act(() => attempt(() => api.stop(cid), 'Stopped')), { kind: 'danger', icon: 'stop', disabled: busy }),
         button('Wipe…', () => wipe(a), { disabled: busy }),
@@ -516,6 +665,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
           card('Harness', harness.el),
           card('Permissions', permissionHost),
           card('Conduct', conduct.el),
+          checkpointCard,
           card('Details', details),
           card('Queue', queue),
         ),
@@ -538,6 +688,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     }
     if (!alive) return;
     renderAgent();
+    void loadCheckpoints();
     void Promise.all([api.models(), api.settings()])
       .then(([view, settings]) => alive && populateModels(view.models, settings))
       .catch(() => undefined);
@@ -664,6 +815,14 @@ function conductCard(cid: number): { el: HTMLElement; destroy: () => void } {
 }
 
 /** Time left until `untilMs`, as "2h 5m left". */
+/** The status word in the head. Asleep is muted, not a warning: the agent is paused on purpose and wakes on a chat or task. */
+function statusBadge(status: AgentStatus): HTMLElement {
+  if (status === 'working') return badge('Working', 'info', true);
+  if (status === 'idle') return badge('Idle', 'ok', true);
+  if (status === 'asleep') return badge('Asleep', 'muted', true);
+  return badge('Offline', 'muted', true);
+}
+
 function timeLeft(untilMs: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((untilMs - now) / 1000));
   if (s < 60) return `${s}s left`;

@@ -56,7 +56,8 @@ const query = (params: Record<string, string | number | undefined>): string => {
 
 // ---- Types -----------------------------------------------------------------
 
-export type AgentStatus = 'offline' | 'idle' | 'working';
+/** A sleeping agent's VM is paused or stopped; a chat or a task wakes it. */
+export type AgentStatus = 'offline' | 'idle' | 'working' | 'asleep';
 export type Tier = 'orchestrator' | 'worker';
 export type WorkKind = 'task' | 'chat' | 'message' | 'motion';
 
@@ -173,7 +174,28 @@ export interface Settings {
   laws?: { strict_permits: boolean };
   /** Contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries. */
   allow_training_models?: boolean;
+  /** Minutes an idle agent waits before its VM sleeps; 0 = never. */
+  idle_sleep_min: number;
+  /** Roles whose agents never sleep when idle. */
+  sleep_never_roles: string[];
+  /** Take a checkpoint of the agent's VM before each irreversible tool call. */
+  vm_auto_checkpoints: boolean;
 }
+
+/** One saved state of an agent's VM (memory, disk and running processes). `diff` builds on the one before it. */
+export interface VmCheckpoint {
+  name: string; cid: number; label: string; kind: 'full' | 'diff'; taken_at_ms: number;
+  memory_written: number; disk_bytes: number; paused_ms: number;
+}
+
+export interface VmCheckpointList { checkpoints: VmCheckpoint[] }
+
+export interface ForkedAgent { cid: number; run: string; name: string }
+
+/** The forks made from one checkpoint of the agent's VM, which the forks start from. */
+export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
+
+export interface VmRestoreResult { ok: boolean; safety: VmCheckpoint }
 
 export interface Task {
   id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
@@ -665,6 +687,16 @@ export const api = {
   restartAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/restart`, {}),
   wipeAgent: (cid: number, opts: { memory?: boolean; transcript?: boolean; identity?: boolean }) => post<{ ok: boolean; wiped: string[] }>(`/v1/agents/${cid}/wipe`, opts),
   retireAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/retire`, {}),
+  /** Refused (409) while the agent works or has queued work. */
+  sleepAgent: (cid: number) => post<{ ok: boolean }>(`/v1/agents/${cid}/sleep`),
+  wakeAgent: (cid: number) => post<{ ok: boolean }>(`/v1/agents/${cid}/wake`),
+  /** The agent's VM checkpoints, newest first. */
+  vmCheckpoints: (cid: number) => get<VmCheckpointList>(`/v1/agents/${cid}/vm-checkpoints`),
+  takeVmCheckpoint: (cid: number, label?: string) => post<VmCheckpoint>(`/v1/agents/${cid}/vm-checkpoints`, label ? { label } : {}),
+  restoreVmCheckpoint: (cid: number, name: string) => post<VmRestoreResult>(`/v1/agents/${cid}/vm-checkpoints/${encodeURIComponent(name)}/restore`),
+  deleteVmCheckpoint: (cid: number, name: string) => del<{ ok: boolean }>(`/v1/agents/${cid}/vm-checkpoints/${encodeURIComponent(name)}`),
+  /** Forks the agent n times (1..8) from a fresh checkpoint of its VM. */
+  forkAgent: (cid: number, n: number) => post<ForkResult>(`/v1/agents/${cid}/fork`, { n }),
   roles: () => get<RoleView[]>('/v1/roles'),
   saveRole: (def: RoleDef) => post<RoleDef>('/v1/roles', def),
   deleteRole: (id: string) => del<unknown>(`/v1/roles/${id}`),

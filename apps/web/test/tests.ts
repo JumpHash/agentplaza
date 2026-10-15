@@ -34,6 +34,9 @@ import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, sta
 import { lookOfSpec, specKey, type PictureSpec } from '../src/views/machine-picture';
 import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
 import type { NodeView, StationVm } from '../src/api';
+import { api } from '../src/api';
+import { statusPill } from '../src/views/agent-list';
+import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1355,6 +1358,55 @@ sectionEnd('ide stored terminals tests: ok');
   eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
 }
 sectionEnd('board owner composer tests: ok');
+
+{
+  // Sleep, VM checkpoints and forks: the requests the console sends, against a recorded fetch (the paths are escaped
+  // as the hub reads them, and a label or a fork count goes in the body only when it is given).
+  const sent: { method: string; url: string; body: unknown }[] = [];
+  const realFetch = globalThis.fetch;
+  let reply: unknown = {};
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent.push({ method: init?.method ?? 'GET', url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
+    return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    await api.sleepAgent(7);
+    await api.wakeAgent(7);
+    reply = { checkpoints: [] };
+    await api.vmCheckpoints(7);
+    await api.takeVmCheckpoint(7, 'before deploy');
+    await api.takeVmCheckpoint(7);
+    await api.restoreVmCheckpoint(7, 'ck 1/x');
+    await api.deleteVmCheckpoint(7, 'ck-1');
+    await api.forkAgent(7, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  eq(
+    sent,
+    [
+      { method: 'POST', url: '/v1/agents/7/sleep', body: {} },
+      { method: 'POST', url: '/v1/agents/7/wake', body: {} },
+      { method: 'GET', url: '/v1/agents/7/vm-checkpoints', body: null },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints', body: { label: 'before deploy' } },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints', body: {} },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints/ck%201%2Fx/restore', body: {} },
+      { method: 'DELETE', url: '/v1/agents/7/vm-checkpoints/ck-1', body: null },
+      { method: 'POST', url: '/v1/agents/7/fork', body: { n: 3 } },
+    ],
+    'vm api: each checkpoint, sleep and fork call goes to its endpoint with its body',
+  );
+  // The roster's status pill: asleep reads as its own word, in the muted tone the offline agents use.
+  eq(statusPill('asleep'), { tone: 'muted', word: 'Asleep' }, 'status pill: asleep is muted and says so');
+  eq(statusPill('offline'), { tone: 'muted', word: null }, 'status pill: offline needs no word');
+  eq([statusPill('working').tone, statusPill('idle').tone], ['info', 'ok'], 'status pill: working and idle keep their tones');
+  // The sleep settings' validation, as the policy form reads its fields: whole numbers in range, blanks refused.
+  eq([wholeInRange('0', 0, 1440), wholeInRange('1440', 0, 1440), wholeInRange(' 30 ', 0, 1440)], [0, 1440, 30], 'wholeInRange: the bounds and a padded whole number are accepted');
+  eq([wholeInRange('1441', 0, 1440), wholeInRange('-1', 0, 1440), wholeInRange('2.5', 0, 1440), wholeInRange('', 0, 1440), wholeInRange('   ', 0, 1440), wholeInRange('x', 0, 1440)], [null, null, null, null, null, null], 'wholeInRange: out of range, negative, fractional, blank or text is refused');
+  eq(sleepRoles('coder, reviewer,, coder ,'), ['coder', 'reviewer'], 'sleepRoles: trimmed, blanks and repeats dropped, order kept');
+  eq(sleepRoles('   '), [], 'sleepRoles: a blank field names no role');
+}
+sectionEnd('sleep and checkpoint tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
