@@ -51,6 +51,8 @@ import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.j
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
 import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
+import { DEFAULT_STATE, LeaseKeeper, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
+import type { LiveLease, Saved } from '../src/metrics/model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1684,6 +1686,65 @@ sectionEnd('metrics format, nice and time labels: ok');
 eq([thin([1, 5, 2, null, 3, 4], bucketStarts(6, 3)), thin([null, null, 1], bucketStarts(3, 2)), thin([3, 1, 2], [0], 'min')], [[5, 2, 4], [null, 1], [1]], 'metrics charts: a long series keeps the largest value of each pixel bucket, and a bucket with no value stays null');
 eq([xLabelIndexes(10, 400), xLabelIndexes(10, 600), xLabelIndexes(1, 600)], [[0, 5, 9], [0, 2, 5, 7, 9], [0]], 'metrics charts: three x labels under 460 px and five above, the first and last always labelled, one point labelled once');
 sectionEnd('metrics charts tests: ok');
+// ---- Metrics view state: the URL hash, the request, the saved pins and scopes, the live lease (src/metrics/state.ts) ----
+{
+  const full: MetricsState = {
+    tab: 'latency',
+    scope: 'node:n1',
+    range: '6h',
+    shift: -2,
+    zoom: [0.25, 0.75],
+    compare: 'scope:node:n2',
+    group: 'model',
+    trace: 'abc 123',
+    filter: 'status=error',
+    fixture: true,
+    live: DEFAULT_STATE.live,
+    annotations: DEFAULT_STATE.annotations,
+    compact: DEFAULT_STATE.compact,
+  };
+  eq(toHash(full), '#/metrics?tab=latency&scope=node%3An1&range=6h&shift=-2&zoom=0.250%2C0.750&compare=scope%3Anode%3An2&group=model&trace=abc+123&filter=status%3Derror&fixture=1', 'metrics state: a full state writes every non-default field in the fixed order');
+  eq(parseHash(toHash(full)), full, 'metrics state: a full state survives the round trip through the hash');
+  eq(toHash(DEFAULT_STATE), '#/metrics', 'metrics state: the defaults write a bare route');
+  eq(parseHash('#/metrics'), DEFAULT_STATE, 'metrics state: a bare route reads as the defaults');
+  eq(parseHash('#/metrics?range=2y&zoom=0.8,0.2&shift=3&fixture=yes'), DEFAULT_STATE, 'metrics state: a bad range, zoom, shift or fixture falls back to the defaults');
+  eq([parseHash('#/metrics?zoom=0.5,1.5').zoom, parseHash('#/metrics?zoom=0.1,0.9').zoom, parseHash('#/metrics?range=7d').range], [null, [0.1, 0.9], '7d'], 'metrics state: a zoom outside 0 to 1 is dropped, a valid one is read, a known range is read');
+  eq(parseHash('#/metrics?compact=1').compact, false, 'metrics state: compact is a preference and is not read from the URL');
+  eq(queryOf(full, 800, 120), { tab: 'latency', scope: 'node:n1', range: '6h', shift: -2, compare: 'scope:node:n2', group: 'model', width: 800, tz: 120, fixture: true, zoom: [0.25, 0.75], trace: 'abc 123', filter: 'status=error' }, 'metrics state: the hub query carries the zoom tuple, trace and filter when set');
+  eq(queryOf(DEFAULT_STATE, 600, 0), { tab: 'overview', scope: 'global', range: '24h', shift: 0, compare: 'prev', group: 'provider', width: 600, tz: 0, fixture: false }, 'metrics state: the default hub query leaves out zoom, trace and filter');
+
+  const none: Saved = { scopes: [], pins: [], recent: [], starter: true };
+  const six: Saved = { ...none, recent: ['a', 'b', 'c', 'd', 'e', 'f'] };
+  eq(visit(six, 'g').recent, ['g', 'a', 'b', 'c', 'd', 'e'], 'metrics state: a new scope goes first and the oldest drops off, so recent keeps six');
+  eq(visit(six, 'c').recent, ['c', 'a', 'b', 'd', 'e', 'f'], 'metrics state: a visited scope moves to the front without a duplicate');
+  eq(six.recent, ['a', 'b', 'c', 'd', 'e', 'f'], 'metrics state: visiting returns a new object and leaves the saved one as it was');
+  eq(togglePinnedScope(togglePinnedScope(none, 'node:n1'), 'node:n1').scopes, [], 'metrics state: a pinned scope unpins on the second toggle');
+
+  const pin = { tab: 'latency', scope: 'global', panel: 'p-p95' };
+  const pinned = togglePin(none, pin);
+  eq(pinned.pins, [pin], 'metrics state: a panel pin is added');
+  eq(pinned.starter, false, 'metrics state: the first pin clears the starter flag');
+  eq(togglePin(pinned, pin).pins, [], 'metrics state: the same pin again removes it');
+  eq(togglePin(pinned, { ...pin, scope: 'node:n1' }).pins.length, 2, 'metrics state: the same panel on another scope is a different pin');
+
+  const sent: LiveLease[] = [];
+  const lease: LiveLease = { scope: 'global', tab: 'overview', group: 'provider', range: '15m' };
+  let current: LiveLease | null = lease;
+  const keeper = new LeaseKeeper(async (l) => { sent.push(l); }, () => current);
+  keeper.poke();
+  keeper.poke();
+  eq(sent.length, 1, 'metrics state: a lease is sent once and not again on a poke within 10 s');
+  current = { ...lease, range: '1h' };
+  keeper.poke();
+  eq(sent.length, 2, 'metrics state: a changed lease is sent at once');
+  current = null;
+  keeper.poke();
+  current = lease;
+  keeper.poke();
+  eq(sent.length, 3, 'metrics state: a lease is sent again after the view stopped holding one');
+  keeper.stop();
+}
+sectionEnd('metrics state tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
