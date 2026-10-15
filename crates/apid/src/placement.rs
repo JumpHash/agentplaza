@@ -745,19 +745,21 @@ pub fn spawn_drain(app: &App, node: &str) {
     };
     let node = node.to_string();
     std::thread::spawn(move || {
-        for agent in hub.agents.list() {
-            if fleet::node_of(&hub, agent.cid) != node || agent.status == Status::Offline {
+        let agents = hub
+            .agents
+            .select(|a| (a.status != Status::Offline).then(|| (a.cid, a.role.clone())));
+        for (cid, role) in agents {
+            if fleet::node_of(&hub, cid) != node {
                 continue;
             }
-            let target = choose_node(&hub, &agent.role);
-            match move_agent(&hub, agent.cid, &target) {
+            let target = choose_node(&hub, &role);
+            match move_agent(&hub, cid, &target) {
                 Ok(moved) => eprintln!(
-                    "apid: drain of {node}: agent {} moved to {} ({} bytes, {} ms)",
-                    agent.cid, moved.to, moved.bytes, moved.ms
+                    "apid: drain of {node}: agent {cid} moved to {} ({} bytes, {} ms)",
+                    moved.to, moved.bytes, moved.ms
                 ),
                 Err(resp) => eprintln!(
-                    "apid: drain of {node}: agent {} stays: {}",
-                    agent.cid,
+                    "apid: drain of {node}: agent {cid} stays: {}",
                     body_text(&resp)
                 ),
             }

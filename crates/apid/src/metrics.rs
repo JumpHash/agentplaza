@@ -71,15 +71,14 @@ fn wakes_queued() -> String {
 
 /// `apz_hub_agents{status="..."}`: the roster by status, counted at scrape time.
 fn agents_by_status(app: &App) -> String {
-    let (mut idle, mut working, mut asleep, mut offline) = (0u64, 0u64, 0u64, 0u64);
-    for agent in app.agents.list() {
-        match agent.status {
-            Status::Idle => idle += 1,
-            Status::Working => working += 1,
-            Status::Asleep => asleep += 1,
-            Status::Offline => offline += 1,
-        }
-    }
+    let counts = app.agents.count_by_status();
+    let of = |status: Status| counts.get(&status).copied().unwrap_or(0);
+    let (idle, working, asleep, offline) = (
+        of(Status::Idle),
+        of(Status::Working),
+        of(Status::Asleep),
+        of(Status::Offline),
+    );
     format!(
         "# HELP apz_hub_agents Agents on the roster, by status\n# TYPE apz_hub_agents gauge\n\
          apz_hub_agents{{status=\"idle\"}} {idle}\napz_hub_agents{{status=\"working\"}} {working}\n\

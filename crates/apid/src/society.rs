@@ -79,7 +79,7 @@ fn verified_agents(app: &App) -> Vec<u64> {
 
 /// Each agent's (reputation 0–100, confidence 0–1).
 fn reputations(app: &App) -> std::collections::BTreeMap<u64, (f64, f64)> {
-    let agents: Vec<u64> = app.agents.list().iter().map(|a| a.cid).collect();
+    let agents: Vec<u64> = app.agents.select(|a| Some(a.cid));
     app.bonds.reputation(&agents, &verified_agents(app), now())
 }
 
@@ -560,26 +560,24 @@ pub fn outreach(app: &App) {
     }
     let period = u64::from(minutes) * 60_000;
     let now_ms = apz_plaza::now_ms();
-    for agent in app.agents.list() {
-        if agent.status != Status::Idle
-            || agent.name.is_empty()
-            || app.work.current(agent.cid).is_some()
-            || !app.work.queued(agent.cid).is_empty()
-        {
+    // Idle, named agents only: (cid, connected_at_ms).
+    let idle = app.agents.select(|a| {
+        (a.status == Status::Idle && !a.name.is_empty()).then_some((a.cid, a.connected_at_ms))
+    });
+    for (cid, connected_at_ms) in idle {
+        if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
             continue;
         }
         let mut last = lock(&app.society.outreach);
-        let due = match last.get(&agent.cid) {
+        let due = match last.get(&cid) {
             Some(&at) => now_ms.saturating_sub(at) >= period,
             // First round: a CID-dependent share of the period after joining, so agents spread out.
-            None => {
-                now_ms.saturating_sub(agent.connected_at_ms) >= 60_000 + (agent.cid * 7919) % period
-            }
+            None => now_ms.saturating_sub(connected_at_ms) >= 60_000 + (cid * 7919) % period,
         };
         if !due {
             continue;
         }
-        last.insert(agent.cid, now_ms);
+        last.insert(cid, now_ms);
         drop(last);
         let prompt = "[plaza] You are free right now. Use the time to build your network and find work:\n\
              1. Check plaza_contacts and the board (plaza_board_read).\n\
@@ -590,9 +588,9 @@ pub fn outreach(app: &App) {
              Keep it short: a few tool calls, then a one-line summary.";
         app.work.enqueue(
             app,
-            agent.cid,
+            cid,
             WorkKind::Chat,
-            format!("social-{}", agent.cid),
+            format!("social-{cid}"),
             prompt.to_string(),
             Origin::default(),
         );

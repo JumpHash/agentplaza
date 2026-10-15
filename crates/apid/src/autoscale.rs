@@ -84,7 +84,21 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
         return;
     }
     let now = apz_plaza::now_ms();
-    let agents = app.agents.list();
+    // The fields the pass reads, of every agent (an Offline one clears its clock).
+    struct Row {
+        cid: u64,
+        status: Status,
+        run: Option<String>,
+        vm: Option<u32>,
+    }
+    let agents = app.agents.select(|a| {
+        Some(Row {
+            cid: a.cid,
+            status: a.status,
+            run: a.run.clone(),
+            vm: a.vm,
+        })
+    });
     let needs_runs = agents.iter().any(|agent| {
         !matches!(agent.status, Status::Offline | Status::Asleep)
             && agent.run.is_some()

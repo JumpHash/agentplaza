@@ -445,7 +445,22 @@ fn sweep_once(app: &App) {
         .collect();
     let mut on_roster = BTreeSet::new();
     let mut to_sleep: Vec<u64> = Vec::new();
-    for agent in app.agents.list() {
+    // The fields the sweep reads, of every agent (Offline ones count as on the roster too).
+    struct Row {
+        cid: u64,
+        status: Status,
+        connected_at_ms: u64,
+        role: String,
+    }
+    let roster = app.agents.select(|a| {
+        Some(Row {
+            cid: a.cid,
+            status: a.status,
+            connected_at_ms: a.connected_at_ms,
+            role: a.role.clone(),
+        })
+    });
+    for agent in roster {
         let cid = agent.cid;
         on_roster.insert(cid);
         let busy = app.work.current(cid).is_some() || !app.work.queued(cid).is_empty();

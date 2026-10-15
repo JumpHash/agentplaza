@@ -81,7 +81,7 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
         },
         None => None,
     };
-    let everyone: Vec<u64> = app.agents.list().iter().map(|agent| agent.cid).collect();
+    let everyone: Vec<u64> = app.agents.select(|agent| Some(agent.cid));
     let roster: Vec<(u64, String, String)> = app
         .agents
         .list()

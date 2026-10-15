@@ -495,7 +495,10 @@ impl Queues {
         if record.state() != TaskState::AwaitingReview.as_str() {
             return false;
         }
-        let Some(reviewer) = next_reviewer(&app.agents.list(), worker) else {
+        let reviewers = app
+            .agents
+            .select(|a| (a.role == REVIEWER_ROLE && a.status == Status::Idle).then(|| a.clone()));
+        let Some(reviewer) = next_reviewer(&reviewers, worker) else {
             return false;
         };
         let worker_name = app
@@ -700,12 +703,9 @@ impl Queues {
     /// Starts the next item for every idle, connected agent that has queued work and nothing
     /// in flight — after a restart (restored queues) or anything else that left work waiting.
     pub fn dispatch_idle(&self, app: &App) {
-        for agent in app.agents.list() {
-            if agent.status == Status::Idle
-                && self.current(agent.cid).is_none()
-                && !self.queued(agent.cid).is_empty()
-            {
-                self.dispatch(app, agent.cid);
+        for cid in app.agents.cids_with(Status::Idle) {
+            if self.current(cid).is_none() && !self.queued(cid).is_empty() {
+                self.dispatch(app, cid);
             }
         }
     }
@@ -980,19 +980,18 @@ pub fn spawn(app: Arc<App>) {
 /// Asks each unnamed agent, once and only after its session settled, to name itself.
 fn ask_names(app: &App) {
     let now = apz_plaza::now_ms();
-    for agent in app.agents.list() {
+    let unnamed = app.agents.select(|agent| {
         let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        if agent.name.is_empty()
-            && agent.status == crate::agents::Status::Idle
-            && settled
-            && app.names.first_ask(agent.cid)
-        {
+        (agent.name.is_empty() && agent.status == Status::Idle && settled).then_some(agent.cid)
+    });
+    for cid in unnamed {
+        if app.names.first_ask(cid) {
             let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
             app.work.enqueue(
                 app,
-                agent.cid,
+                cid,
                 WorkKind::Chat,
-                format!("op-{}", agent.cid),
+                format!("op-{cid}"),
                 prompt.to_owned(),
                 Origin::default(),
             );
@@ -1011,11 +1010,16 @@ fn assign_tasks(app: &App) {
             continue;
         }
         let role = task.role().map(str::to_string);
-        let worker = app.agents.list().into_iter().find(|a| {
-            a.status == Status::Idle
-                && tier_of(&a.role) == Tier::Worker
-                && role.as_deref().is_none_or(|r| a.role == r)
-        });
+        let worker = app
+            .agents
+            .select(|a| {
+                (a.status == Status::Idle
+                    && tier_of(&a.role) == Tier::Worker
+                    && role.as_deref().is_none_or(|r| a.role == r))
+                .then_some(a.cid)
+            })
+            .first()
+            .and_then(|&cid| app.agents.get(cid));
         let Some(worker) = worker else {
             continue;
         };
@@ -1046,14 +1050,14 @@ fn assign_tasks(app: &App) {
 fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
     let view = app.plaza.council.motions(MOTION_SCAN_LIMIT);
     for motion in view.motions.iter().filter(|m| m.state == "open") {
-        for agent in app.agents.list() {
-            if agent.status == Status::Offline || !is_seated(&agent.role) {
+        let seated = app
+            .agents
+            .select(|a| (a.status != Status::Offline && is_seated(&a.role)).then_some(a.cid));
+        for cid in seated {
+            if motion.votes.iter().any(|v| v.agent_cid == cid) {
                 continue;
             }
-            if motion.votes.iter().any(|v| v.agent_cid == agent.cid) {
-                continue;
-            }
-            if !seen.insert((motion.id.clone(), agent.cid)) {
+            if !seen.insert((motion.id.clone(), cid)) {
                 continue;
             }
             let prompt = format!(
@@ -1066,7 +1070,7 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
             };
             app.work.enqueue(
                 app,
-                agent.cid,
+                cid,
                 WorkKind::Motion,
                 format!("motion-{}", motion.id),
                 prompt,
