@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, Router};
@@ -62,6 +62,8 @@ pub struct Roster {
     agents: Mutex<BTreeMap<u64, Agent>>,
     /// Postgres, when this run has it; None keeps the roster in memory only.
     store: Option<Arc<Db>>,
+    /// Signalled after every change to the roster.
+    changed: Condvar,
 }
 
 impl Roster {
@@ -70,6 +72,7 @@ impl Roster {
         Self {
             agents: Mutex::default(),
             store,
+            changed: Condvar::new(),
         }
     }
 
@@ -96,6 +99,7 @@ impl Roster {
             f(agent);
             (durable(agent) != before).then(|| agent.clone())
         };
+        self.changed.notify_all();
         self.persist(written.as_ref());
         true
     }
@@ -105,11 +109,15 @@ impl Roster {
         // contract
         self.persist(Some(&agent));
         self.lock().insert(agent.cid, agent);
+        self.changed.notify_all();
     }
 
     /// Takes the agent off the roster (a soft delete in the database); returns whether it was there.
     pub fn remove(&self, cid: u64) -> bool {
         let removed = self.lock().remove(&cid).is_some();
+        if removed {
+            self.changed.notify_all();
+        }
         if let (true, Some(store)) = (removed, &self.store) {
             store.retire_agent(cid);
         }
@@ -118,10 +126,28 @@ impl Roster {
 
     /// Puts agents loaded from the database on the roster; nothing is written back.
     pub fn restore(&self, agents: Vec<Agent>) {
-        let mut roster = self.lock();
-        for agent in agents {
-            roster.insert(agent.cid, agent);
+        {
+            let mut roster = self.lock();
+            for agent in agents {
+                roster.insert(agent.cid, agent);
+            }
         }
+        self.changed.notify_all();
+    }
+
+    /// Waits, at most `timeout`, until `done` holds for agent `cid` (`None` when it is not on the roster);
+    /// returns whether it held. Every roster change wakes the wait, so nothing polls.
+    pub fn wait_until(
+        &self,
+        cid: u64,
+        timeout: Duration,
+        done: impl Fn(Option<&Agent>) -> bool,
+    ) -> bool {
+        let (_agents, result) = self
+            .changed
+            .wait_timeout_while(self.lock(), timeout, |agents| !done(agents.get(&cid)))
+            .unwrap_or_else(PoisonError::into_inner);
+        !result.timed_out()
     }
 
     fn persist(&self, agent: Option<&Agent>) {
@@ -1289,6 +1315,37 @@ mod route_tests {
             kind: "llm".into(),
             caps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wait_until_returns_as_soon_as_a_change_makes_the_agent_idle() {
+        let roster = Arc::new(Roster::with_db(None));
+        let mut asleep = agent("builder");
+        asleep.status = Status::Asleep;
+        roster.upsert(asleep);
+
+        let writer = Arc::clone(&roster);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            writer.update(42, |slot| slot.status = Status::Idle);
+        });
+
+        let started = std::time::Instant::now();
+        let held = roster.wait_until(42, Duration::from_secs(5), |a| {
+            a.is_some_and(|a| a.status == Status::Idle)
+        });
+        assert!(held);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn wait_until_gives_up_at_the_timeout_when_the_condition_never_holds() {
+        let roster = Roster::with_db(None);
+        roster.upsert(agent("builder"));
+        let held = roster.wait_until(42, Duration::from_millis(50), |a| {
+            a.is_some_and(|a| a.status == Status::Offline)
+        });
+        assert!(!held);
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {

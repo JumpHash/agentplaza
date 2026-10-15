@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use apz_http::{Params, Request, Response, Router};
 use serde_json::{Value, json};
@@ -28,9 +28,6 @@ use crate::state::App;
 
 /// How often the sweeper looks at the roster.
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
-
-/// How often `ensure_awake` checks whether the agent is back.
-const POLL_EVERY: Duration = Duration::from_millis(50);
 
 /// How long a route that needs the agent waits for it to wake before it answers 503.
 const WAKE_WAIT: Duration = Duration::from_secs(15);
@@ -133,20 +130,16 @@ pub fn ensure_awake(app: &App, cid: u64, timeout: Duration) -> Result<(), String
         return Ok(());
     }
     wake(app, cid);
-    let deadline = Instant::now() + timeout;
-    loop {
-        match app.agents.get(cid).map(|agent| agent.status) {
-            Some(Status::Idle | Status::Working) => {
-                touch(app, cid);
-                return Ok(());
-            }
-            None | Some(Status::Offline) => return Ok(()),
-            Some(Status::Asleep) => {}
+    app.agents.wait_until(cid, timeout, |agent| {
+        !matches!(agent.map(|a| a.status), Some(Status::Asleep))
+    });
+    match app.agents.get(cid).map(|agent| agent.status) {
+        Some(Status::Idle | Status::Working) => {
+            touch(app, cid);
+            Ok(())
         }
-        if Instant::now() >= deadline {
-            return Err(format!("agent {cid} is still waking after {timeout:?}"));
-        }
-        std::thread::sleep(POLL_EVERY);
+        None | Some(Status::Offline) => Ok(()),
+        Some(Status::Asleep) => Err(format!("agent {cid} is still waking after {timeout:?}")),
     }
 }
 
