@@ -361,11 +361,13 @@ impl VirtioMmioTransport {
                 .ack_features_by_page(1, (saved.acked_features >> 32) as u32)?;
         }
         // A device the driver had brought up is activated again over its restored queues, the
-        // same call the status write makes. Nothing else from the status write is replayed.
-        if transport.check_device_status(device_status::DRIVER_OK, 0) {
+        // same call the status write makes, and only then repositioned (its queues exist from
+        // activation on). One whose activation had failed (`FAILED` beside `DRIVER_OK`) stays as
+        // the driver left it. Nothing else from the status write is replayed.
+        if transport.check_device_status(device_status::DRIVER_OK, device_status::FAILED) {
             transport.device.activate(&transport.mem, &transport.irq)?;
+            transport.device.restore_device_state(&state.device)?;
         }
-        transport.device.restore_device_state(&state.device)?;
         Ok(transport)
     }
 
