@@ -13,8 +13,8 @@
 
 use std::num::Wrapping;
 
+use crate::pal::eventfd::EventFd;
 use serde_json::Value;
-use vmm_sys_util::eventfd::EventFd;
 
 use super::device::VirtioBlock;
 use super::{BLOCK_QUEUE_NUM, BLOCK_QUEUE_SIZE, VIRTIO_ID_BLOCK, VirtioBlockError};
@@ -166,7 +166,7 @@ impl VirtioDevice for BlockMmioDevice {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::FileExt;
 

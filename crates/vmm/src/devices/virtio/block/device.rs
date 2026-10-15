@@ -27,8 +27,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom};
 use std::path::Path;
 
-use vm_memory::{GuestMemoryBackend, ReadVolatile, WriteVolatile};
-use vmm_sys_util::eventfd::EventFd;
+use crate::pal::eventfd::EventFd;
+use vm_memory::GuestMemoryBackend;
+#[cfg(unix)]
+use vm_memory::{ReadVolatile, WriteVolatile};
 use zerocopy::IntoBytes;
 use zerocopy::little_endian::{U16, U32, U64};
 
@@ -240,10 +242,20 @@ impl DiskProperties {
         count: u32,
     ) -> Result<u32, IoErr> {
         self.file.seek(SeekFrom::Start(offset))?;
+        #[cfg_attr(windows, allow(unused_mut))]
         let mut slice = mem
             .get_slice(addr, u64_to_usize(u64::from(count)))
             .map_err(IoErr::GuestMemory)?;
+        #[cfg(unix)]
         self.file.read_exact_volatile(&mut slice)?;
+        // Windows has no volatile file transfer in `vm-memory`: the bytes go through a buffer.
+        #[cfg(windows)]
+        {
+            use std::io::Read;
+            let mut buffer = vec![0u8; slice.len()];
+            self.file.read_exact(&mut buffer)?;
+            slice.copy_from(&buffer);
+        }
         Ok(count)
     }
 
@@ -259,7 +271,15 @@ impl DiskProperties {
         let slice = mem
             .get_slice(addr, u64_to_usize(u64::from(count)))
             .map_err(IoErr::GuestMemory)?;
+        #[cfg(unix)]
         self.file.write_all_volatile(&slice)?;
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            let mut buffer = vec![0u8; slice.len()];
+            slice.copy_to(&mut buffer[..]);
+            self.file.write_all(&buffer)?;
+        }
         Ok(count)
     }
 
@@ -506,7 +526,7 @@ impl From<vm_memory::VolatileMemoryError> for IoErr {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::FileExt;
 

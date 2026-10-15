@@ -47,6 +47,12 @@ pub struct WhpSnapshot {
     pub ioapic: IoApic,
     pub serial: SerialRegisters,
     pub vsock: Option<MmioDeviceState>,
+    /// The workspace volume's transport.
+    #[serde(default)]
+    pub workspace: Option<MmioDeviceState>,
+    /// The shared data volumes' transports, in the spec's order.
+    #[serde(default)]
+    pub volumes: Vec<MmioDeviceState>,
 }
 
 fn io_error(path: &Path, source: io::Error) -> SnapshotError {
@@ -147,6 +153,8 @@ mod tests {
             ioapic: IoApic::new(3),
             serial: SerialRegisters::default(),
             vsock: None,
+            workspace: None,
+            volumes: Vec::new(),
         };
         write_state(&dir, &snapshot).expect("written");
         assert_eq!(read_state(&dir).expect("read back"), snapshot);

@@ -75,18 +75,9 @@ pub enum BootError {
     /// No vCPUs, or more than this backend runs.
     #[error("{0} vCPUs were requested; this backend runs 1 to {MAX_VCPUS}")]
     VcpuCount(u8),
-    /// The VM asked for a workspace volume.
-    #[error(
-        "this VM asked for a workspace volume, which the Windows backend cannot provide yet \
-         (the virtio-block device is Linux-only)"
-    )]
-    UnsupportedWorkspace,
-    /// Shared data volumes are virtio-block devices too, which the Windows backend does not have.
-    #[error(
-        "this VM asked for shared data volumes, which the Windows backend cannot provide yet \
-         (the virtio-block device is Linux-only)"
-    )]
-    UnsupportedVolumes,
+    /// The data volumes are not ones this VM can carry.
+    #[error("{0}")]
+    Volumes(String),
     /// A kernel or initrd file could not be read.
     #[error("cannot read {path}: {source}")]
     Read {
@@ -170,14 +161,7 @@ fn read(path: &PathBuf) -> Result<Vec<u8>, BootError> {
 
 /// Refuses what this backend cannot build, before anything is.
 fn check_spec(spec: &VmSpec, runtime: &VmRuntime) -> Result<u32, BootError> {
-    // A workspace volume is a writable virtio-block device; booting without it
-    // would leave the guest waiting for a disk that never appears.
-    if spec.workspace.is_some() {
-        return Err(BootError::UnsupportedWorkspace);
-    }
-    if !spec.volumes.is_empty() {
-        return Err(BootError::UnsupportedVolumes);
-    }
+    crate::spawner::check_volumes(&spec.volumes).map_err(BootError::Volumes)?;
     if spec.balloon.is_some() {
         eprintln!(
             "whp: VM {}: the balloon is Linux-only; booting with all {} MiB usable",
@@ -256,15 +240,7 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
     let tsc_khz = capability::<u64>(api, WHvCapabilityCodeProcessorClockFrequency)
         .ok()
         .map(|hz| hz / 1000);
-    let transports: Vec<MmioTransport> = spec
-        .vsock
-        .iter()
-        .map(|_| MmioTransport {
-            base: VSOCK_MMIO_START,
-            len: MMIO_LEN,
-            irq: VSOCK_GSI,
-        })
-        .collect();
+    let transports = transports_of(spec);
     let cmdline = guest_cmdline(&spec.cmdline, &transports, tsc_khz);
     if cmdline.len() + 1 > CMDLINE_MAX_SIZE {
         return Err(BootError::CommandLine(cmdline.len()));
@@ -337,6 +313,8 @@ fn restore_inner(
     if snapshot.vcpus.len() != usize::from(spec.vcpus)
         || snapshot.meta.memory_mib != spec.memory_mib
         || snapshot.vsock.is_some() != spec.vsock.is_some()
+        || snapshot.workspace.is_some() != spec.workspace.is_some()
+        || snapshot.volumes.len() != spec.volumes.len()
     {
         return Err(BootError::Snapshot(format!(
             "the spec ({} vCPUs, {} MiB, vsock {}) is not the snapshot's machine ({} vCPUs, {} MiB, vsock {})",
@@ -489,6 +467,37 @@ fn run(
         None => None,
     };
 
+    // The block devices: the workspace volume and the shared data volumes. Their requests are
+    // served on the vCPU that rings their doorbell, so they need no thread of their own.
+    let workspace = match &spec.workspace {
+        Some(image) => {
+            use crate::arch::x86_64::layout::{WORKSPACE_GSI, WORKSPACE_MMIO_START};
+            Some(attach_block(
+                &vm,
+                image,
+                None,
+                WORKSPACE_MMIO_START,
+                WORKSPACE_GSI,
+                restored.and_then(|s| s.workspace.as_ref()),
+                &mut irq_sources,
+            )?)
+        }
+        None => None,
+    };
+    let mut volumes = Vec::with_capacity(spec.volumes.len());
+    for (index, volume) in spec.volumes.iter().enumerate() {
+        use crate::arch::x86_64::layout::{DATA_GSI_START, DATA_MMIO_START};
+        volumes.push(attach_block(
+            &vm,
+            &volume.image,
+            Some(&volume.name),
+            DATA_MMIO_START + index as u64 * MMIO_LEN,
+            DATA_GSI_START + index as u32,
+            restored.and_then(|s| s.volumes.get(index)),
+            &mut irq_sources,
+        )?);
+    }
+
     // Console input, held weakly: input after the VM stopped fails.
     let input = Arc::downgrade(&serial);
     runtime.set_input_hook(move |data| match input.upgrade() {
@@ -514,6 +523,8 @@ fn run(
         vm: Arc::downgrade(&vm),
         serial: Arc::downgrade(&serial),
         vsock: vsock.as_ref().map(Arc::downgrade),
+        workspace: workspace.as_ref().map(Arc::downgrade),
+        volumes: volumes.iter().map(Arc::downgrade).collect(),
         gate: Arc::clone(&gate),
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
@@ -533,7 +544,7 @@ fn run(
     // stops the vCPUs, and owns the devices until then.
     let watcher_vm = Arc::clone(&vm);
     let watcher_runtime = Arc::clone(runtime);
-    let devices = (serial, i8042, pm1, ioapic, vsock);
+    let devices = (serial, i8042, pm1, ioapic, vsock, workspace, volumes);
     let watcher = thread::Builder::new()
         .name(format!("apz_vm{}_exit", runtime.id))
         .spawn(move || {
@@ -561,6 +572,68 @@ fn run(
         runtime.add_thread(handle);
     }
     Ok(())
+}
+
+/// The virtio-mmio transports a VM of `spec` carries, as its command line announces them: the vsock
+/// device, the workspace volume and the shared data volumes, in the KVM x86_64 backend's slots and
+/// interrupt lines (see `arch::x86_64::layout`).
+fn transports_of(spec: &VmSpec) -> Vec<MmioTransport> {
+    use crate::arch::x86_64::layout::{
+        DATA_GSI_START, DATA_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+    };
+    let mut transports = Vec::new();
+    if spec.vsock.is_some() {
+        transports.push(MmioTransport {
+            base: VSOCK_MMIO_START,
+            len: MMIO_LEN,
+            irq: VSOCK_GSI,
+        });
+    }
+    if spec.workspace.is_some() {
+        transports.push(MmioTransport {
+            base: WORKSPACE_MMIO_START,
+            len: MMIO_LEN,
+            irq: WORKSPACE_GSI,
+        });
+    }
+    for index in 0..spec.volumes.len() {
+        transports.push(MmioTransport {
+            base: DATA_MMIO_START + index as u64 * MMIO_LEN,
+            len: MMIO_LEN,
+            irq: DATA_GSI_START + index as u32,
+        });
+    }
+    transports
+}
+
+/// A block device on `vm`'s MMIO bus at `base`, its interrupt relayed to I/O APIC pin `gsi`: the
+/// writable workspace (`id` is `None`) or a read-only data volume named `id`. Rebuilt from `state`
+/// for a restore.
+fn attach_block(
+    vm: &WhpVm,
+    image: &std::path::Path,
+    id: Option<&str>,
+    base: u64,
+    gsi: u32,
+    state: Option<&crate::devices::virtio::mmio::MmioDeviceState>,
+    irq_sources: &mut Vec<(EventFd, usize)>,
+) -> Result<Arc<Mutex<VirtioMmioTransport>>, BootError> {
+    use crate::devices::virtio::block::device::VirtioBlock;
+    use crate::devices::virtio::block::mmio_device::BlockMmioDevice;
+    let irq = EventFd::new(EFD_NONBLOCK).map_err(BootError::Device)?;
+    irq_sources.push((irq.try_clone().map_err(BootError::Device)?, gsi as usize));
+    let device = match id {
+        Some(name) => VirtioBlock::new_read_only(image, name),
+        None => VirtioBlock::new(image),
+    }
+    .map_err(VirtioError::from)?;
+    let device = Box::new(BlockMmioDevice::new(device));
+    let transport = Arc::new(Mutex::new(match state {
+        Some(state) => VirtioMmioTransport::restore(device, vm.memory.clone(), irq, state)?,
+        None => VirtioMmioTransport::new(device, vm.memory.clone(), irq),
+    }));
+    vm.mmio.insert(transport.clone(), base, MMIO_LEN)?;
+    Ok(transport)
 }
 
 /// Writes the boot processor's long-mode state.

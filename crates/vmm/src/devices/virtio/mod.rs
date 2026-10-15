@@ -36,12 +36,12 @@
 //! [`mmio::VirtioDevice`], and the muxer's tests need only host Unix sockets
 //! (see `FACTS.md` next to this module for what was measured on a real host).
 
-// Linux only: the balloon releases pages with madvise(2), the block device
-// does positional file I/O through the Unix FileExt; the Windows backend
-// refuses a spec that asks for either.
+// The balloon is Linux only (it releases pages with madvise(2)); the block
+// device builds on Linux and Windows (the WHP backend's workspace and data
+// volumes).
 #[cfg(target_os = "linux")]
 pub mod balloon;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod block;
 pub mod iov_deque;
 pub mod iovec;
@@ -133,11 +133,11 @@ pub enum VirtioError {
     VsockActivate(#[from] crate::devices::virtio::vsock::ActivateError),
     /// The block device: {0}
     #[error("block device: {0}")]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     Block(#[from] crate::devices::virtio::block::VirtioBlockError),
     /// Failed to activate the block device: {0}
     #[error("failed to activate the block device: {0}")]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     BlockActivate(#[from] crate::devices::virtio::block::ActivateError),
     /// The balloon device: {0}
     #[error("balloon device: {0}")]

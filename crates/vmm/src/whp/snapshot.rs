@@ -229,6 +229,8 @@ pub struct WhpControl {
     pub vm: Weak<WhpVm>,
     pub serial: Weak<Mutex<SerialDevice>>,
     pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
+    pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
+    pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
     pub gate: DeviceGate,
     pub vcpus: u8,
     pub memory_mib: usize,
@@ -298,16 +300,24 @@ impl VmControl for WhpControl {
             .upgrade()
             .ok_or_else(|| failed("the serial console is gone"))?;
         let serial = lock(&serial).registers();
-        let vsock = match &self.vsock {
-            Some(transport) => {
-                let transport = transport
-                    .upgrade()
-                    .ok_or_else(|| failed("the vsock device is gone"))?;
-                let state = lock(&transport).save_state();
-                Some(state)
-            }
-            None => None,
+        let save = |transport: &Weak<Mutex<VirtioMmioTransport>>, what: &str| {
+            let transport = transport
+                .upgrade()
+                .ok_or_else(|| failed(format!("the {what} device is gone")))?;
+            let state = lock(&transport).save_state();
+            Ok::<_, SpawnError>(state)
         };
+        let vsock = self.vsock.as_ref().map(|t| save(t, "vsock")).transpose()?;
+        let workspace = self
+            .workspace
+            .as_ref()
+            .map(|t| save(t, "workspace"))
+            .transpose()?;
+        let volumes = self
+            .volumes
+            .iter()
+            .map(|t| save(t, "data volume"))
+            .collect::<Result<Vec<_>, SpawnError>>()?;
         // SAFETY: `vm` holds the memory, and the vCPUs are paused and the devices gated.
         let (regions, memory_written) = write_memory(dir, &unsafe { regions(&vm.memory) })
             .map_err(|err| failed(format!("write the memory file: {err}")))?;
@@ -321,6 +331,8 @@ impl VmControl for WhpControl {
                 ioapic,
                 serial,
                 vsock,
+                workspace,
+                volumes,
             },
         )
         .map_err(|err| failed(format!("write the state file: {err}")))?;
