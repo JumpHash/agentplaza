@@ -841,6 +841,7 @@ fn host_call(
                     from_cid: Some(from.cid),
                     owner: false,
                     mcp: false,
+                    acp: false,
                 };
                 let _ = app.work.enqueue(
                     app,
@@ -1113,6 +1114,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         from_cid: None,
         owner: false,
         mcp: false,
+        acp: false,
     };
     let _ = app.work.enqueue(
         app,

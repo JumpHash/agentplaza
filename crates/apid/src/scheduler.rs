@@ -42,6 +42,9 @@ pub struct Origin {
     /// True when the owner's message came over the hub's MCP server; `message_orchestrator` sets it.
     #[serde(default)]
     pub mcp: bool,
+    /// True when the owner's message came from an editor over ACP (`/v1/acp`).
+    #[serde(default)]
+    pub acp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1086,6 +1089,15 @@ impl Queues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_without_acp_still_parses() {
+        // Work items queued before `acp` existed carry no such key: they are not from an editor.
+        let old = r#"{"task":null,"motion":null,"from_cid":null,"owner":true,"mcp":false}"#;
+        let origin: Origin = serde_json::from_str(old).unwrap();
+        assert!(origin.owner);
+        assert!(!origin.acp);
+    }
 
     fn item(id: u64, cid: u64, task: Option<&str>) -> WorkItem {
         WorkItem {

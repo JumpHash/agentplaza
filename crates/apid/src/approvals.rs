@@ -407,18 +407,32 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
             );
         }
     };
-    let approve = body.approve;
-    let item = match app.approvals.decide(id, approve, body.reason) {
+    match decide_approval(app, id, body.approve, body.reason, body.action.as_deref()) {
+        Ok(item) => Response::json(200, &item),
+        Err((code, message)) => Response::error(code, &message),
+    }
+}
+
+/// Records the owner's decision on approval `id`, then does what its kind needs. The approvals API and
+/// the editors' ACP both decide this way. The error is the status and message for the caller.
+pub(crate) fn decide_approval(
+    app: &App,
+    id: &str,
+    approve: bool,
+    reason: Option<String>,
+    action: Option<&str>,
+) -> Result<Value, (u16, String)> {
+    let item = match app.approvals.decide(id, approve, reason) {
         Ok(item) => item,
-        Err(DecideError::NotFound) => return Response::error(404, "no such approval"),
+        Err(DecideError::NotFound) => return Err((404, "no such approval".to_string())),
         Err(DecideError::NotPending) => {
-            return Response::error(409, "this approval is already decided");
+            return Err((409, "this approval is already decided".to_string()));
         }
     };
     app.bus.publish("approval", &item);
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "sanction" => crate::sanctions::decided(app, &item, approve, body.action.as_deref()),
+        "sanction" => crate::sanctions::decided(app, &item, approve, action),
         "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::scheduler::review_decided(app, &item, approve),
         _ => {
@@ -433,8 +447,8 @@ fn decide(app: &App, req: &Request, p: &Params<'_>) -> Response {
         }
     };
     match applied {
-        Ok(()) => Response::json(200, &item),
-        Err(e) => Response::error(409, &e),
+        Ok(()) => Ok(serde_json::to_value(&item).unwrap_or(Value::Null)),
+        Err(e) => Err((409, e)),
     }
 }
 
