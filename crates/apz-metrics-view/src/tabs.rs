@@ -32,7 +32,10 @@ pub fn applies(tab: &str, kind: &str, scope_id: &str) -> bool {
 
 /// The label of a tab key.
 pub fn label(tab: &str) -> &'static str {
-    TABS.iter().find(|t| t.0 == tab).map(|t| t.1).unwrap_or("Overview")
+    TABS.iter()
+        .find(|t| t.0 == tab)
+        .map(|t| t.1)
+        .unwrap_or("Overview")
 }
 
 #[cfg(test)]

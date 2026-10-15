@@ -45,7 +45,16 @@ pub enum Tone {
 impl Tone {
     /// The n-th chart colour (wrapping after 8).
     pub fn chart(n: usize) -> Tone {
-        [Tone::C1, Tone::C2, Tone::C3, Tone::C4, Tone::C5, Tone::C6, Tone::C7, Tone::C8][n % 8]
+        [
+            Tone::C1,
+            Tone::C2,
+            Tone::C3,
+            Tone::C4,
+            Tone::C5,
+            Tone::C6,
+            Tone::C7,
+            Tone::C8,
+        ][n % 8]
     }
 }
 
@@ -205,23 +214,52 @@ pub struct PinRef {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Body {
-    Health { items: Vec<HealthItem> },
-    Tiles { tiles: Vec<Tile> },
+    Health {
+        items: Vec<HealthItem>,
+    },
+    Tiles {
+        tiles: Vec<Tile>,
+    },
     Chart(Chart),
     Heatmap(Heatmap),
-    Treemap { unit: Unit, items: Vec<TreeItem> },
-    Gauges { gauges: Vec<GaugeItem> },
+    Treemap {
+        unit: Unit,
+        items: Vec<TreeItem>,
+    },
+    Gauges {
+        gauges: Vec<GaugeItem>,
+    },
     Table(Table),
-    Flags { flags: Vec<Flag> },
-    Bars { rows: Vec<BarRow>, #[serde(default)] note: String },
-    Split { rows: Vec<SplitRow>, legend: Vec<LegendItem> },
-    Stats { stats: Vec<StatLine> },
+    Flags {
+        flags: Vec<Flag>,
+    },
+    Bars {
+        rows: Vec<BarRow>,
+        #[serde(default)]
+        note: String,
+    },
+    Split {
+        rows: Vec<SplitRow>,
+        legend: Vec<LegendItem>,
+    },
+    Stats {
+        stats: Vec<StatLine>,
+    },
     Swimlanes(Swimlanes),
-    Alerts { rows: Vec<AlertRow> },
-    Rules { rules: Vec<RuleRow> },
+    Alerts {
+        rows: Vec<AlertRow>,
+    },
+    Rules {
+        rules: Vec<RuleRow>,
+    },
     Traces(TracesBody),
-    Events { kinds: Vec<String>, rows: Vec<EventRow> },
-    Empty { text: String },
+    Events {
+        kinds: Vec<String>,
+        rows: Vec<EventRow>,
+    },
+    Empty {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -401,22 +439,44 @@ pub struct Row {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Cell {
     /// Plain text.
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// Monospace (ids, times, routes, tools).
-    Mono { text: String },
+    Mono {
+        text: String,
+    },
     /// A name with a muted monospace id after it ("ada 4417").
-    Named { name: String, id: String },
+    Named {
+        name: String,
+        id: String,
+    },
     /// A formatted number.
-    Num { text: String },
+    Num {
+        text: String,
+    },
     /// Text coloured by status.
-    Status { text: String, status: Status },
+    Status {
+        text: String,
+        status: Status,
+    },
     /// A bordered pill.
-    Pill { text: String, status: Status },
+    Pill {
+        text: String,
+        status: Status,
+    },
     /// Muted text.
-    Muted { text: String },
-    Spark { values: Vec<f64>, tone: Tone },
+    Muted {
+        text: String,
+    },
+    Spark {
+        values: Vec<f64>,
+        tone: Tone,
+    },
     /// A small stacked bar: (share in %, tone, label).
-    Bar { parts: Vec<(f64, Tone, String)> },
+    Bar {
+        parts: Vec<(f64, Tone, String)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -667,10 +727,26 @@ pub struct Pin {
 /// The starter pins shown on My dashboard until the owner pins something.
 pub fn starter_pins() -> Vec<Pin> {
     vec![
-        Pin { tab: "overview".into(), scope: "global".into(), panel: "ttft".into() },
-        Pin { tab: "context".into(), scope: "global".into(), panel: "nearest".into() },
-        Pin { tab: "compute".into(), scope: "global".into(), panel: "cpu".into() },
-        Pin { tab: "capacity".into(), scope: "global".into(), panel: "forecast".into() },
+        Pin {
+            tab: "overview".into(),
+            scope: "global".into(),
+            panel: "ttft".into(),
+        },
+        Pin {
+            tab: "context".into(),
+            scope: "global".into(),
+            panel: "nearest".into(),
+        },
+        Pin {
+            tab: "compute".into(),
+            scope: "global".into(),
+            panel: "cpu".into(),
+        },
+        Pin {
+            tab: "capacity".into(),
+            scope: "global".into(),
+            panel: "forecast".into(),
+        },
     ]
 }
 
