@@ -274,6 +274,8 @@ impl<S: Write, W: Write> Agent<'_, '_, S, W> {
                 Incoming::Handled
             }
             HostMessage::Profile { profile } => {
+                // A changed profile can add or drop the egress CA (the owner edited a rule).
+                crate::trust::install(self.workspace, profile.egress_ca.as_deref());
                 self.profile = Some(profile);
                 Incoming::Handled
             }
