@@ -465,7 +465,6 @@ fn internal(msg: impl ToString) -> types::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixStream;
     use std::sync::Arc;
     use std::sync::mpsc::{self, Sender};
 
@@ -576,8 +575,9 @@ mod tests {
             client: Mutex::default(),
             agent: agent.map(str::to_string),
         });
-        let (server_in, client_out) = UnixStream::pair().expect("a socket pair");
-        let (client_in, server_out) = UnixStream::pair().expect("a socket pair");
+        // Pipes, not a socket pair: the hub builds and tests on Windows too.
+        let (server_in, client_out) = std::io::pipe().expect("a pipe");
+        let (client_in, server_out) = std::io::pipe().expect("a pipe");
         let for_requests = Arc::clone(&plaza);
         let for_notes = Arc::clone(&plaza);
         let server = Peer::new(
