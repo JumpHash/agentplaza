@@ -11,6 +11,7 @@
 //! * [`traces`] — per-agent span rings, the tail sampler, kept traces.
 //! * [`alerting`] — rules, their evaluation as windows update, mute/acknowledge, history, notifications.
 //! * [`live`] — scopes watched live (leases) and the 2 s frames on `/v1/ws` (`metrics` events).
+//! * [`scope`] — the scope tree, the entities under a scope, and which series a scope covers.
 //! * [`source`] — [`apz_metrics_view::source::Source`] over all of the above and the hub's roster.
 //! * [`routes`] — `/v1/metrics/*`, the opt-in `/metrics` (OpenMetrics) and the CSV export.
 //! * [`export`] — OpenMetrics text, CSV, and the opt-in OTLP trace export.
@@ -36,6 +37,7 @@ pub mod live;
 pub mod mem;
 pub mod pg;
 pub mod routes;
+pub mod scope;
 pub mod settings;
 pub mod source;
 pub mod store;
