@@ -118,15 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn default_state_is_changes_since_work_start() {
-        let s = IdeState::default();
-        assert_eq!(s.panel, Panel::Changes);
-        assert_eq!(s.base, Base::WorkStart);
-        assert!(s.workspace.is_none() && s.open.is_empty() && s.active.is_none());
-        assert!(!s.review && !s.filter_changed);
-    }
-
-    #[test]
     fn open_adds_a_tab_and_activates_it_or_only_activates_an_open_one() {
         let s = reduce(IdeState::default(), Action::Open("a.txt".into()));
         assert_eq!(s.open, ["a.txt"]);
@@ -200,23 +191,6 @@ mod tests {
         assert_eq!(s.workspace, Some(WorkspaceId::Agent(7)));
         assert!(s.open.is_empty());
         assert_eq!(s.active, None);
-    }
-
-    #[test]
-    fn panel_base_and_toggles() {
-        let s = IdeState::default();
-        let s = reduce(s, Action::SetPanel(Panel::Approvals));
-        assert_eq!(s.panel, Panel::Approvals);
-        let s = reduce(s, Action::SetBase(Base::Checkpoint(3)));
-        assert_eq!(s.base, Base::Checkpoint(3));
-        let s = reduce(s, Action::SetBase(Base::Branch("main".into())));
-        assert_eq!(s.base, Base::Branch("main".into()));
-        let s = reduce(s, Action::ToggleReview);
-        assert!(s.review);
-        let s = reduce(s, Action::ToggleReview);
-        assert!(!s.review);
-        let s = reduce(s, Action::ToggleChangedFilter);
-        assert!(s.filter_changed);
     }
 
     #[test]

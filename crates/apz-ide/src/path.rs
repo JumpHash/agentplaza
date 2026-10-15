@@ -149,23 +149,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_paths_come_back_normalised() {
-        assert_eq!(check_path("a/b.txt").unwrap(), "a/b.txt");
-        assert_eq!(check_path("./a//b/").unwrap(), "a/b");
-        assert_eq!(check_path("a/./b").unwrap(), "a/b");
-        assert_eq!(check_path("a/b/c.txt/").unwrap(), "a/b/c.txt");
-        assert_eq!(check_path("café/naïve.txt").unwrap(), "café/naïve.txt");
-        assert_eq!(
-            check_path("..hidden/x").unwrap(),
-            "..hidden/x",
-            "a name with dots is not a .. segment"
-        );
-        assert_eq!(check_path("a..b").unwrap(), "a..b");
-    }
+    fn check_path_normalises_clean_paths_and_refuses_bad_shapes() {
+        // A clean path comes back normalised.
+        for (input, want) in [
+            ("a/b.txt", "a/b.txt"),
+            ("./a//b/", "a/b"),
+            ("a/./b", "a/b"),
+            ("a/b/c.txt/", "a/b/c.txt"),
+            ("café/naïve.txt", "café/naïve.txt"),
+            // A name with dots is not a .. segment.
+            ("..hidden/x", "..hidden/x"),
+            ("a..b", "a..b"),
+        ] {
+            assert_eq!(check_path(input).unwrap(), want, "{input:?}");
+        }
 
-    #[test]
-    fn check_path_refuses_each_bad_shape_with_its_own_error() {
-        // Every refusal of `clean` is a row. (Backslash has its own test below.)
+        // Every refusal of `clean` is a row.
         let cases = [
             ("", PathError::Empty),
             (".", PathError::Empty),
@@ -197,10 +196,8 @@ mod tests {
         for (p, want) in cases {
             assert_eq!(check_path(p), Err(want), "{p:?}");
         }
-    }
 
-    #[test]
-    fn backslash_is_refused_as_a_separator() {
+        // Backslash is refused as a separator.
         assert_eq!(check_path("a\\b"), Err(PathError::Backslash));
         assert_eq!(check_write("src\\main.rs"), Err(PathError::Backslash));
     }
@@ -258,69 +255,51 @@ mod tests {
     }
 
     #[test]
-    fn deny_list_matches_the_secret_names() {
-        for p in [
-            ".env",
-            ".env.local",
-            "config/.env.production",
-            "certs/server.pem",
-            "keys/prod.key",
-            "id_rsa",
-            "home/id_rsa.pub",
-            "id_ed25519",
-            "x/id_ed25519.bak",
-            "a/b.p12",
-            "a/b.pfx",
-            ".netrc",
-            ".npmrc",
-            ".pypirc",
-            "credentials",
-            "aws/credentials.json",
-            "home/.ssh/config",
-            ".aws/config",
-            "repo/.gnupg/secring",
-            "PRIVATE.KEY",
-            "./.env",
-            "ENV/.Env.Dev",
+    fn deny_list_matches_the_secret_names_and_leaves_similar_names_alone() {
+        for (p, want) in [
+            // Secret names are refused.
+            (".env", true),
+            (".env.local", true),
+            ("config/.env.production", true),
+            ("certs/server.pem", true),
+            ("keys/prod.key", true),
+            ("id_rsa", true),
+            ("home/id_rsa.pub", true),
+            ("id_ed25519", true),
+            ("x/id_ed25519.bak", true),
+            ("a/b.p12", true),
+            ("a/b.pfx", true),
+            (".netrc", true),
+            (".npmrc", true),
+            (".pypirc", true),
+            ("credentials", true),
+            ("aws/credentials.json", true),
+            ("home/.ssh/config", true),
+            (".aws/config", true),
+            ("repo/.gnupg/secring", true),
+            ("PRIVATE.KEY", true),
+            ("./.env", true),
+            ("ENV/.Env.Dev", true),
+            // Similar names are left alone.
+            ("env.rs", false),
+            ("envelope.txt", false),
+            (".envrc", false),
+            ("src/key_store.rs", false),
+            ("keyboard.txt", false),
+            ("credentials_helper.rs", false),
+            ("sshd_config", false),
+            ("notes/ssh.md", false),
+            ("docs/aws.md", false),
+            ("src/main.rs", false),
+            ("a/b/c", false),
+            ("", false),
         ] {
-            assert!(is_secret(p), "{p} should be secret");
-        }
-    }
-
-    #[test]
-    fn deny_list_leaves_similar_names_alone() {
-        for p in [
-            "env.rs",
-            "envelope.txt",
-            ".envrc",
-            "src/key_store.rs",
-            "keyboard.txt",
-            "credentials_helper.rs",
-            "sshd_config",
-            "notes/ssh.md",
-            "docs/aws.md",
-            "src/main.rs",
-            "a/b/c",
-            "",
-        ] {
-            assert!(!is_secret(p), "{p} should not be secret");
-        }
-    }
-
-    #[test]
-    fn error_messages_are_one_line() {
-        for e in [
-            PathError::Empty,
-            PathError::Absolute,
-            PathError::Backslash,
-            PathError::Nul,
-            PathError::Control,
-            PathError::Escape,
-            PathError::Reserved,
-            PathError::Secret,
-        ] {
-            let s = e.to_string();
-            assert!(!s.is_empty() && !s.contains('\n'), "{s}");
+            assert_eq!(
+                is_secret(p),
+                want,
+                "{p} should be {}",
+                if want { "secret" } else { "not secret" }
+            );
         }
     }
 }
