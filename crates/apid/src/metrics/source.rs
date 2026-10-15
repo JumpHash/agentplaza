@@ -5,7 +5,6 @@
 //! an agent-keyed metric under `node:n1` reads the agents placed on n1; a VM-keyed metric under `run:r12` reads
 //! r12's VMs; under `provider:anthropic` an agent-keyed metric keeps the series labelled `provider=anthropic`.
 
-use apz_metrics::alerts::{SloStatus, State};
 use apz_metrics::query::AggFn;
 use apz_metrics::trace::Trace;
 use apz_metrics::{Event, HistSnapshot, Level};
@@ -27,11 +26,10 @@ impl Source for LiveSource<'_> {
         self.now_ms
     }
     fn level(&self) -> (Level, bool) {
-        todo!()
+        misc::level(self)
     }
     fn series(&self, read: &Read) -> Vec<Group> {
-        let _ = read;
-        todo!()
+        reads::series(self, read)
     }
     fn scalar(
         &self,
@@ -41,12 +39,10 @@ impl Source for LiveSource<'_> {
         to_ms: u64,
         agg: AggFn,
     ) -> Option<f64> {
-        let _ = (metric, scope, from_ms, to_ms, agg);
-        todo!()
+        reads::scalar(self, metric, scope, from_ms, to_ms, agg)
     }
     fn hist(&self, metric: &str, scope: &str, from_ms: u64, to_ms: u64) -> HistSnapshot {
-        let _ = (metric, scope, from_ms, to_ms);
-        todo!()
+        reads::hist(self, metric, scope, from_ms, to_ms)
     }
     fn hist_steps(
         &self,
@@ -56,8 +52,7 @@ impl Source for LiveSource<'_> {
         to_ms: u64,
         step_ms: u64,
     ) -> Vec<HistSnapshot> {
-        let _ = (metric, scope, from_ms, to_ms, step_ms);
-        todo!()
+        reads::hist_steps(self, metric, scope, from_ms, to_ms, step_ms)
     }
     fn events(
         &self,
@@ -67,67 +62,120 @@ impl Source for LiveSource<'_> {
         kinds: &[&str],
         limit: usize,
     ) -> Vec<Event> {
-        let _ = (scope, from_ms, to_ms, kinds, limit);
-        todo!()
+        misc::events(self, scope, from_ms, to_ms, kinds, limit)
     }
     fn scopes(&self) -> Vec<ScopeNode> {
-        todo!()
+        super::scope::tree(self.app)
     }
     fn entities(&self, scope: &str, kind: &str) -> Vec<Entity> {
-        let _ = (scope, kind);
-        todo!()
+        super::scope::entities(self.app, scope, kind)
     }
     fn agent(&self, cid: u64) -> Option<AgentInfo> {
-        let _ = cid;
-        todo!()
+        super::scope::agent(self.app, cid)
     }
     fn calls(&self, scope: &str, before_ms: u64, limit: usize) -> Vec<CallRow> {
-        let _ = (scope, before_ms, limit);
-        todo!()
+        misc::calls(self, scope, before_ms, limit)
     }
     fn traces(&self, scope: &str, from_ms: u64, to_ms: u64, limit: usize) -> Vec<Trace> {
-        let _ = (scope, from_ms, to_ms, limit);
-        todo!()
+        misc::traces(self, scope, from_ms, to_ms, limit)
     }
     fn trace(&self, id: &str) -> Option<Trace> {
-        let _ = id;
-        todo!()
+        self.m.store.trace(id)
     }
     fn alerts(&self) -> AlertsState {
-        todo!()
+        self.m.alerts.state(self.m, self.app, self.now_ms)
     }
     fn self_cost(&self) -> SelfCost {
-        todo!()
+        misc::self_cost(self)
     }
     fn budgets(&self) -> Vec<Budget> {
-        todo!()
+        misc::budgets(self)
     }
     fn monthly_budget(&self) -> Option<f64> {
         self.m.settings.get().monthly_budget_usd
     }
     fn treasury(&self) -> Option<(f64, f64)> {
-        todo!()
+        misc::treasury(self)
     }
     fn report(&self, node: &str) -> serde_json::Value {
-        let _ = node;
-        todo!()
+        let node = node.strip_prefix("node:").unwrap_or(node);
+        super::lock(&self.m.links)
+            .get(node)
+            .map(|l| l.reports.clone())
+            .unwrap_or(serde_json::Value::Null)
     }
     fn rate_limits(&self) -> Vec<(String, Option<f64>, Option<f64>)> {
-        todo!()
+        misc::rate_limits(self)
     }
     fn outside(&self) -> Vec<(String, bool, Option<f64>, String)> {
-        todo!()
+        misc::outside(self)
     }
     fn links(&self) -> Vec<(String, String, u64, f64, f64, u32, f64, f64)> {
-        todo!()
+        misc::links(self)
     }
     fn saved(&self) -> Saved {
-        todo!()
+        self.m
+            .store
+            .kv_get("dashboards")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| Saved {
+                starter: true,
+                ..Saved::default()
+            })
     }
     fn basis_days(&self) -> u32 {
         self.m.settings.get().basis_days
     }
 }
 
-#[allow(dead_code)]
-fn _types(_: SloStatus, _: State) {}
+/// Series reads: the store's closed windows plus the rollup's open ones, filtered by scope, grouped, merged and
+/// bucketed.
+pub mod reads {
+    use super::*;
+
+    /// See [`Source::series`].
+    pub fn series(src: &LiveSource<'_>, read: &Read) -> Vec<Group> {
+        let _ = (src, read);
+        todo!()
+    }
+
+    /// See [`Source::scalar`].
+    pub fn scalar(
+        src: &LiveSource<'_>,
+        metric: &str,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+        agg: AggFn,
+    ) -> Option<f64> {
+        let _ = (src, metric, scope, from_ms, to_ms, agg);
+        todo!()
+    }
+
+    /// See [`Source::hist`].
+    pub fn hist(
+        src: &LiveSource<'_>,
+        metric: &str,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+    ) -> HistSnapshot {
+        let _ = (src, metric, scope, from_ms, to_ms);
+        todo!()
+    }
+
+    /// See [`Source::hist_steps`].
+    pub fn hist_steps(
+        src: &LiveSource<'_>,
+        metric: &str,
+        scope: &str,
+        from_ms: u64,
+        to_ms: u64,
+        step_ms: u64,
+    ) -> Vec<HistSnapshot> {
+        let _ = (src, metric, scope, from_ms, to_ms, step_ms);
+        todo!()
+    }
+}
+
+pub use super::source_misc as misc;

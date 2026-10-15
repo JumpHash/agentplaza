@@ -40,6 +40,7 @@ pub mod routes;
 pub mod scope;
 pub mod settings;
 pub mod source;
+pub mod source_misc;
 pub mod store;
 pub mod traces;
 
