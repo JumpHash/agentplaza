@@ -1057,6 +1057,9 @@ mod x86_64 {
         let memory = super::open_memory(dir)?;
         let guest_regions =
             map_private(&memory, &snapshot.meta.regions).map_err(BootError::from)?;
+        // Before the jail: the snapshot directory is read here, and the advice needs no syscall the
+        // jail allows.
+        crate::vstate::snapshot_memory::read_ahead(dir, &memory);
 
         let kvm = Kvm::new().map_err(BootError::from)?;
         let mut vm = KvmVm::new(kvm).map_err(BootError::from)?;
@@ -1615,6 +1618,8 @@ mod aarch64 {
 
         let memory = super::open_memory(dir)?;
         let guest_regions = map_private(&memory, &snapshot.meta.regions)?;
+        // Before the jail, as on the x86_64 path: the snapshot directory is read here.
+        crate::vstate::snapshot_memory::read_ahead(dir, &memory);
 
         let kvm = Kvm::new()?;
         let mut vm = KvmVm::new(kvm)?;

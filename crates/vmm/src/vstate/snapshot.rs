@@ -13,6 +13,7 @@
 //! |---|---|
 //! | [`STATE_FILE`] | [`VmSnapshot`] as JSON: the format version, the VMM and architecture it was taken on, the guest memory layout, the VM's and every vCPU's KVM state, and the device state |
 //! | [`MEMORY_FILE`] | the guest memory, each region at its [`RegionMeta::offset`]; pages the guest never touched are holes, so the file is sparse |
+//! | [`WORKING_SET_FILE`] | the memory ranges that were resident in host RAM when the snapshot was taken, as [`encode_runs`] writes them; a hint for the restore's read-ahead, not fsynced |
 //!
 //! A snapshot is only restored by the VMM that wrote it: [`read_state`] refuses another format,
 //! another VMM version or another architecture ([`SnapshotError::Incompatible`]) rather than restore
@@ -51,6 +52,16 @@ pub const FORMAT: u32 = 1;
 pub const STATE_FILE: &str = "vmstate.json";
 /// The guest memory file in a snapshot directory.
 pub const MEMORY_FILE: &str = "memory.img";
+/// The working-set hint in a snapshot directory: the ranges of [`MEMORY_FILE`] that were resident in
+/// host RAM when the snapshot was taken (see [`encode_runs`]). A restore reads them ahead; a missing or
+/// malformed file is ignored, since it is only a hint.
+pub const WORKING_SET_FILE: &str = "workingset.bin";
+/// The most runs a [`WORKING_SET_FILE`] holds. A snapshot keeps the first runs it finds, in file
+/// order, and drops the rest.
+pub const MAX_WORKING_SET_RUNS: usize = 65_536;
+
+/// A byte range of a memory file: `(offset, len)`.
+pub type Run = (u64, u64);
 
 /// The architecture snapshots are taken and restored on.
 #[cfg(target_arch = "x86_64")]
@@ -411,4 +422,195 @@ pub fn private_file(path: &Path) -> Result<File, SnapshotError> {
         .mode(0o600)
         .open(path)
         .map_err(|err| SnapshotError::io(path, err))
+}
+
+/// The union of two sets of runs: sorted, with the runs that overlap or touch merged. Empty runs are
+/// dropped.
+pub fn merge_runs(a: &[Run], b: &[Run]) -> Vec<Run> {
+    let mut all: Vec<Run> = a
+        .iter()
+        .chain(b)
+        .copied()
+        .filter(|&(_, len)| len > 0)
+        .collect();
+    all.sort_unstable();
+    let mut merged: Vec<Run> = Vec::with_capacity(all.len());
+    for (offset, len) in all {
+        match merged.last_mut() {
+            Some(last) if offset <= last.0.saturating_add(last.1) => {
+                last.1 = last
+                    .0
+                    .saturating_add(last.1)
+                    .max(offset.saturating_add(len))
+                    - last.0;
+            }
+            _ => merged.push((offset, len)),
+        }
+    }
+    merged
+}
+
+/// The bytes a [`WORKING_SET_FILE`] holds for `runs`: at most [`MAX_WORKING_SET_RUNS`] of them, each
+/// as a little-endian `offset` then a little-endian `len`.
+pub fn encode_runs(runs: &[Run]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(runs.len().min(MAX_WORKING_SET_RUNS) * 16);
+    for &(offset, len) in runs.iter().take(MAX_WORKING_SET_RUNS) {
+        bytes.extend_from_slice(&offset.to_le_bytes());
+        bytes.extend_from_slice(&len.to_le_bytes());
+    }
+    bytes
+}
+
+/// The runs a [`WORKING_SET_FILE`]'s bytes hold, or `None` if they are not a whole number of runs, or
+/// name more than [`MAX_WORKING_SET_RUNS`].
+pub fn decode_runs(bytes: &[u8]) -> Option<Vec<Run>> {
+    if bytes.len() % 16 != 0 || bytes.len() / 16 > MAX_WORKING_SET_RUNS {
+        return None;
+    }
+    let mut runs = Vec::with_capacity(bytes.len() / 16);
+    for chunk in bytes.chunks_exact(16) {
+        let offset = u64::from_le_bytes(chunk[..8].try_into().ok()?);
+        let len = u64::from_le_bytes(chunk[8..].try_into().ok()?);
+        runs.push((offset, len));
+    }
+    Some(runs)
+}
+
+#[cfg(unix)]
+/// The working set `dir` records for a restore. A missing file is an empty set, silently. A file that
+/// cannot be read or decoded is reported on stderr and is also an empty set: it is only a hint.
+pub fn read_working_set(dir: &Path) -> Vec<Run> {
+    use std::io::Read;
+    let path = dir.join(WORKING_SET_FILE);
+    // One byte past the largest valid file, so an oversized file is seen as oversized, not read whole.
+    let limit = (MAX_WORKING_SET_RUNS * 16 + 1) as u64;
+    let mut bytes = Vec::new();
+    let read = fs::File::open(&path).and_then(|file| file.take(limit).read_to_end(&mut bytes));
+    match read {
+        Ok(_) => match decode_runs(&bytes) {
+            Some(runs) => runs,
+            None => {
+                eprintln!(
+                    "vmm: {} is malformed; restoring without a read-ahead",
+                    path.display()
+                );
+                Vec::new()
+            }
+        },
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => {
+            eprintln!(
+                "vmm: cannot read {}: {err}; restoring without a read-ahead",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Writes `runs` as the working-set file of `dir` (mode 0600, created or truncated). Not fsynced: a
+/// lost hint only costs the restore its read-ahead.
+#[cfg(unix)]
+pub fn write_working_set(dir: &Path, runs: &[Run]) -> Result<(), SnapshotError> {
+    use std::io::Write;
+    let path = dir.join(WORKING_SET_FILE);
+    let mut file = private_file(&path)?;
+    file.write_all(&encode_runs(runs))
+        .map_err(|err| SnapshotError::io(&path, err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_joins_adjacent_and_overlapping_runs_and_keeps_gaps() {
+        // Touching runs join; overlapping ones join; a gap stays a gap.
+        assert_eq!(
+            merge_runs(&[(0, 4096), (4096, 4096)], &[]),
+            vec![(0, 8192)],
+            "adjacent runs join"
+        );
+        assert_eq!(
+            merge_runs(&[(0, 8192)], &[(4096, 8192)]),
+            vec![(0, 12288)],
+            "overlapping runs join"
+        );
+        assert_eq!(
+            merge_runs(&[(0, 4096)], &[(8192, 4096)]),
+            vec![(0, 4096), (8192, 4096)],
+            "a gap stays"
+        );
+        assert_eq!(
+            merge_runs(&[(8192, 4096)], &[(0, 4096)]),
+            vec![(0, 4096), (8192, 4096)]
+        );
+    }
+
+    #[test]
+    fn merge_is_a_union_and_drops_empty_runs() {
+        let a = [(40960, 4096), (0, 4096)];
+        let b = [(4096, 4096), (0, 0), (40960, 8192)];
+        assert_eq!(merge_runs(&a, &b), vec![(0, 8192), (40960, 8192)]);
+        assert_eq!(merge_runs(&[], &[]), Vec::<Run>::new());
+        assert_eq!(merge_runs(&[(16, 0)], &[]), Vec::<Run>::new());
+    }
+
+    #[test]
+    fn runs_round_trip_through_their_encoding() {
+        let runs = vec![(0, 4096), (u64::MAX - 4095, 4096), (1 << 40, 1 << 30)];
+        let bytes = encode_runs(&runs);
+        assert_eq!(bytes.len(), runs.len() * 16);
+        assert_eq!(
+            &bytes[..8],
+            &0u64.to_le_bytes(),
+            "little-endian offset first"
+        );
+        assert_eq!(decode_runs(&bytes), Some(runs));
+        assert_eq!(decode_runs(&[]), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_malformed_encoding_decodes_to_nothing() {
+        assert_eq!(decode_runs(&[0u8; 15]), None, "a partial run");
+        assert_eq!(decode_runs(&[0u8; 17]), None, "a stray byte");
+        let too_many = vec![0u8; (MAX_WORKING_SET_RUNS + 1) * 16];
+        assert_eq!(decode_runs(&too_many), None, "more runs than the cap");
+    }
+
+    #[test]
+    fn encoding_keeps_only_the_first_runs_up_to_the_cap() {
+        let runs: Vec<Run> = (0..(MAX_WORKING_SET_RUNS as u64 + 3))
+            .map(|i| (i * 8192, 4096))
+            .collect();
+        let decoded = decode_runs(&encode_runs(&runs)).expect("a capped file decodes");
+        assert_eq!(decoded.len(), MAX_WORKING_SET_RUNS);
+        assert_eq!(decoded.last(), Some(&runs[MAX_WORKING_SET_RUNS - 1]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_working_set_file_is_read_back_and_a_missing_one_is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("apz-workingset-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            read_working_set(&dir),
+            Vec::<Run>::new(),
+            "no file, no runs"
+        );
+
+        write_working_set(&dir, &[(0, 4096), (8192, 8192)]).unwrap();
+        let mode = fs::metadata(dir.join(WORKING_SET_FILE))
+            .unwrap()
+            .permissions();
+        assert_eq!(mode.mode() & 0o777, 0o600);
+        assert_eq!(read_working_set(&dir), vec![(0, 4096), (8192, 8192)]);
+
+        // A malformed file is an empty set, not an error.
+        fs::write(dir.join(WORKING_SET_FILE), [1u8, 2, 3]).unwrap();
+        assert_eq!(read_working_set(&dir), Vec::<Run>::new());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

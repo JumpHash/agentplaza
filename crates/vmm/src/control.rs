@@ -23,6 +23,12 @@
 //! complete either way. The control keeps that file open, so the copy works even after the file's
 //! directory was removed.
 //!
+//! **What a snapshot records for a restore.** The guest's resident pages, as ranges of the memory file
+//! ([`WORKING_SET_FILE`]), taken before the memory is written. A restore reads them ahead, so the
+//! guest's working set is in the page cache when it wakes. A reclaimed VM's pages are gone from RAM by
+//! the time it is snapshotted, so `reclaim` keeps the set it saw first (see the `reclaimed_working_set`
+//! field).
+//!
 //! **What it does not hold.** The control keeps the VM and its devices *weakly*: the VM's exit
 //! watcher owns them, and a control that kept them alive would keep a stopped VM's memory mapped.
 //! Every call on a stopped VM fails with "the VM has stopped".
@@ -42,12 +48,14 @@ use vm_memory::GuestMemoryBackend;
 use crate::spawner::{SnapshotInfo, SnapshotKind, SpawnError, VmControl};
 use crate::sys;
 use crate::vstate::bus::lock;
-use crate::vstate::memory::{GuestMemoryRegion, MemoryRegionAddress, u64_to_usize};
-use crate::vstate::snapshot::{
-    self, DeviceStates, MEMORY_FILE, RegionMeta, SerialRegisters, VcpuState, VmSnapshot, VmState,
-    meta_now, write_state,
+use crate::vstate::memory::{
+    Address, GuestMemoryRegion, MemoryRegionAddress, host_page_size, u64_to_usize, usize_to_u64,
 };
-use crate::vstate::snapshot_memory::{layout, write_memory};
+use crate::vstate::snapshot::{
+    self, DeviceStates, MEMORY_FILE, RegionMeta, Run, SerialRegisters, VcpuState, VmSnapshot,
+    VmState, merge_runs, meta_now, write_state, write_working_set,
+};
+use crate::vstate::snapshot_memory::{layout, resident_runs, write_memory};
 use crate::vstate::vm::{KvmVm, KvmVmError};
 
 /// What every call on a VM that has stopped fails with.
@@ -81,6 +89,10 @@ pub struct InProcessControl {
     /// Whether the control has left the VM's vCPUs paused. Pause and resume check it, so both are
     /// idempotent; a VM starts running.
     paused: AtomicBool,
+    /// The guest's resident pages, as memory-file runs, as the last `reclaim` found them before it
+    /// paged them out. A snapshot of a reclaimed VM would otherwise record almost nothing; the next
+    /// snapshot takes this set (merged with what is resident then) and clears it.
+    reclaimed_working_set: Mutex<Option<Vec<Run>>>,
 }
 
 impl InProcessControl {
@@ -102,6 +114,7 @@ impl InProcessControl {
             restored_from,
             busy: Mutex::new(()),
             paused: AtomicBool::new(false),
+            reclaimed_working_set: Mutex::new(None),
         }
     }
 
@@ -247,7 +260,17 @@ impl VmControl for InProcessControl {
         let vm_state = save_vm_state(&vm, &vcpus).map_err(|err| step("save the VM state", err))?;
         let devices = self.save_devices()?;
         let regions = layout(vm.guest_memory());
+        // Read before the memory is written: the write reads the touched pages back in.
+        let working_set = {
+            let kept = lock(&self.reclaimed_working_set);
+            merge_runs(
+                kept.as_deref().unwrap_or(&[]),
+                &resident_pages(&vm, &regions)?,
+            )
+        };
         let (kind, memory_written) = self.save_memory(&vm, dir, &regions)?;
+        write_working_set(dir, &working_set)
+            .map_err(|err| step("write the working-set file", err))?;
 
         let mut meta = meta_now(kind, self.vcpus, self.memory_mib, regions);
         meta.memory_written = memory_written;
@@ -259,6 +282,8 @@ impl VmControl for InProcessControl {
         };
         write_state(dir, &state, requested.is_durable())
             .map_err(|err| step("write the state file", err))?;
+        // The snapshot has taken what the reclaim kept; a later snapshot records what is resident then.
+        *lock(&self.reclaimed_working_set) = None;
 
         Ok(SnapshotInfo {
             dir: dir.to_path_buf(),
@@ -278,6 +303,14 @@ impl VmControl for InProcessControl {
                 "the VM is running; pause it before reclaiming its memory",
             ));
         }
+        // Keep what is resident before any page goes out, for the next snapshot's working set. A second
+        // reclaim finds little resident, so it adds to the set the first one kept.
+        {
+            let regions = layout(vm.guest_memory());
+            let mut kept = lock(&self.reclaimed_working_set);
+            let resident = resident_pages(&vm, &regions)?;
+            *kept = Some(merge_runs(kept.as_deref().unwrap_or(&[]), &resident));
+        }
         let mut advised = 0;
         for region in vm.guest_memory().iter() {
             let host = region
@@ -290,6 +323,29 @@ impl VmControl for InProcessControl {
         }
         Ok(advised)
     }
+}
+
+/// The guest memory's resident pages, as runs of memory-file offsets. `regions` is the snapshot's
+/// [`layout`] of `vm`'s memory.
+fn resident_pages(vm: &KvmVm, regions: &[RegionMeta]) -> Result<Vec<Run>, SpawnError> {
+    let page = usize_to_u64(host_page_size());
+    let mut runs = Vec::new();
+    for meta in regions {
+        let region = vm
+            .guest_memory()
+            .iter()
+            .find(|r| r.start_addr().raw_value() == meta.guest_addr && r.len() == meta.len)
+            .ok_or_else(|| {
+                snapshot_error(format!("no guest memory region at {:#x}", meta.guest_addr))
+            })?;
+        let host = region
+            .get_host_address(MemoryRegionAddress(0))
+            .map_err(|err| step("find the guest memory", err))?;
+        let vec = sys::resident_pages(host, u64_to_usize(meta.len))
+            .map_err(|err| step("read the resident pages", err))?;
+        runs.extend(resident_runs(&vec, meta.offset, page));
+    }
+    Ok(merge_runs(&runs, &[]))
 }
 
 /// A snapshot failure, as the control reports it.
@@ -509,6 +565,45 @@ mod tests {
         // The memory file spans the whole layout, even where nothing was written.
         assert_eq!(fs::metadata(dir.join(MEMORY_FILE)).unwrap().len(), 1 << 20);
 
+        control.resume().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A snapshot records the guest's resident pages as its working-set hint. A reclaim records them
+    /// before it pages them out, and the next snapshot takes that record and clears it.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_snapshot_records_the_resident_pages_and_a_reclaim_keeps_them() {
+        use crate::vstate::memory::Bytes;
+        use crate::vstate::snapshot::{WORKING_SET_FILE, read_working_set};
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
+        let vm = vm_without_vcpus(1 << 20);
+        let serial = serial();
+        let control = control_of(&vm, &serial, None);
+        // Write the fifth page: it is resident; the rest of the region is never touched.
+        vm.guest_memory()
+            .write_slice(&[0xAA; 4096], GuestAddress(4 * 4096))
+            .unwrap();
+        let root = scratch("working-set");
+        let dir = root.join("snap");
+
+        control.pause().unwrap();
+        control.reclaim().unwrap();
+        control.snapshot(&dir, SnapshotKind::Full).unwrap();
+        let runs = read_working_set(&dir);
+        assert!(
+            runs.iter()
+                .any(|&(offset, len)| offset <= 4 * 4096 && 5 * 4096 <= offset + len),
+            "the touched page is in the working set: {runs:?}"
+        );
+        assert_eq!(mode(&dir.join(WORKING_SET_FILE)), 0o600);
+        assert!(
+            control.reclaimed_working_set.lock().unwrap().is_none(),
+            "the snapshot takes the set the reclaim kept"
+        );
         control.resume().unwrap();
         fs::remove_dir_all(&root).unwrap();
     }

@@ -20,9 +20,16 @@
 //!
 //! **Layout.** [`layout`] places the regions back to back in guest-address order, each at a
 //! page-aligned offset.
+//!
+//! **Working set.** Before a snapshot writes anything, the kernel is asked which pages of each region
+//! are resident ([`crate::sys::resident_pages`]), and [`resident_runs`] turns them into runs of
+//! memory-file offsets: the snapshot's working-set hint ([`crate::vstate::snapshot::WORKING_SET_FILE`]).
+//! A restore reads the hint ahead ([`read_ahead`]), so the guest's first touches of those pages come
+//! from the page cache rather than the disk.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+use std::path::Path;
 
 use vm_memory::GuestMemoryBackend;
 
@@ -31,7 +38,7 @@ use crate::vstate::memory::{
     Address, Bytes, GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmapExt, MemoryRegionAddress,
     host_page_size, u64_to_usize, usize_to_u64,
 };
-use crate::vstate::snapshot::{RegionMeta, SnapshotError};
+use crate::vstate::snapshot::{RegionMeta, Run, SnapshotError, read_working_set};
 
 /// The kernel's per-page state, one 8-byte entry per host page of this process's address space.
 const PAGEMAP: &str = "/proc/self/pagemap";
@@ -278,6 +285,57 @@ fn io_error(path: &str, source: std::io::Error) -> SnapshotError {
     }
 }
 
+/// The most bytes of the memory file a restore asks the kernel to read ahead. The hint is bounded, so a
+/// large working set cannot queue more I/O than the VM is likely to need soon.
+const PREFETCH_BYTES: u64 = 2 << 30;
+
+/// The memory-file runs of a region's resident pages, from its `mincore` vector (see
+/// [`crate::sys::resident_pages`]): one byte per page of the region, its low bit set for a resident
+/// page. `region_offset` is where the region starts in the memory file and `page` is the host page
+/// size. Adjacent resident pages become one run.
+pub fn resident_runs(vec: &[u8], region_offset: u64, page: u64) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for (index, state) in vec.iter().enumerate() {
+        if state & 1 == 0 {
+            continue;
+        }
+        let offset = region_offset.saturating_add(index as u64 * page);
+        match runs.last_mut() {
+            Some(last) if last.0.saturating_add(last.1) == offset => last.1 += page,
+            _ => runs.push((offset, page)),
+        }
+    }
+    runs
+}
+
+/// The leading part of `runs` that fits in `budget` bytes, with the last run cut to fit. The order of
+/// `runs` is kept.
+pub fn prefetch_ranges(runs: &[Run], budget: u64) -> Vec<Run> {
+    let mut left = budget;
+    let mut ranges = Vec::new();
+    for &(offset, len) in runs {
+        if left == 0 {
+            break;
+        }
+        let len = len.min(left);
+        ranges.push((offset, len));
+        left -= len;
+    }
+    ranges
+}
+
+/// Starts reading the working set of the snapshot in `dir` into the page cache, for the memory file
+/// `memory` that a restore has just mapped: `posix_fadvise(WILLNEED)` on each hinted range, up to
+/// [`PREFETCH_BYTES`]. The advice returns without waiting for the I/O. A missing or malformed hint
+/// means no read-ahead, and a failed advice stops the rest silently: the hint only saves time.
+pub fn read_ahead(dir: &Path, memory: &File) {
+    for (offset, len) in prefetch_ranges(&read_working_set(dir), PREFETCH_BYTES) {
+        if crate::sys::willneed(memory, offset, len).is_err() {
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -486,6 +544,60 @@ mod tests {
             map_private(&file, &unaligned),
             Err(MemoryError::UnalignedFileRegion { .. })
         ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Residency bits become memory-file runs: adjacent resident pages merge, a gap splits them, and
+    /// only the low bit counts.
+    #[test]
+    fn resident_pages_become_runs_of_file_offsets() {
+        let page = 4096;
+        let base = 8 * page;
+        // Pages 0 and 1, then 3 to 5, then 8; the byte 2 has its low bit clear, 3 has it set.
+        let vec = [1u8, 1, 2, 3, 1, 1, 0, 0, 1];
+        assert_eq!(
+            resident_runs(&vec, base, page),
+            vec![
+                (base, 2 * page),
+                (base + 3 * page, 3 * page),
+                (base + 8 * page, page)
+            ]
+        );
+        assert_eq!(resident_runs(&[0u8; 4], base, page), Vec::<Run>::new());
+        assert_eq!(resident_runs(&[], base, page), Vec::<Run>::new());
+    }
+
+    /// The read-ahead is cut at its budget, and the last run is shortened to fit it.
+    #[test]
+    fn prefetch_ranges_stay_within_the_budget() {
+        let runs = [(0, 4096), (8192, 8192), (65536, 4096)];
+        assert_eq!(prefetch_ranges(&runs, 1 << 20), runs.to_vec());
+        assert_eq!(prefetch_ranges(&runs, 6000), vec![(0, 4096), (8192, 1904)]);
+        assert_eq!(prefetch_ranges(&runs, 0), Vec::<Run>::new());
+    }
+
+    /// A restore reads a working-set hint ahead, and a missing or malformed one is no error: the
+    /// memory file it names is left alone.
+    #[test]
+    fn read_ahead_tolerates_a_missing_or_malformed_hint() {
+        let dir = scratch("read-ahead");
+        let memory_path = dir.join("memory.img");
+        let memory = create(&memory_path);
+        memory.set_len(1 << 16).unwrap();
+        read_ahead(&dir, &memory);
+        fs::write(
+            dir.join(crate::vstate::snapshot::WORKING_SET_FILE),
+            [7u8; 20],
+        )
+        .unwrap();
+        read_ahead(&dir, &memory);
+        fs::write(
+            dir.join(crate::vstate::snapshot::WORKING_SET_FILE),
+            crate::vstate::snapshot::encode_runs(&[(0, 4096), (8192, 4096)]),
+        )
+        .unwrap();
+        read_ahead(&dir, &memory);
+        assert_eq!(fs::metadata(&memory_path).unwrap().len(), 1 << 16);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

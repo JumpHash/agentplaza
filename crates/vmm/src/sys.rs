@@ -96,6 +96,41 @@ pub fn page_out(host: *mut u8, len: usize) -> io::Result<()> {
     }
 }
 
+/// Which pages of `[host, host + len)` are resident in host RAM (`mincore(2)`): one byte per page, its
+/// low bit set for a resident page. The pages are not touched, so reading residency does not fault
+/// any in. `host` must be page-aligned, as a mapping's start is.
+pub fn resident_pages(host: *mut u8, len: usize) -> io::Result<Vec<u8>> {
+    let page = crate::vstate::memory::host_page_size();
+    let mut vec = vec![0u8; len.div_ceil(page)];
+    // SAFETY: `mincore` reads the page state of the range and writes one byte per page of it into
+    // `vec`, which holds exactly `len` rounded up to whole pages. It reads or writes no byte of the
+    // range itself, and a range that is not a mapping of this process fails with an errno.
+    if unsafe { libc::mincore(host.cast(), len, vec.as_mut_ptr()) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(vec)
+    }
+}
+
+/// Asks the kernel to start reading `[offset, offset + len)` of `file` into the page cache
+/// (`posix_fadvise(2)` with `POSIX_FADV_WILLNEED`). The read is asynchronous: the call returns
+/// without waiting for it. The advice is a hint, so a caller may ignore its failure.
+#[cfg(target_os = "linux")]
+pub fn willneed(file: &std::fs::File, offset: u64, len: u64) -> io::Result<()> {
+    let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let len = libc::off_t::try_from(len).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: `posix_fadvise` takes a descriptor and a range and touches no memory through them. The
+    // descriptor is borrowed from a live `File` for the call. It returns the error number itself
+    // rather than setting `errno`.
+    let err =
+        unsafe { libc::posix_fadvise(file.as_raw_fd(), offset, len, libc::POSIX_FADV_WILLNEED) };
+    if err == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(err))
+    }
+}
+
 /// Makes `dst` share `src`'s extents (`ioctl(FICLONE)`): afterwards `dst` holds
 /// `src`'s bytes at no copy cost, and the two diverge block by block as either is
 /// written. The kernel refuses a filesystem that cannot share extents

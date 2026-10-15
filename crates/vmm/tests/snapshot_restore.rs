@@ -127,6 +127,14 @@ fn a_guest_runs_on_after_a_restore_and_a_restore_of_its_diff() {
     let info = first.snapshot(&snap, SnapshotKind::Full).expect("snapshot");
     assert_eq!(info.kind, SnapshotKind::Full);
     assert!(info.memory_written > 0);
+    // The booted guest touched memory, so the snapshot records its working set for the restore.
+    let working_set = std::fs::read(snap.join(vmm::vstate::snapshot::WORKING_SET_FILE))
+        .expect("the working-set file");
+    assert!(
+        !working_set.is_empty() && working_set.len() % 16 == 0,
+        "a whole number of runs, {} bytes",
+        working_set.len()
+    );
     eprintln!(
         "boot to first heartbeat {boot_ms} ms; full snapshot wrote {} KiB, paused {} ms",
         info.memory_written / 1024,
