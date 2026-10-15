@@ -48,6 +48,8 @@ import type { Entry as TreeEntry } from '../src/ide/types';
 import { format, nice, timeLabel } from '../src/metrics/format';
 import type { Unit } from '../src/metrics/model';
 import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
+import { splitTreemap } from '../src/metrics/figures';
+import type { TreeItem } from '../src/metrics/model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1657,6 +1659,26 @@ sectionEnd('egress credentials and e2b tests: ok');
   eq(format('usd', undefined), '—', 'metrics format: an undefined value is a dash');
 }
 sectionEnd('metrics format, nice and time labels: ok');
+// The Metrics treemap's split (figures.ts): every item keeps a cell, the cells tile the box, and each cell is its share.
+{
+  const items: TreeItem[] = [
+    { name: 'a', value: 50, tone: 'chart-1' },
+    { name: 'b', value: 30, tone: 'chart-2' },
+    { name: 'c', value: 15, tone: 'chart-3' },
+    { name: 'd', value: 5, tone: 'chart-4' },
+    { name: 'e', value: 0, tone: 'chart-5' },
+  ];
+  const cells = splitTreemap(items);
+  eq(cells.map((c) => c.item.name).sort(), ['a', 'b', 'c', 'd', 'e'], 'treemap: every item keeps a cell, zero items included');
+  const area = cells.reduce((s, c) => s + c.w * c.h, 0);
+  eq(Math.round(area) / 100, 100, 'treemap: the cells tile the whole box (areas sum to 100 %)');
+  const share = (name: string): number => {
+    const cell = cells.find((c) => c.item.name === name);
+    return Math.round(((cell?.w ?? 0) * (cell?.h ?? 0)) / 100);
+  };
+  eq([share('a'), share('b'), share('c'), share('d')], [50, 30, 15, 5], 'treemap: each cell is its value share of the box');
+  sectionEnd('treemap split tests: ok');
+}
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
