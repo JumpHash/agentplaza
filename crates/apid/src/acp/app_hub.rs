@@ -247,6 +247,17 @@ impl Hub for AppHub<'_> {
         self.app
             .agents
             .update(cid, |a| a.model_override = Some(model.to_string()));
+        // As the console's PATCH does: the agent gets its new profile now (best effort; its next
+        // hello carries it anyway), and the console sees the change.
+        if let Some(updated) = self.app.agents.get(cid) {
+            let profile = crate::agents::profile(self.app, &updated);
+            let push =
+                serde_json::json!({ "message": apz_proto::wire::HostMessage::Profile { profile } });
+            let _ = crate::fleet::send(self.app, cid, &push);
+            self.app
+                .bus
+                .publish("agent", &crate::agents::view(self.app, &updated));
+        }
         Ok(())
     }
 
