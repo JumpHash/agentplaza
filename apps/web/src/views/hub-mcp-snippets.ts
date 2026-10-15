@@ -66,6 +66,29 @@ export function hubOrigin(url: string): string {
   }
 }
 
+export interface AcpSnippets {
+  /** Zed's settings.json: the agent server, running the default plaza agent. */
+  zed: string;
+  /** The same, pinned to one plaza agent by name (`<name>` is replaced by the agent's name). */
+  zedAgent: string;
+  /** JetBrains AI Assistant, under ACP agents: the command and its arguments, typed into the form. */
+  jetbrains: string;
+  /** Neovim CodeCompanion: the adapter entry, under the adapters of its setup. */
+  neovim: string;
+}
+
+/** The editor setup text. It carries no token: the editor runs `agentplaza acp` on this machine, which is logged in. */
+export function acpSnippets(): AcpSnippets {
+  const zed = (args: string[]): string =>
+    JSON.stringify({ agent_servers: { AgentPlaza: { command: 'agentplaza', args } } }, null, 2);
+  return {
+    zed: zed(['acp']),
+    zedAgent: zed(['acp', '--agent', '<name>']),
+    jetbrains: 'Command: agentplaza\nArguments: acp',
+    neovim: 'adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }',
+  };
+}
+
 export interface SetupSnippets {
   /** The Claude Code command. The bearer header is dropped in open mode. */
   claudeCode: string;

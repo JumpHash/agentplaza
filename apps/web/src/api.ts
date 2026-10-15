@@ -173,6 +173,18 @@ export interface Settings {
   laws?: { strict_permits: boolean };
   /** Contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries. */
   allow_training_models?: boolean;
+  /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */
+  acp_enabled: boolean;
+  /** The coding engines an agent may run (`claude`, `codex`, `opencode`); at least one stays on. */
+  engines_enabled: string[];
+  /** How an engine runs: `acp` is the live stream the laws check at every action; `headless` is the earlier one-shot run. */
+  engines_mode: 'acp' | 'headless';
+}
+
+/** One editor session with a plaza agent (apid's `GET /v1/acp/sessions`). */
+export interface AcpSession {
+  id: string; cid: number; cwd: string; client: string; title: string; works: number;
+  created_ms: number; updated_ms: number; closed: boolean;
 }
 
 export interface Task {
@@ -1206,6 +1218,10 @@ export interface HubTokenBody { name: string; scope: HubScope; tools?: string[];
 export interface HubTokenCreated { token: string; record: HubToken }
 export interface HubCall { token_id: string; tool: string; args_sha256: string; ok: boolean; error: string | null; duration_ms: number; at_ms: number }
 export interface HubCallsQuery { token?: string; tool?: string; limit?: number }
+
+export const acpApi = {
+  sessions: () => get<AcpSession[]>('/v1/acp/sessions'),
+};
 
 export const hubMcpApi = {
   status: () => get<HubMcpStatus>('/v1/hub-mcp'),

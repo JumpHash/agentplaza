@@ -18,7 +18,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
 import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
-import { hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
+import { ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
 import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
@@ -369,7 +370,25 @@ sectionEnd('web tests: ok');
   eq(o.desktopLogin, null, 'hub mcp: open mode has no login line');
   eq(o.generic, 'URL: https://hub.example.test/mcp', 'hub mcp: open mode generic setup is the URL alone');
 }
+{
+  // The editor setup text: Zed's settings carry the agent server, the named form pins an agent, and none holds a token.
+  const a = acpSnippets();
+  eq(JSON.parse(a.zed), { agent_servers: { AgentPlaza: { command: 'agentplaza', args: ['acp'] } } }, 'acp editors: the Zed settings start the agent server');
+  eq(JSON.parse(a.zedAgent).agent_servers.AgentPlaza.args, ['acp', '--agent', '<name>'], 'acp editors: the named Zed form pins an agent');
+  eq(a.jetbrains, 'Command: agentplaza\nArguments: acp', 'acp editors: the JetBrains command and its arguments');
+  eq(a.neovim, 'adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }', 'acp editors: the CodeCompanion adapter');
+  eq(Object.values(a).some((t) => /Bearer|apz_/.test(t)), false, 'acp editors: no token in the editor text');
+}
 sectionEnd('hub mcp tests: ok');
+
+// The coding engines: switching one on or off keeps the canonical order, and the last engine stays on.
+{
+  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode'], 'engines: the three engines in order');
+  eq(toggleEngine(['claude', 'codex'], 'codex', false), ['claude'], 'engines: switching one off leaves the rest');
+  eq(toggleEngine(['claude'], 'claude', false), ['claude'], 'engines: the last engine cannot be switched off');
+  eq(toggleEngine(['codex'], 'claude', true), ['claude', 'codex'], 'engines: switching on keeps the canonical order');
+  eq(toggleEngine(['claude', 'opencode'], 'codex', true), ['claude', 'codex', 'opencode'], 'engines: the middle engine goes between');
+}
 
 // The MCP wizard's pure helpers: the limit bounds the hub checks, the own-row names, and matching a server to its
 // preset by transport (not by id).
