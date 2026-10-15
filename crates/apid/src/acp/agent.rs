@@ -4,7 +4,7 @@
 //! |---|---|
 //! | `initialize` | protocol 1; `loadSession`; prompts take text and embedded resources; sessions can be listed, resumed and closed |
 //! | `session/new` | a new session on the connection's agent (`agentplaza acp --agent`), else `_meta.agentplaza.agent`, else the orchestrator; the editor's `mcpServers` are not connected (a notice says so); modes are the agent's approval modes |
-//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner; the turn's end reports `usage_update`, and the first prompt titles the session (`session_info_update`); a prompt that is one of the [`COMMANDS`] runs it on the agent instead of queuing chat |
+//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner; the turn's end reports `usage_update`, and the first prompt titles the session (`session_info_update`); a prompt that is one of the [`COMMANDS`] runs it on the agent instead of queuing chat; a session linked to a plaza repository (`_meta.agentplaza.repo`, on new/load/resume/prompt) gets a note on that repository's branch, and the pull request its work opened comes back as a `tool_call` of diffs |
 //! | `session/cancel` | cancels the session's work item: the one in progress, or one still queued |
 //! | `session/load` | replays the session's work items, then continues; the commands and the model options come first |
 //! | `session/list`, `session/resume`, `session/close` | the sessions; resume without replay; close ends it |
@@ -12,6 +12,7 @@
 //! | `session/set_config_option` | the agent's `model`, within its tier's list; the reply carries the options |
 
 use std::collections::HashSet;
+use std::path::{Component, Path};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -22,7 +23,7 @@ use apz_acp::types::{self, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
 
 use super::feed::{self, End, Feed};
-use super::store::{Session, Sessions};
+use super::store::{RepoLink, Session, Sessions};
 use crate::events::Frame;
 use crate::hub_mcp::auth::Scope;
 use crate::transcript::Entry;
@@ -65,7 +66,28 @@ pub trait Hub: Sync {
     fn models(&self, cid: u64) -> (String, Vec<String>);
     /// Sets agent `cid`'s model, when its tier allows it.
     fn set_model(&self, cid: u64, model: &str) -> Result<(), String>;
+    /// The open pull request of repository `name` whose head branch is `head`, with its changed text
+    /// files. None when there is none, or when the forge does not answer: the turn then reports no
+    /// pull request rather than failing.
+    fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull>;
     fn now_ms(&self) -> u64;
+}
+
+/// A pull request a session's work opened on its repository (see [`Hub::repo_pull`]).
+#[derive(Debug, Clone)]
+pub struct RepoPull {
+    pub url: String,
+    pub number: u64,
+    pub files: Vec<RepoFile>,
+}
+
+/// One changed file of a [`RepoPull`]. `path` is repository-relative, as the file is after the change;
+/// a text is None on the side the file is not on (added or removed).
+#[derive(Debug, Clone)]
+pub struct RepoFile {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
 }
 
 /// Who an editor connection acts for: the owner, or a hub MCP token of operate or govern scope and the
@@ -221,6 +243,9 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
     let cwd = params["cwd"].as_str().unwrap_or_default();
     let client = lock(conn.client).clone();
     let session = conn.sessions.open(cid, cwd, &client, conn.hub.now_ms());
+    if let Some(link) = repo_of(params) {
+        conn.sessions.set_repo(&session.id, link);
+    }
     // The notice goes before the reply: the editor reads it as the session's first message.
     if params["mcpServers"]
         .as_array()
@@ -246,7 +271,11 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
 }
 
 fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
-    let session = open_session_of(conn, params)?;
+    let mut session = open_session_of(conn, params)?;
+    if let Some(link) = repo_of(params) {
+        conn.sessions.set_repo(&session.id, link.clone());
+        session.repo = Some(link);
+    }
     let text = prompt_text(&params["prompt"]);
     if let Some((command, arg)) = slash_command(&text) {
         return command_turn(conn, peer, &session, command, arg);
@@ -254,9 +283,14 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     // Subscribed before the work is queued: the frames wait in the channel until the stream reads
     // them, so none is lost while `chat` returns.
     let frames = conn.hub.subscribe();
+    // The agent is told where the editor's project lives; the session keeps the editor's own text.
+    let chat = match &session.repo {
+        Some(repo) => format!("{}\n\n{text}", repo_context(&session.id, repo)),
+        None => text.clone(),
+    };
     let work = conn
         .hub
-        .chat(session.cid, &session.id, &text)
+        .chat(session.cid, &session.id, &chat)
         .map_err(internal)?;
     let had_title = !session.title.is_empty();
     conn.sessions
@@ -289,7 +323,99 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     );
     // The turn's tokens are reported whatever its end: a failed work spent them too.
     report_usage(conn.hub, peer, &session.id, session.cid, work);
+    // A pull request the work opened is reported whatever the end too: it is on the repository.
+    if let Some(repo) = &session.repo {
+        report_repo_pull(conn.hub, peer, &session, repo);
+    }
     result
+}
+
+/// The repository the editor linked in `_meta.agentplaza.repo`, when it names a repository and a branch.
+fn repo_of(params: &Value) -> Option<RepoLink> {
+    let repo = &params["_meta"]["agentplaza"]["repo"];
+    let name = repo["name"].as_str().filter(|s| !s.is_empty())?;
+    let branch = repo["branch"].as_str().filter(|s| !s.is_empty())?;
+    Some(RepoLink {
+        name: name.to_string(),
+        branch: branch.to_string(),
+        commit: repo["commit"].as_str().unwrap_or_default().to_string(),
+        dirty: repo["dirty"].as_bool().unwrap_or(false),
+    })
+}
+
+/// The note put before the editor's text on a session linked to a repository: where the project is
+/// mirrored, and what to do with the work (a branch of its own, and a pull request into the editor's).
+fn repo_context(session_id: &str, repo: &RepoLink) -> String {
+    let mut facts = format!("branch {}", repo.branch);
+    if !repo.commit.is_empty() {
+        let short: String = repo.commit.chars().take(7).collect();
+        facts.push_str(&format!(", commit {short}"));
+    }
+    if repo.dirty {
+        facts.push_str("; the editor had uncommitted changes that are not included");
+    }
+    format!(
+        "The editor's project is mirrored to the plaza repository {name} ({facts}). Clone http://plaza.gateway/git/agentplaza/{name}.git, check out {branch}, and work on a branch acp/{session_id} made from it. Commit, push that branch, and open a pull request into {branch} with plaza_git (or update the open one). End your reply with the pull request's link.",
+        name = repo.name,
+        branch = repo.branch,
+    )
+}
+
+/// Shows the editor the pull request the session's work opened on its repository: a completed
+/// `tool_call` with each changed file's diff, and a message with the link. Nothing when there is none.
+fn report_repo_pull(hub: &dyn Hub, peer: &Peer, session: &Session, repo: &RepoLink) {
+    let head = format!("acp/{}", session.id);
+    let Some(pull) = hub.repo_pull(&repo.name, &head) else {
+        return;
+    };
+    // ACP wants absolute paths: the editor's project root is the repository's root. Files that would
+    // leave it, and a project root that is not absolute, are not shown.
+    let root = Path::new(&session.cwd);
+    let mut content = Vec::new();
+    let mut locations = Vec::new();
+    for file in &pull.files {
+        if !root.is_absolute() || !repo_relative(&file.path) {
+            continue;
+        }
+        let path = root.join(&file.path).to_string_lossy().into_owned();
+        content.push(json!({
+            "type": "diff",
+            "path": path,
+            "oldText": file.old_text,
+            "newText": file.new_text,
+        }));
+        locations.push(json!({"path": path}));
+    }
+    notify_update(
+        peer,
+        &session.id,
+        json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": format!("pr-{}", pull.number),
+            "title": format!("Pull request #{} on {}", pull.number, repo.name),
+            "kind": "edit",
+            "status": "completed",
+            "content": content,
+            "locations": locations,
+        }),
+    );
+    notify_update(
+        peer,
+        &session.id,
+        json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": format!("Pull request #{}: {}", pull.number, pull.url)},
+        }),
+    );
+}
+
+/// Whether `path` names a file inside the repository: relative, with no `..`, root or prefix part.
+fn repo_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
 }
 
 /// Runs a plaza command on the session's agent and answers with what the hub said, as the turn's
@@ -475,6 +601,9 @@ fn finish(end: End) -> Result<Value, types::Error> {
 
 fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let session = session_of(conn, params)?;
+    if let Some(link) = repo_of(params) {
+        conn.sessions.set_repo(&session.id, link);
+    }
     let entries = conn.hub.entries(session.cid, &session.works);
     for &work in &session.works {
         for update in feed::replay(work, &entries) {
@@ -490,6 +619,9 @@ fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Er
 
 fn resume(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
     let session = session_of(conn, params)?;
+    if let Some(link) = repo_of(params) {
+        conn.sessions.set_repo(&session.id, link);
+    }
     Ok(json!({"modes": modes(conn.hub, session.cid)}))
 }
 
@@ -747,6 +879,8 @@ mod tests {
         models: Mutex<(String, Vec<String>)>,
         /// The approvals the session's thread holds (each as the approvals API shows it).
         approvals: Mutex<Vec<Value>>,
+        /// What `repo_pull` reports: the pull request the work opened, if any.
+        pull: Mutex<Option<RepoPull>>,
     }
 
     impl FakeHub {
@@ -843,6 +977,11 @@ mod tests {
             Ok(())
         }
 
+        fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull> {
+            self.record(format!("repo_pull {name} {head}"));
+            lock(&self.pull).clone()
+        }
+
         fn now_ms(&self) -> u64 {
             1_700_000_000_123
         }
@@ -877,6 +1016,7 @@ mod tests {
                     ],
                 )),
                 approvals: Mutex::default(),
+                pull: Mutex::default(),
             },
             sessions: Sessions::default(),
             client: Mutex::default(),
@@ -1297,6 +1437,218 @@ mod tests {
         assert!(said.contains("\"used\":150"), "{said}");
         assert!(said.contains("\"input_tokens\":120"), "{said}");
         assert!(h.plaza.hub.calls().contains(&"usage 7 42".to_string()));
+    }
+
+    /// The session's `_meta.agentplaza.repo` as an editor sends it.
+    fn repo_meta(name: &str, branch: &str, commit: &str, dirty: bool) -> Value {
+        json!({"_meta": {"agentplaza": {"repo": {
+            "name": name, "branch": branch, "commit": commit, "dirty": dirty,
+        }}}})
+    }
+
+    /// Calls `method` with `params` merged over `{sessionId}`, and answers the result.
+    fn call_with(h: &Harness, method: &str, session: &str, mut params: Value) -> Value {
+        params["sessionId"] = json!(session);
+        h.client
+            .peer()
+            .call(method, params, WAIT)
+            .expect("the call succeeds")
+    }
+
+    #[test]
+    fn a_repo_link_is_recorded_from_new_session_and_the_latest_wins() {
+        let h = harness(None);
+        let mut params = repo_meta("app", "editor/main", "abc1234def", false);
+        params["cwd"] = json!("/work/app");
+        let created = h
+            .client
+            .peer()
+            .call("session/new", params, WAIT)
+            .expect("session/new");
+        let id = created["sessionId"].as_str().expect("a session id");
+        assert_eq!(
+            h.plaza.sessions.get(id).unwrap().repo,
+            Some(RepoLink {
+                name: "app".into(),
+                branch: "editor/main".into(),
+                commit: "abc1234def".into(),
+                dirty: false,
+            })
+        );
+        // A later resume that names another repository replaces the link; one that names none keeps it.
+        call_with(
+            &h,
+            "session/resume",
+            id,
+            repo_meta("site", "editor/dev", "", true),
+        );
+        call_with(&h, "session/resume", id, json!({}));
+        let link = h.plaza.sessions.get(id).unwrap().repo.unwrap();
+        assert_eq!(
+            (link.name.as_str(), link.branch.as_str()),
+            ("site", "editor/dev")
+        );
+        assert!(link.dirty);
+    }
+
+    #[test]
+    fn the_repo_note_is_prepended_to_the_chat_only_for_a_linked_session() {
+        let h = harness(None);
+        let session = h.client.new_session("/work/app").expect("session/new");
+        h.frames.send(work_end()).expect("the bus is open");
+        h.client.prompt(&session, "hello").expect("session/prompt");
+        assert!(
+            h.plaza
+                .hub
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("chat 7 acp-") && c.ends_with(" hello")),
+            "{:?}",
+            h.plaza.hub.calls()
+        );
+        assert!(
+            !h.plaza.hub.calls().iter().any(|c| c.contains("mirrored")),
+            "{:?}",
+            h.plaza.hub.calls()
+        );
+        // A linked session: the link comes on the prompt, the note goes before the text, and the
+        // title is the editor's own first line.
+        let h = harness(None);
+        let created = h
+            .client
+            .peer()
+            .call("session/new", json!({"cwd": "/work/app"}), WAIT)
+            .expect("session/new");
+        let id = created["sessionId"]
+            .as_str()
+            .expect("a session id")
+            .to_string();
+        h.frames.send(work_end()).expect("the bus is open");
+        call_with(&h, "session/prompt", &id, {
+            let mut p = repo_meta("app", "editor/main", "abc1234def", true);
+            p["prompt"] = json!([{"type": "text", "text": "Fix the parser"}]);
+            p
+        });
+        let calls = h.plaza.hub.calls();
+        let note = format!(
+            "chat 7 {id} The editor's project is mirrored to the plaza repository app (branch editor/main, commit abc1234; the editor had uncommitted changes that are not included). Clone http://plaza.gateway/git/agentplaza/app.git, check out editor/main, and work on a branch acp/{id} made from it. Commit, push that branch, and open a pull request into editor/main with plaza_git (or update the open one). End your reply with the pull request's link.\n\nFix the parser"
+        );
+        assert!(calls.contains(&note), "{calls:?}");
+        assert_eq!(h.plaza.sessions.get(&id).unwrap().title, "Fix the parser");
+        // No pull request on the repository: nothing is reported for it.
+        assert!(
+            calls.contains(&format!("repo_pull app acp/{id}")),
+            "{calls:?}"
+        );
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(!said.contains("\"sessionUpdate\":\"tool_call\""), "{said}");
+    }
+
+    #[test]
+    fn the_pull_request_comes_back_as_one_tool_call_of_absolute_diffs() {
+        let h = harness(None);
+        let cwd = if cfg!(windows) {
+            r"C:\work\app"
+        } else {
+            "/work/app"
+        };
+        *lock(&h.plaza.hub.pull) = Some(RepoPull {
+            url: "http://plaza.gateway/git/agentplaza/app/pulls/3".to_string(),
+            number: 3,
+            files: vec![
+                RepoFile {
+                    path: "src/lib.rs".to_string(),
+                    old_text: Some("old\n".to_string()),
+                    new_text: Some("new\n".to_string()),
+                },
+                RepoFile {
+                    path: "docs/new.txt".to_string(),
+                    old_text: None,
+                    new_text: Some("hi\n".to_string()),
+                },
+                RepoFile {
+                    path: "../escape.txt".to_string(),
+                    old_text: None,
+                    new_text: Some("out\n".to_string()),
+                },
+                RepoFile {
+                    path: "/etc/passwd".to_string(),
+                    old_text: None,
+                    new_text: Some("out\n".to_string()),
+                },
+            ],
+        });
+        let mut params = repo_meta("app", "editor/main", "", false);
+        params["cwd"] = json!(cwd);
+        let created = h
+            .client
+            .peer()
+            .call("session/new", params, WAIT)
+            .expect("session/new");
+        let id = created["sessionId"]
+            .as_str()
+            .expect("a session id")
+            .to_string();
+        h.frames.send(work_end()).expect("the bus is open");
+        call_with(
+            &h,
+            "session/prompt",
+            &id,
+            json!({"prompt": [{"type": "text", "text": "Add the docs"}]}),
+        );
+        assert!(
+            h.plaza
+                .hub
+                .calls()
+                .contains(&format!("repo_pull app acp/{id}")),
+            "{:?}",
+            h.plaza.hub.calls()
+        );
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        // One tool call, with the two safe files as diffs and locations.
+        assert_eq!(
+            said.matches("\"sessionUpdate\":\"tool_call\"").count(),
+            1,
+            "{said}"
+        );
+        assert!(said.contains("\"toolCallId\":\"pr-3\""), "{said}");
+        assert!(
+            said.contains("\"title\":\"Pull request #3 on app\""),
+            "{said}"
+        );
+        let lib = Path::new(cwd)
+            .join("src/lib.rs")
+            .to_string_lossy()
+            .into_owned();
+        let new = Path::new(cwd)
+            .join("docs/new.txt")
+            .to_string_lossy()
+            .into_owned();
+        for path in [&lib, &new] {
+            let quoted = serde_json::to_string(path).expect("serialize");
+            assert!(said.contains(&format!("\"path\":{quoted}")), "{said}");
+        }
+        // The added file has no old text: the editor's schema reads a missing or null one the same.
+        assert!(said.contains("\"newText\":\"hi\\n\""), "{said}");
+        assert!(said.contains("\"oldText\":\"old\\n\""), "{said}");
+        // A path that leaves the repository is skipped, whatever its form.
+        assert!(!said.contains("escape.txt"), "{said}");
+        assert!(!said.contains("passwd"), "{said}");
+        // The link to the pull request is the message.
+        assert!(
+            said.contains("Pull request #3: http://plaza.gateway/git/agentplaza/app/pulls/3"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_repo_path_is_relative_and_plain() {
+        assert!(repo_relative("src/lib.rs"));
+        assert!(!repo_relative(""));
+        assert!(!repo_relative("../x"));
+        assert!(!repo_relative("a/../../x"));
+        assert!(!repo_relative("/etc/passwd"));
+        assert!(!repo_relative("a\\b"));
     }
 
     #[test]

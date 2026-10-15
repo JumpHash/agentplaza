@@ -37,6 +37,22 @@ pub struct Session {
     pub created_ms: u64,
     pub updated_ms: u64,
     pub closed: bool,
+    /// The plaza repository the editor's project is mirrored to, when the editor linked one; the
+    /// agent works on a branch of it. Snapshots from before the link existed have none.
+    #[serde(default)]
+    pub repo: Option<RepoLink>,
+}
+
+/// The plaza repository a session's project is mirrored to (`_meta.agentplaza.repo`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoLink {
+    pub name: String,
+    /// The editor's branch on the plaza: `editor/<branch>`.
+    pub branch: String,
+    /// The editor's commit that was pushed; empty when the editor did not say.
+    pub commit: String,
+    /// The editor had uncommitted changes, which the repository does not have.
+    pub dirty: bool,
 }
 
 /// All sessions.
@@ -64,6 +80,7 @@ impl Sessions {
             created_ms: now_ms,
             updated_ms: now_ms,
             closed: false,
+            repo: None,
         };
         inner.insert(id.clone(), session.clone());
         trim(&mut inner, &id);
@@ -100,6 +117,13 @@ impl Sessions {
         session.updated_ms = now_ms;
         if session.title.is_empty() {
             session.title = title_of(prompt);
+        }
+    }
+
+    /// Links session `id` to a repository; the latest link wins. Nothing when there is no such session.
+    pub fn set_repo(&self, id: &str, repo: RepoLink) {
+        if let Some(session) = self.lock().get_mut(id) {
+            session.repo = Some(repo);
         }
     }
 
@@ -302,6 +326,29 @@ mod tests {
         assert_eq!(other.list(None), sessions.list(None));
         other.restore("").unwrap();
         assert!(other.list(None).is_empty());
+    }
+
+    #[test]
+    fn a_repo_link_is_recorded_and_an_older_snapshot_has_none() {
+        let sessions = Sessions::default();
+        let s = sessions.open(1, "/a", "zed", 10);
+        assert_eq!(s.repo, None);
+        let link = RepoLink {
+            name: "app".into(),
+            branch: "editor/main".into(),
+            commit: "abc1234".into(),
+            dirty: true,
+        };
+        sessions.set_repo(&s.id, link.clone());
+        assert_eq!(sessions.get(&s.id).unwrap().repo, Some(link));
+        // A snapshot saved before the field existed restores with no link.
+        let id = &s.id;
+        let old = format!(
+            "{{\"{id}\":{{\"id\":\"{id}\",\"cid\":1,\"cwd\":\"/a\",\"client\":\"zed\",\"title\":\"\",\"works\":[],\"created_ms\":10,\"updated_ms\":10,\"closed\":false}}}}"
+        );
+        let restored = Sessions::default();
+        restored.restore(&old).unwrap();
+        assert_eq!(restored.get(id).unwrap().repo, None);
     }
 
     #[test]
