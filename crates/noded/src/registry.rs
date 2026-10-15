@@ -1607,6 +1607,7 @@ impl Registry {
                         .cloned(),
                     balloon,
                     restore: None,
+                    volumes: Vec::new(),
                 }
             })
             .collect();
@@ -2100,6 +2101,7 @@ impl Registry {
             workspace,
             balloon: vm.balloon_usable_mib,
             restore: None,
+            volumes: Vec::new(),
         };
         let run = self.insert(
             id,
@@ -2348,6 +2350,7 @@ impl Registry {
             workspace: workspace.map(Path::to_path_buf),
             balloon: meta.balloon_usable_mib,
             restore: None,
+            volumes: Vec::new(),
         };
         let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
         Ok((handle, spec, base))

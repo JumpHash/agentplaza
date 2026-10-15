@@ -539,6 +539,7 @@ pub fn boot_spec(record: &Record, guest: &Guest, disk: &Path) -> Result<VmSpec, 
         workspace: Some(disk.to_path_buf()),
         balloon: None,
         restore: None,
+        volumes: Vec::new(),
     })
 }
 

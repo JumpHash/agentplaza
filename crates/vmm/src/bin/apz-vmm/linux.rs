@@ -352,6 +352,7 @@ fn parse(args: &[String]) -> Result<Launch, String> {
         workspace,
         balloon,
         restore,
+        volumes: Vec::new(),
     };
     Ok(Launch {
         spec,
@@ -744,6 +745,7 @@ mod tests {
             workspace: Some(PathBuf::from("/tmp/run/workspace-0.ext4")),
             balloon: Some(32),
             restore: None,
+            volumes: Vec::new(),
         };
         let args = vmm::spawner::process::child_args(&spec);
         let Launch {

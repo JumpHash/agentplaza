@@ -191,3 +191,13 @@ pub const BALLOON_MMIO_START: u64 = WORKSPACE_MMIO_START + MMIO_LEN;
 /// (GSI 7, the parallel port's, which this platform does not have). Like
 /// [`WORKSPACE_GSI`] it stays inside the MPTable's identity map.
 pub const BALLOON_GSI: u32 = GSI_LEGACY_START + 2;
+
+/// Guest-physical MMIO window of the first shared data volume's `virtio-mmio` transport: the slot
+/// after the balloon's. Volume `i` (up to [`crate::spawner::MAX_DATA_VOLUMES`]) is at
+/// `DATA_MMIO_START + i * MMIO_LEN`, announced by its own `virtio_mmio.device=` entry.
+pub const DATA_MMIO_START: u64 = BALLOON_MMIO_START + MMIO_LEN;
+
+/// Interrupt line of the first data volume; volume `i` has `DATA_GSI_START + i`. GSI 16 onwards: past
+/// the ISA lines (8 RTC, 9 ACPI, 12 the i8042's mouse port, 14/15 IDE) and inside the MPTable's
+/// identity map, which runs to [`GSI_LEGACY_END`].
+pub const DATA_GSI_START: u32 = 16;

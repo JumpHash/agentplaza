@@ -169,6 +169,64 @@ pub struct VmSpec {
     /// the volume as it was when the snapshot was taken. `kernel`, `initrd` and `cmdline` are not used.
     /// Linux/KVM only: other backends refuse it.
     pub restore: Option<PathBuf>,
+    /// Shared data volumes, attached read-only after the workspace (at most [`MAX_DATA_VOLUMES`]).
+    /// Unlike a workspace, one image may back any number of VMs at once: the device refuses writes and
+    /// the guest mounts it read-only at `/data/<name>`. The guest tells the volumes apart by the
+    /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Linux/KVM only: other backends
+    /// refuse a spec with volumes.
+    pub volumes: Vec<DataVolume>,
+}
+
+/// The most shared data volumes one VM carries.
+pub const MAX_DATA_VOLUMES: usize = 4;
+
+/// One shared, read-only data volume of a VM (see [`VmSpec::volumes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataVolume {
+    /// The volume's name: what the guest sees as the device id and mounts it under. See
+    /// [`check_volume_name`].
+    pub name: String,
+    /// The ext4 image. It is opened read-only and never written.
+    pub image: PathBuf,
+}
+
+/// Whether `name` can name a data volume: 1 to 20 characters (the virtio-blk device id is 20 bytes)
+/// of `a-z`, `0-9` and `-`, starting with a letter or digit.
+pub fn check_volume_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 20 {
+        return Err(format!("a volume name has 1 to 20 characters: {name:?}"));
+    }
+    if bytes[0] == b'-'
+        || !bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+    {
+        return Err(format!(
+            "a volume name is lowercase letters, digits and '-', not starting with '-': {name:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks a spec's volumes: at most [`MAX_DATA_VOLUMES`], valid and distinct names.
+pub fn check_volumes(volumes: &[DataVolume]) -> Result<(), String> {
+    if volumes.len() > MAX_DATA_VOLUMES {
+        return Err(format!(
+            "a VM carries at most {MAX_DATA_VOLUMES} data volumes, not {}",
+            volumes.len()
+        ));
+    }
+    for (index, volume) in volumes.iter().enumerate() {
+        check_volume_name(&volume.name)?;
+        if volumes[..index]
+            .iter()
+            .any(|other| other.name == volume.name)
+        {
+            return Err(format!("data volume {:?} is given twice", volume.name));
+        }
+    }
+    Ok(())
 }
 
 impl Default for VmSpec {
@@ -184,6 +242,7 @@ impl Default for VmSpec {
             workspace: None,
             balloon: None,
             restore: None,
+            volumes: Vec::new(),
         }
     }
 }
