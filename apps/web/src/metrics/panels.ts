@@ -50,7 +50,7 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
   let current = p;
   const root = h('div.mx-card');
   root.classList.add(`mx-c${p.span}`);
-  const bodyHost = h('div.mx-body');
+  const bodyHost = h('div.mx-panel-body');
   const freshEl = h('span.mx-fresh');
 
   // The body's live handles: a line chart (with its table view when swapped in) and the figures.
