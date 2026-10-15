@@ -187,7 +187,8 @@ workspace is checkpointed before the turn's first write (label `engine <id>`).
 An engine also reaches the plaza's own tools (the board, tasks, messages, memory and the
 library: the hub-run tools the agent's role grants) through an MCP server the harness
 offers in `session/new`: `agent-harness --plaza-mcp <socket>`, a unix socket under
-`.plaza/`. The server holds no state. Each `tools/call` is a nested request through the
+`.engines/run/`, outside `.plaza/`, which the engine cannot enter. In a root guest the socket is the
+engine user's, mode 0600. The server holds no state. Each `tools/call` is a nested request through the
 hub's gate, the same as the agent's own calls (`crates/agent-harness/src/acp/mcp.rs`).
 
 In ask mode the engine is held open: the hub answers the request `tool_decision`

@@ -174,8 +174,15 @@ pub fn servers(socket: Option<&Path>) -> io::Result<Value> {
     }]))
 }
 
+/// Where an engine session's socket is bound: `<workspace>/.engines/run`, outside `.plaza/`, which an
+/// engine in a root guest cannot enter (see `super::layout`).
+pub fn socket_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".engines").join("run")
+}
+
 /// The engine session's socket for one turn: bound before the engine starts, removed when the turn
-/// ends. Mode 0600, so only the workspace's own processes can connect.
+/// ends. Mode 0600; in a root guest its folder is root's at 0711 (enter, not list) and the socket is
+/// the engine user's, so the engine's MCP server can connect and the agent's own commands cannot.
 #[cfg(unix)]
 pub struct Socket {
     listener: UnixListener,
@@ -193,10 +200,18 @@ impl Socket {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         fs::create_dir_all(dir)?;
+        let root = crate::bash::runs_as_root().map_err(io::Error::other)?;
+        if root {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o711))?;
+        }
         let path = dir.join(format!("engine-mcp-{}-{n}.sock", std::process::id()));
         let _ = fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        if root {
+            let id = crate::bash::ENGINE_UID;
+            std::os::unix::fs::lchown(&path, Some(id), Some(id))?;
+        }
         Ok(Some(Self { listener, path }))
     }
 

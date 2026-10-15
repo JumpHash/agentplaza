@@ -163,12 +163,13 @@ pub fn prompt_turn(
     // The plaza's tools reach the engine through an MCP server it starts from this binary: its
     // socket is bound before the engine starts, and served while the turn runs.
     let tools = link.plaza_tools();
-    let socket = Socket::bind(&options.workspace.plaza_dir(), &tools).map_err(|err| {
-        format!(
-            "cannot open the plaza's tools for the {} engine: {err}",
-            entry.id
-        )
-    })?;
+    let socket =
+        Socket::bind(&mcp::socket_dir(options.workspace.dir()), &tools).map_err(|err| {
+            format!(
+                "cannot open the plaza's tools for the {} engine: {err}",
+                entry.id
+            )
+        })?;
     let servers = mcp::servers(socket.as_ref().map(Socket::path)).map_err(|err| {
         format!(
             "cannot offer the plaza's tools to the {} engine: {err}",
