@@ -68,10 +68,19 @@ documentation for the current field names.
 - The agent's replies as they stream, its tool calls with their status, a coding engine's
   own steps and plan, and the plan the agent keeps.
 - Approvals the agent is waiting on. The editor shows them and you allow or deny each one.
-  The answer is the owner's, the same as answering it on the hub.
-- The agent's approval mode: `autonomous`, `ask` or `read_only`.
+  The answer is the owner's, the same as answering it on the hub. A token with the
+  `operate` scope cannot answer them; `govern` can.
+- The agent's approval mode (`autonomous`, `ask` or `read_only`) and its model. The model
+  picker lists the models within the agent's tier.
+- The session's title, taken from its first prompt, and the agent's own model usage.
+- The plaza's slash commands, offered in the editor's command list. They run on the agent
+  at once instead of queuing as chat:
+  - `/compress` summarises the conversation so far.
+  - `/steer <note>` steers the work in progress.
+  - `/extend-turns <n>` allows more model calls for the work.
+  - `/stop` stops the work.
 
-Cancelling a prompt in the editor stops the work in progress.
+Cancelling a prompt in the editor stops the work in progress and any prompts queued behind it.
 
 ## What agents cannot do through the editor
 
