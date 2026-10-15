@@ -4,6 +4,8 @@
 //!
 //! * `GET /v1/machine` — the machine's facts
 //! * `GET /v1/machine/stats` — live CPU, load, memory and VM counts, with history
+//! * `GET /v1/host/scale` — whether this host suits scale mode (zswap, encrypted swap, reflinks,
+//!   cgroups, KSM), item by item
 //! * `GET /v1/runs` · `POST /v1/runs` — runs (groups of VMs) · boot one
 //! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
@@ -20,6 +22,7 @@
 
 pub mod events;
 pub mod fleet;
+pub mod hostcheck;
 pub mod metrics;
 pub mod migrate;
 pub mod registry;
@@ -1735,6 +1738,11 @@ fn router() -> Router<Node> {
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
         .get("/v1/metrics", |_, _, _| {
             Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
+        })
+        // Whether this host suits scale mode (see `hostcheck`); the same report as `--check-scale`.
+        .get("/v1/host/scale", |node, _, _| {
+            let snapshots = node.registry().snapshot_root().ok();
+            Response::json(200, &crate::hostcheck::report(snapshots).to_json())
         })
         // Shared data volumes: read-only images agent VMs mount at /data/<name>.
         .get("/v1/volumes", |node, _, _| list_volumes(node))
