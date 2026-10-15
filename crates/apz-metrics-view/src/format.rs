@@ -4,7 +4,7 @@
 //! * not finite → `—`; negative → `-` then the absolute value formatted.
 //! * usd: `$` then ≥ 1000 → whole with `,` thousands (`$1,264`); ≥ 100 → 0 decimals; ≥ 10 → 1; else 2.
 //! * tokens: ≥ 1e9 → `1.23B`; ≥ 1e6 → `41.7M`; ≥ 1e3 → `9.8k`; else whole.
-//! * count: ≥ 1000 → as tokens; else fractional below 10 → 1 decimal, otherwise whole.
+//! * count: ≥ 1000 → as tokens; else below 10 with a non-zero first decimal → 1 decimal, otherwise whole.
 //! * ms: ≥ 1000 → seconds (` s`), 0 decimals ≥ 10 s else 1 (`2.4 s`, `14 s`); else whole ` ms`.
 //! * percent: < 10 → 1 decimal, else whole, then `%`.
 //! * mib: ≥ 1024 → GiB with 1 decimal; else whole ` MiB`.
@@ -13,7 +13,8 @@
 //!   whole `B/s`.
 //! * tokens_per_sec: whole ` tok/s`. ratio: 2 decimals.
 //!
-//! Rounding is half away from zero on the printed digits. Time labels use English month abbreviations and
+//! Rounding is half away from zero on the printed digits; a value that rounds across a boundary (99.95 → 100)
+//! takes the decimals of the side it lands on (`$100`, not `$100.0`). Time labels use English month abbreviations and
 //! 24-hour times at a given UTC offset.
 
 use apz_metrics::catalog::Unit;
@@ -39,13 +40,18 @@ pub fn format(unit: Unit, v: f64) -> String {
             if v >= 1000.0 {
                 format!("${}", group_thousands(&fixed(v, 0)))
             } else {
-                let decimals = if v >= 100.0 {
-                    0
-                } else if v >= 10.0 {
-                    1
-                } else {
-                    2
-                };
+                let decimals = settled(v, |x| {
+                    if x >= 100.0 {
+                        0
+                    } else if x >= 10.0 {
+                        1
+                    } else {
+                        2
+                    }
+                });
+                if round_to(v, decimals) >= 1000.0 {
+                    return format!("${}", group_thousands(&fixed(v, 0)));
+                }
                 format!("${}", fixed(v, decimals))
             }
         }
@@ -53,7 +59,7 @@ pub fn format(unit: Unit, v: f64) -> String {
         Unit::Count => {
             if v >= 1000.0 {
                 short_number(v)
-            } else if v < 10.0 {
+            } else if v < 10.0 && round_to(v, 1).fract() != 0.0 {
                 fixed(v, 1)
             } else {
                 fixed(v, 0)
@@ -62,14 +68,16 @@ pub fn format(unit: Unit, v: f64) -> String {
         Unit::Ms => {
             if v >= 1000.0 {
                 let seconds = v / 1000.0;
-                let decimals = if seconds >= 10.0 { 0 } else { 1 };
+                let decimals = settled(seconds, |x| if x >= 10.0 { 0 } else { 1 });
                 format!("{} s", fixed(seconds, decimals))
+            } else if round_to(v, 0) >= 1000.0 {
+                "1.0 s".to_string()
             } else {
                 format!("{} ms", fixed(v, 0))
             }
         }
         Unit::Percent => {
-            let decimals = if v < 10.0 { 1 } else { 0 };
+            let decimals = settled(v, |x| if x < 10.0 { 1 } else { 0 });
             format!("{}%", fixed(v, decimals))
         }
         Unit::Mib => {
@@ -141,6 +149,19 @@ pub fn time_label(t_ms: u64, step_ms: u64, offset_min: i32) -> String {
     } else {
         clock
     }
+}
+
+/// The decimals `pick` chooses for `v`, chosen again for `v` rounded to them, so a value that rounds up across a
+/// boundary (99.95 → 100) prints with the decimals of the side it lands on.
+fn settled(v: f64, pick: impl Fn(f64) -> u32) -> u32 {
+    let first = pick(v);
+    pick(round_to(v, first))
+}
+
+/// `v` rounded half away from zero to `decimals` places.
+fn round_to(v: f64, decimals: u32) -> f64 {
+    let scale = 10f64.powi(decimals as i32);
+    (v * scale).round() / scale
 }
 
 /// The absolute value of `v` rounded half away from zero to `decimals` places. The caller prints the sign.
