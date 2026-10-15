@@ -47,81 +47,81 @@ mod tests {
     use crate::assert_wire;
 
     #[test]
-    fn a_frame_event_carries_the_encoded_image() {
-        assert_wire(
-            &Event::Frame {
-                session: 9,
-                seq: 128,
-                w: 1280,
-                h: 720,
-                format: ImageFormat::Jpeg,
-                data_b64: "/9j/4AAQSkZJRg==".into(),
-            },
-            r#"{"event":"frame","session":9,"seq":128,"w":1280,"h":720,"format":"jpeg","data_b64":"/9j/4AAQSkZJRg=="}"#,
-        );
-    }
-
-    #[test]
-    fn sync_session_and_owner_events_round_trip() {
-        assert_wire(
-            &Event::SyncChanged {
-                paths: vec!["reports/q3.csv".into(), "render/out.png".into()],
-            },
-            r#"{"event":"sync_changed","paths":["reports/q3.csv","render/out.png"]}"#,
-        );
-        assert_wire(
-            &Event::SessionEnded {
-                session: 9,
-                reason: "owner_takeover".into(),
-            },
-            r#"{"event":"session_ended","session":9,"reason":"owner_takeover"}"#,
-        );
-        assert_wire(
-            &Event::OwnerInput { session: 9 },
-            r#"{"event":"owner_input","session":9}"#,
-        );
-    }
-
-    #[test]
-    fn a_facts_event_carries_the_whole_facts_object() {
-        use crate::facts::{AccountMode, Facts, Form, Os};
-        assert_wire(
-            &Event::Facts(Facts {
-                os: Os::Linux,
-                os_version: "6.8".into(),
-                arch: "x86_64".into(),
-                hostname: "desk-1".into(),
-                form: Form::Desktop,
-                cpus: 16,
-                ram_mb: 65536,
-                gpus: vec![],
-                displays: vec![],
-                account: AccountMode::Owner {
-                    name: "irfan".into(),
-                },
-                apps: 0,
-                virtual_displays: false,
-                ui_tree: false,
-                machine_id: None,
-            }),
-            r#"{"event":"facts","os":"linux","os_version":"6.8","arch":"x86_64","hostname":"desk-1","form":"desktop","cpus":16,"ram_mb":65536,"gpus":[],"displays":[],"account":{"mode":"owner","name":"irfan"},"apps":0,"virtual_displays":false,"ui_tree":false}"#,
-        );
-    }
-
-    #[test]
-    fn a_log_line_has_a_level() {
-        for (level, json) in [
-            (Level::Info, "info"),
-            (Level::Warn, "warn"),
-            (Level::Error, "error"),
-        ] {
+    fn every_event_round_trips_its_wire_form() {
+        // A frame event carries the encoded image in `data_b64`.
+        {
             assert_wire(
-                &Event::Log {
-                    level,
-                    message: "blender exited 0".into(),
+                &Event::Frame {
+                    session: 9,
+                    seq: 128,
+                    w: 1280,
+                    h: 720,
+                    format: ImageFormat::Jpeg,
+                    data_b64: "/9j/4AAQSkZJRg==".into(),
                 },
-                &format!(r#"{{"event":"log","level":"{json}","message":"blender exited 0"}}"#),
+                r#"{"event":"frame","session":9,"seq":128,"w":1280,"h":720,"format":"jpeg","data_b64":"/9j/4AAQSkZJRg=="}"#,
             );
+        }
+        // Sync, session-ended and owner-input events round trip.
+        {
+            assert_wire(
+                &Event::SyncChanged {
+                    paths: vec!["reports/q3.csv".into(), "render/out.png".into()],
+                },
+                r#"{"event":"sync_changed","paths":["reports/q3.csv","render/out.png"]}"#,
+            );
+            assert_wire(
+                &Event::SessionEnded {
+                    session: 9,
+                    reason: "owner_takeover".into(),
+                },
+                r#"{"event":"session_ended","session":9,"reason":"owner_takeover"}"#,
+            );
+            assert_wire(
+                &Event::OwnerInput { session: 9 },
+                r#"{"event":"owner_input","session":9}"#,
+            );
+        }
+        // A facts event carries the whole facts object.
+        {
+            use crate::facts::{AccountMode, Facts, Form, Os};
+            assert_wire(
+                &Event::Facts(Facts {
+                    os: Os::Linux,
+                    os_version: "6.8".into(),
+                    arch: "x86_64".into(),
+                    hostname: "desk-1".into(),
+                    form: Form::Desktop,
+                    cpus: 16,
+                    ram_mb: 65536,
+                    gpus: vec![],
+                    displays: vec![],
+                    account: AccountMode::Owner {
+                        name: "irfan".into(),
+                    },
+                    apps: 0,
+                    virtual_displays: false,
+                    ui_tree: false,
+                    machine_id: None,
+                }),
+                r#"{"event":"facts","os":"linux","os_version":"6.8","arch":"x86_64","hostname":"desk-1","form":"desktop","cpus":16,"ram_mb":65536,"gpus":[],"displays":[],"account":{"mode":"owner","name":"irfan"},"apps":0,"virtual_displays":false,"ui_tree":false}"#,
+            );
+        }
+        // A log line has a level, each with its own wire name.
+        {
+            for (level, json) in [
+                (Level::Info, "info"),
+                (Level::Warn, "warn"),
+                (Level::Error, "error"),
+            ] {
+                assert_wire(
+                    &Event::Log {
+                        level,
+                        message: "blender exited 0".into(),
+                    },
+                    &format!(r#"{{"event":"log","level":"{json}","message":"blender exited 0"}}"#),
+                );
+            }
         }
     }
 }

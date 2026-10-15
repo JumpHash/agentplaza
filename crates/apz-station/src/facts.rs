@@ -81,60 +81,61 @@ mod tests {
     use crate::assert_wire;
 
     #[test]
-    fn os_and_form_are_snake_case_words() {
-        for (os, json) in [
-            (Os::Macos, "macos"),
-            (Os::Windows, "windows"),
-            (Os::Linux, "linux"),
-        ] {
-            assert_wire(&os, &format!(r#""{json}""#));
+    fn facts_wire_shapes_round_trip() {
+        // OS and form names are snake_case words.
+        {
+            for (os, json) in [
+                (Os::Macos, "macos"),
+                (Os::Windows, "windows"),
+                (Os::Linux, "linux"),
+            ] {
+                assert_wire(&os, &format!(r#""{json}""#));
+            }
+            for (form, json) in [
+                (Form::Laptop, "laptop"),
+                (Form::Desktop, "desktop"),
+                (Form::Mini, "mini"),
+                (Form::Server, "server"),
+                (Form::Vm, "vm"),
+            ] {
+                assert_wire(&form, &format!(r#""{json}""#));
+            }
         }
-        for (form, json) in [
-            (Form::Laptop, "laptop"),
-            (Form::Desktop, "desktop"),
-            (Form::Mini, "mini"),
-            (Form::Server, "server"),
-            (Form::Vm, "vm"),
-        ] {
-            assert_wire(&form, &format!(r#""{json}""#));
+        // The account mode names the account.
+        {
+            assert_wire(
+                &AccountMode::AgentUser {
+                    name: "agentws".into(),
+                },
+                r#"{"mode":"agent_user","name":"agentws"}"#,
+            );
+            assert_wire(
+                &AccountMode::Owner {
+                    name: "irfan".into(),
+                },
+                r#"{"mode":"owner","name":"irfan"}"#,
+            );
         }
-    }
-
-    #[test]
-    fn account_mode_names_the_account() {
-        assert_wire(
-            &AccountMode::AgentUser {
-                name: "agentws".into(),
-            },
-            r#"{"mode":"agent_user","name":"agentws"}"#,
-        );
-        assert_wire(
-            &AccountMode::Owner {
-                name: "irfan".into(),
-            },
-            r#"{"mode":"owner","name":"irfan"}"#,
-        );
-    }
-
-    #[test]
-    fn gpus_and_displays_round_trip() {
-        assert_wire(
-            &Gpu {
-                vendor: "nvidia".into(),
-                name: "RTX 4090".into(),
-                vram_mb: 24576,
-            },
-            r#"{"vendor":"nvidia","name":"RTX 4090","vram_mb":24576}"#,
-        );
-        assert_wire(
-            &Display {
-                id: 2,
-                w: 2560,
-                h: 1440,
-                scale: 1.0,
-            },
-            r#"{"id":2,"w":2560,"h":1440,"scale":1.0}"#,
-        );
+        // GPUs and displays round trip.
+        {
+            assert_wire(
+                &Gpu {
+                    vendor: "nvidia".into(),
+                    name: "RTX 4090".into(),
+                    vram_mb: 24576,
+                },
+                r#"{"vendor":"nvidia","name":"RTX 4090","vram_mb":24576}"#,
+            );
+            assert_wire(
+                &Display {
+                    id: 2,
+                    w: 2560,
+                    h: 1440,
+                    scale: 1.0,
+                },
+                r#"{"id":2,"w":2560,"h":1440,"scale":1.0}"#,
+            );
+        }
     }
 
     #[test]

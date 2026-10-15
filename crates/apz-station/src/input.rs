@@ -97,70 +97,77 @@ mod tests {
     use crate::assert_wire;
 
     #[test]
-    fn every_input_action_round_trips() {
-        assert_wire(
-            &InputAction::Move { x: 10, y: -4 },
-            r#"{"action":"move","x":10,"y":-4}"#,
-        );
-        assert_wire(
-            &InputAction::Click {
-                x: 640,
-                y: 360,
-                button: Button::Right,
-                count: 1,
-            },
-            r#"{"action":"click","x":640,"y":360,"button":"right","count":1}"#,
-        );
-        assert_wire(
-            &InputAction::Down {
-                button: Button::Middle,
-            },
-            r#"{"action":"down","button":"middle"}"#,
-        );
-        assert_wire(
-            &InputAction::Up {
-                button: Button::Left,
-            },
-            r#"{"action":"up","button":"left"}"#,
-        );
-        assert_wire(
-            &InputAction::Scroll {
-                x: 100,
-                y: 200,
-                dx: 0,
-                dy: -3,
-            },
-            r#"{"action":"scroll","x":100,"y":200,"dx":0,"dy":-3}"#,
-        );
-        assert_wire(
-            &InputAction::Type {
-                text: "héllo".into(),
-            },
-            r#"{"action":"type","text":"héllo"}"#,
-        );
-        assert_wire(
-            &InputAction::Key {
-                combo: "ctrl+shift+s".into(),
-            },
-            r#"{"action":"key","combo":"ctrl+shift+s"}"#,
-        );
-        assert_wire(
-            &InputAction::Drag {
-                from: (5, 6),
-                to: (50, 60),
-            },
-            r#"{"action":"drag","from":[5,6],"to":[50,60]}"#,
-        );
-    }
-
-    #[test]
-    fn buttons_are_lowercase_words() {
-        for (button, json) in [
-            (Button::Left, "left"),
-            (Button::Right, "right"),
-            (Button::Middle, "middle"),
-        ] {
-            assert_wire(&button, &format!(r#""{json}""#));
+    fn every_input_and_ui_action_round_trips() {
+        // Every input action round trips.
+        {
+            assert_wire(
+                &InputAction::Move { x: 10, y: -4 },
+                r#"{"action":"move","x":10,"y":-4}"#,
+            );
+            assert_wire(
+                &InputAction::Click {
+                    x: 640,
+                    y: 360,
+                    button: Button::Right,
+                    count: 1,
+                },
+                r#"{"action":"click","x":640,"y":360,"button":"right","count":1}"#,
+            );
+            assert_wire(
+                &InputAction::Down {
+                    button: Button::Middle,
+                },
+                r#"{"action":"down","button":"middle"}"#,
+            );
+            assert_wire(
+                &InputAction::Up {
+                    button: Button::Left,
+                },
+                r#"{"action":"up","button":"left"}"#,
+            );
+            assert_wire(
+                &InputAction::Scroll {
+                    x: 100,
+                    y: 200,
+                    dx: 0,
+                    dy: -3,
+                },
+                r#"{"action":"scroll","x":100,"y":200,"dx":0,"dy":-3}"#,
+            );
+            assert_wire(
+                &InputAction::Type {
+                    text: "héllo".into(),
+                },
+                r#"{"action":"type","text":"héllo"}"#,
+            );
+            assert_wire(
+                &InputAction::Key {
+                    combo: "ctrl+shift+s".into(),
+                },
+                r#"{"action":"key","combo":"ctrl+shift+s"}"#,
+            );
+            assert_wire(
+                &InputAction::Drag {
+                    from: (5, 6),
+                    to: (50, 60),
+                },
+                r#"{"action":"drag","from":[5,6],"to":[50,60]}"#,
+            );
+        }
+        // Every UI action round trips.
+        {
+            assert_wire(&UiAction::Invoke, r#"{"act":"invoke"}"#);
+            assert_wire(
+                &UiAction::SetValue {
+                    value: "Draft".into(),
+                },
+                r#"{"act":"set_value","value":"Draft"}"#,
+            );
+            assert_wire(&UiAction::Focus, r#"{"act":"focus"}"#);
+            assert_wire(&UiAction::Select, r#"{"act":"select"}"#);
+            assert_wire(&UiAction::Toggle, r#"{"act":"toggle"}"#);
+            assert_wire(&UiAction::Expand, r#"{"act":"expand"}"#);
+            assert_wire(&UiAction::Collapse, r#"{"act":"collapse"}"#);
         }
     }
 
@@ -183,21 +190,5 @@ mod tests {
             },
             r#"{"path":[1,0,2]}"#,
         );
-    }
-
-    #[test]
-    fn every_ui_action_round_trips() {
-        assert_wire(&UiAction::Invoke, r#"{"act":"invoke"}"#);
-        assert_wire(
-            &UiAction::SetValue {
-                value: "Draft".into(),
-            },
-            r#"{"act":"set_value","value":"Draft"}"#,
-        );
-        assert_wire(&UiAction::Focus, r#"{"act":"focus"}"#);
-        assert_wire(&UiAction::Select, r#"{"act":"select"}"#);
-        assert_wire(&UiAction::Toggle, r#"{"act":"toggle"}"#);
-        assert_wire(&UiAction::Expand, r#"{"act":"expand"}"#);
-        assert_wire(&UiAction::Collapse, r#"{"act":"collapse"}"#);
     }
 }
