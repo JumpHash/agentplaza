@@ -38,9 +38,10 @@ pub struct End {
 pub struct Feed {
     cid: u64,
     work: u64,
-    /// The calls that were `todo_write`: their decisions and results are the plan, not tool
-    /// updates, so they must not reach the editor as orphan tool calls.
-    plan_calls: HashSet<String>,
+    /// The calls the editor sees no tool updates for: `todo_write` (its list is the plan) and an
+    /// engine's own checks (`engine.*`; the engine's frames already show that tool call, re-keyed).
+    /// Their decisions and results must not reach the editor as orphan tool calls.
+    hidden: HashSet<String>,
 }
 
 impl Feed {
@@ -48,7 +49,7 @@ impl Feed {
         Self {
             cid,
             work,
-            plan_calls: HashSet::new(),
+            hidden: HashSet::new(),
         }
     }
 
@@ -115,8 +116,12 @@ impl Feed {
         let name = str_of(data, "name");
         let input = &data["input"];
         if name == "todo_write" {
-            self.plan_calls.insert(call.to_string());
+            self.hidden.insert(call.to_string());
             return vec![plan(input)];
+        }
+        if name.starts_with("engine.") {
+            self.hidden.insert(call.to_string());
+            return Vec::new();
         }
         vec![json!({
             "sessionUpdate": "tool_call",
@@ -130,7 +135,7 @@ impl Feed {
 
     fn decision(&mut self, data: &Value) -> Vec<Value> {
         let call = str_of(data, "call");
-        if self.plan_calls.contains(call) {
+        if self.hidden.contains(call) {
             return Vec::new();
         }
         // `done` is a host tool that ran and returned its output, so it is final here.
@@ -145,7 +150,7 @@ impl Feed {
 
     fn result(&mut self, data: &Value) -> Vec<Value> {
         let call = str_of(data, "call");
-        if self.plan_calls.contains(call) {
+        if self.hidden.contains(call) {
             return Vec::new();
         }
         let status = if data["ok"].as_bool().unwrap_or(false) {
