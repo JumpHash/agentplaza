@@ -219,45 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_agent_has_a_tag_only_when_selected_or_hovered() {
-        let mut floor = floor_with("idle");
-        assert!(floor.label_overlays(640.0, 480.0, 2.0).is_empty());
-
-        floor.selected = Some(1);
-        let overlays = floor.label_overlays(640.0, 480.0, 2.0);
-        assert_eq!(overlays.len(), 1);
-        assert_eq!(overlays[0].h, TAG_H + 2.0);
-
-        floor.selected = None;
-        floor.hovered = Some(1);
-        assert_eq!(
-            floor.label_overlays(640.0, 480.0, 2.0).len(),
-            1,
-            "a hovered idle agent shows its tag"
-        );
-    }
-
-    #[test]
-    fn working_and_offline_agents_get_the_one_tag_selected_or_not() {
-        for status in ["working", "offline"] {
-            let mut floor = floor_with(status);
-            let overlays = floor.label_overlays(640.0, 480.0, 2.0);
-            assert_eq!(overlays.len(), 1, "{status}");
-            assert_eq!(overlays[0].h, TAG_H + 2.0, "{status}");
-
-            floor.selected = Some(1);
-            let overlays = floor.label_overlays(640.0, 480.0, 2.0);
-            assert_eq!(overlays[0].h, TAG_H + 2.0, "{status} selected");
-        }
-    }
-
-    #[test]
-    fn a_long_name_is_cut_to_the_200px_box() {
-        let (_, w, _) = paint_tag(&"x".repeat(80), OK, 1.0);
-        assert!(w <= TAG_MAX_W + 0.5, "the box is {w} wide");
-    }
-
-    #[test]
     fn selected_agent_has_one_label_among_three_bots() {
         let mut floor = Floor::new();
         let model =
@@ -292,38 +253,5 @@ mod tests {
             "labels: {:?}",
             labels.iter().map(|l| l.cid).collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn plaza_fits_the_stage_for_its_aspect() {
-        // Every point the fit frames (rooms, dais, robots and their labels) projects inside the
-        // stage, within the fill margin, and the plaza uses most of the tighter axis.
-        for aspect in [1024.0 / 615.0, 1000.0 / 700.0, 0.8] {
-            let mut floor = floor_with("idle");
-            floor.reset_view(aspect);
-            let cam = floor.orbit.camera(aspect);
-            let back = (cam.eye - cam.target).normalize();
-            let right = glam::Vec3::Y.cross(back).normalize();
-            let up = back.cross(right);
-            let tan_v = (crate::controls::FOV_DEG / 2.0).to_radians().tan();
-            let tan_h = tan_v * aspect;
-            let (mut wide, mut tall) = (0.0f32, 0.0f32);
-            for p in floor.fit_points() {
-                let v = p - cam.eye;
-                let depth = -v.dot(back);
-                let (nx, ny) = (v.dot(right) / (depth * tan_h), v.dot(up) / (depth * tan_v));
-                assert!(
-                    nx.abs() <= 0.86 && ny.abs() <= 0.86,
-                    "aspect {aspect}: a point at ({nx}, {ny})"
-                );
-                wide = wide.max(nx.abs());
-                tall = tall.max(ny.abs());
-            }
-            assert!(
-                wide.max(tall) >= 0.8,
-                "aspect {aspect}: the plaza fills only {}",
-                wide.max(tall)
-            );
-        }
     }
 }

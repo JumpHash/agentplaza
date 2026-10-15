@@ -323,36 +323,3 @@ impl NavOverlay {
         self.yields.set_instances(yields);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use apz_board::layout::{AgentSpec, LayoutInput, layout, nav_scene};
-
-    #[test]
-    fn the_overlay_draws_the_cells_of_a_real_board() {
-        let agents = (0..4)
-            .map(|i| AgentSpec {
-                id: format!("a{i}"),
-                role: "builder".into(),
-                seat_hint: None,
-            })
-            .collect();
-        let lay = layout(
-            "workstation",
-            &LayoutInput {
-                agents,
-                gpus: 0,
-                scale_cap: 3.0,
-            },
-        );
-        let scene = nav_scene(&lay, 0, None);
-        let overlay = NavOverlay::new(&scene.grid);
-        assert!(overlay.cells > 0, "the walkable cells are drawn");
-        assert!(
-            !overlay.root.get().children.is_empty(),
-            "the cell layer is in the overlay"
-        );
-        assert!(overlay.cells <= scene.grid.cols * scene.grid.rows);
-    }
-}

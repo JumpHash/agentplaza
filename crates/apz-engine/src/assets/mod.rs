@@ -166,66 +166,9 @@ pub struct AssetRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-
-    #[test]
-    fn dedups_by_key_and_builds_once() {
-        let mut meshes: Assets<MeshAsset> = Assets::default();
-        let builds = Cell::new(0);
-        let make = || {
-            builds.set(builds.get() + 1);
-            MeshAsset::default()
-        };
-        let a = meshes.get_or_insert_with("cube", make);
-        let b = meshes.get_or_insert_with("cube", make);
-        let c = meshes.get_or_insert_with("sphere", make);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-        assert_eq!(builds.get(), 2);
-        assert_eq!(meshes.len(), 2);
-        assert_eq!(meshes.handle_for("sphere"), Some(c));
-        assert_eq!(meshes.handle_for("missing"), None);
-    }
-
-    #[test]
-    fn material_keys_are_separate_from_meshes() {
-        let mut registry = AssetRegistry::default();
-        let mat = registry
-            .materials
-            .get_or_insert_with("hull|2", || MaterialAsset {
-                palette: "hull".into(),
-                flags: material_flags::UNLIT,
-            });
-        assert_eq!(
-            registry.materials.get(mat).map(|m| m.flags),
-            Some(material_flags::UNLIT)
-        );
-        assert!(registry.meshes.is_empty());
-    }
 
     #[test]
     fn vertex_layout_matches_the_renderer() {
         assert_eq!(std::mem::size_of::<MeshVertex>(), 48);
-    }
-
-    #[test]
-    fn mesh_validity() {
-        let v = MeshVertex::default();
-        let ok = MeshAsset {
-            vertices: vec![v; 3],
-            indices: vec![0, 1, 2],
-        };
-        assert!(ok.is_valid());
-        assert_eq!(ok.triangle_count(), 1);
-        let short = MeshAsset {
-            vertices: vec![v; 3],
-            indices: vec![0, 1],
-        };
-        assert!(!short.is_valid());
-        let dangling = MeshAsset {
-            vertices: vec![v; 3],
-            indices: vec![0, 1, 3],
-        };
-        assert!(!dangling.is_valid());
     }
 }

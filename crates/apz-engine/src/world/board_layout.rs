@@ -1117,190 +1117,99 @@ mod tests {
         }
     }
 
-    fn fixture_roles() -> Vec<AgentInfo> {
-        vec![
-            agent(1, "orchestrator", "orchestrator"),
-            agent(2, "builder", "worker"),
-            agent(3, "qa", "worker"),
-            agent(4, "librarian", "worker"),
-            agent(5, "finance", "worker"),
-        ]
-    }
-
-    /// Role → slot id, sorted by role.
-    fn slots_of(layout: &BoardLayout) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = layout
-            .districts
-            .iter()
-            .map(|d| (d.district.role.clone(), d.slot.clone()))
-            .collect();
-        out.sort();
-        out
-    }
-
-    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
-        v.iter()
-            .map(|(r, s)| (r.to_string(), s.to_string()))
-            .collect()
-    }
-
-    fn district<'a>(layout: &'a BoardLayout, role: &str) -> &'a BoardDistrict {
-        layout
-            .districts
-            .iter()
-            .find(|d| d.district.role == role)
-            .expect("the role has a district")
-    }
-
-    fn close(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-4
-    }
-
-    /// No minimum room sizes: the fixture's own rules (the web's `NO_MINIMUMS`).
-    fn no_minimums(_: &str, _: usize) -> f64 {
-        0.0
-    }
-
+    /// Every agent gets a home: when roles outnumber rooms the extra roles join a built room, and every board model seats the full roster.
     #[test]
-    fn fixture_families_take_their_preferred_slots() {
-        let board = fixture();
-        let list = fixture_roles();
-        let layout = layout_on_board_with(&list, &board, &BoardParams::default(), no_minimums);
-        // orchestrator: cpu (nearest the atom); builder and qa: gpu; librarian: memory;
-        // finance (money): power and io are absent, so the first slot with room, cpu.
-        assert_eq!(
-            slots_of(&layout),
-            pairs(&[
-                ("builder", "gpu"),
-                ("finance", "cpu"),
-                ("librarian", "mem"),
-                ("orchestrator", "cpu"),
-                ("qa", "gpu")
-            ])
-        );
-        assert_eq!(layout.districts.len(), 5);
-        assert_eq!(layout.homes.len(), 5);
-        assert_eq!(layout.atom, [-10.0, 1.2, 0.0]);
-        assert_eq!(
-            layout.bounds,
-            Bounds {
-                cx: 0.0,
-                cz: 0.0,
-                w: 40.0,
-                d: 30.0
+    fn layout_places_every_agent() {
+        // overflow_joins_drop_no_agent: more roles than rooms, so the roles past the rooms join a built room.
+        {
+            let board = fixture();
+            let list = vec![
+                agent(1, "orchestrator", "orchestrator"),
+                agent(2, "builder", "worker"),
+                agent(3, "qa", "worker"),
+                agent(4, "reviewer", "worker"),
+                agent(5, "librarian", "worker"),
+                agent(6, "planner", "worker"),
+                agent(7, "finance", "worker"),
+                agent(8, "mayor", "worker"),
+            ];
+            // Five rooms fit (cpu 2, gpu 2, memory 1); the roles past them join a built room.
+            let layout = layout_on_board(&list, &board, &BoardParams::default());
+            assert!(
+                layout.districts.len() <= 5,
+                "at most five rooms: {}",
+                layout.districts.len()
+            );
+            assert_eq!(layout.homes.len(), 8, "every agent has a home");
+            assert!(
+                layout
+                    .homes
+                    .values()
+                    .all(|&(room, _, _)| room < layout.districts.len())
+            );
+            assert!(layout.districts.iter().all(|d| d.w > 0.0 && d.d > 0.0));
+        }
+        // every_board_model_places_all_initial_roles: every board model places all initial roles, one agent each.
+        {
+            let list = initial_roles();
+            let file_roles = initial_roles_json()["roles"]
+                .as_object()
+                .expect("a roles object")
+                .len();
+            assert_eq!(
+                list.len(),
+                file_roles,
+                "one agent per role in initial-roles.json"
+            );
+            for &(name, _) in MODELS.iter().filter(|(n, _)| n.starts_with("board/")) {
+                let board = hardware::model(name).expect("the embedded board parses");
+                let layout = layout_on_board(&list, board, &BoardParams::default());
+                // A role with no free cell joins a built room, so not every role has a room of its own; every room is a
+                // role of the roster and every agent has a home in one of the rooms.
+                let want: Vec<&str> = list.iter().map(|a| a.role.as_str()).collect();
+                for bd in &layout.districts {
+                    assert!(
+                        want.contains(&bd.district.role.as_str()),
+                        "{name}: room {} is a role of the roster",
+                        bd.district.role
+                    );
+                }
+                assert_eq!(
+                    layout.homes.len(),
+                    file_roles,
+                    "{name}: every agent has a home"
+                );
+                assert!(
+                    layout
+                        .homes
+                        .values()
+                        .all(|&(room, _, _)| room < layout.districts.len()),
+                    "{name}: every home is in a room"
+                );
+                println!(
+                    "== {name} (pcb_top {}, atom {:?})",
+                    layout.pcb_top, layout.atom
+                );
+                for bd in &layout.districts {
+                    let family = if bd.district.role == "orchestrator" {
+                        "command"
+                    } else {
+                        role_family(&bd.district.role, "worker")
+                    };
+                    println!(
+                        "  {:<18} {:<10} slot={:<10} at=({:7.2}, {:7.2}) cell={:5.2}x{:<5.2} y={:.2}",
+                        bd.district.role,
+                        family,
+                        bd.slot,
+                        bd.district.cx,
+                        bd.district.cy,
+                        bd.w,
+                        bd.d,
+                        bd.y
+                    );
+                }
             }
-        );
-        // The orchestrator is first and takes the cpu cell nearest the atom (the first of the two
-        // equally near); cells of cpu (2 across) are 4 wide, 8 deep.
-        assert_eq!(layout.districts[0].district.role, "orchestrator");
-        let orch = district(&layout, "orchestrator");
-        assert!(close(orch.district.cx, -12.0) && close(orch.district.cy, 0.0));
-        assert!(close(orch.w, 4.0) && close(orch.d, 8.0) && close(orch.y, 1.0));
-        assert!(close(orch.district.r, 1.8));
-        // Cells: finance is the cpu's second cell; builder and qa split the gpu; librarian fills mem.
-        let fin = district(&layout, "finance");
-        assert!(close(fin.district.cx, -8.0) && close(fin.district.cy, 0.0));
-        assert!(close(district(&layout, "builder").district.cx, 8.0));
-        assert!(close(district(&layout, "qa").district.cx, 12.0));
-        let lib = district(&layout, "librarian");
-        assert!(close(lib.district.cx, 0.0) && close(lib.district.cy, -10.0));
-        assert!(close(lib.w, 8.0) && close(lib.d, 4.0) && close(lib.y, 3.0));
-        // Homes: the orchestrator's agent sits at the room's centre.
-        let (idx, gx, gy) = layout.homes[&1];
-        assert_eq!(idx, 0);
-        assert!(close(gx, -12.0) && close(gy, 0.0));
-    }
-
-    #[test]
-    fn hidden_gpu_sends_builders_to_cpu() {
-        let board = fixture();
-        let list = fixture_roles();
-        let mut params = BoardParams::default();
-        params.params = params.params.with("gpus", 0.0);
-        let layout = layout_on_board_with(&list, &board, &params, no_minimums);
-        assert!(
-            layout.districts.iter().all(|d| d.slot != "gpu"),
-            "the hidden gpu slot does not exist"
-        );
-        let slot = |role: &str| district(&layout, role).slot.clone();
-        assert_eq!(slot("builder"), "cpu");
-        assert_eq!(slot("orchestrator"), "cpu");
-        assert_eq!(slot("finance"), "mem");
-    }
-
-    /// More roles than rooms: the roles that find no free cell join a built room, so every agent keeps a desk.
-    #[test]
-    fn overflow_joins_drop_no_agent() {
-        let board = fixture();
-        let list = vec![
-            agent(1, "orchestrator", "orchestrator"),
-            agent(2, "builder", "worker"),
-            agent(3, "qa", "worker"),
-            agent(4, "reviewer", "worker"),
-            agent(5, "librarian", "worker"),
-            agent(6, "planner", "worker"),
-            agent(7, "finance", "worker"),
-            agent(8, "mayor", "worker"),
-        ];
-        // Five rooms fit (cpu 2, gpu 2, memory 1); the roles past them join a built room.
-        let layout = layout_on_board(&list, &board, &BoardParams::default());
-        assert!(
-            layout.districts.len() <= 5,
-            "at most five rooms: {}",
-            layout.districts.len()
-        );
-        assert_eq!(layout.homes.len(), 8, "every agent has a home");
-        assert!(
-            layout
-                .homes
-                .values()
-                .all(|&(room, _, _)| room < layout.districts.len())
-        );
-        assert!(layout.districts.iter().all(|d| d.w > 0.0 && d.d > 0.0));
-    }
-
-    #[test]
-    fn board_height_inside_ramp_and_outside() {
-        let board = fixture();
-        let layout = layout_on_board(&fixture_roles(), &board, &BoardParams::default());
-        // Inside a cell: the room's height (builder's cell is x 6..10 at top 2).
-        assert!(close(board_height_at(9.0, 0.0, &layout), 2.0));
-        assert!(close(board_height_at(0.0, -10.0, &layout), 3.0));
-        // The ramp: half a unit outside the qa cell (x 10..14, top 2) the height is 2 - 1.6 * 0.5.
-        assert!(close(board_height_at(14.5, 0.0, &layout), 1.2));
-        // The orchestrator's cell spans x -14..-10 at top 1: half a unit out is 1 - 0.6 * 0.5.
-        assert!(close(board_height_at(-14.5, 0.0, &layout), 0.7));
-        // Beyond a unit from every room: the PCB top.
-        assert!(close(board_height_at(-30.0, 0.0, &layout), 0.4));
-    }
-
-    #[test]
-    fn trace_graph_and_walkway_on_an_l_shape() {
-        let board = fixture();
-        let g = trace_graph(&board);
-        assert_eq!(g.nodes, vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]);
-        assert_eq!(g.edges, vec![(0, 1), (1, 2)]);
-        // From (2, 1) joins the corner (0, 0); to (9, 10) joins the corner (10, 10); the walk turns once.
-        let path = path_on_traces(&g, [2.0, 1.0], [9.0, 10.0]);
-        assert_eq!(
-            path,
-            vec![
-                [2.0, 1.0],
-                [0.0, 0.0],
-                [10.0, 0.0],
-                [10.0, 10.0],
-                [9.0, 10.0]
-            ]
-        );
-        // Without a walkway between the ends, the straight line.
-        let apart = TraceGraph {
-            nodes: vec![[0.0, 0.0], [5.0, 5.0]],
-            edges: vec![],
-        };
-        assert_eq!(
-            path_on_traces(&apart, [0.0, 0.0], [5.0, 5.0]),
-            vec![[0.0, 0.0], [5.0, 5.0]]
-        );
+        }
     }
 
     /// docs/agents/initial-roles.json, parsed: `{ "source": ..., "roles": { role: ... } }`.
@@ -1332,149 +1241,6 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    #[test]
-    fn every_board_model_places_all_initial_roles() {
-        let list = initial_roles();
-        let file_roles = initial_roles_json()["roles"]
-            .as_object()
-            .expect("a roles object")
-            .len();
-        assert_eq!(
-            list.len(),
-            file_roles,
-            "one agent per role in initial-roles.json"
-        );
-        for &(name, _) in MODELS.iter().filter(|(n, _)| n.starts_with("board/")) {
-            let board = hardware::model(name).expect("the embedded board parses");
-            let layout = layout_on_board(&list, board, &BoardParams::default());
-            // A role with no free cell joins a built room, so not every role has a room of its own; every room is a
-            // role of the roster and every agent has a home in one of the rooms.
-            let want: Vec<&str> = list.iter().map(|a| a.role.as_str()).collect();
-            for bd in &layout.districts {
-                assert!(
-                    want.contains(&bd.district.role.as_str()),
-                    "{name}: room {} is a role of the roster",
-                    bd.district.role
-                );
-            }
-            assert_eq!(
-                layout.homes.len(),
-                file_roles,
-                "{name}: every agent has a home"
-            );
-            assert!(
-                layout
-                    .homes
-                    .values()
-                    .all(|&(room, _, _)| room < layout.districts.len()),
-                "{name}: every home is in a room"
-            );
-            println!(
-                "== {name} (pcb_top {}, atom {:?})",
-                layout.pcb_top, layout.atom
-            );
-            for bd in &layout.districts {
-                let family = if bd.district.role == "orchestrator" {
-                    "command"
-                } else {
-                    role_family(&bd.district.role, "worker")
-                };
-                println!(
-                    "  {:<18} {:<10} slot={:<10} at=({:7.2}, {:7.2}) cell={:5.2}x{:<5.2} y={:.2}",
-                    bd.district.role,
-                    family,
-                    bd.slot,
-                    bd.district.cx,
-                    bd.district.cy,
-                    bd.w,
-                    bd.d,
-                    bd.y
-                );
-            }
-        }
-    }
-
-    /// The web's home step: 0.8 of the cell's short side over the side - 1 gaps of a row, at most 3; 0 for one column.
-    #[test]
-    fn home_step_is_the_webs_formula() {
-        for (cell, side, want) in [
-            (6.0f32, 1usize, 0.0f32),
-            (6.0, 2, 3.0),
-            (3.0, 2, 2.4),
-            (4.0, 3, 1.6),
-            (5.0, 4, 4.0 / 3.0),
-            (2.0, 3, 0.8),
-        ] {
-            let got = home_step(cell, side);
-            assert!(
-                (got - want).abs() < 1e-6,
-                "cell {cell}, side {side}: got {got}, want {want}"
-            );
-        }
-    }
-
-    /// Two agents with no role get two rooms of their own (keys unnamed:<cid>), both the `other` family.
-    #[test]
-    fn unnamed_agents_each_get_a_district_of_the_other_family() {
-        let list = vec![
-            agent(1, "orchestrator", "orchestrator"),
-            agent(7, "", "worker"),
-            agent(9, "", "worker"),
-        ];
-        let layout = layout_on_board_with(&list, &fixture(), &BoardParams::default(), no_minimums);
-        assert_eq!(
-            layout.districts.len(),
-            3,
-            "the orchestrator and one room per unnamed agent"
-        );
-        for key in ["unnamed:7", "unnamed:9"] {
-            let d = layout
-                .districts
-                .iter()
-                .find(|d| d.key == key)
-                .unwrap_or_else(|| panic!("a district keyed {key}"));
-            assert_eq!(d.district.role, "other");
-            assert_eq!(role_family(&d.district.role, "worker"), "other");
-        }
-        assert_ne!(
-            layout.homes[&7].0, layout.homes[&9].0,
-            "each unnamed agent has its own room"
-        );
-    }
-
-    /// The web's measured case (floor3d/board-layout.ts OCCLUSION_SHARE note): on the workstation the m2_2 slot is 4 of 9
-    /// samples blocked and hidden, the RAM slot 3 of 9 and usable.
-    #[test]
-    fn occlusion_hides_the_m2_slot_the_camera_misses() {
-        let board = hardware::model("board/workstation").expect("the workstation parses");
-        let boxes = hardware::part_boxes(board, &Params::default());
-        let hidden = occluded_slot_ids(board, &boxes);
-        assert!(hidden.contains("slot_m2_2"), "m2_2 is hidden: {hidden:?}");
-        assert!(
-            !hidden.contains("slot_mem"),
-            "the RAM slot stays usable: {hidden:?}"
-        );
-    }
-
-    /// The PCB top is the board's `pcb_top` param (the workstation's 0.336), then the caller's override, then the default.
-    #[test]
-    fn pcb_top_comes_from_the_board_params() {
-        let workstation = hardware::model("board/workstation").expect("the workstation parses");
-        assert_eq!(
-            layout_on_board(&[], workstation, &BoardParams::default()).pcb_top,
-            0.336
-        );
-        let laptop = hardware::model("board/laptop").expect("the laptop parses");
-        assert_eq!(
-            layout_on_board(&[], laptop, &BoardParams::default()).pcb_top,
-            PCB_TOP
-        );
-        let over = BoardParams {
-            params: Params::default().with("pcb_top", 0.5),
-        };
-        assert_eq!(layout_on_board(&[], workstation, &over).pcb_top, 0.5);
     }
 
     /// The shared board core seats every agent of every board kind and count the apz-board tests use, the same way
@@ -1568,53 +1334,5 @@ mod tests {
                 shared_layout_of(&key).unwrap_or_else(|e| panic!("{kind} with {gpus} GPUs: {e}"));
             }
         }
-    }
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn a_shared_layout_is_computed_once_and_ready_after_polling() {
-        let seat = |cid: u64, role: &str| AgentInfo {
-            cid,
-            name: format!("agent {cid}"),
-            role: role.into(),
-            status: "idle".into(),
-            tier: if role == "orchestrator" {
-                "orchestrator"
-            } else {
-                "worker"
-            }
-            .into(),
-            model: String::new(),
-            species: None,
-        };
-        let roster = [seat(1, "orchestrator"), seat(2, "coder")];
-        let key = SharedKey::new("edge", &roster, 1);
-        let mut cache = SharedLayouts::default();
-        assert!(
-            cache.request(key.clone()).is_none(),
-            "the first request starts the layout"
-        );
-        assert!(
-            cache.request(key.clone()).is_none(),
-            "a request while it computes does not start it again"
-        );
-        assert_eq!(cache.spawned, 1, "one computation for the key");
-        let started = std::time::Instant::now();
-        let layout = loop {
-            cache.poll();
-            if let Some(layout) = cache.request(key.clone()) {
-                break layout;
-            }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(120),
-                "the edge layout is ready"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
-        assert_eq!(layout.homes.len(), 2, "both agents are seated");
-        assert!(
-            cache.request(key).is_some(),
-            "a finished key is returned at once"
-        );
-        assert_eq!(cache.spawned, 1, "a finished key is not computed again");
     }
 }

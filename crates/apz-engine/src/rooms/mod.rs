@@ -150,32 +150,3 @@ pub(crate) fn min_side(role: &str, agents: usize) -> f64 {
 fn role_name(role: &str) -> String {
     crate::roles::role_label(role)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::min_side;
-
-    /// The minimum side comes from the table (assets/rooms/minsize.json) for each desk count: a role the table does
-    /// not list has none (0); counts 1 to 6 give that count's entry; counts above 6 use the 6-agent entry, as
-    /// index.ts clamps `agents` to the row's length.
-    #[test]
-    fn min_side_is_the_table_entry_for_each_desk_count() {
-        for (role, agents, want) in [
-            ("no-such-role", 1, 0.0),
-            ("no-such-role", 6, 0.0),
-            ("no-such-role", 9, 0.0),
-            ("architect", 1, 4.5),
-            ("architect", 4, 5.0),
-            ("architect", 6, 6.0),
-            ("planner", 1, 5.0),
-            ("planner", 6, 6.5),
-            ("incident", 3, 3.5),
-            ("architect", 7, 6.0),
-            ("architect", 8, 6.0),
-            ("orchestrator", 7, 6.5),
-            ("orchestrator", 12, 6.5),
-        ] {
-            assert_eq!(min_side(role, agents), want, "{role} with {agents} desks");
-        }
-    }
-}

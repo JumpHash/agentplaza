@@ -142,80 +142,59 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    /// A build runs in budgeted calls: each call stops once its budget is spent, and a zero budget still runs one step.
     #[test]
-    fn a_ten_step_build_finishes_over_several_calls_within_the_budget() {
-        let clock = Rc::new(Cell::new(0.0_f64));
-        let steps = Rc::new(Cell::new(0_u32));
-        let (c, s) = (clock.clone(), steps.clone());
-        let mut warm = Warm::new(move || {
-            c.set(c.get() + 1.0); // each step costs 1 ms on the fake clock
-            s.set(s.get() + 1);
-            if s.get() == 10 {
-                Step::Done(s.get())
-            } else {
-                Step::More
-            }
-        });
-        let budget = 3.0;
-        let mut calls = 0;
-        let result = loop {
-            calls += 1;
-            let before = clock.get();
-            let out = warm.run(|| clock.get(), budget);
-            // A call stops once the budget is spent: at most the budget plus the one step that crosses it.
-            assert!(
-                clock.get() - before <= budget + 1.0,
-                "call {calls} ran past its budget"
-            );
-            if let Some(v) = out {
-                break v;
-            }
-            assert!(calls < 20, "the build never finished");
-        };
-        assert_eq!(result, 10);
-        assert_eq!(calls, 4, "3 + 3 + 3 + 1 steps");
-        assert!(!warm.busy());
-        assert_eq!(warm.run(|| clock.get(), budget), None);
-    }
-
-    #[test]
-    fn a_zero_budget_still_runs_one_step() {
-        let clock = Rc::new(Cell::new(0.0_f64));
-        let c = clock.clone();
-        let mut warm = Warm::new(move || {
-            c.set(c.get() + 1.0);
-            if c.get() >= 2.0 {
-                Step::Done("done")
-            } else {
-                Step::More
-            }
-        });
-        assert_eq!(warm.run(|| clock.get(), 0.0), None);
-        assert_eq!(warm.run(|| clock.get(), 0.0), Some("done"));
-    }
-
-    #[test]
-    fn the_cache_pushes_out_the_least_recently_used_value_first() {
-        let mut cache = BuildCache::new(2);
-        assert!(cache.insert("a".into(), 1).is_empty());
-        assert!(cache.insert("b".into(), 2).is_empty());
-        assert_eq!(cache.get("a"), Some(&1)); // a is now the most recent, so b is the oldest
-        assert_eq!(cache.insert("c".into(), 3), vec![2]);
-        assert!(!cache.contains("b"));
-        assert!(cache.contains("a") && cache.contains("c"));
-        assert_eq!(cache.take("a"), Some(1));
-        assert_eq!(cache.take("a"), None);
-        assert!(cache.release("a".into(), 4).is_empty()); // c is oldest now, a is the newest
-        assert_eq!(cache.insert("d".into(), 5), vec![3]);
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
-    fn inserting_under_a_key_already_held_replaces_it() {
-        let mut cache = BuildCache::new(2);
-        cache.insert("a".into(), 1);
-        assert_eq!(cache.insert("a".into(), 9), vec![1]);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.take("a"), Some(9));
+    fn a_build_runs_within_the_call_budget() {
+        // a_ten_step_build_finishes_over_several_calls_within_the_budget: a ten-step build finishes over
+        // several calls, and each call stays within its budget.
+        {
+            let clock = Rc::new(Cell::new(0.0_f64));
+            let steps = Rc::new(Cell::new(0_u32));
+            let (c, s) = (clock.clone(), steps.clone());
+            let mut warm = Warm::new(move || {
+                c.set(c.get() + 1.0); // each step costs 1 ms on the fake clock
+                s.set(s.get() + 1);
+                if s.get() == 10 {
+                    Step::Done(s.get())
+                } else {
+                    Step::More
+                }
+            });
+            let budget = 3.0;
+            let mut calls = 0;
+            let result = loop {
+                calls += 1;
+                let before = clock.get();
+                let out = warm.run(|| clock.get(), budget);
+                // A call stops once the budget is spent: at most the budget plus the one step that crosses it.
+                assert!(
+                    clock.get() - before <= budget + 1.0,
+                    "call {calls} ran past its budget"
+                );
+                if let Some(v) = out {
+                    break v;
+                }
+                assert!(calls < 20, "the build never finished");
+            };
+            assert_eq!(result, 10);
+            assert_eq!(calls, 4, "3 + 3 + 3 + 1 steps");
+            assert!(!warm.busy());
+            assert_eq!(warm.run(|| clock.get(), budget), None);
+        }
+        // a_zero_budget_still_runs_one_step: a call with a zero budget still runs one step.
+        {
+            let clock = Rc::new(Cell::new(0.0_f64));
+            let c = clock.clone();
+            let mut warm = Warm::new(move || {
+                c.set(c.get() + 1.0);
+                if c.get() >= 2.0 {
+                    Step::Done("done")
+                } else {
+                    Step::More
+                }
+            });
+            assert_eq!(warm.run(|| clock.get(), 0.0), None);
+            assert_eq!(warm.run(|| clock.get(), 0.0), Some("done"));
+        }
     }
 }

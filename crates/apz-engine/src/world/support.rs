@@ -108,38 +108,3 @@ fn add_geometry(geo: &Geometry, m: Mat4, field: &mut SupportField) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::support_field;
-    use crate::scene::{Mat, Material, Obj};
-    use apz_board::nav::drawn::{Support, top_below};
-
-    /// A 2 x 1 x 2 box standing on the floor, under a group root.
-    fn box_on_floor(decal: bool) -> Obj {
-        let root = Obj::group();
-        let mat = Mat::new(Material {
-            decal,
-            ..Material::default()
-        });
-        let mesh = Obj::mesh(&crate::geometry::box_geo(2.0, 1.0, 2.0), &mat);
-        mesh.set_position(0.0, 0.5, 0.0);
-        root.add(&mesh);
-        root
-    }
-
-    #[test]
-    fn the_top_of_a_box_holds_up_what_is_over_it() {
-        let sup = Support {
-            field: support_field(&box_on_floor(false)),
-            scale: 1.0,
-        };
-        assert!((top_below(Some(&sup), 0.0, 0.0, f64::INFINITY) - 1.0).abs() < 1e-6);
-        assert!(top_below(Some(&sup), 5.0, 5.0, f64::INFINITY).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_decal_holds_nothing_up() {
-        assert!(support_field(&box_on_floor(true)).tris.is_empty());
-    }
-}

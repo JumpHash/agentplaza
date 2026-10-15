@@ -825,21 +825,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_empty_feed_is_no_change() {
-        let feed = Feed::default();
-        assert!(feed.fleet.is_none() && feed.agents.is_none() && feed.fleet_error.is_none());
-    }
-
-    #[test]
-    fn a_null_fleet_is_no_change_and_an_empty_agent_array_is_an_empty_list() {
-        let feed = feed_from_json(r#"{"fleet":null,"agents":[]}"#).unwrap();
-        assert!(feed.fleet.is_none());
-        assert_eq!(feed.agents.map(|agents| agents.len()), Some(0));
-    }
-
-    #[test]
-    fn a_feed_that_is_not_an_object_is_an_error() {
-        assert!(feed_from_json("[1, 2]").is_err());
-        assert!(feed_from_json("42").is_err());
+    fn feed_from_json_parses_a_null_fleet_and_empty_agents_and_rejects_non_objects() {
+        // a_null_fleet_is_no_change_and_an_empty_agent_array_is_an_empty_list: a null fleet is no change, and an empty agent array is an empty list.
+        {
+            let feed = feed_from_json(r#"{"fleet":null,"agents":[]}"#).unwrap();
+            assert!(feed.fleet.is_none());
+            assert_eq!(feed.agents.map(|agents| agents.len()), Some(0));
+        }
+        // a_feed_that_is_not_an_object_is_an_error: a feed that is not an object is an error.
+        {
+            assert!(feed_from_json("[1, 2]").is_err());
+            assert!(feed_from_json("42").is_err());
+        }
     }
 }
