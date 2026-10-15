@@ -163,12 +163,63 @@ def _case_wake(suite: Suite, ctx) -> None:
 
 
 def _case_checkpoint_fork(suite: Suite, ctx) -> None:
-    """TODO (job L1): one keepalive agent; CHECKPOINTS x POST /v1/runs/{run}/vms/{index}/checkpoints {"label": ...}
-    timed as the call; then FORKS x POST /v1/runs/{run}/vms/{index}/fork {"n": 2} timed until both copies' CIDs
-    (from the answer) have a vsockd connected line. Record suite.data["checkpoint"] and suite.data["fork"] like
-    _case_wake does, plus noded's timing lines for op=checkpoint and op=fork. Delete each fork's runs after timing."""
-    case = suite.case("checkpoint and fork: not measured yet")
-    case.blocked("job L1 has not implemented this case")
+    """One keepalive agent is checkpointed ``CHECKPOINTS`` times (the API call is timed), then forked ``FORKS`` times,
+    two copies each, timed from the fork call until both copies' hellos reach the hub. Each fork's run is deleted
+    after its timing. noded's own ``timing`` lines for op=checkpoint and op=fork are kept as the node-side breakdown."""
+    case = suite.case(
+        "checkpoint and fork: one keepalive agent checkpointed and forked, forks timed until both copies' hellos",
+        vector=f"noded --agents (1 role); {CHECKPOINTS} x POST checkpoints; {FORKS} x POST fork {{n: 2}} "
+        "(timed until both copies' hellos)",
+    )
+    cid = AGENT_CID_BASE
+    with _agent_lab(ctx, ["builder"], "fork", extra_cids=FORK_CIDS) as lab:
+        run_id = _fleet_run(lab)
+        if not case.invariant("noded booted the fleet run", run_id is not None, lab.noded_log_text()[-400:]):
+            return
+        if not case.invariant(
+            "the agent reached the hub", _await_connected(lab, cid, 0, GUEST_SETTLE_S), lab.vsockd_log_text()[-400:]
+        ):
+            return
+        index = _vm_index(lab, run_id, cid)
+        checkpoint_ms, fork_ms, failures = [], [], []
+        for i in range(CHECKPOINTS):
+            started = time.monotonic()
+            made = lab.api_post(f"/v1/runs/{run_id}/vms/{index}/checkpoints", {"label": f"bench-{i}", "memory": True})
+            checkpoint_ms.append((time.monotonic() - started) * 1000.0)
+            if made.status != 201:
+                failures.append(f"checkpoint {i} answered {made.status}: {made.body[:200]}")
+                break
+        for i in range(FORKS):
+            before = {fork_cid: _connected_count(lab, fork_cid) for fork_cid in FORK_CIDS}
+            started = time.monotonic()
+            forked = lab.api_post(f"/v1/runs/{run_id}/vms/{index}/fork", {"n": 2})
+            if forked.status != 201:
+                failures.append(f"fork {i} answered {forked.status}: {forked.body[:200]}")
+                break
+            try:
+                forks = json.loads(forked.body).get("forks", [])
+            except (ValueError, AttributeError):
+                forks = []
+            connected = bool(forks) and all(
+                _await_connected(lab, fork["cid"], before.get(fork["cid"], 0), OP_DEADLINE_S) for fork in forks
+            )
+            elapsed = (time.monotonic() - started) * 1000.0
+            for fork in forks:
+                lab.delete(fork["run"])
+            if not connected:
+                failures.append(f"fork {i}: a copy had no hello within {OP_DEADLINE_S}s")
+                break
+            fork_ms.append(elapsed)
+        case.invariant("every checkpoint and fork succeeded", not failures, "; ".join(failures))
+        checkpoint_node = [float(row["total_ms"]) for row in _timing_lines(lab, "checkpoint") if "total_ms" in row]
+        fork_node = [float(row["total_ms"]) for row in _timing_lines(lab, "fork") if "total_ms" in row]
+        suite.data["checkpoint"] = {"call_ms": summary(checkpoint_ms), "node_ms": summary(checkpoint_node)}
+        suite.data["fork"] = {"to_hellos_ms": summary(fork_ms), "node_ms": summary(fork_node)}
+        case.note(
+            f"checkpoint call p50={percentile(checkpoint_ms, 0.5)} p95={percentile(checkpoint_ms, 0.95)} ms; "
+            f"fork to hellos p50={percentile(fork_ms, 0.5)} p95={percentile(fork_ms, 0.95)} ms; "
+            f"node fork part p50={percentile(fork_node, 0.5)} ms"
+        )
 
 
 def _case_density(suite: Suite, ctx, agents: int, seconds: float) -> None:
