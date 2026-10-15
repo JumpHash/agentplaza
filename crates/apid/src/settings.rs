@@ -93,6 +93,9 @@ pub struct Settings {
     pub outreach_minutes: u32,
     /// Whether apid resizes agents' VM memory with their work (through the balloon).
     pub memory_autoscale: bool,
+    /// Whether the hub checkpoints an agent's whole VM before an irreversible tool call runs (see
+    /// `vm_snapshots.rs`). Off: only the owner's explicit checkpoints are taken.
+    pub vm_auto_checkpoints: bool,
     /// How much of the plaza's conversations and board is kept, and for how long.
     pub retention: Retention,
     /// What the plaza does to an agent that breaks a law (see `sanctions.rs`).
@@ -204,6 +207,7 @@ impl Default for Settings {
             prices: BTreeMap::new(),
             outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
             memory_autoscale: true,
+            vm_auto_checkpoints: true,
             retention: Retention::default(),
             sanctions: Sanctions::default(),
             laws: LawsSettings::default(),

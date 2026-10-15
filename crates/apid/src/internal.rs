@@ -545,6 +545,10 @@ fn tool_request(
     } else {
         None
     };
+    // An allowed call that may not be undone starts only after its VM is checkpointed (`vm_snapshots`).
+    if verdict.is_ok() && gate.is_none() {
+        crate::vm_snapshots::auto_checkpoint(app, cid, name);
+    }
     let mut program = None;
     let (decision, output, is_error) = match verdict {
         _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),
