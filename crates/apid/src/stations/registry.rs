@@ -343,18 +343,6 @@ impl Store {
         Ok(())
     }
 
-    /// The id of the unused, unexpired code `code_text` is, if it is one. Nothing is counted against it.
-    pub fn code_id_of(&self, code_text: &str, now: u64) -> Option<String> {
-        let token = apz_trust::token::JoinToken::decode(code_text).ok()?;
-        let hash = nodes::hex(&token.secret_hash());
-        let p = self.guard().ok()?;
-        p.codes
-            .iter()
-            .find(|code| apz_trust::ct_eq(code.secret_sha256.as_bytes(), hash.as_bytes()))
-            .filter(|code| code.used_by.is_none() && !code.revoked && now < code.expires_ms)
-            .map(|code| code.id.clone())
-    }
-
     /// Redeems a join code for a new station: the station, and its token (shown once).
     pub fn redeem(
         &self,
@@ -658,22 +646,6 @@ mod tests {
             .issue_code("https://hub.test:7700", [3; 32], label, ttl, now)
             .unwrap();
         (id, text)
-    }
-
-    #[test]
-    fn a_code_s_id_is_known_until_it_is_used() {
-        let store = Store::default();
-        let (code_id, text) = code(&store, "vm desk", 0, NOW);
-        assert_eq!(store.code_id_of(&text, NOW), Some(code_id));
-        assert_eq!(store.code_id_of("not a code", NOW), None);
-        store
-            .redeem("203.0.113.7", &text, facts("desk-1"), None, HUB, NOW)
-            .unwrap();
-        assert_eq!(
-            store.code_id_of(&text, NOW),
-            None,
-            "a used code names nothing"
-        );
     }
 
     #[test]

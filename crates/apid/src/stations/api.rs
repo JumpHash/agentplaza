@@ -354,19 +354,10 @@ fn join_route(app: &App, req: &Request) -> Response {
         Err(refusal) => return refusal,
     };
     // A workstation is another machine. A request from this host (loopback, or a peer nobody can name) is refused
-    // before the code is looked at, so a join from the hub's own machine never spends one. The one exception is a
-    // workstation VM the hub made on its own machine (node n0): its daemon reaches the hub through the local node's
-    // relay, so its join comes from loopback, with the code the hub issued for that VM and no other.
-    let local_vm_code = || {
-        app.stations
-            .code_id_of(&body.code, apz_plaza::now_ms())
-            .is_some_and(|id| {
-                app.stations.vms().iter().any(|vm| {
-                    vm.node == crate::fleet::LOCAL && vm.code == id && vm.station.is_none()
-                })
-            })
-    };
-    if req.peer.is_none_or(|peer| peer.is_loopback()) && !local_vm_code() {
+    // before the code is looked at, so a join from the hub's own machine never spends one. A workstation VM on the
+    // hub's own machine (node n0) is not this host: the local node's relay announces its connections
+    // (`apz_http::RELAY_PREFACE`), so they arrive as from elsewhere, and with no loopback trust.
+    if req.peer.is_none_or(|peer| peer.is_loopback()) {
         return Response::error(
             403,
             "a workstation joins from another machine; this request came from the hub's own host",

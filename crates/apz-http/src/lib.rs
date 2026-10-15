@@ -23,4 +23,4 @@ pub mod ws;
 
 pub use message::{Body, JSON, Limits, Request, Response, Sse, host_is_loopback};
 pub use router::{Params, Router};
-pub use server::{Handle, Server};
+pub use server::{Handle, RELAY_PREFACE, Server};
