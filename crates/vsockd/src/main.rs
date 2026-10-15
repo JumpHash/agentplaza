@@ -83,9 +83,9 @@ fn shutdown_waker() -> &'static crate::waker::Waker {
         waker
     })
 }
-/// Guest sessions served at once; the next connection is refused.
+/// Guest sessions served at once by default; `--max-sessions` changes it.
 #[cfg(any(target_os = "linux", windows))]
-const MAX_SESSIONS: usize = 64;
+const DEFAULT_MAX_SESSIONS: usize = 4096;
 /// Probe/remove/bind rounds before `bind_listener` gives up on a racing path.
 #[cfg(any(target_os = "linux", windows))]
 const MAX_BIND_ATTEMPTS: u32 = 8;
@@ -126,6 +126,11 @@ impl SessionLimiter {
         }
     }
 
+    /// The most sessions served at once.
+    fn capacity(&self) -> usize {
+        self.max
+    }
+
     fn try_acquire(self: &Arc<Self>) -> Option<SessionGuard> {
         if self.active.fetch_add(1, Ordering::SeqCst) >= self.max {
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -149,7 +154,7 @@ impl Drop for SessionGuard {
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
-              [--e2b-port P]
+              [--e2b-port P] [--max-sessions N]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
                     %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
@@ -172,6 +177,8 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid U
   --e2b-port P      the E2B gateway on 127.0.0.1:P (default off): the SDKs' sandbox
                     requests, relayed to the sandbox's port 49983 through its VM's
                     muxer; needs --internal-token-file, since apid names the sandbox
+  --max-sessions N  guest sessions served at once; the next connection is refused
+                    (default 4096; each takes three file descriptors)
   -h, --help        print this help
 
 Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
@@ -224,6 +231,7 @@ struct Config {
     egress: bool,
     egress_ports: Vec<u16>,
     e2b_port: Option<u16>,
+    max_sessions: usize,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -239,6 +247,7 @@ impl Default for Config {
             egress: true,
             egress_ports: Vec::new(),
             e2b_port: None,
+            max_sessions: DEFAULT_MAX_SESSIONS,
         }
     }
 }
@@ -292,6 +301,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 }
                 config.e2b_port = Some(port);
             }
+            "--max-sessions" => {
+                let sessions: usize = value?
+                    .parse()
+                    .map_err(|err| format!("--max-sessions: {err}"))?;
+                if sessions == 0 {
+                    return Err("--max-sessions: at least one session is required".to_string());
+                }
+                config.max_sessions = sessions;
+            }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
             "--http-port" => {
                 config.http_port = value?
@@ -302,6 +320,24 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         }
     }
     Ok(config)
+}
+
+/// Raises the descriptor limit so `max_sessions` guest sessions fit, and reports what it is now.
+#[cfg(unix)]
+fn raise_fd_limit(max_sessions: usize) {
+    match sys::raise_fd_limit() {
+        Ok(limit) => {
+            println!("vsockd: file descriptor limit {limit}");
+            let needed = 3 * max_sessions as u64 + 64;
+            if limit < needed {
+                let sessions = limit.saturating_sub(64) / 3;
+                println!(
+                    "vsockd: warning: the file descriptor limit {limit} holds about {sessions} sessions, not {max_sessions}; raise it to {needed}"
+                );
+            }
+        }
+        Err(err) => eprintln!("vsockd: cannot raise the file descriptor limit: {err}"),
+    }
 }
 
 /// Creates the socket directory `0700` (and tightens an existing one): the
@@ -327,6 +363,8 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 /// Serves until a signal asks the daemon to stop.
 #[cfg(any(target_os = "linux", windows))]
 fn run(config: Config) -> Result<(), String> {
+    #[cfg(unix)]
+    raise_fd_limit(config.max_sessions);
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
     let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone())
         .map_err(|err| format!("--apid: {err}"))?;
@@ -362,11 +400,12 @@ fn run(config: Config) -> Result<(), String> {
         config.port,
         egress_setup,
         Arc::clone(&hub),
+        config.max_sessions,
     ));
     let facts = http::NodeFacts {
         port: config.port,
         started: Instant::now(),
-        max_sessions: MAX_SESSIONS,
+        max_sessions: config.max_sessions,
         keepalive_idle_s: KEEPALIVE_IDLE_SECS,
     };
     let internal_token = match &config.internal_token_file {
@@ -480,13 +519,14 @@ impl Registry {
         port: u32,
         egress: Option<(Arc<egress::Policy>, apid::Apid)>,
         hub: Arc<Hub>,
+        max_sessions: usize,
     ) -> Self {
         Self {
             uds_dir,
             port,
             egress,
             hub,
-            limiter: Arc::new(SessionLimiter::new(MAX_SESSIONS)),
+            limiter: Arc::new(SessionLimiter::new(max_sessions)),
             served: Mutex::new(BTreeMap::new()),
         }
     }
@@ -748,9 +788,13 @@ fn accept_loop(
         }
         match listener.accept() {
             Ok((stream, _)) => match limiter.try_acquire() {
-                None => println!(
-                    "vsockd: refusing a connection from cid {cid}: {MAX_SESSIONS} sessions are already running"
-                ),
+                None => {
+                    crate::metrics::SESSIONS_REFUSED.inc();
+                    println!(
+                        "vsockd: refusing a connection from cid {cid}: {} sessions are already running",
+                        limiter.capacity()
+                    );
+                }
                 Some(guard) => {
                     println!("vsockd: accepted a connection from cid {cid}");
                     let hub = Arc::clone(&hub);
@@ -897,6 +941,7 @@ mod tests {
             egress: false,
             egress_ports: vec![8080, 8443],
             e2b_port: Some(49990),
+            max_sessions: DEFAULT_MAX_SESSIONS,
         };
         assert_eq!(config, expected);
         assert!(
@@ -916,6 +961,17 @@ mod tests {
         ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn max_sessions_is_a_flag_and_zero_is_refused() {
+        assert_eq!(args(&["--max-sessions", "10"]).unwrap().max_sessions, 10);
+        assert_eq!(Config::default().max_sessions, DEFAULT_MAX_SESSIONS);
+        assert!(
+            args(&["--max-sessions", "0"]).is_err(),
+            "at least one session"
+        );
+        assert!(args(&["--max-sessions", "x"]).is_err());
     }
 
     #[test]
@@ -996,6 +1052,7 @@ mod tests {
             DEFAULT_PORT,
             None,
             Arc::new(crate::hub::tests::hub_with(None).1),
+            DEFAULT_MAX_SESSIONS,
         );
         assert_eq!(registry.serve(40), Ok(true));
         let path = dir.join(format!("vm40_{DEFAULT_PORT}"));
@@ -1035,6 +1092,7 @@ mod tests {
             DEFAULT_PORT,
             None,
             Arc::new(crate::hub::tests::hub_with(None).1),
+            DEFAULT_MAX_SESSIONS,
         );
         let bound = registry.bind(3).expect("binds");
         registry.start(bound);

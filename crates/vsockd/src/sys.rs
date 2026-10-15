@@ -128,6 +128,33 @@ pub fn wait_readable(
     Ok(pollfds.iter().map(|p| p.revents != 0).collect())
 }
 
+/// Raises the soft `RLIMIT_NOFILE` to the hard limit, since each guest session holds three descriptors,
+/// and returns the soft limit now in force. A lower soft limit is left alone when the hard one is too.
+#[cfg(unix)]
+pub fn raise_fd_limit() -> io::Result<u64> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes one `rlimit` through the valid, writable pointer `&mut limit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if limit.rlim_cur < limit.rlim_max {
+        let raised = libc::rlimit {
+            rlim_cur: limit.rlim_max,
+            rlim_max: limit.rlim_max,
+        };
+        // SAFETY: `setrlimit` reads one `rlimit` through the valid pointer `&raised`. The new soft limit equals
+        // the hard limit read above, which an unprivileged process may raise its soft limit to.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(raised.rlim_cur as u64);
+    }
+    Ok(limit.rlim_cur as u64)
+}
+
 /// Asks the process to stop on `SIGTERM`/`SIGINT`.
 ///
 /// The handler only sets [`SHUTDOWN`] and writes one byte to the shutdown waker

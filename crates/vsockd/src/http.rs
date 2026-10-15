@@ -365,7 +365,13 @@ mod tests {
     /// A surface whose registry serves CIDs 10 and 11 (egress off).
     fn surface(hub: Hub) -> Surface {
         let hub = Arc::new(hub);
-        let registry = Arc::new(Registry::new(socket_dir(), 5000, None, Arc::clone(&hub)));
+        let registry = Arc::new(Registry::new(
+            socket_dir(),
+            5000,
+            None,
+            Arc::clone(&hub),
+            crate::DEFAULT_MAX_SESSIONS,
+        ));
         for cid in [10, 11] {
             registry.serve(cid).expect("binds");
         }
@@ -555,6 +561,7 @@ mod tests {
             5000,
             Some((policy, Apid::off())),
             Arc::clone(&hub),
+            crate::DEFAULT_MAX_SESSIONS,
         ));
         let surface = Surface {
             hub,
