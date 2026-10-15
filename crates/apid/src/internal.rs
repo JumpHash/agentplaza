@@ -678,12 +678,31 @@ pub(crate) fn gate_call(
     if let Some(refused) = laws.refusal(cid, role, name, input) {
         return Err(refused);
     }
-    decide(granted, name, runs(name)).map_err(str::to_string)
+    decide(granted, name, engine_runs(name).or_else(|| runs(name))).map_err(str::to_string)
 }
 
-/// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not.
+/// The requests an ACP engine makes of its own (`engine.*`), sent as nested tool requests while
+/// `code_engine` runs. They act in the agent's VM, so they run in the guest like `code_engine` does.
+const ENGINE_TOOLS: &[&str] = &[
+    "engine.read",
+    "engine.edit",
+    "engine.exec",
+    "engine.fetch",
+    "engine.other",
+];
+
+/// Where an engine request runs: the guest, for the five names the engine may make; `None` for any
+/// other name under `engine.`.
+fn engine_runs(name: &str) -> Option<Runs> {
+    ENGINE_TOOLS.contains(&name).then_some(Runs::Guest)
+}
+
+/// The pure tool policy: `Ok(where)` when the tool may run, `Err(reason)` when it may not. An engine
+/// request is granted with `code_engine` (it is the engine's own action inside that run), so an
+/// unknown `engine.*` name is granted and then refused as unknown.
 fn decide(granted: &[String], name: &str, runs: Option<Runs>) -> Result<Runs, &'static str> {
-    if !granted.iter().any(|g| g == name) {
+    let engine = name.starts_with("engine.") && granted.iter().any(|g| g == "code_engine");
+    if !engine && !granted.iter().any(|g| g == name) {
         return Err("not granted to this agent");
     }
     runs.ok_or("unknown tool")
@@ -733,6 +752,40 @@ mod tests {
             decide(&granted, "read", None),
             Err("unknown tool")
         ));
+    }
+
+    #[test]
+    fn an_engine_request_is_granted_with_code_engine_and_runs_in_the_guest() {
+        let with_engine = vec!["read".to_string(), "code_engine".to_string()];
+        let without = vec!["read".to_string()];
+        for name in [
+            "engine.read",
+            "engine.edit",
+            "engine.exec",
+            "engine.fetch",
+            "engine.other",
+        ] {
+            assert!(
+                matches!(
+                    decide(&with_engine, name, engine_runs(name).or_else(|| runs(name))),
+                    Ok(Runs::Guest)
+                ),
+                "{name} with code_engine"
+            );
+            assert!(
+                matches!(
+                    decide(&without, name, engine_runs(name).or_else(|| runs(name))),
+                    Err("not granted to this agent")
+                ),
+                "{name} without code_engine"
+            );
+        }
+        // Anything else under `engine.` is granted with code_engine and then unknown.
+        assert!(matches!(
+            decide(&with_engine, "engine.bogus", engine_runs("engine.bogus")),
+            Err("unknown tool")
+        ));
+        assert_eq!(engine_runs("engine.bogus"), None);
     }
 
     #[test]
