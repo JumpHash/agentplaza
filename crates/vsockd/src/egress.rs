@@ -346,12 +346,29 @@ pub fn accept_loop(
     policy: Arc<Policy>,
     apid: Apid,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    stop_waker: Arc<crate::waker::Waker>,
 ) {
-    // `stop` is the CID's own stop request (it is no longer served), checked on every poll like
+    #[cfg(unix)]
+    let listener_handle = {
+        use std::os::fd::AsRawFd;
+        listener.as_raw_fd()
+    };
+    #[cfg(windows)]
+    let listener_handle = {
+        use std::os::windows::io::AsRawSocket;
+        listener.as_raw_socket()
+    };
+    // `stop` is the CID's own stop request (it is no longer served), checked on every wake like
     // the daemon-wide shutdown.
     while !sys::shutdown_requested() && !stop.load(std::sync::atomic::Ordering::SeqCst) {
-        if let Err(err) = sys::poll_readable(&listener, super::ACCEPT_POLL_MS) {
+        let handles = [
+            listener_handle,
+            stop_waker.handle(),
+            super::shutdown_waker().handle(),
+        ];
+        if let Err(err) = sys::wait_readable(&handles, None) {
             eprintln!("vsockd: egress poll failed: {err}");
+            thread::sleep(Duration::from_millis(100));
         }
         match listener.accept() {
             Ok((stream, _)) => {

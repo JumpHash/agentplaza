@@ -66,9 +66,23 @@ use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 const DEFAULT_PORT: u32 = 5000;
 #[cfg(any(target_os = "linux", windows))]
 const DEFAULT_HTTP_PORT: u16 = 19080;
-/// How often an accept loop checks for a stop request.
+/// How often the daemon's main thread checks for a stop request.
 #[cfg(any(target_os = "linux", windows))]
 const ACCEPT_POLL_MS: i32 = 200;
+
+/// The shutdown waker, created by `shutdown_waker`.
+#[cfg(any(target_os = "linux", windows))]
+static SHUTDOWN_WAKER: std::sync::OnceLock<crate::waker::Waker> = std::sync::OnceLock::new();
+
+/// Woken once when the daemon is asked to stop, so every accept thread returns at once. Never drained.
+#[cfg(any(target_os = "linux", windows))]
+fn shutdown_waker() -> &'static crate::waker::Waker {
+    SHUTDOWN_WAKER.get_or_init(|| {
+        let waker = crate::waker::Waker::new().expect("vsockd: cannot create the shutdown waker");
+        sys::set_shutdown_wake(waker.wake_handle());
+        waker
+    })
+}
 /// Guest sessions served at once; the next connection is refused.
 #[cfg(any(target_os = "linux", windows))]
 const MAX_SESSIONS: usize = 64;
@@ -320,6 +334,7 @@ fn run(config: Config) -> Result<(), String> {
         println!("vsockd: v3 agent loop forwarded to {}", config.apid);
     }
     sys::install_signal_handlers();
+    shutdown_waker();
     create_uds_dir(&config.uds_dir).map_err(|err| {
         format!(
             "cannot create the socket directory {}: {err}",
@@ -438,6 +453,8 @@ struct Served {
     /// Present only when egress is on; it stops on the same request as the session loop.
     egress: Option<JoinHandle<()>>,
     paths: Vec<PathBuf>,
+    /// Wakes the accept loops out of their wait, so they see `stop` at once.
+    stop_waker: Arc<crate::waker::Waker>,
 }
 
 /// Listeners bound for one CID and not yet accepting.
@@ -541,22 +558,32 @@ impl Registry {
             egress,
         } = bound;
         let stop = Arc::new(AtomicBool::new(false));
+        let stop_waker =
+            Arc::new(crate::waker::Waker::new().expect("vsockd: cannot create a CID's stop waker"));
         let (session_path, session_listener) = session;
         let mut paths = vec![session_path];
         let session = {
-            let (stop, limiter, hub) = (
+            let (stop, limiter, hub, stop_waker) = (
                 Arc::clone(&stop),
                 Arc::clone(&self.limiter),
                 Arc::clone(&self.hub),
+                Arc::clone(&stop_waker),
             );
-            thread::spawn(move || accept_loop(cid, session_listener, stop, limiter, hub))
+            thread::spawn(move || {
+                accept_loop(cid, session_listener, stop, limiter, hub, stop_waker)
+            })
         };
         let mut egress_loop = None;
         if let (Some((path, listener)), Some((policy, apid))) = (egress, &self.egress) {
             paths.push(path);
-            let (policy, apid, stop) = (Arc::clone(policy), apid.clone(), Arc::clone(&stop));
+            let (policy, apid, stop, stop_waker) = (
+                Arc::clone(policy),
+                apid.clone(),
+                Arc::clone(&stop),
+                Arc::clone(&stop_waker),
+            );
             egress_loop = Some(thread::spawn(move || {
-                egress::accept_loop(cid, listener, policy, apid, stop)
+                egress::accept_loop(cid, listener, policy, apid, stop, stop_waker)
             }));
         }
         Served {
@@ -564,6 +591,7 @@ impl Registry {
             session,
             egress: egress_loop,
             paths,
+            stop_waker,
         }
     }
 
@@ -592,10 +620,11 @@ impl Registry {
 
 #[cfg(any(target_os = "linux", windows))]
 impl Served {
-    /// Stops the session accept loop and joins it; with `egress` also joins the egress loop, which
-    /// only returns once the daemon stops, so only at shutdown. Then removes the socket files.
+    /// Stops the accept loops and joins them: the stop flag is set and the stop waker woken, so both
+    /// return at once. Then removes the socket files.
     fn stop_and_join(self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.stop_waker.wake();
         let _ = self.session.join();
         if let Some(loop_) = self.egress {
             let _ = loop_.join();
@@ -695,10 +724,27 @@ fn accept_loop(
     stop: Arc<AtomicBool>,
     limiter: Arc<SessionLimiter>,
     hub: Arc<Hub>,
+    stop_waker: Arc<crate::waker::Waker>,
 ) {
+    #[cfg(unix)]
+    let listener_handle = {
+        use std::os::fd::AsRawFd;
+        listener.as_raw_fd()
+    };
+    #[cfg(windows)]
+    let listener_handle = {
+        use std::os::windows::io::AsRawSocket;
+        listener.as_raw_socket()
+    };
     while !stop.load(Ordering::SeqCst) && !sys::shutdown_requested() {
-        if let Err(err) = sys::poll_readable(&listener, ACCEPT_POLL_MS) {
+        let handles = [
+            listener_handle,
+            stop_waker.handle(),
+            shutdown_waker().handle(),
+        ];
+        if let Err(err) = sys::wait_readable(&handles, None) {
             eprintln!("vsockd: poll failed: {err}");
+            thread::sleep(Duration::from_millis(100));
         }
         match listener.accept() {
             Ok((stream, _)) => match limiter.try_acquire() {

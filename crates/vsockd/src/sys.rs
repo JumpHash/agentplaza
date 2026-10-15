@@ -11,74 +11,31 @@
 // calls the daemon needs — the accept loop's shutdown-check cadence and the
 // stop request — do not put an `#[allow(unsafe_code)]` on the file that owns
 // the daemon's logic. Each platform has its own implementation of the same
-// API: `poll_readable` (`poll(2)` on Unix, `WSAPoll` on Windows) and
+// API: `wait_readable` (`poll(2)` on Unix, `WSAPoll` on Windows) and
 // `install_signal_handlers` (`sigaction(2)` on Unix, a console control handler
 // on Windows). `shutdown_requested` and the `SHUTDOWN` flag are shared.
 #![allow(unsafe_code)]
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-/// Set by the signal or console handler; the accept loop reads it.
+/// Set by the signal or console handler; the accept loops read it.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// The write end of the shutdown waker (see `main.rs`), or -1 while none is set. The handler writes one byte to it,
+/// so every accept loop blocked in `wait_readable` wakes at once.
+static SHUTDOWN_WAKE: AtomicI64 = AtomicI64::new(-1);
+
+/// Stores the write end of the shutdown waker for the signal or console handler to write to. The handle must stay
+/// open for the process's life.
+pub fn set_shutdown_wake(handle: RawHandle) {
+    SHUTDOWN_WAKE.store(handle as i64, Ordering::SeqCst);
+}
 
 /// Whether `SIGTERM`/`SIGINT` (or a console stop event on Windows) has asked
 /// the process to stop.
 pub fn shutdown_requested() -> bool {
     SHUTDOWN.load(Ordering::SeqCst)
-}
-
-/// Waits up to `timeout_ms` for `listener` to have a connection to accept,
-/// returning `Ok(false)` on timeout. The timeout is the accept loop's
-/// shutdown-check cadence, mirroring the old AF_VSOCK `wait_readable`.
-#[cfg(unix)]
-pub fn poll_readable(listener: &apz_uds::UnixListener, timeout_ms: i32) -> io::Result<bool> {
-    use std::os::fd::AsRawFd;
-
-    // `pollfd` is fully initialised, and `fd` is borrowed from the live
-    // `listener` for the duration of the call.
-    let mut pollfd = libc::pollfd {
-        fd: listener.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // SAFETY: `pollfd` points to one initialised entry, which `poll` may
-    // modify but whose storage stays valid across the call.
-    let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-    if ret < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(ret > 0)
-    }
-}
-
-/// Waits up to `timeout_ms` for `listener` to have a connection to accept,
-/// returning `Ok(false)` on timeout. Uses `WSAPoll` on the listener socket.
-#[cfg(windows)]
-pub fn poll_readable(listener: &apz_uds::UnixListener, timeout_ms: i32) -> io::Result<bool> {
-    use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{
-        POLLRDNORM, SOCKET, WSAGetLastError, WSAPOLLFD, WSAPoll,
-    };
-
-    // `pollfd` is fully initialised, and the socket is borrowed from the live
-    // `listener` for the duration of the call.
-    let mut pollfd = WSAPOLLFD {
-        fd: listener.as_raw_socket() as SOCKET,
-        events: POLLRDNORM,
-        revents: 0,
-    };
-    // SAFETY: `pollfd` points to one initialised entry, which `WSAPoll` may
-    // modify but whose storage stays valid across the call.
-    let ret = unsafe { WSAPoll(&mut pollfd, 1, timeout_ms) };
-    if ret < 0 {
-        // SAFETY: `WSAGetLastError` takes no arguments and only reads the
-        // calling thread's last Winsock error.
-        let code = unsafe { WSAGetLastError() };
-        Err(io::Error::from_raw_os_error(code))
-    } else {
-        Ok(ret > 0)
-    }
 }
 
 /// A handle that [`wait_readable`] can watch: a file descriptor on Unix, a socket on Windows.
@@ -173,8 +130,8 @@ pub fn wait_readable(
 
 /// Asks the process to stop on `SIGTERM`/`SIGINT`.
 ///
-/// The handler only sets [`SHUTDOWN`] (the async-signal-safe thing to do); the
-/// accept loop notices it within [`crate::ACCEPT_POLL_MS`], and `SA_RESTART` is
+/// The handler only sets [`SHUTDOWN`] and writes one byte to the shutdown waker
+/// (both async-signal-safe), so the accept loops wake at once. `SA_RESTART` is
 /// left off so an interrupted wait cannot hold the shutdown back.
 #[cfg(unix)]
 pub fn install_signal_handlers() {
@@ -196,13 +153,23 @@ pub fn install_signal_handlers() {
 #[cfg(unix)]
 extern "C" fn on_signal(_signal: libc::c_int) {
     SHUTDOWN.store(true, Ordering::SeqCst);
+    let fd = SHUTDOWN_WAKE.load(Ordering::SeqCst);
+    if fd >= 0 {
+        let byte = 1u8;
+        // SAFETY: `write(2)` is async-signal-safe and reads one byte from the live local `byte`. `fd` is the
+        // write end of the shutdown waker, which `main` keeps open for the process's life; a failed write is
+        // ignored, since a full buffer means a wake is already pending.
+        unsafe {
+            libc::write(fd as libc::c_int, (&byte as *const u8).cast(), 1);
+        }
+    }
 }
 
 /// Asks the process to stop on a console stop event (Ctrl+C, Ctrl+Break, the
 /// console window closing, logoff, or system shutdown).
 ///
-/// The handler only sets [`SHUTDOWN`]; the accept loop notices it within
-/// [`crate::ACCEPT_POLL_MS`].
+/// The handler only sets [`SHUTDOWN`] and sends one byte to the shutdown waker;
+/// the accept loops wake at once.
 #[cfg(windows)]
 pub fn install_signal_handlers() {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
@@ -219,6 +186,7 @@ pub fn install_signal_handlers() {
 /// report them as handled (`TRUE`).
 #[cfg(windows)]
 unsafe extern "system" fn on_console_ctrl(ctrl_type: u32) -> i32 {
+    use windows_sys::Win32::Networking::WinSock::{SOCKET, send};
     use windows_sys::Win32::System::Console::{
         CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
     };
@@ -227,6 +195,15 @@ unsafe extern "system" fn on_console_ctrl(ctrl_type: u32) -> i32 {
         CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
         | CTRL_SHUTDOWN_EVENT => {
             SHUTDOWN.store(true, Ordering::SeqCst);
+            let sock = SHUTDOWN_WAKE.load(Ordering::SeqCst);
+            if sock >= 0 {
+                // SAFETY: `send` reads one byte from the live local array. `sock` is the write end of the
+                // shutdown waker, a socket that `main` keeps open for the process's life; a failed send is
+                // ignored, since a full buffer means a wake is already pending.
+                unsafe {
+                    send(sock as SOCKET, [1u8].as_ptr(), 1, 0);
+                }
+            }
             1
         }
         _ => 0,

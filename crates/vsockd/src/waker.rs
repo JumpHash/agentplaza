@@ -56,6 +56,22 @@ impl Waker {
         use std::os::windows::io::AsRawSocket;
         self.rx.as_raw_socket()
     }
+
+    /// The writable end, for a signal or console handler to wake the waiting threads with. The waker keeps it
+    /// open for its own life.
+    #[cfg(unix)]
+    pub fn wake_handle(&self) -> crate::sys::RawHandle {
+        use std::os::fd::AsRawFd;
+        self.tx.as_raw_fd()
+    }
+
+    /// The writable end, for a signal or console handler to wake the waiting threads with. The waker keeps it
+    /// open for its own life.
+    #[cfg(windows)]
+    pub fn wake_handle(&self) -> crate::sys::RawHandle {
+        use std::os::windows::io::AsRawSocket;
+        self.tx.as_raw_socket()
+    }
 }
 
 #[cfg(test)]
