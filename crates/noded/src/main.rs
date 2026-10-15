@@ -114,9 +114,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 "noded: per-VM processes, cgroup limits under {}",
                 root.path().display()
             ),
-            None => eprintln!(
-                "noded: per-VM processes; no delegated cgroup tree, so no cgroup limits"
-            ),
+            None => {
+                eprintln!("noded: per-VM processes; no delegated cgroup tree, so no cgroup limits")
+            }
         }
         vmm::spawner::set_cgroup_root(root);
     }

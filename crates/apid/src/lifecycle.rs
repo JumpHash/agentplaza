@@ -127,13 +127,44 @@ pub(crate) fn place(app: &App, cid: u64) -> Result<(String, u32), Response> {
     let Some(agent) = app.agents.get(cid) else {
         return Err(Response::error(404, &format!("no agent {cid}")));
     };
-    match (agent.run, agent.vm) {
-        (Some(run), Some(vm)) => Ok((run, vm)),
-        _ => Err(Response::error(
+    if let (Some(run), Some(vm)) = (agent.run, agent.vm) {
+        return Ok((run, vm));
+    }
+    // The roster learns an agent's run from the reconcile pass, every 10 s: an agent spawned (or
+    // forked, or moved) since is looked up on its node now, and the roster keeps what was found.
+    match run_of(app, cid) {
+        Some((run, vm)) => {
+            app.agents.update(cid, |slot| {
+                slot.run = Some(run.clone());
+                slot.vm = Some(vm);
+            });
+            Ok((run, vm))
+        }
+        None => Err(Response::error(
             409,
             &format!("agent {cid} has no VM on this node"),
         )),
     }
+}
+
+/// The live run and VM index whose guest CID is `cid`, from its node's noded.
+fn run_of(app: &App, cid: u64) -> Option<(String, u32)> {
+    let Ok((200, runs)) = crate::fleet::noded_for(app, cid, "GET", "/v1/runs", None) else {
+        return None;
+    };
+    let list = runs["runs"].as_array().or_else(|| runs.as_array())?;
+    list.iter()
+        .filter(|run| run["ended_at"].is_null())
+        .find_map(|run| {
+            let id = run["id"].as_str()?;
+            run["vms"].as_array()?.iter().find_map(|vm| {
+                (vm["guest_cid"].as_u64() == Some(cid))
+                    .then(|| vm["id"].as_u64())
+                    .flatten()
+                    .and_then(|index| u32::try_from(index).ok())
+                    .map(|index| (id.to_string(), index))
+            })
+        })
 }
 
 /// Asks noded to run `action` on the VM; any failure becomes the response.
