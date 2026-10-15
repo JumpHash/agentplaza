@@ -161,7 +161,7 @@ where
         } else {
             0
         };
-        check_queue_count(expected, state.queues.len())?;
+        crate::devices::virtio::mmio::check_snapshot_queue_count(expected, state.queues.len())?;
         restore_queue_positions(device.queues_mut(), &state.queues);
         if let Some(armed) = state
             .extra
@@ -218,19 +218,6 @@ fn restore_queue_positions(queues: &mut [Queue], positions: &[QueuePosition]) {
         queue.next_avail = Wrapping(position.next_avail);
         queue.next_used = Wrapping(position.next_used);
     }
-}
-
-/// Refuses a snapshot whose queue count is not the device's: an activated
-/// device has one position per queue and an inactive one none. The virtio error
-/// type has no snapshot variant, so the mismatch is named by the first queue
-/// index the two sides disagree on.
-fn check_queue_count(expected: usize, got: usize) -> Result<(), VirtioError> {
-    if expected == got {
-        return Ok(());
-    }
-    Err(VirtioError::NoSuchQueue(
-        u32::try_from(expected.min(got)).unwrap_or(u32::MAX),
-    ))
 }
 
 #[cfg(test)]

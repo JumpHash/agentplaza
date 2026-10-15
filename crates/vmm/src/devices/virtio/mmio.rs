@@ -189,6 +189,16 @@ pub trait VirtioDevice: Send {
     }
 }
 
+/// Refuses a device snapshot whose queue count is not the device's: an activated device has one
+/// position per queue, an inactive one none. Shared by the devices' `restore_device_state`.
+pub(crate) fn check_snapshot_queue_count(expected: usize, found: usize) -> Result<(), VirtioError> {
+    if expected == found {
+        Ok(())
+    } else {
+        Err(VirtioError::SnapshotQueueCount { expected, found })
+    }
+}
+
 /// One virtqueue's position, as a device's snapshot carries it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueuePosition {

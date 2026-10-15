@@ -32,19 +32,6 @@ fn queue_position(queue: &Queue) -> QueuePosition {
     }
 }
 
-/// Refuses a snapshot whose queue count is not the device's: an activated
-/// device has one position and an inactive one none. The virtio error type has
-/// no snapshot variant, so the mismatch is named by the first queue index the
-/// two sides disagree on.
-fn check_queue_count(expected: usize, got: usize) -> Result<(), VirtioError> {
-    if expected == got {
-        return Ok(());
-    }
-    Err(VirtioError::NoSuchQueue(
-        u32::try_from(expected.min(got)).unwrap_or(u32::MAX),
-    ))
-}
-
 /// The virtio-mmio device that hands the block device to the transport.
 ///
 /// Unlike the vsock device's adapter there is no shared state here: the device
@@ -148,7 +135,7 @@ impl VirtioDevice for BlockMmioDevice {
         } else {
             0
         };
-        check_queue_count(expected, state.queues.len())?;
+        crate::devices::virtio::mmio::check_snapshot_queue_count(expected, state.queues.len())?;
         if let Some(position) = state.queues.first() {
             let queue = self.device.queue_mut();
             queue.next_avail = Wrapping(position.next_avail);
