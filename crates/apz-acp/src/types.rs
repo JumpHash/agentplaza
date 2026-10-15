@@ -6,3 +6,7 @@
 
 pub use agent_client_protocol_schema::ProtocolVersion;
 pub use agent_client_protocol_schema::v1::*;
+
+/// The ACP v2 draft types, for the peers that speak it. Only [`crate::compat`] moves between the two
+/// versions; the rest of the crate keeps the v1 names above.
+pub use agent_client_protocol_schema::v2;

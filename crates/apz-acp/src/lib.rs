@@ -5,6 +5,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod compat;
 pub mod map;
 pub mod rpc;
 pub mod testing;

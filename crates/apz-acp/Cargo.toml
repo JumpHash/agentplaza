@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 # Types only: the schema crate. Framing, ids and the peer are ours (see the plan's section 2).
-agent-client-protocol-schema = "=1.10.2"
+agent-client-protocol-schema = { version = "=1.10.2", features = ["unstable_protocol_v2"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
