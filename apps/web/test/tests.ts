@@ -1136,6 +1136,43 @@ sectionEnd('station machine tests: ok');
   eq(stepsItem.kind === 'steps' ? stepsItem.outcome : '', 'mixed', 'buildChat: one ok and one failed is mixed');
   eq(stepsItem.kind === 'steps' ? stepLabel(stepsItem.steps[0]) : '', 'Read src/main.rs', 'stepLabel: read names the path');
 
+  // A code_engine call is one engine block: its updates fill it, and its nested checks go into it, never into a steps run.
+  // `engine_update` is not in the Entry kinds yet, so the fixture entries are typed by hand.
+  const ev = (seq: number, at_ms: number, kind: string, data: Record<string, unknown>): Entry => ({ seq, at_ms, cid: 1, work: 7, kind, data } as Entry);
+  const engineRun = buildChat([
+    ev(1, 10, 'tool_request', { call: 'k1', name: 'code_engine', input: { engine: 'claude-code', prompt: 'fix the parser', session: 'sess-12345678' } }),
+    ev(2, 11, 'tool_decision', { call: 'k1', decision: 'allow' }),
+    ev(3, 12, 'tool_request', { call: 'k1.e1', name: 'engine.read', input: { engine: 'claude-code', title: 'Read src/parser.rs', locations: [], raw: {} } }),
+    ev(4, 13, 'tool_decision', { call: 'k1.e1', decision: 'allow' }),
+    ev(5, 14, 'engine_update', { call: 'k1', item: 'tool_call', update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Edit parser.rs', kind: 'edit', status: 'pending', locations: [{ path: 'src/parser.rs', line: 40 }], content: [{ type: 'diff', path: 'src/parser.rs', oldText: 'a', newText: 'b' }] } }),
+    ev(6, 15, 'engine_update', { call: 'k1', item: 'tool_status', update: { toolCallId: 't1', status: 'completed' } }),
+    ev(7, 16, 'engine_update', { call: 'k1', item: 'plan', update: [{ content: 'Find the bug', status: 'completed', priority: 'high' }, { content: 'Fix it', status: 'in_progress', priority: 'medium' }] }),
+    ev(8, 17, 'tool_request', { call: 'k1.e2', name: 'engine.exec', input: { engine: 'claude-code', title: 'Run cargo test', locations: [], raw: {} } }),
+    ev(9, 18, 'tool_decision', { call: 'k1.e2', decision: 'pending', output: "waiting for the owner's approval (appr-42)" }),
+    ev(10, 19, 'engine_update', { call: 'k1', item: 'message', text: 'Fixed the parser.' }),
+    ev(11, 20, 'tool_request', { id: 'c9', name: 'bash', input: { command: 'ls' } }),
+    ev(12, 21, 'tool_result', { id: 'c9', is_error: false }),
+    ev(13, 22, 'tool_result', { call: 'k1', ok: true, output: 'Fixed in one edit.' }),
+  ], false);
+  eq(engineRun.map((c) => c.kind).join(','), 'engine,steps', 'buildChat: one engine item, then the plaza\'s own bash call as steps');
+  const block = engineRun[0];
+  eq(block?.kind === 'engine' ? block.engine : '', 'claude-code', 'buildChat: the engine block names the engine');
+  eq(block?.kind === 'engine' ? block.session ?? '' : '', 'sess-12345678', 'buildChat: the engine block keeps the session');
+  eq(block?.kind === 'engine' ? block.status : '', 'ok', 'buildChat: a successful result is ok');
+  eq(block?.kind === 'engine' ? block.message : '', 'Fixed the parser.', 'buildChat: the engine message is its final text');
+  eq(block?.kind === 'engine' ? block.summary ?? '' : '', 'Fixed in one edit.', 'buildChat: the result output is the summary');
+  eq(block?.kind === 'engine' ? block.tools.map((t) => `${t.title}:${t.status}:${t.locations[0]?.line}`).join(',') : '', 'Edit parser.rs:completed:40', 'buildChat: a tool row takes its later status update');
+  eq(block?.kind === 'engine' ? block.tools[0]?.content[0]?.type ?? '' : '', 'diff', 'buildChat: a tool row keeps its diff content');
+  eq(block?.kind === 'engine' ? block.plan.map((p) => `${p.content}:${p.status}`).join(',') : '', 'Find the bug:completed,Fix it:in_progress', 'buildChat: the plan is the latest entries');
+  eq(block?.kind === 'engine' ? block.checks.map((c) => `${c.name}:${c.decision}:${c.approval ?? ''}`).join(',') : '', 'engine.read:allow:,engine.exec:pending:appr-42', 'buildChat: nested checks, the held one with its approval id');
+  eq(engineRun[1]?.kind === 'steps' ? engineRun[1].steps.length : -1, 1, 'buildChat: nested checks make no steps, only the bash call does');
+
+  const deniedRun = buildChat([
+    ev(1, 10, 'tool_request', { call: 'k2', name: 'code_engine', input: { engine: 'codex', prompt: 'drop the table' } }),
+    ev(2, 11, 'tool_decision', { call: 'k2', decision: 'deny', output: 'denied by the owner' }),
+  ], false);
+  eq(deniedRun.map((c) => (c.kind === 'engine' ? `${c.status}:${c.summary ?? ''}` : c.kind)).join(','), 'denied:denied by the owner', 'buildChat: a denied engine call is a denied engine item');
+
   const act = activitySplit([
     en(1, 0, 'model_request'),
     en(2, 100, 'model_response'),

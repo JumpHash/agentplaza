@@ -143,6 +143,269 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Engine: a coding engine's run under its code_engine call, as a bordered card: header, message, tools, plan, checks, summary. */
+.ide-chat-engine {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.ide-chat-engine-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ide-chat-engine-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 1px var(--s2);
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ide-chat-engine-session {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-status[data-status='running'] {
+  color: var(--info);
+}
+
+.ide-chat-engine-status[data-status='ok'] {
+  color: var(--ok);
+}
+
+.ide-chat-engine-status[data-status='failed'] {
+  color: var(--danger);
+}
+
+.ide-chat-engine-status[data-status='denied'] {
+  color: var(--warn);
+}
+
+.ide-chat-engine-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-message {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* The engine's text that has streamed in and is not yet recorded; empty, it takes no room. */
+.ide-chat-engine-live {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ide-chat-engine-live:empty {
+  display: none;
+}
+
+.ide-chat-engine-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.ide-chat-engine-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-tools,
+.ide-chat-engine-plan,
+.ide-chat-engine-checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.ide-chat-engine-tool-head,
+.ide-chat-engine-plan > li,
+.ide-chat-engine-check {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.ide-chat-engine-glyph,
+.ide-chat-engine-mark {
+  flex: 0 0 1.2em;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-tool-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.ide-chat-engine-tool-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-tool[data-status='in_progress'] .ide-chat-engine-tool-status,
+.ide-chat-engine-check[data-decision='pending'] .ide-chat-engine-tool-status {
+  color: var(--info);
+}
+
+.ide-chat-engine-tool[data-status='completed'] .ide-chat-engine-tool-status,
+.ide-chat-engine-check[data-decision='allow'] .ide-chat-engine-tool-status {
+  color: var(--ok);
+}
+
+.ide-chat-engine-tool[data-status='failed'] .ide-chat-engine-tool-status,
+.ide-chat-engine-check[data-decision='deny'] .ide-chat-engine-tool-status {
+  color: var(--danger);
+}
+
+.ide-chat-engine-check-name {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-decide {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--s2);
+}
+
+.ide-chat-engine-locs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  padding-left: calc(1.2em + var(--s2));
+}
+
+.ide-chat-engine-loc {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.ide-chat-engine-body {
+  padding-left: calc(1.2em + var(--s2));
+  min-width: 0;
+}
+
+.ide-chat-engine-diff-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-pre {
+  margin-top: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-x: auto;
+}
+
+.ide-chat-engine-line {
+  padding: 0 var(--s2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text-2);
+}
+
+.ide-chat-engine-line.add {
+  color: var(--ok);
+}
+
+.ide-chat-engine-line.del {
+  color: var(--danger);
+}
+
+.ide-chat-engine-more {
+  padding-top: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ide-chat-engine-plan > li[data-status='completed'] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.ide-chat-engine-plan > li[data-status='in_progress'] .ide-chat-engine-mark {
+  color: var(--info);
+}
+
+.ide-chat-engine-summary > summary {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.ide-chat-engine-summary > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ide-chat-engine-summary > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.ide-chat-engine-summary-body {
+  padding-top: var(--s1);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 /* Working: three dots that pulse; still under reduced motion. */
 .ide-chat-working {
   display: flex;
