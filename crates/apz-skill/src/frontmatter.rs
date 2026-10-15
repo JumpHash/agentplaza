@@ -330,80 +330,78 @@ mod tests {
     }
 
     #[test]
-    fn plain_keys_and_the_body() {
-        let p = ok(
-            "---\nname: pdf-forms\ndescription: Fill forms. Use when: a PDF has fields.\n---\n# Title\nbody\n",
-        );
-        assert_eq!(p.frontmatter.name, "pdf-forms");
-        assert_eq!(
-            p.frontmatter.description,
-            "Fill forms. Use when: a PDF has fields."
-        );
-        assert_eq!(p.body, "# Title\nbody\n");
-        assert_eq!(p.body_line, 5);
-    }
-
-    #[test]
-    fn quoted_values_unescape() {
-        let p = ok(
-            "---\nname: \"a-b\"\ndescription: \"Say \\\"hi\\\" # not a comment\" # real comment\nlicense: 'it''s MIT'\n---\n",
-        );
-        assert_eq!(p.frontmatter.name, "a-b");
-        assert_eq!(p.frontmatter.description, "Say \"hi\" # not a comment");
-        assert_eq!(p.frontmatter.license.as_deref(), Some("it's MIT"));
-    }
-
-    #[test]
-    fn folded_and_literal_block_scalars() {
-        let p = ok(
-            "---\ndescription: >\n  Fill forms\n  for PDFs.\n\n  Use when needed.\nname: x\n---\n",
-        );
-        assert_eq!(
-            p.frontmatter.description,
-            "Fill forms for PDFs.\nUse when needed."
-        );
-        assert_eq!(p.frontmatter.name, "x");
-        let p = ok("---\ndescription: |\n  one\n    indented\n  two\nname: x\n---\n");
-        assert_eq!(p.frontmatter.description, "one\n  indented\ntwo");
-    }
-
-    #[test]
-    fn list_and_string_allowed_tools() {
-        let p = ok("---\nallowed-tools:\n  - Read\n  - \"Bash(git:*)\"\n  - Grep\n---\n");
-        assert_eq!(p.frontmatter.allowed_tools, ["Read", "Bash(git:*)", "Grep"]);
-        let p = ok("---\nallowed-tools: Read, Grep  Bash\n---\n");
-        assert_eq!(p.frontmatter.allowed_tools, ["Read", "Grep", "Bash"]);
-    }
-
-    #[test]
-    fn metadata_map_and_extra_keys() {
-        let p = ok(
-            "---\nmetadata:\n  author: me\n  version: \"1\" # x\ncompatibility: any tool\n---\n",
-        );
-        assert_eq!(
-            p.frontmatter.metadata.get("author").map(String::as_str),
-            Some("me")
-        );
-        assert_eq!(
-            p.frontmatter.metadata.get("version").map(String::as_str),
-            Some("1")
-        );
-        assert_eq!(
-            p.frontmatter.extra.get("compatibility").map(String::as_str),
-            Some("any tool")
-        );
-    }
-
-    #[test]
-    fn comments_and_blank_lines_are_ignored() {
-        let p = ok("---\n# top\n\nname: x # trailing\n  # indented comment\n---\n");
-        assert_eq!(p.frontmatter.name, "x");
-    }
-
-    #[test]
-    fn the_first_closing_line_ends_the_frontmatter() {
-        let p = ok("---\nname: x\n---\nbody\n---\nmore\n");
-        assert_eq!(p.body, "body\n---\nmore\n");
+    fn valid_frontmatter_parses() {
+        // plain_keys_and_the_body: plain keys parse, and the body starts after the closing line.
+        {
+            let p = ok(
+                "---\nname: pdf-forms\ndescription: Fill forms. Use when: a PDF has fields.\n---\n# Title\nbody\n",
+            );
+            assert_eq!(p.frontmatter.name, "pdf-forms");
+            assert_eq!(
+                p.frontmatter.description,
+                "Fill forms. Use when: a PDF has fields."
+            );
+            assert_eq!(p.body, "# Title\nbody\n");
+            assert_eq!(p.body_line, 5);
+        }
+        // quoted_values_unescape: double and single quoted values are unescaped; `#` inside
+        // quotes is not a comment.
+        {
+            let p = ok(
+                "---\nname: \"a-b\"\ndescription: \"Say \\\"hi\\\" # not a comment\" # real comment\nlicense: 'it''s MIT'\n---\n",
+            );
+            assert_eq!(p.frontmatter.name, "a-b");
+            assert_eq!(p.frontmatter.description, "Say \"hi\" # not a comment");
+            assert_eq!(p.frontmatter.license.as_deref(), Some("it's MIT"));
+        }
+        // folded_and_literal_block_scalars: `>` folds lines and `|` keeps them.
+        {
+            let p = ok(
+                "---\ndescription: >\n  Fill forms\n  for PDFs.\n\n  Use when needed.\nname: x\n---\n",
+            );
+            assert_eq!(
+                p.frontmatter.description,
+                "Fill forms for PDFs.\nUse when needed."
+            );
+            assert_eq!(p.frontmatter.name, "x");
+            let p = ok("---\ndescription: |\n  one\n    indented\n  two\nname: x\n---\n");
+            assert_eq!(p.frontmatter.description, "one\n  indented\ntwo");
+        }
+        // list_and_string_allowed_tools: allowed-tools accepts a list or a comma/space string.
+        {
+            let p = ok("---\nallowed-tools:\n  - Read\n  - \"Bash(git:*)\"\n  - Grep\n---\n");
+            assert_eq!(p.frontmatter.allowed_tools, ["Read", "Bash(git:*)", "Grep"]);
+            let p = ok("---\nallowed-tools: Read, Grep  Bash\n---\n");
+            assert_eq!(p.frontmatter.allowed_tools, ["Read", "Grep", "Bash"]);
+        }
+        // metadata_map_and_extra_keys: `metadata` is a map, unknown keys go to `extra`.
+        {
+            let p = ok(
+                "---\nmetadata:\n  author: me\n  version: \"1\" # x\ncompatibility: any tool\n---\n",
+            );
+            assert_eq!(
+                p.frontmatter.metadata.get("author").map(String::as_str),
+                Some("me")
+            );
+            assert_eq!(
+                p.frontmatter.metadata.get("version").map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                p.frontmatter.extra.get("compatibility").map(String::as_str),
+                Some("any tool")
+            );
+        }
+        // comments_and_blank_lines_are_ignored: comment and blank lines do not affect values.
+        {
+            let p = ok("---\n# top\n\nname: x # trailing\n  # indented comment\n---\n");
+            assert_eq!(p.frontmatter.name, "x");
+        }
+        // the_first_closing_line_ends_the_frontmatter: later `---` lines stay in the body.
+        {
+            let p = ok("---\nname: x\n---\nbody\n---\nmore\n");
+            assert_eq!(p.body, "body\n---\nmore\n");
+        }
     }
 
     #[test]
