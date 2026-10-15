@@ -11,6 +11,8 @@
 //! plaza.keepalive=1    run the long-lived keepalive session (optional, default off)
 //! plaza.template=1    a warm template: announce readiness, then retry the hub every 25 ms
 //!                     until its first welcome (optional, default off)
+//! plaza.sandbox=1     a sandbox: no hub session; serve the envd daemon on its vsock port
+//!                     (optional, default off)
 //! ```
 //!
 //! `plaza.harness=1` is consumed by the guest's `init`, not by the harness;
@@ -48,6 +50,9 @@ pub struct Config {
     /// Whether this guest is a warm template (`plaza.template=1`): one the host snapshots while
     /// it waits for its first welcome, so it announces readiness and retries the hub quickly.
     pub template: bool,
+    /// Whether this guest is a sandbox (`plaza.sandbox=1`): it serves the E2B-compatible
+    /// daemon (see [`crate::envd`]) instead of running a hub session.
+    pub sandbox: bool,
 }
 
 impl Default for Config {
@@ -58,6 +63,7 @@ impl Default for Config {
             role: None,
             keepalive: false,
             template: false,
+            sandbox: false,
         }
     }
 }
@@ -130,6 +136,10 @@ impl Config {
             Some(value) => number("plaza.template", value)? != 0,
             None => false,
         };
+        let sandbox = match value_of("plaza.sandbox=") {
+            Some(value) => number("plaza.sandbox", value)? != 0,
+            None => false,
+        };
         let role = match value_of("plaza.role=") {
             // An empty value is "no role", not a role named "".
             Some("") => None,
@@ -142,6 +152,7 @@ impl Config {
             role,
             keepalive,
             template,
+            sandbox,
         })
     }
 }
@@ -186,12 +197,16 @@ mod tests {
                 role: Some("builder".to_string()),
                 keepalive: true,
                 template: false,
+                sandbox: false,
             }
         );
         assert!(!Config::parse("plaza.keepalive=0").unwrap().keepalive);
         assert!(Config::parse("plaza.template=1").unwrap().template);
         assert!(!Config::parse("plaza.template=0").unwrap().template);
         assert!(!Config::default().template);
+        assert!(Config::parse("plaza.sandbox=1").unwrap().sandbox);
+        assert!(!Config::parse("plaza.sandbox=0").unwrap().sandbox);
+        assert!(!Config::default().sandbox);
         assert_eq!(Config::parse("plaza.role=").unwrap().role, None);
     }
 

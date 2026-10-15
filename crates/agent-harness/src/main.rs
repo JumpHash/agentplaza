@@ -162,6 +162,8 @@ enum HarnessError {
     UnassignedCid(u32),
     /// The session did not complete: {0}
     Session(SessionError),
+    /// The sandbox daemon could not start: {0}
+    Sandbox(io::Error),
 }
 
 #[cfg(target_os = "linux")]
@@ -177,6 +179,7 @@ impl fmt::Display for HarnessError {
                 "the vsock device published no guest CID (it answered {cid}): the VM has no CID to report"
             ),
             Self::Session(err) => write!(f, "session failed: {err}"),
+            Self::Sandbox(err) => write!(f, "sandbox daemon failed: {err}"),
         }
     }
 }
@@ -198,11 +201,48 @@ fn run() -> Result<(), HarnessError> {
         config.vm, HOST_CID, config.port
     );
 
-    if config.keepalive {
+    if config.sandbox {
+        sandbox(&mut out)
+    } else if config.keepalive {
         keepalive(&config, &mut out)
     } else {
         one_shot(&config, &mut out)
     }
+}
+
+/// The sandbox's home, and the user its processes run as (E2B's default user).
+#[cfg(target_os = "linux")]
+const SANDBOX_HOME: &str = "/home/user";
+#[cfg(target_os = "linux")]
+const SANDBOX_USER: u32 = bash::UNPRIVILEGED;
+
+/// Serves the sandbox daemon (E2B's envd) on its vsock port, forever: no hub session. The egress
+/// shim runs as it does for an agent, so the sandbox's processes reach the internet the same way.
+/// `/home/user` is the workspace volume, linked in when the image does not have it.
+#[cfg(target_os = "linux")]
+fn sandbox(out: &mut (impl Write + Send)) -> Result<(), HarnessError> {
+    egress::spawn_shim();
+    // Best effort: a home that cannot be linked is reported by the first command that needs it
+    // (its working directory is then refused), not by the daemon failing to start.
+    let _ = fs::create_dir_all("/workspace");
+    if fs::symlink_metadata(SANDBOX_HOME).is_err() {
+        let _ = fs::create_dir_all("/home");
+        if let Err(err) = std::os::unix::fs::symlink("/workspace", SANDBOX_HOME) {
+            let _ = writeln!(
+                out,
+                "agent-harness: sandbox: cannot link {SANDBOX_HOME}: {err}"
+            );
+        }
+    }
+    let _ = writeln!(out, "agent-harness: sandbox: home {SANDBOX_HOME}");
+    let _ = out.flush();
+    let ctx = envd::Ctx {
+        home: SANDBOX_HOME.into(),
+        uid: SANDBOX_USER,
+        gid: SANDBOX_USER,
+        env: Vec::new(),
+    };
+    envd::serve(envd::PORT, ctx).map_err(HarnessError::Sandbox)
 }
 
 /// Runs the frozen v1 session once and returns when it completed.
