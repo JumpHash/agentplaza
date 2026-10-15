@@ -27,6 +27,8 @@ mod db;
 mod decisions;
 mod deliverables;
 mod e2b;
+mod e2b_net;
+mod e2b_obs;
 mod egress_inject;
 mod events;
 mod fleet;

@@ -372,6 +372,11 @@ pub struct Sandbox {
     /// from every sandbox route. Deleting its last snapshot ends its run and forgets it.
     #[serde(default)]
     pub retired: bool,
+    /// The network rules (`allowOut`, `denyOut`; see `crate::e2b_net`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_out: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_out: Vec<String>,
 }
 
 /// The sandboxes, saved to `<state>/e2b-sandboxes.json` on every change.
@@ -577,6 +582,24 @@ pub(crate) fn sandbox_verdict(
     law_refusal: Option<String>,
     host: &str,
 ) -> EgressVerdict {
+    // The sandbox's own rules: an allowed host goes out even without internet access, a denied one
+    // never; the laws and the blocklist decide either way (`egress_verdict`).
+    if law_refusal.is_none() {
+        match crate::e2b_net::verdict(&sandbox.allow_out, &sandbox.deny_out, host) {
+            Some(true) => return egress_verdict(blocked, None, host),
+            Some(false) => {
+                return EgressVerdict {
+                    allow: false,
+                    law: None,
+                    reason: Some(format!(
+                        "refused: sandbox {} denies {host} (denyOut)",
+                        sandbox.id
+                    )),
+                };
+            }
+            None => {}
+        }
+    }
     if law_refusal.is_none() && !sandbox.allow_internet {
         return EgressVerdict {
             allow: false,
@@ -684,6 +707,62 @@ pub struct NewSandbox {
     metadata: Option<BTreeMap<String, String>>,
     #[serde(rename = "envVars")]
     env_vars: Option<BTreeMap<String, String>>,
+    network: Option<NetworkBody>,
+    #[serde(rename = "volumeMounts")]
+    volume_mounts: Option<Vec<Value>>,
+}
+
+/// E2B's network configuration (`SandboxNetworkConfig` at create, `SandboxNetworkUpdateConfig` in
+/// `PUT .../network`). The fields the plaza does not act on are refused when set, not ignored.
+#[derive(Debug, Default, Deserialize)]
+pub struct NetworkBody {
+    #[serde(rename = "allowOut")]
+    allow_out: Option<Vec<String>>,
+    #[serde(rename = "denyOut")]
+    deny_out: Option<Vec<String>>,
+    /// Only in an update: the internet access, as the create's `allow_internet_access`.
+    allow_internet_access: Option<bool>,
+    rules: Option<Value>,
+    #[serde(rename = "egressProxy")]
+    egress_proxy: Option<Value>,
+    #[serde(rename = "maskRequestHost")]
+    mask_request_host: Option<String>,
+}
+
+impl NetworkBody {
+    /// The checked `(allowOut, denyOut)`.
+    fn lists(&self) -> Result<(Vec<String>, Vec<String>), Refused> {
+        let set = |value: &Option<Value>| {
+            value.as_ref().is_some_and(|v| match v {
+                Value::Null => false,
+                Value::Object(map) => !map.is_empty(),
+                _ => true,
+            })
+        };
+        if set(&self.rules) {
+            return Err(invalid(
+                "network.rules are not served: the hub adds credentials only by the owner's egress rules",
+            ));
+        }
+        if set(&self.egress_proxy) {
+            return Err(invalid(
+                "network.egressProxy is not served: every sandbox goes through the hub's egress proxy",
+            ));
+        }
+        if self
+            .mask_request_host
+            .as_deref()
+            .is_some_and(|m| !m.is_empty())
+        {
+            return Err(invalid("network.maskRequestHost is not served"));
+        }
+        let allow =
+            crate::e2b_net::check(self.allow_out.as_deref().unwrap_or(&[]), "allowOut", true)
+                .map_err(invalid)?;
+        let deny = crate::e2b_net::check(self.deny_out.as_deref().unwrap_or(&[]), "denyOut", false)
+            .map_err(invalid)?;
+        Ok((allow, deny))
+    }
 }
 
 /// A checked create request.
@@ -696,6 +775,8 @@ pub struct Spec {
     pub allow_internet: bool,
     pub metadata: BTreeMap<String, String>,
     pub env_vars: BTreeMap<String, String>,
+    pub allow_out: Vec<String>,
+    pub deny_out: Vec<String>,
 }
 
 impl Spec {
@@ -703,6 +784,16 @@ impl Spec {
     pub fn from_body(body: NewSandbox) -> Result<Spec, Refused> {
         let template = body.template_id.unwrap_or_default().trim().to_string();
         check_text(&template, "templateID", 128)?;
+        if body
+            .volume_mounts
+            .as_ref()
+            .is_some_and(|mounts| !mounts.is_empty())
+        {
+            return Err(invalid(
+                "volumeMounts are not served: the plaza's volumes are read-only and given by role",
+            ));
+        }
+        let (allow_out, deny_out) = body.network.unwrap_or_default().lists()?;
         Ok(Spec {
             template,
             timeout_s: match body.timeout {
@@ -714,6 +805,8 @@ impl Spec {
             allow_internet: body.allow_internet_access.unwrap_or(true),
             metadata: pairs(body.metadata.unwrap_or_default(), "metadata", 128, 1024)?,
             env_vars: pairs(body.env_vars.unwrap_or_default(), "envVars", 128, 4096)?,
+            allow_out,
+            deny_out,
         })
     }
 }
@@ -1082,6 +1175,8 @@ fn admit(app: &App, spec: &Spec, run: String, cid: u64, actor: &str) -> Result<S
         snapshots: Vec::new(),
         cold: false,
         retired: false,
+        allow_out: spec.allow_out.clone(),
+        deny_out: spec.deny_out.clone(),
     };
     // The record comes first: vsockd finds the CID and the token by the sandbox's id on each gateway call.
     if let Err(refused) = sandboxes(app).insert(sandbox.clone()) {
@@ -1484,6 +1579,135 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
     Ok(Response::json(201, &snapshot_view(&snap)))
 }
 
+/// A running sandbox's daemon answers `path` (a GET) with JSON; `None` for a paused one.
+fn daemon_json(sandbox: &Sandbox, path: &str) -> Result<Option<Value>, Refused> {
+    if sandbox.phase != Phase::Running {
+        return Ok(None);
+    }
+    let reply = gateway(
+        &sandbox.id,
+        sandbox.access_token.as_deref(),
+        "GET",
+        path,
+        None,
+        GATEWAY_CALL,
+    )
+    .map_err(|why| Refused::new(502, "sandbox_unreachable", why))?;
+    if !(200..300).contains(&reply.status) {
+        return Err(Refused::new(
+            502,
+            "sandbox_unreachable",
+            format!("the daemon answered {} to {path}", reply.status),
+        ));
+    }
+    serde_json::from_slice(&reply.body)
+        .map(Some)
+        .map_err(|err| Refused::new(502, "sandbox_unreachable", format!("{path}: {err}")))
+}
+
+/// `GET /e2b/sandboxes/{id}/metrics`: the daemon's sample now, one entry (none while paused).
+fn metrics(app: &App, id: &str) -> Result<Response, Refused> {
+    let sandbox = find(app, id)?;
+    let list: Vec<Value> = daemon_json(&sandbox, "/metrics")?
+        .map(|envd| crate::e2b_obs::metric(&envd, rfc3339))
+        .into_iter()
+        .collect();
+    Ok(Response::json(200, &list))
+}
+
+/// `GET /e2b/sandboxes/metrics?sandbox_ids=a,b`: each running sandbox's sample, by id.
+fn metrics_many(app: &App, req: &Request) -> Result<Response, Refused> {
+    let ids = req
+        .query_param("sandbox_ids")
+        .map(|raw| crate::plaza::percent_decode(raw))
+        .ok_or_else(|| invalid("sandbox_ids is required"))?;
+    let ids: Vec<&str> = ids
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.len() > 100 {
+        return Err(invalid("at most 100 sandbox_ids"));
+    }
+    let mut out = serde_json::Map::new();
+    for id in ids {
+        let Ok(sandbox) = find(app, id) else { continue };
+        if let Ok(Some(envd)) = daemon_json(&sandbox, "/metrics") {
+            out.insert(id.to_string(), crate::e2b_obs::metric(&envd, rfc3339));
+        }
+    }
+    Ok(Response::json(200, &json!({ "sandboxes": out })))
+}
+
+/// `GET /e2b/v2/sandboxes/{id}/logs` (and the v1 form): the daemon's log, filtered and paged.
+fn logs(app: &App, req: &Request, id: &str, v2: bool) -> Result<Response, Refused> {
+    let sandbox = find(app, id)?;
+    let number = |name: &str| -> Result<Option<u64>, Refused> {
+        req.query_param(name)
+            .map(|raw| {
+                raw.parse::<u64>()
+                    .map_err(|_| invalid(format!("{name} is not a number")))
+            })
+            .transpose()
+    };
+    let level = req.query_param("level").map(str::to_string);
+    if let Some(level) = &level
+        && !["debug", "info", "warn", "error"].contains(&level.as_str())
+    {
+        return Err(invalid(format!("unknown level {level:?}")));
+    }
+    let query = crate::e2b_obs::LogQuery {
+        // v1 names its start `start`; v2 its `cursor`.
+        cursor: if v2 {
+            number("cursor")?
+        } else {
+            number("start")?
+        },
+        limit: number("limit")?.map_or(1000, |n| n.min(1000) as usize),
+        backward: req.query_param("direction") == Some("backward"),
+        level,
+        search: req
+            .query_param("search")
+            .map(|raw| crate::plaza::percent_decode(raw)),
+    };
+    let daemon = daemon_json(&sandbox, "/logs")?.unwrap_or_else(|| json!([]));
+    let entries = crate::e2b_obs::entries(&daemon, &query, rfc3339);
+    if v2 {
+        return Ok(Response::json(200, &json!({ "logs": entries })));
+    }
+    let lines: Vec<Value> = entries
+        .iter()
+        .map(|entry| json!({"timestamp": entry["timestamp"], "line": entry["message"]}))
+        .collect();
+    Ok(Response::json(
+        200,
+        &json!({ "logs": lines, "logEntries": entries }),
+    ))
+}
+
+/// `PUT /e2b/sandboxes/{id}/network`: replaces the sandbox's network rules (an omitted list is
+/// cleared, an omitted `allow_internet_access` is on). Takes effect on the next connection.
+fn network(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
+    let body: NetworkBody = json_body(req)?;
+    let (allow_out, deny_out) = body.lists()?;
+    let allow_internet = body.allow_internet_access.unwrap_or(true);
+    find(app, id)?;
+    let updated = sandboxes(app).update(id, |s| {
+        s.allow_out = allow_out;
+        s.deny_out = deny_out;
+        s.allow_internet = allow_internet;
+    })?;
+    audit(
+        app,
+        &updated,
+        "sandbox_network",
+        "network",
+        key,
+        json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet}),
+    );
+    Ok(no_content())
+}
+
 /// The body of `POST /e2b/sandboxes/{id}/fork` (E2B's SandboxForkRequest).
 #[derive(Deserialize, Default)]
 struct ForkBody {
@@ -1521,6 +1745,8 @@ fn fork(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refus
         // The forks' daemons are copies of the source's: they hold its environment already, and a
         // fresh `/init` only adds the clock and entropy.
         env_vars: BTreeMap::new(),
+        allow_out: source.allow_out.clone(),
+        deny_out: source.deny_out.clone(),
     };
     let forks = fork_runs(app, &source, None, count)?;
     let results: Vec<Value> = forks
@@ -1766,10 +1992,19 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         // Metrics are not sampled for sandboxes: the list is empty, as for a sandbox that just started.
         .get("/e2b/sandboxes/{id}/metrics", |app, req, p| {
-            guard(app, req, |_| {
-                find(app, p.get("id"))?;
-                Ok(Response::json(200, &json!([])))
-            })
+            guard(app, req, |_| metrics(app, p.get("id")))
+        })
+        .get("/e2b/sandboxes/metrics", |app, req, _| {
+            guard(app, req, |_| metrics_many(app, req))
+        })
+        .get("/e2b/v2/sandboxes/{id}/logs", |app, req, p| {
+            guard(app, req, |_| logs(app, req, p.get("id"), true))
+        })
+        .get("/e2b/sandboxes/{id}/logs", |app, req, p| {
+            guard(app, req, |_| logs(app, req, p.get("id"), false))
+        })
+        .route("PUT", "/e2b/sandboxes/{id}/network", |app, req, p| {
+            guard(app, req, |key| network(app, req, p.get("id"), key))
         })
         .post("/e2b/sandboxes/{id}/snapshots", |app, req, p| {
             guard(app, req, |key| snapshot(app, req, p.get("id"), key))
@@ -1821,7 +2056,52 @@ mod tests {
             cold: false,
             snapshots: Vec::new(),
             retired: false,
+            allow_out: Vec::new(),
+            deny_out: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_sandbox_s_network_rules_open_and_close_hosts_but_never_the_laws() {
+        let mut offline = sample(false);
+        offline.allow_out = vec!["pypi.org".into()];
+        assert!(
+            sandbox_verdict(&offline, false, None, "pypi.org").allow,
+            "allowOut opens a host"
+        );
+        assert!(!sandbox_verdict(&offline, false, None, "example.com").allow);
+        assert!(
+            !sandbox_verdict(&offline, true, None, "pypi.org").allow,
+            "the blocklist still applies"
+        );
+        let law = Some("refused by law S-1".to_string());
+        assert!(
+            !sandbox_verdict(&offline, false, law, "pypi.org").allow,
+            "the laws still apply"
+        );
+        let mut online = sample(true);
+        online.deny_out = vec!["0.0.0.0/0".into()];
+        online.allow_out = vec!["*.example.com".into()];
+        assert!(!sandbox_verdict(&online, false, None, "github.com").allow);
+        assert!(sandbox_verdict(&online, false, None, "api.example.com").allow);
+    }
+
+    #[test]
+    fn network_bodies_refuse_what_is_not_served() {
+        let body = |v: Value| serde_json::from_value::<NetworkBody>(v).unwrap().lists();
+        assert!(body(json!({"allowOut": ["*.example.com"], "denyOut": ["10.0.0.0/8"]})).is_ok());
+        assert!(body(json!({"denyOut": ["example.com"]})).is_err());
+        assert!(body(json!({"rules": {"api.example.com": [{}]}})).is_err());
+        assert!(
+            body(json!({"rules": {}})).is_ok(),
+            "an empty rule set is no rule"
+        );
+        assert!(body(json!({"egressProxy": {"url": "http://x"}})).is_err());
+        let mounts: NewSandbox = serde_json::from_value(
+            json!({"templateID": "base", "volumeMounts": [{"name": "v", "path": "/v"}]}),
+        )
+        .unwrap();
+        assert!(Spec::from_body(mounts).is_err());
     }
 
     #[test]

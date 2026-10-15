@@ -35,6 +35,8 @@ use crate::vsock::VsockListener;
 
 pub mod files;
 pub mod filesystem;
+pub mod log;
+pub mod metrics;
 pub mod process;
 
 /// The vsock port the daemon listens on (E2B's envd port).
@@ -234,11 +236,18 @@ pub fn handle_connection<S: Read + Write>(stream: S, shared: &Shared) -> io::Res
     }
 }
 
-/// The REST routes: `GET /health`, `POST /init`, `GET|POST /files`. The relay in front may strip a
+/// The REST routes: `GET /health`, `GET /metrics`, `POST /init`, `GET|POST /files`, and the plaza's
+/// `POST /sync` and `GET /logs`. The relay in front may strip a
 /// prefix, so a route is matched on the path's last segment.
 fn dispatch(request: &Request, shared: &Shared) -> Reply {
     match (request.method.as_str(), last_segment(&request.path)) {
         ("GET", "health") => Reply::empty(204),
+        ("GET", "metrics") => {
+            let home = read_lock(shared).home.clone();
+            Reply::json(200, &metrics::sample(&home))
+        }
+        // A plaza extension: the daemon's log (each process's start and end) for the hub's logs.
+        ("GET", "logs") => Reply::json(200, &log::entries()),
         ("POST", "init") => init(request, shared),
         // A plaza extension: the hub flushes the guest's filesystems before it stops the VM without
         // a memory image (an E2B pause with `memory: false`), so what was written survives the boot.

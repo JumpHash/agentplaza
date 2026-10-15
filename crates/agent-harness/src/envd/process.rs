@@ -222,6 +222,11 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
     });
     proc.push(json!({"event": {"start": {"pid": pid}}}));
     lock(&TABLE).insert(pid, Arc::clone(&proc));
+    super::log::record(
+        "info",
+        format!("process {pid} started: {cmd}"),
+        &[("pid", pid.to_string()), ("cmd", cmd.to_string())],
+    );
 
     let mut readers = readers
         .into_iter()
@@ -237,7 +242,20 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
         for reader in readers.drain(..) {
             let _ = reader.join();
         }
-        waiter.finish(end_event(status));
+        let end = end_event(status);
+        let code = end
+            .pointer("/event/end/exitCode")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        super::log::record(
+            if code == 0 { "info" } else { "warn" },
+            format!("process {} ended with {code}", waiter.pid),
+            &[
+                ("pid", waiter.pid.to_string()),
+                ("exitCode", code.to_string()),
+            ],
+        );
+        waiter.finish(end);
     });
     Ok(proc)
 }
