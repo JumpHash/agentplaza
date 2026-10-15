@@ -28,7 +28,6 @@ use crate::pal::eventfd::EventFd;
 use super::VsockBackend;
 use super::device::{EVQ_INDEX, RXQ_INDEX, TXQ_INDEX, Vsock};
 use super::metrics::{IncMetric, METRICS};
-use crate::control::DeviceGate;
 
 /// Poll-set ids. The queue ids are `RXQ`/`TXQ`/`EVQ`; the backend fd is
 /// registered with [`BACKEND`], the device's activation event with [`ACTIVATE`]
@@ -51,6 +50,11 @@ const EXIT: u64 = 5;
 /// the wakeup is lost. It bounds exit latency, not throughput: while events
 /// arrive the wait returns immediately.
 const EXIT_POLL_TIMEOUT_MS: i32 = 200;
+
+/// The VM's device gate: this thread holds the read half while it processes, and a snapshot holds
+/// the write half from before the device state is saved until the memory is written
+/// (`crate::control`), so no packet lands in guest memory in between.
+pub type DeviceGate = std::sync::Arc<std::sync::RwLock<()>>;
 
 /// Spawns the event thread for a VM's vsock device.
 ///

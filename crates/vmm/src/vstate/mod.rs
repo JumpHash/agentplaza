@@ -15,10 +15,8 @@ pub mod memory;
 #[cfg(any(target_os = "linux", all(windows, target_arch = "x86_64")))]
 pub mod resources;
 /// VM snapshots on disk: the format, the state they carry, and the files.
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
+// Every platform: the format and the metadata are what a daemon reads; the state parts are gated
+// inside to the KVM backends that take snapshots.
 pub mod snapshot;
 /// Guest memory in snapshots: writing the touched (or changed) pages, and mapping a memory file
 /// back as a restored guest's memory.

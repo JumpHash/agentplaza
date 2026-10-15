@@ -1241,6 +1241,7 @@ pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
 
 /// [`copy_sparse`] between two files already open (`dst` writable and empty): the copy a jailed VMM
 /// makes from a descriptor it holds, where no path names the source any more.
+#[cfg(unix)]
 pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Result<u64> {
     let meta = src.metadata()?;
     let len = meta.len();
@@ -1255,6 +1256,17 @@ pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Re
     }
     copy_skipping_zero_blocks(&src, &dst, len, &mut buf)?;
     Ok(len)
+}
+
+/// [`copy_sparse`] between two open files on a platform without the sparse helpers: a plain copy.
+#[cfg(not(unix))]
+pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Result<u64> {
+    use std::io::{Seek, SeekFrom};
+    let mut from = src.try_clone()?;
+    from.seek(SeekFrom::Start(0))?;
+    let mut to = dst.try_clone()?;
+    to.set_len(0)?;
+    std::io::copy(&mut from, &mut to)
 }
 
 /// Copies the data extents of `src` into `dst`, found with `SEEK_DATA` and

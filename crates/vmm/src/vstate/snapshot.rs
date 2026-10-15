@@ -25,12 +25,23 @@
 //! (`vstate::snapshot_memory`). The workspace volume is not part of the snapshot: the caller copies
 //! (reflinks) it beside the snapshot while the VM is paused, and hands the copy back on restore.
 
+#[cfg(unix)]
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use std::io::Write;
+#[cfg(unix)]
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use crate::devices::virtio::mmio::MmioDeviceState;
 use crate::spawner::SnapshotKind;
 
@@ -47,18 +58,21 @@ pub const ARCH: &str = "x86_64";
 /// The architecture snapshots are taken and restored on.
 #[cfg(target_arch = "aarch64")]
 pub const ARCH: &str = "aarch64";
+/// The architecture snapshots are taken and restored on (none here: this build takes no snapshots).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const ARCH: &str = "unsupported";
 
 /// The architecture's vCPU state.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use crate::arch::aarch64::vcpu::VcpuState;
 /// The architecture's VM state.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub use crate::arch::aarch64::vm::VmState;
 /// The architecture's vCPU state (registers, MSRs, LAPIC, … on x86_64; the core registers on aarch64).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use crate::arch::x86_64::vcpu::VcpuState;
 /// The architecture's VM state (irqchip, clock, PIT on x86_64; the GIC on aarch64).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use crate::arch::x86_64::vm::VmState;
 
 /// One guest memory region and where it sits in [`MEMORY_FILE`].
@@ -92,6 +106,10 @@ pub struct SnapshotMeta {
     pub memory_written: u64,
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 /// The state of the VM's devices. A device the VM does not have is `None`; a restore refuses a
 /// snapshot whose devices do not match the spec it is restored with.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +136,10 @@ pub struct SerialRegisters {
     pub in_buffer: Vec<u8>,
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 /// Everything [`STATE_FILE`] holds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VmSnapshot {
@@ -157,6 +179,7 @@ pub enum SnapshotError {
 }
 
 impl SnapshotError {
+    #[cfg(unix)]
     fn io(path: &Path, source: io::Error) -> Self {
         Self::Io {
             path: path.display().to_string(),
@@ -190,6 +213,10 @@ pub fn meta_now(
     }
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 /// Writes [`STATE_FILE`] into `dir` (created if missing, mode 0700): to a temporary name first, then
 /// renamed, so a crash never leaves a half-written state beside a complete memory file. The file is
 /// mode 0600: guest state is the agent's data.
@@ -208,6 +235,10 @@ pub fn write_state(dir: &Path, snapshot: &VmSnapshot) -> Result<(), SnapshotErro
     fs::rename(&tmp, &path).map_err(|err| SnapshotError::io(&path, err))
 }
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 /// Reads [`STATE_FILE`] from `dir` and refuses a snapshot this VMM cannot restore.
 pub fn read_state(dir: &Path) -> Result<VmSnapshot, SnapshotError> {
     let path = dir.join(STATE_FILE);
@@ -245,6 +276,7 @@ pub fn check_compatible(meta: &SnapshotMeta) -> Result<(), SnapshotError> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Creates `dir` (and its parents) with mode 0700 for the leaf.
 pub fn create_private_dir(dir: &Path) -> Result<(), SnapshotError> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -259,6 +291,7 @@ pub fn create_private_dir(dir: &Path) -> Result<(), SnapshotError> {
         .map_err(|err| SnapshotError::io(dir, err))
 }
 
+#[cfg(unix)]
 /// Creates (truncating) `path` with mode 0600.
 pub fn private_file(path: &Path) -> Result<File, SnapshotError> {
     use std::os::unix::fs::OpenOptionsExt;

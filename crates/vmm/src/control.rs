@@ -32,7 +32,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
 
 use crate::devices::legacy::SerialDevice;
@@ -49,9 +49,8 @@ use crate::vstate::vm::{KvmVm, KvmVmError};
 /// What every call on a VM that has stopped fails with.
 const VM_STOPPED: &str = "the VM has stopped";
 
-/// The VM's device gate: the vsock event thread holds the read half while it processes, a snapshot
-/// holds the write half from before the device state is saved until the memory is written.
-pub type DeviceGate = Arc<RwLock<()>>;
+/// The VM's device gate (see the vsock event thread, where it is defined for every backend).
+pub use crate::devices::virtio::vsock::event_thread::DeviceGate;
 
 /// The VM's devices, as the control reaches them (weakly; see the module docs).
 pub struct VmDevices {
@@ -333,7 +332,7 @@ mod tests {
                 workspace: None,
                 balloon: None,
             },
-            Arc::new(RwLock::new(())),
+            DeviceGate::default(),
             0,
             1,
             None,
@@ -406,7 +405,7 @@ mod tests {
                 workspace: None,
                 balloon: None,
             },
-            Arc::new(RwLock::new(())),
+            DeviceGate::default(),
             0,
             1,
             restored_from,

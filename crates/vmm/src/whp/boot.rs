@@ -381,6 +381,8 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
                 Arc::clone(&device),
                 vm.exit.evt.try_clone().map_err(BootError::Device)?,
                 Arc::clone(&vm.exit.signalled),
+                // No snapshots on this backend yet: the gate is never taken for writing.
+                event_thread::DeviceGate::default(),
                 runtime.id,
             )
             .map_err(BootError::Thread)?;
