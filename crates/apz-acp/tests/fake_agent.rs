@@ -32,7 +32,10 @@ fn start(name: &str, script: &Value, config: ClientConfig) -> (FakeClient, Runni
     let log_path = dir.join(format!("{name}.log.json"));
     fs::write(&script_path, serde_json::to_vec_pretty(script).unwrap()).unwrap();
     let _ = fs::remove_file(&log_path);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_apz-acp-fake-agent"))
+    // Under cargo's runner for this target (qemu in CI's arm64 job), the agent runs under it too.
+    let argv = apz_acp::testing::helper_argv(Path::new(env!("CARGO_BIN_EXE_apz-acp-fake-agent")));
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
         .arg(&script_path)
         .env("APZ_ACP_FAKE_LOG", &log_path)
         .stdin(Stdio::piped())
