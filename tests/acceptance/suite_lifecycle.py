@@ -99,10 +99,15 @@ def _await_connected(lab: Lab, cid: int, after: int, deadline_s: float) -> bool:
     return False
 
 
-def _vm_index(lab: Lab, run_id: str, cid: int) -> int | None:
-    """The index of the VM whose guest CID is ``cid`` in run ``run_id``."""
-    for vm in lab.get(run_id).get("vms", []):
+def _vm_index(lab: Lab, run_id: str, cid: int, role: str = "builder") -> int | None:
+    """The index of the VM whose guest CID is ``cid`` in run ``run_id``; a fleet VM's view may carry only its role,
+    so a VM with no CID is matched by ``role``."""
+    vms = lab.api_get(f"/v1/runs/{run_id}").json.get("vms", [])
+    for vm in vms:
         if vm.get("guest_cid") == cid:
+            return vm.get("id")
+    for vm in vms:
+        if vm.get("guest_cid") is None and vm.get("role") == role:
             return vm.get("id")
     return None
 
@@ -131,7 +136,7 @@ def _case_wake(suite: Suite, ctx) -> None:
         ):
             return
         index = _vm_index(lab, run_id, cid)
-        sleeps, wakes, failures = [], [], []
+        sleeps, wakes, wake_calls, failures = [], [], [], []
         for cycle in range(WAKE_CYCLES):
             before = _connected_count(lab, cid)
             started = time.monotonic()
@@ -142,6 +147,7 @@ def _case_wake(suite: Suite, ctx) -> None:
                 break
             started = time.monotonic()
             woke = lab.api_post(f"/v1/runs/{run_id}/vms/{index}/wake", {})
+            wake_calls.append((time.monotonic() - started) * 1000.0)
             if woke.status >= 300:
                 failures.append(f"cycle {cycle}: wake answered {woke.status}: {woke.body[:200]}")
                 break
@@ -153,6 +159,8 @@ def _case_wake(suite: Suite, ctx) -> None:
         node = [float(row["total_ms"]) for row in _timing_lines(lab, "wake") if "total_ms" in row]
         suite.data["wake"] = {
             "wake_to_hello_ms": summary(wakes),
+            "wake_call_ms": summary(wake_calls),
+            "samples": {"wake_to_hello_ms": wakes, "wake_call_ms": wake_calls, "sleep_ms": sleeps},
             "sleep_ms": summary(sleeps),
             "node_wake_ms": summary(node),
             "cold_fallbacks": sum(1 for row in _timing_lines(lab, "wake") if row.get("fallback") == "true"),
@@ -206,7 +214,7 @@ def _case_checkpoint_fork(suite: Suite, ctx) -> None:
             )
             elapsed = (time.monotonic() - started) * 1000.0
             for fork in forks:
-                lab.delete(fork["run"])
+                lab.api_delete(f"/v1/runs/{fork['run']}")
             if not connected:
                 failures.append(f"fork {i}: a copy had no hello within {OP_DEADLINE_S}s")
                 break
