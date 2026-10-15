@@ -125,7 +125,8 @@ impl WriteHooks for OwnerEdit<'_> {
 /// `ide_changes {base?, offset?}`: the unified diff from a base checkpoint to the workspace now.
 ///
 /// `base` is `work_start` (the default: the latest checkpoint a work item took at its start, or the oldest
-/// checkpoint when there is none) or `checkpoint:<n>`. Output: `{"base", "checkpoint", "offset", "total", "diff",
+/// checkpoint when there is none) or `checkpoint:<n>`. With no checkpoint at all, `work_start` is an empty change
+/// set: `checkpoint` is null and `diff` is empty. Output: `{"base", "checkpoint", "offset", "total", "diff",
 /// "done"}`, where `checkpoint` is the base's id and `diff` a chunk of the git-style diff, which
 /// `apz_ide::parse_unified` reads. Secret files are left out.
 pub fn changes(workspace: &Workspace, args: &Value) -> Result<String, ToolError> {
@@ -140,8 +141,15 @@ pub fn changes(workspace: &Workspace, args: &Value) -> Result<String, ToolError>
     };
     let summaries = checkpoints::summaries(workspace);
     let chosen = resolve_base(&summaries, &base)?;
-    let diff = checkpoints::unified_since(workspace, chosen.n, |path| !is_secret(path))
-        .map_err(internal)?;
+    // No checkpoint yet means nothing to diff from: the change set is empty.
+    let (checkpoint, diff) = match chosen {
+        Some(chosen) => (
+            json!(chosen.id),
+            checkpoints::unified_since(workspace, chosen.n, |path| !is_secret(path))
+                .map_err(internal)?,
+        ),
+        None => (Value::Null, String::new()),
+    };
     if diff.len() > MAX_DIFF {
         return Err(files::limit(format!(
             "the diff is {} bytes, over the {MAX_DIFF}-byte cap; use a later base",
@@ -169,7 +177,7 @@ pub fn changes(workspace: &Workspace, args: &Value) -> Result<String, ToolError>
     let reply = |end: usize| {
         json!({
             "base": base,
-            "checkpoint": chosen.id,
+            "checkpoint": checkpoint,
             "offset": offset,
             "total": diff.len(),
             "diff": &diff[offset..end],
@@ -287,18 +295,27 @@ fn internal(reason: impl Into<String>) -> ToolError {
     }
 }
 
-/// The base of a `base` argument: the checkpoint it names.
-fn resolve_base<'a>(summaries: &'a [Summary], base: &str) -> Result<&'a Summary, ToolError> {
+/// The base of a `base` argument: the checkpoint it names. None is the work start of a workspace with no
+/// checkpoint yet, which has no base; a named checkpoint that does not exist is not found.
+fn resolve_base<'a>(
+    summaries: &'a [Summary],
+    base: &str,
+) -> Result<Option<&'a Summary>, ToolError> {
     if summaries.is_empty() {
+        if base == "work_start" {
+            return Ok(None);
+        }
         return Err(files::not_found("no checkpoints yet"));
     }
     if base == "work_start" {
         // Checkpoints are oldest first: the latest work start, else the oldest checkpoint.
-        return Ok(summaries
-            .iter()
-            .rev()
-            .find(|s| s.label.starts_with("work-"))
-            .unwrap_or(&summaries[0]));
+        return Ok(Some(
+            summaries
+                .iter()
+                .rev()
+                .find(|s| s.label.starts_with("work-"))
+                .unwrap_or(&summaries[0]),
+        ));
     }
     let n = base
         .strip_prefix("checkpoint:")
@@ -308,10 +325,11 @@ fn resolve_base<'a>(summaries: &'a [Summary], base: &str) -> Result<&'a Summary,
                 "\"base\" must be \"work_start\" or \"checkpoint:<n>\", not {base:?}"
             ))
         })?;
-    summaries
+    let chosen = summaries
         .iter()
         .find(|s| s.n == n)
-        .ok_or_else(|| files::not_found(format!("no checkpoint {n}")))
+        .ok_or_else(|| files::not_found(format!("no checkpoint {n}")))?;
+    Ok(Some(chosen))
 }
 
 #[cfg(test)]
@@ -535,6 +553,29 @@ mod tests {
             restore(&ws, &json!({ "n": 999_999 })),
             Err(ToolError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn a_workspace_with_no_checkpoint_answers_an_empty_change_set() {
+        let (dir, ws) = scratch("no-checkpoints");
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        assert!(checkpoints::summaries(&ws).is_empty());
+        let reply = ok(changes(&ws, &json!({ "base": "work_start" })));
+        assert_eq!(
+            reply,
+            json!({
+                "base": "work_start",
+                "checkpoint": null,
+                "offset": 0,
+                "total": 0,
+                "diff": "",
+                "done": true,
+            })
+        );
+        assert!(
+            changes(&ws, &json!({ "base": "checkpoint:1" })).is_err(),
+            "a named checkpoint that does not exist is still not found"
+        );
     }
 
     #[test]
