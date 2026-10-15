@@ -1148,7 +1148,6 @@ mod rfc3339_tests {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
     use serde_json::json;
 
     use super::test_support::{
