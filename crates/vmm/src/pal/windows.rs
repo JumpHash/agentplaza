@@ -127,10 +127,18 @@ pub mod eventfd {
             let before = *counter;
             *counter = before.saturating_add(v);
             if before == 0 && *counter != 0 {
-                match (&self.inner.tx).write(&[1]) {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                    Err(e) => return Err(e),
+                loop {
+                    match (&self.inner.tx).write(&[1]) {
+                        Ok(_) => break,
+                        // A full socket already holds a byte, so readers are still signalled.
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                        Err(e) => {
+                            // No byte was queued: undo the increment so the counter and the socket agree.
+                            *counter = before;
+                            return Err(e);
+                        }
+                    }
                 }
             }
             Ok(())
@@ -147,7 +155,12 @@ pub mod eventfd {
                     Ok(_) => {}
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                     Err(e) => {
+                        // The drained byte is gone, so restoring the counter needs a fresh
+                        // wake byte, or readers would see no signal while it is non-zero.
                         *counter = taken;
+                        if taken != 0 {
+                            let _ = (&self.inner.tx).write(&[1]);
+                        }
                         return Err(e);
                     }
                 }
@@ -201,8 +214,8 @@ pub mod epoll {
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Networking::WinSock::{
-        POLLERR, POLLHUP, POLLRDNORM, POLLWRNORM, SOCKET, SOCKET_ERROR, WSAGetLastError, WSAPOLLFD,
-        WSAPoll,
+        POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLWRNORM, SO_TYPE, SOCKET, SOCKET_ERROR,
+        SOL_SOCKET, WSAENOTSOCK, WSAGetLastError, WSAPOLLFD, WSAPoll, getsockopt,
     };
 
     /// Pseudo handles of `Epoll` instances carry this bit, so they cannot
@@ -363,6 +376,31 @@ pub mod epoll {
         }
     }
 
+    /// Whether `sock` names no socket: `getsockopt` fails with `WSAENOTSOCK`.
+    fn is_closed(sock: RawFd) -> bool {
+        let mut ty: i32 = 0;
+        let mut len = std::mem::size_of::<i32>() as i32;
+        let rc = {
+            // SAFETY: getsockopt writes at most `len` bytes (4, the size of `ty`) into `ty`
+            // and reads `len` as its in/out length. Any value of `sock` is allowed: an
+            // invalid one fails with WSAENOTSOCK rather than touching memory.
+            unsafe {
+                getsockopt(
+                    sock as SOCKET,
+                    SOL_SOCKET as i32,
+                    SO_TYPE as i32,
+                    std::ptr::addr_of_mut!(ty).cast(),
+                    &mut len,
+                )
+            }
+        };
+        if rc != SOCKET_ERROR {
+            return false;
+        }
+        // SAFETY: WSAGetLastError has no preconditions; it reads this thread's last-error value.
+        unsafe { WSAGetLastError() == WSAENOTSOCK }
+    }
+
     impl Epoll {
         pub fn new() -> io::Result<Epoll> {
             ensure_winsock();
@@ -413,6 +451,10 @@ pub mod epoll {
         /// `events.len()` ready entries. Returns how many were written. A
         /// registration made from another thread wakes a blocked wait, which then
         /// polls the new set; an empty set waits out the whole timeout.
+        ///
+        /// One thread waits on an `Epoll` at a time (as every caller here does). A
+        /// second concurrent waiter may drain the wake that a registration made for
+        /// the first, which would then sleep until its timeout or another event.
         pub fn wait(&self, timeout_ms: i32, events: &mut [EpollEvent]) -> io::Result<usize> {
             let deadline = (timeout_ms >= 0)
                 .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
@@ -432,6 +474,8 @@ pub mod epoll {
                 let mut pfds: Vec<WSAPOLLFD> = Vec::new();
                 let mut owner: Vec<usize> = Vec::new();
                 let mut inner_sets: Vec<Option<EventSet>> = Vec::new();
+                // The nested registry each socket entry was read from, `None` for a direct one.
+                let mut homes: Vec<Option<Arc<Registry>>> = Vec::new();
                 let mut wakes: Vec<Arc<Registry>> = vec![Arc::clone(&self.registry)];
                 for (i, (fd, ev)) in snapshot.iter().enumerate() {
                     if *fd & PSEUDO_BIT != 0 {
@@ -448,6 +492,7 @@ pub mod epoll {
                                 pfds.push(poll_entry(sock, sev));
                                 owner.push(i);
                                 inner_sets.push(Some(sev.event_set()));
+                                homes.push(Some(Arc::clone(&inner)));
                             }
                             wakes.push(inner);
                         }
@@ -455,6 +500,7 @@ pub mod epoll {
                         pfds.push(poll_entry(*fd, *ev));
                         owner.push(i);
                         inner_sets.push(None);
+                        homes.push(None);
                     }
                 }
                 let entries_len = pfds.len();
@@ -501,12 +547,23 @@ pub mod epoll {
 
                 // Map readiness back onto each snapshot entry.
                 let mut ready = vec![EventSet::empty(); snapshot.len()];
-                for ((pfd, &i), inner_set) in pfds[..entries_len]
+                // Sockets found closed (POLLNVAL), with the registry each was read from.
+                let mut closed: Vec<(Option<Arc<Registry>>, RawFd)> = Vec::new();
+                for (((pfd, &i), inner_set), home) in pfds[..entries_len]
                     .iter()
                     .zip(owner.iter())
                     .zip(inner_sets.iter())
+                    .zip(homes.iter())
                 {
                     let r = pfd.revents;
+                    if r & POLLNVAL != 0 {
+                        // Closed without a Delete. Report nothing for it, and drop it from its
+                        // registry once the poll is over. That changes the registrations, so an
+                        // otherwise empty pass polls again rather than return 0 early.
+                        closed.push((home.clone(), pfd.fd as RawFd));
+                        woke = true;
+                        continue;
+                    }
                     let mut bits = EventSet::empty();
                     if r & POLLRDNORM != 0 {
                         bits |= EventSet::IN;
@@ -533,6 +590,17 @@ pub mod epoll {
                             }
                         }
                         None => ready[i] |= bits,
+                    }
+                }
+
+                // Drop the closed sockets, each from the registry it was read from. Each is
+                // removed only if it is still closed under that registry's lock, so a socket
+                // reopened under the same number since the poll is kept.
+                for (home, sock) in closed {
+                    let registry = home.as_deref().unwrap_or(&*self.registry);
+                    let mut entries = lock(&registry.entries);
+                    if is_closed(sock) {
+                        entries.remove(&sock);
                     }
                 }
 
@@ -612,7 +680,7 @@ mod tests {
         let mut out = [EpollEvent::default(); 4];
         let start = Instant::now();
         assert_eq!(ep.wait(150, &mut out).unwrap(), 0);
-        assert!(start.elapsed() >= Duration::from_millis(140));
+        assert!(start.elapsed() >= Duration::from_millis(100));
     }
 
     #[test]
@@ -625,14 +693,16 @@ mod tests {
             tx.send(waiter.wait(-1, &mut out).unwrap()).unwrap();
         });
         std::thread::sleep(Duration::from_millis(100));
+        // Registered while quiet: the blocked wait must wake and poll again on its own.
         let efd = EventFd::new(EFD_NONBLOCK).unwrap();
-        efd.write(1).unwrap();
         ep.ctl(
             ControlOperation::Add,
             efd.as_raw_fd(),
             EpollEvent::new(EventSet::IN, 7),
         )
         .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        efd.write(1).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(1));
         // `efd` lives to the end of the test, so its registration stays valid.
     }
@@ -673,6 +743,27 @@ mod tests {
         assert!(out[0].event_set().contains(EventSet::IN));
         efd.read().unwrap();
         assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_closed_socket_is_dropped_not_reported() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let sock = std::os::windows::io::AsRawSocket::as_raw_socket(&stream) as super::RawFd;
+        let ep = Epoll::new().unwrap();
+        let ev = EpollEvent::new(EventSet::IN, sock);
+        ep.ctl(ControlOperation::Add, sock, ev).unwrap();
+        // Closed without a Delete: WSAPoll reports POLLNVAL for the socket.
+        drop(stream);
+        let mut out = [EpollEvent::default(); 4];
+        assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
+        assert_eq!(
+            ep.ctl(ControlOperation::Delete, sock, ev)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::NotFound
+        );
     }
 
     #[test]

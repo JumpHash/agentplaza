@@ -41,4 +41,7 @@ pub use windows::{AsRawFd, RawFd, epoll, eventfd, iovec};
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 mod posix;
 #[cfg(target_os = "macos")]
-pub use posix::{AsRawFd, RawFd, connect_unix_nonblocking, epoll, eventfd, iovec};
+pub use posix::{
+    AsRawFd, OPEN_FILES_CAP, RawFd, connect_unix_nonblocking, epoll, eventfd, iovec,
+    raise_open_files_limit,
+};

@@ -63,9 +63,10 @@
 //     WinSock FFI, the guest memory allocation, the exit-context reads, and a
 //     snapshot's register unions and guest-memory slices.
 //   * `pal::posix` (macOS; compiled into Linux test builds for its tests) —
-//     `pipe(2)`, `fcntl(2)`, `poll(2)` and the non-blocking
-//     `socket(2)`/`connect(2)` pair, the macOS counterparts of `vmm-sys-util`'s
-//     eventfd and epoll and of `sys`.
+//     `pipe(2)` and the `read(2)`/`write(2)` of its wake bytes, `fcntl(2)`,
+//     `poll(2)`, the non-blocking `socket(2)`/`connect(2)` pair, and
+//     `getrlimit(2)`/`setrlimit(2)` for the open-files limit: the macOS
+//     counterparts of `vmm-sys-util`'s eventfd and epoll and of `sys`.
 //   * `hvf::{sys,vm,vcpu,snapshot}` (macOS only) — the Hypervisor.framework FFI
 //     declarations, the framework calls, the exit-structure reads, the call of
 //     `hv_vcpu_set_simd_fp_reg` (a NEON vector argument, by inline assembly),

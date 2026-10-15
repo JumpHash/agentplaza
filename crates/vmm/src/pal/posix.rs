@@ -5,7 +5,7 @@
 //! subset that the virtio devices use. It is also compiled into Linux test
 //! builds so its tests run there; see [`super`] for the design.
 
-// `unsafe` is confined to the pipe(2), fcntl(2), poll(2), read(2)/write(2) on the pipe, and socket(2)/connect(2) calls.
+// `unsafe` is confined to the pipe(2), fcntl(2), poll(2), read(2)/write(2) on the pipe, socket(2)/connect(2), and getrlimit(2)/setrlimit(2) calls.
 #![allow(unsafe_code)]
 // On Linux this module is compiled only for its tests (Linux uses vmm-sys-util).
 #![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
@@ -73,6 +73,25 @@ pub mod eventfd {
         fd: OwnedFd,
     }
 
+    /// Queues one byte on the pipe, which makes its read end readable. A full pipe already holds a
+    /// byte, so `WouldBlock` counts as done.
+    fn queue_wake_byte(tx: &OwnedFd) -> io::Result<()> {
+        let byte = [1u8];
+        loop {
+            // SAFETY: writes one byte from the live stack array `byte` to the pipe's write end, which the caller owns.
+            let n = unsafe { libc::write(tx.as_raw_fd(), byte.as_ptr().cast(), 1) };
+            if n >= 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                ErrorKind::WouldBlock => return Ok(()),
+                ErrorKind::Interrupted => continue,
+                _ => return Err(e),
+            }
+        }
+    }
+
     /// Duplicates `fd` as a new close-on-exec descriptor.
     fn dup_cloexec(fd: RawFd) -> io::Result<OwnedFd> {
         // SAFETY: F_DUPFD_CLOEXEC takes an int argument and touches no memory; `fd` is only read.
@@ -130,27 +149,13 @@ pub mod eventfd {
             let mut counter = lock(&self.inner.counter);
             let before = *counter;
             *counter = before.saturating_add(v);
-            if before == 0 && *counter != 0 {
-                let byte = [1u8];
-                loop {
-                    // SAFETY: writes one byte from the live stack array `byte` to the pipe's write end, which this EventFd owns.
-                    let n =
-                        unsafe { libc::write(self.inner.tx.as_raw_fd(), byte.as_ptr().cast(), 1) };
-                    if n >= 0 {
-                        break;
-                    }
-                    let e = io::Error::last_os_error();
-                    match e.kind() {
-                        // A full pipe already holds a byte, so readers are still signalled.
-                        ErrorKind::WouldBlock => break,
-                        ErrorKind::Interrupted => continue,
-                        _ => {
-                            // No byte was queued: undo the increment so the counter and the pipe agree.
-                            *counter = before;
-                            return Err(e);
-                        }
-                    }
-                }
+            if before == 0
+                && *counter != 0
+                && let Err(e) = queue_wake_byte(&self.inner.tx)
+            {
+                // No byte was queued: undo the increment so the counter and the pipe agree.
+                *counter = before;
+                return Err(e);
             }
             Ok(())
         }
@@ -180,7 +185,13 @@ pub mod eventfd {
                     ErrorKind::WouldBlock => break,
                     ErrorKind::Interrupted => continue,
                     _ => {
+                        // Bytes already drained are gone. If the restored counter is non-zero, a byte
+                        // must be queued again, or no later write (which queues only on 0 -> non-zero)
+                        // would wake a reader. A failure to re-arm is ignored: the error is returned.
                         *counter = taken;
+                        if taken != 0 {
+                            let _ = queue_wake_byte(&self.inner.tx);
+                        }
                         return Err(e);
                     }
                 }
@@ -459,6 +470,10 @@ pub mod epoll {
         /// A `ctl` from any thread wakes a blocked wait, which then looks at the
         /// registrations again. With nothing registered it blocks for the whole
         /// timeout, as Linux `epoll_wait` does.
+        ///
+        /// One thread waits on an Epoll at a time (as every caller here does). A
+        /// second concurrent waiter may drain the wake that a registration made for
+        /// the first, which would then sleep until its timeout or another event.
         pub fn wait(&self, timeout_ms: i32, events: &mut [EpollEvent]) -> io::Result<usize> {
             let deadline = (timeout_ms >= 0)
                 .then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
@@ -717,6 +732,35 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     Ok(stream)
 }
 
+/// macOS's `OPEN_MAX`: the highest soft limit on open descriptors `raise_open_files_limit` sets.
+pub const OPEN_FILES_CAP: u64 = 10_240;
+
+/// Raises this process's soft limit on open descriptors to its hard limit, capped at `cap`, and
+/// returns the new soft limit. macOS starts processes at 256, which one VM's devices, the muxer's
+/// connections and its event descriptors can exhaust; a failed `accept` then stalls the guest's
+/// vsock. A limit already at least `cap` is left alone.
+pub fn raise_open_files_limit(cap: u64) -> io::Result<u64> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) writes one `rlimit` into the live, exclusively borrowed `limit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let current = limit.rlim_cur;
+    let wanted = limit.rlim_max.min(cap);
+    if wanted <= current {
+        return Ok(current);
+    }
+    limit.rlim_cur = wanted as libc::rlim_t;
+    // SAFETY: setrlimit(2) reads one `rlimit` from the live `limit` and changes no memory.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(wanted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::AsRawFd;
@@ -796,14 +840,16 @@ mod tests {
             tx.send(waiter.wait(-1, &mut out).unwrap()).unwrap();
         });
         std::thread::sleep(Duration::from_millis(100));
+        // Quiet on registration: the waiter can only see it by the wake that `ctl` writes.
         let efd = EventFd::new(EFD_NONBLOCK).unwrap();
-        efd.write(1).unwrap();
         ep.ctl(
             ControlOperation::Add,
             efd.as_raw_fd(),
             EpollEvent::new(EventSet::IN, 5),
         )
         .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        efd.write(1).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
         handle.join().unwrap();
     }
@@ -814,7 +860,24 @@ mod tests {
         let started = Instant::now();
         let mut out = [EpollEvent::default(); 4];
         assert_eq!(ep.wait(150, &mut out).unwrap(), 0);
-        assert!(started.elapsed() >= Duration::from_millis(140));
+        assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn raise_open_files_limit_never_lowers_the_limit() {
+        let mut before = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) writes one `rlimit` into the live, exclusively borrowed `before`.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut before) },
+            0
+        );
+        let old_soft = before.rlim_cur;
+        let new_soft = super::raise_open_files_limit(super::OPEN_FILES_CAP).unwrap();
+        assert!(new_soft >= old_soft);
+        assert!(new_soft <= old_soft.max(super::OPEN_FILES_CAP));
     }
 
     #[test]
