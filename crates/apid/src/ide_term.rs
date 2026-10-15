@@ -62,11 +62,11 @@ const IDLE: Duration = Duration::from_secs(10 * 60);
 const COALESCE: Duration = Duration::from_millis(10);
 /// The most input one write carries, in raw bytes (the harness takes 64 KiB, base64 is 4/3 of that).
 pub const WRITE_CHUNK: usize = 32 * 1024;
-/// The output poll interval while output keeps coming or arrived within [`SLOW_AFTER`].
-const FAST_POLL: Duration = Duration::from_millis(60);
+/// The output poll interval while output keeps coming or arrived within [`SLOW_AFTER`] of output or input.
+const FAST_POLL: Duration = Duration::from_millis(25);
 /// The output poll interval after a quiet spell.
 const SLOW_POLL: Duration = Duration::from_millis(250);
-/// The quiet spell after which polling backs off to [`SLOW_POLL`].
+/// The quiet spell (no output and no input) after which polling backs off to [`SLOW_POLL`].
 const SLOW_AFTER: Duration = Duration::from_secs(2);
 /// The shortest a socket wait may be (a zero wait would never read the socket).
 const MIN_WAIT: Duration = Duration::from_millis(10);
@@ -563,6 +563,8 @@ struct Session<'a> {
     failures: u32,
     poll_at: Option<Instant>,
     last_data: Instant,
+    /// When input was last sent to the shell: typing keeps the output polls fast.
+    last_input: Instant,
     last_client: Instant,
     input: Coalescer,
 }
@@ -785,11 +787,12 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Sets the next output poll from whether this one had data.
+    /// Sets the next output poll from whether this one had data. The quiet spell runs from the later of
+    /// the last output and the last input.
     fn schedule(&mut self, had_data: bool) {
         let now = Instant::now();
-        self.poll_at =
-            Some(now + poll_delay(had_data, now.saturating_duration_since(self.last_data)));
+        let last = self.last_data.max(self.last_input);
+        self.poll_at = Some(now + poll_delay(had_data, now.saturating_duration_since(last)));
     }
 
     /// One scheduled output poll. Three in a row that the node cannot answer end the socket; so does a
@@ -824,17 +827,24 @@ impl Session<'_> {
     }
 
     /// Sends the pending input to the shell, a write at a time. A failure is reported, and the rest of
-    /// that input is dropped.
+    /// that input is dropped. A flush that wrote its input polls the output at once: the shell echoes it.
     fn flush_input(&mut self) -> Flow {
         let chunks = self.input.take();
         let Some(term) = self.term.clone() else {
             return Ok(());
         };
+        let mut written = false;
         for chunk in chunks {
             if let Err(failure) = write_all(self.host, &self.target, &term, &chunk) {
                 self.error(failure.into_message())?;
                 break;
             }
+            written = true;
+        }
+        if written {
+            let now = Instant::now();
+            self.last_input = now;
+            self.poll_at = Some(now);
         }
         Ok(())
     }
@@ -865,6 +875,7 @@ pub fn serve(host: &dyn TermHost, target: Target, socket: &mut dyn Wire) {
         failures: 0,
         poll_at: None,
         last_data: now,
+        last_input: now,
         last_client: now,
         input: Coalescer::default(),
     };
@@ -1179,14 +1190,65 @@ mod tests {
     #[test]
     fn output_is_polled_at_once_while_it_flows_and_backs_off_after_two_seconds_of_quiet() {
         assert_eq!(poll_delay(true, Duration::from_secs(9)), Duration::ZERO);
-        assert_eq!(poll_delay(false, Duration::ZERO), Duration::from_millis(60));
+        assert_eq!(poll_delay(false, Duration::ZERO), Duration::from_millis(25));
         assert_eq!(
             poll_delay(false, Duration::from_millis(1999)),
-            Duration::from_millis(60)
+            Duration::from_millis(25)
         );
         assert_eq!(
             poll_delay(false, Duration::from_secs(2)),
             Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn input_polls_the_output_at_once_and_keeps_the_polls_fast() {
+        let fake = Fake::with_output(b"", 0);
+        let mut socket = Client::new(Vec::new());
+        let mut session = Session {
+            host: &fake,
+            target: Target::Agent(1),
+            socket: &mut socket,
+            term: Some("term-1".into()),
+            offset: 0,
+            failures: 0,
+            poll_at: None,
+            last_data: Instant::now() - Duration::from_secs(9),
+            last_input: Instant::now() - Duration::from_secs(9),
+            last_client: Instant::now(),
+            input: Coalescer::default(),
+        };
+        // Quiet for a long while: the next poll is on the slow schedule.
+        session.schedule(false);
+        let slow = session
+            .poll_at
+            .unwrap()
+            .saturating_duration_since(Instant::now());
+        assert!(
+            slow > FAST_POLL,
+            "a quiet terminal polls slowly, got {slow:?}"
+        );
+
+        // Typing: the flush writes the keys, so the output is polled at once.
+        session.input.push(b"ls\n", Instant::now());
+        session.flush_input().unwrap();
+        assert!(session.poll_at.unwrap() <= Instant::now());
+        assert_eq!(fake.guest().written, b"ls\n");
+
+        // The echo comes back on that poll, and the poll after it finds nothing: the input keeps both fast.
+        session.poll().unwrap();
+        assert!(
+            session.poll_at.unwrap() <= Instant::now(),
+            "output that flows is polled at once"
+        );
+        session.poll().unwrap();
+        let fast = session
+            .poll_at
+            .unwrap()
+            .saturating_duration_since(Instant::now());
+        assert!(
+            fast <= FAST_POLL,
+            "typing keeps the polls fast, got {fast:?}"
         );
     }
 
