@@ -33,6 +33,10 @@ const SWEEP_EVERY: Duration = Duration::from_secs(30);
 /// How long a route that needs the agent waits for it to wake before it answers 503.
 const WAKE_WAIT: Duration = Duration::from_secs(15);
 
+/// How many threads put idle agents to sleep at once in one sweep. Each sleep is a noded snapshot
+/// that can take a while, so they run side by side, but not all at once.
+const SLEEP_PARALLEL: usize = 4;
+
 /// When one wake started and how far it got: the request, the worker picking it up, and noded's answer.
 struct WakeTimes {
     requested: std::time::Instant,
@@ -306,8 +310,11 @@ fn sweep_once(app: &App) {
         .filter(|item| item.state == crate::approvals::State::Pending)
         .map(|item| item.cid)
         .collect();
+    let mut on_roster = BTreeSet::new();
+    let mut to_sleep: Vec<u64> = Vec::new();
     for agent in app.agents.list() {
         let cid = agent.cid;
+        on_roster.insert(cid);
         let busy = app.work.current(cid).is_some() || !app.work.queued(cid).is_empty();
         match agent.status {
             Status::Asleep => {
@@ -325,7 +332,7 @@ fn sweep_once(app: &App) {
                     .get(&cid)
                     .copied()
                     .unwrap_or(agent.connected_at_ms);
-                let check = SleepCheck {
+                let mut check = SleepCheck {
                     status: agent.status,
                     busy,
                     approval_pending: approvals.contains(&cid),
@@ -334,20 +341,49 @@ fn sweep_once(app: &App) {
                     role: &agent.role,
                     never_roles: &settings.sleep_never_roles,
                     stop_all,
-                    placed: place(app, cid).is_ok(),
+                    // Only an agent that passes the cheap checks asks noded for its VM.
+                    placed: true,
                 };
                 if should_sleep(&check) {
-                    if let Err(res) = put_to_sleep(app, cid) {
-                        eprintln!(
-                            "apid: agent {cid} stays awake: its sleep was refused ({})",
-                            res.status
-                        );
+                    check.placed = place(app, cid).is_ok();
+                    if should_sleep(&check) {
+                        to_sleep.push(cid);
                     }
                 }
             }
             Status::Offline => {}
         }
     }
+    // The sleeps run side by side: each is a noded snapshot that can take a while.
+    if !to_sleep.is_empty() {
+        std::thread::scope(|scope| {
+            for chunk in to_sleep.chunks(to_sleep.len().div_ceil(SLEEP_PARALLEL).max(1)) {
+                scope.spawn(move || {
+                    for &cid in chunk {
+                        if let Err(res) = put_to_sleep(app, cid) {
+                            eprintln!(
+                                "apid: agent {cid} stays awake: its sleep was refused ({})",
+                                res.status
+                            );
+                        }
+                    }
+                });
+            }
+        });
+    }
+    let stale = prune_book(&mut book(), &on_roster, std::time::Instant::now());
+    crate::metrics::WAKES_IN_FLIGHT.add(-(stale as i64));
+}
+
+/// Drops the book's entries that no longer matter: a `touched` clock for a cid off the roster, and a
+/// wake timing whose request is older than twice [`WAKE_WAIT`] (its hello never came). Returns how
+/// many wake timings it dropped, so the caller can take them off the in-flight count.
+fn prune_book(book: &mut Book, on_roster: &BTreeSet<u64>, now: std::time::Instant) -> usize {
+    book.touched.retain(|cid, _| on_roster.contains(cid));
+    let before = book.wake_started.len();
+    book.wake_started
+        .retain(|_, times| now.saturating_duration_since(times.requested) <= 2 * WAKE_WAIT);
+    before - book.wake_started.len()
 }
 
 /// What the sweeper knows about one agent when it asks whether to put it to sleep.
@@ -532,6 +568,42 @@ mod tests {
             stop_all: false,
             placed: true,
         }
+    }
+
+    #[test]
+    fn prune_book_drops_what_is_off_the_roster_or_stale() {
+        let now = std::time::Instant::now();
+        let mut state = Book {
+            touched: BTreeMap::new(),
+            sleeping: BTreeSet::new(),
+            waking: BTreeSet::new(),
+            wake_started: BTreeMap::new(),
+        };
+        state.touched.insert(1, 10);
+        state.touched.insert(2, 20);
+        state.wake_started.insert(
+            1,
+            WakeTimes {
+                requested: now - Duration::from_secs(31),
+                dequeued: None,
+                node_done: None,
+            },
+        );
+        state.wake_started.insert(
+            2,
+            WakeTimes {
+                requested: now,
+                dequeued: None,
+                node_done: None,
+            },
+        );
+        let on_roster = BTreeSet::from([1]);
+        assert_eq!(prune_book(&mut state, &on_roster, now), 1);
+        assert_eq!(state.touched.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            state.wake_started.keys().copied().collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     #[test]
