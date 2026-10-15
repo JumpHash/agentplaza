@@ -265,6 +265,15 @@ pub struct Settings {
     pub max_turns: i64,
     #[serde(default)]
     pub max_tokens: i64,
+    /// Minutes an idle agent waits before it sleeps; 0 keeps every agent awake (apid's `idle_sleep_min`).
+    #[serde(default = "default_idle_sleep_min")]
+    pub idle_sleep_min: i64,
+    /// The roles that never sleep (apid's `sleep_never_roles`).
+    #[serde(default = "default_sleep_never_roles")]
+    pub sleep_never_roles: Vec<String>,
+    /// Whether the hub takes a machine checkpoint before risky tool calls (apid's `vm_auto_checkpoints`).
+    #[serde(default = "default_vm_auto_checkpoints")]
+    pub vm_auto_checkpoints: bool,
     #[serde(default)]
     pub fetch_block: Vec<String>,
     #[serde(default)]
@@ -276,6 +285,19 @@ pub struct Settings {
     pub dev_models: Option<bool>,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// apid's defaults for the sleep and checkpoint settings, read when a hub that predates them omits them.
+fn default_idle_sleep_min() -> i64 {
+    10
+}
+
+fn default_sleep_never_roles() -> Vec<String> {
+    vec!["orchestrator".to_string()]
+}
+
+fn default_vm_auto_checkpoints() -> bool {
+    true
 }
 
 /// Which tier a list belongs to.
@@ -304,6 +326,7 @@ pub enum Side {
 pub enum Num {
     MaxTurns,
     MaxTokens,
+    IdleSleep,
     Price(String, Side),
 }
 
@@ -506,6 +529,8 @@ pub enum Msg {
     PolicyDefault(Slot, Opt),
     PolicyEffort(String),
     PolicyAllowTraining(bool),
+    PolicyAutoCheckpoints(bool),
+    PolicyRoles(String),
     PolicyNumber(Num, String),
     PolicyFetchBlock(text_editor::Action),
     TogglePrices,
@@ -959,6 +984,29 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        Msg::PolicyAutoCheckpoints(on) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy.vm_auto_checkpoints = on;
+            }
+            Task::none()
+        }
+        Msg::PolicyRoles(text) => {
+            let Some(p) = state.policy.as_mut() else {
+                return Task::none();
+            };
+            let key = "sleep_never_roles".to_string();
+            match role_names(&text) {
+                Some(roles) => {
+                    p.copy.sleep_never_roles = roles;
+                    p.errors.remove(&key);
+                }
+                None => {
+                    p.errors.insert(key.clone());
+                }
+            }
+            p.raw.insert(key, text);
+            Task::none()
+        }
         Msg::PolicyEffort(v) => {
             if let Some(p) = state.policy.as_mut() {
                 p.copy.effort = if v == "default" { None } else { Some(v) };
@@ -972,6 +1020,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let key = match &num {
                 Num::MaxTurns => "max_turns".to_string(),
                 Num::MaxTokens => "max_tokens".to_string(),
+                Num::IdleSleep => "idle_sleep_min".to_string(),
                 Num::Price(k, side) => price_key(k, *side),
             };
             let ok = match &num {
@@ -988,6 +1037,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         true
                     }
                     _ => false,
+                },
+                Num::IdleSleep => match idle_minutes(&text) {
+                    Some(n) => {
+                        p.copy.idle_sleep_min = n;
+                        true
+                    }
+                    None => false,
                 },
                 Num::Price(k, side) => match text.trim().parse::<f64>() {
                     Ok(n) if n.is_finite() && n >= 0.0 => {
@@ -1363,6 +1419,28 @@ fn split_list(text: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+        .collect()
+}
+
+/// An idle-sleep time in whole minutes, 0 to a day (apid's `MAX_IDLE_SLEEP_MIN`); 0 keeps every agent awake.
+fn idle_minutes(text: &str) -> Option<i64> {
+    text.trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|n| (0..=1440).contains(n))
+}
+
+/// The roles that never sleep: comma-separated, each one name with no blanks or inner spaces. An empty field keeps
+/// none awake. None when an entry is not a role name, so the save waits for it.
+fn role_names(text: &str) -> Option<Vec<String>> {
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    text.split(',')
+        .map(|role| {
+            let role = role.trim();
+            (!role.is_empty() && !role.chars().any(char::is_whitespace)).then(|| role.to_string())
+        })
         .collect()
 }
 
@@ -2511,9 +2589,30 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
         .on_action(Msg::PolicyFetchBlock)
         .height(120.0)
         .into();
+    let idle: Element<'a, Msg> = text_input(
+        "0–1440",
+        &p.shown("idle_sleep_min", s.idle_sleep_min.to_string()),
+    )
+    .on_input(|v| Msg::PolicyNumber(Num::IdleSleep, v))
+    .padding(8)
+    .into();
+    let roles: Element<'a, Msg> = text_input(
+        "orchestrator, dev",
+        &p.shown("sleep_never_roles", s.sleep_never_roles.join(", ")),
+    )
+    .on_input(Msg::PolicyRoles)
+    .padding(8)
+    .into();
+    let checkpoints: Element<'a, Msg> = iced::widget::checkbox(s.vm_auto_checkpoints)
+        .label("Take machine checkpoints before risky tool calls")
+        .on_toggle(Msg::PolicyAutoCheckpoints)
+        .into();
     let items: Vec<Element<'a, Msg>> = vec![
         labelled("Max turns", turns),
         labelled("Max tokens (0 = provider default)", tokens),
+        labelled("Sleep an idle agent after (minutes, 0 = never)", idle),
+        labelled("Roles that never sleep (comma-separated)", roles),
+        checkpoints,
         labelled("Effort", effort),
         labelled("Fetch blocklist (every other host is allowed)", block),
     ];
@@ -2669,5 +2768,53 @@ mod tests {
             listing_unavailable_line("HTTP 503"),
             "Model listing unavailable: HTTP 503"
         );
+    }
+
+    #[test]
+    fn idle_sleep_is_whole_minutes_from_zero_to_a_day() {
+        assert_eq!(idle_minutes("0"), Some(0));
+        assert_eq!(idle_minutes(" 10 "), Some(10));
+        assert_eq!(idle_minutes("1440"), Some(1440));
+        assert_eq!(idle_minutes("1441"), None);
+        assert_eq!(idle_minutes("-1"), None);
+        assert_eq!(idle_minutes("5.5"), None);
+        assert_eq!(idle_minutes(""), None);
+    }
+
+    #[test]
+    fn sleep_never_roles_are_names_with_no_blanks() {
+        assert_eq!(role_names(""), Some(Vec::new()));
+        assert_eq!(
+            role_names("orchestrator, dev"),
+            Some(vec!["orchestrator".to_string(), "dev".to_string()])
+        );
+        assert_eq!(role_names("dev,,qa"), None);
+        assert_eq!(role_names("dev,"), None);
+        assert_eq!(role_names("data eng"), None);
+    }
+
+    #[test]
+    fn settings_without_the_sleep_fields_take_the_hubs_defaults() {
+        let bare = json!({"default_model": "a/b", "orchestrator_model": "a/c"});
+        let settings: Settings = serde_json::from_value(bare).unwrap();
+        assert_eq!(settings.idle_sleep_min, 10);
+        assert_eq!(settings.sleep_never_roles, vec!["orchestrator".to_string()]);
+        assert!(settings.vm_auto_checkpoints);
+    }
+
+    #[test]
+    fn the_sleep_fields_are_read_and_kept_for_the_save() {
+        let saved = json!({
+            "default_model": "a/b", "orchestrator_model": "a/c",
+            "idle_sleep_min": 0, "sleep_never_roles": ["orchestrator", "dev"],
+            "vm_auto_checkpoints": false
+        });
+        let settings: Settings = serde_json::from_value(saved).unwrap();
+        assert_eq!(settings.idle_sleep_min, 0);
+        assert_eq!(settings.sleep_never_roles.len(), 2);
+        assert!(!settings.vm_auto_checkpoints);
+        let back = serde_json::to_value(&settings).unwrap();
+        assert_eq!(back["idle_sleep_min"], json!(0));
+        assert_eq!(back["vm_auto_checkpoints"], json!(false));
     }
 }

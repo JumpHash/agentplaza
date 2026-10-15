@@ -87,7 +87,8 @@ impl StatusFilter {
             StatusFilter::All => true,
             StatusFilter::Working => status == "working",
             StatusFilter::Idle => status == "idle",
-            StatusFilter::Offline => status == "offline",
+            // A sleeping agent is not working or idle, so it is filed with the offline ones.
+            StatusFilter::Offline => status == "offline" || status == "asleep",
         }
     }
 }
@@ -563,7 +564,7 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
             role_hue(&a.role)
         },
         body_hue: agent_hue(a.cid),
-        offline: a.status == "offline",
+        offline: matches!(a.status.as_str(), "offline" | "asleep"),
         species: crate::console::engine::robot::species_of(Some(a.species.as_str()), a.cid),
     };
     let layers: Vec<Element<'a, Msg>> = match render_card::robot_portrait(slot, spec, AVATAR) {

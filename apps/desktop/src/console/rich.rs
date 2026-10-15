@@ -811,7 +811,7 @@ pub fn chip_tone(r: &Ref, card: Option<&Value>) -> ChipTone {
         },
         Ref::Agent { .. } => match field("status") {
             "working" => ChipTone::Info,
-            "offline" => ChipTone::Muted,
+            "offline" | "asleep" => ChipTone::Muted,
             _ => ChipTone::Plain,
         },
         Ref::Task { .. } => match field("status") {
