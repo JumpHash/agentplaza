@@ -183,7 +183,17 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     let mut specs = specs_for(app, &agent.role);
     specs.extend(crate::library::specs_for(app, agent.cid));
     specs.extend(crate::mcp::specs_for_agent(app, agent));
+    // The engines offered are the owner's enabled ones (`engines_enabled`).
+    let enabled = app.settings.get().engines_enabled;
+    for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
+        restrict_engines(&mut spec.input_schema, &enabled);
+    }
     specs
+}
+
+/// Narrows a `code_engine` schema's `engine` enum to the owner's enabled engines.
+fn restrict_engines(schema: &mut Value, enabled: &[String]) {
+    schema["properties"]["engine"]["enum"] = json!(enabled);
 }
 
 /// Runs host tool `name` for `agent`; `(is_error, output)`.
@@ -212,6 +222,25 @@ pub(crate) fn code_engine_model(
     };
     app.settings.allowed(tier_of(role), model)?;
     Ok(Some(model.to_string()))
+}
+
+/// Refuses a `code_engine` call that names an engine the owner has not enabled (`engines_enabled`).
+/// The guest arm of `internal::dispatch` calls it beside `code_engine_model`.
+pub(crate) fn code_engine_enabled(app: &App, input: &Value) -> Result<(), String> {
+    engine_enabled(&app.settings.get().engines_enabled, input)
+}
+
+/// Whether the `engine` named by `input` is one of `enabled`.
+fn engine_enabled(enabled: &[String], input: &Value) -> Result<(), String> {
+    let engine = input
+        .get("engine")
+        .and_then(Value::as_str)
+        .ok_or("invalid input: \"engine\" must name an engine")?;
+    if enabled.iter().any(|id| id == engine) {
+        Ok(())
+    } else {
+        Err(format!("the owner has not enabled the {engine} engine"))
+    }
 }
 
 /// The shape of the `model` input: `None` when absent or empty, else the trimmed `<provider>/<model>`
@@ -366,9 +395,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode). It works in your workspace with its own tools and returns its final report. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`). Omit it to use the default."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "Optional. The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1261,6 +1290,31 @@ mod tests {
         assert_eq!(model_input(&json!({"prompt": "p"})), Ok(None));
         assert_eq!(model_input(&json!({"model": "  "})), Ok(None));
         assert_eq!(model_input(&json!({"model": null})), Ok(None));
+    }
+
+    #[test]
+    fn code_engine_offers_sessions_modes_and_only_the_enabled_engines() {
+        let spec = spec("code_engine").expect("code_engine is a spec");
+        assert!(spec.description.contains("streams live"));
+        assert!(spec.description.contains("`session`"));
+        let props = &spec.input_schema["properties"];
+        assert_eq!(props["session"]["type"], "string");
+        assert_eq!(props["mode"]["type"], "string");
+        let mut schema = spec.input_schema.clone();
+        restrict_engines(&mut schema, &["codex".to_string()]);
+        assert_eq!(schema["properties"]["engine"]["enum"], json!(["codex"]));
+    }
+
+    #[test]
+    fn code_engine_refuses_an_engine_the_owner_has_not_enabled() {
+        let enabled = vec!["claude".to_string(), "codex".to_string()];
+        let ask = |engine: &str| json!({"engine": engine, "prompt": "p"});
+        assert_eq!(engine_enabled(&enabled, &ask("codex")), Ok(()));
+        assert_eq!(
+            engine_enabled(&enabled, &ask("opencode")),
+            Err("the owner has not enabled the opencode engine".to_string())
+        );
+        assert!(engine_enabled(&enabled, &json!({"prompt": "p"})).is_err());
     }
 
     #[test]

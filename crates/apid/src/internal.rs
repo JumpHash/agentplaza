@@ -624,7 +624,9 @@ fn tool_request(
             // The engine's model is checked against the tier before the VM runs it: a bad one is a
             // tool error here, not a gateway refusal later.
             match name {
-                "code_engine" => match crate::tools::code_engine_model(app, &agent.role, input) {
+                "code_engine" => match crate::tools::code_engine_model(app, &agent.role, input)
+                    .and_then(|_| crate::tools::code_engine_enabled(app, input))
+                {
                     Ok(_) => (Decision::Allow, String::new(), false),
                     Err(reason) => (Decision::Deny, reason, true),
                 },
