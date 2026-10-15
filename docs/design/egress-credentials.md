@@ -2,7 +2,7 @@
 
 Status (2026-10-15): built in `crates/apid/src/egress_inject.rs` (rules, the CA, the decisions, the routes), in
 `crates/vsockd/src/egress_tls.rs` (the TLS interception on the node), and in `crates/agent-harness/src/trust.rs` (the
-guest's trust in the CA).
+guest's trust in the CA). The path is verified end to end through a real agent VM (see Verified end to end below).
 
 An agent's outbound HTTPS request can carry a secret the agent never holds. The owner writes a rule: for these roles,
 requests to this host get this header, with a vault secret in its value. The hub's egress proxy adds the header on the
@@ -103,6 +103,23 @@ record (the `egress` entries the relay reports for every connection) is the same
 
 The `internal` routes take the node's internal token, as the other `/internal` routes do (see
 [`architecture.md`](../architecture.md)).
+
+## Verified end to end
+
+Verified through a real agent VM to the internet. A static TLS client ran in the agent's workspace and went through
+the guest's egress proxy (127.0.0.1:3128).
+
+- `postman-echo.com`: vsockd intercepted the connection (`intercepted=true injected=1`). The client validated the hub's
+  leaf through the CA bundle that the profile installed (`SSL_CERT_FILE`). The echo showed the injected header with the
+  vault value.
+- `httpbin.org`, with no rule: an opaque tunnel with its real certificate chain. The echo showed no header.
+
+The secret's value was in neither the guest's environment nor its disk.
+
+That run found two bugs, both fixed:
+
+- The vault refused the `egress` binding that rules require, so no secret could be bound through the API.
+- A just-spawned agent's IDE workspace was a 404 until the next reconcile.
 
 ## Limits
 

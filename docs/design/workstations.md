@@ -223,6 +223,15 @@ A workstation VM runs the same daemon. The plaza can also make them:
 - Snapshots before a lease and reset after, when the owner wants clean machines (a per-workstation setting).
 - macOS VMs only on Apple hardware (Apple's Virtualization framework), at most two per Mac by Apple's licence.
 
+Snapshot, revert and sleep work live on a plaza VM. A running workstation VM takes a live snapshot of its memory and
+its disk. The VM pauses for about 0.1 s and keeps running. A revert to the snapshot resumes the VM from its memory with
+no boot, in about 90 ms. A plaza VM sleeps through `POST /v1/workstations/{id}/sleep` on its node, in about 160 ms. A
+start or `POST .../wake` resumes it from memory in about 100 ms, a warm start in place of a desktop boot. The hub's
+lease hooks run the snapshot and the revert live when the node can. When the node answers 409 (QEMU VMs, and a
+disk-only snapshot), the hub does a stop-copy-start: it stops the VM, copies the disk and starts it again. QEMU VMs do
+not sleep. The owner sleeps and wakes a VM with `POST /v1/stations/vms/{id}/sleep|wake`: Sleep and Wake on the VM row
+in the web console, the Sleep and Wake buttons in the desktop app, and `agentplaza stations vms sleep|wake` in the CLI.
+
 A Linux VM has no NIC (rule 0010), so its daemon reaches the hub over vsock through its node. The node relays the
 station link to the hub byte for byte (`noded`'s `ws_relay`, at most four connections per VM), and the daemon's pinned
 TLS runs end to end with the hub; the relay never reads it. The hub is `vsock://2:5100` as the VM dials it. The join

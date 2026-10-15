@@ -127,6 +127,7 @@ feature, in the file or command named.
 | Warm templates: list and remove | none | none | `agentplaza templates list`, `rm` | CLI and API (`GET/DELETE /v1/templates`): templates build and rebuild themselves; listing them is a diagnostic |
 | Data volumes: list, create, remove | `apps/web/src/views/volumes.ts` | `apps/desktop/src/console/screens/volumes.rs` | `agentplaza volumes ls`, `create`, `rm` | Done in all three (`GET/POST /v1/volumes`, `DELETE /v1/volumes/{name}`) |
 | Per-role volumes (`role_volumes`) | `volumes.ts` (Roles) | `volumes.rs` (Roles) | `agentplaza volumes roles`, `mount`, `unmount` | Done in all three |
+| Sleep and wake a workstation VM | apps/web/src/views/workstations-vms.ts (Sleep, Wake) | apps/desktop/src/console/screens/workstations_vms.rs (Sleep, Wake) | agentplaza stations vms sleep, wake | Done in all three (plaza VMs) |
 
 ## Out of scope
 
