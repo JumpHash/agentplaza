@@ -383,8 +383,10 @@ sectionEnd('hub mcp tests: ok');
 
 // The coding engines: switching one on or off keeps the canonical order, and the last engine stays on.
 {
-  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini', 'qwen', 'kilo', 'cline', 'copilot', 'goose'], 'engines: the nine engines in order');
+  eq(ENGINES.map((e) => e.value), ['claude', 'codex', 'opencode', 'gemini', 'qwen', 'kilo', 'cline', 'copilot', 'goose', 'kimi', 'auggie'], 'engines: the eleven engines in order');
   eq(ENGINES.find((e) => e.value === 'goose')?.label, 'Goose', 'engines: Goose is labelled');
+  eq(ENGINES.find((e) => e.value === 'kimi')?.label, 'Kimi Code', 'engines: Kimi Code is labelled');
+  eq(ENGINES.find((e) => e.value === 'auggie')?.label, 'Auggie', 'engines: Auggie is labelled');
   eq(ENGINES.find((e) => e.value === 'cline')?.label, 'Cline', 'engines: Cline is labelled');
   eq(toggleEngine(['claude'], 'cline', true), ['claude', 'cline'], 'engines: Cline switches on last');
   eq(ENGINES.find((e) => e.value === 'gemini')?.label, 'Gemini CLI', 'engines: Gemini CLI is labelled');

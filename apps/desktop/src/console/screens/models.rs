@@ -297,12 +297,13 @@ fn keep_acp_switches(copy: &mut Settings, hub: &Settings) {
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
-const ENGINE_IDS: [&str; 9] = [
-    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose",
+const ENGINE_IDS: [&str; 11] = [
+    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose", "kimi",
+    "auggie",
 ];
 
 /// The engines enabled out of the box (`DEFAULT_ENGINE_IDS` in apid's settings): Gemini CLI, Qwen Code,
-/// Kilo Code, Cline, GitHub Copilot and Goose are off until the owner turns them on.
+/// Kilo Code, Cline, GitHub Copilot, Goose, Kimi Code and Auggie are off until the owner turns them on.
 const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The name an engine's switch shows.
@@ -317,6 +318,8 @@ fn engine_label(id: &'static str) -> &'static str {
         "cline" => "Cline",
         "copilot" => "GitHub Copilot",
         "goose" => "Goose",
+        "kimi" => "Kimi Code",
+        "auggie" => "Auggie",
         other => other,
     }
 }
@@ -2727,6 +2730,8 @@ mod tests {
             ("cline", "Cline"),
             ("copilot", "GitHub Copilot"),
             ("goose", "Goose"),
+            ("kimi", "Kimi Code"),
+            ("auggie", "Auggie"),
         ] {
             assert_eq!(
                 engines_after(&engines(&["claude"]), id, true),

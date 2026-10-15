@@ -222,8 +222,21 @@ pub(crate) fn code_engine_model(
         return Ok(None);
     };
     engine_provider(input, model)?;
-    app.settings.allowed(tier_of(role), model)?;
+    match app.settings.allowed(tier_of(role), model) {
+        Ok(()) => {}
+        // Auggie's models are Augment's own, billed to the owner's Augment account through the vendor
+        // relay, so the plaza's list (which names the gateway's models) does not name them. The
+        // provider was checked above, so only the `augment/` models of Auggie reach this arm.
+        Err(_) if is_auggie_model(input, model) => {}
+        Err(err) => return Err(err),
+    }
     Ok(Some(model.to_string()))
+}
+
+/// True for a call to Auggie on one of its own `augment/` models.
+fn is_auggie_model(input: &Value, model: &str) -> bool {
+    input.get("engine").and_then(Value::as_str) == Some("auggie")
+        && model.split_once('/').map(|(provider, _)| provider) == Some("augment")
 }
 
 /// Refuses a call without a model where its engine needs one: Cline is configured with its model
@@ -231,6 +244,10 @@ pub(crate) fn code_engine_model(
 fn model_required(input: &Value) -> Result<(), String> {
     match input.get("engine").and_then(Value::as_str) {
         Some("cline") => Err("invalid input: Cline needs \"model\"".to_string()),
+        Some("kimi") => Err(
+            "invalid input: Kimi Code needs \"model\": its provider and model come from it"
+                .to_string(),
+        ),
         Some("copilot") => Err(
             "invalid input: Copilot needs \"model\": its bring-your-own-key mode names the model"
                 .to_string(),
@@ -247,7 +264,8 @@ fn model_required(input: &Value) -> Result<(), String> {
 /// routes that serve them. Cline takes the four routes its setup maps (Anthropic-shaped
 /// `anthropic/` and `openrouter/`, and `openai/` and `opencode/`). Kilo Code takes what OpenCode
 /// takes, so it has no rule here (the route checks the provider's shape). GitHub Copilot takes the
-/// four routes its bring-your-own-key mode maps, and Goose the four its providers map. The other
+/// four routes its bring-your-own-key mode maps, and Goose the four its providers map. Kimi Code takes
+/// the four routes its provider mode maps, and Auggie only its own `augment/` models. The other
 /// engines keep their own routes.
 fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
     let provider = model.split_once('/').map(|(provider, _)| provider);
@@ -290,6 +308,19 @@ fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
                 "invalid input: \"model\" is {model:?}; Goose takes anthropic/..., openrouter/..., openai/... or opencode/... models"
             ))
         }
+        Some("kimi")
+            if !matches!(
+                provider,
+                Some("anthropic" | "openrouter" | "openai" | "opencode")
+            ) =>
+        {
+            Err(format!(
+                "invalid input: \"model\" is {model:?}; Kimi Code takes anthropic/..., openrouter/..., openai/... or opencode/... models"
+            ))
+        }
+        Some("auggie") if provider != Some("augment") => Err(format!(
+            "invalid input: \"model\" is {model:?}; Auggie runs Augment's own models: use augment/<model>"
+        )),
         _ => Ok(()),
     }
 }
@@ -465,9 +496,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline, copilot = GitHub Copilot, goose = Goose). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline, copilot = GitHub Copilot, goose = Goose, kimi = Kimi Code, auggie = Auggie). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, GitHub Copilot `anthropic/`, `openai/`, `openrouter/` or `opencode/` models and needs one, Goose `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose", "kimi", "auggie"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, GitHub Copilot `anthropic/`, `openai/`, `openrouter/` or `opencode/` models and needs one, Goose `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, Kimi Code `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, Auggie `augment/<model>` models). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1422,6 +1453,39 @@ mod tests {
     }
 
     #[test]
+    fn code_engine_kimi_takes_its_provider_routes_and_needs_a_model() {
+        let kimi = |model: &str| json!({"engine": "kimi", "prompt": "p", "model": model});
+        for model in [
+            "anthropic/claude-x",
+            "openai/gpt-x",
+            "openrouter/anthropic/claude-x",
+            "opencode/gpt-x",
+        ] {
+            assert!(engine_provider(&kimi(model), model).is_ok(), "{model}");
+        }
+        assert!(engine_provider(&kimi("gemini/x"), "gemini/x").is_err());
+        let err = model_required(&json!({"engine": "kimi", "prompt": "p"})).expect_err("refused");
+        assert!(err.contains("Kimi Code needs \"model\""), "{err}");
+    }
+
+    #[test]
+    fn code_engine_auggie_takes_only_augments_own_models_and_needs_no_model() {
+        let auggie = |model: &str| json!({"engine": "auggie", "prompt": "p", "model": model});
+        assert!(engine_provider(&auggie("augment/claude-x"), "augment/claude-x").is_ok());
+        let err = engine_provider(&auggie("anthropic/claude-x"), "anthropic/claude-x")
+            .expect_err("refused");
+        assert!(err.contains("use augment/<model>"), "{err}");
+        assert!(model_required(&json!({"engine": "auggie", "prompt": "p"})).is_ok());
+        // Only Auggie's own models skip the plaza's model list (see `code_engine_model`).
+        assert!(is_auggie_model(&auggie("augment/x"), "augment/x"));
+        assert!(!is_auggie_model(&auggie("anthropic/x"), "anthropic/x"));
+        assert!(!is_auggie_model(
+            &json!({"engine": "claude", "prompt": "p"}),
+            "augment/x"
+        ));
+    }
+
+    #[test]
     fn code_engine_cline_takes_the_four_routes_and_needs_a_model() {
         let ask = |model: &str| json!({"engine": "cline", "prompt": "p", "model": model});
         for model in [
@@ -1470,7 +1534,7 @@ mod tests {
             props["engine"]["enum"],
             json!([
                 "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot",
-                "goose"
+                "goose", "kimi", "auggie"
             ])
         );
         assert_eq!(props["session"]["type"], "string");

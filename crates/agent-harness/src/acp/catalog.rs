@@ -74,12 +74,15 @@ pub struct Entry {
     /// Session modes the harness never selects, whatever the engine offers (its bypass modes). A mode
     /// is refused when its id contains one of these words, ignoring case.
     pub refused_modes: &'static [&'static str],
+    /// Session modes refused only when their id is exactly one of these words, ignoring case. For words
+    /// too short to match as substrings: `auto` would also refuse a harmless `autonomous`.
+    pub refused_exact_modes: &'static [&'static str],
 }
 
 /// Every engine the harness knows, in the order they are listed to the model. Gemini CLI, Qwen Code,
-/// Kilo Code, Cline, GitHub Copilot CLI and Goose are ACP only (`gemini --acp`, `qwen --acp`,
-/// `kilo acp`, `cline --acp`, `copilot --acp --stdio`, `goose acp`): they have no headless run, and
-/// the owner enables them in `engines_enabled`.
+/// Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code and Auggie are ACP only (`gemini --acp`,
+/// `qwen --acp`, `kilo acp`, `cline --acp`, `copilot --acp --stdio`, `goose acp`, `kimi acp`,
+/// `auggie --acp`): they have no headless run, and the owner enables them in `engines_enabled`.
 pub const ENGINES: &[Entry] = &[
     Entry {
         id: "claude",
@@ -91,6 +94,7 @@ pub const ENGINES: &[Entry] = &[
         binary: "claude-agent-acp",
         args: &[],
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &["bypassPermissions"],
     },
     Entry {
@@ -103,6 +107,7 @@ pub const ENGINES: &[Entry] = &[
         binary: "codex-acp",
         args: &[],
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &["full-access", "danger-full-access"],
     },
     Entry {
@@ -115,6 +120,7 @@ pub const ENGINES: &[Entry] = &[
         binary: "opencode",
         args: &["acp"],
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &[],
     },
     Entry {
@@ -129,6 +135,7 @@ pub const ENGINES: &[Entry] = &[
         // Gemini CLI takes its model from the environment (`GEMINI_MODEL`), not the session, so the
         // launch names no model for it (`engines::acp_launch`).
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &["yolo"],
     },
     Entry {
@@ -143,6 +150,7 @@ pub const ENGINES: &[Entry] = &[
         // Qwen Code takes its model from the environment (`OPENAI_MODEL`), not the session, so the
         // launch names no model for it (`engines::acp_launch`).
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &["yolo"],
     },
     Entry {
@@ -155,6 +163,7 @@ pub const ENGINES: &[Entry] = &[
         binary: "kilo",
         args: &["acp"],
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &[],
     },
     Entry {
@@ -169,6 +178,7 @@ pub const ENGINES: &[Entry] = &[
         // Cline takes its model from its saved provider settings, which `engines::setup_args` writes
         // before each call, so the session is given none.
         model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
         refused_modes: &[],
     },
     Entry {
@@ -185,6 +195,7 @@ pub const ENGINES: &[Entry] = &[
         // optional dependency, so the install must not omit optional packages.
         model: ModelVia::ConfigOption,
         // Its bypass modes: allow-all and autopilot approve every action without asking.
+        refused_exact_modes: &[],
         refused_modes: &["allow-all", "allow_all", "yolo", "autopilot"],
     },
     Entry {
@@ -211,7 +222,42 @@ pub const ENGINES: &[Entry] = &[
         // session is given none.
         model: ModelVia::ConfigOption,
         // Its auto mode approves what the model asks for without a prompt.
+        refused_exact_modes: &[],
         refused_modes: &["auto"],
+    },
+    Entry {
+        id: "kimi",
+        install: Install::Npm {
+            package: "@moonshot-ai/kimi-code",
+            version: "2.1.1",
+            integrity: "sha512-xClqcnTQUKgKDbeOGPU78qcwxGzL8wA2rqWuOX3CLpyQ1/NhSX7jAh6hZo/JFwThSX8obkgef3uw/li5JaJNyw==",
+        },
+        binary: "kimi",
+        args: &["acp"],
+        // Kimi Code takes its model and provider from the environment (`engines::acp_launch`), so the
+        // session is given none. It needs Node 22.19 or later, checked before its install.
+        model: ModelVia::ConfigOption,
+        // Its auto mode approves what the model asks for. Matched exactly: `autonomous` is not auto.
+        refused_exact_modes: &["auto"],
+        // Its yolo mode approves every action without asking.
+        refused_modes: &["yolo"],
+    },
+    Entry {
+        id: "auggie",
+        install: Install::Npm {
+            package: "@augmentcode/auggie",
+            version: "0.36.0",
+            integrity: "sha512-jb4kq97pGzG0i5UyISc//LjTVlFzIywwD+VfPemiSIl58KjLfxry3KDgxWYnr1vmV8yUkySVzjLnj4ewUEbT/Q==",
+        },
+        binary: "auggie",
+        args: &["--acp"],
+        // Auggie's account never enters the VM: the session token is a placeholder that the hub's vendor
+        // relay answers for (`engines::acp_launch`). A call's model goes on the command line instead
+        // (`engines::acp_args`), so the session is given none.
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        // Its launch-process allow rule runs every command the model asks for without a prompt.
+        refused_modes: &["launch-process:allow"],
     },
 ];
 
@@ -220,9 +266,13 @@ impl Entry {
     /// words, ignoring case, so `Allow-All` and `allow_all_tools` are refused like `allow-all`.
     pub fn refuses(&self, mode: &str) -> bool {
         let mode = mode.to_ascii_lowercase();
-        self.refused_modes
+        self.refused_exact_modes
             .iter()
-            .any(|word| mode.contains(&word.to_ascii_lowercase()))
+            .any(|word| mode == word.to_ascii_lowercase())
+            || self
+                .refused_modes
+                .iter()
+                .any(|word| mode.contains(&word.to_ascii_lowercase()))
     }
 }
 
@@ -402,5 +452,46 @@ mod tests {
             assets[1].sha256,
             "4584ba8840fc77c2f3e48758f45543c18f1c1293d704941a8eeb5220852ce653"
         );
+    }
+
+    #[test]
+    fn kimi_is_the_cli_in_acp_mode_with_yolo_refused_and_auto_matched_exactly() {
+        let kimi = entry("kimi").expect("kimi");
+        assert_eq!(
+            kimi.install,
+            Install::Npm {
+                package: "@moonshot-ai/kimi-code",
+                version: "2.1.1",
+                integrity: "sha512-xClqcnTQUKgKDbeOGPU78qcwxGzL8wA2rqWuOX3CLpyQ1/NhSX7jAh6hZo/JFwThSX8obkgef3uw/li5JaJNyw==",
+            }
+        );
+        assert_eq!(kimi.binary, "kimi");
+        assert_eq!(kimi.args, ["acp"]);
+        assert!(kimi.refuses("yolo"));
+        assert!(kimi.refuses("YOLO"));
+        assert!(kimi.refuses("auto"));
+        assert!(kimi.refuses("Auto"));
+        // The substring of a harmless mode is not the auto mode.
+        assert!(!kimi.refuses("autonomous"));
+        assert!(!kimi.refuses("auto-edit"));
+        assert!(!kimi.refuses("default"));
+    }
+
+    #[test]
+    fn auggie_is_the_cli_in_acp_mode_with_its_launch_allow_rule_refused() {
+        let auggie = entry("auggie").expect("auggie");
+        assert_eq!(
+            auggie.install,
+            Install::Npm {
+                package: "@augmentcode/auggie",
+                version: "0.36.0",
+                integrity: "sha512-jb4kq97pGzG0i5UyISc//LjTVlFzIywwD+VfPemiSIl58KjLfxry3KDgxWYnr1vmV8yUkySVzjLnj4ewUEbT/Q==",
+            }
+        );
+        assert_eq!(auggie.binary, "auggie");
+        assert_eq!(auggie.args, ["--acp"]);
+        assert!(auggie.refuses("launch-process:allow"));
+        assert!(auggie.refuses("Launch-Process:Allow-All"));
+        assert!(!auggie.refuses("launch-process:ask"));
     }
 }

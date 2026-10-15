@@ -52,6 +52,7 @@ pub fn run(
     let entry = request.entry;
     install(workspace, entry)?;
     let (env, model) = engines::acp_launch(workspace, entry.id, request.model.as_deref())?;
+    let extra = engines::acp_args(entry.id, request.model.as_deref())?;
     // Before the turn and on every call: the setup rewrites the engine's saved settings, so a new
     // model takes effect.
     if let Some(args) = engines::setup_args(entry.id, request.model.as_deref())? {
@@ -61,7 +62,7 @@ pub fn run(
         entry,
         workspace,
         cwd: request.cwd.clone(),
-        argv: argv(entry, env),
+        argv: argv(entry, env, &extra),
         model,
         protocol,
         mode: request.mode.clone(),
@@ -168,10 +169,12 @@ pub fn protocol_offer(engine_transport: &str) -> u16 {
 }
 
 /// The program the ACP session starts: `/usr/bin/env` with the engine's pairs, the installed
-/// binary and its arguments. The model is not among them: every engine takes it as a session config
-/// option.
-fn argv(entry: &Entry, env: Vec<String>) -> Vec<String> {
-    let args: Vec<String> = entry.args.iter().map(|arg| arg.to_string()).collect();
+/// binary, its arguments and `extra` (the call's model, for an engine that takes it on the command
+/// line: see [`engines::acp_args`]). Otherwise the model is not among them: an engine takes it as a
+/// session config option.
+fn argv(entry: &Entry, env: Vec<String>, extra: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = entry.args.iter().map(|arg| arg.to_string()).collect();
+    args.extend(extra.iter().cloned());
     command(entry, env, &args)
 }
 
@@ -249,6 +252,9 @@ fn install_npm(
     let binary = npm_binary(entry);
     engines::ensure_node(workspace)
         .map_err(|err| format!("cannot install nodejs and npm for {}: {err}", entry.id))?;
+    if let Some((name, minimum)) = node_minimum(entry) {
+        check_node(workspace, name, minimum)?;
+    }
     let spec = format!("{package}@{version}");
     let cache = workspace.plaza_dir().join(CACHE_DIR);
     files::create_dirs(&cache)
@@ -295,6 +301,50 @@ fn install_npm(
             "npm installed {spec} but {} is missing",
             binary.display()
         ))
+    }
+}
+
+/// The Node.js version an engine's package needs, with the engine's name for the message. Kimi Code
+/// runs on Node 22.19 or later, which the VM's apk `nodejs` may not be.
+fn node_minimum(entry: &Entry) -> Option<(&'static str, (u64, u64))> {
+    (entry.id == "kimi").then_some(("Kimi Code", (22, 19)))
+}
+
+/// Checks the VM's `node --version` against `minimum` before the install, so a VM with an older node
+/// fails with a message that names both versions.
+fn check_node(workspace: &Workspace, name: &str, minimum: (u64, u64)) -> Result<(), String> {
+    let printed = bash::execute(
+        workspace.dir(),
+        "node",
+        &["--version"],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot run node for {name}: {}", engines::tail(&err)))?;
+    let printed = printed.trim();
+    let version = printed
+        .lines()
+        .find(|line| line.starts_with('v'))
+        .unwrap_or(printed);
+    if node_at_least(version, minimum) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name} needs Node {}.{} or later; the VM has {version}",
+            minimum.0, minimum.1
+        ))
+    }
+}
+
+/// True when `version`, as `node --version` prints it (`v22.19.0`), is at least `minimum`.
+fn node_at_least(version: &str, minimum: (u64, u64)) -> bool {
+    let mut parts = version
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| part.parse::<u64>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) >= minimum,
+        _ => false,
     }
 }
 
@@ -862,7 +912,7 @@ mod tests {
     fn the_adapter_starts_with_its_environment_and_binary() {
         let entry = catalog::entry("opencode").expect("opencode");
         assert_eq!(
-            argv(entry, vec!["HOME=/workspace".to_string()]),
+            argv(entry, vec!["HOME=/workspace".to_string()], &[]),
             [
                 engines::ENV_PROGRAM,
                 "HOME=/workspace",
@@ -870,6 +920,37 @@ mod tests {
                 "acp"
             ]
         );
+    }
+
+    #[test]
+    fn auggie_takes_the_call_s_model_after_its_own_arguments() {
+        let entry = catalog::entry("auggie").expect("auggie");
+        let extra = engines::acp_args("auggie", Some("augment/claude-x")).expect("a model");
+        assert_eq!(
+            argv(entry, vec!["HOME=/workspace".to_string()], &extra),
+            [
+                engines::ENV_PROGRAM,
+                "HOME=/workspace",
+                "/workspace/.npm-global/bin/auggie",
+                "--acp",
+                "--model",
+                "claude-x"
+            ]
+        );
+    }
+
+    #[test]
+    fn kimi_needs_node_22_19_or_later() {
+        let kimi = catalog::entry("kimi").expect("kimi");
+        let (name, minimum) = node_minimum(kimi).expect("kimi names a minimum");
+        assert_eq!((name, minimum), ("Kimi Code", (22, 19)));
+        assert!(node_at_least("v22.19.0", minimum));
+        assert!(node_at_least("v22.20.1", minimum));
+        assert!(node_at_least("v24.1.0", minimum));
+        assert!(!node_at_least("v22.18.0", minimum));
+        assert!(!node_at_least("v20.11.1", minimum));
+        assert!(!node_at_least("node: not found", minimum));
+        assert!(node_minimum(catalog::entry("claude").expect("claude")).is_none());
     }
 
     #[test]

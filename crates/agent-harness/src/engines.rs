@@ -73,8 +73,8 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            // Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot and Goose have no headless run:
-            // their ACP adapters are the only way they run.
+            // Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot, Goose, Kimi Code and Auggie have
+            // no headless run: their ACP adapters are the only way they run.
             "gemini" => Err(
                 "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
                     .to_string(),
@@ -97,6 +97,14 @@ impl Engine {
             ),
             "goose" => Err(
                 "invalid input: \"engine\" is goose: Goose runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "kimi" => Err(
+                "invalid input: \"engine\" is kimi: Kimi Code runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "auggie" => Err(
+                "invalid input: \"engine\" is auggie: Auggie runs over ACP only; switch engines_mode to acp"
                     .to_string(),
             ),
             _ => Err(format!(
@@ -330,6 +338,10 @@ pub(crate) fn acp_launch(
         // Copilot and Goose take their provider and model from the environment too.
         "copilot" => return Ok((engine_env(home, &copilot_route(model)?), None)),
         "goose" => return Ok((engine_env(home, &goose_route(model)?), None)),
+        "kimi" => return Ok((engine_env(home, &kimi_route(model)?), None)),
+        // Auggie's session token is the placeholder the vendor relay answers for; its model is on the
+        // command line (`acp_args`).
+        "auggie" => return Ok((engine_env(home, &auggie_route()), None)),
         "opencode" => {
             let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
@@ -543,6 +555,76 @@ fn goose_route(model: Option<&str>) -> Result<Route, String> {
             .map(|(key, value)| (key.to_string(), value)),
     );
     Ok(Route { env, model: None })
+}
+
+/// The route for Kimi Code, which runs over ACP only, in its env-only provider mode: the placeholder
+/// key, the gateway route of the model's provider, the model without its provider as
+/// `KIMI_MODEL_NAME`, and the context window it is given. `anthropic` and `openrouter` are
+/// Anthropic-shaped on the gateway; `openai` and `opencode` speak chat completions. A call needs a
+/// model: Kimi Code names none by default.
+fn kimi_route(model: Option<&str>) -> Result<Route, String> {
+    let Some(model) = model else {
+        return Err(
+            "invalid input: Kimi Code needs \"model\": its provider and model come from it"
+                .to_string(),
+        );
+    };
+    let (provider, rest) = split_model(model)?;
+    let (provider_type, base_url) = match provider {
+        "anthropic" | "openrouter" => ("anthropic", format!("{GATEWAY}/{provider}")),
+        "openai" | "opencode" => ("openai", format!("{GATEWAY}/{provider}/v1")),
+        _ => {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Kimi Code takes anthropic/..., openrouter/..., openai/... or opencode/... models"
+            ));
+        }
+    };
+    let env = [
+        ("KIMI_MODEL_NAME", rest.to_string()),
+        ("KIMI_MODEL_PROVIDER_TYPE", provider_type.to_string()),
+        ("KIMI_MODEL_BASE_URL", base_url),
+        ("KIMI_MODEL_API_KEY", "plaza".to_string()),
+        ("KIMI_MODEL_MAX_CONTEXT_SIZE", "262144".to_string()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
+    Ok(Route { env, model: None })
+}
+
+/// The session token Auggie starts with inside the VM: a placeholder, and a tenant URL on the hub's
+/// Augment relay (`/vendor/augment/`, see apid's vendor relay), which swaps in the owner's real token
+/// and tenant. The VM never holds the owner's token.
+const AUGGIE_SESSION_AUTH: &str = r#"{"accessToken":"plaza","tenantURL":"http://plaza.gateway/vendor/augment/","scopes":["email"]}"#;
+
+/// The route for Auggie: its placeholder session token, and no model (a call's model is on the command
+/// line, see [`acp_args`]).
+fn auggie_route() -> Route {
+    Route {
+        env: vec![(
+            "AUGMENT_SESSION_AUTH".to_string(),
+            AUGGIE_SESSION_AUTH.to_string(),
+        )],
+        model: None,
+    }
+}
+
+/// The arguments an ACP engine's command takes for a call's model, beyond its catalogue arguments.
+/// Auggie takes its model on the command line (`--model`), and its models are Augment's own: a call
+/// names them `augment/<model>`, and the provider is dropped. The other engines take none here.
+pub(crate) fn acp_args(engine_id: &str, model: Option<&str>) -> Result<Vec<String>, String> {
+    if engine_id != "auggie" {
+        return Ok(Vec::new());
+    }
+    let Some(model) = model else {
+        return Ok(Vec::new());
+    };
+    match split_model(model)? {
+        ("augment", rest) => Ok(vec!["--model".to_string(), rest.to_string()]),
+        _ => Err(format!(
+            "invalid input: \"model\" is {model:?}; Auggie runs Augment's own models: use augment/<model>"
+        )),
+    }
 }
 
 /// The `env` arguments that start the headless engine: its pairs (see [`engine_env`]), then the
@@ -1229,6 +1311,70 @@ mod tests {
     }
 
     #[test]
+    fn kimi_runs_its_env_only_provider_mode_through_the_gateway() {
+        let workspace = scratch("kimi-launch");
+        let (env, model) =
+            acp_launch(&workspace, "kimi", Some("anthropic/claude-x")).expect("kimi");
+        assert_eq!(model, None);
+        assert_eq!(value(&env, "KIMI_MODEL_NAME"), Some("claude-x"));
+        assert_eq!(value(&env, "KIMI_MODEL_PROVIDER_TYPE"), Some("anthropic"));
+        assert_eq!(
+            value(&env, "KIMI_MODEL_BASE_URL"),
+            Some("http://plaza.gateway/anthropic")
+        );
+        assert_eq!(value(&env, "KIMI_MODEL_API_KEY"), Some("plaza"));
+        assert_eq!(value(&env, "KIMI_MODEL_MAX_CONTEXT_SIZE"), Some("262144"));
+        let (env, _) =
+            acp_launch(&workspace, "kimi", Some("openrouter/anthropic/claude-x")).expect("kimi");
+        assert_eq!(value(&env, "KIMI_MODEL_PROVIDER_TYPE"), Some("anthropic"));
+        assert_eq!(
+            value(&env, "KIMI_MODEL_BASE_URL"),
+            Some("http://plaza.gateway/openrouter")
+        );
+        assert_eq!(value(&env, "KIMI_MODEL_NAME"), Some("anthropic/claude-x"));
+        let (env, _) = acp_launch(&workspace, "kimi", Some("opencode/gpt-x")).expect("kimi");
+        assert_eq!(value(&env, "KIMI_MODEL_PROVIDER_TYPE"), Some("openai"));
+        assert_eq!(
+            value(&env, "KIMI_MODEL_BASE_URL"),
+            Some("http://plaza.gateway/opencode/v1")
+        );
+        assert_eq!(value(&env, "KIMI_MODEL_NAME"), Some("gpt-x"));
+        let err = acp_launch(&workspace, "kimi", None).expect_err("refused");
+        assert!(err.contains("Kimi Code needs \"model\""), "{err}");
+        let err = acp_launch(&workspace, "kimi", Some("gemini/x")).expect_err("refused");
+        assert!(err.contains("Kimi Code takes"), "{err}");
+    }
+
+    #[test]
+    fn auggie_starts_on_a_placeholder_session_and_takes_its_model_on_the_command_line() {
+        let workspace = scratch("auggie-launch");
+        let (env, model) = acp_launch(&workspace, "auggie", None).expect("auggie");
+        assert_eq!(model, None);
+        let auth = value(&env, "AUGMENT_SESSION_AUTH").expect("the placeholder session");
+        let session: serde_json::Value = serde_json::from_str(auth).expect("valid JSON");
+        assert_eq!(session["accessToken"], "plaza");
+        assert_eq!(session["tenantURL"], "http://plaza.gateway/vendor/augment/");
+        assert_eq!(session["scopes"], json!(["email"]));
+        // The owner's token and tenant never enter the VM: the relay swaps them in.
+        assert!(!auth.contains("augmentcode.com"), "{auth}");
+        assert_eq!(
+            acp_args("auggie", None).expect("no model"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            acp_args("auggie", Some("augment/claude-x")).expect("a model"),
+            ["--model", "claude-x"]
+        );
+        let err = acp_args("auggie", Some("anthropic/claude-x")).expect_err("refused");
+        assert!(err.contains("use augment/<model>"), "{err}");
+        assert!(
+            acp_args("claude", Some("anthropic/claude-x"))
+                .expect("claude")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn qwen_and_kilo_are_acp_only_under_the_headless_engines() {
         let workspace = scratch("acp-only-headless");
         for (engine, name) in [
@@ -1237,6 +1383,8 @@ mod tests {
             ("cline", "Cline"),
             ("copilot", "GitHub Copilot"),
             ("goose", "Goose"),
+            ("kimi", "Kimi Code"),
+            ("auggie", "Auggie"),
         ] {
             let input = json!({"engine": engine, "prompt": "p"});
             let err = Job::parse(&workspace, &input).err().expect("refused");
