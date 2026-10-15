@@ -450,11 +450,13 @@ fn upstream_url(base: &str, owner: &str, repo: &str, tail: &str, query: &str) ->
     url
 }
 
-/// The headers that go to Forgejo: the authorization, and the request's Content-Type, Accept and
-/// Git-Protocol when it sent them. Nothing else of the caller's reaches the forge.
+/// The headers that go to Forgejo: the authorization, and the request's Content-Type, Accept, Git-Protocol and
+/// Content-Encoding when it sent them. Content-Encoding matters: git gzips a large upload-pack request, and the
+/// body is forwarded as it came, so the forge needs to know it is compressed. Nothing else of the caller's
+/// reaches the forge.
 fn upstream_headers(authorization: &str, req: &Request) -> Vec<(&'static str, String)> {
     let mut headers = vec![("Authorization", authorization.to_string())];
-    for key in ["Content-Type", "Accept", "Git-Protocol"] {
+    for key in ["Content-Type", "Accept", "Git-Protocol", "Content-Encoding"] {
         if let Some(value) = req.header(key) {
             headers.push((key, value.to_string()));
         }
@@ -476,10 +478,20 @@ fn unreplayable(req: &Request) -> Option<Response> {
 }
 
 /// The plaza repository a smart-HTTP route names: `foo`, or `foo.git` (git adds the suffix to the URL it
-/// clones). The name goes into the upstream path, so it is checked as a plain name: not blank, no `/`,
-/// only letters, digits, `-`, `_` and `.`, and not `.` or `..`.
+/// clones). The suffix goes once, and the name is checked as [`plain_name`] checks it.
 fn smart_repo(raw: &str) -> Result<String, Failure> {
-    let name = raw.strip_suffix(".git").unwrap_or(raw);
+    plain_name(raw.strip_suffix(".git").unwrap_or(raw))
+}
+
+/// The owner and the repository an agent's smart-HTTP route names, each checked as [`smart_repo`] checks
+/// the owner's repository. The agent's relay forwards them to the forge's path, so a bad name is refused here.
+fn agent_names(owner: &str, repo: &str) -> Result<(String, String), Failure> {
+    Ok((plain_name(owner)?, smart_repo(repo)?))
+}
+
+/// A name a route puts into the upstream path: not blank, no `/`, only letters, digits, `-`, `_` and `.`,
+/// and not `.` or `..`. So no `%`, no control character and no path segment that climbs out of the forge's tree.
+fn plain_name(name: &str) -> Result<String, Failure> {
     let plain = !name.is_empty()
         && name != "."
         && name != ".."
@@ -656,7 +668,11 @@ fn internal(app: &App, req: &Request, p: &Params<'_>, tail: &str) -> Response {
                 return Ok(Response::error(403, &why));
             }
         }
-        Ok(relay(app, req, cid, p.get("owner"), p.get("repo"), tail))
+        let (owner, repo) = match agent_names(p.get("owner"), p.get("repo")) {
+            Ok(names) => names,
+            Err(f) => return Ok(Response::error(f.status, &f.message)),
+        };
+        Ok(relay(app, req, cid, &owner, &repo, tail))
     })
 }
 
@@ -1948,7 +1964,8 @@ mod tests {
         let req = request(
             "POST",
             &[
-                ("Content-Type", "application/x-git-receive-pack-request"),
+                ("Content-Type", "application/x-git-upload-pack-request"),
+                ("Content-Encoding", "gzip"),
                 ("Cookie", "session=secret"),
                 ("Git-Protocol", "version=2"),
             ],
@@ -1960,11 +1977,63 @@ mod tests {
                 ("Authorization", "Basic abc".to_string()),
                 (
                     "Content-Type",
-                    "application/x-git-receive-pack-request".to_string()
+                    "application/x-git-upload-pack-request".to_string()
                 ),
                 ("Git-Protocol", "version=2".to_string()),
+                ("Content-Encoding", "gzip".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn a_gzipped_upload_pack_keeps_its_content_encoding_to_the_forge() {
+        // git gzips a large fetch's request body; the body goes on unchanged, so the header must too.
+        let req = request(
+            "POST",
+            &[
+                ("Content-Type", "application/x-git-upload-pack-request"),
+                ("Content-Encoding", "gzip"),
+                ("Content-Length", "4"),
+            ],
+            vec![0x1f, 0x8b, 0x08, 0x00],
+        );
+        let headers = upstream_headers("Basic abc", &req);
+        assert!(headers.contains(&("Content-Encoding", "gzip".to_string())));
+        assert_eq!(req.body, vec![0x1f, 0x8b, 0x08, 0x00]);
+    }
+
+    #[test]
+    fn an_agents_route_names_plain_owner_and_repository_only() {
+        assert_eq!(
+            agent_names(ORG, "foo.git").ok(),
+            Some((ORG.to_string(), "foo".to_string()))
+        );
+        assert_eq!(
+            agent_names(ORG, "foo").ok(),
+            Some((ORG.to_string(), "foo".to_string()))
+        );
+        for (owner, repo) in [
+            ("", "foo"),
+            (".", "foo"),
+            ("..", "foo"),
+            ("org/x", "foo"),
+            ("a%2Fb", "foo"),
+            ("a b", "foo"),
+            ("org\n", "foo"),
+            (ORG, ""),
+            (ORG, "."),
+            (ORG, ".."),
+            (ORG, "../x"),
+            (ORG, "foo/bar"),
+            (ORG, "foo%2Fbar"),
+            (ORG, "foo\t"),
+        ] {
+            assert_eq!(
+                status(agent_names(owner, repo)),
+                Some(400),
+                "{owner:?}/{repo:?}"
+            );
+        }
     }
 
     #[test]

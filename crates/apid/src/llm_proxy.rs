@@ -24,6 +24,7 @@ use crate::payments::{charge_model_call, paying_from};
 use crate::prices::{Tokens, USD_PER_CREDIT};
 use crate::settings::{ModelPolicy, Tier, tier_of};
 use crate::state::App;
+use crate::usage::Charge;
 use crate::vault::VaultError;
 
 /// How long one wait on a socket blocks: a relay reads its two sockets in turns.
@@ -372,8 +373,9 @@ pub fn tokens_in_sse(text: &str) -> Option<Metered> {
 
 /// Usage read from streams and sockets, waiting to be recorded: the stream writer has no
 /// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]). Each
-/// entry names the work item the call started under (0 for none), read when the call started.
-type PendingUsage = Vec<(u64, u64, String, Metered)>;
+/// entry carries the charge the call started under (its task and work item), read when the call
+/// started: the usage is recorded only after the call ends, by which time the agent may have moved on.
+type PendingUsage = Vec<(u64, Charge, String, Metered)>;
 
 fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingUsage>> =
@@ -381,11 +383,11 @@ fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     PENDING.get_or_init(Default::default)
 }
 
-fn defer_usage(cid: u64, work: u64, model: String, metered: Metered) {
+fn defer_usage(cid: u64, charge: Charge, model: String, metered: Metered) {
     pending_usage()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((cid, work, model, metered));
+        .push((cid, charge, model, metered));
 }
 
 /// The usage of one Gemini `usageMetadata` object. Gemini's prompt count includes the cached part
@@ -451,16 +453,16 @@ pub fn drain_usage(app: &App) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (cid, work, model, metered) in done {
-        record_usage(app, cid, work, &model, metered);
+    for (cid, charge, model, metered) in done {
+        record_usage(app, cid, charge, &model, metered);
     }
 }
 
 /// Adds one call's usage to the agent's usage, records it in the transcript and meters it into
-/// the usage ledger, under the task the agent is working on (if any) and the work item the call
-/// started under (`work`, 0 for none). The transcript entry stays under no work: a work's
-/// transcript is the agent's own text, and the feed would show these calls as that.
-fn record_usage(app: &App, cid: u64, work: u64, model: &str, metered: Metered) {
+/// the usage ledger, charged to the task and work item the call started under (`charge`, read when
+/// it started). The transcript entry stays under no work: a work's transcript is the agent's own
+/// text, and the feed would show these calls as that.
+fn record_usage(app: &App, cid: u64, charge: Charge, model: &str, metered: Metered) {
     let t = metered.tokens;
     let usage = serde_json::from_value(json!({
         "input_tokens": t.input,
@@ -487,9 +489,7 @@ fn record_usage(app: &App, cid: u64, work: u64, model: &str, metered: Metered) {
             "cost_usd": metered.cost_usd,
         }),
     );
-    let task = current_task(app, cid);
-    bill_call(app, cid, task.as_deref(), model, t, metered.cost_usd);
-    let charge = crate::usage::Charge { task, work };
+    bill_call(app, cid, charge.task.as_deref(), model, t, metered.cost_usd);
     crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
 }
 
@@ -498,10 +498,16 @@ fn current_task(app: &App, cid: u64) -> Option<String> {
     app.work.current(cid).and_then(|item| item.origin.task)
 }
 
-/// The work item agent `cid` is running (0 for none): the one its engine's calls are metered
-/// under. Read when a call starts, since the usage is recorded only after the call ends.
-fn current_work(app: &App, cid: u64) -> u64 {
-    app.work.current(cid).map_or(0, |item| item.id)
+/// The charge for a model call agent `cid` starts now: the task it works on and the work item it runs
+/// under (0 for none). Read when the call starts, since its usage is recorded only after the call ends.
+fn current_charge(app: &App, cid: u64) -> Charge {
+    match app.work.current(cid) {
+        Some(item) => Charge {
+            task: item.origin.task,
+            work: item.id,
+        },
+        None => Charge::default(),
+    }
 }
 
 /// The 402 message when agent `cid` cannot pay for a model call, or `None` when it can (or when
@@ -764,7 +770,7 @@ fn relay(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
-    let work = current_work(app, cid);
+    let charge = current_charge(app, cid);
     let mut body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
@@ -807,7 +813,7 @@ fn relay(
             // The stream's tail carries its usage; it is metered once the stream ends.
             let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
             if let Some(tokens) = tokens_in_sse(&tail) {
-                defer_usage(cid, work, model, tokens);
+                defer_usage(cid, charge, model, tokens);
             }
             Ok(())
         }));
@@ -821,10 +827,28 @@ fn relay(
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in(&value) {
-            record_usage(app, cid, work, &model, tokens);
+            record_usage(app, cid, charge, &model, tokens);
         }
     }
     Ok(Response::json(status, &value))
+}
+
+/// The refusal for a Gemini body that names a model other than the path's `model`, or `None` when it names
+/// none or the same one. A body names its model at the top level or, for countTokens, inside
+/// `generateContentRequest`; Gemini spells it `models/{id}` there, so that prefix is dropped before the compare.
+fn gemini_body_mismatch(body: &Value, model: &str) -> Option<String> {
+    [
+        body.get("model"),
+        body.pointer("/generateContentRequest/model"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    .map(|named| named.strip_prefix("models/").unwrap_or(named))
+    .find(|named| *named != model)
+    .map(|other| {
+        format!("`{other}` is not allowed for this agent; the call names `{model}` in its path")
+    })
 }
 
 /// Relays one Gemini API call for agent `cid`: `model` and `method` as the path names them. The agent's
@@ -847,11 +871,15 @@ fn relay_gemini(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
-    let work = current_work(app, cid);
+    let charge = current_charge(app, cid);
     let body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
-    // The model is in the path, so the policy checks a body that names only it.
+    // The model is in the path, so the policy checks a body that names only it. A body that names
+    // another model would be sent under this path's model and metered as well; it is refused.
+    if let Some(message) = gemini_body_mismatch(&body, model) {
+        return Err(Response::json(403, &json!({ "error": message })));
+    }
     let mut named = json!({ "model": model });
     if let Some(list) = held_to(app, &agent) {
         let own = crate::agents::model_of(app, &agent);
@@ -884,7 +912,7 @@ fn relay_gemini(
             // The stream's last event carries the usage; it is metered once the stream ends.
             let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
             if let Some(tokens) = tokens_in_gemini_sse(&tail) {
-                defer_usage(cid, work, model, tokens);
+                defer_usage(cid, charge, model, tokens);
             }
             Ok(())
         }));
@@ -898,7 +926,7 @@ fn relay_gemini(
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in_gemini(&value) {
-            record_usage(app, cid, work, &model, tokens);
+            record_usage(app, cid, charge, &model, tokens);
         }
     }
     Ok(Response::json(status, &value))
@@ -976,8 +1004,8 @@ fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant
 /// The gateway's policy for one WebSocket call, as over HTTP, read live: STOP ALL holds the call,
 /// the agent's current model and the list it is held to apply (a change since the socket opened
 /// counts), and an agent that cannot pay is refused with the same message as over HTTP's 402.
-/// The work item the call starts under (0 for none) is returned: its usage is metered under it.
-fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<u64, String> {
+/// The charge the call starts under is returned: its usage is metered under it.
+fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Charge, String> {
     let app = grant.app.upgrade().ok_or("the hub is shutting down")?;
     if app.control.paused() {
         return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
@@ -994,7 +1022,7 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<u64, String>
     if let Some(message) = payment_refusal(&app, grant.cid) {
         return Err(message);
     }
-    Ok(current_work(&app, grant.cid))
+    Ok(current_charge(&app, grant.cid))
 }
 
 fn limits() -> ws::Limits {
@@ -1061,7 +1089,7 @@ fn sse_frame(id: &Value, event: &str, data: &str) -> Value {
 }
 
 /// Meters a `response.completed` event's usage, as the HTTP path meters a response.
-fn meter_responses(cid: u64, work: u64, model: &str, frame: &str) {
+fn meter_responses(cid: u64, charge: &Charge, model: &str, frame: &str) {
     let Ok(event) = serde_json::from_str::<Value>(frame) else {
         return;
     };
@@ -1069,7 +1097,7 @@ fn meter_responses(cid: u64, work: u64, model: &str, frame: &str) {
         return;
     }
     if let Some(tokens) = tokens_in(&event) {
-        defer_usage(cid, work, model.to_string(), tokens);
+        defer_usage(cid, charge.clone(), model.to_string(), tokens);
     }
 }
 
@@ -1096,8 +1124,8 @@ fn relay_responses(mut client: Socket, grant: Grant) {
     };
     let started = Instant::now();
     let mut model = String::new();
-    // The work item of the call in flight, read when its `response.create` was admitted.
-    let mut work = 0;
+    // The charge of the call in flight, read when its `response.create` was admitted.
+    let mut charge = Charge::default();
     loop {
         if started.elapsed() >= LIFETIME {
             client.close(1001, "reconnect");
@@ -1125,7 +1153,7 @@ fn relay_responses(mut client: Socket, grant: Grant) {
                     }
                 };
                 match admit(&grant, "openai", &mut body) {
-                    Ok(admitted) => work = admitted,
+                    Ok(admitted) => charge = admitted,
                     Err(message) => {
                         if client
                             .send(&text(
@@ -1158,7 +1186,7 @@ fn relay_responses(mut client: Socket, grant: Grant) {
             Ok(None) => {}
             Ok(Some(message)) => {
                 if let Message::Text(frame) = &message {
-                    meter_responses(grant.cid, work, &model, frame);
+                    meter_responses(grant.cid, &charge, &model, frame);
                 }
                 if client.send(&message).is_err() {
                     upstream.close(1000, "");
@@ -1242,7 +1270,7 @@ fn stream_messages(
     id: &Value,
     request: &mut Value,
 ) -> Result<(), String> {
-    let work = admit(grant, "anthropic", request)?;
+    let charge = admit(grant, "anthropic", request)?;
     let model = request
         .get("model")
         .and_then(Value::as_str)
@@ -1270,7 +1298,7 @@ fn stream_messages(
     })
     .map_err(|e| e.to_string())?;
     if let Some(tokens) = tokens_in_sse(&tail) {
-        defer_usage(grant.cid, work, model, tokens);
+        defer_usage(grant.cid, charge, model, tokens);
     }
     Ok(())
 }
@@ -1455,9 +1483,13 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
             cache_read: 0,
             cache_write: 0,
         };
+        let started = Charge {
+            task: Some("task-7".into()),
+            work: 42,
+        };
         defer_usage(
             cid,
-            42,
+            started.clone(),
             "anthropic/x".into(),
             Metered {
                 tokens,
@@ -1473,10 +1505,31 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         *pending = rest;
         drop(pending);
         assert_eq!(mine.len(), 1);
-        let (_, work, model, metered) = &mine[0];
-        assert_eq!(*work, 42);
+        let (_, charge, model, metered) = &mine[0];
+        // The task is the one the call started under, not whatever the agent works on when it drains.
+        assert_eq!(charge, &started);
         assert_eq!(model, "anthropic/x");
         assert_eq!(metered.tokens, tokens);
+    }
+
+    #[test]
+    fn a_gemini_body_naming_another_model_is_refused() {
+        // countTokens names its model inside generateContentRequest; any body may name one at the top level.
+        let count = json!({ "generateContentRequest": { "model": "models/gemini-2.5-pro" } });
+        assert!(gemini_body_mismatch(&count, "gemini-2.5-flash").is_some());
+        let top = json!({ "model": "gemini-2.5-pro", "contents": [] });
+        assert!(gemini_body_mismatch(&top, "gemini-2.5-flash").is_some());
+        // The same model, with or without the `models/` prefix, and bodies that name none, pass.
+        let same = json!({ "generateContentRequest": { "model": "models/gemini-2.5-flash" } });
+        assert_eq!(gemini_body_mismatch(&same, "gemini-2.5-flash"), None);
+        let bare = json!({ "model": "gemini-2.5-flash" });
+        assert_eq!(gemini_body_mismatch(&bare, "gemini-2.5-flash"), None);
+        assert_eq!(
+            gemini_body_mismatch(&json!({ "contents": [] }), "gemini-2.5-flash"),
+            None
+        );
+        let message = gemini_body_mismatch(&count, "gemini-2.5-flash").unwrap();
+        assert!(message.contains("gemini-2.5-pro") && message.contains("gemini-2.5-flash"));
     }
 
     #[test]

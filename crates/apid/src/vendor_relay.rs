@@ -5,6 +5,7 @@
 //! streams the answer back. Adding a vendor is one entry in [`VENDORS`].
 
 use std::io::{Read, Write};
+use std::time::Duration;
 
 use apz_http::{Body, Request, Response, Router};
 use secrecy::{ExposeSecret, SecretString};
@@ -51,7 +52,8 @@ const VENDORS: &[Vendor] = &[Vendor {
     allowed_host_suffix: AUGMENT_HOST,
 }];
 
-/// The vendor paths for every method the vendors' APIs use. The `{rest..}` capture keeps the vendor's
+/// The vendor paths for the methods the vendors' APIs use: GET and POST, the two a model call and a
+/// session read need. Any other method is the router's 405. The `{rest..}` capture keeps the vendor's
 /// own path whole, so the relay needs no route per vendor endpoint.
 pub fn routes(router: Router<App>) -> Router<App> {
     const PATH: &str = "/internal/v1/agents/{cid}/gateway/vendor/{rest..}";
@@ -62,16 +64,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
             })
         })
         .post(PATH, |app, req, p| {
-            authorized(app, req, p.get("cid"), |cid| {
-                relay(app, req, cid, p.get("rest"))
-            })
-        })
-        .route("PUT", PATH, |app, req, p| {
-            authorized(app, req, p.get("cid"), |cid| {
-                relay(app, req, cid, p.get("rest"))
-            })
-        })
-        .delete(PATH, |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
                 relay(app, req, cid, p.get("rest"))
             })
@@ -168,13 +160,26 @@ fn copy_through(reader: &mut impl Read, sink: &mut dyn Write) -> std::io::Result
     }
 }
 
-/// The upstream agent, built as `llm_proxy::http_agent` builds its own: a status is an answer, not an error.
+/// How long the vendor's host may take to accept a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the vendor may take to answer, and then to finish its answer. ureq 3 has no per-read limit, so this
+/// is the budget for the whole response body, counted from its headers: a stalled vendor cannot hold a hub
+/// thread forever. A stream that runs longer than this is cut.
+const READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// The upstream agent's config: a status is an answer, not an error (as `llm_proxy::http_agent`), and the
+/// connect and read limits above.
+fn upstream_config() -> ureq::config::Config {
+    ureq::config::Config::builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(READ_TIMEOUT))
+        .timeout_recv_body(Some(READ_TIMEOUT))
+        .build()
+}
+
 fn http_agent() -> ureq::Agent {
-    ureq::Agent::new_with_config(
-        ureq::config::Config::builder()
-            .http_status_as_error(false)
-            .build(),
-    )
+    ureq::Agent::new_with_config(upstream_config())
 }
 
 /// The 403 for a credential the vault would not give: a sealed vault says so, a tampered one says why,
@@ -421,6 +426,15 @@ mod tests {
 
         let empty = r#"{"accessToken":"","tenantURL":"https://acme.api.augmentcode.com/"}"#;
         assert!(augment_upstream(&secret(empty)).is_err());
+    }
+
+    #[test]
+    fn the_upstream_agent_bounds_its_connect_and_its_read() {
+        let timeouts = upstream_config().timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(15)));
+        assert_eq!(timeouts.recv_response, Some(Duration::from_secs(600)));
+        assert_eq!(timeouts.recv_body, Some(Duration::from_secs(600)));
+        assert!(!upstream_config().http_status_as_error());
     }
 
     #[test]
