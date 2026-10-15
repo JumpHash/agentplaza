@@ -73,8 +73,8 @@ impl Engine {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::OpenCode),
-            // Gemini CLI, Qwen Code, Kilo Code and Cline have no headless run: their ACP adapters are
-            // the only way they run.
+            // Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot and Goose have no headless run:
+            // their ACP adapters are the only way they run.
             "gemini" => Err(
                 "invalid input: \"engine\" is gemini: Gemini CLI runs over ACP only; switch engines_mode to acp"
                     .to_string(),
@@ -89,6 +89,14 @@ impl Engine {
             ),
             "cline" => Err(
                 "invalid input: \"engine\" is cline: Cline runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "copilot" => Err(
+                "invalid input: \"engine\" is copilot: GitHub Copilot runs over ACP only; switch engines_mode to acp"
+                    .to_string(),
+            ),
+            "goose" => Err(
+                "invalid input: \"engine\" is goose: Goose runs over ACP only; switch engines_mode to acp"
                     .to_string(),
             ),
             _ => Err(format!(
@@ -319,6 +327,9 @@ pub(crate) fn acp_launch(
         "qwen" => return Ok((engine_env(home, &qwen_route(model)?), None)),
         // Cline's model is in its saved settings (see `setup_args`), so the session is given none.
         "cline" => return Ok((engine_env(home, &Route::default()), None)),
+        // Copilot and Goose take their provider and model from the environment too.
+        "copilot" => return Ok((engine_env(home, &copilot_route(model)?), None)),
+        "goose" => return Ok((engine_env(home, &goose_route(model)?), None)),
         "opencode" => {
             let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
@@ -449,6 +460,88 @@ fn gemini_route(model: Option<&str>) -> Result<Route, String> {
         }
         env.push(("GEMINI_MODEL".to_string(), rest.to_string()));
     }
+    Ok(Route { env, model: None })
+}
+
+/// The route for GitHub Copilot CLI in its bring-your-own-key mode, which runs over ACP only: the
+/// gateway route of the model's provider (Anthropic's route for `anthropic`, the chat-completions route
+/// for `openai`, `openrouter` and `opencode`), the placeholder key, and the model without its provider
+/// as `COPILOT_MODEL`. The mode names no default model, so a call needs one. No GitHub credential is
+/// ever given: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` and `COPILOT_ALLOW_ALL` are never set
+/// by the harness, and the test below holds the launch to that.
+fn copilot_route(model: Option<&str>) -> Result<Route, String> {
+    let Some(model) = model else {
+        return Err(
+            "invalid input: Copilot needs \"model\": its bring-your-own-key mode names the model"
+                .to_string(),
+        );
+    };
+    let (provider, rest) = split_model(model)?;
+    let (provider_type, base_url) = match provider {
+        "anthropic" => ("anthropic", format!("{GATEWAY}/anthropic")),
+        "openai" | "openrouter" | "opencode" => ("openai", format!("{GATEWAY}/{provider}/v1")),
+        _ => {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Copilot takes anthropic/..., openai/..., openrouter/... or opencode/... models"
+            ));
+        }
+    };
+    let env = [
+        ("COPILOT_OFFLINE", "true".to_string()),
+        ("COPILOT_PROVIDER_TYPE", provider_type.to_string()),
+        ("COPILOT_PROVIDER_BASE_URL", base_url),
+        ("COPILOT_PROVIDER_API_KEY", "plaza".to_string()),
+        ("COPILOT_MODEL", rest.to_string()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
+    Ok(Route { env, model: None })
+}
+
+/// The route for Goose, which runs over ACP only: the placeholder key, the gateway route of the model's
+/// provider, and the model without its provider as `GOOSE_MODEL`. `anthropic` and `openrouter` are
+/// Anthropic-shaped on the gateway, so Goose's Anthropic provider takes them; `openai` and `opencode`
+/// speak chat completions, so its OpenAI provider does. The keyring is off (the VM has none) and the
+/// mode is `approve`, so Goose asks before it acts. A call needs a model: Goose names none by default.
+fn goose_route(model: Option<&str>) -> Result<Route, String> {
+    let Some(model) = model else {
+        return Err(
+            "invalid input: Goose needs \"model\": its provider and model come from it".to_string(),
+        );
+    };
+    let (provider, rest) = split_model(model)?;
+    let mut env: Vec<(String, String)> = [
+        ("GOOSE_DISABLE_KEYRING", "1"),
+        ("GOOSE_MODE", "approve"),
+        ("GOOSE_MODEL", rest),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect();
+    let provider_pairs: Vec<(&str, String)> = match provider {
+        "anthropic" | "openrouter" => vec![
+            ("GOOSE_PROVIDER", "anthropic".to_string()),
+            ("ANTHROPIC_HOST", format!("{GATEWAY}/{provider}")),
+            ("ANTHROPIC_API_KEY", "plaza".to_string()),
+        ],
+        "openai" | "opencode" => vec![
+            ("GOOSE_PROVIDER", "openai".to_string()),
+            ("OPENAI_HOST", format!("{GATEWAY}/{provider}")),
+            ("OPENAI_BASE_PATH", "v1/chat/completions".to_string()),
+            ("OPENAI_API_KEY", "plaza".to_string()),
+        ],
+        _ => {
+            return Err(format!(
+                "invalid input: \"model\" is {model:?}; Goose takes anthropic/..., openrouter/..., openai/... or opencode/... models"
+            ));
+        }
+    };
+    env.extend(
+        provider_pairs
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
+    );
     Ok(Route { env, model: None })
 }
 
@@ -1055,6 +1148,86 @@ mod tests {
         );
     }
 
+    /// The value of `key` in a launch's `KEY=VALUE` pairs.
+    fn value<'a>(env: &'a [String], key: &str) -> Option<&'a str> {
+        env.iter().find_map(|pair| {
+            pair.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('='))
+        })
+    }
+
+    #[test]
+    fn copilot_runs_its_byok_mode_through_the_gateway_with_no_github_credential() {
+        let workspace = scratch("copilot-launch");
+        let (env, model) = acp_launch(&workspace, "copilot", Some("openrouter/anthropic/claude-x"))
+            .expect("copilot");
+        assert_eq!(model, None);
+        assert_eq!(value(&env, "COPILOT_OFFLINE"), Some("true"));
+        assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("openai"));
+        assert_eq!(
+            value(&env, "COPILOT_PROVIDER_BASE_URL"),
+            Some("http://plaza.gateway/openrouter/v1")
+        );
+        assert_eq!(value(&env, "COPILOT_PROVIDER_API_KEY"), Some("plaza"));
+        assert_eq!(value(&env, "COPILOT_MODEL"), Some("anthropic/claude-x"));
+        // Copilot must never see a GitHub credential or the allow-all switch: the harness never sets
+        // them, and the bash environment it inherits is cleared of them.
+        for key in [
+            "COPILOT_GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "COPILOT_ALLOW_ALL",
+        ] {
+            assert_eq!(value(&env, key), None, "{key} is never set");
+        }
+        let (env, _) =
+            acp_launch(&workspace, "copilot", Some("anthropic/claude-x")).expect("claude");
+        assert_eq!(value(&env, "COPILOT_PROVIDER_TYPE"), Some("anthropic"));
+        assert_eq!(
+            value(&env, "COPILOT_PROVIDER_BASE_URL"),
+            Some("http://plaza.gateway/anthropic")
+        );
+        assert_eq!(value(&env, "COPILOT_MODEL"), Some("claude-x"));
+    }
+
+    #[test]
+    fn copilot_needs_a_model_on_a_provider_it_can_reach() {
+        let workspace = scratch("copilot-refused");
+        let err = acp_launch(&workspace, "copilot", None).expect_err("refused");
+        assert!(err.contains("Copilot needs \"model\""), "{err}");
+        let err = acp_launch(&workspace, "copilot", Some("gemini/x")).expect_err("refused");
+        assert!(err.contains("Copilot takes"), "{err}");
+    }
+
+    #[test]
+    fn goose_takes_its_provider_and_model_from_the_environment() {
+        let workspace = scratch("goose-launch");
+        let (env, model) =
+            acp_launch(&workspace, "goose", Some("anthropic/claude-x")).expect("goose");
+        assert_eq!(model, None);
+        assert_eq!(value(&env, "GOOSE_PROVIDER"), Some("anthropic"));
+        assert_eq!(
+            value(&env, "ANTHROPIC_HOST"),
+            Some("http://plaza.gateway/anthropic")
+        );
+        assert_eq!(value(&env, "ANTHROPIC_API_KEY"), Some("plaza"));
+        assert_eq!(value(&env, "GOOSE_MODEL"), Some("claude-x"));
+        assert_eq!(value(&env, "GOOSE_DISABLE_KEYRING"), Some("1"));
+        assert_eq!(value(&env, "GOOSE_MODE"), Some("approve"));
+        let (env, _) = acp_launch(&workspace, "goose", Some("opencode/gpt-x")).expect("goose");
+        assert_eq!(value(&env, "GOOSE_PROVIDER"), Some("openai"));
+        assert_eq!(
+            value(&env, "OPENAI_HOST"),
+            Some("http://plaza.gateway/opencode")
+        );
+        assert_eq!(value(&env, "OPENAI_BASE_PATH"), Some("v1/chat/completions"));
+        assert_eq!(value(&env, "GOOSE_MODEL"), Some("gpt-x"));
+        let err = acp_launch(&workspace, "goose", None).expect_err("refused");
+        assert!(err.contains("Goose needs \"model\""), "{err}");
+        let err = acp_launch(&workspace, "goose", Some("gemini/x")).expect_err("refused");
+        assert!(err.contains("Goose takes"), "{err}");
+    }
+
     #[test]
     fn qwen_and_kilo_are_acp_only_under_the_headless_engines() {
         let workspace = scratch("acp-only-headless");
@@ -1062,6 +1235,8 @@ mod tests {
             ("qwen", "Qwen Code"),
             ("kilo", "Kilo Code"),
             ("cline", "Cline"),
+            ("copilot", "GitHub Copilot"),
+            ("goose", "Goose"),
         ] {
             let input = json!({"engine": engine, "prompt": "p"});
             let err = Job::parse(&workspace, &input).err().expect("refused");

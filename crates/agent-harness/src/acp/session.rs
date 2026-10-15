@@ -390,7 +390,7 @@ fn run_turn(
 
     let modes = offered_modes(&reply);
     if let Some(mode) = options.mode.as_deref() {
-        let refused = entry.refused_modes.contains(&mode);
+        let refused = entry.refuses(mode);
         if refused || !modes.iter().any(|offered| offered.as_str() == mode) {
             return Err(format!(
                 "the {} engine does not offer the mode {mode}",

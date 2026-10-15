@@ -231,6 +231,13 @@ pub(crate) fn code_engine_model(
 fn model_required(input: &Value) -> Result<(), String> {
     match input.get("engine").and_then(Value::as_str) {
         Some("cline") => Err("invalid input: Cline needs \"model\"".to_string()),
+        Some("copilot") => Err(
+            "invalid input: Copilot needs \"model\": its bring-your-own-key mode names the model"
+                .to_string(),
+        ),
+        Some("goose") => Err(
+            "invalid input: Goose needs \"model\": its provider and model come from it".to_string(),
+        ),
         _ => Ok(()),
     }
 }
@@ -239,8 +246,9 @@ fn model_required(input: &Value) -> Result<(), String> {
 /// `gemini/<model>` is the one shape it takes. Qwen Code speaks chat completions and takes the three
 /// routes that serve them. Cline takes the four routes its setup maps (Anthropic-shaped
 /// `anthropic/` and `openrouter/`, and `openai/` and `opencode/`). Kilo Code takes what OpenCode
-/// takes, so it has no rule here (the route checks the provider's shape). The other engines keep
-/// their own routes.
+/// takes, so it has no rule here (the route checks the provider's shape). GitHub Copilot takes the
+/// four routes its bring-your-own-key mode maps, and Goose the four its providers map. The other
+/// engines keep their own routes.
 fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
     let provider = model.split_once('/').map(|(provider, _)| provider);
     match input.get("engine").and_then(Value::as_str) {
@@ -260,6 +268,26 @@ fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
         {
             Err(format!(
                 "invalid input: \"model\" is {model:?}; Cline takes anthropic/..., openrouter/..., openai/... or opencode/... models"
+            ))
+        }
+        Some("copilot")
+            if !matches!(
+                provider,
+                Some("anthropic" | "openai" | "openrouter" | "opencode")
+            ) =>
+        {
+            Err(format!(
+                "invalid input: \"model\" is {model:?}; Copilot takes anthropic/..., openai/..., openrouter/... or opencode/... models"
+            ))
+        }
+        Some("goose")
+            if !matches!(
+                provider,
+                Some("anthropic" | "openrouter" | "openai" | "opencode")
+            ) =>
+        {
+            Err(format!(
+                "invalid input: \"model\" is {model:?}; Goose takes anthropic/..., openrouter/..., openai/... or opencode/... models"
             ))
         }
         _ => Ok(()),
@@ -437,9 +465,9 @@ fn spec(name: &str) -> Option<ToolSpec> {
             ),
         ),
         "code_engine" => (
-            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+            "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline, copilot = GitHub Copilot, goose = Goose). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
             obj(
-                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
+                json!({"engine": {"type": "string", "enum": ["claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose"]}, "prompt": {"type": "string"}, "path": {"type": "string"}, "timeout_s": {"type": "integer", "minimum": 30, "maximum": 3600}, "model": {"type": "string", "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, GitHub Copilot `anthropic/`, `openai/`, `openrouter/` or `opencode/` models and needs one, Goose `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one). Omit it to use the default."}, "session": {"type": "string", "description": "Optional. Continue an earlier engine session: the id its summary gave."}, "mode": {"type": "string", "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."}}),
                 &["engine", "prompt"],
             ),
         ),
@@ -1366,6 +1394,34 @@ mod tests {
     }
 
     #[test]
+    fn code_engine_copilot_and_goose_take_their_provider_routes_and_need_a_model() {
+        let copilot = |model: &str| json!({"engine": "copilot", "prompt": "p", "model": model});
+        for model in [
+            "anthropic/claude-x",
+            "openai/gpt-x",
+            "openrouter/anthropic/claude-x",
+            "opencode/gpt-x",
+        ] {
+            assert!(engine_provider(&copilot(model), model).is_ok(), "{model}");
+        }
+        assert!(engine_provider(&copilot("gemini/x"), "gemini/x").is_err());
+        let err =
+            model_required(&json!({"engine": "copilot", "prompt": "p"})).expect_err("refused");
+        assert!(err.contains("Copilot needs \"model\""), "{err}");
+        let goose = |model: &str| json!({"engine": "goose", "prompt": "p", "model": model});
+        for model in [
+            "anthropic/claude-x",
+            "openrouter/anthropic/claude-x",
+            "openai/gpt-x",
+        ] {
+            assert!(engine_provider(&goose(model), model).is_ok(), "{model}");
+        }
+        assert!(engine_provider(&goose("qwen/x"), "qwen/x").is_err());
+        let err = model_required(&json!({"engine": "goose", "prompt": "p"})).expect_err("refused");
+        assert!(err.contains("Goose needs \"model\""), "{err}");
+    }
+
+    #[test]
     fn code_engine_cline_takes_the_four_routes_and_needs_a_model() {
         let ask = |model: &str| json!({"engine": "cline", "prompt": "p", "model": model});
         for model in [
@@ -1413,7 +1469,8 @@ mod tests {
         assert_eq!(
             props["engine"]["enum"],
             json!([
-                "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline"
+                "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot",
+                "goose"
             ])
         );
         assert_eq!(props["session"]["type"], "string");

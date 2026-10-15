@@ -150,12 +150,12 @@ impl BoardPauses {
 pub const DEFAULT_REVIEW_TIMEOUT_MINUTES: u32 = 30;
 
 /// The coding engines a `code_engine` call may name.
-pub const ENGINE_IDS: [&str; 7] = [
-    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline",
+pub const ENGINE_IDS: [&str; 9] = [
+    "claude", "codex", "opencode", "gemini", "qwen", "kilo", "cline", "copilot", "goose",
 ];
 
-/// The engines enabled out of the box. Gemini CLI, Qwen Code, Kilo Code and Cline are named but off
-/// until the owner enables them.
+/// The engines enabled out of the box. Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot and Goose
+/// are named but off until the owner enables them.
 pub const DEFAULT_ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// The transports `engines_mode` may name: the Agent Client Protocol, or the headless engines.

@@ -12,9 +12,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 
-use super::catalog::{self, Entry};
+use super::catalog::{self, Asset, Entry, Install};
 use super::link::EngineLink;
 use super::session::{self, Options, Outcome};
 use crate::bash::{self, Privilege};
@@ -38,6 +38,8 @@ const FILE_LINES: usize = 40;
 const SETUP_TIMEOUT_S: u64 = 60;
 const SESSIONS_FILE: &str = "engine-sessions.json";
 const CACHE_DIR: &str = "engine-cache";
+/// Where a release engine is extracted, one folder per engine and version.
+const ENGINES_DIR: &str = "/workspace/.engines";
 
 /// Runs one `code_engine` call as an ACP prompt turn and returns its summary for the model.
 pub fn run(workspace: &Workspace, input: &Value, link: &dyn EngineLink) -> Result<String, String> {
@@ -200,18 +202,42 @@ fn npm_binary(entry: &Entry) -> PathBuf {
         .join(entry.binary)
 }
 
-/// Installs the engine's pinned adapter when its binary is missing. `npm pack` fetches the exact
-/// version into the workspace's engine cache; the tarball must match the catalogue's integrity
-/// (else it is deleted and nothing is installed), and only then is it installed globally, so the
-/// bytes that run are the ones that were checked.
+/// Installs the engine when its binary is missing, by its install method. Either way the bytes that
+/// run are the ones whose checksum the catalogue names: a mismatch deletes the download and installs
+/// nothing.
 fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
     let binary = npm_binary(entry);
     if binary.exists() {
         return Ok(());
     }
+    match entry.install {
+        Install::Npm {
+            package,
+            version,
+            integrity,
+        } => install_npm(workspace, entry, package, version, integrity),
+        Install::Release {
+            version,
+            assets,
+            binary_path,
+        } => install_release(workspace, entry, version, assets, binary_path),
+    }
+}
+
+/// Installs an npm package's pinned version. `npm pack` fetches the exact version into the
+/// workspace's engine cache; the tarball must match the catalogue's integrity (else it is deleted and
+/// nothing is installed), and only then is it installed globally.
+fn install_npm(
+    workspace: &Workspace,
+    entry: &Entry,
+    package: &str,
+    version: &str,
+    integrity: &str,
+) -> Result<(), String> {
+    let binary = npm_binary(entry);
     engines::ensure_node(workspace)
         .map_err(|err| format!("cannot install nodejs and npm for {}: {err}", entry.id))?;
-    let spec = format!("{}@{}", entry.package, entry.version);
+    let spec = format!("{package}@{version}");
     let cache = workspace.plaza_dir().join(CACHE_DIR);
     files::create_dirs(&cache)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
@@ -232,7 +258,7 @@ fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
         .ok_or_else(|| format!("cannot download {spec}: npm packed no tarball"))?;
     let tarball = cache.join(name);
     let bytes = std::fs::read(&tarball).map_err(|err| format!("cannot read {spec}: {err}"))?;
-    if !integrity_matches(&bytes, entry.integrity) {
+    if !integrity_matches(&bytes, integrity) {
         let _ = std::fs::remove_file(&tarball);
         return Err(format!("integrity mismatch for {spec}"));
     }
@@ -258,6 +284,124 @@ fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
             binary.display()
         ))
     }
+}
+
+/// Installs a release archive: the asset for this VM's architecture is downloaded into the engine
+/// cache, checked against its sha256 (else it is deleted and nothing is installed), extracted into the
+/// engine's own folder, and its binary copied into the npm prefix's `bin`, where the launch looks.
+fn install_release(
+    workspace: &Workspace,
+    entry: &Entry,
+    version: &str,
+    assets: &[Asset],
+    binary_path: &str,
+) -> Result<(), String> {
+    let spec = format!("{} {version}", entry.id);
+    let arch = std::env::consts::ARCH;
+    let asset = asset_for(assets, arch)
+        .ok_or_else(|| format!("cannot install {spec}: no build for {arch}"))?;
+    bash::install_packages(workspace, &json!({ "packages": ["curl"] }))
+        .map_err(|err| format!("cannot install curl for {spec}: {err}"))?;
+    let cache = workspace.plaza_dir().join(CACHE_DIR);
+    files::create_dirs(&cache)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
+    let archive = cache.join(archive_name(asset.url));
+    bash::execute(
+        workspace.dir(),
+        "curl",
+        &[
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "-o",
+            text_path(&archive)?,
+            asset.url,
+        ],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
+    let bytes = std::fs::read(&archive).map_err(|err| format!("cannot read {spec}: {err}"))?;
+    if !sha256_matches(&bytes, asset.sha256) {
+        let _ = std::fs::remove_file(&archive);
+        return Err(format!("integrity mismatch for {} {version}", entry.id));
+    }
+    let dir = release_dir(entry.id, version);
+    files::create_dirs(&dir)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
+    bash::execute(
+        workspace.dir(),
+        "tar",
+        &["-xzf", text_path(&archive)?, "-C", text_path(&dir)?],
+        engines::INSTALL_TIMEOUT_S,
+        Privilege::Agent,
+    )
+    .map_err(|err| format!("cannot extract {spec}: {}", engines::tail(&err)))?;
+    let found = find_binary(&dir, binary_path)
+        .ok_or_else(|| format!("{spec} has no {binary_path} in its archive"))?;
+    let binary = npm_binary(entry);
+    if let Some(bin_dir) = binary.parent() {
+        files::create_dirs(bin_dir)
+            .map_err(|err| format!("unavailable: cannot create {}: {err}", bin_dir.display()))?;
+    }
+    std::fs::copy(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
+    Ok(())
+}
+
+/// The release archive for `arch` (`std::env::consts::ARCH`), if the engine ships one for it.
+fn asset_for<'a>(assets: &'a [Asset], arch: &str) -> Option<&'a Asset> {
+    assets.iter().find(|asset| asset.arch == arch)
+}
+
+/// The file name a release archive is downloaded under: the last segment of its URL.
+fn archive_name(url: &str) -> &str {
+    url.rsplit('/').next().unwrap_or("engine-release.tar.gz")
+}
+
+/// The folder a release is extracted into: `/workspace/.engines/<id>-<version>`.
+fn release_dir(id: &str, version: &str) -> PathBuf {
+    Path::new(ENGINES_DIR).join(format!("{id}-{version}"))
+}
+
+/// True when `bytes` hash to `sha256` (lowercase hex).
+fn sha256_matches(bytes: &[u8], sha256: &str) -> bool {
+    let digest: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    digest == sha256
+}
+
+/// The binary in an extracted archive: at `binary_path` under `dir` when the archive keeps it there,
+/// else the first file of that name found anywhere under `dir`.
+fn find_binary(dir: &Path, binary_path: &str) -> Option<PathBuf> {
+    let direct = dir.join(binary_path);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    find_named(dir, Path::new(binary_path).file_name()?)
+}
+
+/// The first file named `name` under `dir`, searching its folders depth first. Symbolic links are not
+/// followed, so a link in the archive cannot send the search outside it.
+fn find_named(dir: &Path, name: &std::ffi::OsStr) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            if let Some(found) = find_named(&path, name) {
+                return Some(found);
+            }
+        } else if file_type.is_file() && path.file_name() == Some(name) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn text_path(path: &Path) -> Result<&str, String> {
@@ -617,6 +761,61 @@ mod tests {
         .err()
         .expect("another engine's session");
         assert_eq!(err, "unknown engine session \"abc\" for codex");
+    }
+
+    #[test]
+    fn a_release_is_picked_for_the_vms_architecture_only() {
+        let goose = catalog::entry("goose").expect("goose");
+        let Install::Release { assets, .. } = goose.install else {
+            panic!("goose is a release install");
+        };
+        assert!(
+            asset_for(assets, "x86_64")
+                .expect("x86_64")
+                .url
+                .ends_with("x86_64-unknown-linux-musl.tar.gz")
+        );
+        assert!(
+            asset_for(assets, "aarch64")
+                .expect("aarch64")
+                .url
+                .ends_with("aarch64-unknown-linux-musl.tar.gz")
+        );
+        assert!(asset_for(assets, "riscv64").is_none());
+    }
+
+    #[test]
+    fn a_release_archive_must_hash_to_its_sha256_in_lowercase_hex() {
+        // SHA-256 of "abc" (FIPS 180-2 example).
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(sha256_matches(b"abc", abc));
+        assert!(!sha256_matches(b"abd", abc));
+        assert!(!sha256_matches(b"abc", &abc.to_uppercase()));
+    }
+
+    #[test]
+    fn a_release_extracts_into_its_own_folder_and_is_named_by_its_url_tail() {
+        assert_eq!(
+            release_dir("goose", "1.52.0"),
+            Path::new("/workspace/.engines/goose-1.52.0")
+        );
+        assert_eq!(
+            archive_name("https://example.com/a/goose-x86_64.tar.gz"),
+            "goose-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn the_binary_is_found_where_the_archive_keeps_it_or_in_a_folder() {
+        let workspace = scratch("release-binary");
+        let dir = workspace.dir().join("extracted");
+        std::fs::create_dir_all(dir.join("goose-1.52.0/bin")).expect("a folder");
+        std::fs::write(dir.join("goose-1.52.0/bin/goose"), b"#!/bin/sh\n").expect("a file");
+        std::fs::write(dir.join("README"), b"").expect("a file");
+        let nested = dir.join("goose-1.52.0/bin/goose");
+        assert_eq!(find_binary(&dir, "goose"), Some(nested.clone()));
+        assert_eq!(find_binary(&dir, "bin/goose"), Some(nested));
+        assert_eq!(find_binary(&dir, "missing"), None);
     }
 
     #[test]
