@@ -76,17 +76,33 @@ pub fn spawn(app: Arc<App>) {
     });
 }
 
-/// One pass over the roster. Each run is read once per pass; noded errors
-/// skip the affected agents for this pass only.
+/// One pass over the roster. The runs come from one `GET /v1/runs` per pass;
+/// when that read fails the whole pass is skipped. Offline and asleep agents
+/// are skipped (only offline ones lose their idle clock).
 fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
     if !app.settings.get().memory_autoscale {
         return;
     }
     let now = apz_plaza::now_ms();
-    let mut runs: HashMap<String, Option<Value>> = HashMap::new();
-    for agent in app.agents.list() {
+    let agents = app.agents.list();
+    let needs_runs = agents.iter().any(|agent| {
+        !matches!(agent.status, Status::Offline | Status::Asleep)
+            && agent.run.is_some()
+            && agent.vm.is_some()
+    });
+    let runs = if needs_runs {
+        let Some(runs) = list_runs(app) else {
+            return;
+        };
+        runs
+    } else {
+        HashMap::new()
+    };
+    for agent in agents {
         if agent.status == Status::Offline {
             last_busy.remove(&agent.cid);
+        }
+        if matches!(agent.status, Status::Offline | Status::Asleep) {
             continue;
         }
         let working = agent.status == Status::Working;
@@ -98,10 +114,7 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
         let (Some(run), Some(_)) = (agent.run.clone(), agent.vm) else {
             continue;
         };
-        let cached = runs
-            .entry(run.clone())
-            .or_insert_with(|| read_run(app, &run));
-        let Some(view) = cached.as_ref() else {
+        let Some(view) = runs.get(&run) else {
             continue;
         };
         // Agents are placed by guest CID (see agents::reconcile_once).
@@ -160,12 +173,24 @@ fn pass(app: &App, last_busy: &mut BTreeMap<u64, u64>) {
     }
 }
 
-/// `GET /v1/runs/{run}` from noded, or `None` when it is not available.
-fn read_run(app: &App, run: &str) -> Option<Value> {
-    match app.noded.get(&format!("/v1/runs/{run}")) {
-        Ok((200, body)) => Some(body),
-        _ => None,
-    }
+/// `GET /v1/runs` from noded, as each run's view by run id. noded answers
+/// `{"runs": [view, ...]}`; `None` when the list is not available.
+fn list_runs(app: &App) -> Option<HashMap<String, Value>> {
+    let mut body = match app.noded.get("/v1/runs") {
+        Ok((200, body)) => body,
+        _ => return None,
+    };
+    let Value::Array(runs) = body["runs"].take() else {
+        return None;
+    };
+    Some(
+        runs.into_iter()
+            .filter_map(|run| {
+                let id = run["id"].as_str()?.to_string();
+                Some((id, run))
+            })
+            .collect(),
+    )
 }
 
 fn mib(value: &Value) -> Option<u32> {
