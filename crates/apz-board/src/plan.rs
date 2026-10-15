@@ -726,58 +726,123 @@ mod tests {
     }
 
     #[test]
-    fn flat_square_plans_a_path() {
-        let set = WalkSet {
-            surfaces: vec![surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open())],
-            links: vec![],
-        };
-        let g = build(&set);
-        let p = plan_grid(&g, [0.3, 0.3], [1.7, 1.7]).expect("a path");
-        assert!(p.cost > 0.0);
-        assert_eq!(p.points.first().unwrap().x, 0.3);
-        assert_eq!(p.points.last().unwrap().z, 1.7);
-        assert!(
-            p.points
-                .iter()
-                .all(|pt| pt.edge.is_none() && pt.portal == -1)
-        );
-    }
+    fn grid_planner_plans_and_refuses_routes() {
+        // flat_square_plans_a_path: a flat 2 by 2 square gets a path from start to end, with no edge or portal points.
+        {
+            let set = WalkSet {
+                surfaces: vec![surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open())],
+                links: vec![],
+            };
+            let g = build(&set);
+            let p = plan_grid(&g, [0.3, 0.3], [1.7, 1.7]).expect("a path");
+            assert!(p.cost > 0.0);
+            assert_eq!(p.points.first().unwrap().x, 0.3);
+            assert_eq!(p.points.last().unwrap().z, 1.7);
+            assert!(
+                p.points
+                    .iter()
+                    .all(|pt| pt.edge.is_none() && pt.portal == -1)
+            );
+        }
 
-    #[test]
-    fn step_of_0_2_across_a_step_link_is_walked() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
-                surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane::flat(0.2), open()),
-            ],
-            links: vec![link(0, 1, LinkKind::Step, [2.0, 1.0])],
-        };
-        let g = build(&set);
-        let p = plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).expect("a walk across the step");
-        assert!(p.points.iter().any(|pt| (pt.y - 0.2).abs() < 1e-9));
-        assert!(p.points.iter().all(|pt| pt.edge.is_none()));
-    }
+        // step_of_0_2_across_a_step_link_is_walked: a 0.2 step over a Step link is walked, with no edge points.
+        {
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
+                    surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane::flat(0.2), open()),
+                ],
+                links: vec![link(0, 1, LinkKind::Step, [2.0, 1.0])],
+            };
+            let g = build(&set);
+            let p = plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).expect("a walk across the step");
+            assert!(p.points.iter().any(|pt| (pt.y - 0.2).abs() < 1e-9));
+            assert!(p.points.iter().all(|pt| pt.edge.is_none()));
+        }
 
-    #[test]
-    fn rise_of_0_5_is_a_jump_edge() {
-        let g = build(&jump_set());
-        let p = plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).expect("a jump");
-        assert!(p.points.iter().any(|pt| pt.edge == Some(Edge::Jump)));
-    }
+        // rise_of_0_5_is_a_jump_edge: a 0.5 rise is planned as a Jump edge.
+        {
+            let g = build(&jump_set());
+            let p = plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).expect("a jump");
+            assert!(p.points.iter().any(|pt| pt.edge == Some(Edge::Jump)));
+        }
 
-    #[test]
-    fn rise_of_1_0_with_a_step_link_is_not_planned() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
-                surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane::flat(1.0), open()),
-            ],
-            links: vec![link(0, 1, LinkKind::Step, [2.0, 1.0])],
-        };
-        let g = build(&set);
-        assert!(plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).is_none());
-        assert!(plan_grid(&g, [3.0, 1.0], [1.0, 1.0]).is_none());
-        assert!(plan(&g, [1.0, 1.0], [3.0, 1.0]).is_none());
+        // rise_of_1_0_with_a_step_link_is_not_planned: a 1.0 rise over a Step link is refused both ways and by both planners.
+        {
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
+                    surf(1, rect(2.0, 0.0, 4.0, 2.0), Plane::flat(1.0), open()),
+                ],
+                links: vec![link(0, 1, LinkKind::Step, [2.0, 1.0])],
+            };
+            let g = build(&set);
+            assert!(plan_grid(&g, [1.0, 1.0], [3.0, 1.0]).is_none());
+            assert!(plan_grid(&g, [3.0, 1.0], [1.0, 1.0]).is_none());
+            assert!(plan(&g, [1.0, 1.0], [3.0, 1.0]).is_none());
+        }
+
+        // lift_portal_joins_two_landings: a Lift link joins two landings with one portal, and a ride up is planned.
+        {
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
+                    surf(1, rect(4.0, 0.0, 6.0, 2.0), Plane::flat(2.0), open()),
+                ],
+                links: vec![link(0, 1, LinkKind::Lift, [2.0, 1.0])],
+            };
+            let g = build(&set);
+            assert_eq!(g.portals.len(), 1);
+            let pt = &g.portals[0];
+            assert_eq!(pt.kind, LinkKind::Lift);
+            assert!((pt.cost - (4.0 + 2.0)).abs() < 1e-9);
+            assert_eq!(g.component_of(pt.a), g.component_of(pt.b));
+
+            let p = plan_grid(&g, [0.5, 1.0], [5.0, 1.0]).expect("a ride up");
+            assert!(p.points.iter().any(|q| q.portal == 0));
+            assert!(p.cost >= 6.0);
+        }
+
+        // walled_block_is_planned_round: a walled raised plate is planned round its top, longer than straight.
+        {
+            // A floor with a raised plate in its middle. The plate's sides are walls, so the straight route is cut and A*
+            // goes round the top of the plate (z above 4).
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(0, rect(0.0, 0.0, 6.0, 6.0), Plane::flat(0.0), open()),
+                    surf(
+                        1,
+                        rect(2.0, 0.0, 4.0, 4.0),
+                        Plane::flat(1.0),
+                        vec![Side::Walled; 4],
+                    ),
+                ],
+                links: vec![],
+            };
+            let g = build(&set);
+            let straight = ((5.5f64 - 0.5).powi(2)).sqrt();
+            let p = plan_grid(&g, [0.5, 3.0], [5.5, 3.0]).expect("a way round");
+            assert!(p.cost > straight);
+            assert!(
+                p.points
+                    .iter()
+                    .all(|q| !(q.x > 2.0 && q.x < 4.0) || q.z > 4.0)
+            );
+        }
+
+        // unreachable_island_has_no_path: two islands with no link have no path from either planner.
+        {
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
+                    surf(1, rect(5.0, 0.0, 7.0, 2.0), Plane::flat(0.0), open()),
+                ],
+                links: vec![],
+            };
+            let g = build(&set);
+            assert!(plan_grid(&g, [1.0, 1.0], [6.0, 1.0]).is_none());
+            assert!(plan(&g, [1.0, 1.0], [6.0, 1.0]).is_none());
+        }
     }
 
     #[test]
@@ -805,93 +870,24 @@ mod tests {
     }
 
     #[test]
-    fn lift_portal_joins_two_landings() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
-                surf(1, rect(4.0, 0.0, 6.0, 2.0), Plane::flat(2.0), open()),
-            ],
-            links: vec![link(0, 1, LinkKind::Lift, [2.0, 1.0])],
-        };
-        let g = build(&set);
-        assert_eq!(g.portals.len(), 1);
-        let pt = &g.portals[0];
-        assert_eq!(pt.kind, LinkKind::Lift);
-        assert!((pt.cost - (4.0 + 2.0)).abs() < 1e-9);
-        assert_eq!(g.component_of(pt.a), g.component_of(pt.b));
+    fn planners_are_deterministic() {
+        // plan_twice_is_equal: the grid planner gives equal plans for the same input.
+        {
+            let g = build(&drop_set());
+            assert_eq!(
+                plan_grid(&g, [1.0, 1.0], [3.0, 1.0]),
+                plan_grid(&g, [1.0, 1.0], [3.0, 1.0])
+            );
+        }
 
-        let p = plan_grid(&g, [0.5, 1.0], [5.0, 1.0]).expect("a ride up");
-        assert!(p.points.iter().any(|q| q.portal == 0));
-        assert!(p.cost >= 6.0);
-    }
-
-    #[test]
-    fn walled_block_is_planned_round() {
-        // A floor with a raised plate in its middle. The plate's sides are walls, so the straight route is cut and A*
-        // goes round the top of the plate (z above 4).
-        let set = WalkSet {
-            surfaces: vec![
-                surf(0, rect(0.0, 0.0, 6.0, 6.0), Plane::flat(0.0), open()),
-                surf(
-                    1,
-                    rect(2.0, 0.0, 4.0, 4.0),
-                    Plane::flat(1.0),
-                    vec![Side::Walled; 4],
-                ),
-            ],
-            links: vec![],
-        };
-        let g = build(&set);
-        let straight = ((5.5f64 - 0.5).powi(2)).sqrt();
-        let p = plan_grid(&g, [0.5, 3.0], [5.5, 3.0]).expect("a way round");
-        assert!(p.cost > straight);
-        assert!(
-            p.points
-                .iter()
-                .all(|q| !(q.x > 2.0 && q.x < 4.0) || q.z > 4.0)
-        );
-    }
-
-    #[test]
-    fn unreachable_island_has_no_path() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(0, rect(0.0, 0.0, 2.0, 2.0), Plane::flat(0.0), open()),
-                surf(1, rect(5.0, 0.0, 7.0, 2.0), Plane::flat(0.0), open()),
-            ],
-            links: vec![],
-        };
-        let g = build(&set);
-        assert!(plan_grid(&g, [1.0, 1.0], [6.0, 1.0]).is_none());
-        assert!(plan(&g, [1.0, 1.0], [6.0, 1.0]).is_none());
-    }
-
-    #[test]
-    fn plan_twice_is_equal() {
-        let g = build(&drop_set());
-        assert_eq!(
-            plan_grid(&g, [1.0, 1.0], [3.0, 1.0]),
-            plan_grid(&g, [1.0, 1.0], [3.0, 1.0])
-        );
-    }
-
-    #[test]
-    fn edge_cost_gives_the_jump_and_the_drop_and_refuses_the_rest() {
-        let g = build(&jump_set());
-        let a = g.cell_at(1.875, 1.0).unwrap();
-        let b = g.cell_at(2.125, 1.0).unwrap();
-        let east = DIRS8.iter().position(|&d| d == (1, 0)).unwrap();
-        let west = DIRS8.iter().position(|&d| d == (-1, 0)).unwrap();
-        let up = edge_cost(&g, a, east).expect("a jump up is a move");
-        assert_eq!((up.0, up.2), (b, Some(Edge::Jump)));
-        assert!((up.1 - (g.cell * g.cost[b] + JUMP_COST * g.cell)).abs() < 1e-12);
-        let down = edge_cost(&g, b, west).expect("a two-way step down is a move");
-        assert_eq!((down.0, down.2), (a, Some(Edge::StepDown)));
-        let walk = edge_cost(&g, a, west).expect("a walk step on the low floor");
-        assert_eq!(walk.2, None);
-        // A move off the far edge of the high floor (no walk cell beyond it) gives no edge.
-        let edge = g.cell_at(3.875, 1.0).unwrap();
-        assert!(edge_cost(&g, edge, east).is_none());
+        // theta_is_deterministic: the theta planner gives equal plans for the same input.
+        {
+            let g = build(&wall_set());
+            assert_eq!(
+                plan(&g, [1.0, 2.0], [11.0, 2.0]),
+                plan(&g, [1.0, 2.0], [11.0, 2.0])
+            );
+        }
     }
 
     #[test]
@@ -930,196 +926,193 @@ mod tests {
     }
 
     #[test]
-    fn theta_open_ground_is_straight_within_2_percent() {
-        let set = WalkSet {
-            surfaces: vec![surf(
-                0,
-                rect(0.0, 0.0, 10.0, 10.0),
-                Plane::flat(0.0),
-                open(),
-            )],
-            links: vec![],
-        };
-        let g = build(&set);
-        let (from, to) = ([0.6, 0.9], [9.1, 7.3]);
-        let p = plan(&g, from, to).expect("a path");
-        let straight = dist(from, to);
-        let len = polyline(&p.points);
-        eprintln!(
-            "theta open ground: length {len:.4} straight {straight:.4} ratio {:.4}",
-            len / straight
-        );
-        assert!(
-            len <= 1.02 * straight,
-            "length {len} against straight {straight}"
-        );
-        assert!(all_walk(&g, &p.points));
-    }
-
-    #[test]
-    fn theta_around_one_wall_is_within_5_percent_of_the_polyline() {
-        // The inflated block is x 3.5 to 6.5, z 0 to 8.5 (the wall, its blocked cells and one ring of inflation), so the
-        // true shortest polyline from (1, 2) to (11, 2) goes round its top corners:
-        //   (1, 2) -> (3.5, 8.5) -> (6.5, 8.5) -> (11, 2)
-        // with length sqrt(48.5) + 3 + sqrt(62.5) = 17.870. A sight line cannot touch the inflated corner cell itself,
-        // so the planner bends at the cell centres just outside it; the bound allows that.
-        let g = build(&wall_set());
-        let p = plan(&g, [1.0, 2.0], [11.0, 2.0]).expect("a way round");
-        let reference = (48.5f64).sqrt() + 3.0 + (62.5f64).sqrt();
-        let len = polyline(&p.points);
-        eprintln!(
-            "theta round one wall: length {len:.4} polyline {reference:.4} ratio {:.4}",
-            len / reference
-        );
-        assert!(
-            len <= 1.05 * reference,
-            "length {len} against polyline {reference}"
-        );
-        assert!(all_walk(&g, &p.points));
-        let grid_len = polyline(&plan_grid(&g, [1.0, 2.0], [11.0, 2.0]).unwrap().points);
-        assert!(
-            len <= grid_len + 1e-9,
-            "theta {len} must not be longer than the grid path {grid_len}"
-        );
-    }
-
-    #[test]
-    fn theta_never_cuts_a_walled_corner() {
-        // The straight line from (2, 7) to (8, 9) runs through the inflated block's top corner. The path must go round
-        // the corner at (3.5, 8.5) and (6.5, 8.5): reference length sqrt(4.5) + 3 + sqrt(2.25 + 0.25) (about 6.70).
-        let g = build(&wall_set());
-        assert!(
-            !sight(&g, [2.0, 7.0], [8.0, 9.0]),
-            "the straight line is not a sight line"
-        );
-        let p = plan(&g, [2.0, 7.0], [8.0, 9.0]).expect("a way round");
-        assert!(
-            all_walk(&g, &p.points),
-            "no segment touches a blocked or inflated cell"
-        );
-        let reference = (4.5f64).sqrt() + 3.0 + (2.5f64).sqrt();
-        let len = polyline(&p.points);
-        eprintln!(
-            "theta walled corner: length {len:.4} polyline {reference:.4} ratio {:.4}",
-            len / reference
-        );
-        assert!(
-            len <= 1.05 * reference,
-            "length {len} against polyline {reference}"
-        );
-        assert!(len > dist([2.0, 7.0], [8.0, 9.0]));
-    }
-
-    #[test]
-    fn theta_keeps_a_jump_as_a_waypoint() {
-        let g = build(&jump_set());
-        assert!(
-            !sight(&g, [1.0, 1.0], [3.0, 1.0]),
-            "a straight line over the jump is refused"
-        );
-        assert!(!sight(&g, [1.7, 1.0], [2.3, 1.0]));
-        let p = plan(&g, [1.0, 1.0], [3.0, 1.0]).expect("a jump");
-        let jump = p
-            .points
-            .iter()
-            .find(|q| q.edge == Some(Edge::Jump))
-            .expect("the jump is kept");
-        assert!(jump.x > 2.0 && (jump.y - 0.5).abs() < 1e-9);
-    }
-
-    #[test]
-    fn theta_keeps_a_drop_as_a_waypoint() {
-        let g = build(&drop_set());
-        assert!(
-            !sight(&g, [1.0, 1.0], [3.0, 1.0]),
-            "a straight line over the drop is refused"
-        );
-        let down = plan(&g, [1.0, 1.0], [3.0, 1.0]).expect("the drop is planned");
-        let drop = down
-            .points
-            .iter()
-            .find(|q| q.edge == Some(Edge::Drop))
-            .expect("the drop is kept");
-        assert!(drop.x > 2.0 && drop.y.abs() < 1e-9);
-
-        let up = plan(&g, [3.0, 1.0], [1.0, 1.0]).expect("the way round");
-        assert!(
-            up.points
-                .windows(2)
-                .all(|w| !(w[0].x > 2.0 && w[1].x < 2.0 && w[0].z < 2.0 && w[1].z < 2.0))
-        );
-    }
-
-    #[test]
-    fn theta_keeps_a_lift_portal_as_a_waypoint() {
-        // The two landings touch across x = 2: the only way between them is the lift, so a sight line is refused and the
-        // portal entry stays a waypoint.
-        let g = build(&lift_set(rect(2.0, 0.0, 4.0, 2.0), open()));
-        assert_eq!(g.portals.len(), 1);
-        assert!(
-            !sight(&g, [1.7, 1.0], [2.3, 1.0]),
-            "a sight line over the portal is refused"
-        );
-        let p = plan(&g, [0.5, 1.0], [3.5, 1.0]).expect("a ride up");
-        assert!(
-            p.points.iter().any(|q| q.portal == 0),
-            "the portal waypoint is kept"
-        );
-        assert!(p.cost >= 6.0);
-    }
-
-    #[test]
-    fn theta_lift_over_air_or_blocked_has_no_path() {
-        let air = build(&lift_set(rect(4.0, 0.0, 4.1, 2.0), open()));
-        let blocked = build(&lift_set(rect(4.0, 0.0, 4.2, 2.0), vec![Side::Walled; 4]));
-        for g in [&air, &blocked] {
-            assert!(g.portals.is_empty());
-            assert!(plan(g, [0.5, 1.0], [4.05, 1.0]).is_none());
-            assert!(plan_grid(g, [0.5, 1.0], [4.05, 1.0]).is_none());
-            assert!(
-                plan(g, [0.5, 1.0], [1.5, 1.0]).is_some(),
-                "the bottom landing still plans"
+    fn theta_paths_are_short_and_agree_with_the_grid() {
+        // theta_open_ground_is_straight_within_2_percent: open ground gives a path within 2 percent of straight, and every segment walks.
+        {
+            let set = WalkSet {
+                surfaces: vec![surf(
+                    0,
+                    rect(0.0, 0.0, 10.0, 10.0),
+                    Plane::flat(0.0),
+                    open(),
+                )],
+                links: vec![],
+            };
+            let g = build(&set);
+            let (from, to) = ([0.6, 0.9], [9.1, 7.3]);
+            let p = plan(&g, from, to).expect("a path");
+            let straight = dist(from, to);
+            let len = polyline(&p.points);
+            eprintln!(
+                "theta open ground: length {len:.4} straight {straight:.4} ratio {:.4}",
+                len / straight
             );
+            assert!(
+                len <= 1.02 * straight,
+                "length {len} against straight {straight}"
+            );
+            assert!(all_walk(&g, &p.points));
+        }
+
+        // theta_around_one_wall_is_within_5_percent_of_the_polyline: round one wall the path is within 5 percent of the polyline and no longer than the grid path.
+        {
+            // The inflated block is x 3.5 to 6.5, z 0 to 8.5 (the wall, its blocked cells and one ring of inflation), so the
+            // true shortest polyline from (1, 2) to (11, 2) goes round its top corners:
+            //   (1, 2) -> (3.5, 8.5) -> (6.5, 8.5) -> (11, 2)
+            // with length sqrt(48.5) + 3 + sqrt(62.5) = 17.870. A sight line cannot touch the inflated corner cell itself,
+            // so the planner bends at the cell centres just outside it; the bound allows that.
+            let g = build(&wall_set());
+            let p = plan(&g, [1.0, 2.0], [11.0, 2.0]).expect("a way round");
+            let reference = (48.5f64).sqrt() + 3.0 + (62.5f64).sqrt();
+            let len = polyline(&p.points);
+            eprintln!(
+                "theta round one wall: length {len:.4} polyline {reference:.4} ratio {:.4}",
+                len / reference
+            );
+            assert!(
+                len <= 1.05 * reference,
+                "length {len} against polyline {reference}"
+            );
+            assert!(all_walk(&g, &p.points));
+            let grid_len = polyline(&plan_grid(&g, [1.0, 2.0], [11.0, 2.0]).unwrap().points);
+            assert!(
+                len <= grid_len + 1e-9,
+                "theta {len} must not be longer than the grid path {grid_len}"
+            );
+        }
+
+        // theta_never_cuts_a_walled_corner: the path goes round the walled corner and no segment touches a blocked cell.
+        {
+            // The straight line from (2, 7) to (8, 9) runs through the inflated block's top corner. The path must go round
+            // the corner at (3.5, 8.5) and (6.5, 8.5): reference length sqrt(4.5) + 3 + sqrt(2.25 + 0.25) (about 6.70).
+            let g = build(&wall_set());
+            assert!(
+                !sight(&g, [2.0, 7.0], [8.0, 9.0]),
+                "the straight line is not a sight line"
+            );
+            let p = plan(&g, [2.0, 7.0], [8.0, 9.0]).expect("a way round");
+            assert!(
+                all_walk(&g, &p.points),
+                "no segment touches a blocked or inflated cell"
+            );
+            let reference = (4.5f64).sqrt() + 3.0 + (2.5f64).sqrt();
+            let len = polyline(&p.points);
+            eprintln!(
+                "theta walled corner: length {len:.4} polyline {reference:.4} ratio {:.4}",
+                len / reference
+            );
+            assert!(
+                len <= 1.05 * reference,
+                "length {len} against polyline {reference}"
+            );
+            assert!(len > dist([2.0, 7.0], [8.0, 9.0]));
+        }
+
+        // theta_and_grid_agree_where_theta_cannot_improve: on open ground theta matches the grid's cost and length, with two waypoints.
+        {
+            // Two cell centres on one row of open ground: the grid path is already straight, so Theta* gives the same length
+            // with its two ends as the only waypoints.
+            let set = WalkSet {
+                surfaces: vec![surf(
+                    0,
+                    rect(0.0, 0.0, 10.0, 10.0),
+                    Plane::flat(0.0),
+                    open(),
+                )],
+                links: vec![],
+            };
+            let g = build(&set);
+            let from = g.cell_centre(g.cell_at(1.0, 4.0).unwrap());
+            let to = g.cell_centre(g.cell_at(8.0, 4.0).unwrap());
+            let grid = plan_grid(&g, from, to).expect("a grid path");
+            let theta = plan(&g, from, to).expect("a theta path");
+            assert!(
+                (grid.cost - theta.cost).abs() < 1e-9,
+                "costs {} and {}",
+                grid.cost,
+                theta.cost
+            );
+            assert!((polyline(&grid.points) - polyline(&theta.points)).abs() < 1e-9);
+            assert_eq!(theta.points.len(), 2);
+            assert_eq!((theta.points[0].x, theta.points[0].z), (from[0], from[1]));
+            assert_eq!((theta.points[1].x, theta.points[1].z), (to[0], to[1]));
         }
     }
 
     #[test]
-    fn theta_is_deterministic() {
-        let g = build(&wall_set());
-        assert_eq!(
-            plan(&g, [1.0, 2.0], [11.0, 2.0]),
-            plan(&g, [1.0, 2.0], [11.0, 2.0])
-        );
-    }
+    fn theta_waypoints_and_lift_refusals() {
+        // theta_keeps_a_jump_as_a_waypoint: a jump stays a waypoint.
+        {
+            let g = build(&jump_set());
+            assert!(
+                !sight(&g, [1.0, 1.0], [3.0, 1.0]),
+                "a straight line over the jump is refused"
+            );
+            assert!(!sight(&g, [1.7, 1.0], [2.3, 1.0]));
+            let p = plan(&g, [1.0, 1.0], [3.0, 1.0]).expect("a jump");
+            let jump = p
+                .points
+                .iter()
+                .find(|q| q.edge == Some(Edge::Jump))
+                .expect("the jump is kept");
+            assert!(jump.x > 2.0 && (jump.y - 0.5).abs() < 1e-9);
+        }
 
-    #[test]
-    fn theta_and_grid_agree_where_theta_cannot_improve() {
-        // Two cell centres on one row of open ground: the grid path is already straight, so Theta* gives the same length
-        // with its two ends as the only waypoints.
-        let set = WalkSet {
-            surfaces: vec![surf(
-                0,
-                rect(0.0, 0.0, 10.0, 10.0),
-                Plane::flat(0.0),
-                open(),
-            )],
-            links: vec![],
-        };
-        let g = build(&set);
-        let from = g.cell_centre(g.cell_at(1.0, 4.0).unwrap());
-        let to = g.cell_centre(g.cell_at(8.0, 4.0).unwrap());
-        let grid = plan_grid(&g, from, to).expect("a grid path");
-        let theta = plan(&g, from, to).expect("a theta path");
-        assert!(
-            (grid.cost - theta.cost).abs() < 1e-9,
-            "costs {} and {}",
-            grid.cost,
-            theta.cost
-        );
-        assert!((polyline(&grid.points) - polyline(&theta.points)).abs() < 1e-9);
-        assert_eq!(theta.points.len(), 2);
-        assert_eq!((theta.points[0].x, theta.points[0].z), (from[0], from[1]));
-        assert_eq!((theta.points[1].x, theta.points[1].z), (to[0], to[1]));
+        // theta_keeps_a_drop_as_a_waypoint: a drop stays a waypoint and the way back up goes round.
+        {
+            let g = build(&drop_set());
+            assert!(
+                !sight(&g, [1.0, 1.0], [3.0, 1.0]),
+                "a straight line over the drop is refused"
+            );
+            let down = plan(&g, [1.0, 1.0], [3.0, 1.0]).expect("the drop is planned");
+            let drop = down
+                .points
+                .iter()
+                .find(|q| q.edge == Some(Edge::Drop))
+                .expect("the drop is kept");
+            assert!(drop.x > 2.0 && drop.y.abs() < 1e-9);
+
+            let up = plan(&g, [3.0, 1.0], [1.0, 1.0]).expect("the way round");
+            assert!(
+                up.points
+                    .windows(2)
+                    .all(|w| !(w[0].x > 2.0 && w[1].x < 2.0 && w[0].z < 2.0 && w[1].z < 2.0))
+            );
+        }
+
+        // theta_keeps_a_lift_portal_as_a_waypoint: a lift portal stays a waypoint.
+        {
+            // The two landings touch across x = 2: the only way between them is the lift, so a sight line is refused and the
+            // portal entry stays a waypoint.
+            let g = build(&lift_set(rect(2.0, 0.0, 4.0, 2.0), open()));
+            assert_eq!(g.portals.len(), 1);
+            assert!(
+                !sight(&g, [1.7, 1.0], [2.3, 1.0]),
+                "a sight line over the portal is refused"
+            );
+            let p = plan(&g, [0.5, 1.0], [3.5, 1.0]).expect("a ride up");
+            assert!(
+                p.points.iter().any(|q| q.portal == 0),
+                "the portal waypoint is kept"
+            );
+            assert!(p.cost >= 6.0);
+        }
+
+        // theta_lift_over_air_or_blocked_has_no_path: a lift over air or behind a wall has no path, and the bottom landing still plans.
+        {
+            let air = build(&lift_set(rect(4.0, 0.0, 4.1, 2.0), open()));
+            let blocked = build(&lift_set(rect(4.0, 0.0, 4.2, 2.0), vec![Side::Walled; 4]));
+            for g in [&air, &blocked] {
+                assert!(g.portals.is_empty());
+                assert!(plan(g, [0.5, 1.0], [4.05, 1.0]).is_none());
+                assert!(plan_grid(g, [0.5, 1.0], [4.05, 1.0]).is_none());
+                assert!(
+                    plan(g, [0.5, 1.0], [1.5, 1.0]).is_some(),
+                    "the bottom landing still plans"
+                );
+            }
+        }
     }
 
     #[test]

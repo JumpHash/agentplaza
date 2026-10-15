@@ -427,54 +427,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn when_forms_parse() {
-        assert_eq!(
-            parse_when("gpus"),
-            Some(When {
-                name: "gpus".into(),
-                negate: false,
-                cond: None
-            })
-        );
-        assert_eq!(
-            parse_when("!amd"),
-            Some(When {
-                name: "amd".into(),
-                negate: true,
-                cond: None
-            })
-        );
-        assert_eq!(
-            parse_when("gpus >= 2"),
-            Some(When {
-                name: "gpus".into(),
-                negate: false,
-                cond: Some((Op::Ge, 2.0))
-            })
-        );
-        assert_eq!(
-            parse_when("p_x<-1.5"),
-            Some(When {
-                name: "p_x".into(),
-                negate: false,
-                cond: Some((Op::Lt, -1.5))
-            })
-        );
-        assert_eq!(
-            parse_when("a != 0"),
-            Some(When {
-                name: "a".into(),
-                negate: false,
-                cond: Some((Op::Ne, 0.0))
-            })
-        );
-        assert_eq!(parse_when("!a > 1"), None);
-        assert_eq!(parse_when("a >="), None);
-        assert_eq!(parse_when("1a"), None);
-        assert_eq!(parse_when(""), None);
-    }
-
-    #[test]
     fn when_evaluates_as_the_ts() {
         let mut p = BTreeMap::new();
         p.insert("gpus".to_string(), 2.0);

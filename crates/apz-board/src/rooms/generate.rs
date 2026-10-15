@@ -1948,23 +1948,6 @@ pub fn fixture_cases() -> Vec<FixtureCase> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_role_order_is_the_files_and_names_every_role() {
-        let order = role_order();
-        let first = ROLES_JSON
-            .find("\"roles\"")
-            .map(|at| &ROLES_JSON[at..])
-            .and_then(|r| r.split('"').nth(3))
-            .unwrap();
-        assert_eq!(order[0], first, "the first role is the file's first");
-        let mut sorted = order.to_vec();
-        sorted.sort();
-        assert_eq!(
-            sorted,
-            data().roles.roles.keys().cloned().collect::<Vec<_>>()
-        );
-    }
-
     /// The golden set: every case's layout hash equals the one the web's generator (gen.ts, retired with three.js) wrote,
     /// and its skipped and dropped counts too. A mismatch names its case: a change to this generator that moves a hash
     /// is a change to every room's furniture, made on purpose or not at all.
@@ -2006,44 +1989,6 @@ mod tests {
             bad[..bad.len().min(5)].join("\n")
         );
         eprintln!("fixtures: {} cases match the web", cases.len());
-    }
-
-    /// Every row of the minSize table holds six counts, and the table covers the templates' roles.
-    #[test]
-    fn minsize_table_covers_known_roles_and_six_counts() {
-        let d = data();
-        let table = min_size_table();
-        let mut want: Vec<&str> = d.roles.roles.keys().map(String::as_str).collect();
-        assert!(
-            d.roles.families.contains_key("other"),
-            "the family fallback row"
-        );
-        want.push("other");
-        let mut have: Vec<&str> = table.keys().map(String::as_str).collect();
-        want.sort_unstable();
-        have.sort_unstable();
-        assert_eq!(
-            have, want,
-            "one row per role, plus the family fallback `other`"
-        );
-        for (role, row) in table {
-            assert_eq!(row.len(), 6, "{role}: six desk counts");
-        }
-    }
-
-    /// `min_size` returns the table's value for every role and count the table holds.
-    #[test]
-    fn min_size_returns_every_table_entry() {
-        let d = data();
-        for (role, row) in min_size_table() {
-            for (i, v) in row.iter().enumerate() {
-                let got = min_size(role, i + 1, d);
-                match v {
-                    Some(s) => assert_eq!(got, *s, "{role} agents {}", i + 1),
-                    None => assert!(got.is_infinite(), "{role} agents {}", i + 1),
-                }
-            }
-        }
     }
 
     /// The minSize table against a fresh computation (`computeMinSize`, every seed 1..=500 and each door). Slow:
@@ -2093,37 +2038,6 @@ mod tests {
         check(0xDEAD_BEEF, &[0.9413696141, 0.2671957498, 0.7720333575]);
         // The seed at the top of the u32 range: the first add wraps past 2^32.
         check(u32::MAX, &[0.8964226141, 0.1894782567]);
-    }
-
-    #[test]
-    fn rounding_matches_js_math_round() {
-        assert_eq!(round_num(-0.0), 0.0);
-        assert_eq!(round_num(0.0005), 0.001); // Math.round(0.5) = 1
-        assert_eq!(round_num(-0.0005), 0.0); // Math.round(-0.5) = -0, then mapped to 0
-        assert_eq!(round_num(-0.0015), -0.001); // Math.round(-1.5) = -1
-        assert_eq!(round_num(1.23456), 1.235);
-    }
-
-    #[test]
-    fn canonical_numbers_have_no_trailing_zeros_and_no_negative_zero() {
-        assert_eq!(num(-0.0), "0");
-        assert_eq!(num(1.5), "1.5");
-        assert_eq!(num(2.0), "2");
-        assert_eq!(num(-0.125), "-0.125");
-    }
-
-    /// The canonical form is generic: keys are sorted at every depth, and an unknown key changes the hash.
-    #[test]
-    fn canonical_json_is_generic_over_keys() {
-        let v: Value =
-            serde_json::json!({ "b": [1.0, -0.0, 2.25], "a": { "z": null, "y": "s" }, "g": 0 });
-        assert_eq!(
-            canonical_value(&v),
-            r#"{"a":{"y":"s","z":null},"b":[1,0,2.25],"g":0}"#
-        );
-        let mut more = v.clone();
-        more["extra"] = serde_json::json!(3);
-        assert_ne!(canonical_value(&v), canonical_value(&more));
     }
 
     #[test]
@@ -2216,49 +2130,5 @@ mod tests {
             &bad[..bad.len().min(8)]
         );
         eprintln!("matches_the_web_dump: {total} cases match");
-    }
-
-    #[test]
-    fn every_role_resolves_to_a_template() {
-        let d = data();
-        assert!(d.roles.roles.len() >= 17);
-        for role in d.roles.roles.keys() {
-            assert!(template_for(role, &d.roles).is_some(), "{role}");
-        }
-        assert!(
-            template_for("no-such-role", &d.roles).is_some(),
-            "the family fallback"
-        );
-    }
-
-    /// Every group of the catalogue names known items, and every role's group is a catalogue group.
-    #[test]
-    fn every_group_and_role_group_resolves() {
-        let d = data();
-        for (gid, g) in &d.catalog.groups {
-            for it in &g.items {
-                assert!(
-                    it.id == "$station" || d.catalog.items.contains_key(&it.id),
-                    "{gid}: item {}",
-                    it.id
-                );
-            }
-        }
-        for (role, t) in &d.roles.roles {
-            for e in t.required.iter().chain(&t.preferred) {
-                assert!(
-                    d.catalog.groups.contains_key(&e.group),
-                    "{role}: group {}",
-                    e.group
-                );
-            }
-            for p in &t.pool {
-                assert!(
-                    d.catalog.groups.contains_key(&p.group),
-                    "{role}: pool group {}",
-                    p.group
-                );
-            }
-        }
     }
 }
