@@ -2,7 +2,7 @@
 
 Status (2026-10-15): built. The hub serves the E2B REST surface under `/e2b`, the node's gateway (`vsockd`) relays the
 SDK's sandbox requests into the guest, and the in-VM daemon (`agent-harness/src/envd`) answers as E2B's `envd`. Tested
-end to end on Linux x86_64 with KVM.
+end to end on Linux x86_64 with KVM, and with the E2B Python SDK 2.56.0 (see [Verified with the SDK](#verified-with-the-sdk)).
 
 E2B's SDKs (Python and JavaScript) create and drive sandboxes: small VMs for running code. The plaza offers the same
 API, so the SDKs work unchanged against the hub. A plaza sandbox is a governed sandbox. Its laws, egress rules, STOP ALL,
@@ -57,26 +57,47 @@ These routes are implemented, with the SDK's own shapes (`NewSandbox`, `Sandbox`
 
 | route | reply |
 |---|---|
-| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names the base image (`base` by default; any template name is accepted). |
-| `GET /e2b/sandboxes` | `[ListedSandbox]`: the running ones. |
-| `GET /e2b/v2/sandboxes?state=running,paused` | `[ListedSandbox]`, for the states asked. |
+| `POST /e2b/sandboxes` | `201 Sandbox`. The `templateID` names the base image (`base` by default; any template name is accepted), or a snapshot (see [Snapshots and templates](#snapshots-and-templates)). |
+| `POST /e2b/v2/sandboxes` | `201 Sandbox`. The create the current SDKs call. The same as v1, and always secured. |
+| `GET /e2b/sandboxes` | `[ListedSandbox]`: the running ones, filtered by `metadata`. |
+| `GET /e2b/v2/sandboxes?state=running,paused` | `[ListedSandbox]`, for the states asked, filtered by `metadata`. |
 | `GET /e2b/sandboxes/{id}` | `SandboxDetail`. |
 | `DELETE /e2b/sandboxes/{id}` | `204`. |
 | `POST /e2b/sandboxes/{id}/timeout` `{timeout}` | `204`: sets the end time. |
 | `POST /e2b/sandboxes/{id}/refreshes` `{duration}` | `204`: extends the end time. |
-| `POST /e2b/sandboxes/{id}/pause` | `204`. |
-| `POST /e2b/sandboxes/{id}/resume` `{timeout?}` | `201 Sandbox`. |
-| `POST /e2b/sandboxes/{id}/connect` `{timeout}` | `201 Sandbox` when it was woken, `200` when it was already running. |
+| `GET /e2b/sandboxes/{id}/metrics` | `[]`. Metrics are not sampled. |
+| `POST /e2b/sandboxes/{id}/pause` `{memory?}` | `204`. With `memory: false`, the VM stops with no memory image (a cold resume). |
+| `POST /e2b/sandboxes/{id}/resume` `{timeout?, memory?}` | `201 Sandbox`. With `memory: false`, the sandbox boots from its disk. |
+| `POST /e2b/sandboxes/{id}/connect` `{timeout}` | `201 Sandbox` when it was woken, `200` when it was already running. With `memory: false`, it boots from its disk. |
+| `POST /e2b/v2/sandboxes/{id}/connect` `{timeout?}` | As the v1 connect. The timeout is optional, 300 s by default. |
+| `POST /e2b/sandboxes/{id}/fork` `{timeout, count}` | Takes a checkpoint now, and starts `count` sandboxes (1 to 8) from it, each with its own access token. The reply has one entry per fork: `{"sandbox"}` or `{"error"}`. |
 | `POST /e2b/sandboxes/{id}/snapshots` `{name?}` | `201 SnapshotInfo`. |
 | `GET /e2b/snapshots` | `[SnapshotInfo]`. |
+| `DELETE /e2b/templates/{id}` | `204`: deletes a snapshot. `404` when unknown. `{id}` is the snapshot's id (`<sandbox>:<checkpoint>`) or its unique name. |
 
 Errors are E2B's `{code, message}`, with apid's machine-readable `error_code` beside them.
 
-**Not implemented:** `StreamInput` (the process input stream; the unary input calls are), metadata filtering on the
-sandbox lists, starting a sandbox from a snapshot as a template, and a cold resume.
+The lists take a `metadata` filter, as the SDK sends it (`metadata=k1%3Dv1%26k2%3Dv2`). Each key and value is percent-decoded
+again.
+
+**Not served:** `volumeMounts`, network config updates, logs, template builds and metric values.
 
 The owner's console routes for the same records: `GET /v1/e2b/sandboxes` lists every sandbox, with its CID and run, and
 `DELETE /v1/e2b/sandboxes/{id}`, `POST .../{id}/pause` and `POST .../{id}/resume` end, pause or resume one.
+
+## Snapshots and templates
+
+A snapshot is a checkpoint of a sandbox, with its memory. A snapshot with `memory: false` is refused.
+
+- A create whose `templateID` is a snapshot id, or a name that exactly one snapshot has, forks that checkpoint. The new
+  sandbox has the source's environment variables, under the request's.
+- A snapshot outlives its sandbox. A killed sandbox that has snapshots is retired: its VM is stopped, it has no memory
+  image, and every sandbox route hides it. It stays retired until its last snapshot is deleted, and then its run ends.
+
+**Cold resume.** `pause` with `memory: false` (the SDK's `mode="filesystem"`) flushes the guest (`POST /sync` on the
+daemon, a plaza extension) and stops the VM with no memory image. The sandbox resumes cold: `resume` and `connect` with
+`memory: false` boot it from its disk. The daemon starts fresh, so the hub sends the sandbox's environment again. The
+record keeps `env_vars`, and the file is mode 0600.
 
 ## The in-VM daemon
 
@@ -86,8 +107,13 @@ requests to it over the VM's vsock device.
 - **Connect RPC with the JSON codec.** A unary call is a `POST /<package>.<Service>/<Method>` with `application/json`.
   A server-streaming call is one enveloped message (`application/connect+json`) and an end-of-stream envelope.
   Field names are protobuf's JSON names, `bytes` are base64, 64-bit integers are strings, and enums are their names.
-- **Services.** `process.Process/*` (start, list, connect, input, signals, PTY) and `filesystem.Filesystem/*` (stat,
-  list, make directory, move, remove, watch).
+- **Services.** `process.Process/*` (start, list, connect, input, StreamInput, signals, PTY) and `filesystem.Filesystem/*`
+  (stat, list, make directory, move, remove, watch).
+- **Input.** `StreamInput` takes stdin as a client stream. The body is buffered, so the input is delivered when the client
+  finishes the stream. A command runs as the SDKs' `/bin/bash -l -c`, or under `/bin/sh` when the guest has no bash. The
+  user name `user` (E2B's default) means the sandbox user.
+- **Version.** Sandboxes report envd `0.5.7`. The SDK gates command stdin, the default user, `CloseStdin` and
+  octet-stream uploads on that version. All four are served.
 - **REST.** `GET /health` (`204`), `GET` and `POST /files` (download and upload), and `POST /init`.
 - **`/init`** merges `envVars` into the context every later process gets, sets the clock when `timestamp` (RFC 3339) is
   given, and mixes `entropy` (64 hex digits, a plaza extension) into the kernel pool. The hub sends fresh entropy on
@@ -114,9 +140,9 @@ travels in one.
 
 A sandbox is a run, so the owner's controls reach it the same way they reach an agent.
 
-- **Laws and egress.** The sandbox VM has the role `sandbox` for the laws and for the egress credential rules (see
-  [`egress-credentials.md`](egress-credentials.md)). Its outbound connections go through the same egress proxy and
-  relay as an agent's.
+- **Laws and egress.** The sandbox VM has the role `sandbox` in the laws. Its outbound connections go through the same
+  egress proxy and relay as an agent's, but the proxy never intercepts sandbox egress for credentials (see
+  [`egress-credentials.md`](egress-credentials.md)). A sandbox is its own party.
 - **STOP ALL.** While the plaza is held, every sandbox is ended, and creates, wakes and connects are refused with 409.
 - **Transcript and bus.** Each sandbox event is a transcript entry under the sandbox's CID, and an `e2b` event on the
   bus.
@@ -134,9 +160,27 @@ Measured on this machine (x86_64, KVM, 1 vCPU, 256 to 512 MiB guests). p50 unles
 | Resume | ~210 ms |
 
 The VM underneath is the one [`vm-snapshots.md`](vm-snapshots.md) measures: a sandbox is a restore of its template, and a
-pause is a snapshot.
+pause with memory is a snapshot. A pause without memory keeps only the disk.
 
 See also [`architecture.md`](../architecture.md), "`apid` HTTP API", for the hub's route families.
+
+## Verified with the SDK
+
+Checked with the real E2B Python SDK 2.56.0 against a scratch hub: `E2B_API_URL` at apid's `/e2b`, and `E2B_SANDBOX_URL`
+at vsockd's gateway.
+
+| step | result |
+|---|---|
+| create | ~750 ms |
+| commands with env vars, files write/read/list, stdin | pass |
+| metadata list, match and miss | pass |
+| create_snapshot | ~65 ms |
+| create from the snapshot | ~230 ms. The child reads the file and the env. |
+| fork ×2 | ~490 ms |
+| pause and connect from memory | ~290 ms |
+| pause in filesystem mode, then connect | cold boot ~670 ms. The file is on disk. |
+| kill with a snapshot kept, list_snapshots, create from that snapshot after the source was killed | pass |
+| delete_snapshot | `true`, then `false` |
 
 ## In the consoles
 
