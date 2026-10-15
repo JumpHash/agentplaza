@@ -68,8 +68,10 @@ const READY_CALL: Duration = Duration::from_secs(60);
 /// The build sandbox's time to live: the reaper ends one a hub restart left behind.
 const BUILD_TTL_S: u32 = 3 * 3600;
 const UPLOAD_TTL_MS: u64 = 3_600_000;
+/// The most upload links that may be open at once; a link asked for past that is refused with 429.
+const MAX_UPLOAD_LINKS: usize = 1024;
 const UPLOAD_HEADER: &str = "x-plaza-upload";
-const MAX_LOG_LINES: usize = 10_000;
+const MAX_LOG_LINES: usize = 2_000;
 const MAX_LOG_LINE: usize = 4096;
 /// The most log entries one status answer carries (E2B's page).
 const STATUS_PAGE: usize = 100;
@@ -318,7 +320,14 @@ fn log(build: &str, level: &'static str, message: impl Into<String>) {
     }
     let mut logs = e2b::lock(&LOGS);
     let lines = logs.entry(build.to_string()).or_default();
-    if lines.len() < MAX_LOG_LINES {
+    // The log's last slot says where it stops; the lines after it are dropped.
+    if lines.len() + 1 == MAX_LOG_LINES {
+        lines.push(LogLine {
+            ms: apz_plaza::now_ms(),
+            level: "warn",
+            message: "… the log is truncated here".into(),
+        });
+    } else if lines.len() + 1 < MAX_LOG_LINES {
         lines.push(LogLine {
             ms: apz_plaza::now_ms(),
             level,
@@ -365,6 +374,9 @@ fn check_name(name: &str) -> Result<(), Refused> {
     }
     if name == "base" {
         return Err(e2b::invalid("base names the plaza's base image"));
+    }
+    if name == "aliases" || name == "tags" {
+        return Err(e2b::invalid(format!("{name} is the name of an API route")));
     }
     Ok(())
 }
@@ -418,6 +430,10 @@ fn request_build(app: &App, req: &Request) -> Result<Response, Refused> {
     let body: BuildRequest = e2b::json_body(req)?;
     let (name, tag) = split_reference(body.name.trim());
     check_name(name)?;
+    // Checked before the dedup loop below, which is quadratic in the number of tags.
+    if body.tags.as_ref().is_some_and(|tags| tags.len() > MAX_TAGS) {
+        return Err(e2b::invalid(format!("at most {MAX_TAGS} tags")));
+    }
     let mut wanted: Vec<String> = Vec::new();
     for tag in tag
         .into_iter()
@@ -503,8 +519,8 @@ fn request_build(app: &App, req: &Request) -> Result<Response, Refused> {
     ))
 }
 
-/// Keeps a template's builds at [`MAX_BUILDS`]: the oldest failed builds go first, then the oldest
-/// ready builds that hold no tag (whose snapshots the next finished build deletes anyway).
+/// Keeps a template's builds at [`MAX_BUILDS`] by dropping the oldest failed ones. It drops only
+/// failed builds: a ready build is never dropped here, so a template may keep more than that.
 fn trim_builds(template: &mut Template) {
     while template.builds.len() > MAX_BUILDS {
         let failed = template
@@ -541,25 +557,46 @@ fn find_template(app: &App, id: &str) -> Result<Template, Refused> {
         .ok_or_else(|| template_not_found(id))
 }
 
-/// `GET /e2b/templates/{id}/files/{hash}`: whether the archive is here already, and if not a link to
-/// put it at, good for one upload within the hour.
+/// `GET /e2b/templates/{id}/files/{hash}`: whether the archive is here already, and a link to put it
+/// at, good for one upload within the hour. The link comes even when the archive is here, for a
+/// forced re-upload.
 fn file_link(app: &App, req: &Request, id: &str, hash: &str) -> Result<Response, Refused> {
     let template = find_template(app, id)?;
     check_hash(hash)?;
     let hash = hash.to_ascii_lowercase();
-    if files_dir(app).join(&hash).is_file() {
-        return Ok(Response::json(201, &json!({"present": true})));
-    }
+    let present = files_dir(app).join(&hash).is_file();
+    let (url, headers) = mint_link(app, req, &template, &hash)?;
+    Ok(Response::json(
+        201,
+        &json!({"present": present, "url": url, "headers": headers}),
+    ))
+}
+
+/// A new upload link for the archive `hash` of `template`: its URL, and the headers that carry its
+/// one-time token. Refused with 429 while more than [`MAX_UPLOAD_LINKS`] links are open.
+fn mint_link(
+    app: &App,
+    req: &Request,
+    template: &Template,
+    hash: &str,
+) -> Result<(String, Value), Refused> {
     let token = e2b::hex_of(&apz_trust::random::<32>());
     let now = apz_plaza::now_ms();
     {
         let mut uploads = e2b::lock(&UPLOADS);
         uploads.retain(|_, u| u.expires_ms > now);
+        if uploads.len() > MAX_UPLOAD_LINKS {
+            return Err(Refused::new(
+                429,
+                "upload_links_busy",
+                "too many upload links are open; ask again in a while",
+            ));
+        }
         uploads.insert(
             token.clone(),
             Upload {
                 template: template.id.clone(),
-                hash: hash.clone(),
+                hash: hash.to_string(),
                 expires_ms: now + UPLOAD_TTL_MS,
             },
         );
@@ -569,14 +606,15 @@ fn file_link(app: &App, req: &Request, id: &str, hash: &str) -> Result<Response,
         base_url(app, req),
         template.id
     );
-    Ok(Response::json(
-        201,
-        &json!({"present": false, "url": url, "headers": {UPLOAD_HEADER: token}}),
-    ))
+    Ok((url, json!({UPLOAD_HEADER: token})))
 }
 
-/// The hub's address as the caller reached it: its `Host`, with the scheme the hub serves.
+/// The hub's address for links: its configured public URL when it has one, else the address the
+/// caller reached it at (its `Host`), with the scheme the hub serves.
 fn base_url(app: &App, req: &Request) -> String {
+    if !app.config.public_url.is_empty() {
+        return app.config.public_url.trim_end_matches('/').to_string();
+    }
     let scheme = if app.config.tls || !app.config.bind.is_loopback() {
         "https"
     } else {
@@ -594,28 +632,51 @@ fn base_url(app: &App, req: &Request) -> String {
     format!("{scheme}://{host}")
 }
 
-/// `PUT /e2b/templates/{id}/files/{hash}`: the archive itself, with the link's token.
+/// `PUT /e2b/templates/{id}/files/{hash}`: the archive itself, with the link's token. Only an upload
+/// that matches the link uses it up. The archive goes to a temporary file that is renamed into place,
+/// so a reader never sees a part-written archive.
 fn upload(app: &App, req: &Request, id: &str, hash: &str) -> Result<Response, Refused> {
     let token = req.header(UPLOAD_HEADER).unwrap_or_default();
-    let upload = e2b::lock(&UPLOADS).remove(token);
-    let Some(upload) = upload.filter(|u| {
-        u.expires_ms > apz_plaza::now_ms()
-            && u.template == id
-            && u.hash == hash.to_ascii_lowercase()
-    }) else {
+    let hash = hash.to_ascii_lowercase();
+    let now = apz_plaza::now_ms();
+    let matches = {
+        let mut uploads = e2b::lock(&UPLOADS);
+        let matches = uploads
+            .get(token)
+            .is_some_and(|u| u.expires_ms > now && u.template == id && u.hash == hash);
+        if matches {
+            uploads.remove(token);
+        }
+        matches
+    };
+    if !matches {
         return Err(Refused::new(
             403,
             "upload_forbidden",
             "this upload link is not valid (ask for a new one)",
         ));
-    };
+    }
     let dir = files_dir(app);
     let io_error = |e: io::Error| Refused::new(500, "internal_server_error", e.to_string());
     std::fs::create_dir_all(&dir).map_err(io_error)?;
-    let part = dir.join(format!("{}.part", upload.hash));
-    std::fs::write(&part, &req.body).map_err(io_error)?;
-    std::fs::rename(&part, dir.join(&upload.hash)).map_err(io_error)?;
+    let part = dir.join(format!(
+        "{hash}.{}.part",
+        e2b::hex_of(&apz_trust::random::<8>())
+    ));
+    let stored = write_archive(&part, &req.body)
+        .and_then(|()| std::fs::rename(&part, dir.join(&hash)));
+    if let Err(e) = stored {
+        let _ = std::fs::remove_file(&part);
+        return Err(io_error(e));
+    }
     Ok(Response::json(200, &json!({})))
+}
+
+/// Writes `body` to `path` and flushes it to disk.
+fn write_archive(path: &Path, body: &[u8]) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(body)?;
+    file.sync_all()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2062,7 +2123,7 @@ mod tests {
     fn names_tags_and_hashes_are_checked() {
         assert!(check_name("my-env").is_ok());
         assert!(check_name("team/my_env.2").is_ok());
-        for bad in ["", "base", "-x", "a b", "x:y", &"a".repeat(129)] {
+        for bad in ["", "base", "aliases", "tags", "-x", "a b", "x:y", &"a".repeat(129)] {
             assert!(check_name(bad).is_err(), "{bad}");
         }
         assert!(check_tag("v1.0-rc_1").is_ok());
