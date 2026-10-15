@@ -1140,7 +1140,9 @@ pub(crate) enum Recovery {
 /// checkpoints and sleep snapshot) and the times its earlier recoveries started (`recent`, all of
 /// them; only those inside [`RECOVERY_WINDOW_MS`] count). The rate limit comes first: a VM in a
 /// crash loop is given up on whatever it has. Otherwise the newest snapshot taken within
-/// [`RECOVERY_SNAPSHOT_AGE_MS`] is the one to boot from, and with none the VM boots cold.
+/// [`RECOVERY_SNAPSHOT_AGE_MS`] that has memory is the one to boot from, and with none the VM boots
+/// cold. A disk-only checkpoint (kind `disk`) has no memory to resume a running VM from, so it is
+/// never picked.
 pub(crate) fn recovery_decision(now: u64, snapshots: &[SnapshotView], recent: &[u64]) -> Recovery {
     let recovered = recent
         .iter()
@@ -1151,6 +1153,7 @@ pub(crate) fn recovery_decision(now: u64, snapshots: &[SnapshotView], recent: &[
     }
     snapshots
         .iter()
+        .filter(|view| view.kind != "disk")
         .filter(|view| now.saturating_sub(view.taken_at_ms) <= RECOVERY_SNAPSHOT_AGE_MS)
         .max_by_key(|view| view.taken_at_ms)
         .map_or(Recovery::Cold, |view| Recovery::From(view.name.clone()))
@@ -1994,6 +1997,8 @@ impl Registry {
     /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
     /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
     /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
+    /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
+    /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
     pub fn checkpoint_vm(
         &self,
         run: &str,
@@ -2041,6 +2046,10 @@ impl Registry {
             .map_err(|err| VmOpError::Refused(err.to_string()))?;
         let kept = snapshots::private_dir(&dir)
             .and_then(|()| clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)).map(|_| ()))
+            .and_then(|()| {
+                fs::File::open(dir.join(snapshots::WORKSPACE_FILE))
+                    .and_then(|copy| copy.sync_all())
+            })
             .and_then(|()| snapshots::write_disk_marker(&dir, taken_at_ms));
         if let Err(err) = kept {
             let _ = fs::remove_dir_all(&dir);
@@ -4036,6 +4045,26 @@ mod tests {
             recovery_decision(NOW, &sleep_older, &[]),
             Recovery::From("cp-b".to_string()),
             "a checkpoint newer than the sleep snapshot"
+        );
+    }
+
+    #[test]
+    fn a_disk_only_checkpoint_is_never_booted_from() {
+        let disk_only = SnapshotView {
+            kind: "disk".to_string(),
+            ..snapshot("cp-disk", NOW - MINUTE)
+        };
+        assert_eq!(
+            recovery_decision(NOW, std::slice::from_ref(&disk_only), &[]),
+            Recovery::Cold,
+            "a disk-only checkpoint alone leaves the VM cold"
+        );
+
+        let views = [disk_only, snapshot("cp-mem", NOW - HOUR)];
+        assert_eq!(
+            recovery_decision(NOW, &views, &[]),
+            Recovery::From("cp-mem".to_string()),
+            "the newest checkpoint with memory, past a newer disk-only one"
         );
     }
 

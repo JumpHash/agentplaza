@@ -20,8 +20,9 @@
 //! over it, and a removed directory's files stay readable by a VM that still maps them.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use vmm::spawner::SnapshotKind;
@@ -45,6 +46,9 @@ pub const SLEEP_PARTIAL: &str = "sleep.new";
 pub const BASE: &str = "base";
 /// The checkpoints kept per VM; the oldest beyond this are removed when a new one is taken.
 pub const KEEP_CHECKPOINTS: usize = 20;
+/// How old a checkpoint directory with neither a VM state nor a disk marker must be before a prune
+/// removes it as a half-made checkpoint.
+const PARTIAL_AGE: Duration = Duration::from_secs(10 * 60);
 /// The most characters of a label that make it into a checkpoint's name.
 const MAX_LABEL_LEN: usize = 40;
 
@@ -217,15 +221,49 @@ impl SnapshotStore {
         remove_dir(&self.root.join(format!("cid-{cid}")))
     }
 
-    /// Removes the oldest checkpoints of VM `cid` beyond [`KEEP_CHECKPOINTS`]. A checkpoint that
-    /// cannot be removed is reported and left for the next prune.
+    /// Removes the oldest checkpoints of VM `cid` beyond [`KEEP_CHECKPOINTS`], and the half-made ones
+    /// (see [`SnapshotStore::sweep_partial`]). A checkpoint that cannot be removed is reported and
+    /// left for the next prune.
     pub fn prune(&self, cid: u64) {
+        self.sweep_partial(cid);
         for old in self.checkpoints(cid).into_iter().skip(KEEP_CHECKPOINTS) {
             if let Err(err) = self.remove(cid, &old.name) {
                 eprintln!(
                     "noded: VM CID {cid}: cannot prune checkpoint {}: {err}",
                     old.name
                 );
+            }
+        }
+    }
+
+    /// Removes the checkpoint directories of VM `cid` that hold neither a VM state nor a disk marker
+    /// and were last modified more than [`PARTIAL_AGE`] ago: a crash mid-checkpoint left them. A
+    /// younger one may still be in progress, so it is left alone.
+    fn sweep_partial(&self, cid: u64) {
+        let Ok(entries) = fs::read_dir(self.root.join(format!("cid-{cid}"))) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let dir = entry.path();
+            if !is_checkpoint_name(&name)
+                || dir.join("vmstate.json").exists()
+                || dir.join(DISK_MARKER).exists()
+            {
+                continue;
+            }
+            let aged = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|taken| taken.elapsed().ok())
+                .is_some_and(|age| age > PARTIAL_AGE);
+            if aged {
+                if let Err(err) = remove_dir(&dir) {
+                    eprintln!("noded: VM CID {cid}: cannot sweep checkpoint {name}: {err}");
+                }
             }
         }
     }
@@ -277,12 +315,23 @@ pub fn is_disk_only(dir: &Path) -> bool {
     !dir.join("vmstate.json").exists() && dir.join(DISK_MARKER).exists()
 }
 
-/// Marks `dir` as a disk-only checkpoint taken at `taken_at_ms`.
+/// Marks `dir` as a disk-only checkpoint taken at `taken_at_ms`. The marker is written to a temporary
+/// file, synced, and renamed into place, so a crash leaves either no marker or a whole one.
 pub fn write_disk_marker(dir: &Path, taken_at_ms: u64) -> io::Result<()> {
-    fs::write(
-        dir.join(DISK_MARKER),
-        serde_json::json!({ "taken_at_ms": taken_at_ms }).to_string(),
-    )
+    let tmp = dir.join(format!("{DISK_MARKER}.tmp"));
+    let mut file = fs::File::create(&tmp)?;
+    file.write_all(
+        serde_json::json!({ "taken_at_ms": taken_at_ms })
+            .to_string()
+            .as_bytes(),
+    )?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp, dir.join(DISK_MARKER))?;
+    // The rename is durable once the directory is synced; a failure here is not an error the
+    // checkpoint can act on, since the marker is already in place.
+    let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
+    Ok(())
 }
 
 /// The meta of the snapshot in `dir`, read from its `vmstate.json`.
