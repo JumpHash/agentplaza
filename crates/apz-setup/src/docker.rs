@@ -395,69 +395,104 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn apt_install_runs_the_steps_in_order_as_root_and_adds_the_user_to_docker() {
-        let mut mock = Mock::new(all_succeed);
-        mock.paths = vec!["pkexec"];
-        mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: Some("tester".into()),
-        };
-        let mut lines = Vec::new();
-        install(&env, &mut |l| lines.push(l)).unwrap();
-        assert_eq!(
-            mock.calls(),
-            vec![
-                "pkexec apt-get update",
-                "pkexec env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io",
-                "pkexec systemctl enable --now docker",
-                "pkexec usermod -aG docker tester",
-            ]
-        );
-        assert!(lines.last().unwrap().starts_with("Docker is installed"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn install_asks_for_pkexec_first_and_runs_nothing_without_it() {
-        let mock = Mock::new(all_succeed);
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: Some("tester".into()),
-        };
-        assert!(install(&env, &mut |_| {}).is_err());
-        assert!(mock.calls().is_empty());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_failed_step_stops_the_install_with_its_last_error_line() {
-        let mut mock = Mock::new(|program, args| {
-            if args.contains(&"DEBIAN_FRONTEND=noninteractive") {
-                Output::failed("E: Unable to locate package docker.io\n")
-            } else {
-                all_succeed(program, args)
-            }
-        });
-        mock.paths = vec!["pkexec"];
-        mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: Some("tester".into()),
-        };
-        let err = install(&env, &mut |_| {}).unwrap_err();
-        assert!(
-            err.contains("E: Unable to locate package docker.io"),
-            "{err}"
-        );
-        assert_eq!(
-            mock.calls().len(),
-            2,
-            "the install stops at the failed step"
-        );
+    fn install_runs_its_steps_in_order_and_stops_on_its_failures() {
+        // apt_install_runs_the_steps_in_order_as_root_and_adds_the_user_to_docker: the apt
+        // steps run in order as root, and the user joins the docker group last.
+        {
+            let mut mock = Mock::new(all_succeed);
+            mock.paths = vec!["pkexec"];
+            mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
+            let env = Env {
+                runner: &mock,
+                keys: None,
+                user: Some("tester".into()),
+            };
+            let mut lines = Vec::new();
+            install(&env, &mut |l| lines.push(l)).unwrap();
+            assert_eq!(
+                mock.calls(),
+                vec![
+                    "pkexec apt-get update",
+                    "pkexec env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io",
+                    "pkexec systemctl enable --now docker",
+                    "pkexec usermod -aG docker tester",
+                ]
+            );
+            assert!(lines.last().unwrap().starts_with("Docker is installed"));
+        }
+        // install_asks_for_pkexec_first_and_runs_nothing_without_it: without pkexec the
+        // install fails before any command runs.
+        {
+            let mock = Mock::new(all_succeed);
+            let env = Env {
+                runner: &mock,
+                keys: None,
+                user: Some("tester".into()),
+            };
+            assert!(install(&env, &mut |_| {}).is_err());
+            assert!(mock.calls().is_empty());
+        }
+        // a_failed_step_stops_the_install_with_its_last_error_line: a failed step ends the
+        // install with its error line, and no later step runs.
+        {
+            let mut mock = Mock::new(|program, args| {
+                if args.contains(&"DEBIAN_FRONTEND=noninteractive") {
+                    Output::failed("E: Unable to locate package docker.io\n")
+                } else {
+                    all_succeed(program, args)
+                }
+            });
+            mock.paths = vec!["pkexec"];
+            mock.files = vec![("/etc/os-release", UBUNTU.to_string())];
+            let env = Env {
+                runner: &mock,
+                keys: None,
+                user: Some("tester".into()),
+            };
+            let err = install(&env, &mut |_| {}).unwrap_err();
+            assert!(
+                err.contains("E: Unable to locate package docker.io"),
+                "{err}"
+            );
+            assert_eq!(
+                mock.calls().len(),
+                2,
+                "the install stops at the failed step"
+            );
+        }
+        // install_reads_the_login_name_when_the_environment_has_none: with no user in the
+        // environment the login name comes from `id -un`.
+        {
+            let mut mock = Mock::new(|program, args| match (program, args.first()) {
+                ("id", _) => Output::ok("carol\n"),
+                _ => all_succeed(program, args),
+            });
+            mock.paths = vec!["pkexec"];
+            mock.files = vec![("/etc/os-release", FEDORA.to_string())];
+            let env = Env {
+                runner: &mock,
+                keys: None,
+                user: None,
+            };
+            install(&env, &mut |_| {}).unwrap();
+            let calls = mock.calls();
+            assert!(calls.contains(&"id -un".to_string()));
+            assert_eq!(calls.last().unwrap(), "pkexec usermod -aG docker carol");
+        }
+        // install_stops_on_an_unknown_distro_before_running_anything: an unknown distro is
+        // refused before any command runs.
+        {
+            let mut mock = Mock::new(all_succeed);
+            mock.paths = vec!["pkexec"];
+            mock.files = vec![("/etc/os-release", GENTOO.to_string())];
+            let env = Env {
+                runner: &mock,
+                keys: None,
+                user: Some("tester".into()),
+            };
+            assert!(install(&env, &mut |_| {}).is_err());
+            assert!(mock.calls().is_empty());
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -479,40 +514,5 @@ mod tests {
             ]
         );
         assert!(lines.contains(&"Docker 27.1.1 is running".to_string()));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn install_reads_the_login_name_when_the_environment_has_none() {
-        let mut mock = Mock::new(|program, args| match (program, args.first()) {
-            ("id", _) => Output::ok("carol\n"),
-            _ => all_succeed(program, args),
-        });
-        mock.paths = vec!["pkexec"];
-        mock.files = vec![("/etc/os-release", FEDORA.to_string())];
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: None,
-        };
-        install(&env, &mut |_| {}).unwrap();
-        let calls = mock.calls();
-        assert!(calls.contains(&"id -un".to_string()));
-        assert_eq!(calls.last().unwrap(), "pkexec usermod -aG docker carol");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn install_stops_on_an_unknown_distro_before_running_anything() {
-        let mut mock = Mock::new(all_succeed);
-        mock.paths = vec!["pkexec"];
-        mock.files = vec![("/etc/os-release", GENTOO.to_string())];
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: Some("tester".into()),
-        };
-        assert!(install(&env, &mut |_| {}).is_err());
-        assert!(mock.calls().is_empty());
     }
 }
