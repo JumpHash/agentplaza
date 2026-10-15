@@ -13,6 +13,7 @@ use iced::{Alignment, Element, Length, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::models::{Settings, save_settings};
 use crate::console::{Ctx, client, ui};
 
 const DAY_MS: u64 = 86_400_000;
@@ -377,6 +378,70 @@ struct CallList {
     calls: Vec<HubCall>,
 }
 
+/// One editor session the hub holds (`GET /v1/acp/sessions`). Only the fields the list shows are read.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AcpSession {
+    pub cid: u64,
+    pub cwd: String,
+    pub client: String,
+    pub title: String,
+    pub updated_ms: u64,
+    pub closed: bool,
+}
+
+/// The setup text for each editor. Each block is what the owner pastes into that editor's settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorSnippets {
+    /// Zed's `agent_servers` entry, which opens the hub's default agent.
+    pub zed: String,
+    /// The same entry with `--agent <name>`, for one agent the owner names.
+    pub zed_agent: String,
+    /// The JetBrains ACP settings: a command, then its arguments.
+    pub jetbrains: String,
+    /// The CodeCompanion adapter for Neovim.
+    pub neovim: String,
+}
+
+/// The setup text for the editors. Each editor starts `agentplaza acp`, which speaks ACP over stdio.
+pub fn editor_snippets() -> EditorSnippets {
+    EditorSnippets {
+        zed: r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp"]}}}"#
+            .to_string(),
+        zed_agent: r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp", "--agent", "<name>"]}}}"#
+            .to_string(),
+        jetbrains: "Command: agentplaza\nArguments: acp".to_string(),
+        neovim: r#"adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }"#
+            .to_string(),
+    }
+}
+
+/// A session's title for the list: the first prompt's line, or "untitled" when there is none.
+pub fn session_title(session: &AcpSession) -> &str {
+    let title = session.title.trim();
+    if title.is_empty() { "untitled" } else { title }
+}
+
+/// The line under a session's title: its cid, editor, folder, when it last changed, and whether it is closed.
+pub fn session_line(session: &AcpSession, now: u64) -> String {
+    let mut parts = vec![format!("cid {}", session.cid)];
+    if !session.client.is_empty() {
+        parts.push(session.client.clone());
+    }
+    if !session.cwd.is_empty() {
+        parts.push(session.cwd.clone());
+    }
+    parts.push(format!("updated {}", ago(now, session.updated_ms)));
+    if session.closed {
+        parts.push("closed".to_string());
+    }
+    parts.join(" · ")
+}
+
+fn parse_sessions(value: Value) -> Result<Vec<AcpSession>, String> {
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
 /// A choice in a filter list: the value the API takes, and the label the list shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
@@ -465,6 +530,13 @@ pub struct State {
     /// The call filters; an empty string means all.
     pub filter_token: String,
     pub filter_tool: String,
+    // The editors section: the ACP switch as the hub holds it (None until the first read), and the sessions.
+    pub acp_enabled: Option<bool>,
+    /// A switch save is on its way to the hub.
+    pub acp_busy: bool,
+    pub acp_error: Option<String>,
+    pub acp_sessions: Option<Vec<AcpSession>>,
+    pub acp_sessions_error: Option<String>,
 }
 
 /// Drops the new token from the page. Called when the owner leaves the tab or the screen.
@@ -504,6 +576,11 @@ pub enum Msg {
     Revoked(Result<String, String>),
     FilterToken(Choice),
     FilterTool(Choice),
+    AcpSettingsLoaded(Result<bool, String>),
+    SetAcp(bool),
+    AcpSaved(Result<bool, String>),
+    RefreshAcpSessions,
+    AcpSessionsLoaded(Result<Vec<AcpSession>, String>),
 }
 
 // ---- Loading and writing ----------------------------------------------------------------------------------
@@ -543,9 +620,46 @@ fn calls_task(state: &State, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Loads the hub's settings, tokens and calls (called when the tab opens and on every poll tick).
+/// The ACP switch as the hub holds it. Only the switch is read: the other settings belong to the Models tab.
+fn acp_settings_task(ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(
+        move || c.get::<Settings>("/v1/settings").map(|s| s.acp_enabled),
+        Msg::AcpSettingsLoaded,
+    )
+}
+
+fn acp_sessions_task(ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(
+        move || c.get::<Value>("/v1/acp/sessions").and_then(parse_sessions),
+        Msg::AcpSessionsLoaded,
+    )
+}
+
+/// Turns the ACP switch on or off. The settings are read again first, so the save carries the hub's current
+/// values and not the ones this tab loaded earlier.
+fn acp_save_task(on: bool, ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    client::task(
+        move || {
+            let mut settings = c.get::<Settings>("/v1/settings")?;
+            settings.acp_enabled = on;
+            save_settings(&c, &settings).map(|saved| saved.acp_enabled)
+        },
+        Msg::AcpSaved,
+    )
+}
+
+/// Loads the hub's settings, tokens, calls and editor sessions (called when the tab opens and on every poll tick).
 pub fn load(state: &State, ctx: &Ctx) -> Task<Msg> {
-    Task::batch([status_task(ctx), tokens_task(ctx), calls_task(state, ctx)])
+    Task::batch([
+        status_task(ctx),
+        tokens_task(ctx),
+        calls_task(state, ctx),
+        acp_settings_task(ctx),
+        acp_sessions_task(ctx),
+    ])
 }
 
 fn apply_draft(state: &mut State, status: &HubStatus) {
@@ -638,6 +752,52 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Saved(Err(e)) => {
             state.busy = false;
             state.notice = Some((e, true));
+            Task::none()
+        }
+        Msg::AcpSettingsLoaded(Ok(on)) => {
+            // A save in flight wins over a read that was taken before it.
+            if !state.acp_busy {
+                state.acp_enabled = Some(on);
+            }
+            state.acp_error = None;
+            Task::none()
+        }
+        Msg::AcpSettingsLoaded(Err(e)) => {
+            state.acp_error = Some(e);
+            Task::none()
+        }
+        Msg::SetAcp(on) => {
+            if state.acp_busy || state.acp_enabled.is_none() {
+                return Task::none();
+            }
+            state.acp_busy = true;
+            state.acp_error = None;
+            acp_save_task(on, ctx)
+        }
+        Msg::AcpSaved(Ok(on)) => {
+            state.acp_busy = false;
+            state.acp_enabled = Some(on);
+            let text = if on {
+                "Editors can connect to this hub."
+            } else {
+                "Editors can no longer connect to this hub."
+            };
+            state.notice = Some((text.to_string(), false));
+            Task::none()
+        }
+        Msg::AcpSaved(Err(e)) => {
+            state.acp_busy = false;
+            state.acp_error = Some(e);
+            Task::none()
+        }
+        Msg::RefreshAcpSessions => acp_sessions_task(ctx),
+        Msg::AcpSessionsLoaded(Ok(list)) => {
+            state.acp_sessions = Some(list);
+            state.acp_sessions_error = None;
+            Task::none()
+        }
+        Msg::AcpSessionsLoaded(Err(e)) => {
+            state.acp_sessions_error = Some(e);
             Task::none()
         }
         Msg::TokensLoaded(Ok(list)) => {
@@ -818,6 +978,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     parts.push(enable_card(state));
     parts.push(token_form(state));
     parts.push(tokens_card(state));
+    parts.push(editors_card(state));
     parts.push(calls_card(state));
     column(parts).spacing(22).width(Length::Fill).into()
 }
@@ -1193,6 +1354,98 @@ fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
     column(lines).spacing(8).into()
 }
 
+/// The Editors (ACP) section: the switch, the setup text for each editor, and the sessions the hub holds.
+fn editors_card(state: &State) -> Element<'_, Msg> {
+    let mut parts: Vec<Element<'_, Msg>> = vec![
+        checkbox(state.acp_enabled.unwrap_or(false))
+            .label("Let editors connect to this hub")
+            .on_toggle(Msg::SetAcp)
+            .into(),
+        ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
+    ];
+    if let Some(error) = &state.acp_error {
+        parts.push(ui::error_line(error));
+    }
+    let snippets = editor_snippets();
+    parts.push(snippet(
+        "Zed",
+        &snippets.zed,
+        "Add to Zed's settings, under agent_servers.",
+    ));
+    parts.push(snippet(
+        "Zed, one agent",
+        &snippets.zed_agent,
+        "Replace <name> with the agent to open.",
+    ));
+    parts.push(snippet(
+        "JetBrains",
+        &snippets.jetbrains,
+        "In the IDE's ACP agent settings, enter the command, then its arguments.",
+    ));
+    parts.push(snippet(
+        "Neovim (CodeCompanion)",
+        &snippets.neovim,
+        "Add to the CodeCompanion setup.",
+    ));
+    parts.push(sessions_block(state));
+    ui::card(
+        "Editors (ACP)",
+        column(parts).spacing(16).width(Length::Fill).into(),
+    )
+}
+
+fn sessions_block(state: &State) -> Element<'_, Msg> {
+    let head: Element<'_, Msg> = row(vec![
+        ui::label("Editor sessions").into(),
+        ui::btn_sm(
+            "Refresh",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::RefreshAcpSessions),
+        ),
+    ])
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into();
+    let body: Element<'_, Msg> = if let Some(error) = &state.acp_sessions_error {
+        ui::empty("alert", "Could not load the editor sessions", error)
+    } else {
+        match &state.acp_sessions {
+            None => ui::loading(),
+            Some(list) if list.is_empty() => ui::empty(
+                "terminal",
+                "No editor sessions",
+                "A session shows here once an editor opens one.",
+            ),
+            Some(list) => {
+                let now = now_ms();
+                column(
+                    list.iter()
+                        .map(|session| session_row(session, now))
+                        .collect::<Vec<_>>(),
+                )
+                .spacing(12)
+                .width(Length::Fill)
+                .into()
+            }
+        }
+    };
+    column![head, body].spacing(10).into()
+}
+
+fn session_row<'a>(session: &AcpSession, now: u64) -> Element<'a, Msg> {
+    column![
+        ui::sans(
+            session_title(session).to_string(),
+            12.0,
+            crate::theme::palette().ink
+        ),
+        ui::faint(session_line(session, now)),
+    ]
+    .spacing(4)
+    .into()
+}
+
 fn calls_card(state: &State) -> Element<'_, Msg> {
     let token_options = token_choices(state.tokens.as_deref().unwrap_or(&[]));
     let selected_token = token_options
@@ -1448,6 +1701,67 @@ mod tests {
         assert_eq!(ago(10 * 60_000, 0), "10 min ago");
         assert_eq!(expiry_text(5, None), "never expires");
         assert_eq!(expiry_text(5, Some(4)), "expired 1970-01-01");
+    }
+
+    #[test]
+    fn mcp_hub_editor_snippets_are_the_pasted_text() {
+        let s = editor_snippets();
+        assert_eq!(
+            s.zed,
+            r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp"]}}}"#
+        );
+        assert_eq!(s.jetbrains, "Command: agentplaza\nArguments: acp");
+        assert_eq!(
+            s.neovim,
+            r#"adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }"#
+        );
+        let named: Value = serde_json::from_str(&s.zed_agent).expect("the named block is JSON");
+        assert_eq!(
+            named["agent_servers"]["AgentPlaza"]["args"],
+            json!(["acp", "--agent", "<name>"])
+        );
+    }
+
+    #[test]
+    fn mcp_hub_sessions_parse_from_the_editor_api() {
+        let raw = json!([
+            {"id": "acp-0123456789abcdef", "cid": 7, "cwd": "/work/app", "client": "zed 0.200",
+             "title": "fix the build", "works": [3, 4], "created_ms": 1000, "updated_ms": 2000, "closed": false},
+            {"id": "acp-fedcba9876543210", "cid": 8, "cwd": "", "client": "", "title": "  ",
+             "works": [], "created_ms": 1000, "updated_ms": 3000, "closed": true}
+        ]);
+        let list = parse_sessions(raw).expect("sessions parse");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].cid, 7);
+        assert_eq!(session_title(&list[0]), "fix the build");
+        assert_eq!(session_title(&list[1]), "untitled");
+        assert!(list[1].closed);
+        assert!(parse_sessions(json!({"error": "nope"})).is_err());
+    }
+
+    #[test]
+    fn mcp_hub_session_lines_read_in_plain_words() {
+        let open = AcpSession {
+            cid: 7,
+            cwd: "/work/app".into(),
+            client: "zed 0.200".into(),
+            title: String::new(),
+            updated_ms: 1_000_000,
+            closed: false,
+        };
+        assert_eq!(
+            session_line(&open, 1_000_000 + 120_000),
+            "cid 7 · zed 0.200 · /work/app · updated 2 min ago"
+        );
+        let closed = AcpSession {
+            cwd: String::new(),
+            closed: true,
+            ..open
+        };
+        assert_eq!(
+            session_line(&closed, 1_000_000),
+            "cid 7 · zed 0.200 · updated just now · closed"
+        );
     }
 
     #[test]

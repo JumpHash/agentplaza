@@ -274,8 +274,48 @@ pub struct Settings {
     pub allow_training_models: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_models: Option<bool>,
+    /// The coding engines the owner has enabled. The hub never keeps none.
+    #[serde(default = "default_engines")]
+    pub engines_enabled: Vec<String>,
+    /// How the engines run: `acp` (live, every action checked by the laws) or `headless` (one run per job).
+    #[serde(default = "default_engines_mode")]
+    pub engines_mode: String,
+    /// Whether editors may connect to the hub's ACP server. Off until the owner turns it on.
+    #[serde(default)]
+    pub acp_enabled: bool,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
+}
+
+/// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
+const ENGINE_IDS: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// The transports `engines_mode` may name. `acp` is the first, and the default.
+const ENGINE_MODES: [&str; 2] = ["acp", "headless"];
+
+fn default_engines() -> Vec<String> {
+    ENGINE_IDS.into_iter().map(String::from).collect()
+}
+
+fn default_engines_mode() -> String {
+    ENGINE_MODES[0].to_string()
+}
+
+/// The engine list after `id` is switched `on`, in the hub's order. None when that would leave no engine on:
+/// the hub refuses an empty list, so the switch is not taken.
+pub fn engines_after(enabled: &[String], id: &str, on: bool) -> Option<Vec<String>> {
+    let next: Vec<String> = ENGINE_IDS
+        .into_iter()
+        .filter(|&engine| {
+            if engine == id {
+                on
+            } else {
+                enabled.iter().any(|e| e.as_str() == engine)
+            }
+        })
+        .map(String::from)
+        .collect();
+    (!next.is_empty()).then_some(next)
 }
 
 /// Which tier a list belongs to.
@@ -506,6 +546,8 @@ pub enum Msg {
     PolicyDefault(Slot, Opt),
     PolicyEffort(String),
     PolicyAllowTraining(bool),
+    PolicyEngine(String, bool),
+    PolicyEngineMode(String),
     PolicyNumber(Num, String),
     PolicyFetchBlock(text_editor::Action),
     TogglePrices,
@@ -959,6 +1001,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
+        Msg::PolicyEngine(id, on) => {
+            // A switch that would leave no engine on is not taken; the checkbox keeps its place.
+            if let Some(p) = state.policy.as_mut()
+                && let Some(next) = engines_after(&p.copy.engines_enabled, &id, on)
+            {
+                p.copy.engines_enabled = next;
+            }
+            Task::none()
+        }
+        Msg::PolicyEngineMode(mode) => {
+            if let Some(p) = state.policy.as_mut() {
+                p.copy.engines_mode = mode;
+            }
+            Task::none()
+        }
         Msg::PolicyEffort(v) => {
             if let Some(p) = state.policy.as_mut() {
                 p.copy.effort = if v == "default" { None } else { Some(v) };
@@ -1028,9 +1085,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             }
             p.saving = true;
-            let s = p.copy.clone();
+            let mut s = p.copy.clone();
             let c = ctx.client.clone();
-            client::task(move || save_settings(&c, &s), Msg::PolicySaved)
+            client::task(
+                move || {
+                    // The ACP switch lives on the MCP hub tab, so this save keeps the hub's current value
+                    // rather than the one this copy was loaded with.
+                    s.acp_enabled = c.get::<Settings>("/v1/settings")?.acp_enabled;
+                    save_settings(&c, &s)
+                },
+                Msg::PolicySaved,
+            )
         }
         Msg::PolicySaved(Ok(saved)) => {
             if let Some(p) = state.policy.as_mut() {
@@ -1294,7 +1359,8 @@ fn listed_task(ctx: &Ctx, id: String) -> Task<Msg> {
     )
 }
 
-fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
+/// Writes the whole settings object. The MCP hub tab saves its ACP switch through this too.
+pub(super) fn save_settings(c: &Client, s: &Settings) -> Result<Settings, String> {
     let body = serde_json::to_value(s).map_err(|e| e.to_string())?;
     let v = c.call("PUT", "/v1/settings", Some(&body))?;
     serde_json::from_value(v).map_err(|e| e.to_string())
@@ -2323,6 +2389,7 @@ fn policy_view<'a>(state: &'a State) -> Element<'a, Msg> {
         policy_card(p),
         defaults_card(p),
         limits_card(p),
+        engines_card(p),
         prices_card(state, p),
     ]);
     column(items).spacing(16).into()
@@ -2520,6 +2587,32 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     ui::card("Limits", column(items).spacing(12).into())
 }
 
+/// The coding engines a `code_engine` call may name, and how they run. At least one stays on.
+fn engines_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
+    let s = &p.copy;
+    let mut items: Vec<Element<'a, Msg>> = ENGINE_IDS
+        .into_iter()
+        .map(|id| {
+            iced::widget::checkbox(s.engines_enabled.iter().any(|e| e == id))
+                .label(id)
+                .on_toggle(move |on| Msg::PolicyEngine(id.to_string(), on))
+                .into()
+        })
+        .collect();
+    let modes: Vec<String> = ENGINE_MODES.iter().map(|m| m.to_string()).collect();
+    let mode: Element<'a, Msg> = pick_list(modes, Some(s.engines_mode.clone()), |v: String| {
+        Msg::PolicyEngineMode(v)
+    })
+    .width(Length::Fill)
+    .into();
+    items.push(labelled("Mode", mode));
+    items.push(
+        ui::faint("acp: a live stream, and every action is checked by the laws. headless: one run per job, as in earlier releases.")
+            .into(),
+    );
+    ui::card("Engines", column(items).spacing(12).into())
+}
+
 fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
     let s = &p.copy;
     let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -2588,6 +2681,58 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn engines(list: &[&str]) -> Vec<String> {
+        list.iter().map(|e| e.to_string()).collect()
+    }
+
+    #[test]
+    fn engines_switch_on_and_off_in_the_hubs_order() {
+        assert_eq!(
+            engines_after(&engines(&["codex"]), "claude", true),
+            Some(engines(&["claude", "codex"]))
+        );
+        assert_eq!(
+            engines_after(&engines(&["claude", "codex"]), "claude", false),
+            Some(engines(&["codex"]))
+        );
+    }
+
+    #[test]
+    fn the_last_engine_stays_on() {
+        assert_eq!(engines_after(&engines(&["codex"]), "codex", false), None);
+        assert_eq!(
+            engines_after(&engines(&["codex"]), "claude", false),
+            Some(engines(&["codex"]))
+        );
+    }
+
+    #[test]
+    fn settings_without_engine_fields_take_the_hubs_defaults() {
+        let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
+        let s: Settings = serde_json::from_value(bare).expect("settings parse");
+        assert_eq!(s.engines_enabled, ["claude", "codex", "opencode"]);
+        assert_eq!(s.engines_mode, "acp");
+        assert!(!s.acp_enabled);
+    }
+
+    #[test]
+    fn engine_fields_round_trip_to_the_hub() {
+        let raw = json!({
+            "default_model": "a",
+            "orchestrator_model": "b",
+            "engines_enabled": ["opencode"],
+            "engines_mode": "headless",
+            "acp_enabled": true,
+            "some_future_field": 3
+        });
+        let s: Settings = serde_json::from_value(raw).expect("settings parse");
+        let back = serde_json::to_value(&s).expect("settings serialize");
+        assert_eq!(back["engines_enabled"], json!(["opencode"]));
+        assert_eq!(back["engines_mode"], "headless");
+        assert_eq!(back["acp_enabled"], true);
+        assert_eq!(back["some_future_field"], 3);
+    }
 
     #[test]
     fn price_path_encodes_the_provider_model_key() {
