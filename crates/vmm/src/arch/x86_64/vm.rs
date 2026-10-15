@@ -222,6 +222,10 @@ mod tests {
 
     #[test]
     fn test_vm_save_restore_state() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_with_irqchip();
         let state = vm.save_state().unwrap();
         assert_eq!(
@@ -258,6 +262,10 @@ mod tests {
 
     #[test]
     fn test_vm_restore_state_bad_irqchip() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_with_irqchip();
         let mut state = vm.save_state().unwrap();
 
@@ -288,6 +296,10 @@ mod tests {
 
     #[test]
     fn test_vmstate_serde() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_with_irqchip();
         let state = vm.save_state().unwrap();
 

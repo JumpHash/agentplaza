@@ -415,6 +415,10 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn pause_and_resume_are_idempotent_and_track_the_flag() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_without_vcpus(1 << 20);
         let control = control_of(&vm, &serial(), None);
         control.pause().unwrap();
@@ -428,6 +432,10 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_booted_vm_snapshot_writes_private_state_and_memory_and_stays_paused() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_without_vcpus(1 << 20);
         let serial = serial();
         serial.lock().unwrap().queue_input(b"ab").unwrap();
@@ -464,6 +472,10 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_restored_vm_snapshot_is_a_diff_over_a_copy_of_its_base() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let vm = vm_without_vcpus(1 << 20);
         let serial = serial();
         let root = scratch("restored");

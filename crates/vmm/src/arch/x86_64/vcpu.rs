@@ -1261,6 +1261,10 @@ mod tests {
 
     #[test]
     fn test_save_restore_round_trip() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
         let (vm, mut vcpu) = vm_with_vcpu();
         vcpu.configure_cpuid(vm.kvm(), 1, false).unwrap();
         vcpu.configure_msrs_for_boot().unwrap();
