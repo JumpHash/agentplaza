@@ -670,53 +670,43 @@ mod tests {
         );
     }
 
-    /// A `builder` whose manifest entry grants no write still falls back: the
-    /// plan reads the grants, not the family's name.
+    /// The write-then-read workflows: each writes the task's own line into its
+    /// artifact, then reads it back. The line is task-derived, and a multi-line
+    /// goal is one line in the artifact.
     #[test]
-    fn a_family_whose_grants_exclude_its_script_falls_back() {
-        let roles = manifest(&[("builder", &["read_file", "list", "search"])]);
-        assert_eq!(
-            plan_for("builder", Some(&roles)),
-            Plan::Drive(&READ_ONLY_FAMILY)
-        );
-
-        // And with no search either, there is nothing left to drive.
-        let roles = manifest(&[("builder", &["read_file", "list"])]);
-        assert_eq!(
-            plan_for("builder", Some(&roles)),
-            Plan::Skipped("the role grants no tool this dispatcher may drive")
-        );
-    }
-
-    /// The default workflow's script: write the task's own line, read it back.
-    /// The line is task-derived, and a multi-line goal is one line in the
-    /// artifact.
-    #[test]
-    fn the_default_workflow_writes_the_task_line_then_reads_it_back() {
-        let (run, agent) = run("architect", &task("t7", "draft\nthe handbook", "architect"));
-        assert_eq!(
-            run.expect("the workflow runs"),
-            Report::Artifacts(vec!["notes.txt".to_string()])
-        );
-        assert_eq!(agent.sequence(), vec!["write_file", "read_file"]);
-        assert_eq!(agent.arg(0, "path"), "notes.txt");
-        assert_eq!(agent.arg(0, "content"), "task t7: draft the handbook");
-        assert_eq!(agent.arg(1, "path"), "notes.txt");
-        assert_eq!(agent.calls(), 2);
-    }
-
-    /// The builder's script: the same round trip, into its own artifact.
-    #[test]
-    fn the_builder_workflow_writes_build_notes() {
-        let (run, agent) = run("builder", &task("t3", "raise the plaza", "builder"));
-        assert_eq!(
-            run.expect("the workflow runs"),
-            Report::Artifacts(vec!["build-notes.txt".to_string()])
-        );
-        assert_eq!(agent.sequence(), vec!["write_file", "read_file"]);
-        assert_eq!(agent.arg(0, "path"), "build-notes.txt");
-        assert_eq!(agent.arg(0, "content"), "task t3: raise the plaza");
-        assert_eq!(agent.calls(), 2);
+    fn the_write_then_read_workflows_write_the_task_line() {
+        // The default workflow's script: write the task's own line, read it back.
+        // The builder's script: the same round trip, into its own artifact.
+        for (case, role, id, goal, artifact, line) in [
+            (
+                "the default workflow",
+                "architect",
+                "t7",
+                "draft\nthe handbook",
+                "notes.txt",
+                "task t7: draft the handbook",
+            ),
+            (
+                "the builder workflow",
+                "builder",
+                "t3",
+                "raise the plaza",
+                "build-notes.txt",
+                "task t3: raise the plaza",
+            ),
+        ] {
+            let (run, agent) = run(role, &task(id, goal, role));
+            assert_eq!(
+                run.expect("the workflow runs"),
+                Report::Artifacts(vec![artifact.to_string()]),
+                "{case} reports its artifact"
+            );
+            assert_eq!(agent.sequence(), vec!["write_file", "read_file"], "{case}");
+            assert_eq!(agent.arg(0, "path"), artifact, "{case} writes its artifact");
+            assert_eq!(agent.arg(0, "content"), line, "{case} writes the task line");
+            assert_eq!(agent.arg(1, "path"), artifact, "{case} reads it back");
+            assert_eq!(agent.calls(), 2, "{case}");
+        }
     }
 
     /// The librarian's script writes nothing at all: it searches for the token

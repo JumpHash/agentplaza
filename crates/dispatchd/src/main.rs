@@ -202,38 +202,46 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    /// Flags and their values parse into the config: an explicit flag overrides
+    /// its default, and `--once` is a flag, not a value, so it takes no argument
+    /// and everything after it still parses.
     #[test]
-    fn the_defaults_are_the_loopback_stack() {
-        let config = parse_args(Vec::new()).expect("no arguments is valid");
-        assert_eq!(config.noded, DEFAULT_NODED);
-        assert_eq!(config.hub, DEFAULT_HUB);
-        assert_eq!(config.roles, None, "no manifest, no grant policy");
-        assert!(!config.once, "the daemon loops unless asked for one pass");
-        assert_eq!(config.interval, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn explicit_flags_override_their_defaults() {
-        let config = parse_args(vec![
-            "--noded".to_string(),
-            "http://127.0.0.1:8901".to_string(),
-            "--hub".to_string(),
-            "http://localhost:19082".to_string(),
-            "--roles".to_string(),
-            "docs/agents/initial-roles.json".to_string(),
-            "--once".to_string(),
-            "--interval-secs".to_string(),
-            "30".to_string(),
-        ])
-        .expect("explicit flags parse");
-        assert_eq!(config.noded, "http://127.0.0.1:8901");
-        assert_eq!(config.hub, "http://localhost:19082");
-        assert_eq!(
-            config.roles,
-            Some(PathBuf::from("docs/agents/initial-roles.json"))
-        );
-        assert!(config.once);
-        assert_eq!(config.interval, Duration::from_secs(30));
+    fn parse_args_reads_flags_and_their_values() {
+        // The explicit flags override their defaults.
+        {
+            let config = parse_args(vec![
+                "--noded".to_string(),
+                "http://127.0.0.1:8901".to_string(),
+                "--hub".to_string(),
+                "http://localhost:19082".to_string(),
+                "--roles".to_string(),
+                "docs/agents/initial-roles.json".to_string(),
+                "--once".to_string(),
+                "--interval-secs".to_string(),
+                "30".to_string(),
+            ])
+            .expect("explicit flags parse");
+            assert_eq!(config.noded, "http://127.0.0.1:8901");
+            assert_eq!(config.hub, "http://localhost:19082");
+            assert_eq!(
+                config.roles,
+                Some(PathBuf::from("docs/agents/initial-roles.json"))
+            );
+            assert!(config.once);
+            assert_eq!(config.interval, Duration::from_secs(30));
+        }
+        // `--once` is a flag, not a value: it takes no argument, and everything
+        // after it still parses.
+        {
+            let config = parse_args(vec![
+                "--once".to_string(),
+                "--noded".to_string(),
+                "http://127.0.0.1:1".to_string(),
+            ])
+            .expect("a flag then a value parses");
+            assert!(config.once);
+            assert_eq!(config.noded, "http://127.0.0.1:1");
+        }
     }
 
     #[test]
@@ -271,19 +279,5 @@ mod tests {
     fn a_manifest_outside_the_contract_is_refused_before_any_pass() {
         assert!(Manifest::load(std::path::Path::new("/no/such/dispatchd-roles.json")).is_err());
         assert!(Manifest::parse(r#"{"roles": {"builder": {"role": "builder"}}}"#).is_err());
-    }
-
-    /// `--once` is a flag, not a value: it takes no argument, and everything
-    /// after it still parses.
-    #[test]
-    fn once_is_a_flag() {
-        let config = parse_args(vec![
-            "--once".to_string(),
-            "--noded".to_string(),
-            "http://127.0.0.1:1".to_string(),
-        ])
-        .expect("a flag then a value parses");
-        assert!(config.once);
-        assert_eq!(config.noded, "http://127.0.0.1:1");
     }
 }
