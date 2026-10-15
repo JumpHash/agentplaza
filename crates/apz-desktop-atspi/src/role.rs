@@ -61,7 +61,7 @@ mod tests {
     use super::apz_role;
 
     #[test]
-    fn the_common_controls_map_to_the_names_the_desktop_uses() {
+    fn the_role_names_the_desktop_uses_map_from_atspi_roles() {
         let cases = [
             ("push button", "button"),
             ("button", "button"),
@@ -77,15 +77,12 @@ mod tests {
             ("window", "window"),
             ("application", "application"),
             ("combo box", "combo_box"),
+            // A role the table does not name keeps its name in snake_case.
+            ("dial", "dial"),
+            ("color chooser", "color_chooser"),
         ];
         for (atspi, apz) in cases {
             assert_eq!(apz_role(atspi), apz, "AT-SPI role {atspi:?}");
         }
-    }
-
-    #[test]
-    fn a_role_the_table_does_not_name_keeps_its_name_in_snake_case() {
-        assert_eq!(apz_role("dial"), "dial");
-        assert_eq!(apz_role("color chooser"), "color_chooser");
     }
 }
