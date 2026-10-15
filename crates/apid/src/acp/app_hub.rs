@@ -6,7 +6,7 @@ use apz_proto::wire::{Control, WorkKind};
 use serde_json::{Value, json};
 
 use super::agent::{Hub, RepoFile, RepoPull};
-use crate::agents::{Agent, Status, check_chat_text};
+use crate::agents::{Agent, Status};
 use crate::approvals::{Mode, State};
 use crate::events::Frame;
 use crate::git::{ORG, contents_path, forge_on, seg};
@@ -66,7 +66,7 @@ impl Hub for AppHub<'_> {
         if let Some(why) = chat_refusal(&agent) {
             return Err(why.to_string());
         }
-        check_chat_text(text)?;
+        check_prompt_text(text)?;
         let origin = Origin {
             owner: true,
             acp: true,
@@ -402,6 +402,25 @@ fn side(forge: &crate::git::Forge, repo: &str, path: &str, reference: &str) -> S
     }
 }
 
+/// The most an editor's prompt may hold, in bytes: the attached files ([`super::agent::PROMPT_BYTES`])
+/// plus room for the editor's own text and the repository note. The console's chat keeps its own,
+/// smaller limit (`agents::check_chat_text`); a prompt with attached files is far longer than a typed one.
+const PROMPT_TEXT_BYTES: usize = super::agent::PROMPT_BYTES + 64 * 1024;
+
+/// Whether an editor's prompt text may be queued: not blank, and within [`PROMPT_TEXT_BYTES`].
+fn check_prompt_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("text must not be empty".into());
+    }
+    if text.len() > PROMPT_TEXT_BYTES {
+        return Err(format!(
+            "the prompt is {} bytes; the limit is {PROMPT_TEXT_BYTES}",
+            text.len()
+        ));
+    }
+    Ok(())
+}
+
 /// Why `agent` takes no chat: a model agent has none, and an offline one cannot take it. The
 /// messages are the chat route's.
 fn chat_refusal(agent: &Agent) -> Option<&'static str> {
@@ -469,6 +488,14 @@ mod tests {
         assert_eq!(harness_only["engine_input_tokens"], 0);
 
         assert_eq!(combined_usage((0, 0, 0), (0, 0, 0)), None);
+    }
+
+    #[test]
+    fn an_editor_prompt_may_carry_its_attached_files() {
+        let attached = "x".repeat(super::super::agent::PROMPT_BYTES);
+        assert!(check_prompt_text(&attached).is_ok());
+        assert!(check_prompt_text("  ").is_err());
+        assert!(check_prompt_text(&"x".repeat(PROMPT_TEXT_BYTES + 1)).is_err());
     }
 
     #[test]

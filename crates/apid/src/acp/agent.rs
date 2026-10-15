@@ -148,7 +148,7 @@ const APPROVALS_EVERY: Duration = Duration::from_secs(2);
 /// How long the editor has to answer an approval before its request is left pending.
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// The most attached file text one prompt carries; the rest of the files are left out.
-const PROMPT_BYTES: usize = 256 * 1024;
+pub(crate) const PROMPT_BYTES: usize = 256 * 1024;
 /// Said before the reply to `session/new` when the editor offered MCP servers: they are not run.
 const MCP_NOTICE: &str = "AgentPlaza agents work in their own VM: the editor's MCP servers are not connected. Add remote MCP servers in the hub's MCP screen.";
 /// The plaza's commands: name, what the editor shows, and the argument's hint when it takes one.
