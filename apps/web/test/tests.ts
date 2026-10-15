@@ -43,6 +43,8 @@ import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem,
 import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
 import { movableNodes, moveText } from '../src/views/agent-detail';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
+import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
+import type { Entry as TreeEntry } from '../src/ide/types';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1434,6 +1436,42 @@ sectionEnd('ide stored terminals tests: ok');
   eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
 }
 sectionEnd('board owner composer tests: ok');
+
+{
+  // The Files tree repaints only when its rows would change: the same inputs in any set order are the same paint, and each
+  // input that shows in a row (the workspace, a loaded or open folder, an entry's kind or binary flag, a changed mark, the
+  // filter's kept paths, the active file) makes it a new one.
+  const entry = (path: string, kind: 'file' | 'dir' = 'file', binary = false): TreeEntry => ({ path, kind, size: 0, hash: null, binary });
+  const base: TreeKeyInput = {
+    workspace: 'agent:1',
+    all: [entry('src', 'dir'), entry('src/a.ts'), entry('logo.png', 'file', true)],
+    loaded: new Set(['', 'src']),
+    expanded: new Set(['src']),
+    changed: new Set(['src/a.ts']),
+    keep: null,
+    active: 'src/a.ts',
+    hasWorkspace: true,
+  };
+  const same = treeKey({ ...base, loaded: new Set(['src', '']), expanded: new Set(['src']), changed: new Set(['src/a.ts']) });
+  eq(treeKey(base) === same, true, 'treeKey: the same inputs (sets in another order) give the same key');
+  const differs = (over: Partial<TreeKeyInput>, name: string) => eq(treeKey({ ...base, ...over }) === treeKey(base), false, `treeKey: ${name}`);
+  differs({ workspace: 'agent:2' }, 'a new workspace is a new paint');
+  differs({ hasWorkspace: false }, 'no workspace is a new paint');
+  differs({ loaded: new Set(['']) }, 'a folder that finishes loading is a new paint');
+  differs({ expanded: new Set() }, 'a folder that is closed is a new paint');
+  differs({ all: [entry('src', 'dir'), entry('src/a.ts'), entry('logo.png')] }, 'an entry that is no longer binary is a new paint');
+  differs({ all: [...base.all, entry('src/b.ts')] }, 'a new entry is a new paint');
+  differs({ changed: new Set() }, 'a changed mark that clears is a new paint');
+  differs({ keep: new Set(['src/a.ts']) }, 'turning the changed-only filter on is a new paint');
+  differs({ active: null }, 'the active file changing is a new paint');
+  eq(treeKey({ ...base, keep: new Set(['src/a.ts']) }) === treeKey({ ...base, keep: new Set(['src/a.ts']) }), true, 'treeKey: the same filter keeps the same key');
+  const cps = [{ n: 1, label: 'before refactor', files: 3 }];
+  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [{ ...cps[0] }]), true, 'checkpointsKey: the same checkpoints give the same key');
+  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [{ ...cps[0], files: 4 }]), false, 'checkpointsKey: a checkpoint whose file count changes is a new paint');
+  eq(checkpointsKey('agent:1', true, cps) === checkpointsKey('agent:1', true, [...cps, { n: 2, label: 'x', files: 0 }]), false, 'checkpointsKey: a new checkpoint is a new paint');
+  eq(checkpointsKey('agent:1', false, cps) === checkpointsKey(null, true, cps), true, 'checkpointsKey: no panel (no diff, or no workspace) is the same paint');
+}
+sectionEnd('ide files paint tests: ok');
 
 {
   // Sleep, VM checkpoints and forks: the requests the console sends, against a recorded fetch (the paths are escaped
