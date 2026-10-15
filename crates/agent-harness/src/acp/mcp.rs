@@ -16,9 +16,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_proto::chat::ToolSpec;
 use serde_json::{Value, json};
@@ -33,8 +39,22 @@ const SERVER_NAME: &str = "plaza";
 /// How long the accept loop sleeps between checks of its stop flag.
 #[cfg(unix)]
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
+/// How long the accept loop waits after an accept error (EMFILE, say) before it tries again.
+#[cfg(unix)]
+const ACCEPT_RETRY: Duration = Duration::from_millis(50);
+/// The most bytes in one line on the socket or the stdio side, newline included. A longer line is
+/// answered with an error and its connection closed, so an engine cannot grow the harness's buffers.
+#[cfg(unix)]
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+/// The most connections open at once; one more is closed as it is accepted.
+#[cfg(unix)]
+const MAX_CONNECTIONS: usize = 8;
+#[cfg(unix)]
+const LINE_TOO_LONG: &str = "the line is longer than 8 MiB";
 
 const PARSE_ERROR: i64 = -32700;
+#[cfg(unix)]
+const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
@@ -196,7 +216,10 @@ impl Socket {
         if self.listener.set_nonblocking(true).is_err() {
             return;
         }
-        let mut open = Vec::new();
+        // The connections still open, by number: a finished one takes itself out, so the cap counts
+        // only live connections and the set does not keep their sockets.
+        let open: Mutex<HashMap<u64, UnixStream>> = Mutex::new(HashMap::new());
+        let mut next = 0u64;
         thread::scope(|scope| {
             while !stop.load(Ordering::SeqCst) {
                 match self.listener.accept() {
@@ -205,23 +228,74 @@ impl Socket {
                         if stream.set_nonblocking(false).is_err() {
                             continue;
                         }
-                        if let Ok(clone) = stream.try_clone() {
-                            open.push(clone);
+                        // Over the cap the connection is closed at once, not queued.
+                        if lock(&open).len() >= MAX_CONNECTIONS {
+                            continue;
                         }
-                        scope.spawn(move || connection(stream, tools, link, deadline));
+                        let Ok(clone) = stream.try_clone() else {
+                            continue;
+                        };
+                        next += 1;
+                        let id = next;
+                        lock(&open).insert(id, clone);
+                        let registry = &open;
+                        scope.spawn(move || {
+                            connection(stream, tools, link, deadline);
+                            lock(registry).remove(&id);
+                        });
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(ACCEPT_POLL);
                     }
-                    Err(_) => break,
+                    // An accept error (EMFILE, say) ends nothing: it is logged and tried again.
+                    Err(err) => {
+                        eprintln!(
+                            "agent-harness: the plaza's tools cannot accept a connection: {err}"
+                        );
+                        thread::sleep(ACCEPT_RETRY);
+                    }
                 }
             }
             // Closing the connections ends their reads, so the threads end and the scope returns.
-            for stream in &open {
+            for stream in lock(&open).values() {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
         });
     }
+}
+
+/// A mutex's guard, past a poisoning: the sets it guards stay usable when a connection's thread died.
+#[cfg(unix)]
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One line read under the cap.
+#[cfg(unix)]
+#[derive(Debug, PartialEq)]
+enum Line {
+    /// A line, without its newline.
+    Text(String),
+    /// A line longer than the cap; the reader has consumed only the cap's bytes of it.
+    TooLong,
+    /// The end of the input.
+    End,
+}
+
+/// Reads one line of at most `max` bytes, newline included. A longer line is [`Line::TooLong`]: the
+/// caller answers with an error and stops reading the input.
+#[cfg(unix)]
+fn read_line_capped(reader: &mut impl BufRead, max: usize) -> io::Result<Line> {
+    let mut line = String::new();
+    // One byte past the cap tells a line that is too long from one that exactly fits.
+    let read = reader.take(max as u64 + 1).read_line(&mut line)?;
+    if read == 0 {
+        return Ok(Line::End);
+    }
+    if line.len() > max {
+        return Ok(Line::TooLong);
+    }
+    Ok(Line::Text(line.trim_end_matches(['\r', '\n']).to_string()))
 }
 
 #[cfg(unix)]
@@ -237,9 +311,20 @@ fn connection(stream: UnixStream, tools: &[ToolSpec], link: &dyn EngineLink, dea
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
-    for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else {
-            return;
+    let mut reader = BufReader::new(stream);
+    loop {
+        let line = match read_line_capped(&mut reader, MAX_LINE_BYTES) {
+            Ok(Line::Text(line)) => line,
+            // An over-long line is answered, then the connection is closed.
+            Ok(Line::TooLong) => {
+                let _ = writeln!(
+                    writer,
+                    "{}",
+                    failure(&Value::Null, INVALID_REQUEST, LINE_TOO_LONG)
+                );
+                return;
+            }
+            Ok(Line::End) | Err(_) => return,
         };
         if line.trim().is_empty() {
             continue;
@@ -265,34 +350,69 @@ pub fn run_stdio(socket: &Path) -> io::Result<()> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;
     let mut replies = BufReader::new(stream);
-    let stdin = io::stdin();
+    let mut stdin = io::stdin().lock();
     let mut out = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line?;
+    // Set when a session's reply could not be read whole: the rest of that line is not a reply, so
+    // the server stops after answering.
+    let mut broken = false;
+    loop {
+        let line = match read_line_capped(&mut stdin, MAX_LINE_BYTES)? {
+            Line::Text(line) => line,
+            Line::TooLong => {
+                writeln!(
+                    out,
+                    "{}",
+                    failure(&Value::Null, INVALID_REQUEST, LINE_TOO_LONG)
+                )?;
+                out.flush()?;
+                return Ok(());
+            }
+            Line::End => return Ok(()),
+        };
         if line.trim().is_empty() {
             continue;
         }
-        let reply = answer(&line, |request| forward(request, &mut writer, &mut replies));
+        let reply = answer(&line, |request| {
+            forward(request, &mut writer, &mut replies, &mut broken)
+        });
         if let Some(reply) = reply {
             writeln!(out, "{reply}")?;
             out.flush()?;
         }
+        if broken {
+            return Ok(());
+        }
     }
-    Ok(())
 }
 
 /// Sends one request to the session and returns its reply. A session that cannot be reached is an
 /// error reply to the request, not a crash of the engine's server.
 #[cfg(unix)]
-fn forward(request: &Value, writer: &mut UnixStream, replies: &mut BufReader<UnixStream>) -> Value {
+fn forward(
+    request: &Value,
+    writer: &mut UnixStream,
+    replies: &mut BufReader<UnixStream>,
+    broken: &mut bool,
+) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let sent = writeln!(writer, "{request}").and_then(|()| writer.flush());
-    let mut line = String::new();
-    let read = sent.and_then(|()| replies.read_line(&mut line));
+    let read = sent.and_then(|()| read_line_capped(replies, MAX_LINE_BYTES));
     match read {
-        Ok(count) if count > 0 => serde_json::from_str(&line)
+        Ok(Line::Text(line)) => serde_json::from_str(&line)
             .unwrap_or_else(|_| failure(&id, INTERNAL_ERROR, "the plaza's tools gave a bad reply")),
-        _ => failure(&id, INTERNAL_ERROR, "the plaza's tools are not reachable"),
+        Ok(Line::TooLong) => {
+            *broken = true;
+            failure(
+                &id,
+                INTERNAL_ERROR,
+                "the plaza's tools gave a reply longer than 8 MiB",
+            )
+        }
+        Err(_) => {
+            *broken = true;
+            failure(&id, INTERNAL_ERROR, "the plaza's tools are not reachable")
+        }
+        Ok(Line::End) => failure(&id, INTERNAL_ERROR, "the plaza's tools are not reachable"),
     }
 }
 
@@ -508,13 +628,13 @@ mod tests {
             let mut replies = BufReader::new(stream);
             let listed = answer(
                 r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
-                |request| forward(request, &mut writer, &mut replies),
+                |request| forward(request, &mut writer, &mut replies, &mut false),
             )
             .expect("a reply");
             assert!(listed.contains(r#""name":"board_list""#), "{listed}");
             let called = answer(
                 r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"board_list","arguments":{"column":"doing"}}}"#,
-                |request| forward(request, &mut writer, &mut replies),
+                |request| forward(request, &mut writer, &mut replies, &mut false),
             )
             .expect("a reply");
             assert!(called.contains("cards in doing"), "{called}");
@@ -522,6 +642,71 @@ mod tests {
         });
         drop(socket);
         assert!(!path.exists(), "the socket file is removed with the turn");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_is_read_up_to_the_cap_and_a_longer_one_is_too_long() {
+        let mut short: &[u8] = b"one\n";
+        assert_eq!(
+            read_line_capped(&mut short, 8).expect("a line"),
+            Line::Text("one".to_string())
+        );
+        assert_eq!(read_line_capped(&mut short, 8).expect("the end"), Line::End);
+        // Eight bytes with the newline exactly fit; nine do not.
+        let mut exact: &[u8] = b"abcdefg\n";
+        assert_eq!(
+            read_line_capped(&mut exact, 8).expect("a line"),
+            Line::Text("abcdefg".to_string())
+        );
+        let mut long: &[u8] = b"abcdefgh\n";
+        assert_eq!(
+            read_line_capped(&mut long, 8).expect("a line"),
+            Line::TooLong
+        );
+    }
+
+    #[test]
+    fn the_socket_serves_eight_connections_and_a_finished_one_frees_its_slot() {
+        let dir = scratch("cap");
+        let tools = vec![spec("board_list")];
+        let socket = Socket::bind(&dir, &tools).expect("bind").expect("a socket");
+        let path = socket.path().to_path_buf();
+        let stop = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        thread::scope(|scope| {
+            scope.spawn(|| socket.serve(&tools, &Fake, deadline, &stop));
+            let mut open: Vec<UnixStream> = (0..MAX_CONNECTIONS)
+                .map(|_| UnixStream::connect(&path).expect("connects"))
+                .collect();
+            // The ninth is closed as it is accepted: its read ends at once.
+            let extra = UnixStream::connect(&path).expect("connects");
+            let mut reply = String::new();
+            assert_eq!(
+                BufReader::new(&extra)
+                    .read_line(&mut reply)
+                    .expect("a closed read"),
+                0
+            );
+            // A finished connection leaves the set, so the next one is served.
+            drop(open.remove(0));
+            thread::sleep(Duration::from_millis(100));
+            let mut served = UnixStream::connect(&path).expect("connects");
+            writeln!(
+                served,
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}"#
+            )
+            .expect("a request");
+            let mut listed = String::new();
+            BufReader::new(&served)
+                .read_line(&mut listed)
+                .expect("a reply");
+            assert!(listed.contains(r#""name":"board_list""#), "{listed}");
+            drop(served);
+            drop(open);
+            stop.store(true, Ordering::SeqCst);
+        });
+        drop(socket);
         let _ = fs::remove_dir_all(&dir);
     }
 

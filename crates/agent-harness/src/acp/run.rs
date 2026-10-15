@@ -1,7 +1,8 @@
 //! `code_engine` over ACP: one prompt turn of an engine session.
 //!
 //! The call is validated first, so a bad call installs nothing. The engine's pinned adapter is
-//! installed when its binary is missing, from the exact tarball whose sha512 the catalogue names.
+//! installed when it is not installed at the catalogue's version (see [`install`]), from the exact
+//! tarball whose sha512 the catalogue names.
 //! One prompt turn then runs through [`session::prompt_turn`]. The session it ends in is kept in
 //! `<workspace>/.plaza/engine-sessions.json`, so a later call can continue it, and the turn's
 //! summary is what the model reads back.
@@ -220,15 +221,17 @@ fn npm_binary(entry: &Entry) -> PathBuf {
         .join(entry.binary)
 }
 
-/// Installs the engine when its binary is missing, by its install method. Either way the bytes that
-/// run are the ones whose checksum the catalogue names: a mismatch deletes the download and installs
-/// nothing.
+/// Installs the engine when it is not installed at the catalogue's version, by its install method.
+/// An install counts only once its binary is in place and its marker is recorded, so a failed one is
+/// tried again, and a version bump in the catalogue installs the new version. Either way the bytes
+/// installed are the ones whose checksum the catalogue names: a mismatch deletes the download and
+/// installs nothing. That check covers the install only. The engine runs as root in its VM, so it
+/// could change the installed files afterwards, and the launch does not check them again.
 fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
-    let binary = npm_binary(entry);
-    if binary.exists() {
+    if installed(entry) {
         return Ok(());
     }
-    match entry.install {
+    let result = match entry.install {
         Install::Npm {
             package,
             version,
@@ -245,7 +248,65 @@ fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
             file,
             sha256,
         } => install_pip(workspace, entry, package, version, file, sha256),
+    };
+    result?;
+    record_install(
+        Path::new(engines::NPM_PREFIX),
+        entry.id,
+        pinned_version(entry),
+    )
+    .map_err(|err| format!("cannot record the install of {}: {err}", entry.id))
+}
+
+/// The version the catalogue pins for an engine's install.
+fn pinned_version(entry: &Entry) -> &str {
+    match entry.install {
+        Install::Npm { version, .. }
+        | Install::Release { version, .. }
+        | Install::Pip { version, .. } => version,
     }
+}
+
+/// The folder under the npm prefix where an install's marker goes.
+const INSTALLED_DIR: &str = ".apz-installed";
+
+/// Whether the engine is installed at its catalogue version: its binary is in place and the marker
+/// of that version is recorded.
+fn installed(entry: &Entry) -> bool {
+    npm_binary(entry).exists()
+        && is_recorded(
+            Path::new(engines::NPM_PREFIX),
+            entry.id,
+            pinned_version(entry),
+        )
+}
+
+/// Records that `id` at `version` is installed under `prefix`. Written only after the install and its
+/// checks succeeded; the marker is named by version, so a bump in the catalogue names a new one.
+fn record_install(prefix: &Path, id: &str, version: &str) -> std::io::Result<()> {
+    let dir = prefix.join(INSTALLED_DIR);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(format!("{id}-{version}")), b"")
+}
+
+fn is_recorded(prefix: &Path, id: &str, version: &str) -> bool {
+    prefix
+        .join(INSTALLED_DIR)
+        .join(format!("{id}-{version}"))
+        .exists()
+}
+
+/// Copies a binary to `to` through `<to>.tmp` and a rename: a reader of `to` sees the old file or the
+/// new one, never a half-written copy, and a failed copy leaves no file behind.
+fn install_binary(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tmp = to.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let result = std::fs::copy(from, &tmp).and_then(|_| std::fs::rename(&tmp, to));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Installs an npm package's pinned version. `npm pack` fetches the exact version into the
@@ -417,7 +478,7 @@ fn install_release(
         files::create_dirs(bin_dir)
             .map_err(|err| format!("unavailable: cannot create {}: {err}", bin_dir.display()))?;
     }
-    std::fs::copy(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
+    install_binary(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
     Ok(())
 }
 
@@ -516,7 +577,7 @@ fn install_pip(
         files::create_dirs(bin_dir)
             .map_err(|err| format!("unavailable: cannot create {}: {err}", bin_dir.display()))?;
     }
-    std::fs::copy(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
+    install_binary(&found, &binary).map_err(|err| format!("cannot install {spec}: {err}"))?;
     Ok(())
 }
 
@@ -1068,6 +1129,45 @@ mod tests {
         assert_eq!(find_binary(&dir, "goose"), Some(nested.clone()));
         assert_eq!(find_binary(&dir, "bin/goose"), Some(nested));
         assert_eq!(find_binary(&dir, "missing"), None);
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("apz-harness-run-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn an_install_is_recorded_per_version_so_a_version_bump_installs_again() {
+        let prefix = scratch_dir("recorded");
+        assert!(!is_recorded(&prefix, "claude", "1.0.0"));
+        record_install(&prefix, "claude", "1.0.0").expect("recorded");
+        assert!(is_recorded(&prefix, "claude", "1.0.0"));
+        assert!(!is_recorded(&prefix, "claude", "1.1.0"));
+        assert!(!is_recorded(&prefix, "cline", "1.0.0"));
+        let _ = std::fs::remove_dir_all(&prefix);
+    }
+
+    #[test]
+    fn a_binary_is_replaced_through_a_tmp_file_and_a_failed_copy_leaves_the_old_one() {
+        let dir = scratch_dir("binary");
+        std::fs::create_dir_all(&dir).expect("a dir");
+        let from = dir.join("from");
+        let to = dir.join("to");
+        std::fs::write(&from, b"new bytes").expect("a source");
+        std::fs::write(&to, b"old bytes").expect("an old binary");
+        install_binary(&from, &to).expect("copied");
+        assert_eq!(std::fs::read(&to).expect("read"), b"new bytes");
+        assert!(!dir.join("to.tmp").exists());
+        assert!(install_binary(&dir.join("missing"), &to).is_err());
+        assert_eq!(
+            std::fs::read(&to).expect("read"),
+            b"new bytes",
+            "the installed binary is not touched by a failed copy"
+        );
+        assert!(!dir.join("to.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

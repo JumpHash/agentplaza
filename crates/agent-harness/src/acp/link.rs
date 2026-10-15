@@ -42,6 +42,11 @@ pub trait EngineLink: Send + Sync {
     /// sends `session/cancel`, answers its open requests `cancelled` and ends the turn.
     fn cancelled(&self) -> bool;
 
+    /// The engine's turn is over (its prompt was answered, the engine exited, or it was killed after
+    /// the cancel grace). Waits still open on the hub end at once, so the turn's threads can join
+    /// instead of waiting for their deadline. Default: nothing to end.
+    fn end_turn(&self) {}
+
     /// The plaza's tools an engine may call through its MCP server (see [`super::mcp::plaza_tools`]).
     /// Empty where the link has none, so the engine is offered no MCP server.
     fn plaza_tools(&self) -> Vec<ToolSpec> {

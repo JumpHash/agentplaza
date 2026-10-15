@@ -34,6 +34,8 @@ pub struct HubLink<'a, 'l, S, W> {
     seq: AtomicU64,
     /// Set when the work item is cancelled or the agent is stopping.
     cancel: &'a AtomicBool,
+    /// Set when the engine's turn is over (see [`EngineLink::end_turn`]): the waits end at once.
+    ended: AtomicBool,
     /// The profile's tools, which the engine's plaza MCP server offers (see [`mcp::plaza_tools`]).
     tools: Vec<ToolSpec>,
 }
@@ -52,6 +54,8 @@ enum Settled {
     Deadline,
     /// Cancelled, or the request was unregistered under the wait (only a dropped link does that).
     Cancelled,
+    /// The engine's turn ended while the request was open.
+    Ended,
 }
 
 impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
@@ -69,6 +73,7 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
             next: AtomicU64::new(0),
             seq: AtomicU64::new(0),
             cancel,
+            ended: AtomicBool::new(false),
             tools,
         }
     }
@@ -78,6 +83,9 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
     fn request(&self, name: &str, input: &Value, deadline: Instant) -> Settled {
         if self.cancel.load(Ordering::SeqCst) {
             return Settled::Cancelled;
+        }
+        if self.ended.load(Ordering::SeqCst) {
+            return Settled::Ended;
         }
         let n = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let id = format!("{}.e{n}", self.call);
@@ -106,6 +114,9 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
         loop {
             if self.cancel.load(Ordering::SeqCst) {
                 return Settled::Cancelled;
+            }
+            if self.ended.load(Ordering::SeqCst) {
+                return Settled::Ended;
             }
             let now = Instant::now();
             if now >= deadline {
@@ -155,18 +166,24 @@ fn denial(output: String) -> String {
 impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
     fn decide(&self, name: &str, input: &Value, deadline: Instant) -> Verdict {
         match self.request(name, input, deadline) {
+            // Fail closed: only `Allow`, or a `Done` that is not an error, lets the engine act. A
+            // `Deny`, an error and any other final answer are refusals.
             Settled::Final {
-                decision: Decision::Deny,
-                output,
+                decision: Decision::Allow,
                 ..
-            } => Verdict::Deny(denial(output)),
-            Settled::Final { .. } => Verdict::Allow,
+            }
+            | Settled::Final {
+                decision: Decision::Done,
+                is_error: false,
+                ..
+            } => Verdict::Allow,
+            Settled::Final { output, .. } => Verdict::Deny(denial(output)),
             Settled::Owner { allow: true, .. } => Verdict::Allow,
             Settled::Owner { reason, .. } => {
                 Verdict::Deny(reason.unwrap_or_else(|| "the owner denied it".to_string()))
             }
             Settled::Deadline => Verdict::Deny("no decision before the deadline".to_string()),
-            Settled::Cancelled => Verdict::Cancelled,
+            Settled::Cancelled | Settled::Ended => Verdict::Cancelled,
         }
     }
 
@@ -199,11 +216,16 @@ impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
             }
             Settled::Deadline => Err("no decision before the deadline".to_string()),
             Settled::Cancelled => Err("the turn was cancelled".to_string()),
+            Settled::Ended => Err("the engine's turn is over".to_string()),
         }
     }
 
     fn plaza_tools(&self) -> Vec<ToolSpec> {
         mcp::plaza_tools(&self.tools)
+    }
+
+    fn end_turn(&self) {
+        self.ended.store(true, Ordering::SeqCst);
     }
 
     fn update(&self, engine: &str, session: &str, update: &Value) {
@@ -534,5 +556,74 @@ mod tests {
             .map(|tool| tool.name)
             .collect();
         assert_eq!(names, vec!["board_list".to_string()]);
+    }
+
+    #[test]
+    fn a_done_decision_that_is_an_error_is_denied_and_an_error_free_one_is_allowed() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
+        let (first, second) = thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = next(&mut host);
+                shared.nested().route(tool_decision(
+                    "toolu_1.e1",
+                    Decision::Done,
+                    "the hub failed",
+                    true,
+                ));
+                let _ = next(&mut host);
+                shared
+                    .nested()
+                    .route(tool_decision("toolu_1.e2", Decision::Done, "", false));
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let first = link.decide("engine.edit", &json!({}), deadline);
+            let second = link.decide("engine.edit", &json!({}), deadline);
+            (first, second)
+        });
+        assert_eq!(first, Verdict::Deny("the hub failed".to_string()));
+        assert_eq!(second, Verdict::Allow);
+    }
+
+    #[test]
+    fn a_turn_that_ends_releases_the_waits_open_on_the_hub_at_once() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new());
+        let started = Instant::now();
+        let verdict = thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = next(&mut host);
+                link.end_turn();
+            });
+            // The deadline is far off: only the end of the turn can end this wait.
+            link.decide(
+                "engine.exec",
+                &json!({}),
+                Instant::now() + Duration::from_secs(60),
+            )
+        });
+        assert_eq!(verdict, Verdict::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // A request after the turn ended is not sent at all.
+        assert_eq!(
+            link.call(
+                "board_list",
+                &json!({}),
+                Instant::now() + Duration::from_secs(60)
+            ),
+            Err("the engine's turn is over".to_string())
+        );
     }
 }

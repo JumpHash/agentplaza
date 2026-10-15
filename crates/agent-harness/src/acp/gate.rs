@@ -67,22 +67,29 @@ fn first_option<'a>(params: &'a Value, kind: &str) -> Option<&'a str> {
         .and_then(|option| option["optionId"].as_str())
 }
 
-/// The check for a client method the engine called, or `None` when it needs none
+/// What a client method needs before it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Check {
+    /// Nothing to ask: the method is not gated, or it acts on a terminal already allowed.
+    None,
+    /// The hub decides it: the tool name (`engine.read|edit|exec`) and its input.
+    Ask(String, Value),
+    /// The command cannot be shown to the hub whole (its raw input is longer than [`RAW_BYTES`], so
+    /// the hub would decide a cut-off command). The session refuses it without asking.
+    TooLong,
+}
+
+/// The check for a client method the engine called, or [`Check::None`] when it needs none
 /// (`terminal/output`, `wait_for_exit`, `kill`, `release` act on a terminal already allowed).
 /// `fs/read_text_file` is `engine.read`, `fs/write_text_file` is `engine.edit` and
 /// `terminal/create` is `engine.exec`; `label` is the workspace-relative path the fs method names
 /// (its `locations`), and the title says what is done (`write src/main.rs`, `run cargo test`).
-pub fn client_check(
-    engine: &str,
-    method: &str,
-    params: &Value,
-    label: Option<&str>,
-) -> Option<(String, Value)> {
+pub fn client_check(engine: &str, method: &str, params: &Value, label: Option<&str>) -> Check {
     let (tool, title) = match method {
         "fs/read_text_file" => ("engine.read", titled("read", label.unwrap_or(""))),
         "fs/write_text_file" => ("engine.edit", titled("write", label.unwrap_or(""))),
         "terminal/create" => ("engine.exec", titled("run", &command_line(params))),
-        _ => return None,
+        _ => return Check::None,
     };
     let locations = match label {
         Some(path) if method.starts_with("fs/") => json!([{"path": path}]),
@@ -101,13 +108,17 @@ pub fn client_check(
             fields.insert("bytes".to_string(), json!(bytes));
         }
     }
+    // A command the cap would cut is refused rather than checked: the hub would see only its prefix.
+    if method == "terminal/create" && cap_update(raw.clone(), RAW_BYTES) != raw {
+        return Check::TooLong;
+    }
     let input = json!({
         "engine": engine,
         "title": title,
         "locations": locations,
         "raw": cap_update(raw, RAW_BYTES),
     });
-    Some((tool.to_string(), input))
+    Check::Ask(tool.to_string(), input)
 }
 
 /// A short title for a verb and its object, without the trailing space an empty object leaves.
@@ -277,7 +288,7 @@ mod tests {
         let check = client_check("claude", "fs/read_text_file", &params, Some("src/main.rs"));
         assert_eq!(
             check,
-            Some((
+            Check::Ask(
                 "engine.read".to_string(),
                 json!({
                     "engine": "claude",
@@ -285,15 +296,27 @@ mod tests {
                     "locations": [{"path": "src/main.rs"}],
                     "raw": {"sessionId": "s1", "path": "/workspace/src/main.rs"},
                 }),
-            ))
+            )
         );
+    }
+
+    /// The check a method asks the hub, for the tests that expect one.
+    fn ask(check: Check) -> (String, Value) {
+        match check {
+            Check::Ask(tool, input) => (tool, input),
+            other => panic!("expected a check for the hub, got {other:?}"),
+        }
     }
 
     #[test]
     fn fs_write_is_checked_as_an_edit_with_its_size_and_not_its_content() {
         let params = json!({"sessionId": "s1", "path": "/workspace/a.txt", "content": "hello"});
-        let (tool, input) =
-            client_check("claude", "fs/write_text_file", &params, Some("a.txt")).unwrap();
+        let (tool, input) = ask(client_check(
+            "claude",
+            "fs/write_text_file",
+            &params,
+            Some("a.txt"),
+        ));
         assert_eq!(tool, "engine.edit");
         assert_eq!(input["title"], json!("write a.txt"));
         assert_eq!(input["locations"], json!([{"path": "a.txt"}]));
@@ -310,14 +333,35 @@ mod tests {
             "command": "cargo",
             "args": ["test", "-p", "agent-harness"],
         });
-        let (tool, input) = client_check("claude", "terminal/create", &params, None).unwrap();
+        let (tool, input) = ask(client_check("claude", "terminal/create", &params, None));
         assert_eq!(tool, "engine.exec");
         assert_eq!(input["title"], json!("run cargo test -p agent-harness"));
         assert_eq!(input["locations"], json!([]));
 
         let bare = json!({"command": "ls"});
-        let (_, input) = client_check("claude", "terminal/create", &bare, None).unwrap();
+        let (_, input) = ask(client_check("claude", "terminal/create", &bare, None));
         assert_eq!(input["title"], json!("run ls"));
+    }
+
+    #[test]
+    fn a_command_longer_than_raw_bytes_is_refused_without_a_check() {
+        // The hub would see only the cut-off prefix of the command, so it is not asked at all.
+        let long = json!({"command": "x".repeat(RAW_BYTES + 1)});
+        assert_eq!(
+            client_check("claude", "terminal/create", &long, None),
+            Check::TooLong
+        );
+        let long_arg = json!({"command": "echo", "args": ["y".repeat(RAW_BYTES + 1)]});
+        assert_eq!(
+            client_check("claude", "terminal/create", &long_arg, None),
+            Check::TooLong
+        );
+        // A command that fits is still checked in full.
+        let fits = json!({"command": "echo", "args": ["y".repeat(RAW_BYTES / 2)]});
+        assert!(matches!(
+            client_check("claude", "terminal/create", &fits, None),
+            Check::Ask(..)
+        ));
     }
 
     #[test]
@@ -330,7 +374,7 @@ mod tests {
         ] {
             assert_eq!(
                 client_check("claude", method, &json!({}), None),
-                None,
+                Check::None,
                 "{method}"
             );
         }

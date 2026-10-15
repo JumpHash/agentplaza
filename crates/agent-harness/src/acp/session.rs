@@ -131,14 +131,18 @@ pub fn prompt_turn(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("cannot start the {} engine: {err}", entry.id))?;
-    let (Some(stdin), Some(stdout), Some(stderr)) =
-        (child.stdin.take(), child.stdout.take(), child.stderr.take())
-    else {
-        bash::kill_group(&mut child);
-        let _ = child.wait();
+    // Guarded from the spawn on: every way out below (an early `?`, a panic, the normal end) kills
+    // the engine's group and reaps it.
+    let mut engine = Engine::new(
+        command
+            .spawn()
+            .map_err(|err| format!("cannot start the {} engine: {err}", entry.id))?,
+    );
+    let (Some(stdin), Some(stdout), Some(stderr)) = (
+        engine.child().stdin.take(),
+        engine.child().stdout.take(),
+        engine.child().stderr.take(),
+    ) else {
         return Err(format!("the {} engine has no stdio", entry.id));
     };
     // The reader ends when the process group is gone (EOF), so it is joined after the kill.
@@ -168,14 +172,57 @@ pub fn prompt_turn(
         if let Some(socket) = &socket {
             scope.spawn(|| socket.serve(&tools, link, options.deadline, &stop));
         }
-        let result = drive(&mut child, options, prompt, link, &servers, stdin, stdout);
+        let result = drive(
+            engine.child(),
+            options,
+            prompt,
+            link,
+            &servers,
+            stdin,
+            stdout,
+        );
         stop.store(true, AtomicOrdering::SeqCst);
         result
     });
-    bash::kill_group(&mut child);
-    let _ = child.wait();
+    engine.stop();
     let _ = stderr_reader.join();
     result.map_err(|err| with_stderr(err, &tail))
+}
+
+/// The engine's child and its process group. Dropping it kills the group and reaps the child, so no
+/// way out of [`prompt_turn`] leaves the engine running.
+struct Engine {
+    child: Child,
+    stopped: bool,
+}
+
+impl Engine {
+    fn new(child: Child) -> Self {
+        Self {
+            child,
+            stopped: false,
+        }
+    }
+
+    fn child(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    /// Kills the group and reaps the child: the turn's normal end. Runs once; the drop does nothing
+    /// after it.
+    fn stop(&mut self) {
+        if !self.stopped {
+            self.stopped = true;
+            bash::kill_group(&mut self.child);
+            let _ = self.child.wait();
+        }
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// What the engine's threads send to the turn loop.
@@ -266,8 +313,13 @@ impl Ctx<'_> {
 
     /// Asks the hub about a client method; a denial or a cancel is the error the engine gets.
     fn check(&self, method: &str, params: &Value, label: Option<&str>) -> Result<(), types::Error> {
-        let Some((name, input)) = gate::client_check(self.entry.id, method, params, label) else {
-            return Ok(());
+        let (name, input) = match gate::client_check(self.entry.id, method, params, label) {
+            gate::Check::None => return Ok(()),
+            // Refused without a question to the hub: it would decide the cut-off command.
+            gate::Check::TooLong => {
+                return Err(failed("the command is too long to check".to_string()));
+            }
+            gate::Check::Ask(name, input) => (name, input),
         };
         match self.link.decide(&name, &input, self.deadline) {
             Verdict::Allow => Ok(()),
@@ -520,8 +572,17 @@ fn run_turn(
                     };
                     for update in updates {
                         if update["sessionUpdate"] == "_apz_turn_end" {
-                            let stop = update["stopReason"].as_str().unwrap_or("end_turn");
-                            turn_end = Some(stop.to_string());
+                            // Only the v2 translator makes this marker. On v1 an engine that sends it
+                            // is not ending the turn, so the update is dropped.
+                            if v2 {
+                                let stop = update["stopReason"].as_str().unwrap_or("end_turn");
+                                turn_end = Some(stop.to_string());
+                            } else {
+                                eprintln!(
+                                    "agent-harness: the {} engine sent _apz_turn_end on protocol 1; dropped",
+                                    entry.id
+                                );
+                            }
                         } else {
                             stream.absorb(update);
                         }
@@ -554,6 +615,9 @@ fn run_turn(
             }
         }
         stream.flush();
+        // The turn is over (answered, the engine gone, or killed after the grace): the hub waits its
+        // workers still hold end now, or the scope below would wait for their deadlines.
+        link.end_turn();
         // A terminal's `wait_for_exit` does not see the deadline, so the commands end here, or the
         // workers that wait for them would hold the scope open.
         terminals.release_all();
@@ -1031,6 +1095,28 @@ mod tests {
 
         assert_eq!(outcome.commands.len(), 1);
         assert!(read_log(&log)[0]["answer"]["result"]["terminalId"].is_string());
+    }
+
+    #[test]
+    fn an_engine_is_killed_and_reaped_when_its_guard_goes() {
+        use std::os::unix::process::CommandExt;
+        // A process group of its own, as the engine has, so the guard's group kill reaches it.
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("sleep starts");
+        let pid = child.id().to_string();
+        drop(Engine::new(child));
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .expect("kill runs")
+            .success();
+        assert!(
+            !alive,
+            "the engine's process is gone once its guard is dropped"
+        );
     }
 
     #[test]
