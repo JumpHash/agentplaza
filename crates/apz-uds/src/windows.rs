@@ -9,9 +9,9 @@ use std::mem::{offset_of, size_of, zeroed};
 use std::net::Shutdown;
 use std::os::windows::io::{AsRawSocket, RawSocket};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Once};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use vm_memory::bitmap::BitmapSlice;
 use vm_memory::{ReadVolatile, VolatileMemoryError, VolatileSlice, WriteVolatile};
@@ -68,12 +68,23 @@ fn sockaddr_ptr(addr: &ws::SOCKADDR_UN) -> *const ws::SOCKADDR {
     (addr as *const ws::SOCKADDR_UN).cast()
 }
 
+/// How often a read that waits for data with a timeout looks at `read_shut`: a `shutdown(Read)` from another thread
+/// ends it within this.
+const READ_SHUT_POLL: Duration = Duration::from_millis(50);
+
 /// An owned WinSock socket, closed on drop.
 #[derive(Debug)]
 struct Socket {
     raw: ws::SOCKET,
     /// Set by `shutdown(Read | Both)`: a read cancelled by it reports EOF.
     read_shut: AtomicBool,
+    /// The read timeout in milliseconds, 0 for none. It is kept here, not set as `SO_RCVTIMEO`: WinSock leaves a socket
+    /// whose receive timed out "in an indeterminate state", and on AF_UNIX a peer's half-close that arrives as a timed-out
+    /// receive is cancelled can be lost, so a reader polling with short timeouts never sees the EOF. A read with a timeout
+    /// waits in `WSAPoll` instead and calls `recv` only once the socket is readable (data, EOF or an error).
+    read_timeout_ms: AtomicU32,
+    /// Whether the socket is in non-blocking mode, where a read never waits.
+    nonblocking: AtomicBool,
 }
 
 impl Drop for Socket {
@@ -88,6 +99,8 @@ impl Socket {
         Socket {
             raw,
             read_shut: AtomicBool::new(false),
+            read_timeout_ms: AtomicU32::new(0),
+            nonblocking: AtomicBool::new(false),
         }
     }
 
@@ -114,20 +127,31 @@ impl Socket {
     fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let mut mode = u32::from(nonblocking);
         // SAFETY: mode is a valid u32 that lives for the duration of the call.
-        check(unsafe { ws::ioctlsocket(self.raw, ws::FIONBIO, &mut mode) })
+        check(unsafe { ws::ioctlsocket(self.raw, ws::FIONBIO, &mut mode) })?;
+        self.nonblocking.store(nonblocking, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// A timeout in milliseconds (0 for none), refusing a zero duration as std does.
+    fn timeout_ms(dur: Option<Duration>) -> io::Result<u32> {
+        match dur {
+            None => Ok(0),
+            Some(d) if d.is_zero() => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot set a 0 duration timeout",
+            )),
+            Some(d) => Ok(d.as_millis().clamp(1, u32::MAX as u128) as u32),
+        }
+    }
+
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.read_timeout_ms
+            .store(Self::timeout_ms(dur)?, Ordering::SeqCst);
+        Ok(())
     }
 
     fn set_timeout(&self, option: i32, dur: Option<Duration>) -> io::Result<()> {
-        let ms: u32 = match dur {
-            None => 0,
-            Some(d) if d.is_zero() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "cannot set a 0 duration timeout",
-                ));
-            }
-            Some(d) => d.as_millis().clamp(1, u32::MAX as u128) as u32,
-        };
+        let ms = Self::timeout_ms(dur)?;
         // SAFETY: optval points at a u32 that lives for the call, and optlen is its size.
         check(unsafe {
             ws::setsockopt(
@@ -162,8 +186,45 @@ impl Socket {
         Ok(())
     }
 
+    /// Waits until a read will not block (data, EOF or an error is waiting), for the read timeout, looking at
+    /// `read_shut` every [`READ_SHUT_POLL`]. `Ok(false)` when the socket was shut for reading meanwhile.
+    fn wait_readable(&self, timeout_ms: u32) -> io::Result<bool> {
+        let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+        loop {
+            if self.read_shut.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::from_raw_os_error(ws::WSAETIMEDOUT));
+            }
+            let slice = left.min(READ_SHUT_POLL).as_millis().max(1) as i32;
+            let mut fd = ws::WSAPOLLFD {
+                fd: self.raw,
+                events: ws::POLLRDNORM,
+                revents: 0,
+            };
+            // SAFETY: fd is one valid, writable WSAPOLLFD for the duration of the call.
+            let ready = unsafe { ws::WSAPoll(&mut fd, 1, slice) };
+            if ready == ws::SOCKET_ERROR {
+                return Err(last_error());
+            }
+            if ready > 0 {
+                return Ok(true);
+            }
+        }
+    }
+
     fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {
+            return Ok(0);
+        }
+        let timeout_ms = self.read_timeout_ms.load(Ordering::SeqCst);
+        if timeout_ms != 0
+            && !self.nonblocking.load(Ordering::SeqCst)
+            && !self.wait_readable(timeout_ms)?
+        {
+            // Shut down for reading while waiting: EOF, as on Unix (see `shutdown`).
             return Ok(0);
         }
         let len = buf.len().min(i32::MAX as usize) as i32;
@@ -313,7 +374,7 @@ impl UnixStream {
 
     /// Sets the read timeout. `None` blocks indefinitely.
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
-        self.0.set_timeout(ws::SO_RCVTIMEO, dur)
+        self.0.set_read_timeout(dur)
     }
 
     /// Sets the write timeout. `None` blocks indefinitely.
@@ -468,8 +529,13 @@ impl UnixListener {
         if s == ws::INVALID_SOCKET {
             return Err(last_error());
         }
+        // An accepted socket inherits the listener's non-blocking mode.
+        let stream = Socket::from_raw(s);
+        stream
+            .nonblocking
+            .store(self.0.nonblocking.load(Ordering::SeqCst), Ordering::SeqCst);
         Ok((
-            UnixStream(Arc::new(Socket::from_raw(s))),
+            UnixStream(Arc::new(stream)),
             SocketAddr::from_raw(&addr, len),
         ))
     }
