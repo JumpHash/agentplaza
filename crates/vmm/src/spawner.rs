@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -683,6 +683,8 @@ pub struct VmRuntime {
     /// [`SpawnMode::Process`] the child's console stream is appended here by
     /// the mode's reader thread, so callers see the same growing capture.
     pub serial: Arc<Mutex<Vec<u8>>>,
+    /// Signalled after the UART appends to `serial`; pairs with `serial`'s mutex.
+    pub serial_ready: Arc<Condvar>,
     /// The pid of the VM's per-VM process, when the VM runs in one (`0` = the
     /// VM is this process's threads, the v0 shape).
     child_pid: AtomicU32,
@@ -743,6 +745,7 @@ impl VmRuntime {
         Self {
             id,
             serial: Arc::new(Mutex::new(Vec::new())),
+            serial_ready: Arc::new(Condvar::new()),
             child_pid: AtomicU32::new(0),
             process_log: Arc::new(Mutex::new(Vec::new())),
             stop: Mutex::new(None),
@@ -1037,6 +1040,12 @@ impl VmHandle {
     /// stream guest output while the VM runs.
     pub fn serial_sink(&self) -> Arc<Mutex<Vec<u8>>> {
         Arc::clone(&self.runtime.serial)
+    }
+
+    /// The condition variable the UART signals after each append to
+    /// [`VmHandle::serial_sink`]'s capture.
+    pub fn serial_ready(&self) -> Arc<Condvar> {
+        Arc::clone(&self.runtime.serial_ready)
     }
 
     /// Forwards `data` to the guest's serial console: the host's console

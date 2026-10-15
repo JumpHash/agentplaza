@@ -797,7 +797,12 @@ mod tests {
         use crate::vstate::snapshot::SerialRegisters;
         use std::sync::{Arc, Mutex};
 
-        let out = || SerialOut::shared(Arc::new(Mutex::new(Vec::new())));
+        let out = || {
+            SerialOut::shared(
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(std::sync::Condvar::new()),
+            )
+        };
         let mut serial = SerialDevice::new(out()).expect("a serial console");
         serial.serial.raw_input(b"abc").expect("input");
         let state = serial.serial.state();
@@ -1111,7 +1116,10 @@ mod x86_64 {
         // The guest's only legacy devices: the serial console and the i8042
         // controller (which emulates just enough to reset the machine). There is
         // no network device by design.
-        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial_out = SerialOut::shared(
+            Arc::clone(&runtime.serial),
+            Arc::clone(&runtime.serial_ready),
+        );
         let serial = Arc::new(Mutex::new(match restored {
             Some(states) => super::restore_serial(&states.serial, serial_out)?,
             None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,
@@ -1675,7 +1683,10 @@ mod aarch64 {
     ) -> Result<Devices, BootError> {
         // The guest's only legacy device: the serial console, on the MMIO bus
         // (there is no network device by design).
-        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial_out = SerialOut::shared(
+            Arc::clone(&runtime.serial),
+            Arc::clone(&runtime.serial_ready),
+        );
         let serial = Arc::new(Mutex::new(match restored {
             Some(states) => super::restore_serial(&states.serial, serial_out)?,
             None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,

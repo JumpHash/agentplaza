@@ -17,7 +17,7 @@
 //! Implements a wrapper over an UART serial device.
 use std::fmt::Debug;
 use std::io;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 
 use crate::pal::eventfd::EventFd;
 use vm_superio::Serial;
@@ -91,7 +91,7 @@ pub enum SerialOutInner {
     Sink,
     /// Appends every byte to a shared in-memory buffer (the serial capture
     /// shared between the serial device and the VM handle).
-    Shared(Arc<Mutex<Vec<u8>>>),
+    Shared(Arc<Mutex<Vec<u8>>>, Arc<Condvar>),
 }
 
 /// Upper bound on the in-memory serial capture: guest console output is
@@ -113,9 +113,9 @@ impl SerialOut {
     }
 
     /// Create the shared serial capture sink.
-    pub fn shared(buffer: Arc<Mutex<Vec<u8>>>) -> Self {
+    pub fn shared(buffer: Arc<Mutex<Vec<u8>>>, ready: Arc<Condvar>) -> Self {
         Self {
-            inner: SerialOutInner::Shared(buffer),
+            inner: SerialOutInner::Shared(buffer, ready),
         }
     }
 }
@@ -124,16 +124,19 @@ impl std::io::Write for SerialOut {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match &mut self.inner {
             SerialOutInner::Sink => Ok(buf.len()),
-            SerialOutInner::Shared(buffer) => {
-                let mut buffer = buffer
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // Keep at most `MAX_SERIAL_CAPTURE` bytes: the boot log is at
-                // the head, and a chatty guest must not grow VMM memory
-                // without bound.
-                let room = MAX_SERIAL_CAPTURE.saturating_sub(buffer.len());
-                let taken = room.min(buf.len());
-                buffer.extend_from_slice(&buf[..taken]);
+            SerialOutInner::Shared(buffer, ready) => {
+                {
+                    let mut buffer = buffer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // Keep at most `MAX_SERIAL_CAPTURE` bytes: the boot log is at
+                    // the head, and a chatty guest must not grow VMM memory
+                    // without bound.
+                    let room = MAX_SERIAL_CAPTURE.saturating_sub(buffer.len());
+                    let taken = room.min(buf.len());
+                    buffer.extend_from_slice(&buf[..taken]);
+                }
+                ready.notify_all();
                 Ok(buf.len())
             }
         }
@@ -294,7 +297,11 @@ mod tests {
     #[test]
     fn test_serial_bus_write_to_shared_sink() {
         let buffer = Arc::new(Mutex::new(Vec::new()));
-        let mut serial = SerialDevice::new(SerialOut::shared(Arc::clone(&buffer))).unwrap();
+        let mut serial = SerialDevice::new(SerialOut::shared(
+            Arc::clone(&buffer),
+            Arc::new(std::sync::Condvar::new()),
+        ))
+        .unwrap();
 
         // The kernel writes bytes one at a time to the UART data register
         // (offset 0).

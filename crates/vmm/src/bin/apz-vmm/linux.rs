@@ -59,8 +59,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -113,9 +113,6 @@ serves it:
 
 The exit status is the VM's: 0 the guest shut down, 3 the guest reset, 1 a
 failure, 2 a refused command line.";
-
-/// How often the serial stream is drained from the capture to stdout.
-const SERIAL_POLL: Duration = Duration::from_millis(5);
 
 /// How many bytes one console-input read takes from stdin: the UART's input
 /// queue is 64 bytes and `serial_input` refuses a slice it cannot take whole.
@@ -434,12 +431,14 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
     eprintln!("{CHILD_READY}");
 
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = handle.serial_ready();
     let serial = {
         let stop = Arc::clone(&stop);
+        let ready = Arc::clone(&ready);
         let sink = handle.serial_sink();
         thread::Builder::new()
             .name("apz_vmm_console_out".to_string())
-            .spawn(move || stream_serial(sink, stop))
+            .spawn(move || stream_serial(sink, ready, stop))
             .map_err(|err| format!("cannot start the serial stream: {err}"))?
     };
     // The console-input thread is deliberately not joined: it sits in a
@@ -459,6 +458,7 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
     // The VM stopped: let the serial stream drain what is left, then report the
     // exit the guest asked for.
     stop.store(true, Ordering::SeqCst);
+    ready.notify_all();
     let _ = serial.join();
     match exit {
         VmExit::GuestExited { reset } => {
@@ -676,8 +676,9 @@ fn field<T: std::fmt::Display>(value: Option<T>) -> String {
 }
 
 /// Writes the guest's console to stdout as it is produced, until `stop` is set
-/// and the capture is drained.
-fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, stop: Arc<AtomicBool>) {
+/// and the capture is drained. Waits on `ready`, which the UART signals after
+/// each append, instead of polling the capture.
+fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, ready: Arc<Condvar>, stop: Arc<AtomicBool>) {
     let mut stdout = std::io::stdout();
     let mut printed = 0usize;
     loop {
@@ -706,7 +707,18 @@ fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, stop: Arc<AtomicBool>) {
             }
             // Nothing to print and the VM has stopped: the capture is drained.
             None if stop.load(Ordering::SeqCst) => return,
-            None => thread::sleep(SERIAL_POLL),
+            // Nothing new yet: wait for the UART's next append. The timeout only
+            // bounds how long a stop request can go unnoticed.
+            None => {
+                let buffer = sink
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ = ready
+                    .wait_timeout_while(buffer, Duration::from_secs(1), |buffer| {
+                        buffer.len() <= printed && !stop.load(Ordering::SeqCst)
+                    })
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
     }
 }
