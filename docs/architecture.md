@@ -61,9 +61,13 @@ apid closes the work item ◀── vsockd ◀─┘ (task finished, artifact no
 
 The wire is `apz_proto::wire` (one JSON object per line, tagged by `type`).
 Guest lines: `hello`, `tool_call` (v1), `tool_result` (v2), `heartbeat`, `bye`,
-and in v3 `model_call`, `tool_request`, `tool_report`, `work_done`, `compressed`.
+and in v3 `model_call`, `tool_request`, `tool_report`, `work_done`, `compressed`,
+and in v4 (ACP engines) `engine_update`; `hello` carries `caps`, and `"acp"` in it
+says the harness can host an engine.
 Host lines: `welcome`, `tool_result`, `tool_call`, `stop`, `work`, `model_result`,
-`tool_decision`, `cancel`, `profile`, `control`. The relay stamps the CID (from
+`tool_decision` (`allow`, `deny`, or `pending` with the `approval` the owner must
+decide), `cancel`, `profile`, `control`, and in v4 `permission_decision`, pushed
+when the owner decides a pending engine request. The relay stamps the CID (from
 the socket path, never from the line) and forwards every v3 guest line to
 `apid`; `apid`'s reply (if any) is written back to the guest. Model calls can
 take minutes: the relay runs each forward on a worker thread and keeps reading
@@ -106,10 +110,41 @@ model calls; three identical failing tool calls in a row (stuck); a `cancel` or
 `stop` from the host; a refusal. A conversation past `compress_at` is summarised
 (the `compressed` line records it), keeping the recent messages.
 
-**Coding engines.** Claude Code, Codex and OpenCode run inside an agent's VM
-with their base URL at `plaza.gateway`. The hub relays each request to
-`/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`), so the
-same keys, model policy and metering apply, and no key enters the VM.
+**Coding engines over ACP.** `code_engine` runs Claude Code, Codex or OpenCode as
+an ACP agent (the Agent Client Protocol) inside the agent's VM. The harness is the
+ACP client (`crates/agent-harness/src/acp`), and the engine's adapter runs as a child
+process on its stdio. The adapters are pinned in `catalog.rs` with their registry
+sha512: `@agentclientprotocol/claude-agent-acp` 0.84.0, `@agentclientprotocol/codex-acp`
+2.0.1 and `opencode-ai` 1.18.34 (`opencode acp`). They are installed in the VM on first
+use under `/workspace/.npm-global` and checked against the integrity before they run.
+The engine's model still comes from the hub: each request goes to
+`/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`), so the same
+keys, model policy and metering apply, and no key enters the VM.
+
+Every action an engine takes is a nested `tool_request` named `engine.read`,
+`engine.edit`, `engine.exec`, `engine.fetch` or `engine.other`, decided by the laws,
+grants, sanctions and approvals like any other tool. Each permission request the
+engine raises and each client call (`fs/*`, `terminal/create`) is one such request.
+The harness never picks an `always` option, so the hub decides every action and the
+engine caches nothing. The engine's file calls stay inside `/workspace`, and the
+workspace is checkpointed before the turn's first write (label `engine <id>`).
+
+In ask mode the engine is held open: the hub answers the request `tool_decision`
+`pending` with an `approval`, and the harness waits until the owner's answer comes
+back as `permission_decision`. A cancel reaches a running engine at once
+(`session/cancel`, and the process group is killed after a short grace).
+
+The engine's stream goes to the hub as `engine_update` lines. The hub publishes each
+one live as an `engine` event, and keeps in the transcript what explains the turn:
+tool calls and their status changes, the final message of each message, the latest
+plan and usage, and mode changes. Text chunks are not kept, and a turn keeps at most
+400 entries (`crates/apid/src/engine_feed.rs`). A call can continue an earlier
+session (`session`, kept in `<workspace>/.plaza/engine-sessions.json`), and `model`
+and `mode` are session options. Bypass modes are refused whatever the engine offers.
+
+The owner's settings choose the engines. `engines_enabled` lists them (`claude`,
+`codex`, `opencode`; the offer shows only these). `engines_mode` is `acp` (the
+default) or `headless`, the one-process-per-job runner that stays for one release.
 
 **Internet access goes through the hub.** The harness runs a proxy on the
 guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools
@@ -193,6 +228,42 @@ Two directions, both off until the owner turns them on.
   `/v1/hub-mcp`, `/v1/hub-mcp/tokens` and `/v1/hub-mcp/calls`
   (`crates/apid/src/hub_mcp`). The `observe` tools include read-only views of the
   treasury and the laws; the owner decides which scopes a token holds.
+
+## ACP for editors
+
+Editors that speak the Agent Client Protocol (Zed, JetBrains IDEs, Neovim, others)
+drive plaza agents through `agentplaza acp`, a stdio agent the editor starts. The CLI
+sends each line the editor writes as one text frame to the hub's `GET /v1/acp`
+WebSocket (subprotocol `apz.acp.v1`), and sends each frame back as one line on
+stdout. It speaks no protocol of its own: the hub answers every method
+(`crates/apid/src/acp`). `agentplaza acp sessions` lists the editor sessions
+(`GET /v1/acp/sessions`). The route is an owner route (loopback or the owner token),
+and it is off until the owner sets `acp_enabled`.
+
+| ACP | Plaza |
+|---|---|
+| `initialize` | protocol 1; `loadSession`; prompts take text and embedded resources |
+| `session/new` | a session on the connection's agent: `agentplaza acp --agent <name>`, else `_meta.agentplaza.agent`, else the orchestrator |
+| `session/prompt` | a chat work item on the session's thread; `stopReason` is `end_turn`, or `cancelled` |
+| `session/cancel` | cancels the session's work item in progress |
+| `session/load`, `session/resume`, `session/close` | replays the work items then continues; resumes without replay; ends the session |
+| `session/list` | the editor's sessions |
+| `session/set_mode` | the agent's approval mode: `autonomous`, `ask` or `read_only` |
+
+Each editor session is a thread of its own on the agent (`acp-<id>`), so it never
+mixes with the owner's console chat. The sessions are kept with the rest of the plaza
+state (`acp_sessions` in the state snapshot), so an editor can list, load and resume
+them after the hub restarts. The agent's work streams back as `session/update`s: its
+text and thoughts, its tool calls (the kind follows the law's operation), a coding
+engine's own tool calls and plan under its `code_engine` call, and the plan from
+`todo_write`. An approval the work waits on is sent as `session/request_permission`,
+and it is decided for the owner "from the editor", the same decision the approval
+route takes.
+
+**Containment.** The agent works in its own VM, as it always does. The editor's MCP
+servers are not connected (the session says so), and the hub never calls the editor's
+`fs/*` or `terminal/*`: nothing reaches the owner's machine through the editor. An
+editor can prompt, watch and approve; it is not a host an agent can reach.
 
 ## The Lab (Foundry)
 
@@ -324,6 +395,7 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | library, skills, prompts, toolbox | `/v1/library` (`/{name}/{version}`, `/files`, `/review`), `/v1/skills` (import, GitHub, export, `/{id}` versions, bindings, publish), `/v1/prompts` (versions, publish, diff, rules, `/check`), `/v1/toolbox` (`/{id}`, `/flag`) |
 | connectors and MCP | `/v1/connectors` (`/{id}`, `/secret`, `/test`, `/proposals`), `/v1/mcp/catalog`, `/v1/mcp/servers` (`/{id}`, `/start`, `/stop`, `/test`, `/tools`, `/logs`) |
 | hub as MCP server | `/v1/hub-mcp`, `/v1/hub-mcp/tokens`, `/v1/hub-mcp/calls`; the MCP endpoint itself is `POST /mcp` (bearer token) |
+| editors (ACP) | `GET /v1/acp` (WebSocket, subprotocol `apz.acp.v1`, owner route, off until `acp_enabled`), `GET /v1/acp/sessions` |
 | vault | `/v1/vault` (`/seal`, `/unseal`, `/recovery`, `/rekey`, `/import`), `/v1/vault/secrets` (`/{id}`, `/value`, `/test`, `/rollback`), `/v1/vault/slots`, `/v1/vault/consumers`, `/v1/vault/audit` |
 | git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`) |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
@@ -342,14 +414,16 @@ before the upgrade. The kinds include `agent`, `transcript`, `delta` (`{cid, wor
 req, delta}`: live model output, not stored), `task`, `treasury`, `agora`, `board`,
 `conversation`, `motion`, `provider`, `approval`, `sanction`, `station`,
 `station_takeover`, `lease_granted`, `lease_released`, `loop`, `project`, `skill`,
-`prompt`, `toolbox`, `usage`, `training`, `ide`, and noded's `run`, `vm` and
+`prompt`, `toolbox`, `usage`, `training`, `ide`, `engine` (an ACP engine's stream:
+`{cid, work, call, engine, update}`), and noded's `run`, `vm` and
 `serial` relayed unchanged. A new subscriber gets no backlog: read the REST views,
 then apply events.
 
 **Transcript entry**: `{seq, at_ms, cid, work, kind, data}` with `kind` one of
 `work_start`, `model_request`, `model_response`, `tool_request`,
 `tool_decision`, `tool_result`, `work_end`, `error`, plus `egress` (a connection
-the relay made for the guest) and `control` (an owner's action on the agent).
+the relay made for the guest), `control` (an owner's action on the agent) and
+`engine_update` (an ACP engine's update that the transcript keeps; see "Coding engines over ACP").
 `model_response.data` carries the full `ChatResponse` (content, stop, usage, model).
 
 ### Internal endpoints (relay and nodes to `apid`)
