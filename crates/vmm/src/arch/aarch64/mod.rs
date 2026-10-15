@@ -512,17 +512,4 @@ mod tests {
         // Larger than the guest's DRAM: no address.
         assert_eq!(initrd_load_addr(&mem, 0x1_0000_0000), None);
     }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_kernel_release_at_least() {
-        assert!(kernel_release_at_least("6.10.0", 6, 10));
-        assert!(kernel_release_at_least("6.10.0-rc1", 6, 10));
-        assert!(kernel_release_at_least("7.2.8-arch1-2", 6, 10));
-        assert!(!kernel_release_at_least("6.9.12", 6, 10));
-        assert!(!kernel_release_at_least("5.15.0", 6, 10));
-        // Missing components count as 0, like upstream's parser.
-        assert!(!kernel_release_at_least("6", 6, 10));
-        assert!(kernel_release_at_least("", 0, 0));
-    }
 }

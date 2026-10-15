@@ -570,29 +570,32 @@ mod tests {
     use crate::vstate::resources::ResourceAllocator;
 
     #[test]
-    fn regions_lt_4gb() {
-        let regions = arch_memory_regions(1usize << 29);
-        assert_eq!(1, regions.len());
-        assert_eq!(GuestAddress(0), regions[0].0);
-        assert_eq!(1usize << 29, regions[0].1);
-    }
+    fn arch_memory_regions_below_and_above_4gb() {
+        // Original `regions_lt_4gb`: memory below 4 GiB is a single region at guest address 0.
+        {
+            let regions = arch_memory_regions(1usize << 29);
+            assert_eq!(1, regions.len());
+            assert_eq!(GuestAddress(0), regions[0].0);
+            assert_eq!(1usize << 29, regions[0].1);
+        }
 
-    #[test]
-    fn regions_gt_4gb() {
-        const MEMORY_SIZE: usize = (1 << 32) + 0x8000;
+        // Original `regions_gt_4gb`: memory above 4 GiB is split into a second region at the 32-bit hole's end.
+        {
+            const MEMORY_SIZE: usize = (1 << 32) + 0x8000;
 
-        let regions = arch_memory_regions(MEMORY_SIZE);
-        assert_eq!(2, regions.len());
-        assert_eq!(GuestAddress(0), regions[0].0);
-        assert_eq!(GuestAddress(1u64 << 32), regions[1].0);
+            let regions = arch_memory_regions(MEMORY_SIZE);
+            assert_eq!(2, regions.len());
+            assert_eq!(GuestAddress(0), regions[0].0);
+            assert_eq!(GuestAddress(1u64 << 32), regions[1].0);
 
-        assert_eq!(
-            regions[1],
-            (
-                GuestAddress(layout::FIRST_ADDR_PAST_32BITS),
-                MEMORY_SIZE - regions[0].1
-            )
-        );
+            assert_eq!(
+                regions[1],
+                (
+                    GuestAddress(layout::FIRST_ADDR_PAST_32BITS),
+                    MEMORY_SIZE - regions[0].1
+                )
+            );
+        }
     }
 
     #[test]
@@ -662,71 +665,63 @@ mod tests {
     }
 
     #[test]
-    fn test_load_kernel_bzimage() {
+    fn load_kernel_bzimage_and_invalid_images() {
         use std::io::{Seek, SeekFrom, Write};
 
         use vmm_sys_util::tempfile::TempFile;
 
         let gm = arch_mem(mib_to_bytes(128));
 
-        let image = make_fake_bzimage(XLF_KERNEL_64);
-        let tempfile = TempFile::new().unwrap();
-        let mut file = tempfile.into_file();
-        file.write_all(&image).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
+        // Original `test_load_kernel_bzimage`: a bzImage with a 64-bit entry loads at the
+        // 64-bit entry point and yields its setup header.
+        {
+            let image = make_fake_bzimage(XLF_KERNEL_64);
+            let tempfile = TempFile::new().unwrap();
+            let mut file = tempfile.into_file();
+            file.write_all(&image).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
 
-        let entry_point = load_kernel(&file, &gm).unwrap();
+            let entry_point = load_kernel(&file, &gm).unwrap();
 
-        assert_eq!(entry_point.protocol, BootProtocol::LinuxBoot);
-        assert_eq!(
-            entry_point.entry_addr,
-            GuestAddress(get_kernel_start() + BZIMAGE_64BIT_ENTRY_OFFSET)
-        );
-        let hdr = entry_point
-            .setup_header
-            .expect("bzImage must yield a setup header");
-        // Copy out of the packed struct to avoid unaligned references.
-        let (header, setup_sects) = (hdr.header, hdr.setup_sects);
-        assert_eq!(header, 0x5372_6448);
-        assert_eq!(setup_sects, 4);
-    }
+            assert_eq!(entry_point.protocol, BootProtocol::LinuxBoot);
+            assert_eq!(
+                entry_point.entry_addr,
+                GuestAddress(get_kernel_start() + BZIMAGE_64BIT_ENTRY_OFFSET)
+            );
+            let hdr = entry_point
+                .setup_header
+                .expect("bzImage must yield a setup header");
+            // Copy out of the packed struct to avoid unaligned references.
+            let (header, setup_sects) = (hdr.header, hdr.setup_sects);
+            assert_eq!(header, 0x5372_6448);
+            assert_eq!(setup_sects, 4);
+        }
 
-    #[test]
-    fn test_load_kernel_bzimage_without_64bit_entry() {
-        use std::io::{Seek, SeekFrom, Write};
+        // Original `test_load_kernel_bzimage_without_64bit_entry`: a valid bzImage that does not
+        // advertise a 64-bit entry point is rejected with `BzImageMissing64BitEntry`.
+        {
+            let image = make_fake_bzimage(0);
+            let tempfile = TempFile::new().unwrap();
+            let mut file = tempfile.into_file();
+            file.write_all(&image).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
 
-        use vmm_sys_util::tempfile::TempFile;
+            assert!(matches!(
+                load_kernel(&file, &gm),
+                Err(ConfigurationError::BzImageMissing64BitEntry)
+            ));
+        }
 
-        let gm = arch_mem(mib_to_bytes(128));
+        // Original `test_load_kernel_invalid_image_is_rejected`: neither a valid ELF nor a valid
+        // bzImage is rejected.
+        {
+            let tempfile = TempFile::new().unwrap();
+            let mut file = tempfile.into_file();
+            file.write_all(&[0u8; 8192]).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
 
-        // A valid bzImage that does not advertise a 64-bit entry point.
-        let image = make_fake_bzimage(0);
-        let tempfile = TempFile::new().unwrap();
-        let mut file = tempfile.into_file();
-        file.write_all(&image).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-
-        assert!(matches!(
-            load_kernel(&file, &gm),
-            Err(ConfigurationError::BzImageMissing64BitEntry)
-        ));
-    }
-
-    #[test]
-    fn test_load_kernel_invalid_image_is_rejected() {
-        use std::io::{Seek, SeekFrom, Write};
-
-        use vmm_sys_util::tempfile::TempFile;
-
-        let gm = arch_mem(mib_to_bytes(128));
-
-        // Neither valid ELF nor valid bzImage.
-        let tempfile = TempFile::new().unwrap();
-        let mut file = tempfile.into_file();
-        file.write_all(&[0u8; 8192]).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-
-        load_kernel(&file, &gm).unwrap_err();
+            load_kernel(&file, &gm).unwrap_err();
+        }
     }
 
     #[test]

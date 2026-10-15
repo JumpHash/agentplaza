@@ -527,57 +527,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_vcpu_answer_is_read_from_its_own_channel() {
-        let (sender, receiver) = channel();
-        sender.send(VcpuResponse::Paused).unwrap();
-        let response = await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap();
-        assert!(matches!(response, VcpuResponse::Paused), "got {response:?}");
+    fn await_response_reads_the_answer_times_out_or_names_an_exited_vcpu() {
+        // Original: a_vcpu_answer_is_read_from_its_own_channel
+        {
+            let (sender, receiver) = channel();
+            sender.send(VcpuResponse::Paused).unwrap();
+            let response =
+                await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap();
+            assert!(matches!(response, VcpuResponse::Paused), "got {response:?}");
+        }
+
+        // Original: a_silent_vcpu_times_out_and_is_named
+        {
+            // The sender is kept alive so the wait ends by timeout, not disconnect.
+            let (_sender, receiver) = channel::<VcpuResponse>();
+            let err = await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("vCPU 2") && msg.contains("pause"), "{msg}");
+            assert!(msg.contains("did not answer"), "{msg}");
+        }
+
+        // Original: a_vcpu_whose_thread_exited_is_named_and_not_a_timeout
+        {
+            let (sender, receiver) = channel::<VcpuResponse>();
+            drop(sender);
+            let err =
+                await_response(1, "save state", &receiver, Duration::from_secs(5)).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("vCPU 1") && msg.contains("exited"), "{msg}");
+        }
     }
 
     #[test]
-    fn a_silent_vcpu_times_out_and_is_named() {
-        // The sender is kept alive so the wait ends by timeout, not disconnect.
-        let (_sender, receiver) = channel::<VcpuResponse>();
-        let err = await_response(2, "pause", &receiver, Duration::from_millis(10)).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("vCPU 2") && msg.contains("pause"), "{msg}");
-        assert!(msg.contains("did not answer"), "{msg}");
-    }
+    fn vcpu_failure_names_the_vcpu_and_carries_its_reason() {
+        // Original: a_refusal_or_failure_from_a_vcpu_carries_its_reason
+        {
+            let refused = vcpu_failure(
+                0,
+                "save state",
+                VcpuResponse::NotAllowed("save/restore unavailable while running".into()),
+            );
+            let msg = refused.to_string();
+            assert!(
+                msg.contains("vCPU 0") && msg.contains("while running"),
+                "{msg}"
+            );
 
-    #[test]
-    fn a_vcpu_whose_thread_exited_is_named_and_not_a_timeout() {
-        let (sender, receiver) = channel::<VcpuResponse>();
-        drop(sender);
-        let err = await_response(1, "save state", &receiver, Duration::from_secs(5)).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("vCPU 1") && msg.contains("exited"), "{msg}");
-    }
+            let failed = vcpu_failure(3, "save state", VcpuResponse::Error("boom".into()));
+            let msg = failed.to_string();
+            assert!(msg.contains("vCPU 3") && msg.contains("boom"), "{msg}");
+        }
 
-    #[test]
-    fn a_refusal_or_failure_from_a_vcpu_carries_its_reason() {
-        let refused = vcpu_failure(
-            0,
-            "save state",
-            VcpuResponse::NotAllowed("save/restore unavailable while running".into()),
-        );
-        let msg = refused.to_string();
-        assert!(
-            msg.contains("vCPU 0") && msg.contains("while running"),
-            "{msg}"
-        );
-
-        let failed = vcpu_failure(3, "save state", VcpuResponse::Error("boom".into()));
-        let msg = failed.to_string();
-        assert!(msg.contains("vCPU 3") && msg.contains("boom"), "{msg}");
-    }
-
-    #[test]
-    fn an_answer_of_the_wrong_kind_is_an_error_naming_the_vcpu() {
-        let err = vcpu_failure(1, "pause", VcpuResponse::Resumed);
-        let msg = err.to_string();
-        assert!(
-            msg.contains("vCPU 1") && msg.contains("unexpected"),
-            "{msg}"
-        );
+        // Original: an_answer_of_the_wrong_kind_is_an_error_naming_the_vcpu
+        {
+            let err = vcpu_failure(1, "pause", VcpuResponse::Resumed);
+            let msg = err.to_string();
+            assert!(
+                msg.contains("vCPU 1") && msg.contains("unexpected"),
+                "{msg}"
+            );
+        }
     }
 }

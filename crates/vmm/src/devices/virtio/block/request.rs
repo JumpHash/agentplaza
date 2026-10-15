@@ -576,48 +576,50 @@ mod tests {
     const NUM_DISK_SECTORS: u64 = 1024;
 
     #[test]
-    fn test_read_request_header() {
-        let mem = single_region_mem(0x1000);
-        let addr = GuestAddress(0);
-        let sector = 123_454_321;
+    fn request_header_is_read_from_guest_memory() {
+        // test_read_request_header: every supported request type reads back from memory, and a
+        // header past the end of memory fails.
+        {
+            let mem = single_region_mem(0x1000);
+            let addr = GuestAddress(0);
+            let sector = 123_454_321;
 
-        // Test that all supported request types are read correctly from memory.
-        let supported_request_types = [
-            VIRTIO_BLK_T_IN,
-            VIRTIO_BLK_T_OUT,
-            VIRTIO_BLK_T_DISCARD,
-            VIRTIO_BLK_T_FLUSH,
-            VIRTIO_BLK_T_GET_ID,
-        ];
+            // Test that all supported request types are read correctly from memory.
+            let supported_request_types = [
+                VIRTIO_BLK_T_IN,
+                VIRTIO_BLK_T_OUT,
+                VIRTIO_BLK_T_DISCARD,
+                VIRTIO_BLK_T_FLUSH,
+                VIRTIO_BLK_T_GET_ID,
+            ];
 
-        for request_type in supported_request_types {
-            let expected_header = RequestHeader::new(request_type, sector);
-            mem.write_slice(expected_header.as_bytes(), addr).unwrap();
+            for request_type in supported_request_types {
+                let expected_header = RequestHeader::new(request_type, sector);
+                mem.write_slice(expected_header.as_bytes(), addr).unwrap();
 
-            let actual_header = RequestHeader::read_from(&mem, addr).unwrap();
-            assert_eq!(actual_header.request_type(), expected_header.request_type());
-            assert_eq!(actual_header.sector(), expected_header.sector());
+                let actual_header = RequestHeader::read_from(&mem, addr).unwrap();
+                assert_eq!(actual_header.request_type(), expected_header.request_type());
+                assert_eq!(actual_header.sector(), expected_header.sector());
+            }
+
+            // Test that trying to read a request header that goes outside of the
+            // memory boundary fails.
+            RequestHeader::read_from(&mem, GuestAddress(0x1000)).unwrap_err();
         }
 
-        // Test that trying to read a request header that goes outside of the
-        // memory boundary fails.
-        RequestHeader::read_from(&mem, GuestAddress(0x1000)).unwrap_err();
-    }
+        // a_header_is_read_from_an_unaligned_address: a header at a misaligned address is read back
+        // in little endian.
+        {
+            let mem = default_mem();
+            let addr = GuestAddress(0x1234);
+            let header = RequestHeader::new(VIRTIO_BLK_T_OUT, 0x1122_3344_5566_7788);
+            // Write the header's bytes at a deliberately 4-byte-misaligned address.
+            mem.write_slice(header.as_bytes(), addr).unwrap();
 
-    /// A request header is read from whatever the driver wrote, in little
-    /// endianness, wherever in the descriptor's buffer it sits (the driver is
-    /// not required to align the header, and this port must not assume it).
-    #[test]
-    fn a_header_is_read_from_an_unaligned_address() {
-        let mem = default_mem();
-        let addr = GuestAddress(0x1234);
-        let header = RequestHeader::new(VIRTIO_BLK_T_OUT, 0x1122_3344_5566_7788);
-        // Write the header's bytes at a deliberately 4-byte-misaligned address.
-        mem.write_slice(header.as_bytes(), addr).unwrap();
-
-        let read = RequestHeader::read_from(&mem, addr).unwrap();
-        assert_eq!(read.request_type(), VIRTIO_BLK_T_OUT);
-        assert_eq!(read.sector(), 0x1122_3344_5566_7788);
+            let read = RequestHeader::read_from(&mem, addr).unwrap();
+            assert_eq!(read.request_type(), VIRTIO_BLK_T_OUT);
+            assert_eq!(read.sector(), 0x1122_3344_5566_7788);
+        }
     }
 
     #[test]
@@ -733,157 +735,164 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_in() {
-        let mem = default_mem();
-        let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let chain = RequestDescriptorChain::new(&queue);
+    fn blk_parse_checks_each_request_type() {
+        // test_parse_in: a read-only data descriptor, a data length that is not a multiple of 512
+        // and an out-of-range sector are rejected; a valid IN request parses.
+        {
+            let mem = default_mem();
+            let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let chain = RequestDescriptorChain::new(&queue);
 
-        let mut request_header = RequestHeader::new(VIRTIO_BLK_T_IN, 99);
-        chain.set_header(request_header);
+            let mut request_header = RequestHeader::new(VIRTIO_BLK_T_IN, 99);
+            chain.set_header(request_header);
 
-        // Read only data descriptor for IN.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.check_parse_err(VirtioBlockError::UnexpectedReadOnlyDescriptor);
+            // Read only data descriptor for IN.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+            chain.check_parse_err(VirtioBlockError::UnexpectedReadOnlyDescriptor);
 
-        // data_len is not multiple of 512 for IN.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
-        chain.set_data_len(513);
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            // data_len is not multiple of 512 for IN.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
+            chain.set_data_len(513);
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        // sector is too big.
-        request_header = RequestHeader::new(VIRTIO_BLK_T_IN, NUM_DISK_SECTORS);
-        chain.set_data_len(512);
-        chain.set_header(request_header);
-        chain.check_parse_err(VirtioBlockError::InvalidOffset);
+            // sector is too big.
+            request_header = RequestHeader::new(VIRTIO_BLK_T_IN, NUM_DISK_SECTORS);
+            chain.set_data_len(512);
+            chain.set_header(request_header);
+            chain.check_parse_err(VirtioBlockError::InvalidOffset);
 
-        // Fix data descriptor.
-        request_header = RequestHeader::new(VIRTIO_BLK_T_IN, NUM_DISK_SECTORS - 1);
-        chain.set_header(request_header);
-        chain.check_parse(true);
-    }
+            // Fix data descriptor.
+            request_header = RequestHeader::new(VIRTIO_BLK_T_IN, NUM_DISK_SECTORS - 1);
+            chain.set_header(request_header);
+            chain.check_parse(true);
+        }
 
-    #[test]
-    fn test_parse_out() {
-        let mem = default_mem();
-        let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let chain = RequestDescriptorChain::new(&queue);
+        // test_parse_out: a write-only data descriptor, a bad data length and an out-of-range
+        // sector are rejected; a valid OUT request parses.
+        {
+            let mem = default_mem();
+            let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let chain = RequestDescriptorChain::new(&queue);
 
-        let mut request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, 100);
-        chain.set_header(request_header);
+            let mut request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, 100);
+            chain.set_header(request_header);
 
-        // Write only data descriptor for OUT.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
-        chain.check_parse_err(VirtioBlockError::UnexpectedWriteOnlyDescriptor);
+            // Write only data descriptor for OUT.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
+            chain.check_parse_err(VirtioBlockError::UnexpectedWriteOnlyDescriptor);
 
-        // data_len is not a multiple of 512 for OUT.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.set_data_len(1000);
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            // data_len is not a multiple of 512 for OUT.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+            chain.set_data_len(1000);
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        // sector is too big.
-        request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, NUM_DISK_SECTORS - 1);
-        chain.set_data_len(1024);
-        chain.set_header(request_header);
-        chain.check_parse_err(VirtioBlockError::InvalidOffset);
+            // sector is too big.
+            request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, NUM_DISK_SECTORS - 1);
+            chain.set_data_len(1024);
+            chain.set_header(request_header);
+            chain.check_parse_err(VirtioBlockError::InvalidOffset);
 
-        // Fix header descriptor.
-        request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, NUM_DISK_SECTORS - 2);
-        chain.set_header(request_header);
-        chain.check_parse(true);
-    }
+            // Fix header descriptor.
+            request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, NUM_DISK_SECTORS - 2);
+            chain.set_header(request_header);
+            chain.check_parse(true);
+        }
 
-    #[test]
-    fn test_parse_flush() {
-        let mem = default_mem();
-        let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let chain = RequestDescriptorChain::new(&queue);
+        // test_parse_flush: a FLUSH request parses with and without a data descriptor.
+        {
+            let mem = default_mem();
+            let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let chain = RequestDescriptorChain::new(&queue);
 
-        // Flush request with a data descriptor.
-        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_FLUSH, 50));
-        chain.check_parse(true);
+            // Flush request with a data descriptor.
+            chain.set_header(RequestHeader::new(VIRTIO_BLK_T_FLUSH, 50));
+            chain.check_parse(true);
 
-        // Flush request without a data descriptor: the status descriptor
-        // follows the header directly.
-        chain.set_header_next(2);
-        chain.check_parse(false);
-    }
+            // Flush request without a data descriptor: the status descriptor
+            // follows the header directly.
+            chain.set_header_next(2);
+            chain.check_parse(false);
+        }
 
-    #[test]
-    fn test_parse_discard() {
-        let mem = default_mem();
-        let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let chain = RequestDescriptorChain::new(&queue);
+        // test_parse_discard: the discard range is checked for descriptor direction, length, size
+        // and bounds; a valid range parses.
+        {
+            let mem = default_mem();
+            let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let chain = RequestDescriptorChain::new(&queue);
 
-        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_DISCARD, 0));
+            chain.set_header(RequestHeader::new(VIRTIO_BLK_T_DISCARD, 0));
 
-        // Write only data descriptor for Discard.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
-        chain.check_parse_err(VirtioBlockError::UnexpectedWriteOnlyDescriptor);
+            // Write only data descriptor for Discard.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
+            chain.check_parse_err(VirtioBlockError::UnexpectedWriteOnlyDescriptor);
 
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.set_data_len(15);
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+            chain.set_data_len(15);
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        let write_range = |range: DiscardWriteZeroes| {
-            mem.write_slice(range.as_bytes(), chain.data_desc_addr())
-                .unwrap();
-        };
+            let write_range = |range: DiscardWriteZeroes| {
+                mem.write_slice(range.as_bytes(), chain.data_desc_addr())
+                    .unwrap();
+            };
 
-        chain.set_data_len(DISCARD_RANGE_SIZE);
-        write_range(DiscardWriteZeroes {
-            sector: 0.into(),
-            num_sectors: 0.into(),
-            flags: 0.into(),
-        });
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            chain.set_data_len(DISCARD_RANGE_SIZE);
+            write_range(DiscardWriteZeroes {
+                sector: 0.into(),
+                num_sectors: 0.into(),
+                flags: 0.into(),
+            });
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        write_range(DiscardWriteZeroes {
-            sector: 0.into(),
-            num_sectors: 1.into(),
-            flags: 1.into(),
-        });
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            write_range(DiscardWriteZeroes {
+                sector: 0.into(),
+                num_sectors: 1.into(),
+                flags: 1.into(),
+            });
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        write_range(DiscardWriteZeroes {
-            sector: 0.into(),
-            num_sectors: (MAX_DISCARD_SECTORS + 1).into(),
-            flags: 0.into(),
-        });
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            write_range(DiscardWriteZeroes {
+                sector: 0.into(),
+                num_sectors: (MAX_DISCARD_SECTORS + 1).into(),
+                flags: 0.into(),
+            });
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        write_range(DiscardWriteZeroes {
-            sector: (NUM_DISK_SECTORS - 1).into(),
-            num_sectors: 2.into(),
-            flags: 0.into(),
-        });
-        chain.check_parse_err(VirtioBlockError::InvalidOffset);
+            write_range(DiscardWriteZeroes {
+                sector: (NUM_DISK_SECTORS - 1).into(),
+                num_sectors: 2.into(),
+                flags: 0.into(),
+            });
+            chain.check_parse_err(VirtioBlockError::InvalidOffset);
 
-        write_range(DiscardWriteZeroes {
-            sector: (NUM_DISK_SECTORS - 1).into(),
-            num_sectors: 1.into(),
-            flags: 0.into(),
-        });
-        chain.check_parse(true);
-    }
+            write_range(DiscardWriteZeroes {
+                sector: (NUM_DISK_SECTORS - 1).into(),
+                num_sectors: 1.into(),
+                flags: 0.into(),
+            });
+            chain.check_parse(true);
+        }
 
-    #[test]
-    fn test_parse_get_id() {
-        let mem = default_mem();
-        let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
-        let chain = RequestDescriptorChain::new(&queue);
+        // test_parse_get_id: a GET_ID request needs a writable data descriptor of at least
+        // VIRTIO_BLK_ID_BYTES; a valid one parses.
+        {
+            let mem = default_mem();
+            let queue = VirtQueue::new(GuestAddress(0), &mem, 16);
+            let chain = RequestDescriptorChain::new(&queue);
 
-        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_GET_ID, 15));
+            chain.set_header(RequestHeader::new(VIRTIO_BLK_T_GET_ID, 15));
 
-        // Read only data descriptor for GetDeviceId.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
-        chain.check_parse_err(VirtioBlockError::UnexpectedReadOnlyDescriptor);
+            // Read only data descriptor for GetDeviceId.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+            chain.check_parse_err(VirtioBlockError::UnexpectedReadOnlyDescriptor);
 
-        // data_len is < VIRTIO_BLK_ID_BYTES for GetDeviceID.
-        chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
-        chain.set_data_len(VIRTIO_BLK_ID_BYTES - 1);
-        chain.check_parse_err(VirtioBlockError::InvalidDataLength);
+            // data_len is < VIRTIO_BLK_ID_BYTES for GetDeviceID.
+            chain.set_data_flags(VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE);
+            chain.set_data_len(VIRTIO_BLK_ID_BYTES - 1);
+            chain.check_parse_err(VirtioBlockError::InvalidDataLength);
 
-        chain.set_data_len(VIRTIO_BLK_ID_BYTES);
-        chain.check_parse(true);
+            chain.set_data_len(VIRTIO_BLK_ID_BYTES);
+            chain.check_parse(true);
+        }
     }
 }

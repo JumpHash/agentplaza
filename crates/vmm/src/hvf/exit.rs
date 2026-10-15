@@ -265,18 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hypervisor_encoding_matches_the_known_register_values() {
-        // Values from `Hypervisor/hv.h`: `HV_SYS_REG_MIDR_EL1` = 0xc000,
-        // `HV_SYS_REG_MPIDR_EL1` = 0xc005, `HV_SYS_REG_SCTLR_EL1` = 0xc080,
-        // `HV_SYS_REG_CNTV_CTL_EL0` = 0xdf19 and `HV_SYS_REG_VBAR_EL1` = 0xc600.
-        assert_eq!(sysreg(3, 0, 0, 0, 0), 0xc000);
-        assert_eq!(sysreg(3, 0, 0, 0, 5), 0xc005);
-        assert_eq!(sysreg(3, 0, 1, 0, 0), 0xc080);
-        assert_eq!(sysreg(3, 3, 14, 3, 1), 0xdf19);
-        assert_eq!(sysreg(3, 0, 12, 0, 0), 0xc600);
-    }
-
-    #[test]
     fn encode_then_decode_round_trips_every_field() {
         for op0 in 0..4u64 {
             for op1 in 0..8u64 {

@@ -185,89 +185,95 @@ mod tests {
     }
 
     #[test]
-    fn a_signalled_source_raises_its_spi() {
-        let rec = Recorder::new();
-        let exit = EventFd::new(EFD_NONBLOCK).unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let quiet = EventFd::new(EFD_NONBLOCK).unwrap();
-        let busy = EventFd::new(EFD_NONBLOCK).unwrap();
-        let sources = vec![
-            (quiet.try_clone().unwrap(), 1),
-            (busy.try_clone().unwrap(), 8),
-        ];
-        let handle = spawn_relay(&rec, &exit, &flag, sources);
+    fn the_relay_raises_spis() {
+        // a_signalled_source_raises_its_spi: a signalled source raises its SPI,
+        // and the exit signal ends the relay without stopping the VM.
+        {
+            let rec = Recorder::new();
+            let exit = EventFd::new(EFD_NONBLOCK).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let quiet = EventFd::new(EFD_NONBLOCK).unwrap();
+            let busy = EventFd::new(EFD_NONBLOCK).unwrap();
+            let sources = vec![
+                (quiet.try_clone().unwrap(), 1),
+                (busy.try_clone().unwrap(), 8),
+            ];
+            let handle = spawn_relay(&rec, &exit, &flag, sources);
 
-        busy.write(1).unwrap();
-        assert!(
-            wait_until(|| rec.raised() == [8]),
-            "the relay did not raise SPI 8"
-        );
+            busy.write(1).unwrap();
+            assert!(
+                wait_until(|| rec.raised() == [8]),
+                "the relay did not raise SPI 8"
+            );
 
-        flag.store(true, Ordering::SeqCst);
-        exit.write(1).unwrap();
-        join_within_two_seconds(handle);
-        assert!(!rec.stopped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn signals_before_a_read_coalesce_into_one_raise() {
-        let rec = Recorder::new();
-        let exit = EventFd::new(EFD_NONBLOCK).unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let irq = EventFd::new(EFD_NONBLOCK).unwrap();
-        for _ in 0..3 {
-            irq.write(1).unwrap();
+            flag.store(true, Ordering::SeqCst);
+            exit.write(1).unwrap();
+            join_within_two_seconds(handle);
+            assert!(!rec.stopped.load(Ordering::SeqCst));
         }
-        let handle = spawn_relay(&rec, &exit, &flag, vec![(irq.try_clone().unwrap(), 5)]);
+        // signals_before_a_read_coalesce_into_one_raise: signals written before
+        // the relay reads coalesce into one raise.
+        {
+            let rec = Recorder::new();
+            let exit = EventFd::new(EFD_NONBLOCK).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let irq = EventFd::new(EFD_NONBLOCK).unwrap();
+            for _ in 0..3 {
+                irq.write(1).unwrap();
+            }
+            let handle = spawn_relay(&rec, &exit, &flag, vec![(irq.try_clone().unwrap(), 5)]);
 
-        assert!(wait_until(|| !rec.raised().is_empty()));
-        thread::sleep(Duration::from_millis(300));
-        assert_eq!(rec.raised(), [5]);
+            assert!(wait_until(|| !rec.raised().is_empty()));
+            thread::sleep(Duration::from_millis(300));
+            assert_eq!(rec.raised(), [5]);
 
-        flag.store(true, Ordering::SeqCst);
-        exit.write(1).unwrap();
-        join_within_two_seconds(handle);
+            flag.store(true, Ordering::SeqCst);
+            exit.write(1).unwrap();
+            join_within_two_seconds(handle);
+        }
+        // a_refused_raise_ends_the_relay: a refused raise ends the relay, and the
+        // raise was attempted.
+        {
+            let rec = Recorder::new();
+            rec.refuse.store(true, Ordering::SeqCst);
+            let exit = EventFd::new(EFD_NONBLOCK).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let irq = EventFd::new(EFD_NONBLOCK).unwrap();
+            let handle = spawn_relay(&rec, &exit, &flag, vec![(irq.try_clone().unwrap(), 3)]);
+
+            irq.write(1).unwrap();
+            join_within_two_seconds(handle);
+            assert_eq!(rec.raised(), [3]);
+        }
     }
 
     #[test]
-    fn the_exit_signal_ends_the_relay() {
-        let rec = Recorder::new();
-        let exit = EventFd::new(EFD_NONBLOCK).unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let handle = spawn_relay(&rec, &exit, &flag, Vec::new());
+    fn the_relay_ends_on_exit_or_release() {
+        // the_exit_signal_ends_the_relay: the exit signal ends the relay with no raise and no stop.
+        {
+            let rec = Recorder::new();
+            let exit = EventFd::new(EFD_NONBLOCK).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let handle = spawn_relay(&rec, &exit, &flag, Vec::new());
 
-        thread::sleep(Duration::from_millis(50));
-        flag.store(true, Ordering::SeqCst);
-        exit.write(1).unwrap();
-        join_within_two_seconds(handle);
-        assert!(rec.raised().is_empty());
-        assert!(!rec.stopped.load(Ordering::SeqCst));
-    }
+            thread::sleep(Duration::from_millis(50));
+            flag.store(true, Ordering::SeqCst);
+            exit.write(1).unwrap();
+            join_within_two_seconds(handle);
+            assert!(rec.raised().is_empty());
+            assert!(!rec.stopped.load(Ordering::SeqCst));
+        }
+        // a_released_vm_ends_the_relay: a released VM ends the relay with no raise and no stop.
+        {
+            let rec = Recorder::new();
+            rec.alive.store(false, Ordering::SeqCst);
+            let exit = EventFd::new(EFD_NONBLOCK).unwrap();
+            let flag = Arc::new(AtomicBool::new(false));
+            let handle = spawn_relay(&rec, &exit, &flag, Vec::new());
 
-    #[test]
-    fn a_released_vm_ends_the_relay() {
-        let rec = Recorder::new();
-        rec.alive.store(false, Ordering::SeqCst);
-        let exit = EventFd::new(EFD_NONBLOCK).unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let handle = spawn_relay(&rec, &exit, &flag, Vec::new());
-
-        join_within_two_seconds(handle);
-        assert!(rec.raised().is_empty());
-        assert!(!rec.stopped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn a_refused_raise_ends_the_relay() {
-        let rec = Recorder::new();
-        rec.refuse.store(true, Ordering::SeqCst);
-        let exit = EventFd::new(EFD_NONBLOCK).unwrap();
-        let flag = Arc::new(AtomicBool::new(false));
-        let irq = EventFd::new(EFD_NONBLOCK).unwrap();
-        let handle = spawn_relay(&rec, &exit, &flag, vec![(irq.try_clone().unwrap(), 3)]);
-
-        irq.write(1).unwrap();
-        join_within_two_seconds(handle);
-        assert_eq!(rec.raised(), [3]);
+            join_within_two_seconds(handle);
+            assert!(rec.raised().is_empty());
+            assert!(!rec.stopped.load(Ordering::SeqCst));
+        }
     }
 }

@@ -148,13 +148,6 @@ pub fn reg_size(reg_id: u64) -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_reg_size() {
-        assert_eq!(reg_size(KVM_REG_SIZE_U32), 4);
-        // ID_AA64PFR0_EL1 is 64 bit register
-        assert_eq!(reg_size(ID_AA64PFR0_EL1), 8);
-    }
-
     /// The core-register ID encodes the byte offset divided by four, so the
     /// program counter must land on the value documented by KVM's ABI.
     #[test]

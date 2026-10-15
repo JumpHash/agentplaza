@@ -397,176 +397,187 @@ mod tests {
     }
 
     #[test]
-    fn elf_loads_file_bytes_and_zero_fills_bss() {
-        let mut ram = TestRam::new();
-        let image = elf_image(62, 0x20_0010, 0x20_0000, 0x300, &[0x11; 0x100]);
-        let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
-        assert_eq!(loaded.entry, 0x20_0010);
-        assert_eq!(loaded.format, KernelFormat::Elf);
-        assert_eq!(loaded.setup_header, None);
-        assert_eq!(loaded.end, 0x20_0300);
-        assert!(ram.bytes(0x20_0000, 0x100).iter().all(|&b| b == 0x11));
-        assert!(ram.bytes(0x20_0100, 0x200).iter().all(|&b| b == 0));
-        assert_eq!(ram.bytes(0x20_0300, 1)[0], 0xAA);
-    }
-
-    #[test]
-    fn large_bss_is_zeroed_across_chunks() {
-        let mut ram = TestRam::new();
-        let memsz = 2 * (64 * 1024) + 0x1234;
-        let image = elf_image(62, 0x20_0000, 0x20_0000, memsz, &[]);
-        let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
-        assert_eq!(loaded.end, 0x20_0000 + memsz);
-        assert!(ram.bytes(0x20_0000, memsz as usize).iter().all(|&b| b == 0));
-        assert_eq!(ram.bytes(0x20_0000 + memsz, 1)[0], 0xAA);
-    }
-
-    #[test]
-    fn elf_segment_below_himem_is_rejected() {
-        let mut ram = TestRam::new();
-        let image = elf_image(62, 0x1000, 0x1000, 0x100, &[1; 16]);
-        assert_eq!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::SegmentOutOfRange {
-                addr: 0x1000,
-                len: 0x100,
-                min: HIMEM,
-            })
-        );
-    }
-
-    #[test]
-    fn elf_segment_outside_ram_is_rejected() {
-        let mut ram = TestRam::new();
-        let image = elf_image(62, 0x3000_0000, 0x3000_0000, 0x100, &[1; 16]);
-        assert!(matches!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::SegmentOutOfRange { .. })
-        ));
-    }
-
-    #[test]
-    fn wrong_machine_is_unsupported() {
-        let mut ram = TestRam::new();
-        let image = elf_image(40, 0x20_0000, 0x20_0000, 0x10, &[1; 4]); // EM_ARM
-        assert_eq!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::UnsupportedElf)
-        );
-    }
-
-    #[test]
-    fn truncated_program_header_table_is_rejected() {
-        let mut ram = TestRam::new();
-        let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
-        image[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes()); // claim two headers
-        image.truncate(64 + 56); // only one is present
-        assert!(matches!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::Truncated(_))
-        ));
-    }
-
-    #[test]
-    fn overflowing_or_huge_segment_fields_do_not_panic() {
-        let mut ram = TestRam::new();
-
-        // p_paddr + p_memsz overflows.
-        let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
-        image[64 + 0x18..64 + 0x20].copy_from_slice(&(u64::MAX - 0x10).to_le_bytes());
-        image[64 + 0x20..64 + 0x28].copy_from_slice(&0u64.to_le_bytes()); // p_filesz
-        image[64 + 0x28..64 + 0x30].copy_from_slice(&0x20u64.to_le_bytes()); // p_memsz
-        assert!(matches!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::SegmentOutOfRange { .. })
-        ));
-
-        // p_offset points past the end of the image.
-        let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
-        image[64 + 8..64 + 16].copy_from_slice(&u64::MAX.to_le_bytes());
-        assert!(matches!(
-            load_kernel(&image, &mut ram, HIMEM),
-            Err(KernelError::Truncated(_))
-        ));
-    }
-
-    #[test]
-    fn bzimage_loads_payload_at_himem_and_returns_setup_header() {
-        let mut ram = TestRam::new();
-        let image = bzimage(1, 0x020f, 1, &[0x77; 0x300]);
-        let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
-        assert_eq!(loaded.entry, HIMEM + 0x200);
-        assert_eq!(loaded.format, KernelFormat::BzImage);
-        assert_eq!(loaded.setup_header.as_deref(), Some(&image[0x1f1..0x212]));
-        assert_eq!(loaded.end, HIMEM + 0x300);
-        assert!(ram.bytes(HIMEM, 0x300).iter().all(|&b| b == 0x77));
-    }
-
-    #[test]
-    fn bzimage_setup_sects_zero_means_four() {
-        let mut ram = TestRam::new();
-        // With 4 setup sectors the payload starts at 5 * 512 = 2560.
-        let image = bzimage(0, 0x020c, 1, &[0x55; 0x100]);
-        let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
-        assert_eq!(loaded.end, HIMEM + 0x100);
-        assert!(ram.bytes(HIMEM, 0x100).iter().all(|&b| b == 0x55));
-    }
-
-    #[test]
-    fn bzimage_old_protocol_or_no_64bit_entry_is_rejected() {
-        let mut ram = TestRam::new();
-        assert_eq!(
-            load_kernel(&bzimage(1, 0x020b, 1, &[0; 16]), &mut ram, HIMEM),
-            Err(KernelError::NoBzImage64Entry(0x020b))
-        );
-        assert_eq!(
-            load_kernel(&bzimage(1, 0x020c, 0, &[0; 16]), &mut ram, HIMEM),
-            Err(KernelError::NoBzImage64Entry(0x020c))
-        );
-    }
-
-    #[test]
-    fn unknown_formats_are_rejected() {
-        let mut ram = TestRam::new();
-        assert_eq!(
-            load_kernel(&[0x42; 4096], &mut ram, HIMEM),
-            Err(KernelError::UnknownFormat)
-        );
-        assert_eq!(
-            load_kernel(&[], &mut ram, HIMEM),
-            Err(KernelError::UnknownFormat)
-        );
-    }
-
-    #[test]
-    fn tiny_and_empty_images_never_panic() {
-        let mut ram = TestRam::new();
-        for len in 0..0x260usize {
-            let mut elf = vec![0xffu8; len];
-            if len >= 4 {
-                elf[..4].copy_from_slice(b"\x7fELF");
-            }
-            let _ = load_kernel(&elf, &mut ram, HIMEM);
-
-            let mut bz = vec![0xffu8; len];
-            if len >= 0x206 {
-                bz[0x202..0x206].copy_from_slice(b"HdrS");
-            }
-            let _ = load_kernel(&bz, &mut ram, HIMEM);
+    fn elf_load_copies_file_bytes_and_zeroes_bss() {
+        // Original `elf_loads_file_bytes_and_zero_fills_bss`: file bytes are copied, the bss
+        // after them is zeroed, and the byte past the segment is untouched.
+        {
+            let mut ram = TestRam::new();
+            let image = elf_image(62, 0x20_0010, 0x20_0000, 0x300, &[0x11; 0x100]);
+            let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
+            assert_eq!(loaded.entry, 0x20_0010);
+            assert_eq!(loaded.format, KernelFormat::Elf);
+            assert_eq!(loaded.setup_header, None);
+            assert_eq!(loaded.end, 0x20_0300);
+            assert!(ram.bytes(0x20_0000, 0x100).iter().all(|&b| b == 0x11));
+            assert!(ram.bytes(0x20_0100, 0x200).iter().all(|&b| b == 0));
+            assert_eq!(ram.bytes(0x20_0300, 1)[0], 0xAA);
+        }
+        // Original `large_bss_is_zeroed_across_chunks`: a bss larger than two 64 KiB chunks is
+        // zeroed in full.
+        {
+            let mut ram = TestRam::new();
+            let memsz = 2 * (64 * 1024) + 0x1234;
+            let image = elf_image(62, 0x20_0000, 0x20_0000, memsz, &[]);
+            let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
+            assert_eq!(loaded.end, 0x20_0000 + memsz);
+            assert!(ram.bytes(0x20_0000, memsz as usize).iter().all(|&b| b == 0));
+            assert_eq!(ram.bytes(0x20_0000 + memsz, 1)[0], 0xAA);
         }
     }
 
     #[test]
-    fn corrupting_any_header_byte_never_panics() {
-        let mut ram = TestRam::new();
-        let base_elf = elf_image(62, HIMEM, HIMEM, 0x100, &[1; 0x40]);
-        let base_bz = bzimage(1, 0x020f, 1, &[2; 0x40]);
-        for base in [base_elf, base_bz] {
-            for i in 0..base.len() {
-                for v in [0x00u8, 0x7f, 0xff] {
-                    let mut img = base.clone();
-                    img[i] = v;
-                    let _ = load_kernel(&img, &mut ram, HIMEM);
+    fn malformed_kernels_are_rejected() {
+        // Original `elf_segment_below_himem_is_rejected`: a segment below HIMEM is out of range.
+        {
+            let mut ram = TestRam::new();
+            let image = elf_image(62, 0x1000, 0x1000, 0x100, &[1; 16]);
+            assert_eq!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::SegmentOutOfRange {
+                    addr: 0x1000,
+                    len: 0x100,
+                    min: HIMEM,
+                })
+            );
+        }
+        // Original `elf_segment_outside_ram_is_rejected`: a segment past the end of RAM is out of range.
+        {
+            let mut ram = TestRam::new();
+            let image = elf_image(62, 0x3000_0000, 0x3000_0000, 0x100, &[1; 16]);
+            assert!(matches!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::SegmentOutOfRange { .. })
+            ));
+        }
+        // Original `wrong_machine_is_unsupported`: an ELF for another machine (EM_ARM) is unsupported.
+        {
+            let mut ram = TestRam::new();
+            let image = elf_image(40, 0x20_0000, 0x20_0000, 0x10, &[1; 4]); // EM_ARM
+            assert_eq!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::UnsupportedElf)
+            );
+        }
+        // Original `truncated_program_header_table_is_rejected`: a program header table that
+        // claims more entries than the image holds is truncated.
+        {
+            let mut ram = TestRam::new();
+            let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
+            image[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes()); // claim two headers
+            image.truncate(64 + 56); // only one is present
+            assert!(matches!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::Truncated(_))
+            ));
+        }
+        // Original `overflowing_or_huge_segment_fields_do_not_panic`: overflowing or huge segment
+        // fields are rejected instead of panicking.
+        {
+            let mut ram = TestRam::new();
+
+            // p_paddr + p_memsz overflows.
+            let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
+            image[64 + 0x18..64 + 0x20].copy_from_slice(&(u64::MAX - 0x10).to_le_bytes());
+            image[64 + 0x20..64 + 0x28].copy_from_slice(&0u64.to_le_bytes()); // p_filesz
+            image[64 + 0x28..64 + 0x30].copy_from_slice(&0x20u64.to_le_bytes()); // p_memsz
+            assert!(matches!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::SegmentOutOfRange { .. })
+            ));
+
+            // p_offset points past the end of the image.
+            let mut image = elf_image(62, HIMEM, HIMEM, 0x10, &[1; 4]);
+            image[64 + 8..64 + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+            assert!(matches!(
+                load_kernel(&image, &mut ram, HIMEM),
+                Err(KernelError::Truncated(_))
+            ));
+        }
+        // Original `bzimage_old_protocol_or_no_64bit_entry_is_rejected`: protocol 2.11 and a 2.12
+        // image without the 64-bit entry flag are rejected.
+        {
+            let mut ram = TestRam::new();
+            assert_eq!(
+                load_kernel(&bzimage(1, 0x020b, 1, &[0; 16]), &mut ram, HIMEM),
+                Err(KernelError::NoBzImage64Entry(0x020b))
+            );
+            assert_eq!(
+                load_kernel(&bzimage(1, 0x020c, 0, &[0; 16]), &mut ram, HIMEM),
+                Err(KernelError::NoBzImage64Entry(0x020c))
+            );
+        }
+        // Original `unknown_formats_are_rejected`: neither an unknown nor an empty image is loadable.
+        {
+            let mut ram = TestRam::new();
+            assert_eq!(
+                load_kernel(&[0x42; 4096], &mut ram, HIMEM),
+                Err(KernelError::UnknownFormat)
+            );
+            assert_eq!(
+                load_kernel(&[], &mut ram, HIMEM),
+                Err(KernelError::UnknownFormat)
+            );
+        }
+    }
+
+    #[test]
+    fn bzimage_load_places_payload_at_himem() {
+        // Original `bzimage_loads_payload_at_himem_and_returns_setup_header`: the payload lands at
+        // HIMEM after the setup area, and the setup header is returned.
+        {
+            let mut ram = TestRam::new();
+            let image = bzimage(1, 0x020f, 1, &[0x77; 0x300]);
+            let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
+            assert_eq!(loaded.entry, HIMEM + 0x200);
+            assert_eq!(loaded.format, KernelFormat::BzImage);
+            assert_eq!(loaded.setup_header.as_deref(), Some(&image[0x1f1..0x212]));
+            assert_eq!(loaded.end, HIMEM + 0x300);
+            assert!(ram.bytes(HIMEM, 0x300).iter().all(|&b| b == 0x77));
+        }
+        // Original `bzimage_setup_sects_zero_means_four`: a setup_sects of zero means four sectors.
+        {
+            let mut ram = TestRam::new();
+            // With 4 setup sectors the payload starts at 5 * 512 = 2560.
+            let image = bzimage(0, 0x020c, 1, &[0x55; 0x100]);
+            let loaded = load_kernel(&image, &mut ram, HIMEM).unwrap();
+            assert_eq!(loaded.end, HIMEM + 0x100);
+            assert!(ram.bytes(HIMEM, 0x100).iter().all(|&b| b == 0x55));
+        }
+    }
+
+    #[test]
+    fn malformed_images_never_panic() {
+        // Original `tiny_and_empty_images_never_panic`: every length below 0x260, ELF or bzImage
+        // magic only, must load without panicking.
+        {
+            let mut ram = TestRam::new();
+            for len in 0..0x260usize {
+                let mut elf = vec![0xffu8; len];
+                if len >= 4 {
+                    elf[..4].copy_from_slice(b"\x7fELF");
+                }
+                let _ = load_kernel(&elf, &mut ram, HIMEM);
+
+                let mut bz = vec![0xffu8; len];
+                if len >= 0x206 {
+                    bz[0x202..0x206].copy_from_slice(b"HdrS");
+                }
+                let _ = load_kernel(&bz, &mut ram, HIMEM);
+            }
+        }
+        // Original `corrupting_any_header_byte_never_panics`: overwriting any header byte with
+        // 0x00, 0x7f or 0xff must load without panicking.
+        {
+            let mut ram = TestRam::new();
+            let base_elf = elf_image(62, HIMEM, HIMEM, 0x100, &[1; 0x40]);
+            let base_bz = bzimage(1, 0x020f, 1, &[2; 0x40]);
+            for base in [base_elf, base_bz] {
+                for i in 0..base.len() {
+                    for v in [0x00u8, 0x7f, 0xff] {
+                        let mut img = base.clone();
+                        img[i] = v;
+                        let _ = load_kernel(&img, &mut ram, HIMEM);
+                    }
                 }
             }
         }

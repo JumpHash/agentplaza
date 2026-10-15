@@ -455,66 +455,69 @@ mod tests {
         handle.join().is_ok()
     }
 
-    /// F1 regression: a lost exit wakeup must not strand the thread.
-    ///
-    /// This is the exit watcher winning the race exactly as the review
-    /// describes: the exit path published the shared flag and notified the
-    /// event fd, but the watcher - the fd's only reader - consumed the count
-    /// before this thread revalidated it, so a level-triggered `epoll_wait`
-    /// reports nothing and the thread sees no exit event. Modelling the lost
-    /// count as "the fd is never written again", the thread must still observe
-    /// the exit through the flag within one poll timeout. With the pre-F1 code
-    /// (no flag, `epoll.wait(-1)`) it blocks forever.
+    /// The event thread ends on the exit signal, both when its event fd
+    /// wakeup is lost and when the event fd wakeup arrives.
     #[test]
-    fn exit_is_observed_when_the_event_fd_wakeup_is_lost() {
-        let mem = default_mem();
-        let device = idle_device(&mem);
-        let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
-        let exit_signalled = Arc::new(AtomicBool::new(false));
-        let handle = start_event_thread(
-            device,
-            exit_evt.try_clone().unwrap(),
-            Arc::clone(&exit_signalled),
-            DeviceGate::default(),
-            0,
-        )
-        .expect("the event thread starts");
+    fn event_thread_exits_on_exit_signal() {
+        // F1 regression: a lost exit wakeup must not strand the thread.
+        //
+        // This is the exit watcher winning the race exactly as the review
+        // describes: the exit path published the shared flag and notified the
+        // event fd, but the watcher - the fd's only reader - consumed the count
+        // before this thread revalidated it, so a level-triggered `epoll_wait`
+        // reports nothing and the thread sees no exit event. Modelling the lost
+        // count as "the fd is never written again", the thread must still observe
+        // the exit through the flag within one poll timeout. With the pre-F1 code
+        // (no flag, `epoll.wait(-1)`) it blocks forever.
+        {
+            let mem = default_mem();
+            let device = idle_device(&mem);
+            let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
+            let exit_signalled = Arc::new(AtomicBool::new(false));
+            let handle = start_event_thread(
+                device,
+                exit_evt.try_clone().unwrap(),
+                Arc::clone(&exit_signalled),
+                DeviceGate::default(),
+                0,
+            )
+            .expect("the event thread starts");
 
-        // Let the thread reach its wait, then run the exit path. Only the flag
-        // is set: the event fd's count was already consumed (by the watcher).
-        std::thread::sleep(Duration::from_millis(50));
-        exit_signalled.store(true, Ordering::SeqCst);
+            // Let the thread reach its wait, then run the exit path. Only the flag
+            // is set: the event fd's count was already consumed (by the watcher).
+            std::thread::sleep(Duration::from_millis(50));
+            exit_signalled.store(true, Ordering::SeqCst);
 
-        assert!(
-            joined_within(handle, Duration::from_secs(2)),
-            "the event thread did not observe the exit after its event-fd wakeup was consumed"
-        );
-    }
+            assert!(
+                joined_within(handle, Duration::from_secs(2)),
+                "the event thread did not observe the exit after its event-fd wakeup was consumed"
+            );
+        }
 
-    /// The event fd wakeup still ends the thread on its own: the normal path,
-    /// where this thread sees the readable fd before the watcher consumes it.
-    #[test]
-    fn the_event_fd_wakeup_ends_the_thread() {
-        let mem = default_mem();
-        let device = idle_device(&mem);
-        let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
-        let exit_signalled = Arc::new(AtomicBool::new(false));
-        let handle = start_event_thread(
-            device,
-            exit_evt.try_clone().unwrap(),
-            Arc::clone(&exit_signalled),
-            DeviceGate::default(),
-            0,
-        )
-        .expect("the event thread starts");
+        // The event fd wakeup still ends the thread on its own: the normal path,
+        // where this thread sees the readable fd before the watcher consumes it.
+        {
+            let mem = default_mem();
+            let device = idle_device(&mem);
+            let exit_evt = EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap();
+            let exit_signalled = Arc::new(AtomicBool::new(false));
+            let handle = start_event_thread(
+                device,
+                exit_evt.try_clone().unwrap(),
+                Arc::clone(&exit_signalled),
+                DeviceGate::default(),
+                0,
+            )
+            .expect("the event thread starts");
 
-        // Both halves of the exit path: the flag the watcher publishes, and
-        // the event fd write that wakes the thread's own poll.
-        std::thread::sleep(Duration::from_millis(50));
-        exit_signalled.store(true, Ordering::SeqCst);
-        exit_evt.write(1).unwrap();
+            // Both halves of the exit path: the flag the watcher publishes, and
+            // the event fd write that wakes the thread's own poll.
+            std::thread::sleep(Duration::from_millis(50));
+            exit_signalled.store(true, Ordering::SeqCst);
+            exit_evt.write(1).unwrap();
 
-        assert!(joined_within(handle, Duration::from_secs(2)));
+            assert!(joined_within(handle, Duration::from_secs(2)));
+        }
     }
 
     /// P1 regression: a device reset that lands between a queue kick and the

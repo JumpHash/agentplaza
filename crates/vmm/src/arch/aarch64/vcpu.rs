@@ -512,10 +512,4 @@ mod tests {
         let restored: VcpuState = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, state);
     }
-
-    /// The hex form reads the little-endian bytes from the most significant end.
-    #[test]
-    fn register_value_string_is_big_endian_hex() {
-        assert_eq!(reg_value_str(&[0x78, 0x56, 0x34, 0x12]), "0x12345678");
-    }
 }

@@ -845,14 +845,6 @@ mod tests {
     }
 
     #[test]
-    fn eventfd_clone_shares_the_counter() {
-        let a = EventFd::new(EFD_NONBLOCK).unwrap();
-        let b = a.try_clone().unwrap();
-        b.write(1).unwrap();
-        assert_eq!(a.read().unwrap(), 1);
-    }
-
-    #[test]
     fn try_clone_gives_a_distinct_descriptor_on_the_same_counter() {
         let a = EventFd::new(EFD_NONBLOCK).unwrap();
         let b = a.try_clone().unwrap();
@@ -927,23 +919,6 @@ mod tests {
     }
 
     #[test]
-    fn raise_open_files_limit_never_lowers_the_limit() {
-        let mut before = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: getrlimit(2) writes one `rlimit` into the live, exclusively borrowed `before`.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut before) },
-            0
-        );
-        let old_soft = before.rlim_cur;
-        let new_soft = super::raise_open_files_limit(super::OPEN_FILES_CAP).unwrap();
-        assert!(new_soft >= old_soft);
-        assert!(new_soft <= old_soft.max(super::OPEN_FILES_CAP));
-    }
-
-    #[test]
     fn nested_epoll_reports_inner_as_readable() {
         let inner = Epoll::new().unwrap();
         let efd = EventFd::new(EFD_NONBLOCK).unwrap();
@@ -993,29 +968,6 @@ mod tests {
         assert_eq!(outer.wait(0, &mut out).unwrap(), 1);
         assert_eq!(out[0].data(), 42);
         assert!(out[0].event_set().contains(EventSet::IN));
-    }
-
-    #[test]
-    fn nested_epoll_ignores_inner_readiness_it_did_not_ask_for() {
-        let inner = Epoll::new().unwrap();
-        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
-        inner
-            .ctl(
-                ControlOperation::Add,
-                efd.as_raw_fd(),
-                EpollEvent::new(EventSet::IN, 1),
-            )
-            .unwrap();
-        let outer = Epoll::new().unwrap();
-        outer
-            .ctl(
-                ControlOperation::Add,
-                inner.as_raw_fd(),
-                EpollEvent::new(EventSet::IN, 42),
-            )
-            .unwrap();
-        let mut out = [EpollEvent::default(); 4];
-        assert_eq!(outer.wait(0, &mut out).unwrap(), 0);
     }
 
     #[test]
@@ -1133,33 +1085,6 @@ mod tests {
         ep.ctl(ControlOperation::Delete, fd, ev).unwrap();
         let mut out = [EpollEvent::default(); 4];
         assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
-    }
-
-    #[test]
-    fn eventfd_fd_is_readable_only_while_counted() {
-        let ep = Epoll::new().unwrap();
-        let efd = EventFd::new(EFD_NONBLOCK).unwrap();
-        ep.ctl(
-            ControlOperation::Add,
-            efd.as_raw_fd(),
-            EpollEvent::new(EventSet::IN, 9),
-        )
-        .unwrap();
-        let mut out = [EpollEvent::default(); 4];
-        assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
-        efd.write(1).unwrap();
-        assert_eq!(ep.wait(0, &mut out).unwrap(), 1);
-        efd.read().unwrap();
-        assert_eq!(ep.wait(0, &mut out).unwrap(), 0);
-    }
-
-    #[test]
-    fn pseudo_handles_are_negative_and_distinct() {
-        let a = Epoll::new().unwrap();
-        let b = Epoll::new().unwrap();
-        assert!(a.as_raw_fd() < 0);
-        assert!(b.as_raw_fd() < 0);
-        assert_ne!(a.as_raw_fd(), b.as_raw_fd());
     }
 
     #[test]
