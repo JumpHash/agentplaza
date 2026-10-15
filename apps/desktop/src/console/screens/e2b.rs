@@ -829,7 +829,12 @@ fn template_actions<'a>(state: &State, template_id: &str) -> Element<'a, Msg> {
     if state.confirm_delete_template.as_deref() == Some(id.as_str()) {
         let confirm: Vec<Element<'a, Msg>> = vec![
             ui::faint("Delete it? This cannot be undone.").into(),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDeleteTemplate)),
+            ui::btn_sm(
+                "Cancel",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::CancelDeleteTemplate),
+            ),
             ui::btn_sm(
                 "Delete",
                 None,
