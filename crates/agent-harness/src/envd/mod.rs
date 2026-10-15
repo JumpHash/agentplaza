@@ -254,8 +254,9 @@ fn dispatch(request: &Request, shared: &Shared) -> Reply {
     }
 }
 
-/// `POST /init`: merges `envVars` into the context every later process gets, and sets the clock
-/// when `timestamp` (RFC 3339) is given. The other fields (`accessToken`, `defaultUser`,
+/// `POST /init`: merges `envVars` into the context every later process gets, sets the clock when
+/// `timestamp` (RFC 3339) is given, and mixes `entropy` (64 hex digits; a plaza extension) into the
+/// kernel pool. The other fields (`accessToken`, `defaultUser`,
 /// `defaultWorkdir`) are accepted and not applied: the sandbox's user and home are fixed.
 fn init(request: &Request, shared: &Shared) -> Reply {
     let body = match unary_body(&request.body) {
@@ -286,6 +287,14 @@ fn init(request: &Request, shared: &Shared) -> Reply {
     if let Some(timestamp) = body.get("timestamp").and_then(Value::as_str) {
         if let Err(err) = set_clock(timestamp) {
             return error_reply(&err);
+        }
+    }
+    // The plaza's own field: a sandbox starts as a restore of a warm template (and wakes as a
+    // restore of its snapshot), so the hub sends fresh entropy with every `/init` and no two
+    // sandboxes share the template's random state.
+    if let Some(entropy) = body.get("entropy").and_then(Value::as_str) {
+        if let Err(err) = crate::restore::mix_hex_entropy(entropy) {
+            println!("agent-harness: envd: host entropy not mixed: {err}");
         }
     }
     Reply::empty(204)

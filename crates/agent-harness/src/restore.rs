@@ -45,6 +45,13 @@ struct RandPoolInfo {
     buf: [u8; ENTROPY_BYTES],
 }
 
+/// Mixes host entropy (64 hex digits) into the kernel pool: the sandbox daemon's `/init` path, where
+/// the host's clock arrives separately as E2B's `timestamp`.
+pub fn mix_hex_entropy(hex: &str) -> Result<(), String> {
+    let bytes = decode_entropy(hex).ok_or("the entropy is not 64 hex digits")?;
+    mix_entropy(&bytes).map_err(|err| err.to_string())
+}
+
 /// Brings the guest up to the host's clock and mixes the host's entropy into the kernel's pool.
 ///
 /// The clock is set only when it is off by more than [`CLOCK_TOLERANCE_MS`]: a guest that is
