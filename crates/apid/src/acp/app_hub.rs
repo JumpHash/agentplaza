@@ -2,8 +2,8 @@
 
 use std::sync::mpsc::Receiver;
 
-use apz_proto::wire::WorkKind;
-use serde_json::Value;
+use apz_proto::wire::{Control, WorkKind};
+use serde_json::{Value, json};
 
 use super::agent::Hub;
 use crate::agents::{Agent, Status, check_chat_text};
@@ -76,14 +76,20 @@ impl Hub for AppHub<'_> {
     }
 
     fn cancel(&self, cid: u64, work: u64) -> bool {
-        // The scheduler takes out only the item in flight; a queued item is not cancelled here.
-        match self.app.work.current(cid) {
-            Some(item) if item.id == work => {
-                self.app
-                    .work
-                    .cancel(self.app, cid, "cancelled from the editor")
-            }
-            _ => false,
+        // The item in flight is stopped on the agent; a queued one only leaves its queue.
+        let in_flight = self
+            .app
+            .work
+            .current(cid)
+            .is_some_and(|item| item.id == work);
+        if in_flight {
+            self.app
+                .work
+                .cancel(self.app, cid, "cancelled from the editor")
+        } else {
+            self.app
+                .work
+                .cancel_queued(self.app, cid, work, "cancelled from the editor")
         }
     }
 
@@ -132,6 +138,116 @@ impl Hub for AppHub<'_> {
             .approvals
             .set_mode(cid, mode)
             .map_err(|e| format!("could not save the permission mode: {e}"))
+    }
+
+    fn usage(&self, cid: u64, work: u64) -> Option<Value> {
+        // The harness records each model call of a work as a `model_response` entry with its usage.
+        let mut input = 0;
+        let mut output = 0;
+        let mut calls = 0;
+        for entry in self.entries(cid, &[work]) {
+            if entry.kind != "model_response" || entry.data["usage"].is_null() {
+                continue;
+            }
+            input += entry.data["usage"]["input_tokens"].as_u64().unwrap_or(0);
+            output += entry.data["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            calls += 1;
+        }
+        (calls > 0).then(|| json!({"input_tokens": input, "output_tokens": output}))
+    }
+
+    fn control(
+        &self,
+        cid: u64,
+        work: Option<u64>,
+        command: &str,
+        arg: &str,
+    ) -> Result<String, String> {
+        let running = self.app.work.current(cid);
+        if let Some(work) = work {
+            if running.as_ref().map(|item| item.id) != Some(work) {
+                return Err(format!("work {work} is not running"));
+            }
+        }
+        match command {
+            "compress" => crate::harness_control::control(self.app, cid, Control::Compress)
+                .map(|w| format!("compression queued for work {w}")),
+            "steer" => {
+                let text = arg.trim();
+                if text.is_empty() {
+                    return Err("steer needs what to change: /steer <text>".to_string());
+                }
+                if text.chars().count() > 2000 {
+                    return Err("steer text is over 2000 characters".to_string());
+                }
+                let note = Control::Steer {
+                    from: "owner".to_string(),
+                    text: text.to_string(),
+                };
+                crate::harness_control::control(self.app, cid, note)
+                    .map(|w| format!("steer queued for work {w}"))
+            }
+            "extend-turns" => {
+                let turns = arg
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|t| (1..=200).contains(t))
+                    .ok_or("extend-turns needs how many turns, from 1 to 200")?;
+                crate::harness_control::control(self.app, cid, Control::ExtendTurns { turns })
+                    .map(|w| format!("work {w} may take {turns} more turns"))
+            }
+            "stop" => {
+                let item = running.ok_or_else(|| format!("agent {cid} has no running work"))?;
+                if self
+                    .app
+                    .work
+                    .cancel(self.app, cid, "stopped from the editor")
+                {
+                    Ok(format!("stopping work {}", item.id))
+                } else {
+                    Err(format!("agent {cid} did not take the stop"))
+                }
+            }
+            other => Err(format!("no command {other}")),
+        }
+    }
+
+    fn models(&self, cid: u64) -> (String, Vec<String>) {
+        let Some(agent) = self.app.agents.get(cid) else {
+            return (String::new(), Vec::new());
+        };
+        let current = self
+            .app
+            .settings
+            .resolve(&agent.role, agent.model_override.as_deref());
+        let policy = self.app.settings.get().model_policy;
+        let mut models = match tier_of(&agent.role) {
+            Tier::Orchestrator => policy.orchestrator,
+            Tier::Worker => policy.worker,
+        };
+        // The model the agent runs now is offered even when the policy's list does not name it.
+        if !models.contains(&current) {
+            models.insert(0, current.clone());
+        }
+        (current, models)
+    }
+
+    fn set_model(&self, cid: u64, model: &str) -> Result<(), String> {
+        let agent = self
+            .app
+            .agents
+            .get(cid)
+            .ok_or_else(|| "no such agent".to_string())?;
+        self.app.settings.allowed(tier_of(&agent.role), model)?;
+        // The same override the console's PATCH sets: the hub resolves it on the agent's next model call.
+        self.app
+            .spawned
+            .set_model(cid, Some(model))
+            .map_err(|e| format!("could not save the model: {e}"))?;
+        self.app
+            .agents
+            .update(cid, |a| a.model_override = Some(model.to_string()));
+        Ok(())
     }
 
     fn now_ms(&self) -> u64 {

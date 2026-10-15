@@ -4,11 +4,12 @@
 //! |---|---|
 //! | `initialize` | protocol 1; `loadSession`; prompts take text and embedded resources; sessions can be listed, resumed and closed |
 //! | `session/new` | a new session on the connection's agent (`agentplaza acp --agent`), else `_meta.agentplaza.agent`, else the orchestrator; the editor's `mcpServers` are not connected (a notice says so); modes are the agent's approval modes |
-//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner |
-//! | `session/cancel` | cancels the session's work item in progress |
-//! | `session/load` | replays the session's work items, then continues |
+//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner; the turn's end reports `usage_update`, and the first prompt titles the session (`session_info_update`); a prompt that is one of the [`COMMANDS`] runs it on the agent instead of queuing chat |
+//! | `session/cancel` | cancels the session's work item: the one in progress, or one still queued |
+//! | `session/load` | replays the session's work items, then continues; the commands and the model options come first |
 //! | `session/list`, `session/resume`, `session/close` | the sessions; resume without replay; close ends it |
 //! | `session/set_mode` | the agent's approval mode: `autonomous`, `ask`, `read_only` (`current_mode_update` follows) |
+//! | `session/set_config_option` | the agent's `model`, within its tier's list; the reply carries the options |
 
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -36,7 +37,7 @@ pub trait Hub: Sync {
     /// Queues `text` as the owner's chat on agent `cid`, thread `thread` (origin: the owner, over
     /// ACP); the work item's id.
     fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String>;
-    /// Cancels work item `work` of agent `cid` if it is the one in progress; false otherwise.
+    /// Cancels work item `work` of agent `cid` if it is in progress or queued; false otherwise.
     fn cancel(&self, cid: u64, work: u64) -> bool;
     /// The transcript entries of agent `cid` for the given work items, oldest first.
     fn entries(&self, cid: u64, works: &[u64]) -> Vec<Entry>;
@@ -47,6 +48,22 @@ pub trait Hub: Sync {
     /// The agent's approval mode: `autonomous`, `ask` or `read_only`.
     fn mode(&self, cid: u64) -> String;
     fn set_mode(&self, cid: u64, mode: &str) -> Result<(), String>;
+    /// The token usage work item `work` of agent `cid` made, as `input_tokens` and `output_tokens`;
+    /// None when the work made no model call.
+    fn usage(&self, cid: u64, work: u64) -> Option<Value>;
+    /// Sends a control to agent `cid`'s work `work` (the one in progress for `None`): one of
+    /// [`COMMANDS`] with its argument. Ok and Err both carry the text to show the editor.
+    fn control(
+        &self,
+        cid: u64,
+        work: Option<u64>,
+        command: &str,
+        arg: &str,
+    ) -> Result<String, String>;
+    /// The model agent `cid` runs now, and the models its tier allows.
+    fn models(&self, cid: u64) -> (String, Vec<String>);
+    /// Sets agent `cid`'s model, when its tier allows it.
+    fn set_model(&self, cid: u64, model: &str) -> Result<(), String>;
     fn now_ms(&self) -> u64;
 }
 
@@ -71,6 +88,22 @@ const PERMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PROMPT_BYTES: usize = 256 * 1024;
 /// Said before the reply to `session/new` when the editor offered MCP servers: they are not run.
 const MCP_NOTICE: &str = "AgentPlaza agents work in their own VM: the editor's MCP servers are not connected. Add remote MCP servers in the hub's MCP screen.";
+/// The plaza's commands: name, what the editor shows, and the argument's hint when it takes one.
+/// A prompt that is one of them (`/steer <text>`) is a control of the agent's work, not chat.
+const COMMANDS: [(&str, &str, Option<&str>); 4] = [
+    ("compress", "Compress the agent's conversation", None),
+    (
+        "steer",
+        "Steer the work in progress",
+        Some("what to change"),
+    ),
+    (
+        "extend-turns",
+        "Allow more model calls for this work",
+        Some("how many"),
+    ),
+    ("stop", "Stop the work in progress", None),
+];
 
 /// Answers one request from the editor.
 pub fn request(
@@ -96,6 +129,8 @@ pub fn request(
         close(conn, &params)
     } else if method == names.session_set_mode {
         set_mode(conn, peer, &params)
+    } else if method == names.session_set_config_option {
+        set_config_option(conn, &params)
     } else {
         Err(types::Error::method_not_found())
     }
@@ -109,6 +144,7 @@ pub fn notification(conn: &Conn<'_>, method: &str, params: Value) {
     let Ok(session) = session_of(conn, &params) else {
         return;
     };
+    // The last work is the one the editor's prompt waits on, in progress or queued.
     if let Some(&work) = session.works.last() {
         conn.hub.cancel(session.cid, work);
     }
@@ -155,12 +191,22 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
             }),
         );
     }
-    Ok(json!({"sessionId": session.id, "modes": modes(conn.hub, cid)}))
+    // Before the reply: the editor takes the commands as the session's, and a notification may come
+    // ahead of the reply to `session/new`.
+    notify_update(peer, &session.id, commands_update());
+    Ok(json!({
+        "sessionId": session.id,
+        "modes": modes(conn.hub, cid),
+        "configOptions": config_options(conn.hub, cid),
+    }))
 }
 
 fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let session = open_session_of(conn, params)?;
     let text = prompt_text(&params["prompt"]);
+    if let Some((command, arg)) = slash_command(&text) {
+        return command_turn(conn, peer, &session, command, arg);
+    }
     // Subscribed before the work is queued: the frames wait in the channel until the stream reads
     // them, so none is lost while `chat` returns.
     let frames = conn.hub.subscribe();
@@ -168,9 +214,85 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
         .hub
         .chat(session.cid, &session.id, &text)
         .map_err(internal)?;
+    let had_title = !session.title.is_empty();
     conn.sessions
         .add_work(&session.id, work, &text, conn.hub.now_ms());
-    stream(conn.hub, peer, &session, work, &frames)
+    // The first prompt sets the title; the editor learns it once.
+    if !had_title {
+        if let Some(titled) = conn
+            .sessions
+            .get(&session.id)
+            .filter(|s| !s.title.is_empty())
+        {
+            notify_update(
+                peer,
+                &session.id,
+                json!({
+                    "sessionUpdate": "session_info_update",
+                    "title": titled.title,
+                    "updatedAt": rfc3339(titled.updated_ms),
+                }),
+            );
+        }
+    }
+    let result = stream(conn.hub, peer, &session, work, &frames);
+    // The turn's tokens are reported whatever its end: a failed work spent them too.
+    report_usage(conn.hub, peer, &session.id, session.cid, work);
+    result
+}
+
+/// Runs a plaza command on the session's agent and answers with what the hub said, as the turn's
+/// message. Nothing is queued as chat; a command the hub refused says why, and still ends the turn.
+fn command_turn(
+    conn: &Conn<'_>,
+    peer: &Peer,
+    session: &Session,
+    command: &str,
+    arg: &str,
+) -> Result<Value, types::Error> {
+    let said = match conn.hub.control(session.cid, None, command, arg) {
+        Ok(said) | Err(said) => said,
+    };
+    notify_update(
+        peer,
+        &session.id,
+        json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": said},
+        }),
+    );
+    Ok(json!({"stopReason": "end_turn"}))
+}
+
+/// The command a prompt names: `/<name>` or `/<name> <argument>` for one of [`COMMANDS`], as
+/// the command's name and its trimmed argument (empty when none).
+fn slash_command(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix('/')?;
+    let (name, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    COMMANDS
+        .iter()
+        .any(|(known, _, _)| *known == name)
+        .then_some((name, arg.trim()))
+}
+
+/// Tells the editor the work's tokens, when it made any model call. `size` is 0: the plaza does
+/// not know the model's context window here.
+fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u64) {
+    let Some(usage) = hub.usage(cid, work) else {
+        return;
+    };
+    let input = usage["input_tokens"].as_u64().unwrap_or(0);
+    let output = usage["output_tokens"].as_u64().unwrap_or(0);
+    notify_update(
+        peer,
+        session_id,
+        json!({
+            "sessionUpdate": "usage_update",
+            "used": input + output,
+            "size": 0,
+            "_meta": {"agentplaza": {"input_tokens": input, "output_tokens": output}},
+        }),
+    );
 }
 
 /// Sends the work item's updates as they come, asks the approvals it waits on, and returns the
@@ -298,7 +420,11 @@ fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Er
             notify_update(peer, &session.id, update);
         }
     }
-    Ok(json!({"modes": modes(conn.hub, session.cid)}))
+    notify_update(peer, &session.id, commands_update());
+    Ok(json!({
+        "modes": modes(conn.hub, session.cid),
+        "configOptions": config_options(conn.hub, session.cid),
+    }))
 }
 
 fn resume(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
@@ -345,6 +471,50 @@ fn set_mode(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types
         }),
     );
     Ok(json!({}))
+}
+
+/// `session/set_config_option`: the agent's model. The reply carries every config option again.
+fn set_config_option(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
+    let session = open_session_of(conn, params)?;
+    let config = params["configId"].as_str().unwrap_or_default();
+    if config != "model" {
+        return Err(invalid(format!("no config option {config}")));
+    }
+    let model = params["value"]
+        .as_str()
+        .ok_or_else(|| invalid("the model is a model id, as a string"))?;
+    conn.hub.set_model(session.cid, model).map_err(invalid)?;
+    Ok(json!({"configOptions": config_options(conn.hub, session.cid)}))
+}
+
+/// The session's config options: the agent's `model`, and the models its tier allows.
+fn config_options(hub: &dyn Hub, cid: u64) -> Value {
+    let (current, models) = hub.models(cid);
+    json!([{
+        "id": "model",
+        "name": "Model",
+        "type": "select",
+        "currentValue": current,
+        "options": models
+            .iter()
+            .map(|m| json!({"value": m, "name": m}))
+            .collect::<Vec<_>>(),
+    }])
+}
+
+/// The plaza's commands, for the editor's command list.
+fn commands_update() -> Value {
+    let commands: Vec<Value> = COMMANDS
+        .iter()
+        .map(|(name, description, hint)| {
+            let mut command = json!({"name": name, "description": description});
+            if let Some(hint) = hint {
+                command["input"] = json!({"hint": hint});
+            }
+            command
+        })
+        .collect();
+    json!({"sessionUpdate": "available_commands_update", "availableCommands": commands})
 }
 
 /// The session `params` name, open or closed.
@@ -487,6 +657,10 @@ mod tests {
         /// The bus receiver, handed out once by `subscribe`; the test keeps the sender.
         frames: Mutex<Option<Receiver<Frame>>>,
         mode: Mutex<String>,
+        /// What `usage` reports for any work (None: no model call).
+        usage: Mutex<Option<Value>>,
+        /// What `models` reports: the current model and the tier's list.
+        models: Mutex<(String, Vec<String>)>,
     }
 
     impl FakeHub {
@@ -550,6 +724,38 @@ mod tests {
             Ok(())
         }
 
+        fn usage(&self, cid: u64, work: u64) -> Option<Value> {
+            self.record(format!("usage {cid} {work}"));
+            lock(&self.usage).clone()
+        }
+
+        fn control(
+            &self,
+            cid: u64,
+            work: Option<u64>,
+            command: &str,
+            arg: &str,
+        ) -> Result<String, String> {
+            self.record(format!("control {cid} {work:?} {command}({arg})"));
+            if arg == "refused" {
+                return Err("agent 7 has no running work".to_string());
+            }
+            Ok(format!("{command} sent"))
+        }
+
+        fn models(&self, _cid: u64) -> (String, Vec<String>) {
+            lock(&self.models).clone()
+        }
+
+        fn set_model(&self, cid: u64, model: &str) -> Result<(), String> {
+            self.record(format!("set_model {cid} {model}"));
+            if model.starts_with("forbidden/") {
+                return Err(format!("{model} is not allowed for this tier"));
+            }
+            lock(&self.models).0 = model.to_string();
+            Ok(())
+        }
+
         fn now_ms(&self) -> u64 {
             1_700_000_000_123
         }
@@ -570,6 +776,14 @@ mod tests {
                 calls: Mutex::default(),
                 frames: Mutex::new(Some(rx)),
                 mode: Mutex::new("autonomous".to_string()),
+                usage: Mutex::default(),
+                models: Mutex::new((
+                    "anthropic/claude-haiku-5-5".to_string(),
+                    vec![
+                        "anthropic/claude-haiku-5-5".to_string(),
+                        "anthropic/claude-opus-5-5".to_string(),
+                    ],
+                )),
             },
             sessions: Sessions::default(),
             client: Mutex::default(),
@@ -663,12 +877,201 @@ mod tests {
             )
             .expect("session/new");
         let updates = h.client.updates();
-        assert_eq!(updates.len(), 1);
+        // The notice, then the command list.
+        assert_eq!(updates.len(), 2);
         let text = serde_json::to_string(&updates[0]).expect("serialize");
         assert!(
             text.contains("the editor's MCP servers are not connected"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn new_session_offers_the_commands_and_the_model_options() {
+        let h = harness(None);
+        let reply = h
+            .client
+            .peer()
+            .call("session/new", json!({"cwd": "/work/app"}), WAIT)
+            .expect("session/new");
+        let model = &reply["configOptions"][0];
+        assert_eq!(model["id"], "model");
+        assert_eq!(model["currentValue"], "anthropic/claude-haiku-5-5");
+        assert_eq!(model["options"].as_array().map(Vec::len), Some(2));
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(said.contains("available_commands_update"), "{said}");
+        assert!(said.contains("\"name\":\"extend-turns\""), "{said}");
+        assert!(said.contains("\"hint\":\"how many\""), "{said}");
+    }
+
+    #[test]
+    fn session_cancel_asks_the_hub_to_cancel_the_last_work_queued_or_not() {
+        let h = harness(None);
+        let session = h.plaza.sessions.open(7, "/work/app", "", 0);
+        h.plaza.sessions.add_work(&session.id, 42, "fix it", 0);
+        notification(
+            &conn_of(&h.plaza),
+            "session/cancel",
+            json!({"sessionId": session.id}),
+        );
+        assert!(h.plaza.hub.calls().contains(&"cancel 7 42".to_string()));
+    }
+
+    #[test]
+    fn a_slash_command_runs_on_the_agent_and_is_not_queued_as_chat() {
+        let h = harness(None);
+        let session = h.client.new_session("/work/app").expect("session/new");
+        let stop = h.client.prompt(&session, "/stop").expect("session/prompt");
+        assert_eq!(
+            serde_json::to_value(stop).expect("serialize"),
+            json!("end_turn")
+        );
+        let calls = h.plaza.hub.calls();
+        assert!(
+            calls.contains(&"control 7 None stop()".to_string()),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("chat")), "{calls:?}");
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(said.contains("stop sent"), "{said}");
+    }
+
+    #[test]
+    fn a_refused_command_says_why_and_still_ends_the_turn() {
+        let h = harness(None);
+        let session = h.client.new_session("/work/app").expect("session/new");
+        let stop = h
+            .client
+            .prompt(&session, "/steer refused")
+            .expect("session/prompt");
+        assert_eq!(
+            serde_json::to_value(stop).expect("serialize"),
+            json!("end_turn")
+        );
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(said.contains("no running work"), "{said}");
+    }
+
+    #[test]
+    fn slash_commands_are_the_listed_names_with_their_argument() {
+        assert_eq!(
+            slash_command("/steer  add tests "),
+            Some(("steer", "add tests"))
+        );
+        assert_eq!(
+            slash_command(" /extend-turns 5"),
+            Some(("extend-turns", "5"))
+        );
+        assert_eq!(slash_command("/compress"), Some(("compress", "")));
+        assert_eq!(slash_command("/compressor"), None);
+        assert_eq!(slash_command("please /stop"), None);
+        assert_eq!(slash_command("/unknown x"), None);
+    }
+
+    #[test]
+    fn set_config_option_picks_the_model_and_the_tier_refuses_the_rest() {
+        let h = harness(None);
+        let session = h.client.new_session("/work/app").expect("session/new");
+        let reply = h
+            .client
+            .peer()
+            .call(
+                "session/set_config_option",
+                json!({"sessionId": session, "configId": "model", "value": "anthropic/claude-opus-5-5"}),
+                WAIT,
+            )
+            .expect("session/set_config_option");
+        assert!(
+            h.plaza
+                .hub
+                .calls()
+                .contains(&"set_model 7 anthropic/claude-opus-5-5".to_string())
+        );
+        assert_eq!(reply["configOptions"][0]["id"], "model");
+        let refused = h
+            .client
+            .peer()
+            .call(
+                "session/set_config_option",
+                json!({"sessionId": session, "configId": "model", "value": "forbidden/model"}),
+                WAIT,
+            )
+            .expect_err("the tier refuses it");
+        assert!(matches!(refused, rpc::Error::Remote(_)), "{refused:?}");
+        let other = h
+            .client
+            .peer()
+            .call(
+                "session/set_config_option",
+                json!({"sessionId": session, "configId": "effort", "value": "low"}),
+                WAIT,
+            )
+            .expect_err("no such option");
+        assert!(matches!(other, rpc::Error::Remote(_)), "{other:?}");
+    }
+
+    #[test]
+    fn a_turn_reports_its_usage_and_the_first_prompt_titles_the_session() {
+        let h = harness(None);
+        *lock(&h.plaza.hub.usage) = Some(json!({"input_tokens": 120, "output_tokens": 30}));
+        let session = h.client.new_session("/work/app").expect("session/new");
+        // The work's end is already on the bus; the turn reads it.
+        h.frames
+            .send(Frame {
+                kind: "transcript".to_string(),
+                data: json!({
+                    "cid": 7,
+                    "work": 42,
+                    "kind": "work_end",
+                    "data": {"status": "done", "summary": ""},
+                })
+                .to_string(),
+            })
+            .expect("the bus is open");
+        h.client
+            .prompt(&session, "Fix the parser\nthen test it")
+            .expect("session/prompt");
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(
+            said.contains("\"sessionUpdate\":\"session_info_update\""),
+            "{said}"
+        );
+        assert!(said.contains("\"title\":\"Fix the parser\""), "{said}");
+        assert!(
+            said.contains("\"updatedAt\":\"2023-11-14T22:13:20.123Z\""),
+            "{said}"
+        );
+        assert!(
+            said.contains("\"sessionUpdate\":\"usage_update\""),
+            "{said}"
+        );
+        assert!(said.contains("\"used\":150"), "{said}");
+        assert!(said.contains("\"input_tokens\":120"), "{said}");
+        assert!(h.plaza.hub.calls().contains(&"usage 7 42".to_string()));
+    }
+
+    #[test]
+    fn a_later_prompt_does_not_retitle_the_session() {
+        let h = harness(None);
+        let session = h.client.new_session("/work/app").expect("session/new");
+        // A session with a title already: the prompt sends no `session_info_update`.
+        let id = h.plaza.sessions.list(None)[0].id.clone();
+        h.plaza.sessions.add_work(&id, 1, "earlier", 0);
+        h.frames
+            .send(Frame {
+                kind: "transcript".to_string(),
+                data: json!({
+                    "cid": 7,
+                    "work": 42,
+                    "kind": "work_end",
+                    "data": {"status": "done", "summary": ""},
+                })
+                .to_string(),
+            })
+            .expect("the bus is open");
+        h.client.prompt(&session, "again").expect("session/prompt");
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(!said.contains("session_info_update"), "{said}");
     }
 
     #[test]

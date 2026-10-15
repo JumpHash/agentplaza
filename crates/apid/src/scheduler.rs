@@ -123,6 +123,13 @@ impl Lanes {
             .unwrap_or_default()
     }
 
+    /// Takes item `work` out of `cid`'s queue, if it waits there. The item in flight is not queued, so it is not taken.
+    fn remove_queued(&mut self, cid: u64, work: u64) -> Option<WorkItem> {
+        let lane = self.lanes.get_mut(&cid)?;
+        let at = lane.queue.iter().position(|item| item.id == work)?;
+        lane.queue.remove(at)
+    }
+
     /// Removes everything for `cid`: the item in flight first, then the queue.
     fn drain(&mut self, cid: u64) -> Vec<WorkItem> {
         let Some(lane) = self.lanes.remove(&cid) else {
@@ -335,6 +342,31 @@ impl Queues {
             crate::fleet::send(app, cid, &json!({ "message": message })),
             Ok((code, _)) if (200..300).contains(&code)
         )
+    }
+
+    /// Cancels item `work` of `cid` while it still waits in the queue: it leaves the queue and ends as `stopped`,
+    /// recorded the way [`Queues::agent_gone`] ends a dropped item, so an editor's prompt ends with `cancelled`.
+    /// The item in flight is [`Queues::cancel`]'s; false when `work` is not queued for `cid`.
+    pub fn cancel_queued(&self, app: &App, cid: u64, work: u64, reason: &str) -> bool {
+        let Some(item) = self.locked().remove_queued(cid, work) else {
+            return false;
+        };
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            "work_end",
+            json!({ "status": "stopped", "summary": reason }),
+        );
+        app.bus.publish(
+            "work",
+            &json!({ "cid": cid, "work": work, "state": "ended", "status": "stopped" }),
+        );
+        if let Some(task) = item.origin.task.as_deref() {
+            settle_task(app, task, WorkStatus::Stopped, reason);
+        }
+        self.review_lost(app, work, reason);
+        true
     }
 
     /// Takes plaza task `task` off agent `cid`'s lane: its waiting items are dropped, and its item in flight is
@@ -1285,6 +1317,23 @@ mod tests {
         assert!(
             lanes.finish(7, 99).is_none(),
             "a stray work id closes nothing"
+        );
+        assert_eq!(lanes.current(7).map(|i| i.id), Some(1));
+    }
+
+    #[test]
+    fn remove_queued_takes_a_waiting_item_and_never_the_one_in_flight() {
+        let mut lanes = Lanes::default();
+        for id in 1..=3 {
+            lanes.push(item(id, 7, None));
+        }
+        lanes.start_next(7, 0);
+        assert_eq!(lanes.remove_queued(7, 2).map(|i| i.id), Some(2));
+        assert!(lanes.remove_queued(7, 1).is_none(), "in flight, not queued");
+        assert!(lanes.remove_queued(7, 9).is_none(), "no such item");
+        assert_eq!(
+            lanes.queued(7).iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![3]
         );
         assert_eq!(lanes.current(7).map(|i| i.id), Some(1));
     }
