@@ -640,7 +640,8 @@ impl VsockMuxer {
     }
 
     /// Connect to the Unix socket at `path` without blocking; a full accept backlog
-    /// fails with `EAGAIN`.
+    /// fails at once (`EAGAIN` on Linux, `ECONNREFUSED` on macOS, `WSAENOBUFS` on
+    /// Windows).
     ///
     /// The `socket(2)`+`connect(2)` pair lives behind the crate's audited
     /// syscall boundary ([`crate::sys::connect_unix_nonblocking`]), because it
@@ -1019,12 +1020,16 @@ mod tests {
                 Ok(stream) => pending.push(stream),
                 Err(err) => {
                     // Windows refuses a connect into a full AF_UNIX queue at
-                    // once too, but with WSAENOBUFS rather than EAGAIN.
+                    // once too, but with WSAENOBUFS rather than EAGAIN, and
+                    // macOS with ECONNREFUSED (XNU's `unp_connect` finds no
+                    // room in the listener's queue).
                     let full_queue = err.kind() == std::io::ErrorKind::WouldBlock
-                        || (cfg!(windows) && err.raw_os_error() == Some(10055));
+                        || (cfg!(windows) && err.raw_os_error() == Some(10055))
+                        || (cfg!(target_os = "macos")
+                            && err.kind() == std::io::ErrorKind::ConnectionRefused);
                     assert!(
                         full_queue,
-                        "filling the accept queue must end in EAGAIN, not {err:?}"
+                        "filling the accept queue must end in a refusal, not {err:?}"
                     );
                     break;
                 }
