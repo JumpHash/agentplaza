@@ -177,6 +177,8 @@ export interface Settings {
   acp_enabled: boolean;
   /** ACP: the editor offers to apply an agent's pull request to the editor's project (`agentplaza acp --repo`). */
   acp_write_back?: boolean;
+  /** ACP: editors and coding engines that ask for protocol 2 get the ACP v2 draft; everything else stays on v1. */
+  acp_v2?: boolean;
   /** The coding engines an agent may run (`claude`, `codex`, `opencode`); at least one stays on. */
   engines_enabled: string[];
   /** How an engine runs: `acp` is the live stream the laws check at every action; `headless` is the earlier one-shot run. */

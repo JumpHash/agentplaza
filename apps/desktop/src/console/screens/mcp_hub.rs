@@ -534,6 +534,8 @@ pub struct State {
     pub acp_enabled: Option<bool>,
     /// The write-back switch (`acp_write_back`) as the hub holds it (None until the first read).
     pub acp_write_back: Option<bool>,
+    /// The ACP v2 draft switch (`acp_v2`) as the hub holds it (None until the first read).
+    pub acp_v2: Option<bool>,
     /// A switch save is on its way to the hub.
     pub acp_busy: bool,
     pub acp_error: Option<String>,
@@ -551,6 +553,7 @@ pub fn leave(state: &mut State) {
 pub enum AcpSwitch {
     Enabled,
     WriteBack,
+    V2,
 }
 
 impl AcpSwitch {
@@ -558,6 +561,7 @@ impl AcpSwitch {
         match self {
             Self::Enabled => s.acp_enabled,
             Self::WriteBack => s.acp_write_back,
+            Self::V2 => s.acp_v2,
         }
     }
 
@@ -565,6 +569,7 @@ impl AcpSwitch {
         match self {
             Self::Enabled => s.acp_enabled = on,
             Self::WriteBack => s.acp_write_back = on,
+            Self::V2 => s.acp_v2 = on,
         }
     }
 
@@ -572,6 +577,7 @@ impl AcpSwitch {
         match self {
             Self::Enabled => &mut state.acp_enabled,
             Self::WriteBack => &mut state.acp_write_back,
+            Self::V2 => &mut state.acp_v2,
         }
     }
 }
@@ -608,9 +614,10 @@ pub enum Msg {
     Revoked(Result<String, String>),
     FilterToken(Choice),
     FilterTool(Choice),
-    AcpSettingsLoaded(Result<(bool, bool), String>),
+    AcpSettingsLoaded(Result<(bool, bool, bool), String>),
     SetAcp(bool),
     SetAcpWriteBack(bool),
+    SetAcpV2(bool),
     AcpSaved(AcpSwitch, Result<bool, String>),
     RefreshAcpSessions,
     AcpSessionsLoaded(Result<Vec<AcpSession>, String>),
@@ -659,7 +666,7 @@ fn acp_settings_task(ctx: &Ctx) -> Task<Msg> {
     client::task(
         move || {
             c.get::<Settings>("/v1/settings")
-                .map(|s| (s.acp_enabled, s.acp_write_back))
+                .map(|s| (s.acp_enabled, s.acp_write_back, s.acp_v2))
         },
         Msg::AcpSettingsLoaded,
     )
@@ -800,11 +807,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
-        Msg::AcpSettingsLoaded(Ok((on, write_back))) => {
+        Msg::AcpSettingsLoaded(Ok((on, write_back, v2))) => {
             // A save in flight wins over a read that was taken before it.
             if !state.acp_busy {
                 state.acp_enabled = Some(on);
                 state.acp_write_back = Some(write_back);
+                state.acp_v2 = Some(v2);
             }
             state.acp_error = None;
             Task::none()
@@ -815,6 +823,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::SetAcp(on) => save_acp_switch(state, ctx, AcpSwitch::Enabled, on),
         Msg::SetAcpWriteBack(on) => save_acp_switch(state, ctx, AcpSwitch::WriteBack, on),
+        Msg::SetAcpV2(on) => save_acp_switch(state, ctx, AcpSwitch::V2, on),
         Msg::AcpSaved(switch, Ok(on)) => {
             state.acp_busy = false;
             *switch.slot(state) = Some(on);
@@ -827,6 +836,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 (AcpSwitch::WriteBack, false) => {
                     "Editors will no longer offer to apply pull requests."
                 }
+                (AcpSwitch::V2, true) => {
+                    "Editors and engines that ask for protocol 2 get the ACP v2 draft."
+                }
+                (AcpSwitch::V2, false) => "Editors and engines are back on the stable v1.",
             };
             state.notice = Some((text.to_string(), false));
             Task::none()
@@ -1409,6 +1422,10 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
     if enabled {
         write_back = write_back.on_toggle(Msg::SetAcpWriteBack);
     }
+    // The v2 switch is never greyed out: the engines inside the VMs speak v2 too, so Editors being off does not matter.
+    let v2 = checkbox(state.acp_v2.unwrap_or(false))
+        .label("Speak the ACP v2 draft")
+        .on_toggle(Msg::SetAcpV2);
     let mut parts: Vec<Element<'_, Msg>> = vec![
         checkbox(enabled)
             .label("Let editors connect to this hub")
@@ -1417,6 +1434,8 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
         ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
         write_back.into(),
         ui::faint("With agentplaza acp --repo, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.").into(),
+        v2.into(),
+        ui::faint("Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.").into(),
     ];
     if let Some(error) = &state.acp_error {
         parts.push(ui::error_line(error));

@@ -286,6 +286,9 @@ pub struct Settings {
     /// Whether an editor offers to apply an agent's pull request to the editor's project. Off until the owner turns it on.
     #[serde(default)]
     pub acp_write_back: bool,
+    /// Whether editors and coding engines that ask for protocol 2 get the ACP v2 draft. Off until the owner turns it on.
+    #[serde(default)]
+    pub acp_v2: bool,
     #[serde(flatten)]
     pub rest: Map<String, Value>,
 }
@@ -294,6 +297,7 @@ pub struct Settings {
 fn keep_acp_switches(copy: &mut Settings, hub: &Settings) {
     copy.acp_enabled = hub.acp_enabled;
     copy.acp_write_back = hub.acp_write_back;
+    copy.acp_v2 = hub.acp_v2;
 }
 
 /// The coding engines a `code_engine` call may name, in the hub's order (`ENGINE_IDS` in apid's settings).
@@ -2777,19 +2781,22 @@ mod tests {
             "default_model": "a",
             "orchestrator_model": "b",
             "acp_enabled": true,
-            "acp_write_back": true
+            "acp_write_back": true,
+            "acp_v2": true
         }))
         .expect("settings parse");
         let mut copy: Settings = serde_json::from_value(json!({
             "default_model": "a",
             "orchestrator_model": "b",
             "acp_enabled": false,
-            "acp_write_back": false
+            "acp_write_back": false,
+            "acp_v2": false
         }))
         .expect("settings parse");
         keep_acp_switches(&mut copy, &hub);
         assert!(copy.acp_enabled);
         assert!(copy.acp_write_back);
+        assert!(copy.acp_v2);
     }
 
     #[test]
@@ -2797,6 +2804,13 @@ mod tests {
         let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
         let s: Settings = serde_json::from_value(bare).expect("settings parse");
         assert!(!s.acp_write_back);
+    }
+
+    #[test]
+    fn acp_v2_is_off_until_the_owner_turns_it_on() {
+        let bare = json!({ "default_model": "a", "orchestrator_model": "b" });
+        let s: Settings = serde_json::from_value(bare).expect("settings parse");
+        assert!(!s.acp_v2);
     }
 
     #[test]

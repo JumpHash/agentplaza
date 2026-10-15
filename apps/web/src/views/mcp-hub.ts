@@ -672,14 +672,22 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   // on its way, since each save reads the whole document and two at once could overwrite each other.
   const acpBox = input({ type: 'checkbox' });
   const writeBackBox = input({ type: 'checkbox' });
+  const v2Box = input({ type: 'checkbox' });
+  const boxes = { acp_enabled: acpBox, acp_write_back: writeBackBox, acp_v2: v2Box };
   let acpSaving = false;
   // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the pull request.
+  // The v2 switch is not greyed out by Editors: the engines inside the VMs speak v2 too.
   const drawAcpSwitches = (): void => {
     acpBox.disabled = acpSaving;
     writeBackBox.disabled = acpSaving || !acpBox.checked;
+    v2Box.disabled = acpSaving;
   };
-  const saveAcpFlag = async (field: 'acp_enabled' | 'acp_write_back', on: boolean, success: string): Promise<void> => {
-    const box = field === 'acp_enabled' ? acpBox : writeBackBox;
+  const saveAcpFlag = async (
+    field: 'acp_enabled' | 'acp_write_back' | 'acp_v2',
+    on: boolean,
+    success: string,
+  ): Promise<void> => {
+    const box = boxes[field];
     acpSaving = true;
     drawAcpSwitches();
     const saved = await attempt(async () => {
@@ -700,6 +708,13 @@ export function mountHubTab(root: HTMLElement): Cleanup {
       writeBackBox.checked ? 'The editor will offer to apply pull requests' : 'The editor will not offer to apply pull requests',
     ),
   );
+  v2Box.addEventListener('change', () =>
+    void saveAcpFlag(
+      'acp_v2',
+      v2Box.checked,
+      v2Box.checked ? 'Editors and engines that ask for protocol 2 get the ACP v2 draft' : 'Editors and engines are back on the stable v1',
+    ),
+  );
   drawAcpSwitches();
 
   const loadAcpSwitch = async (): Promise<void> => {
@@ -708,6 +723,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
       if (!alive) return;
       acpBox.checked = current.acp_enabled === true;
       writeBackBox.checked = current.acp_write_back === true;
+      v2Box.checked = current.acp_v2 === true;
       drawAcpSwitches();
     } catch (err) {
       if (alive) toast(errorText(err), 'error');
@@ -796,6 +812,12 @@ export function mountHubTab(root: HTMLElement): Cleanup {
         'With ',
         h('code', null, 'agentplaza acp --repo'),
         ', the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
+      ),
+      h('label.hub-switch', null, v2Box, h('span', null, 'Speak the ACP v2 draft')),
+      h(
+        'p.mcp-muted',
+        null,
+        "Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.",
       ),
       snippet('Zed', ACP_SNIPPETS.zed, 'Add this to the settings.json of Zed. It runs the default plaza agent.'),
       snippet('Zed, one agent', ACP_SNIPPETS.zedAgent, "The same, pinned to one plaza agent. Replace <name> with the agent's name."),
