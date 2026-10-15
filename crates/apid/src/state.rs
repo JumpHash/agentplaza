@@ -224,6 +224,8 @@ impl App {
             &config.vault_key,
             vault_db,
         ));
+        // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
+        crate::vendor_relay::register(&vault);
         // The Library of deliverables, shared with the skill library's file store.
         let library = Arc::new(crate::deliverables::Store::load(
             &config.state_dir,

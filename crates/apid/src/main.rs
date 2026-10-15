@@ -74,6 +74,7 @@ mod unfurl;
 mod upstream;
 mod usage;
 mod vault;
+mod vendor_relay;
 
 use std::process::ExitCode;
 
