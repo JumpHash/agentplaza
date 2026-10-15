@@ -16,6 +16,7 @@
     allow(linker_messages)
 )]
 
+mod acp;
 mod agent_proposals;
 mod agents;
 mod api;

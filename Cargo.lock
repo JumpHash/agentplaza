@@ -301,6 +301,7 @@ checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
 name = "apid"
 version = "0.1.0"
 dependencies = [
+ "apz-acp",
  "apz-gateway",
  "apz-http",
  "apz-ide",

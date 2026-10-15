@@ -45,6 +45,7 @@ pub fn router() -> Router<App> {
             )
         });
     let router = events::routes(router);
+    let router = crate::acp::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);
     let router = decisions::routes(router);
