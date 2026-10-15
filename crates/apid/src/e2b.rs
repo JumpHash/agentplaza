@@ -365,6 +365,10 @@ pub struct Sandbox {
     pub access_token: Option<String>,
     #[serde(default)]
     pub snapshots: Vec<Snapshot>,
+    /// Killed while it had snapshots: its VM is stopped and the record stays only for them, hidden
+    /// from every sandbox route. Deleting its last snapshot ends its run and forgets it.
+    #[serde(default)]
+    pub retired: bool,
 }
 
 /// The sandboxes, saved to `<state>/e2b-sandboxes.json` on every change.
@@ -509,7 +513,7 @@ pub(crate) fn reap_decision(
 /// One reaper pass over the sandboxes.
 fn reap(app: &App, now: u64) {
     let held = app.control.paused();
-    for sandbox in sandboxes(app).list() {
+    for sandbox in live(app) {
         let decision = reap_decision(
             held,
             sandbox.phase == Phase::Running,
@@ -539,7 +543,7 @@ fn reap(app: &App, now: u64) {
 /// STOP ALL: every sandbox ends. Called by `control::stop_all` after the hold is set, so nothing new
 /// starts meanwhile; a kill that fails is retried by the reaper while the hold lasts.
 pub fn stop_all(app: &App) {
-    for sandbox in sandboxes(app).list() {
+    for sandbox in live(app) {
         if let Err(refused) = destroy(app, &sandbox, "STOP ALL by the owner", "owner") {
             eprintln!(
                 "apid: sandbox {} not stopped: {}",
@@ -905,7 +909,48 @@ fn audit(app: &App, sandbox: &Sandbox, kind: &'static str, event: &str, actor: &
 }
 
 fn find(app: &App, id: &str) -> Result<Sandbox, Refused> {
-    sandboxes(app).get(id).ok_or_else(|| not_found(id))
+    sandboxes(app)
+        .get(id)
+        .filter(|s| !s.retired)
+        .ok_or_else(|| not_found(id))
+}
+
+/// The sandboxes the API shows: every one but the retired.
+fn live(app: &App) -> Vec<Sandbox> {
+    sandboxes(app)
+        .list()
+        .into_iter()
+        .filter(|s| !s.retired)
+        .collect()
+}
+
+/// The snapshot `template` names, with the sandbox it was taken of (retired ones too): a snapshot id
+/// (`<sandbox>:<checkpoint>`), or a snapshot name when exactly one snapshot has it.
+fn snapshot_source(app: &App, template: &str) -> Option<(Sandbox, Snapshot)> {
+    pick_snapshot(&sandboxes(app).list(), template)
+}
+
+/// [`snapshot_source`] over the sandboxes `all`.
+fn pick_snapshot(all: &[Sandbox], template: &str) -> Option<(Sandbox, Snapshot)> {
+    let by_id = all.iter().find_map(|s| {
+        s.snapshots
+            .iter()
+            .find(|snap| snap.id == template)
+            .map(|snap| (s.clone(), snap.clone()))
+    });
+    if by_id.is_some() {
+        return by_id;
+    }
+    let mut named = all.iter().flat_map(|s| {
+        s.snapshots
+            .iter()
+            .filter(|snap| snap.name == template)
+            .map(move |snap| (s.clone(), snap.clone()))
+    });
+    match (named.next(), named.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
 }
 
 /// Starts a sandbox: a run on this node, the daemon's health, its environment and token. The record is
@@ -914,8 +959,25 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
     if app.control.paused() {
         return Err(held());
     }
-    let spec = Spec::from_body(json_body::<NewSandbox>(req)?)?;
-    let now = apz_plaza::now_ms();
+    let mut spec = Spec::from_body(json_body::<NewSandbox>(req)?)?;
+    // A snapshot's id (or its unique name) as the template: the new sandbox is a fork of that
+    // checkpoint, with the source's environment under the request's.
+    let (run, cid) = match snapshot_source(app, &spec.template) {
+        Some((source, snap)) => {
+            let mut env = source.env_vars.clone();
+            env.extend(std::mem::take(&mut spec.env_vars));
+            spec.env_vars = env;
+            spec.template = snap.id.clone();
+            fork_runs(app, &source, Some(&snap.checkpoint), 1)?.remove(0)
+        }
+        None => new_run(app)?,
+    };
+    let sandbox = admit(app, &spec, run, cid, actor)?;
+    Ok(Response::json(201, &created_view(&sandbox)))
+}
+
+/// A new sandbox run on this node: its run id and its VM's CID.
+fn new_run(app: &App) -> Result<(String, u64), Refused> {
     let (status, view) = noded(
         app,
         "POST",
@@ -949,6 +1011,57 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
             "noded's run has no sandbox VM",
         ));
     };
+    Ok((run, cid))
+}
+
+/// `n` forks of `source`'s VM, each a new single-VM run: of checkpoint `checkpoint`, or of a
+/// checkpoint taken now when `None`. Returns each fork's run and CID.
+fn fork_runs(
+    app: &App,
+    source: &Sandbox,
+    checkpoint: Option<&str>,
+    n: u32,
+) -> Result<Vec<(String, u64)>, Refused> {
+    let mut body = json!({ "n": n });
+    if let Some(checkpoint) = checkpoint {
+        body["checkpoint"] = json!(checkpoint);
+    }
+    let view = noded_ok(
+        app,
+        "POST",
+        &vm_path(&source.run, "fork"),
+        &body,
+        SNAPSHOT_TIMEOUT,
+    )?;
+    let forks: Vec<(String, u64)> = view["forks"]
+        .as_array()
+        .map(|forks| {
+            forks
+                .iter()
+                .filter_map(|fork| Some((fork["run"].as_str()?.to_string(), fork["cid"].as_u64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if forks.len() != n as usize {
+        for (run, _) in &forks {
+            destroy_run(app, run);
+        }
+        return Err(Refused::new(
+            500,
+            "sandbox_create_failed",
+            format!(
+                "noded's fork answer has {} of {n} forks: {view}",
+                forks.len()
+            ),
+        ));
+    }
+    Ok(forks)
+}
+
+/// Makes run `run` (VM `cid`) a sandbox: the record, the daemon's health, its environment and
+/// token. The record is kept only when the daemon answers; a failed start ends the run.
+fn admit(app: &App, spec: &Spec, run: String, cid: u64, actor: &str) -> Result<Sandbox, Refused> {
+    let now = apz_plaza::now_ms();
     let access_token = spec.secure.then(|| hex_of(&apz_trust::random::<32>()));
     let sandbox = Sandbox {
         id: format!("sb{}", hex_of(&apz_trust::random::<8>())),
@@ -965,6 +1078,7 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         access_token: access_token.clone(),
         snapshots: Vec::new(),
         cold: false,
+        retired: false,
     };
     // The record comes first: vsockd finds the CID and the token by the sandbox's id on each gateway call.
     if let Err(refused) = sandboxes(app).insert(sandbox.clone()) {
@@ -990,11 +1104,53 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         actor,
         json!({"timeout": spec.timeout_s, "allow_internet_access": spec.allow_internet}),
     );
-    Ok(Response::json(201, &created_view(&sandbox)))
+    Ok(sandbox)
 }
 
-/// Ends a sandbox: its run goes, then its record. A kill that noded refuses keeps the record.
+/// Ends a sandbox: its run goes, then its record. A kill that noded refuses keeps the record. A
+/// sandbox with snapshots is retired instead: its VM stops (no memory image is written) and the run
+/// stays for the snapshots, which new sandboxes can still start from.
 fn destroy(app: &App, sandbox: &Sandbox, reason: &str, actor: &str) -> Result<(), Refused> {
+    if !sandbox.snapshots.is_empty() {
+        if sandbox.phase == Phase::Running {
+            noded_ok(
+                app,
+                "POST",
+                &vm_path(&sandbox.run, "sleep"),
+                &memory_body(false),
+                NODED_TIMEOUT,
+            )?;
+        }
+        sandboxes(app).update(&sandbox.id, |s| {
+            s.retired = true;
+            s.phase = Phase::Paused;
+            s.cold = true;
+        })?;
+        audit(
+            app,
+            sandbox,
+            "sandbox_kill",
+            "kill",
+            actor,
+            json!({"reason": reason, "kept_for_snapshots": sandbox.snapshots.len()}),
+        );
+        return Ok(());
+    }
+    end_run(app, sandbox)?;
+    sandboxes(app).remove(&sandbox.id)?;
+    audit(
+        app,
+        sandbox,
+        "sandbox_kill",
+        "kill",
+        actor,
+        json!({"reason": reason}),
+    );
+    Ok(())
+}
+
+/// Deletes sandbox `sandbox`'s run on noded (a run noded no longer has is already gone).
+fn end_run(app: &App, sandbox: &Sandbox) -> Result<(), Refused> {
     match noded(
         app,
         "DELETE",
@@ -1013,15 +1169,6 @@ fn destroy(app: &App, sandbox: &Sandbox, reason: &str, actor: &str) -> Result<()
         }
         Err(why) => return Err(Refused::new(502, "sandbox_node_unreachable", why)),
     }
-    sandboxes(app).remove(&sandbox.id)?;
-    audit(
-        app,
-        sandbox,
-        "sandbox_kill",
-        "kill",
-        actor,
-        json!({"reason": reason}),
-    );
     Ok(())
 }
 
@@ -1154,8 +1301,7 @@ fn matches(sandbox: &Sandbox, filter: &[(String, String)]) -> bool {
 
 fn list(app: &App, req: &Request) -> Result<Response, Refused> {
     let filter = metadata_filter(req)?;
-    let mut running: Vec<Sandbox> = sandboxes(app)
-        .list()
+    let mut running: Vec<Sandbox> = live(app)
         .into_iter()
         .filter(|s| s.phase == Phase::Running && matches(s, &filter))
         .collect();
@@ -1179,8 +1325,7 @@ fn list_v2(app: &App, req: &Request) -> Result<Response, Refused> {
             })
             .collect::<Result<Vec<Phase>, Refused>>()?,
     };
-    let mut listed: Vec<Sandbox> = sandboxes(app)
-        .list()
+    let mut listed: Vec<Sandbox> = live(app)
         .into_iter()
         .filter(|s| phases.contains(&s.phase) && matches(s, &filter))
         .collect();
@@ -1316,6 +1461,104 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
     Ok(Response::json(201, &snapshot_view(&snap)))
 }
 
+/// The body of `POST /e2b/sandboxes/{id}/fork` (E2B's SandboxForkRequest).
+#[derive(Deserialize, Default)]
+struct ForkBody {
+    timeout: Option<i64>,
+    count: Option<i64>,
+}
+
+/// The most forks one request makes (noded's limit).
+const MAX_FORKS: u32 = 8;
+
+/// Forks a running or paused sandbox into `count` new ones, each from one checkpoint taken now, with
+/// the source's template, metadata, environment and settings, and tokens of their own. Each fork
+/// stands or fails on its own: the answer has one `{"sandbox"}` or `{"error"}` entry per fork.
+fn fork(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
+    if app.control.paused() {
+        return Err(held());
+    }
+    let body: ForkBody = body_or_default(req)?;
+    let count = match body.count {
+        None => 1,
+        Some(n) => seconds(n, 1, MAX_FORKS, "count")?,
+    };
+    let timeout_s = match body.timeout {
+        None => DEFAULT_TIMEOUT_S,
+        Some(t) => seconds(t, 1, MAX_TIMEOUT_S, "timeout")?,
+    };
+    let source = find(app, id)?;
+    let spec = Spec {
+        template: source.template.clone(),
+        timeout_s,
+        auto_pause: source.auto_pause,
+        secure: source.access_token.is_some(),
+        allow_internet: source.allow_internet,
+        metadata: source.metadata.clone(),
+        // The forks' daemons are copies of the source's: they hold its environment already, and a
+        // fresh `/init` only adds the clock and entropy.
+        env_vars: BTreeMap::new(),
+    };
+    let forks = fork_runs(app, &source, None, count)?;
+    let results: Vec<Value> = forks
+        .into_iter()
+        .map(|(run, cid)| match admit(app, &spec, run, cid, key) {
+            Ok(mut sandbox) => {
+                // A cold resume of a fork boots its daemon fresh, so it keeps the source's environment.
+                let env = source.env_vars.clone();
+                if let Ok(updated) = sandboxes(app).update(&sandbox.id, |s| s.env_vars = env) {
+                    sandbox = updated;
+                }
+                json!({ "sandbox": created_view(&sandbox) })
+            }
+            Err(refused) => json!({
+                "error": { "code": refused.status, "message": refused.message }
+            }),
+        })
+        .collect();
+    Ok(Response::json(201, &results))
+}
+
+/// Deletes a snapshot named by its id or its unique name: noded's checkpoint goes, then the record's
+/// entry; a retired sandbox whose last snapshot this was ends with it.
+fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Response, Refused> {
+    let template = crate::plaza::percent_decode(template);
+    let Some((owner, snap)) = snapshot_source(app, &template) else {
+        return Err(not_found(&template));
+    };
+    match noded(
+        app,
+        "DELETE",
+        &vm_path(&owner.run, &format!("checkpoints/{}", snap.checkpoint)),
+        None,
+        NODED_TIMEOUT,
+    ) {
+        Ok((status, _)) if (200..300).contains(&status) || status == 404 => {}
+        Ok((status, value)) => {
+            return Err(Refused::new(
+                502,
+                "sandbox_node_refused",
+                format!("noded answered {status} to the snapshot's deletion: {value}"),
+            ));
+        }
+        Err(why) => return Err(Refused::new(502, "sandbox_node_unreachable", why)),
+    }
+    let updated = sandboxes(app).update(&owner.id, |s| s.snapshots.retain(|x| x.id != snap.id))?;
+    audit(
+        app,
+        &updated,
+        "sandbox_snapshot",
+        "snapshot_delete",
+        key,
+        json!({"snapshot": snap.id}),
+    );
+    if updated.retired && updated.snapshots.is_empty() {
+        end_run(app, &updated)?;
+        sandboxes(app).remove(&updated.id)?;
+    }
+    Ok(no_content())
+}
+
 fn snapshots_list(app: &App) -> Response {
     let mut snaps: Vec<Snapshot> = sandboxes(app)
         .list()
@@ -1437,7 +1680,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         // The owner's view of the sandboxes (the console): every one, running or paused, with its
         // VM's CID and run; never its envd token. Ending, pausing and resuming act as the owner.
         .get("/v1/e2b/sandboxes", |app, _, _| {
-            let mut all = sandboxes(app).list();
+            let mut all = live(app);
             all.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
             let rows: Vec<Value> = all
                 .iter()
@@ -1497,6 +1740,13 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/e2b/snapshots", |app, req, _| {
             guard(app, req, |_| Ok(snapshots_list(app)))
         })
+        .post("/e2b/sandboxes/{id}/fork", |app, req, p| {
+            guard(app, req, |key| fork(app, req, p.get("id"), key))
+        })
+        // E2B deletes a snapshot as the template it is.
+        .delete("/e2b/templates/{id}", |app, req, p| {
+            guard(app, req, |key| delete_snapshot(app, p.get("id"), key))
+        })
 }
 
 #[cfg(test)]
@@ -1533,7 +1783,45 @@ mod tests {
             env_vars: BTreeMap::new(),
             cold: false,
             snapshots: Vec::new(),
+            retired: false,
         }
+    }
+
+    #[test]
+    fn a_snapshot_template_is_found_by_its_id_or_its_one_name() {
+        let snap = |sandbox: &str, checkpoint: &str, name: &str| Snapshot {
+            id: format!("{sandbox}:{checkpoint}"),
+            name: name.into(),
+            checkpoint: checkpoint.into(),
+            taken_ms: 1,
+        };
+        let mut a = sample(true);
+        a.snapshots = vec![
+            snap("sba", "cp-1-x", "first"),
+            snap("sba", "cp-2-y", "both"),
+        ];
+        let mut b = sample(true);
+        b.id = "sbb".into();
+        b.retired = true;
+        b.snapshots = vec![snap("sbb", "cp-3-z", "both"), snap("sbb", "cp-4-w", "kept")];
+        let all = vec![a, b];
+        let found = |t: &str| pick_snapshot(&all, t).map(|(s, snap)| (s.id, snap.checkpoint));
+        assert_eq!(
+            found("sba:cp-2-y"),
+            Some(("sb0123456789abcdef".into(), "cp-2-y".into()))
+        );
+        assert_eq!(
+            found("first"),
+            Some(("sb0123456789abcdef".into(), "cp-1-x".into()))
+        );
+        // A retired sandbox's snapshots are still templates.
+        assert_eq!(found("kept"), Some(("sbb".into(), "cp-4-w".into())));
+        assert_eq!(
+            found("both"),
+            None,
+            "a name two snapshots share names neither"
+        );
+        assert_eq!(found("base"), None, "a template that is no snapshot");
     }
 
     #[test]
