@@ -572,6 +572,8 @@ fn serve_one(stream: &UnixStream, controls: &Controls) {
 ///   `stats <max> <usable> <held> <free|-> <available|->`;
 /// * `pause` and `resume` answer `ok` once the VM's vCPUs have stopped or
 ///   started;
+/// * `reclaim` pages a paused VM's guest memory out of host RAM and answers
+///   `ok <bytes>` with the bytes advised;
 /// * `snapshot full|diff DIR` writes a snapshot under the snapshot root and
 ///   answers `ok <kind> <memory_written> <paused_ms>`, leaving the VM paused.
 ///
@@ -610,6 +612,7 @@ fn answer(request: &str, controls: &Controls) -> String {
         },
         (Some("pause"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.pause()),
         (Some("resume"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.resume()),
+        (Some("reclaim"), None, None) => reclaim_reply(controls.vm.as_deref()),
         _ => format!("err {request:?} is not a request this control socket takes"),
     }
 }
@@ -662,6 +665,18 @@ fn acknowledge(
     match vm {
         Some(vm) => match call(vm) {
             Ok(()) => "ok".to_string(),
+            Err(err) => err_line(err),
+        },
+        None => NO_SNAPSHOTS.to_string(),
+    }
+}
+
+/// The reply to `reclaim`: `ok <bytes>`, the guest memory the VM advised out of host RAM, or
+/// why it could not (the VM must be paused).
+fn reclaim_reply(vm: Option<&dyn VmControl>) -> String {
+    match vm {
+        Some(vm) => match vm.reclaim() {
+            Ok(bytes) => format!("ok {bytes}"),
             Err(err) => err_line(err),
         },
         None => NO_SNAPSHOTS.to_string(),
@@ -973,6 +988,7 @@ mod tests {
             assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
             assert_eq!(answer("pause", &controls), "ok");
             assert_eq!(answer("resume", &controls), "ok");
+            assert_eq!(answer("reclaim", &controls), "ok 0");
             assert_eq!(
                 answer("snapshot full /srv/snaps/a", &controls),
                 "ok full 4096 3"
@@ -1023,6 +1039,7 @@ mod tests {
             };
             assert_eq!(answer("pause", &controls), NO_SNAPSHOTS);
             assert_eq!(answer("resume", &controls), NO_SNAPSHOTS);
+            assert_eq!(answer("reclaim", &controls), NO_SNAPSHOTS);
             assert_eq!(
                 answer("snapshot full /srv/snaps/a", &controls),
                 NO_SNAPSHOTS

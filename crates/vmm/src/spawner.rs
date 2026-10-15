@@ -283,6 +283,12 @@ pub trait VmControl: Send + Sync {
     /// Pauses the VM (if it is running), writes a snapshot into `dir`, and leaves it **paused**: the
     /// caller resumes it, or stops it (to sleep or move it).
     fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError>;
+    /// Pages a paused VM's guest memory out of host RAM (`MADV_PAGEOUT` on every guest region):
+    /// the guest is not touched, and its next accesses fault the pages back. Refused while the VM
+    /// runs. Returns the bytes advised; 0 where the backend cannot page out.
+    fn reclaim(&self) -> Result<u64, SpawnError> {
+        Ok(0)
+    }
 }
 
 /// How a VM stopped.
@@ -1125,6 +1131,14 @@ impl VmHandle {
             .vm_control()
             .ok_or(SpawnError::NoSnapshots)?
             .snapshot(dir, kind)
+    }
+
+    /// Pages a paused VM's guest memory out of host RAM (see [`VmControl::reclaim`]).
+    pub fn reclaim(&self) -> Result<u64, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .reclaim()
     }
 }
 

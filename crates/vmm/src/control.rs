@@ -37,8 +37,12 @@ use std::time::Instant;
 
 use crate::devices::legacy::SerialDevice;
 use crate::devices::virtio::mmio::{MmioDeviceState, VirtioMmioTransport};
+use vm_memory::GuestMemoryBackend;
+
 use crate::spawner::{SnapshotInfo, SnapshotKind, SpawnError, VmControl};
+use crate::sys;
 use crate::vstate::bus::lock;
+use crate::vstate::memory::{GuestMemoryRegion, MemoryRegionAddress, u64_to_usize};
 use crate::vstate::snapshot::{
     self, DeviceStates, MEMORY_FILE, RegionMeta, SerialRegisters, VcpuState, VmSnapshot, VmState,
     meta_now, write_state,
@@ -263,6 +267,29 @@ impl VmControl for InProcessControl {
             paused_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         })
     }
+
+    /// Pages every guest region out of host RAM. The vCPUs and devices are stopped, so nothing
+    /// touches the guest meanwhile; the pages fault back in when the guest next reads them.
+    fn reclaim(&self) -> Result<u64, SpawnError> {
+        let _busy = lock(&self.busy);
+        let vm = self.live_vm()?;
+        if !self.paused.load(Ordering::SeqCst) {
+            return Err(snapshot_error(
+                "the VM is running; pause it before reclaiming its memory",
+            ));
+        }
+        let mut advised = 0;
+        for region in vm.guest_memory().iter() {
+            let host = region
+                .get_host_address(MemoryRegionAddress(0))
+                .map_err(|err| step("find the guest memory", err))?;
+            let len = region.len();
+            sys::page_out(host, u64_to_usize(len))
+                .map_err(|err| step("page out the guest memory", err))?;
+            advised += len;
+        }
+        Ok(advised)
+    }
 }
 
 /// A snapshot failure, as the control reports it.
@@ -352,6 +379,7 @@ mod tests {
         let control = stopped();
         assert_stopped(control.pause());
         assert_stopped(control.resume());
+        assert_stopped(control.reclaim().map(|_| ()));
         assert_stopped(
             control
                 .snapshot(Path::new("/nonexistent/apz-control"), SnapshotKind::Full)
@@ -429,6 +457,20 @@ mod tests {
         control.resume().unwrap();
         control.resume().unwrap();
         assert!(!control.paused.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn reclaim_is_refused_while_running_and_advises_every_region_when_paused() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
+        let vm = vm_without_vcpus(1 << 20);
+        let control = control_of(&vm, &serial(), None);
+        assert!(control.reclaim().is_err(), "a running VM is not paged out");
+        control.pause().unwrap();
+        assert_eq!(control.reclaim().unwrap(), 1 << 20);
+        control.resume().unwrap();
     }
 
     #[cfg(target_arch = "x86_64")]

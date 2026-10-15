@@ -165,6 +165,10 @@ const PAUSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// caller to resume or stop.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The budget for `reclaim`: the child advises the VM's whole memory out of host RAM, and the
+/// kernel may write dirty anonymous pages to swap on the way, so it can take seconds.
+const RECLAIM_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// The environment the per-VM process is given — the whole of it. Each name is
 /// a confinement switch this crate itself reads: the jailer's mode, base and
 /// uid/gid target ([`crate::jail::jailer`]) and the seccomp jail's mode
@@ -675,19 +679,26 @@ enum Reply {
         memory_written: u64,
         paused_ms: u64,
     },
+    /// `ok <bytes>`: the reclaim took, and the child advised this many bytes of guest memory out
+    /// of host RAM.
+    Reclaimed(u64),
     /// `err <message>`: the child refused or could not carry out the request.
     Err(String),
     /// `stats …`: the balloon's counters.
     Stats(MemoryStats),
 }
 
-/// Parses one reply line: `ok`, `ok <kind> <memory_written> <paused_ms>`,
-/// `err <message>`, or `stats <max> <usable> <held> <free|-> <available|->`. A
-/// line that is none of these is an error, never a guess.
+/// Parses one reply line: `ok`, `ok <bytes>` (a reclaim), `ok <kind> <memory_written>
+/// <paused_ms>` (a snapshot), `err <message>`, or `stats <max> <usable> <held> <free|-> <available|->`.
+/// A line that is none of these is an error, never a guess.
 fn parse_reply(line: &str) -> Result<Reply, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     match verb {
         "ok" if rest.is_empty() => Ok(Reply::Ok),
+        "ok" if !rest.contains(' ') => rest
+            .parse::<u64>()
+            .map(Reply::Reclaimed)
+            .map_err(|_| format!("the reclaim reply {rest:?} is not a number of bytes")),
         "ok" => parse_snapshot(rest),
         "err" => Ok(Reply::Err(rest.to_string())),
         "stats" => parse_stats(rest).map(Reply::Stats),
@@ -862,6 +873,13 @@ impl VmControl for ChildControl {
 
     fn resume(&self) -> Result<(), SpawnError> {
         self.acknowledged("resume", PAUSE_TIMEOUT)
+    }
+
+    fn reclaim(&self) -> Result<u64, SpawnError> {
+        match self.request("reclaim", RECLAIM_TIMEOUT)? {
+            Reply::Reclaimed(bytes) => Ok(bytes),
+            other => Err(unexpected("reclaim", &other)),
+        }
     }
 
     fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
@@ -1066,10 +1084,13 @@ mod tests {
                 paused_ms: 37,
             })
         );
+        assert_eq!(parse_reply("ok 8192"), Ok(Reply::Reclaimed(8192)));
         for bad in [
             "",
             "okay",
             "ok extra",
+            "ok -1",
+            "ok 1 2",
             "ok full 4096",
             "ok sparse 1 2",
             "ok full x 2",
@@ -1175,6 +1196,7 @@ mod tests {
             vec![
                 "ok",
                 "ok",
+                "ok 8192",
                 "ok full 4096 37",
                 "err this VM cannot be paused or snapshotted on this backend",
                 "ok diff 0 5",
@@ -1184,6 +1206,7 @@ mod tests {
 
         control.pause().expect("pause is acknowledged");
         control.resume().expect("resume is acknowledged");
+        assert_eq!(control.reclaim().expect("reclaim is answered"), 8192);
         let full = control
             .snapshot(Path::new("/var/snap/a"), SnapshotKind::Full)
             .expect("the snapshot is written");
@@ -1222,6 +1245,7 @@ mod tests {
             vec![
                 "pause".to_string(),
                 "resume".to_string(),
+                "reclaim".to_string(),
                 "snapshot full /var/snap/a".to_string(),
                 "snapshot full /var/snap/b".to_string(),
                 "snapshot diff /var/snap/c".to_string(),
