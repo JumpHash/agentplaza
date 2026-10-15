@@ -1116,13 +1116,13 @@ fn boot_from(
             .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
     }
     if snapshots::is_disk_only(snapshot) {
-        let handle = spawner::spawn(spec.clone()).map_err(|err| err.to_string())?;
+        let handle = spawn_timed(spec.clone()).map_err(|err| err.to_string())?;
         return Ok((handle, None));
     }
     let base = store
         .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
         .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
-    let handle = spawner::spawn(VmSpec {
+    let handle = spawn_timed(VmSpec {
         restore: Some(snapshot.to_path_buf()),
         ..spec.clone()
     })
@@ -1206,7 +1206,7 @@ fn boot_recovered(
             .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
             .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?
     };
-    let handle = spawner::spawn(VmSpec {
+    let handle = spawn_timed(VmSpec {
         restore: Some(snapshot),
         ..spec.clone()
     })
@@ -2212,7 +2212,7 @@ impl Registry {
                 let before = store.dir(cid, &safety.name);
                 let (fresh, base, back) = match boot_from(store, cid, &spec, &before) {
                     Ok((fresh, base)) => (fresh, base, safety.name.clone()),
-                    Err(back) => match spawner::spawn(spec.clone()) {
+                    Err(back) => match spawn_timed(spec.clone()) {
                         Ok(fresh) => {
                             eprintln!(
                                 "noded: run {}: VM {vm} did not return to {} ({back}); booted it cold",
@@ -2744,7 +2744,7 @@ impl Registry {
                 )));
             }
         }
-        match spawner::spawn(spec) {
+        match spawn_timed(spec) {
             Ok(fresh) => {
                 run.seat_vm(vm, killed, fresh, None);
                 Ok(())
@@ -3795,7 +3795,7 @@ fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) 
             (fresh, Some(base), "the sleep snapshot".to_string())
         }
         Some((fresh, base, name)) => (fresh, Some(base), format!("checkpoint {name}")),
-        None => match spawner::spawn(spec.clone()) {
+        None => match spawn_timed(spec.clone()) {
             Ok(fresh) => (fresh, None, "a cold boot".to_string()),
             Err(err) => {
                 eprintln!(
