@@ -376,7 +376,11 @@ pub fn accept_loop(
                 thread::spawn(move || serve_conn(stream, cid, &policy, &apid));
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) => eprintln!("vsockd: egress accept failed: {err}"),
+            Err(err) => {
+                eprintln!("vsockd: egress accept failed: {err}");
+                // A broken listener or fd exhaustion must not spin the loop.
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 }

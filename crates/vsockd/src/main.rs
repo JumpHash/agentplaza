@@ -761,7 +761,11 @@ fn accept_loop(
                 }
             },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) => eprintln!("vsockd: accept failed: {err}"),
+            Err(err) => {
+                eprintln!("vsockd: accept failed: {err}");
+                // A broken listener or fd exhaustion must not spin the loop.
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 }

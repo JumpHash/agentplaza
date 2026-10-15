@@ -456,8 +456,16 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
 
     let exit = handle.wait().map_err(|err| err.to_string())?;
     // The VM stopped: let the serial stream drain what is left, then report the
-    // exit the guest asked for.
-    stop.store(true, Ordering::SeqCst);
+    // exit the guest asked for. The flag is set under the serial sink's lock, so
+    // the serial thread cannot sit between its check and its wait when the
+    // notify goes out (that would lose the wakeup until its 1 s timeout).
+    {
+        let sink = handle.serial_sink();
+        let _guard = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        stop.store(true, Ordering::SeqCst);
+    }
     ready.notify_all();
     let _ = serial.join();
     match exit {

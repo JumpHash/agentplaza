@@ -152,6 +152,10 @@ pub fn install_signal_handlers() {
 /// The signal handler: request a clean stop.
 #[cfg(unix)]
 extern "C" fn on_signal(_signal: libc::c_int) {
+    // SAFETY: errno is thread-local, and reading it is async-signal-safe. It is saved here and restored at the
+    // end, so the interrupted code sees the errno it had before the handler ran.
+    #[cfg(target_os = "linux")]
+    let saved = unsafe { *libc::__errno_location() };
     SHUTDOWN.store(true, Ordering::SeqCst);
     let fd = SHUTDOWN_WAKE.load(Ordering::SeqCst);
     if fd >= 0 {
@@ -162,6 +166,11 @@ extern "C" fn on_signal(_signal: libc::c_int) {
         unsafe {
             libc::write(fd as libc::c_int, (&byte as *const u8).cast(), 1);
         }
+    }
+    // SAFETY: writing errno is async-signal-safe; this restores the value saved above on the same thread.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        *libc::__errno_location() = saved;
     }
 }
 
