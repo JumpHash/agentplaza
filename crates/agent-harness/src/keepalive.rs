@@ -21,6 +21,7 @@ use crate::restore;
 use crate::session::{
     Identity, SessionError, await_host, escape_for_transcript, note, send, wrong_echo,
 };
+use crate::trust;
 
 pub const HEARTBEAT_SECS: u64 = 5;
 /// The first reconnect delay.
@@ -73,6 +74,10 @@ pub fn session<S: Duplex, W: Write + Send>(
     heartbeat: Duration,
 ) -> Result<u64, KeepaliveError> {
     let profile = handshake(lines, log, identity, role)?;
+    if let Some(profile) = &profile {
+        // The profile's CA is what the guest trusts from now on; `None` retires a rule that was removed.
+        trust::install(workspace, profile.egress_ca.as_deref());
+    }
     crate::agent::serve(lines, log, workspace, profile, heartbeat).map_err(|error| KeepaliveError {
         adopted: true,
         error,

@@ -83,6 +83,8 @@ mod term;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]
+mod trust;
+#[cfg(target_os = "linux")]
 mod vsock;
 
 use std::process::ExitCode;
