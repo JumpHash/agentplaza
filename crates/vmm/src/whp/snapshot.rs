@@ -231,6 +231,8 @@ pub struct WhpControl {
     pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The data volumes' names, in the spec's order, recorded in the snapshot.
+    pub volume_names: Vec<String>,
     pub gate: DeviceGate,
     pub vcpus: u8,
     pub memory_mib: usize,
@@ -333,6 +335,7 @@ impl VmControl for WhpControl {
                 vsock,
                 workspace,
                 volumes,
+                volume_names: self.volume_names.clone(),
             },
         )
         .map_err(|err| failed(format!("write the state file: {err}")))?;

@@ -53,6 +53,11 @@ pub struct WhpSnapshot {
     /// The shared data volumes' transports, in the spec's order.
     #[serde(default)]
     pub volumes: Vec<MmioDeviceState>,
+    /// The data volumes' names, in slot order, when the snapshot was taken. A restore refuses a spec
+    /// whose volumes differ in name or order. Empty for a snapshot from before they were recorded,
+    /// which a restore checks by count alone.
+    #[serde(default)]
+    pub volume_names: Vec<String>,
 }
 
 fn io_error(path: &Path, source: io::Error) -> SnapshotError {
@@ -155,6 +160,7 @@ mod tests {
             vsock: None,
             workspace: None,
             volumes: Vec::new(),
+            volume_names: vec!["alpha".to_string(), "beta".to_string()],
         };
         write_state(&dir, &snapshot).expect("written");
         assert_eq!(read_state(&dir).expect("read back"), snapshot);
