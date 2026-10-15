@@ -5,16 +5,23 @@
 //! because stdout is the protocol.
 //!
 //! `agentplaza acp sessions` lists the editor sessions the hub holds (`GET /v1/acp/sessions`).
+//!
+//! With `--repo <name>` the bridge also mirrors the editor's project to a plaza git repository
+//! before each session starts and each prompt runs, so the agent can work on it in its own VM. The
+//! mirror pushes the committed HEAD only; uncommitted changes stay in the editor.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 use apz_http::ws::{self, Limits, Message, Socket};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::cmd::mcp::bridge::error_line;
 use crate::ctx::{self, Client, Ctx};
@@ -35,6 +42,10 @@ pub struct Args {
     /// The agent the editor's sessions are made on: its name or CID (default: the orchestrator).
     #[arg(long)]
     pub agent: Option<String>,
+    /// Mirrors the editor's project to this plaza repository (created if missing) before each
+    /// session starts and each prompt runs, on branch `editor/<branch>`.
+    #[arg(long, value_parser = parse_repo)]
+    pub repo: Option<String>,
     #[command(subcommand)]
     pub command: Option<Cmd>,
 }
@@ -59,7 +70,25 @@ pub fn run(
             let api = ctx::resolve(hub, token, pin, json)?;
             sessions(&api)
         }
-        None => stdio(args.agent.as_deref(), hub, token, pin),
+        None => stdio(args.agent.as_deref(), hub, token, pin, args.repo.as_deref()),
+    }
+}
+
+/// The `--repo` value: a plaza repository name, `[a-z0-9._-]` up to 100 bytes. `.` and `..` are
+/// refused too: they would climb out of the repository's URL path.
+fn parse_repo(name: &str) -> Result<String, String> {
+    let valid = (1..=100).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        });
+    if valid {
+        Ok(name.to_string())
+    } else {
+        Err(format!(
+            "`{name}` is not a repository name: use 1 to 100 of a-z, 0-9, '.', '_' or '-'"
+        ))
     }
 }
 
@@ -113,27 +142,46 @@ fn stdio(
     hub: Option<String>,
     token: Option<String>,
     pin: Option<String>,
+    repo: Option<&str>,
 ) -> Result<(), String> {
     let path = socket_path(agent);
     let client = match ctx::resolve(hub, token, pin, false) {
-        Ok(api) => api.client,
+        Ok(api) => Arc::new(api.client),
         Err(reason) => return refuse(&reason, io::stdin().lock(), io::stdout().lock()),
     };
     let mut socket = match connect(&client, &path) {
         Ok(socket) => socket,
         Err(reason) => return refuse(&reason, io::stdin().lock(), io::stdout().lock()),
     };
+    // Mirror state is shared: the reader thread notes the projects it mirrors, the socket loop
+    // notes the sessions the hub answers with. Without `--repo` there is none, and nothing is parsed.
+    let repo = repo.map(str::to_string);
+    let projects = repo
+        .as_ref()
+        .map(|_| Arc::new(Mutex::new(Projects::default())));
 
     // The reader thread owns stdin. It ends when the editor closes its input, which drops the
     // sender: the socket loop sees the channel disconnect once the queue is empty.
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<Outgoing>();
     let finished = Arc::new(AtomicBool::new(false));
     let reader_finished = Arc::clone(&finished);
+    let reader_client = Arc::clone(&client);
+    let reader_projects = projects.clone();
     thread::spawn(move || {
+        let plaza = Plaza {
+            client: reader_client,
+        };
         let result = forward_lines(
             io::stdin().lock(),
             MAX_LINE,
-            |line| tx.send(line.to_string()).is_ok(),
+            |line| {
+                let outgoing = match (&repo, &reader_projects) {
+                    (Some(name), Some(projects)) => mirror_line(line, name, &plaza, projects),
+                    _ => Some(Outgoing::Hub(line.to_string())),
+                };
+                // A line with no outgoing message (a dropped notification) is skipped, not fatal.
+                outgoing.is_none_or(|outgoing| tx.send(outgoing).is_ok())
+            },
             report_dropped,
         );
         if let Err(err) = result {
@@ -144,7 +192,7 @@ fn stdio(
 
     let mut out = io::stdout().lock();
     loop {
-        match pump(&mut socket, &rx, &mut out)? {
+        match pump(&mut socket, &rx, &mut out, projects.as_deref())? {
             Ended::EditorDone => return Ok(()),
             Ended::Lost(reason) => {
                 if finished.load(Ordering::SeqCst) {
@@ -163,16 +211,33 @@ fn stdio(
     }
 }
 
-/// Sends queued editor lines and writes each hub message as a line, until the editor is done or
-/// the socket ends. Stdout is written and flushed per message.
-fn pump(socket: &mut Socket, rx: &Receiver<String>, out: &mut impl Write) -> Result<Ended, String> {
+/// What the socket loop writes next: a line for the hub, or a line for the editor (an answer the
+/// bridge made itself, such as a mirror failure). Both go through one queue, so they keep their order.
+enum Outgoing {
+    Hub(String),
+    Editor(String),
+}
+
+/// Sends queued lines and writes each hub message as a line, until the editor is done or the
+/// socket ends. Stdout is written and flushed per message. With mirror state, each hub answer is
+/// noted first, so the sessions it opens are known before the editor sees them.
+fn pump(
+    socket: &mut Socket,
+    rx: &Receiver<Outgoing>,
+    out: &mut impl Write,
+    projects: Option<&Mutex<Projects>>,
+) -> Result<Ended, String> {
     loop {
         loop {
             match rx.try_recv() {
-                Ok(line) => {
+                Ok(Outgoing::Hub(line)) => {
                     if let Err(err) = socket.send(&Message::Text(line)) {
                         return Ok(Ended::Lost(err.to_string()));
                     }
+                }
+                Ok(Outgoing::Editor(line)) => {
+                    write_line(out, &line)
+                        .map_err(|e| format!("writing to the editor failed: {e}"))?;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -183,6 +248,9 @@ fn pump(socket: &mut Socket, rx: &Receiver<String>, out: &mut impl Write) -> Res
         }
         match socket.recv(TICK) {
             Ok(Some(Message::Text(text))) => {
+                if let Some(projects) = projects {
+                    remember(&mut lock(projects), &text);
+                }
                 write_line(out, &text).map_err(|e| format!("writing to the editor failed: {e}"))?;
             }
             Ok(Some(Message::Binary(_))) | Ok(None) => {}
@@ -322,6 +390,353 @@ pub fn encode_query(value: &str) -> String {
         }
     }
     out
+}
+
+/// The session requests the bridge mirrors the project for before it forwards them.
+const MIRRORED: [&str; 4] = [
+    "session/new",
+    "session/load",
+    "session/resume",
+    "session/prompt",
+];
+const NOT_A_REPO: &str = "--repo needs the editor's project to be a git repository";
+
+/// The mirror's view of the editor's sessions: the project each one runs in. A new, loaded or
+/// resumed session is known only from the hub's answer, so its request waits in `pending` until then.
+#[derive(Default)]
+struct Projects {
+    sessions: HashMap<String, PathBuf>,
+    /// Request id (as JSON text) to the request's project and the session it names, if any.
+    pending: HashMap<String, Pending>,
+}
+
+struct Pending {
+    dir: PathBuf,
+    session: Option<String>,
+}
+
+/// The mirror state, whatever a panicking thread left in it: it is only a cache of ids and paths.
+fn lock(projects: &Mutex<Projects>) -> MutexGuard<'_, Projects> {
+    projects.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What the mirror does outside the bridge: git in the editor's project, and the hub's repository
+/// routes. `Plaza` is the real one; the tests fake it.
+trait Mirror {
+    /// The top of the working tree `dir` is in; None when `dir` is not in a git repository.
+    fn toplevel(&self, dir: &Path) -> Result<Option<PathBuf>, String>;
+    fn commit(&self, top: &Path) -> Result<String, String>;
+    /// The branch HEAD is on; None when HEAD is detached.
+    fn branch(&self, top: &Path) -> Result<Option<String>, String>;
+    /// Whether `git status` lists anything: an uncommitted or untracked change.
+    fn dirty(&self, top: &Path) -> Result<bool, String>;
+    fn repo_exists(&self, name: &str) -> Result<bool, String>;
+    fn create_repo(&self, name: &str) -> Result<(), String>;
+    /// Force-pushes `refspec` of the repository at `top` to the plaza repository `name`.
+    fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String>;
+}
+
+/// The real mirror: git runs in the editor's project, and the hub answers the repository routes.
+struct Plaza {
+    client: Arc<Client>,
+}
+
+impl Mirror for Plaza {
+    fn toplevel(&self, dir: &Path) -> Result<Option<PathBuf>, String> {
+        match git(dir, &["rev-parse", "--show-toplevel"], &[]) {
+            Ok(top) => Ok(Some(PathBuf::from(top))),
+            Err(reason) if reason.contains("not a git repository") => Ok(None),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn commit(&self, top: &Path) -> Result<String, String> {
+        git(top, &["rev-parse", "HEAD"], &[])
+    }
+
+    fn branch(&self, top: &Path) -> Result<Option<String>, String> {
+        // The full name prints `HEAD` when detached, which no branch can be called.
+        let full = git(top, &["rev-parse", "--symbolic-full-name", "HEAD"], &[])?;
+        Ok(full.strip_prefix("refs/heads/").map(str::to_string))
+    }
+
+    fn dirty(&self, top: &Path) -> Result<bool, String> {
+        Ok(!git(top, &["status", "--porcelain"], &[])?.is_empty())
+    }
+
+    fn repo_exists(&self, name: &str) -> Result<bool, String> {
+        // `Client::get` cannot tell a 404 from other failures, so the status is read here.
+        let path = format!("/v1/git/repos/{name}");
+        let (status, value) = apz_http::client::request_json(
+            &self.client.target,
+            "GET",
+            &path,
+            None,
+            self.client.timeout,
+        )
+        .map_err(|e| format!("{}{path}: {e}", self.client.base()))?;
+        match status {
+            200 => Ok(true),
+            404 => Ok(false),
+            _ => Err(value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("GET {path}: HTTP {status}"))),
+        }
+    }
+
+    fn create_repo(&self, name: &str) -> Result<(), String> {
+        self.client
+            .post("/v1/git/repos", &json!({ "name": name }))
+            .map(|_| ())
+    }
+
+    fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String> {
+        let url = format!("{}/v1/git/smart/{name}", self.client.base());
+        push_to(top, &url, refspec, self.client.target.bearer.as_deref())
+    }
+}
+
+/// Runs git in `dir` and returns its trimmed stdout. Git gets no stdin (the editor's protocol
+/// runs on it) and never prompts, and its output is captured, so none of it reaches stdout. A
+/// failure is the tail of git's stderr.
+fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .envs(env.iter().copied())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(stderr_tail(&String::from_utf8_lossy(&output.stderr)))
+    }
+}
+
+/// The last lines of git's stderr: enough to say why, without its progress output.
+fn stderr_tail(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let tail = &lines[lines.len().saturating_sub(5)..];
+    if tail.is_empty() {
+        "git failed".to_string()
+    } else {
+        tail.join("; ")
+    }
+}
+
+/// Force-pushes `refspec` to the git repository at `url`. The owner token, when there is one,
+/// goes in git's environment as an HTTP header: never in the URL, nor in argv where `ps` shows it.
+fn push_to(top: &Path, url: &str, refspec: &str, token: Option<&str>) -> Result<(), String> {
+    let header = token.map(|token| format!("Authorization: Bearer {token}"));
+    let mut env = Vec::new();
+    if let Some(header) = &header {
+        env.push(("GIT_CONFIG_COUNT", "1"));
+        env.push(("GIT_CONFIG_KEY_0", "http.extraHeader"));
+        env.push(("GIT_CONFIG_VALUE_0", header.as_str()));
+    }
+    git(top, &["push", "--force", "--quiet", url, refspec], &env)
+        .map(|_| ())
+        .map_err(|reason| match token {
+            Some(token) => reason.replace(token, "<token>"),
+            None => reason,
+        })
+}
+
+/// What a mirror pushed: the plaza branch, the commit, and whether the editor's working tree had
+/// changes that the push leaves out.
+#[derive(Debug, PartialEq)]
+struct Mirrored {
+    branch: String,
+    commit: String,
+    dirty: bool,
+}
+
+/// Mirrors the project in `dir` to the plaza repository `name`: creates the repository when the hub
+/// does not have it, then pushes HEAD to its `editor/<branch>` branch.
+fn mirror_project(mirror: &dyn Mirror, name: &str, dir: &Path) -> Result<Mirrored, String> {
+    let top = mirror
+        .toplevel(dir)
+        .map_err(mirror_failed)?
+        .ok_or_else(|| NOT_A_REPO.to_string())?;
+    if !mirror.repo_exists(name).map_err(mirror_failed)? {
+        mirror.create_repo(name).map_err(mirror_failed)?;
+    }
+    let commit = mirror.commit(&top).map_err(mirror_failed)?;
+    let branch = branch_ref(
+        mirror.branch(&top).map_err(mirror_failed)?.as_deref(),
+        &commit,
+    );
+    let dirty = mirror.dirty(&top).map_err(mirror_failed)?;
+    mirror
+        .push(&top, name, &format!("HEAD:refs/heads/{branch}"))
+        .map_err(mirror_failed)?;
+    Ok(Mirrored {
+        branch,
+        commit,
+        dirty,
+    })
+}
+
+fn mirror_failed(reason: String) -> String {
+    format!("--repo could not mirror the project: {reason}")
+}
+
+/// The cwd a session request runs in: `cwd` for new, load and resume; for a prompt, the project of
+/// its session. None when the request names no project, or a session the bridge does not know.
+fn mirror_target(
+    method: &str,
+    params: &Value,
+    cwd_of_session: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match method {
+        "session/new" | "session/load" | "session/resume" => {
+            params.get("cwd").and_then(Value::as_str).map(PathBuf::from)
+        }
+        "session/prompt" => params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .and_then(cwd_of_session),
+        _ => None,
+    }
+}
+
+/// The plaza branch a mirror pushes to: `editor/<branch>`, or `editor/detached-<short sha>` when
+/// HEAD is detached.
+fn branch_ref(branch: Option<&str>, commit: &str) -> String {
+    match branch {
+        Some(branch) => format!("editor/{branch}"),
+        None => format!("editor/detached-{}", commit.get(..7).unwrap_or(commit)),
+    }
+}
+
+/// The request's params with `_meta.agentplaza.repo` set to `meta`; the keys already there stay.
+fn with_repo_meta(mut params: Value, meta: Value) -> Value {
+    if !params.is_object() {
+        params = json!({});
+    }
+    if !params["_meta"].is_object() {
+        params["_meta"] = json!({});
+    }
+    if !params["_meta"]["agentplaza"].is_object() {
+        params["_meta"]["agentplaza"] = json!({});
+    }
+    params["_meta"]["agentplaza"]["repo"] = meta;
+    params
+}
+
+fn repo_meta(name: &str, mirrored: &Mirrored) -> Value {
+    json!({
+        "name": name,
+        "branch": mirrored.branch,
+        "commit": mirrored.commit,
+        "dirty": mirrored.dirty,
+        "note": "the branch holds commits only: uncommitted changes in the editor are not in it",
+    })
+}
+
+/// What the bridge does with one editor line when `--repo` is set. A session request is mirrored
+/// first, then forwarded with its `_meta`; when the mirror fails, the request is answered with the
+/// error and not forwarded. Any other line goes on byte for byte. None: nothing is sent (a
+/// notification that cannot be mirrored has no answer to give).
+fn mirror_line(
+    line: &str,
+    repo: &str,
+    mirror: &dyn Mirror,
+    projects: &Mutex<Projects>,
+) -> Option<Outgoing> {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return Some(Outgoing::Hub(line.to_string()));
+    };
+    let method = message
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !MIRRORED.contains(&method) {
+        return Some(Outgoing::Hub(line.to_string()));
+    }
+    match mirror_request(&message, method, repo, mirror, projects) {
+        Ok(rewritten) => Some(Outgoing::Hub(rewritten.to_string())),
+        Err(reason) => match message.get("id") {
+            Some(id) => Some(Outgoing::Editor(error_line(id, -32000, &reason))),
+            None => {
+                eprintln!("agentplaza acp: {reason}; {method} is not forwarded");
+                None
+            }
+        },
+    }
+}
+
+fn mirror_request(
+    message: &Value,
+    method: &str,
+    repo: &str,
+    mirror: &dyn Mirror,
+    projects: &Mutex<Projects>,
+) -> Result<Value, String> {
+    let params = message.get("params").unwrap_or(&Value::Null);
+    let dir = {
+        let state = lock(projects);
+        mirror_target(method, params, &|session| {
+            state.sessions.get(session).cloned()
+        })
+    }
+    .ok_or_else(|| format!("--repo cannot tell which of the editor's projects {method} is for"))?;
+    let mirrored = mirror_project(mirror, repo, &dir)?;
+    // The hub's answer to a new, loaded or resumed session is what names it, so the project waits
+    // for that answer (see `remember`).
+    if let Some(id) = message.get("id").filter(|_| method != "session/prompt") {
+        let session = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        lock(projects)
+            .pending
+            .insert(id.to_string(), Pending { dir, session });
+    }
+    let mut rewritten = message.clone();
+    let params = rewritten["params"].take();
+    rewritten["params"] = with_repo_meta(params, repo_meta(repo, &mirrored));
+    Ok(rewritten)
+}
+
+/// Notes the session a hub answer opens. The answer to a request the bridge mirrored names the
+/// session (or, for a load or resume, the request does); later prompts of that session run in the
+/// project the request was mirrored from.
+fn remember(projects: &mut Projects, text: &str) {
+    if projects.pending.is_empty() {
+        return;
+    }
+    let Ok(message) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    // Only answers settle a request; the hub's own requests carry a method.
+    if message.get("method").is_some() {
+        return;
+    }
+    let Some(id) = message.get("id") else {
+        return;
+    };
+    let Some(pending) = projects.pending.remove(&id.to_string()) else {
+        return;
+    };
+    if message.get("error").is_some() {
+        return;
+    }
+    let session = pending
+        .session
+        .or_else(|| message["result"]["sessionId"].as_str().map(str::to_string));
+    if let Some(session) = session {
+        projects.sessions.insert(session, pending.dir);
+    }
 }
 
 fn connect(client: &Client, path: &str) -> Result<Socket, String> {
@@ -478,5 +893,373 @@ mod tests {
             crate::Command::Acp(args) => assert!(matches!(args.command, Some(Cmd::Sessions))),
             _ => panic!("not the acp command"),
         }
+    }
+
+    #[test]
+    fn acp_takes_a_repo_name() {
+        let cli =
+            crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "my-app"]).expect("parses");
+        match cli.command {
+            crate::Command::Acp(args) => assert_eq!(args.repo.as_deref(), Some("my-app")),
+            _ => panic!("not the acp command"),
+        }
+        assert!(crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "My App"]).is_err());
+    }
+
+    #[test]
+    fn repo_names_are_lowercase_dotted_words_up_to_100_bytes() {
+        assert_eq!(parse_repo("my-app.1_x").as_deref(), Ok("my-app.1_x"));
+        assert!(parse_repo("").is_err());
+        assert!(parse_repo("My App").is_err());
+        assert!(parse_repo("a/b").is_err());
+        assert!(parse_repo(".").is_err());
+        assert!(parse_repo("..").is_err());
+        assert!(parse_repo(&"a".repeat(100)).is_ok());
+        assert!(parse_repo(&"a".repeat(101)).is_err());
+    }
+
+    use std::cell::RefCell;
+
+    /// A mirror that records what it is asked, instead of running git or calling the hub.
+    #[derive(Default)]
+    struct Fake {
+        top: Option<PathBuf>,
+        branch: Option<String>,
+        commit: String,
+        dirty: bool,
+        repo_exists: bool,
+        push_error: Option<String>,
+        asked: RefCell<Vec<PathBuf>>,
+        created: RefCell<Vec<String>>,
+        pushed: RefCell<Vec<(PathBuf, String, String)>>,
+    }
+
+    impl Mirror for Fake {
+        fn toplevel(&self, dir: &Path) -> Result<Option<PathBuf>, String> {
+            self.asked.borrow_mut().push(dir.to_path_buf());
+            Ok(self.top.clone())
+        }
+        fn commit(&self, _top: &Path) -> Result<String, String> {
+            Ok(self.commit.clone())
+        }
+        fn branch(&self, _top: &Path) -> Result<Option<String>, String> {
+            Ok(self.branch.clone())
+        }
+        fn dirty(&self, _top: &Path) -> Result<bool, String> {
+            Ok(self.dirty)
+        }
+        fn repo_exists(&self, _name: &str) -> Result<bool, String> {
+            Ok(self.repo_exists)
+        }
+        fn create_repo(&self, name: &str) -> Result<(), String> {
+            self.created.borrow_mut().push(name.to_string());
+            Ok(())
+        }
+        fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String> {
+            self.pushed.borrow_mut().push((
+                top.to_path_buf(),
+                name.to_string(),
+                refspec.to_string(),
+            ));
+            match &self.push_error {
+                Some(reason) => Err(reason.clone()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    /// A clean project on `main` at a fixed commit, in `/work/app`.
+    fn project() -> Fake {
+        Fake {
+            top: Some(PathBuf::from("/work/app")),
+            branch: Some("main".to_string()),
+            commit: "0123456789abcdef".to_string(),
+            ..Fake::default()
+        }
+    }
+
+    fn to_hub(out: Option<Outgoing>) -> String {
+        match out {
+            Some(Outgoing::Hub(line)) => line,
+            Some(Outgoing::Editor(_)) => panic!("answered the editor, not forwarded"),
+            None => panic!("nothing sent"),
+        }
+    }
+
+    #[test]
+    fn a_missing_repository_is_created_and_the_branch_pushed() {
+        let fake = project();
+        let mirrored = mirror_project(&fake, "app", Path::new("/work/app/src")).expect("mirrors");
+        assert_eq!(
+            mirrored,
+            Mirrored {
+                branch: "editor/main".to_string(),
+                commit: "0123456789abcdef".to_string(),
+                dirty: false,
+            }
+        );
+        assert_eq!(*fake.created.borrow(), ["app"]);
+        assert_eq!(
+            *fake.pushed.borrow(),
+            [(
+                PathBuf::from("/work/app"),
+                "app".to_string(),
+                "HEAD:refs/heads/editor/main".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn an_existing_repository_is_not_created_again() {
+        let fake = Fake {
+            repo_exists: true,
+            ..project()
+        };
+        mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
+        assert!(fake.created.borrow().is_empty());
+        assert_eq!(fake.pushed.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_project_outside_git_is_refused_before_anything_is_pushed() {
+        let fake = Fake {
+            top: None,
+            ..project()
+        };
+        let err = mirror_project(&fake, "app", Path::new("/tmp/notes")).unwrap_err();
+        assert_eq!(err, NOT_A_REPO);
+        assert!(fake.created.borrow().is_empty());
+        assert!(fake.pushed.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_detached_head_is_pushed_under_its_short_sha() {
+        let fake = Fake {
+            branch: None,
+            ..project()
+        };
+        let mirrored = mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
+        assert_eq!(mirrored.branch, "editor/detached-0123456");
+    }
+
+    #[test]
+    fn a_git_failure_is_reported_with_its_reason() {
+        let fake = Fake {
+            push_error: Some("remote rejected".to_string()),
+            ..project()
+        };
+        let err = mirror_project(&fake, "app", Path::new("/work/app")).unwrap_err();
+        assert_eq!(err, "--repo could not mirror the project: remote rejected");
+    }
+
+    #[test]
+    fn a_session_request_is_mirrored_and_forwarded_with_its_meta() {
+        let fake = Fake {
+            dirty: true,
+            ..project()
+        };
+        let projects = Mutex::new(Projects::default());
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app","mcpServers":[]}}"#;
+        let sent = to_hub(mirror_line(line, "app", &fake, &projects));
+        let value: Value = serde_json::from_str(&sent).unwrap();
+        let repo = &value["params"]["_meta"]["agentplaza"]["repo"];
+        assert_eq!(repo["name"], "app");
+        assert_eq!(repo["branch"], "editor/main");
+        assert_eq!(repo["commit"], "0123456789abcdef");
+        assert_eq!(repo["dirty"], true);
+        assert!(repo["note"].as_str().unwrap().contains("uncommitted"));
+        assert_eq!(value["params"]["cwd"], "/work/app", "the params are kept");
+        assert!(lock(&projects).pending.contains_key("1"));
+    }
+
+    #[test]
+    fn a_prompt_runs_in_the_project_its_session_was_opened_in() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        lock(&projects)
+            .sessions
+            .insert("s1".to_string(), PathBuf::from("/work/other"));
+        let line = r#"{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}"#;
+        let sent = to_hub(mirror_line(line, "app", &fake, &projects));
+        assert!(sent.contains("_meta"));
+        assert_eq!(*fake.asked.borrow(), [PathBuf::from("/work/other")]);
+    }
+
+    #[test]
+    fn a_prompt_of_an_unknown_session_is_answered_with_an_error() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        let line = r#"{"jsonrpc":"2.0","id":9,"method":"session/prompt","params":{"sessionId":"nope","prompt":[]}}"#;
+        match mirror_line(line, "app", &fake, &projects) {
+            Some(Outgoing::Editor(answer)) => {
+                let value: Value = serde_json::from_str(&answer).unwrap();
+                assert_eq!(value["id"], 9);
+                assert_eq!(value["error"]["code"], -32000);
+            }
+            _ => panic!("the editor is not answered"),
+        }
+        assert!(fake.pushed.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_notification_that_cannot_be_mirrored_is_dropped() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        let line = r#"{"jsonrpc":"2.0","method":"session/prompt","params":{"sessionId":"nope"}}"#;
+        assert!(mirror_line(line, "app", &fake, &projects).is_none());
+    }
+
+    #[test]
+    fn other_lines_go_on_byte_for_byte() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        for line in [
+            r#"{"jsonrpc":"2.0","id":2,"method":"fs/read_text_file","params":{"path":"a"}}"#,
+            r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}"#,
+            "not json",
+        ] {
+            assert_eq!(to_hub(mirror_line(line, "app", &fake, &projects)), line);
+        }
+        assert!(fake.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_hubs_answer_to_a_session_request_names_its_project() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
+        to_hub(mirror_line(line, "app", &fake, &projects));
+        remember(
+            &mut lock(&projects),
+            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
+        );
+        assert_eq!(
+            lock(&projects).sessions.get("s9"),
+            Some(&PathBuf::from("/work/app"))
+        );
+    }
+
+    #[test]
+    fn a_failed_session_answer_names_no_session() {
+        let fake = project();
+        let projects = Mutex::new(Projects::default());
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
+        to_hub(mirror_line(line, "app", &fake, &projects));
+        remember(
+            &mut lock(&projects),
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
+        );
+        assert!(lock(&projects).sessions.is_empty());
+        assert!(lock(&projects).pending.is_empty());
+    }
+
+    #[test]
+    fn mirror_target_is_the_cwd_of_the_request_or_of_its_session() {
+        let known = |session: &str| (session == "s1").then(|| PathBuf::from("/work/s1"));
+        let params = json!({"cwd": "/work/app", "sessionId": "s1"});
+        assert_eq!(
+            mirror_target("session/new", &params, &known),
+            Some(PathBuf::from("/work/app"))
+        );
+        assert_eq!(
+            mirror_target("session/load", &params, &known),
+            Some(PathBuf::from("/work/app"))
+        );
+        assert_eq!(
+            mirror_target("session/resume", &params, &known),
+            Some(PathBuf::from("/work/app"))
+        );
+        assert_eq!(
+            mirror_target("session/prompt", &params, &known),
+            Some(PathBuf::from("/work/s1"))
+        );
+        assert_eq!(mirror_target("session/new", &json!({}), &known), None);
+        assert_eq!(mirror_target("fs/read_text_file", &params, &known), None);
+    }
+
+    #[test]
+    fn the_repo_meta_keeps_the_keys_already_in_meta() {
+        let params = json!({"cwd": "/x", "_meta": {"other": 1, "agentplaza": {"keep": true}}});
+        let value = with_repo_meta(params, json!({"name": "app"}));
+        assert_eq!(value["_meta"]["other"], 1);
+        assert_eq!(value["_meta"]["agentplaza"]["keep"], true);
+        assert_eq!(value["_meta"]["agentplaza"]["repo"]["name"], "app");
+        assert_eq!(value["cwd"], "/x");
+    }
+
+    #[test]
+    fn a_branch_ref_is_the_branch_or_the_short_sha() {
+        assert_eq!(branch_ref(Some("main"), "0123456789"), "editor/main");
+        assert_eq!(branch_ref(Some("fix/x"), "0123456789"), "editor/fix/x");
+        assert_eq!(branch_ref(None, "0123456789"), "editor/detached-0123456");
+    }
+
+    /// A scratch directory under the system temp dir, unique to this test run.
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("apz-acp-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Runs git for the test's own setup; the test fails when git does.
+    fn git_setup(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("git runs");
+        assert!(status.status.success(), "git {args:?}: {status:?}");
+    }
+
+    #[test]
+    fn the_real_git_mirrors_a_commit_to_a_bare_repository() {
+        let root = scratch("mirror");
+        let project = root.join("project");
+        let hub = root.join("hub.git");
+        std::fs::create_dir_all(&project).unwrap();
+        git_setup(&project, &["init", "-q", "-b", "main"]);
+        std::fs::write(project.join("main.rs"), "fn main() {}\n").unwrap();
+        git_setup(&project, &["add", "main.rs"]);
+        git_setup(
+            &project,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "first",
+            ],
+        );
+        git_setup(&root, &["init", "-q", "--bare", "hub.git"]);
+
+        let mirror = Plaza {
+            client: Arc::new(Client::new("http://127.0.0.1:9", None, None)),
+        };
+        let top = mirror.toplevel(&project).unwrap().expect("a repository");
+        let commit = mirror.commit(&top).unwrap();
+        assert_eq!(mirror.branch(&top).unwrap().as_deref(), Some("main"));
+        assert!(!mirror.dirty(&top).unwrap());
+        std::fs::write(project.join("draft.txt"), "not committed").unwrap();
+        assert!(mirror.dirty(&top).unwrap(), "an untracked file is a change");
+
+        let refspec = format!("HEAD:refs/heads/{}", branch_ref(Some("main"), &commit));
+        push_to(&top, &format!("file://{}", hub.display()), &refspec, None).expect("pushes");
+        assert_eq!(
+            git(&hub, &["rev-parse", "refs/heads/editor/main"], &[]).unwrap(),
+            commit
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
