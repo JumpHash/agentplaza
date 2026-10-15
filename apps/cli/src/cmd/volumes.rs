@@ -52,7 +52,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Ls => {
             let v = ctx.client.get("/v1/volumes")?;
             ctx.out(&v, |v| {
-                ctx::table(&["NAME", "SIZE (MiB)", "MOUNTED BY", "SOURCE"], &volume_rows(v));
+                ctx::table(
+                    &["NAME", "SIZE (MiB)", "MOUNTED BY", "SOURCE"],
+                    &volume_rows(v),
+                );
             });
             Ok(())
         }
@@ -80,7 +83,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Roles => {
             let settings = ctx.client.get("/v1/settings")?;
-            ctx.out(&settings, |s| ctx::table(&["ROLE", "VOLUMES"], &role_rows(s)));
+            ctx.out(&settings, |s| {
+                ctx::table(&["ROLE", "VOLUMES"], &role_rows(s))
+            });
             Ok(())
         }
         Cmd::Mount { role, names } => {
@@ -94,10 +99,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             set_role(&mut settings, &role, Some(names.as_slice()))?;
             let saved = ctx.client.put("/v1/settings", &settings)?;
             ctx.out(&saved, |_| {
-                println!(
-                    "role {role} mounts {} from now on",
-                    names.join(", ")
-                )
+                println!("role {role} mounts {} from now on", names.join(", "))
             });
             Ok(())
         }
@@ -105,7 +107,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             let mut settings = ctx.client.get("/v1/settings")?;
             set_role(&mut settings, &role, None)?;
             let saved = ctx.client.put("/v1/settings", &settings)?;
-            ctx.out(&saved, |_| println!("role {role} mounts no volumes from now on"));
+            ctx.out(&saved, |_| {
+                println!("role {role} mounts no volumes from now on")
+            });
             Ok(())
         }
     }
@@ -141,7 +145,10 @@ fn volume_rows(list: &Value) -> Vec<Vec<String>> {
         .map(|v| {
             vec![
                 ctx::s(v, "name").to_string(),
-                format!("{:.1}", v["size_bytes"].as_f64().unwrap_or(0.0) / 1_048_576.0),
+                format!(
+                    "{:.1}",
+                    v["size_bytes"].as_f64().unwrap_or(0.0) / 1_048_576.0
+                ),
                 list_text(&v["in_use"]),
                 ctx::s(v, "source").to_string(),
             ]
@@ -189,8 +196,15 @@ mod tests {
 
     #[test]
     fn volumes_parse() {
-        let cli = crate::Cli::try_parse_from(["agentplaza", "volumes", "mount", "worker", "data", "tools"])
-            .expect("parses");
+        let cli = crate::Cli::try_parse_from([
+            "agentplaza",
+            "volumes",
+            "mount",
+            "worker",
+            "data",
+            "tools",
+        ])
+        .expect("parses");
         assert!(matches!(
             cli.command,
             crate::Command::Volumes(Cmd::Mount { ref role, ref names })

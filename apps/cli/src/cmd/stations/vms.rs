@@ -187,9 +187,10 @@ pub fn run(ctx: &Ctx, action: Option<VmsCmd>) -> Result<(), String> {
 
 /// `POST /v1/stations/vms/{id}/sleep` or `.../wake`: the answer is the VM's view, printed as `<id>: <state>`.
 fn power(ctx: &Ctx, id: &str, action: &str) -> Result<(), String> {
-    let view = ctx
-        .client
-        .post(&format!("/v1/stations/vms/{}/{action}", seg(id)), &json!({}))?;
+    let view = ctx.client.post(
+        &format!("/v1/stations/vms/{}/{action}", seg(id)),
+        &json!({}),
+    )?;
     ctx.out(&view, |v| {
         println!("{}: {}", ctx::text(v, "id"), ctx::text(v, "state"));
     });

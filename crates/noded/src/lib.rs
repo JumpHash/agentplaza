@@ -1766,6 +1766,18 @@ fn router() -> Router<Node> {
         .post("/v1/workstations/{id}/wake", |node, _, params| {
             workstation_answer(node.workstations.start(params.get("id")))
         })
+        // The serial console's tail (`?bytes=`, default 16 KiB), as text.
+        .get("/v1/workstations/{id}/console", |node, request, params| {
+            let bytes = request
+                .query_param("bytes")
+                .and_then(|b| b.parse::<usize>().ok())
+                .unwrap_or(16 * 1024)
+                .min(1 << 20);
+            match node.workstations.console(params.get("id"), bytes) {
+                Ok(text) => Response::text(200, &text),
+                Err((status, message)) => Response::error(status, &message),
+            }
+        })
         .post("/v1/workstations/{id}/stop", |node, _, params| {
             workstation_answer(node.workstations.stop(params.get("id")))
         })

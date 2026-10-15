@@ -814,6 +814,29 @@ impl Store {
             .ok_or_else(|| not_found(id))
     }
 
+    /// The last `bytes` of a running plaza VM's serial console: the guest kernel's and init's output,
+    /// for an owner finding out why a desktop does not come up. A QEMU VM's console is not captured.
+    pub fn console(&self, id: &str, bytes: usize) -> Result<String, Refusal> {
+        let mut inner = self.lock();
+        let slot = inner.slots.get_mut(id).ok_or_else(|| not_found(id))?;
+        refresh(slot);
+        match slot.handle.as_ref() {
+            Some(Handle::Plaza(handle)) => {
+                let serial = handle.serial();
+                let start = serial.len().saturating_sub(bytes);
+                let start = (start..serial.len())
+                    .find(|&i| serial.is_char_boundary(i))
+                    .unwrap_or(serial.len());
+                Ok(serial[start..].to_string())
+            }
+            Some(_) => Err((
+                409,
+                format!("workstation {id} runs under QEMU, whose console is not captured"),
+            )),
+            None => Err((409, format!("workstation {id} is not running"))),
+        }
+    }
+
     /// Makes a workstation VM from `request` and boots it, its join config served once by its relay. Every check that needs no
     /// device or file runs before the directory is made, so a refused request leaves nothing behind.
     pub fn create(&self, request: &CreateWorkstation, now: u64) -> Result<View, Refusal> {

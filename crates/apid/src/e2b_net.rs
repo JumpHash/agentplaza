@@ -5,8 +5,11 @@
 //! literal), so: `allowOut` entries are a name (`example.com`), a wildcard (`*.example.com`: any
 //! subdomain, not the apex), an IP or a CIDR block; `denyOut` entries are an IP or a CIDR block (E2B
 //! takes no names there), and `0.0.0.0/0` (or `::/0`) denies every host, named or not. An allowed
-//! entry wins over a denied one. Neither overrides the laws or the hub's blocklist of private
-//! ranges: they only narrow or open what the sandbox's internet access would allow.
+//! entry wins over a denied one, and an `allowOut` match lets a host out even when the sandbox has
+//! no internet access (as in E2B). A `denyOut` block is also checked against the addresses a name
+//! resolves to: `deny_blocks` hands those blocks to vsockd, which resolves the name itself. An
+//! IPv4-mapped IPv6 address (`::ffff:8.8.8.8`) is the IPv4 address it wraps. Neither list overrides
+//! the laws or the hub's blocklist of private ranges.
 
 use std::net::IpAddr;
 
@@ -27,8 +30,16 @@ fn parse_block(text: &str) -> Option<Entry> {
         None => (text, None),
     };
     let addr: IpAddr = addr.parse().ok()?;
+    let (addr, prefix) = match addr {
+        // An IPv4-mapped address is the IPv4 address it wraps: `::ffff:8.8.8.0/120` is `8.8.8.0/24`,
+        // and a block that starts before the mapped range (prefix < 96) is refused.
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => (IpAddr::V4(v4), prefix.unwrap_or(128).checked_sub(96)?),
+            None => (addr, prefix.unwrap_or(128)),
+        },
+        IpAddr::V4(_) => (addr, prefix.unwrap_or(32)),
+    };
     let max = if addr.is_ipv4() { 32 } else { 128 };
-    let prefix = prefix.unwrap_or(max);
     (prefix <= max).then_some(Entry::Block { addr, prefix })
 }
 
@@ -111,9 +122,13 @@ fn matches(entry: &Entry, host: &str) -> bool {
         // A block of every address denies (or allows) every host, a name included: the name
         // resolves to some address in it.
         Entry::Block { prefix: 0, .. } => true,
-        Entry::Block { addr, prefix } => host
-            .parse::<IpAddr>()
-            .is_ok_and(|ip| in_block(ip, *addr, *prefix)),
+        Entry::Block { addr, prefix } => host.parse::<IpAddr>().is_ok_and(|ip| {
+            let ip = match ip {
+                IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+                IpAddr::V4(_) => ip,
+            };
+            in_block(ip, *addr, *prefix)
+        }),
     }
 }
 
@@ -132,6 +147,21 @@ pub fn verdict(allow_out: &[String], deny_out: &[String], host: &str) -> Option<
     } else {
         None
     }
+}
+
+/// The `denyOut` blocks (as "addr/prefix") that vsockd checks the addresses a name resolves to
+/// against: none when `allow_out` names `host` (allow wins), else every block in `deny_out`.
+pub fn deny_blocks(allow_out: &[String], deny_out: &[String], host: &str) -> Vec<String> {
+    if verdict(allow_out, &[], host) == Some(true) {
+        return Vec::new();
+    }
+    deny_out
+        .iter()
+        .filter_map(|text| match parse(text, false) {
+            Ok(Entry::Block { addr, prefix }) => Some(format!("{addr}/{prefix}")),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -192,5 +222,33 @@ mod tests {
             Some(false)
         );
         assert_eq!(verdict(&[], &[], "anything"), None);
+    }
+
+    #[test]
+    fn ipv4_mapped_addresses_match_ipv4_blocks() {
+        let deny = list(&["8.8.8.0/24", "::ffff:10.0.0.0/104"]);
+        assert_eq!(verdict(&[], &deny, "::ffff:8.8.8.8"), Some(false));
+        assert_eq!(verdict(&[], &deny, "[::ffff:8.8.8.8]"), Some(false));
+        assert_eq!(verdict(&[], &deny, "::ffff:8.8.4.4"), None);
+        assert_eq!(verdict(&[], &deny, "::ffff:10.1.2.3"), Some(false));
+        assert_eq!(verdict(&[], &deny, "2001:db8::8.8.8.8"), None);
+        assert!(
+            check(&list(&["::ffff:8.8.8.0/64"]), "denyOut", false).is_err(),
+            "a mapped block starts at prefix 96"
+        );
+    }
+
+    #[test]
+    fn deny_blocks_are_for_the_resolved_addresses() {
+        let deny = list(&["8.8.8.8", "10.0.0.0/8", "2001:db8::1", "::ffff:1.1.1.1"]);
+        assert_eq!(
+            deny_blocks(&[], &deny, "example.com"),
+            list(&["8.8.8.8/32", "10.0.0.0/8", "2001:db8::1/128", "1.1.1.1/32"])
+        );
+        assert_eq!(
+            deny_blocks(&list(&["example.com"]), &deny, "example.com"),
+            Vec::<String>::new(),
+            "allow wins"
+        );
     }
 }

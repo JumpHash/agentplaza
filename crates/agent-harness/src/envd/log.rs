@@ -43,10 +43,7 @@ pub fn record(level: &str, message: impl Into<String>, fields: &[(&str, String)]
     let mut log = LOG
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if log.len() == CAPACITY {
-        log.pop_front();
-    }
-    log.push_back(entry);
+    push(&mut log, entry);
 }
 
 /// Every entry kept, oldest first.

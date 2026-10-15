@@ -326,6 +326,26 @@ fn restore_inner(
             snapshot.vsock.is_some()
         )));
     }
+    // The data volumes are attached by slot, so the spec must name them in the snapshot's order.
+    // An empty list is an older snapshot, which the count above is all there is to check.
+    let spec_volumes: Vec<&str> = spec
+        .volumes
+        .iter()
+        .map(|volume| volume.name.as_str())
+        .collect();
+    if !snapshot.volume_names.is_empty()
+        && snapshot
+            .volume_names
+            .iter()
+            .map(String::as_str)
+            .ne(spec_volumes.iter().copied())
+    {
+        return Err(BootError::Snapshot(format!(
+            "the spec's data volumes ({}) are not the snapshot's ({}), in the same slots",
+            spec_volumes.join(", "),
+            snapshot.volume_names.join(", ")
+        )));
+    }
     let (memory, partition) = memory_and_partition(spec, vcpu_count)?;
     super::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
     for (index, state) in (0..vcpu_count).zip(&snapshot.vcpus) {
@@ -525,6 +545,11 @@ fn run(
         vsock: vsock.as_ref().map(Arc::downgrade),
         workspace: workspace.as_ref().map(Arc::downgrade),
         volumes: volumes.iter().map(Arc::downgrade).collect(),
+        volume_names: spec
+            .volumes
+            .iter()
+            .map(|volume| volume.name.clone())
+            .collect(),
         gate: Arc::clone(&gate),
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,

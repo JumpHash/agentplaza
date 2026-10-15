@@ -123,7 +123,7 @@ feature, in the file or command named.
 | Drain and undrain a node | `apps/web/src/views/nodes.ts` | `apps/desktop/src/console/screens/nodes.rs` | `agentplaza nodes drain`, `undrain` | Done in all three |
 | Sleep and checkpoint settings: `idle_sleep_min`, `sleep_never_roles`, `vm_auto_checkpoints` | `apps/web/src/views/models-policy.ts` | `apps/desktop/src/console/screens/models.rs` (Limits) | `agentplaza models policy set --idle-sleep-min --sleep-never-roles --vm-auto-checkpoints` | Done in all three |
 | Egress credential rules: list, create, enable, delete | `apps/web/src/views/egress-credentials.ts` | `apps/desktop/src/console/screens/egress.rs` | `agentplaza egress list`, `add`, `enable`, `disable`, `rm` | Done in all three |
-| E2B keys and sandboxes | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume` | Done in all three |
+| E2B keys, sandboxes and templates | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume`, `e2b templates`, `delete-template` | Done in all three |
 | Warm templates: list and remove | none | none | `agentplaza templates list`, `rm` | CLI and API (`GET/DELETE /v1/templates`): templates build and rebuild themselves; listing them is a diagnostic |
 | Data volumes: list, create, remove | `apps/web/src/views/volumes.ts` | `apps/desktop/src/console/screens/volumes.rs` | `agentplaza volumes ls`, `create`, `rm` | Done in all three (`GET/POST /v1/volumes`, `DELETE /v1/volumes/{name}`) |
 | Per-role volumes (`role_volumes`) | `volumes.ts` (Roles) | `volumes.rs` (Roles) | `agentplaza volumes roles`, `mount`, `unmount` | Done in all three |

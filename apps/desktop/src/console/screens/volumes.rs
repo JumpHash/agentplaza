@@ -18,8 +18,7 @@ use crate::console::{Ctx, client, ui};
 pub const MAX_PER_ROLE: usize = 4;
 /// The longest volume name.
 const MAX_NAME: usize = 20;
-const NAME_HINT: &str =
-    "A volume name is 1 to 20 lowercase letters, digits or hyphens, starting with a letter or digit.";
+const NAME_HINT: &str = "A volume name is 1 to 20 lowercase letters, digits or hyphens, starting with a letter or digit.";
 
 /// A volume, as `GET /v1/volumes` lists it. `in_use` holds the CIDs of the agents that mount it now.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -148,7 +147,13 @@ pub fn role_volumes(settings: &Value) -> BTreeMap<String, Vec<String>> {
                 .map(|(role, names)| {
                     let names = names
                         .as_array()
-                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
                         .unwrap_or_default();
                     (role.clone(), names)
                 })
@@ -192,7 +197,10 @@ pub fn mounted_text(cids: &[u64]) -> String {
     if cids.is_empty() {
         "—".to_string()
     } else {
-        cids.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+        cids.iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -255,7 +263,11 @@ fn put_settings(state: &mut State, ctx: &Ctx, settings: Value, notice: String) -
     state.notice = None;
     let client = ctx.client.clone();
     client::task(
-        move || client.call("PUT", "/v1/settings", Some(&settings)).map(|_| ()),
+        move || {
+            client
+                .call("PUT", "/v1/settings", Some(&settings))
+                .map(|_| ())
+        },
         move |result| Msg::Saved(result, notice.clone()),
     )
 }
@@ -517,10 +529,7 @@ fn volume_row<'a>(state: &State, volume: &Volume) -> Element<'a, Msg> {
     let facts = row![
         ui::mono(volume.name.clone(), 12.0, crate::theme::palette().ink),
         ui::faint(format!("{} MiB", size_mib(volume.size_bytes))),
-        ui::faint(format!(
-            "mounted by {}",
-            mounted_text(&volume.in_use)
-        )),
+        ui::faint(format!("mounted by {}", mounted_text(&volume.in_use))),
         ui::faint(volume.source.clone()),
         ui::faint(format!("created {}", agent::ago(volume.created_ms))),
     ]
@@ -669,7 +678,10 @@ mod tests {
         let settings = json!({"idle_sleep_min": 10, "role_volumes": {"dev": ["x"], "ops": ["y"]}});
         let set = role_settings(&settings, "dev", "z, w").unwrap();
         assert_eq!(set["idle_sleep_min"], json!(10));
-        assert_eq!(set["role_volumes"], json!({"dev": ["z", "w"], "ops": ["y"]}));
+        assert_eq!(
+            set["role_volumes"],
+            json!({"dev": ["z", "w"], "ops": ["y"]})
+        );
         let cleared = role_settings(&set, "ops", " ").unwrap();
         assert_eq!(cleared["role_volumes"], json!({"dev": ["z", "w"]}));
         assert!(role_settings(&settings, "dev", "Bad").is_err());

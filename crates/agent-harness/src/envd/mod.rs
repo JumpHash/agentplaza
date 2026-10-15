@@ -23,7 +23,7 @@
 //! - [`files`]: `GET/POST /files` — download and upload.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -67,6 +67,13 @@ pub struct Ctx {
     /// a request names `root`.
     pub uid: u32,
     pub gid: u32,
+    /// The sandbox user's own ids (`user`, E2B's default user): what a request that names `user`,
+    /// or `/init`'s `defaultUser: "user"`, runs as.
+    pub user_uid: u32,
+    pub user_gid: u32,
+    /// Where a process starts when its request names no `cwd` (`/init`'s `defaultWorkdir`, set by a
+    /// template's `WORKDIR`); `None` is `home`.
+    pub workdir: Option<PathBuf>,
     /// Environment variables every process gets (set by `POST /init` and at start).
     pub env: Vec<(String, String)>,
 }
@@ -214,12 +221,14 @@ pub fn handle_connection<S: Read + Write>(stream: S, shared: &Shared) -> io::Res
                 write_reply(reader.get_mut(), &reply, keep_alive)?;
             } else if is_connect_stream(&request) {
                 let ctx = request_context(&request, shared);
-                return stream_rpc(reader.get_mut(), &request, &ctx, service, method);
+                return stream_rpc(reader.get_mut(), &request, ctx, service, method);
             } else {
-                let ctx = request_context(&request, shared);
-                let reply = match unary_body(&request.body) {
-                    Ok(message) => match rpc_unary(service, method, &message, &ctx) {
-                        Ok(value) => Reply::json(200, &value),
+                let reply = match request_context(&request, shared) {
+                    Ok(ctx) => match unary_body(&request.body) {
+                        Ok(message) => match rpc_unary(service, method, &message, &ctx) {
+                            Ok(value) => Reply::json(200, &value),
+                            Err(err) => error_reply(&err),
+                        },
                         Err(err) => error_reply(&err),
                     },
                     Err(err) => error_reply(&err),
@@ -271,8 +280,10 @@ fn dispatch(request: &Request, shared: &Shared) -> Reply {
 
 /// `POST /init`: merges `envVars` into the context every later process gets, sets the clock when
 /// `timestamp` (RFC 3339) is given, and mixes `entropy` (64 hex digits; a plaza extension) into the
-/// kernel pool. The other fields (`accessToken`, `defaultUser`,
-/// `defaultWorkdir`) are accepted and not applied: the sandbox's user and home are fixed.
+/// kernel pool. `defaultUser` (`user` or `root`, the guest's two users) and `defaultWorkdir` (an
+/// absolute directory) set who a request that names no user runs as and where a process that names no
+/// `cwd` starts: a template build sets them from its last `USER` and `WORKDIR`. `accessToken` is
+/// accepted and not applied (vsockd checks the token).
 fn init(request: &Request, shared: &Shared) -> Reply {
     let body = match unary_body(&request.body) {
         Ok(body) => body,
@@ -292,17 +303,61 @@ fn init(request: &Request, shared: &Shared) -> Reply {
             }
         }
     }
-    if !vars.is_empty() {
+    let user = match body.get("defaultUser").and_then(Value::as_str) {
+        None | Some("") => None,
+        Some("root") => Some(true),
+        Some("user") => Some(false),
+        Some(other) => {
+            return error_reply(&RpcError::new(
+                "invalid_argument",
+                format!("defaultUser {other}: the sandbox's users are user and root"),
+            ));
+        }
+    };
+    let workdir = match body.get("defaultWorkdir").and_then(Value::as_str) {
+        None | Some("") => None,
+        Some(dir) if Path::new(dir).is_absolute() && Path::new(dir).is_dir() => {
+            Some(PathBuf::from(dir))
+        }
+        Some(dir) => {
+            return error_reply(&RpcError::new(
+                "invalid_argument",
+                format!("defaultWorkdir {dir} is not an absolute directory"),
+            ));
+        }
+    };
+    // Everything is checked above, before anything is applied: a refused `/init` changes nothing.
+    let clock = match body.get("timestamp").and_then(Value::as_str) {
+        None => None,
+        Some(timestamp) => match rfc3339_ms(timestamp) {
+            Some(ms) => Some(ms),
+            None => {
+                return error_reply(&RpcError::new(
+                    "invalid_argument",
+                    "timestamp must be an RFC 3339 time",
+                ));
+            }
+        },
+    };
+    {
         let mut ctx = write_lock(shared);
         for (key, value) in vars {
             ctx.env.retain(|(name, _)| *name != key);
             ctx.env.push((key, value));
         }
-    }
-    if let Some(timestamp) = body.get("timestamp").and_then(Value::as_str) {
-        if let Err(err) = set_clock(timestamp) {
-            return error_reply(&err);
+        match user {
+            Some(true) => (ctx.uid, ctx.gid) = (0, 0),
+            Some(false) => (ctx.uid, ctx.gid) = (ctx.user_uid, ctx.user_gid),
+            None => {}
         }
+        if workdir.is_some() {
+            ctx.workdir = workdir;
+        }
+    }
+    if let Some(ms) = clock
+        && let Err(err) = set_clock(ms)
+    {
+        return error_reply(&err);
     }
     // The plaza's own field: a sandbox starts as a restore of a warm template (and wakes as a
     // restore of its snapshot), so the hub sends fresh entropy with every `/init` and no two
@@ -315,11 +370,8 @@ fn init(request: &Request, shared: &Shared) -> Reply {
     Reply::empty(204)
 }
 
-/// Sets the system clock to `timestamp` with `date -u -s`. The text is checked to be a plain
-/// timestamp first, so nothing but digits and the RFC 3339 punctuation reaches the command.
-fn set_clock(timestamp: &str) -> Result<(), RpcError> {
-    let ms = rfc3339_ms(timestamp)
-        .ok_or_else(|| RpcError::new("invalid_argument", "timestamp must be an RFC 3339 time"))?;
+/// Sets the system clock to `ms` (milliseconds since the Unix epoch, from a checked timestamp).
+fn set_clock(ms: u64) -> Result<(), RpcError> {
     // Only a clock that is off is set (as for an agent's welcome): a sandbox that booted cold is
     // already right, and a restored one is off by however long its template or snapshot waited.
     let now = std::time::SystemTime::now()
@@ -418,30 +470,39 @@ fn is_connect_stream(request: &Request) -> bool {
         .is_some_and(|value| value.starts_with("application/connect+json"))
 }
 
-/// A snapshot of the context for one request. A request that names `root` (in a basic
-/// `Authorization` header, whose user is `root`, or a `username=root` query) runs as root.
-fn request_context(request: &Request, shared: &Shared) -> Ctx {
+/// A snapshot of the context for one request. A request that names `root` or `user` (in a basic
+/// `Authorization` header, whose user it is, or a `username=` query) runs as that user; one that names
+/// neither runs as the default user. A name that is no user of the guest is refused.
+fn request_context(request: &Request, shared: &Shared) -> Result<Ctx, RpcError> {
     let mut ctx = read_lock(shared).clone();
-    if asks_for_root(request) {
-        ctx.uid = 0;
-        ctx.gid = 0;
+    match named_user(request).as_deref() {
+        Some("root") => (ctx.uid, ctx.gid) = (0, 0),
+        Some("user") => (ctx.uid, ctx.gid) = (ctx.user_uid, ctx.user_gid),
+        Some(name) => match filesystem::lookup_user(name) {
+            Some(user) => (ctx.uid, ctx.gid) = (user.uid, user.gid),
+            None => return Err(RpcError::new("unauthenticated", format!("no user {name}"))),
+        },
+        None => {}
     }
-    ctx
+    Ok(ctx)
 }
 
-fn asks_for_root(request: &Request) -> bool {
-    if request.query.split('&').any(|pair| pair == "username=root") {
-        return true;
+/// The user a request names: its `username=` query value (percent-decoded, as files.rs reads it), or
+/// else the user of a basic `Authorization` header.
+fn named_user(request: &Request) -> Option<String> {
+    if let Some(name) = request
+        .query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("username="))
+    {
+        return Some(files::percent_decode(name));
     }
-    request
-        .header("authorization")
-        .and_then(|value| value.strip_prefix("Basic "))
-        .and_then(|encoded| {
-            base64::engine::general_purpose::STANDARD
-                .decode(encoded.trim())
-                .ok()
-        })
-        .is_some_and(|credentials| credentials.starts_with(b"root:"))
+    let encoded = request.header("authorization")?.strip_prefix("Basic ")?;
+    let credentials = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let (user, _) = std::str::from_utf8(&credentials).ok()?.split_once(':')?;
+    Some(user.to_string())
 }
 
 /// Calls a unary RPC; `Err` is the Connect error.
@@ -488,7 +549,7 @@ fn unary_body(body: &[u8]) -> Result<Value, RpcError> {
 fn stream_rpc<W: Write>(
     out: &mut W,
     request: &Request,
-    ctx: &Ctx,
+    ctx: Result<Ctx, RpcError>,
     service: &str,
     method: &str,
 ) -> io::Result<()> {
@@ -496,30 +557,44 @@ fn stream_rpc<W: Write>(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/connect+json\r\n\
           Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
     )?;
-    let result = if service == PROCESS_SERVICE && method == "StreamInput" {
-        stream_input_rpc(&mut *out, &request.body)?
-    } else {
-        match decode_one(&request.body) {
-            Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
-                Ok(message) => {
-                    let mut sink = EnvelopeSink { out: &mut *out };
-                    rpc_stream(service, method, &message, ctx, &mut sink)
-                }
-                Err(err) => Err(RpcError::new(
-                    "invalid_argument",
-                    format!("the message is not JSON: {err}"),
-                )),
-            },
-            Ok(_) => Err(RpcError::new(
-                "invalid_argument",
-                "a request envelope must be an uncompressed message",
-            )),
-            Err(reason) => Err(RpcError::new("invalid_argument", reason)),
-        }
+    let result = match ctx {
+        Ok(ctx) => stream_messages(out, request, &ctx, service, method)?,
+        Err(err) => Err(err),
     };
     write_chunk(out, &end_envelope(result.as_ref().err()))?;
     out.write_all(b"0\r\n\r\n")?;
     out.flush()
+}
+
+/// Runs a server-streaming call's request, writing its messages to `out`; the call's error, if any,
+/// is the result.
+fn stream_messages<W: Write>(
+    out: &mut W,
+    request: &Request,
+    ctx: &Ctx,
+    service: &str,
+    method: &str,
+) -> io::Result<Result<(), RpcError>> {
+    if service == PROCESS_SERVICE && method == "StreamInput" {
+        return stream_input_rpc(out, &request.body);
+    }
+    Ok(match decode_one(&request.body) {
+        Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
+            Ok(message) => {
+                let mut sink = EnvelopeSink { out: &mut *out };
+                rpc_stream(service, method, &message, ctx, &mut sink)
+            }
+            Err(err) => Err(RpcError::new(
+                "invalid_argument",
+                format!("the message is not JSON: {err}"),
+            )),
+        },
+        Ok(_) => Err(RpcError::new(
+            "invalid_argument",
+            "a request envelope must be an uncompressed message",
+        )),
+        Err(reason) => Err(RpcError::new("invalid_argument", reason)),
+    })
 }
 
 /// Answers `StreamInput`, the client-streaming call: the request's envelopes are its messages. On
@@ -642,6 +717,7 @@ pub fn status_of(code: &str) -> u16 {
         "not_found" => 404,
         "already_exists" => 409,
         "permission_denied" => 403,
+        "unauthenticated" => 401,
         "unimplemented" => 501,
         _ => 500,
     }
@@ -883,6 +959,9 @@ pub(crate) mod test_support {
             home: std::env::temp_dir(),
             uid: owner.uid(),
             gid: owner.gid(),
+            user_uid: owner.uid(),
+            user_gid: owner.gid(),
+            workdir: None,
             env: Vec::new(),
         }
     }
@@ -1259,5 +1338,129 @@ mod tests {
         assert!(bad.starts_with(b"HTTP/1.1 400"));
         let (head, _) = split_response(&bad);
         assert!(head.starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn init_sets_the_default_user_and_working_directory() {
+        let shared = shared_of(&test_ctx());
+        let dir = std::env::temp_dir().join(format!("apz-envd-workdir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = json!({"defaultUser": "user", "defaultWorkdir": dir}).to_string();
+        let init = exchange(
+            &shared,
+            &raw("POST", "/init", "application/json", body.as_bytes()),
+        );
+        assert!(init.starts_with(b"HTTP/1.1 204"));
+        assert_eq!(read_lock(&shared).workdir.as_deref(), Some(dir.as_path()));
+        let (messages, end) = stream_on(
+            &shared,
+            "/process.Process/Start",
+            json!({"process": {"cmd": "sh", "args": ["-c", "pwd"]}}),
+        );
+        assert!(end.get("error").is_none(), "{end}");
+        let stdout: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| m.pointer("/event/data/stdout"))
+            .flat_map(|data| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(data.as_str().unwrap_or(""))
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(stdout, format!("{}\n", dir.display()).into_bytes());
+
+        for bad in [
+            json!({"defaultUser": "nobody"}),
+            json!({"defaultWorkdir": "relative/dir"}),
+            json!({"defaultWorkdir": dir.join("missing")}),
+        ] {
+            let reply = exchange(
+                &shared,
+                &raw(
+                    "POST",
+                    "/init",
+                    "application/json",
+                    bad.to_string().as_bytes(),
+                ),
+            );
+            assert!(reply.starts_with(b"HTTP/1.1 400"), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_user_decodes_the_query_value() {
+        let request = Request {
+            query: "username=%72oot&path=x".to_string(),
+            ..Request::default()
+        };
+        assert_eq!(named_user(&request).as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn a_request_naming_an_unknown_user_is_refused() {
+        let shared = shared_of(&test_ctx());
+        let reply = exchange(
+            &shared,
+            &raw(
+                "POST",
+                "/process.Process/List?username=nobody2",
+                "application/json",
+                b"{}",
+            ),
+        );
+        assert!(reply.starts_with(b"HTTP/1.1 401"));
+        assert_eq!(json_body(&reply)["code"], "unauthenticated");
+    }
+
+    #[test]
+    fn init_refuses_a_bad_timestamp_before_it_applies_anything() {
+        let shared = shared_of(&test_ctx());
+        let uid = read_lock(&shared).uid;
+        let body = json!({
+            "defaultUser": "root",
+            "envVars": {"REFUSED": "yes"},
+            "timestamp": "yesterday",
+        })
+        .to_string();
+        let reply = exchange(
+            &shared,
+            &raw("POST", "/init", "application/json", body.as_bytes()),
+        );
+        assert!(reply.starts_with(b"HTTP/1.1 400"));
+        assert_eq!(read_lock(&shared).uid, uid);
+        assert!(
+            read_lock(&shared)
+                .env
+                .iter()
+                .all(|(key, _)| key != "REFUSED")
+        );
+    }
+
+    #[test]
+    fn a_process_started_through_a_link_sees_the_link_as_its_pwd() {
+        let shared = shared_of(&test_ctx());
+        let base = std::env::temp_dir().join(format!("apz-envd-pwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        let link = base.join("link");
+        let (messages, end) = stream_on(
+            &shared,
+            "/process.Process/Start",
+            json!({"process": {"cmd": "sh", "args": ["-c", "pwd"], "cwd": link}}),
+        );
+        assert!(end.get("error").is_none(), "{end}");
+        let stdout: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| m.pointer("/event/data/stdout"))
+            .flat_map(|data| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(data.as_str().unwrap_or(""))
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(stdout, format!("{}\n", link.display()).into_bytes());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

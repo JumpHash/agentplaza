@@ -22,7 +22,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   if (!res.ok) {
     // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
     if (res.status === 401 && path !== '/v1/auth/session') window.dispatchEvent(new CustomEvent('apz-auth-required'));
-    const message = (data as { error?: string } | null)?.error ?? `${method} ${path}: ${res.status}`;
+    // The E2B routes answer `{code, message}` (E2B's own error shape), the rest `{error}`.
+    const reply = data as { error?: string; message?: string } | null;
+    const message = reply?.error ?? reply?.message ?? `${method} ${path}: ${res.status}`;
     throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? [], data);
   }
   return data as T;
@@ -1239,6 +1241,16 @@ export const egressApi = {
 };
 
 /** The owner's E2B API: its keys (`/v1/e2b/keys`) and the sandboxes the gateway runs (`/v1/e2b/sandboxes`). */
+export type BuildStatus = 'waiting' | 'building' | 'ready' | 'error';
+
+/** One build of a template. The hub lists a template's builds newest first; `reason` is set when a build failed. */
+export interface E2bBuild {
+  buildID: string; status: BuildStatus; createdAt: string; finishedAt: string | null; cpuCount: number; memoryMB: number;
+  tags: string[]; reason: { message: string; step: string } | null;
+}
+/** A template on the hub's E2B gateway, with its builds (newest first). The timestamps are RFC 3339 strings. */
+export interface E2bTemplate { templateID: string; name: string; createdAt: string; updatedAt: string; builds: E2bBuild[] }
+
 export const e2bApi = {
   keys: () => get<{ keys: E2bKey[] }>('/v1/e2b/keys').then((r) => r.keys),
   createKey: (label: string) => post<E2bKeyCreated>('/v1/e2b/keys', { label }),
@@ -1250,6 +1262,10 @@ export const e2bApi = {
   pauseSandbox: (id: string) => post<null>(`/v1/e2b/sandboxes/${seg(id)}/pause`, {}),
   /** Resumes a paused sandbox (200 or 201). */
   resumeSandbox: (id: string) => post<unknown>(`/v1/e2b/sandboxes/${seg(id)}/resume`, {}),
+  /** Every template built through the E2B API, newest change first. */
+  templates: () => get<{ templates: E2bTemplate[] }>('/v1/e2b/templates').then((r) => r.templates),
+  /** Deletes a template and its builds' snapshots (204; 409 while a build runs or starts from it). */
+  deleteTemplate: (id: string) => del<null>(`/v1/e2b/templates/${seg(id)}`),
 };
 
 /** A shared read-only data volume on the hub machine (`/v1/volumes`): agents of a role mount it at /data/<name>. */

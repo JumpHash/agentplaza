@@ -240,6 +240,9 @@ fn sandbox(out: &mut (impl Write + Send), template: bool) -> Result<(), HarnessE
         home: SANDBOX_HOME.into(),
         uid: SANDBOX_USER,
         gid: SANDBOX_USER,
+        user_uid: SANDBOX_USER,
+        user_gid: SANDBOX_USER,
+        workdir: None,
         env: Vec::new(),
     };
     envd::serve(envd::PORT, ctx, template).map_err(HarnessError::Sandbox)
