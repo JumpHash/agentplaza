@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
 
 use super::catalog::{self, Asset, Entry, Install};
+use super::layout;
 use super::link::EngineLink;
 use super::session::{self, Options, Outcome};
 use crate::bash::{self, Privilege};
@@ -38,7 +39,6 @@ const FILE_LINES: usize = 40;
 /// The most a setup command (Cline's `auth`) may take, in seconds.
 const SETUP_TIMEOUT_S: u64 = 60;
 const SESSIONS_FILE: &str = "engine-sessions.json";
-const CACHE_DIR: &str = "engine-cache";
 /// Where a release engine is extracted, one folder per engine and version.
 const ENGINES_DIR: &str = "/workspace/.engines";
 
@@ -51,6 +51,9 @@ pub fn run(
 ) -> Result<String, String> {
     let request = Request::parse(workspace, input)?;
     let entry = request.entry;
+    // Before the install, the launch and the setup: the engine's home, its install cache and its job
+    // folder must be its own by then (see `layout`).
+    layout::prepare_engine_dirs(workspace, entry.id, pinned_version(entry), &request.cwd)?;
     install(workspace, entry)?;
     let (env, model) = engines::acp_launch(workspace, entry.id, request.model.as_deref())?;
     let extra = engines::acp_args(entry.id, request.model.as_deref())?;
@@ -208,7 +211,7 @@ fn setup(
         &program,
         &refs,
         SETUP_TIMEOUT_S,
-        Privilege::Agent,
+        Privilege::Engine(layout::engine_home(workspace, entry.id)),
     )
     .map(|_| ())
     .map_err(|err| format!("cannot set up {}: {}", entry.id, engines::tail(&err)))
@@ -225,8 +228,9 @@ fn npm_binary(entry: &Entry) -> PathBuf {
 /// An install counts only once its binary is in place and its marker is recorded, so a failed one is
 /// tried again, and a version bump in the catalogue installs the new version. Either way the bytes
 /// installed are the ones whose checksum the catalogue names: a mismatch deletes the download and
-/// installs nothing. That check covers the install only. The engine runs as root in its VM, so it
-/// could change the installed files afterwards, and the launch does not check them again.
+/// installs nothing. The install scripts run as the engine user, which owns the folder being installed
+/// into only while the install runs (see [`layout::install_in`]); afterwards root owns it, read-only to
+/// the engine, so the engine cannot change the installed files and the launch does not check them again.
 fn install(workspace: &Workspace, entry: &Entry) -> Result<(), String> {
     if installed(entry) {
         return Ok(());
@@ -320,13 +324,14 @@ fn install_npm(
     integrity: &str,
 ) -> Result<(), String> {
     let binary = npm_binary(entry);
+    let home = layout::engine_home(workspace, entry.id);
     engines::ensure_node(workspace)
         .map_err(|err| format!("cannot install nodejs and npm for {}: {err}", entry.id))?;
     if let Some((name, minimum)) = node_minimum(entry) {
-        check_node(workspace, name, minimum)?;
+        check_node(workspace, &home, name, minimum)?;
     }
     let spec = format!("{package}@{version}");
-    let cache = workspace.plaza_dir().join(CACHE_DIR);
+    let cache = layout::install_cache(&home);
     files::create_dirs(&cache)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
     let packed = bash::execute(
@@ -339,7 +344,7 @@ fn install_npm(
             text_path(&cache)?,
         ],
         engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
+        Privilege::Engine(home.clone()),
     )
     .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
     let name = packed_name(&packed)
@@ -350,20 +355,22 @@ fn install_npm(
         let _ = std::fs::remove_file(&tarball);
         return Err(format!("integrity mismatch for {spec}"));
     }
-    bash::execute(
-        workspace.dir(),
-        "npm",
-        &[
-            "install",
-            "-g",
-            "--prefix",
-            engines::NPM_PREFIX,
-            text_path(&tarball)?,
-        ],
-        engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| format!("cannot install {spec}: {}", engines::tail(&err)))?;
+    layout::install_in(Path::new(engines::NPM_PREFIX), || {
+        bash::execute(
+            workspace.dir(),
+            "npm",
+            &[
+                "install",
+                "-g",
+                "--prefix",
+                engines::NPM_PREFIX,
+                text_path(&tarball)?,
+            ],
+            engines::INSTALL_TIMEOUT_S,
+            Privilege::Engine(home.clone()),
+        )
+        .map_err(|err| format!("cannot install {spec}: {}", engines::tail(&err)))
+    })?;
     if binary.exists() {
         Ok(())
     } else {
@@ -382,13 +389,18 @@ fn node_minimum(entry: &Entry) -> Option<(&'static str, (u64, u64))> {
 
 /// Checks the VM's `node --version` against `minimum` before the install, so a VM with an older node
 /// fails with a message that names both versions.
-fn check_node(workspace: &Workspace, name: &str, minimum: (u64, u64)) -> Result<(), String> {
+fn check_node(
+    workspace: &Workspace,
+    home: &Path,
+    name: &str,
+    minimum: (u64, u64),
+) -> Result<(), String> {
     let printed = bash::execute(
         workspace.dir(),
         "node",
         &["--version"],
         engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
+        Privilege::Engine(home.to_path_buf()),
     )
     .map_err(|err| format!("cannot run node for {name}: {}", engines::tail(&err)))?;
     let printed = printed.trim();
@@ -434,7 +446,8 @@ fn install_release(
         .ok_or_else(|| format!("cannot install {spec}: no build for {arch}"))?;
     bash::install_packages(workspace, &json!({ "packages": ["curl"] }))
         .map_err(|err| format!("cannot install curl for {spec}: {err}"))?;
-    let cache = workspace.plaza_dir().join(CACHE_DIR);
+    let home = layout::engine_home(workspace, entry.id);
+    let cache = layout::install_cache(&home);
     files::create_dirs(&cache)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
     let archive = cache.join(archive_name(asset.url));
@@ -452,7 +465,7 @@ fn install_release(
             asset.url,
         ],
         engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
+        Privilege::Engine(home.clone()),
     )
     .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
     let bytes = std::fs::read(&archive).map_err(|err| format!("cannot read {spec}: {err}"))?;
@@ -463,14 +476,16 @@ fn install_release(
     let dir = engine_dir(entry.id, version);
     files::create_dirs(&dir)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
-    bash::execute(
-        workspace.dir(),
-        "tar",
-        &["-xzf", text_path(&archive)?, "-C", text_path(&dir)?],
-        engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| format!("cannot extract {spec}: {}", engines::tail(&err)))?;
+    layout::install_in(&dir, || {
+        bash::execute(
+            workspace.dir(),
+            "tar",
+            &["-xzf", text_path(&archive)?, "-C", text_path(&dir)?],
+            engines::INSTALL_TIMEOUT_S,
+            Privilege::Engine(home.clone()),
+        )
+        .map_err(|err| format!("cannot extract {spec}: {}", engines::tail(&err)))
+    })?;
     let found = find_binary(&dir, binary_path)
         .ok_or_else(|| format!("{spec} has no {binary_path} in its archive"))?;
     let binary = npm_binary(entry);
@@ -497,77 +512,84 @@ fn install_pip(
     let spec = format!("{} {version}", entry.id);
     bash::install_packages(workspace, &json!({ "packages": ["python3", "py3-pip"] }))
         .map_err(|err| format!("cannot install python3 and pip for {spec}: {err}"))?;
+    let home = layout::engine_home(workspace, entry.id);
     let python = bash::execute(
         workspace.dir(),
         "python3",
         &["--version"],
         engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
+        Privilege::Engine(home.clone()),
     )
     .map_err(|err| format!("cannot run python3 for {spec}: {}", engines::tail(&err)))?;
     check_python(entry.id, &python)?;
-    let cache = workspace.plaza_dir().join(CACHE_DIR);
+    let cache = layout::install_cache(&home);
     files::create_dirs(&cache)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", cache.display()))?;
     let dir = engine_dir(entry.id, version);
     files::create_dirs(&dir)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
     let venv = dir.join("venv");
-    bash::execute(
-        workspace.dir(),
-        "python3",
-        &["-m", "venv", text_path(&venv)?],
-        engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| {
-        format!(
-            "cannot create the virtualenv for {spec}: {}",
-            engines::tail(&err)
-        )
-    })?;
     let pip = venv.join("bin").join("pip");
     let pip = text_path(&pip)?;
     // A stale copy of the file would make pip report nothing saved, so it is fetched afresh.
     let downloaded = cache.join(file);
     let _ = std::fs::remove_file(&downloaded);
     let target = format!("{package}=={version}");
-    let fetched = bash::execute(
-        workspace.dir(),
-        pip,
-        &[
-            "download",
-            "--no-deps",
-            "--dest",
-            text_path(&cache)?,
-            target.as_str(),
-        ],
-        engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
-    let name = pip_saved_name(&fetched)
-        .ok_or_else(|| format!("cannot download {spec}: pip saved no file"))?;
-    if name != file {
-        let _ = std::fs::remove_file(cache.join(name));
-        return Err(format!(
-            "integrity mismatch for {} {version}: pip fetched {name}, not {file}",
-            entry.id
-        ));
-    }
-    let bytes = std::fs::read(&downloaded).map_err(|err| format!("cannot read {spec}: {err}"))?;
-    if !sha256_matches(&bytes, sha256) {
-        let _ = std::fs::remove_file(&downloaded);
-        return Err(format!("integrity mismatch for {} {version}", entry.id));
-    }
-    bash::execute(
-        workspace.dir(),
-        pip,
-        &["install", text_path(&downloaded)?],
-        engines::INSTALL_TIMEOUT_S,
-        Privilege::Agent,
-    )
-    .map_err(|err| format!("cannot install {spec}: {}", engines::tail(&err)))?;
+    // The venv and the pip work run as the engine user inside its folder; the checks below read
+    // what it fetched as root.
+    layout::install_in(&dir, || {
+        bash::execute(
+            workspace.dir(),
+            "python3",
+            &["-m", "venv", text_path(&venv)?],
+            engines::INSTALL_TIMEOUT_S,
+            Privilege::Engine(home.clone()),
+        )
+        .map_err(|err| {
+            format!(
+                "cannot create the virtualenv for {spec}: {}",
+                engines::tail(&err)
+            )
+        })?;
+        let fetched = bash::execute(
+            workspace.dir(),
+            pip,
+            &[
+                "download",
+                "--no-deps",
+                "--dest",
+                text_path(&cache)?,
+                target.as_str(),
+            ],
+            engines::INSTALL_TIMEOUT_S,
+            Privilege::Engine(home.clone()),
+        )
+        .map_err(|err| format!("cannot download {spec}: {}", engines::tail(&err)))?;
+        let name = pip_saved_name(&fetched)
+            .ok_or_else(|| format!("cannot download {spec}: pip saved no file"))?;
+        if name != file {
+            let _ = std::fs::remove_file(cache.join(name));
+            return Err(format!(
+                "integrity mismatch for {} {version}: pip fetched {name}, not {file}",
+                entry.id
+            ));
+        }
+        let bytes =
+            std::fs::read(&downloaded).map_err(|err| format!("cannot read {spec}: {err}"))?;
+        if !sha256_matches(&bytes, sha256) {
+            let _ = std::fs::remove_file(&downloaded);
+            return Err(format!("integrity mismatch for {} {version}", entry.id));
+        }
+        bash::execute(
+            workspace.dir(),
+            pip,
+            &["install", text_path(&downloaded)?],
+            engines::INSTALL_TIMEOUT_S,
+            Privilege::Engine(home.clone()),
+        )
+        .map_err(|err| format!("cannot install {spec}: {}", engines::tail(&err)))?;
+        Ok(())
+    })?;
     let found = venv.join("bin").join(entry.binary);
     if !found.is_file() {
         return Err(format!("{spec} has no {} in its virtualenv", entry.binary));
@@ -1247,7 +1269,13 @@ mod tests {
         let workspace = scratch("launch");
         let (env, model) =
             engines::acp_launch(&workspace, "claude", Some("anthropic/claude-x")).expect("claude");
-        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(
+            env[0],
+            format!(
+                "HOME={}",
+                workspace.dir().join(".engines/home/claude").display()
+            )
+        );
         assert!(env.contains(&"ANTHROPIC_BASE_URL=http://plaza.gateway/anthropic".to_string()));
         assert_eq!(model.as_deref(), Some("claude-x"));
         let (env, model) = engines::acp_launch(&workspace, "opencode", Some("opencode/claude-x"))

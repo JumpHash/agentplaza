@@ -34,6 +34,8 @@ const DRAIN_POLL: Duration = Duration::from_millis(5);
 /// One engine session's terminals.
 pub struct Terminals {
     workspace: Workspace,
+    /// The engine's own folder: the `HOME` its terminals run with (see `bash::Privilege::Engine`).
+    home: PathBuf,
     state: Mutex<State>,
 }
 
@@ -117,9 +119,10 @@ impl State {
 }
 
 impl Terminals {
-    pub fn new(workspace: Workspace) -> Self {
+    pub fn new(workspace: Workspace, home: PathBuf) -> Self {
         Self {
             workspace,
+            home,
             state: Mutex::new(State::default()),
         }
     }
@@ -145,7 +148,8 @@ impl Terminals {
             .try_clone()
             .map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
         // The base environment comes from `bash::command`; the engine's variables go on top.
-        let mut process = bash::command(command, &args, &dir, Privilege::Agent)?;
+        let mut process =
+            bash::command(command, &args, &dir, Privilege::Engine(self.home.clone()))?;
         for (name, value) in env {
             process.env(name, value);
         }
@@ -482,7 +486,7 @@ mod tests {
     #[test]
     fn create_then_wait_reports_exit_and_output() {
         let (ws, dir) = workspace("exit");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let id = new_id(&terms, &shell("echo hi; exit 3"));
 
         assert_eq!(
@@ -499,7 +503,7 @@ mod tests {
     #[test]
     fn output_limit_keeps_the_tail() {
         let (ws, dir) = workspace("limit");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let id = new_id(
             &terms,
             &json!({"command": "/bin/sh", "args": ["-c", "printf 0123456789abcdef"], "outputByteLimit": 10}),
@@ -515,7 +519,7 @@ mod tests {
     #[test]
     fn cut_output_starts_on_a_character_boundary() {
         let (ws, dir) = workspace("utf8");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         // Six bytes of "é" (two bytes each); a 3-byte cut would open on half a character.
         let id = new_id(
             &terms,
@@ -532,7 +536,7 @@ mod tests {
     #[test]
     fn fifth_terminal_is_refused_until_one_is_released() {
         let (ws, dir) = workspace("cap");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let ids: Vec<String> = (0..MAX_TERMINALS)
             .map(|_| new_id(&terms, &shell("/bin/sleep 30")))
             .collect();
@@ -549,7 +553,7 @@ mod tests {
     #[test]
     fn kill_ends_a_running_command_promptly() {
         let (ws, dir) = workspace("kill");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let id = new_id(&terms, &shell("/bin/sleep 30"));
 
         let started = Instant::now();
@@ -567,7 +571,7 @@ mod tests {
         let (ws, dir) = workspace("cwd");
         let inside = dir.join("sub");
         std::fs::create_dir_all(&inside).unwrap();
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
 
         assert!(
             terms
@@ -604,7 +608,7 @@ mod tests {
         let state = dir.join(crate::files::PLAZA_DIR);
         std::fs::create_dir_all(state.join("nested")).unwrap();
         std::os::unix::fs::symlink(&state, dir.join("link")).unwrap();
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
 
         // Named directly, named below, and reached through a link.
         for cwd in [
@@ -623,7 +627,7 @@ mod tests {
     #[test]
     fn env_is_passed_and_bad_names_are_refused() {
         let (ws, dir) = workspace("env");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         assert!(
             terms
                 .create(&json!({"command": "/bin/sh", "env": [{"name": "A=B", "value": "x"}]}))
@@ -647,7 +651,7 @@ mod tests {
     #[test]
     fn wait_gives_up_once_cancelled() {
         let (ws, dir) = workspace("cancel");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let id = new_id(&terms, &shell("/bin/sleep 30"));
 
         let err = terms
@@ -661,7 +665,7 @@ mod tests {
     #[test]
     fn ran_records_commands_and_exit_codes() {
         let (ws, dir) = workspace("ran");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let id = new_id(
             &terms,
             &json!({"command": "/bin/sh", "args": ["-c", "echo x; exit 4"]}),
@@ -678,7 +682,7 @@ mod tests {
     #[test]
     fn unknown_ids_are_refused() {
         let (ws, dir) = workspace("unknown");
-        let terms = Terminals::new(ws);
+        let terms = Terminals::new(ws, std::env::temp_dir());
         let err = terms.output(&json!({"terminalId": "term-9"})).unwrap_err();
         assert_eq!(err, "no terminal term-9");
         let _ = std::fs::remove_dir_all(&dir);

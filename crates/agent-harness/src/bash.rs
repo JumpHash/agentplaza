@@ -3,14 +3,17 @@
 //!
 //! `/bin/sh -c <command>` runs in the workspace root with a cleared environment
 //! (`HOME` the workspace, `PATH` the system bins), stdin closed and its own
-//! process group. A root guest drops to uid and gid 1000 first. Stdout and
-//! stderr are captured together and capped; the result ends with `exit <code>`.
+//! process group. A root guest drops to uid and gid 1000 first. A coding engine's
+//! process (see [`Privilege::Engine`]) runs as `apz-engine`, uid and gid 1100, with
+//! its own home, so Unix permissions bound what the engine's own tools can do. Stdout
+//! and stderr are captured together and capped; the result ends with `exit <code>`.
 //!
 //! A command that outlives its timeout is killed with its whole process group (the
 //! shell and everything it started), through kill(1) since the crate forbids `unsafe`.
 
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -44,6 +47,11 @@ pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 /// The uid and gid a root guest runs commands as.
 pub(crate) const UNPRIVILEGED: u32 = 1000;
+/// The user a coding engine runs as in a root guest: uid and gid 1100, named `apz-engine`
+/// in `/etc/passwd` and `/etc/group` by [`ensure_engine_user`].
+pub(crate) const ENGINE_UID: u32 = 1100;
+const ENGINE_PASSWD: &str = "apz-engine:x:1100:1100:plaza coding engine:/nonexistent:/sbin/nologin";
+const ENGINE_GROUP: &str = "apz-engine:x:1100:";
 /// The most output kept; past it the rest is drained and dropped.
 const MAX_CAPTURE_BYTES: usize = 8 << 20;
 /// Room kept under the tool cap for the `exit` line.
@@ -128,11 +136,15 @@ fn package_name_ok(name: &str) -> bool {
         })
 }
 
-/// Who a command runs as: the agent (uid 1000 in a root guest), or root for package installs.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Who a command runs as: the agent (uid 1000 in a root guest), root for package installs, or a
+/// coding engine. An engine's process runs as `apz-engine` (uid and gid [`ENGINE_UID`]) when the
+/// harness is root, so an install script it runs never runs as root; `HOME` is the engine's own
+/// folder, given by the caller. Not `Copy`, because the engine's home is a path.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Privilege {
     Agent,
     Root,
+    Engine(PathBuf),
 }
 
 /// The command `program args` in `dir` as `privilege`: a cleared environment (the proxy
@@ -162,8 +174,64 @@ pub(crate) fn environment(
     match privilege {
         Privilege::Root => with_proxy(apz_ops::Env::new("/root", ADMIN_PATH)).apply(builder),
         Privilege::Agent => agent_env(dir)?.apply(builder),
+        Privilege::Engine(home) => coding_engine_env(&home)?.apply(builder),
     }
     Ok(())
+}
+
+/// The environment of a coding engine's process, with `home` (its own folder, see
+/// `acp::layout::engine_home`) as its `HOME`: the agent's PATH and the egress proxy. A root
+/// harness drops the process to [`ENGINE_UID`]; otherwise (tests, dev) nothing is dropped.
+pub(crate) fn coding_engine_env(home: &Path) -> Result<apz_ops::Env, String> {
+    let uid = if runs_as_root()? {
+        Some(ENGINE_UID)
+    } else {
+        None
+    };
+    Ok(with_proxy(apz_ops::Env::new(home, AGENT_PATH)).with_uid(uid))
+}
+
+/// Makes sure `/etc/passwd` and `/etc/group` name the engine user, as root only and idempotently:
+/// a missing line is appended, and a file is replaced through a rename so a reader sees one or the other.
+pub(crate) fn ensure_engine_user() -> Result<(), String> {
+    if !runs_as_root()? {
+        return Ok(());
+    }
+    ensure_line(Path::new("/etc/passwd"), ENGINE_PASSWD)?;
+    ensure_line(Path::new("/etc/group"), ENGINE_GROUP)
+}
+
+fn ensure_line(path: &Path, line: &str) -> Result<(), String> {
+    let current = std::fs::read_to_string(path)
+        .map_err(|err| format!("unavailable: cannot read {}: {err}", path.display()))?;
+    let Some(updated) = with_line(&current, line) else {
+        return Ok(());
+    };
+    let tmp = PathBuf::from(format!("{}.apz-tmp", path.display()));
+    let result = std::fs::write(&tmp, updated).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|err| format!("unavailable: cannot update {}: {err}", path.display()))
+}
+
+/// `current` with `line` appended, or `None` when a line of the same name (the text before the
+/// first `:`) is already there.
+fn with_line(current: &str, line: &str) -> Option<String> {
+    let name = line.split(':').next().unwrap_or(line);
+    if current
+        .lines()
+        .any(|known| known.split(':').next() == Some(name))
+    {
+        return None;
+    }
+    let mut text = current.to_string();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(line);
+    text.push('\n');
+    Some(text)
 }
 
 /// The environment of an agent's command, with `home` as its `HOME`: the agent's PATH and the egress
@@ -362,6 +430,25 @@ mod tests {
             "{}",
             output.len()
         );
+    }
+
+    #[test]
+    fn the_engine_user_lines_are_appended_once() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\n";
+        let added = with_line(passwd, ENGINE_PASSWD).expect("missing, so appended");
+        assert_eq!(added, format!("{passwd}{ENGINE_PASSWD}\n"));
+        assert_eq!(with_line(&added, ENGINE_PASSWD), None);
+        assert_eq!(
+            with_line("root:x:0:", ENGINE_GROUP),
+            Some(format!("root:x:0:\n{ENGINE_GROUP}\n"))
+        );
+    }
+
+    #[test]
+    fn a_coding_engine_runs_with_its_own_home_and_the_agent_path() {
+        let home = Path::new("/workspace/.engines/home/goose");
+        let env = coding_engine_env(home).expect("an environment");
+        assert_eq!(env.home(), home);
     }
 
     #[test]

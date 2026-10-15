@@ -1,7 +1,8 @@
 //! One engine session: the adapter process, the ACP handshake, one prompt turn, and the client
 //! methods the engine calls back while the turn runs.
 //!
-//! The adapter starts as the agent (`bash::command`, `Privilege::Agent`), in its own process group,
+//! The adapter starts as the engine user (`bash::command`, `Privilege::Engine`, `apz-engine` in a root
+//! guest, with the engine's own home; see [`super::layout`]), in its own process group,
 //! with stdin and stdout as the ACP connection (`apz_acp::rpc::Peer`) and stderr kept in a small
 //! ring for errors. The harness advertises `clientCapabilities {fs: {readTextFile, writeTextFile},
 //! terminal: true}` and `clientInfo {name: "agentplaza", version}`, and requires protocol version 1.
@@ -46,6 +47,7 @@ use apz_acp::types::{self as types, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
 
 use super::catalog::{Entry, ModelVia};
+use super::layout;
 use super::link::{EngineLink, Verdict};
 use super::mcp::{self, Socket};
 use super::stream::{Stream, Turn};
@@ -126,7 +128,13 @@ pub fn prompt_turn(
         .split_first()
         .ok_or_else(|| format!("the {} engine has no command", entry.id))?;
     let args: Vec<&str> = rest.iter().map(String::as_str).collect();
-    let mut command = bash::command(program, &args, &options.cwd, Privilege::Agent)?;
+    let home = layout::engine_home(options.workspace, entry.id);
+    let mut command = bash::command(
+        program,
+        &args,
+        &options.cwd,
+        Privilege::Engine(home.clone()),
+    )?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -522,7 +530,10 @@ fn run_turn(
     }
     blocks.push(json!({"type": "text", "text": prompt}));
 
-    let terminals = Terminals::new(options.workspace.clone());
+    let terminals = Terminals::new(
+        options.workspace.clone(),
+        layout::engine_home(options.workspace, options.entry.id),
+    );
     let ctx = Ctx {
         entry,
         workspace: options.workspace,

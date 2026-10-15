@@ -5,11 +5,13 @@
 //!
 //! The engines are installed on first use by the ACP path (see `acp::catalog`): `nodejs` and
 //! `npm` through apk (as root), then each engine's pinned package into the agent's global
-//! prefix (as the agent).
+//! prefix (as the engine user, see `acp::layout`).
 
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
+
+use crate::acp::layout;
 
 use crate::bash;
 use crate::files::Workspace;
@@ -149,13 +151,15 @@ fn engine_env(home: &Path, route: &Route) -> Vec<String> {
 
 /// What an ACP engine session starts with, for the catalogue's engine `engine_id`: its `KEY=VALUE`
 /// pairs (see [`engine_env`]) and the model id the engine is given. OpenCode's model id is its provider block's `<id>/<model>`, which its config
-/// names as the default model.
+/// names as the default model. `HOME` is the engine's own folder (see `acp::layout::engine_home`), not
+/// the workspace.
 pub(crate) fn acp_launch(
     workspace: &Workspace,
     engine_id: &str,
     model: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), String> {
-    let home = workspace.dir();
+    let home = layout::engine_home(workspace, engine_id);
+    let home = home.as_path();
     match engine_id {
         // Gemini CLI and Qwen Code read their model from the environment, so the session is given none.
         "gemini" => return Ok((engine_env(home, &gemini_route(model)?), None)),
@@ -186,12 +190,12 @@ pub(crate) fn acp_launch(
     Ok((engine_env(home, &route), route.model.clone()))
 }
 
-/// The folder Mistral Vibe keeps its config in: `/workspace/.engines/vibe-home`, beside the installed
-/// engines. It must not sit under `.plaza`: Vibe reads and writes its home, so a home there would give
-/// the engine the harness's own state, which the model's tools are kept from. The config holds only
+/// The folder Mistral Vibe keeps its config in: `vibe` under the engine's own home
+/// (`/workspace/.engines/home/vibe/vibe`). It is the engine's, so the engine can edit its own
+/// settings; it is outside `.plaza`, which the engine cannot read. The config holds only
 /// the gateway route and a placeholder key.
 pub(crate) fn vibe_home(workspace: &Workspace) -> PathBuf {
-    workspace.dir().join(".engines").join("vibe-home")
+    layout::engine_home(workspace, "vibe").join("vibe")
 }
 
 /// Writes Mistral Vibe's `config.toml` for the call's model, before the launch, so a new model takes
@@ -202,7 +206,9 @@ pub(crate) fn write_vibe_config(workspace: &Workspace, model: Option<&str>) -> R
     std::fs::create_dir_all(&home)
         .map_err(|err| format!("unavailable: cannot create {}: {err}", home.display()))?;
     std::fs::write(home.join("config.toml"), config)
-        .map_err(|err| format!("unavailable: cannot write {}: {err}", home.display()))
+        .map_err(|err| format!("unavailable: cannot write {}: {err}", home.display()))?;
+    // The harness wrote it as root; the engine keeps its own settings folder (see `acp::layout`).
+    layout::give_to_engine(&home)
 }
 
 /// The route for Mistral Vibe, which runs over ACP only and reads its provider and model from the file
@@ -871,7 +877,13 @@ mod tests {
     fn gemini_launch_points_at_the_gateway_and_takes_its_model_from_the_environment() {
         let workspace = scratch("gemini-launch");
         let (env, model) = acp_launch(&workspace, "gemini", None).expect("gemini");
-        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(
+            env[0],
+            format!(
+                "HOME={}",
+                workspace.dir().join(".engines/home/gemini").display()
+            )
+        );
         assert!(env.contains(&"GOOGLE_GEMINI_BASE_URL=http://plaza.gateway/gemini".to_string()));
         assert!(env.contains(&"GEMINI_API_KEY=plaza".to_string()));
         assert!(env.contains(&"GEMINI_CLI_TRUST_WORKSPACE=true".to_string()));
@@ -917,16 +929,27 @@ mod tests {
              alias = \"plaza\"\n"
         );
         assert!(config.contains("bypass_tool_permissions = false\n"));
-        // Beside the installed engines, and never under the harness's own state.
+        // Under the engine's own home, and never under the harness's own state.
         assert_eq!(
             vibe_home(&workspace),
-            workspace.dir().join(".engines").join("vibe-home")
+            workspace
+                .dir()
+                .join(".engines")
+                .join("home")
+                .join("vibe")
+                .join("vibe")
         );
         assert!(!vibe_home(&workspace).starts_with(workspace.plaza_dir()));
 
         let (env, model) = acp_launch(&workspace, "vibe", Some("openai/gpt-x")).expect("vibe");
         assert_eq!(model, None);
-        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(
+            env[0],
+            format!(
+                "HOME={}",
+                workspace.dir().join(".engines/home/vibe").display()
+            )
+        );
         assert!(env.contains(&format!("VIBE_HOME={}", vibe_home(&workspace).display())));
         assert!(env.contains(&"PLAZA_API_KEY=plaza".to_string()));
     }
@@ -960,7 +983,13 @@ mod tests {
     fn qwen_launch_follows_the_model_provider_to_its_gateway_route() {
         let workspace = scratch("qwen-launch");
         let (env, model) = acp_launch(&workspace, "qwen", None).expect("qwen");
-        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(
+            env[0],
+            format!(
+                "HOME={}",
+                workspace.dir().join(".engines/home/qwen").display()
+            )
+        );
         assert!(env.contains(&"OPENAI_API_KEY=plaza".to_string()));
         assert!(env.contains(&"OPENAI_BASE_URL=http://plaza.gateway/openai/v1".to_string()));
         assert!(!env.iter().any(|pair| pair.starts_with("OPENAI_MODEL=")));
@@ -1168,7 +1197,13 @@ mod tests {
     fn cline_launch_is_given_no_model_and_its_home() {
         let workspace = scratch("cline-launch");
         let (env, model) = acp_launch(&workspace, "cline", None).expect("cline");
-        assert_eq!(env[0], format!("HOME={}", workspace.dir().display()));
+        assert_eq!(
+            env[0],
+            format!(
+                "HOME={}",
+                workspace.dir().join(".engines/home/cline").display()
+            )
+        );
         assert_eq!(model, None);
         let (_, model) =
             acp_launch(&workspace, "cline", Some("anthropic/claude-x")).expect("a model");

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::layout;
 use crate::files::{Workspace, create_dirs, refuse_symlink_target, string_arg, write_atomic};
 
 /// The most `fs/read_text_file` returns, in bytes, after `line` and `limit` are applied.
@@ -96,13 +97,20 @@ pub fn write_text_file(workspace: &Workspace, params: &Value) -> Result<Value, S
         return Err(format!("{label} is a directory; this writes one file"));
     }
     // `resolve` proved the deepest existing ancestor is inside the workspace, so the folders
-    // created here are too.
+    // created here are too. The harness writes as root, so what it creates goes to the engine
+    // (see `layout`): the engine keeps editing what it asked to write.
+    let mut new_top = None;
     if let Some(parent) = file.parent() {
+        new_top = layout::first_missing(parent);
         create_dirs(parent)
             .map_err(|err| format!("cannot create the folders of {label}: {err}"))?;
     }
     write_atomic(&file, content.as_bytes())
         .map_err(|err| format!("cannot write {label}: {err}"))?;
+    if let Some(top) = new_top {
+        layout::give_to_engine(&top)?;
+    }
+    layout::give_to_engine(&file)?;
     Ok(Value::Null)
 }
 

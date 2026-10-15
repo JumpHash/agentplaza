@@ -131,9 +131,20 @@ on first use and checked before it runs. There are three ways to install one:
 - PyPI wheel: Mistral Vibe 2.25.0 (`vibe-acp`). `pip download --no-deps` fetches the exact wheel, which must
   match its sha256, and it is installed into its own venv under `/workspace/.engines/vibe-2.25.0` (the VM's
   Python must be 3.12 or later); its binary is linked into the same `bin`. Before each call the harness
-  writes Vibe's `$VIBE_HOME/config.toml` (inside `.plaza/`): one provider pointing at the gateway
-  (`openai`, `openrouter` or `opencode`; Mistral's own models go as `openrouter/mistralai/<model>`), the
-  call's model, and `bypass_tool_permissions = false`.
+  writes Vibe's `$VIBE_HOME/config.toml` (under the engine's home, `/workspace/.engines/home/vibe/vibe`):
+  one provider pointing at the gateway (`openai`, `openrouter` or `opencode`; Mistral's own models go as
+  `openrouter/mistralai/<model>`), the call's model, and `bypass_tool_permissions = false`.
+
+**Who the engine is.** In a root VM an engine runs as `apz-engine` (uid and gid 1100, added to
+`/etc/passwd` and `/etc/group` by the harness), with `HOME` its own folder `/workspace/.engines/home/<id>`
+(`crates/agent-harness/src/acp/layout.rs`). It can write only its job folder and that home. `.plaza`
+(the harness's state, mode 0700) and the installed engines (`/workspace/.npm-global` and
+`/workspace/.engines/<id>-<version>`, root-owned and read-only to it) are out of its reach, and the
+workspace root is sticky (mode 1777) so it cannot rename them. Installs run as the engine user into a
+folder it owns only for the install, and root takes that folder back afterwards, so no install script
+runs as root. The engine's own tools (its built-in edit and shell tools) never ask the client, so these
+permissions are what bound them; the actions it routes through ACP (`session/request_permission`,
+`fs/*`, `terminal/*`) still pass the per-action gate.
 
 The engine's model still comes from the hub: each
 request goes to `/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`),
