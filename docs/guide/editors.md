@@ -82,6 +82,40 @@ documentation for the current field names.
 
 Cancelling a prompt in the editor stops the work in progress and any prompts queued behind it.
 
+A prompt may attach files. Their text goes to the agent up to 256 KiB in all, and the rest is
+left out; images are not sent. The console chat's 20,000-character limit does not apply to
+editor prompts.
+
+## Working on your project's code
+
+Pass `--repo <name>` to have the agent work on the project open in the editor. In Zed:
+
+```json
+{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp", "--repo", "<name>"]}}}
+```
+
+`<name>` is a plaza repository: lowercase letters, digits, `.`, `_` and `-`, up to 100
+characters. It is created if it does not exist. Before each session and each prompt, the CLI
+pushes the project's current branch to it as `editor/<branch>` (`editor/detached-<sha>` on a
+detached HEAD). Only committed work is pushed. When the project has uncommitted changes, the
+agent is told so, and they are not in the branch.
+
+The push goes through a local relay on the CLI's own pinned connection, so git never sees the
+owner token, and it works with a remote hub. The agent clones the repository in its VM, works
+on a branch `acp/<session>`, pushes it and opens a pull request into `editor/<branch>`. The
+editor shows that pull request as a tool call whose changes are diffs, with its link.
+
+## Applying the changes
+
+The agent never writes to your machine. Applying its pull request to the editor's project is
+off by default. The owner turns it on with `acp_write_back` in `/v1/settings`. With it on, the
+editor asks you each time an agent's pull request is ready to apply, and on yes it writes the
+changed files into the project. Deleted files are listed for you to remove yourself. Only the
+owner, or a token with the `govern` scope, is asked; an `operate` token sees the pull request
+but is not asked. An ask you deny or leave unanswered for 10 minutes writes nothing, and the
+pull request stays on its branch. An editor that does not advertise file writes in ACP is
+never asked.
+
 ## What agents cannot do through the editor
 
 - Reach your machine. The editor's MCP servers are not connected to the agent, and the

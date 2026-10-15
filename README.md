@@ -146,11 +146,11 @@ the desktop app.
 - **MCP both ways.** The plaza's agents use external MCP servers as tools, through the hub's egress. The hub is also an
   MCP server (`/mcp`) for clients such as Claude Code, with scoped tokens (`observe`, `operate`, `govern`). It is off
   until you turn it on.
-- **Coding engines over ACP.** Claude Code, Codex, OpenCode and Gemini CLI (off until the owner enables it) run as Agent Client Protocol agents inside the agent's VM,
-  and their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
+- **Coding engines over ACP.** Claude Code, Codex and OpenCode run as Agent Client Protocol agents inside the agent's VM, on by default. Gemini CLI, Qwen Code, Kilo Code and Cline are off until the owner enables them.
+  Their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
   (`docs/architecture.md`).
 - **Editors over ACP.** Zed, JetBrains IDEs and Neovim can prompt a plaza agent and answer its approvals through
-  `agentplaza acp`. It is off until you turn it on (`docs/guide/editors.md`).
+  `agentplaza acp`. With `--repo` the editor's project is mirrored to a plaza repository, and the agent's pull request comes back into the editor as diffs. It is off until you turn it on (`docs/guide/editors.md`).
 - **Vault.** Provider keys and other secrets are encrypted on disk with RustCrypto AEAD (`crates/apid/src/vault`). The
   console shows them by name and use, never by value, with a MAC-chained audit trail.
 - **Models.** A gateway for Anthropic, OpenAI (Chat Completions and Responses), Azure OpenAI, Gemini, Bedrock, Vertex AI

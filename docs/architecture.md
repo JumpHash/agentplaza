@@ -110,12 +110,14 @@ model calls; three identical failing tool calls in a row (stuck); a `cancel` or
 `stop` from the host; a refusal. A conversation past `compress_at` is summarised
 (the `compressed` line records it), keeping the recent messages.
 
-**Coding engines over ACP.** `code_engine` runs Claude Code, Codex, OpenCode or Gemini CLI as
+**Coding engines over ACP.** `code_engine` runs Claude Code, Codex, OpenCode, Gemini CLI, Qwen Code, Kilo Code or Cline as
 an ACP agent (the Agent Client Protocol) inside the agent's VM. The harness is the
 ACP client (`crates/agent-harness/src/acp`), and the engine's adapter runs as a child
 process on its stdio. The adapters are pinned in `catalog.rs` with their registry
 sha512: `@agentclientprotocol/claude-agent-acp` 0.84.0, `@agentclientprotocol/codex-acp`
-2.0.1 and `opencode-ai` 1.18.34 (`opencode acp`) and `@google/gemini-cli` 0.62.0 (`gemini --acp`).
+2.0.1 and `opencode-ai` 1.18.34 (`opencode acp`), `@google/gemini-cli` 0.62.0 (`gemini --acp`),
+`@qwen-code/qwen-code` 0.24.7 (`qwen --acp`), `@kilocode/cli` 7.8.1 (`kilo acp`) and `cline` 3.0.67
+(`cline --acp`).
 They are installed in the VM on first use under `/workspace/.npm-global` and checked
 against the integrity before they run. The engine's model still comes from the hub: each
 request goes to `/internal/v1/agents/{cid}/gateway/...` (`crates/apid/src/llm_proxy.rs`),
@@ -123,6 +125,13 @@ so the same keys, model policy and metering apply, and no key enters the VM. Gem
 calls `/gateway/gemini/v1beta/models/<model>:generateContent`, `:streamGenerateContent` and
 `:countTokens`, and lists its models at `GET /gateway/gemini/v1beta/models`. The gateway
 puts the hub's Gemini key in `x-goog-api-key` and meters each call from `usageMetadata`.
+
+Qwen Code, Kilo Code and Cline are set up against the gateway as well. Qwen Code reads its
+OpenAI-compatible endpoint and key from the environment, which points at the gateway; Kilo Code
+gets the same from an OpenCode-style inline config in `KILO_CONFIG_CONTENT`; Cline's provider
+settings are written with `cline auth` before each call (`engines::setup_args`). Their model
+calls through the gateway are metered under their work item, as the other engines' are, so an
+editor's `usage_update` includes them (`crates/apid/src/usage.rs`).
 
 Every action an engine takes is a nested `tool_request` named `engine.read`,
 `engine.edit`, `engine.exec`, `engine.fetch` or `engine.other`, decided by the laws,
@@ -152,9 +161,11 @@ session (`session`, kept in `<workspace>/.plaza/engine-sessions.json`), and `mod
 and `mode` are session options. Bypass modes are refused whatever the engine offers.
 
 The owner's settings choose the engines. `engines_enabled` lists them (`claude`,
-`codex`, `opencode`, `gemini`; the offer shows only these). Gemini CLI is off by default,
-so the owner adds it. `engines_mode` is `acp` (the
-default) or `headless`, the one-process-per-job runner that stays for one release.
+`codex`, `opencode`, `gemini`, `qwen`, `kilo`, `cline`; the offer shows only these). Claude, Codex
+and OpenCode are on by default (`DEFAULT_ENGINE_IDS`); Gemini CLI, Qwen Code, Kilo Code and Cline
+are off until the owner adds them. `engines_mode` is `acp` (the
+default) or `headless`, the one-process-per-job runner that stays for one release. Gemini CLI,
+Qwen Code, Kilo Code and Cline have no headless run: they run only over ACP.
 
 **Internet access goes through the hub.** The harness runs a proxy on the
 guest's `127.0.0.1:3128` (`bash` gets `http(s)_proxy` set; the guest tools
@@ -290,6 +301,25 @@ servers are not connected (the session says so), and the hub never calls the edi
 `fs/*` or `terminal/*`: nothing reaches the owner's machine through the editor. An
 editor can prompt, watch and approve; it is not a host an agent can reach.
 
+**Repository mirror.** `agentplaza acp --repo <name>` mirrors the editor's project to a plaza
+repository before each session and each prompt, on branch `editor/<branch>` (`editor/detached-<sha>`
+for a detached HEAD). It pushes the committed HEAD only, and the session is told when the editor had
+uncommitted changes. The CLI sends the link as `_meta.agentplaza.repo` on `session/new`,
+`session/load`, `session/resume` and `session/prompt`. Git's push goes through a relay the CLI runs
+on loopback (`apps/cli/src/cmd/acp_git.rs`): it answers only under a random path prefix and only for
+that one repository, and it forwards each request on the CLI's own pinned client, so git never holds
+the owner token. The hub's owner routes `GET/POST /v1/git/smart/<repo>/{info/refs,git-upload-pack,git-receive-pack}`
+relay the smart-HTTP to the forge as its admin (`crates/apid/src/git.rs`). The agent works on
+`acp/<session>` cloned from that branch and opens a pull request into `editor/<branch>`; the pull
+request comes back to the editor as a `tool_call` of diffs.
+
+**Write-back.** Off by default: the owner sets `acp_write_back` in `/v1/settings`
+(`crates/apid/src/settings.rs`). With it on, and only for a caller that may govern, an editor that
+advertised `fs.writeTextFile` is asked after the pull request's `tool_call` whether to apply its files
+(`session/request_permission`, id `apply-pr-<n>`, 10 minutes to answer). On apply the editor gets one
+`fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`. Deleted files are
+left for the owner. The agent never writes the project itself.
+
 ## The Lab (Foundry)
 
 The Foundry trains small models from the plaza's own records, serves them to
@@ -422,7 +452,7 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | hub as MCP server | `/v1/hub-mcp`, `/v1/hub-mcp/tokens`, `/v1/hub-mcp/calls`; the MCP endpoint itself is `POST /mcp` (bearer token) |
 | editors (ACP) | `GET /v1/acp` (WebSocket, subprotocol `apz.acp.v1`, owner or operate/govern token route, off until `acp_enabled`), `GET /v1/acp/sessions` |
 | vault | `/v1/vault` (`/seal`, `/unseal`, `/recovery`, `/rekey`, `/import`), `/v1/vault/secrets` (`/{id}`, `/value`, `/test`, `/rollback`), `/v1/vault/slots`, `/v1/vault/consumers`, `/v1/vault/audit` |
-| git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`) |
+| git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`), `/v1/git/smart/{repo}/{info/refs,git-upload-pack,git-receive-pack}` (the smart-HTTP of the ACP repository mirror, owner only) |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
 | workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults`, `/v1/workstations` (VMs on nodes, proxied to `noded`) |
