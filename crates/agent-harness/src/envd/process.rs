@@ -165,10 +165,11 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
     let cmd = shell_of(cmd, Path::exists);
     let args = string_list(process.get("args"), "process.args")?;
     let envs = string_map(process.get("envs"), "process.envs")?;
+    let base = ctx.workdir.as_ref().unwrap_or(&ctx.home);
     let dir = match process.get("cwd").and_then(Value::as_str) {
         Some(cwd) if Path::new(cwd).is_absolute() => PathBuf::from(cwd),
-        Some(cwd) => ctx.home.join(cwd),
-        None => ctx.home.clone(),
+        Some(cwd) => base.join(cwd),
+        None => base.clone(),
     };
     if !dir.is_dir() {
         return Err(invalid(format!("{} is not a directory", dir.display())));
@@ -188,7 +189,11 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
 
     // The guest's own environment (the proxy, the CA bundle, the PATH), then the sandbox's, then the
     // request's: the last value of a name wins.
-    let mut env = bash::agent_env(&ctx.home).map_err(|reason| RpcError::new("internal", reason))?;
+    // `PWD` names the directory as asked, so a shell's `pwd` shows `/home/user/…` and not the
+    // volume the home links to; the sandbox's or the request's own `PWD` still wins.
+    let mut env = bash::agent_env(&ctx.home)
+        .map_err(|reason| RpcError::new("internal", reason))?
+        .with_var("PWD", &dir.display().to_string());
     for (key, value) in ctx.env.iter().chain(envs.iter()) {
         env = env.with_var(key, value);
     }

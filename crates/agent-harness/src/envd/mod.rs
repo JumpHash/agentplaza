@@ -23,7 +23,7 @@
 //! - [`files`]: `GET/POST /files` — download and upload.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -67,6 +67,13 @@ pub struct Ctx {
     /// a request names `root`.
     pub uid: u32,
     pub gid: u32,
+    /// The sandbox user's own ids (`user`, E2B's default user): what a request that names `user`,
+    /// or `/init`'s `defaultUser: "user"`, runs as.
+    pub user_uid: u32,
+    pub user_gid: u32,
+    /// Where a process starts when its request names no `cwd` (`/init`'s `defaultWorkdir`, set by a
+    /// template's `WORKDIR`); `None` is `home`.
+    pub workdir: Option<PathBuf>,
     /// Environment variables every process gets (set by `POST /init` and at start).
     pub env: Vec<(String, String)>,
 }
@@ -271,8 +278,10 @@ fn dispatch(request: &Request, shared: &Shared) -> Reply {
 
 /// `POST /init`: merges `envVars` into the context every later process gets, sets the clock when
 /// `timestamp` (RFC 3339) is given, and mixes `entropy` (64 hex digits; a plaza extension) into the
-/// kernel pool. The other fields (`accessToken`, `defaultUser`,
-/// `defaultWorkdir`) are accepted and not applied: the sandbox's user and home are fixed.
+/// kernel pool. `defaultUser` (`user` or `root`, the guest's two users) and `defaultWorkdir` (an
+/// absolute directory) set who a request that names no user runs as and where a process that names no
+/// `cwd` starts: a template build sets them from its last `USER` and `WORKDIR`. `accessToken` is
+/// accepted and not applied (vsockd checks the token).
 fn init(request: &Request, shared: &Shared) -> Reply {
     let body = match unary_body(&request.body) {
         Ok(body) => body,
@@ -292,11 +301,42 @@ fn init(request: &Request, shared: &Shared) -> Reply {
             }
         }
     }
-    if !vars.is_empty() {
+    let user = match body.get("defaultUser").and_then(Value::as_str) {
+        None | Some("") => None,
+        Some("root") => Some(true),
+        Some("user") => Some(false),
+        Some(other) => {
+            return error_reply(&RpcError::new(
+                "invalid_argument",
+                format!("defaultUser {other}: the sandbox's users are user and root"),
+            ));
+        }
+    };
+    let workdir = match body.get("defaultWorkdir").and_then(Value::as_str) {
+        None | Some("") => None,
+        Some(dir) if Path::new(dir).is_absolute() && Path::new(dir).is_dir() => {
+            Some(PathBuf::from(dir))
+        }
+        Some(dir) => {
+            return error_reply(&RpcError::new(
+                "invalid_argument",
+                format!("defaultWorkdir {dir} is not an absolute directory"),
+            ));
+        }
+    };
+    {
         let mut ctx = write_lock(shared);
         for (key, value) in vars {
             ctx.env.retain(|(name, _)| *name != key);
             ctx.env.push((key, value));
+        }
+        match user {
+            Some(true) => (ctx.uid, ctx.gid) = (0, 0),
+            Some(false) => (ctx.uid, ctx.gid) = (ctx.user_uid, ctx.user_gid),
+            None => {}
+        }
+        if workdir.is_some() {
+            ctx.workdir = workdir;
         }
     }
     if let Some(timestamp) = body.get("timestamp").and_then(Value::as_str) {
@@ -418,30 +458,33 @@ fn is_connect_stream(request: &Request) -> bool {
         .is_some_and(|value| value.starts_with("application/connect+json"))
 }
 
-/// A snapshot of the context for one request. A request that names `root` (in a basic
-/// `Authorization` header, whose user is `root`, or a `username=root` query) runs as root.
+/// A snapshot of the context for one request. A request that names `root` or `user` (in a basic
+/// `Authorization` header, whose user it is, or a `username=` query) runs as that user; one that names
+/// neither runs as the default user.
 fn request_context(request: &Request, shared: &Shared) -> Ctx {
     let mut ctx = read_lock(shared).clone();
-    if asks_for_root(request) {
-        ctx.uid = 0;
-        ctx.gid = 0;
+    match named_user(request).as_deref() {
+        Some("root") => (ctx.uid, ctx.gid) = (0, 0),
+        Some("user") => (ctx.uid, ctx.gid) = (ctx.user_uid, ctx.user_gid),
+        _ => {}
     }
     ctx
 }
 
-fn asks_for_root(request: &Request) -> bool {
-    if request.query.split('&').any(|pair| pair == "username=root") {
-        return true;
+fn named_user(request: &Request) -> Option<String> {
+    if let Some(name) = request
+        .query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("username="))
+    {
+        return Some(name.to_string());
     }
-    request
-        .header("authorization")
-        .and_then(|value| value.strip_prefix("Basic "))
-        .and_then(|encoded| {
-            base64::engine::general_purpose::STANDARD
-                .decode(encoded.trim())
-                .ok()
-        })
-        .is_some_and(|credentials| credentials.starts_with(b"root:"))
+    let encoded = request.header("authorization")?.strip_prefix("Basic ")?;
+    let credentials = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let (user, _) = std::str::from_utf8(&credentials).ok()?.split_once(':')?;
+    Some(user.to_string())
 }
 
 /// Calls a unary RPC; `Err` is the Connect error.
@@ -883,6 +926,9 @@ pub(crate) mod test_support {
             home: std::env::temp_dir(),
             uid: owner.uid(),
             gid: owner.gid(),
+            user_uid: owner.uid(),
+            user_gid: owner.gid(),
+            workdir: None,
             env: Vec::new(),
         }
     }
@@ -1259,5 +1305,80 @@ mod tests {
         assert!(bad.starts_with(b"HTTP/1.1 400"));
         let (head, _) = split_response(&bad);
         assert!(head.starts_with("HTTP/1.1 400"));
+    }
+
+    #[test]
+    fn init_sets_the_default_user_and_working_directory() {
+        let shared = shared_of(&test_ctx());
+        let dir = std::env::temp_dir().join(format!("apz-envd-workdir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = json!({"defaultUser": "user", "defaultWorkdir": dir}).to_string();
+        let init = exchange(
+            &shared,
+            &raw("POST", "/init", "application/json", body.as_bytes()),
+        );
+        assert!(init.starts_with(b"HTTP/1.1 204"));
+        assert_eq!(read_lock(&shared).workdir.as_deref(), Some(dir.as_path()));
+        let (messages, end) = stream_on(
+            &shared,
+            "/process.Process/Start",
+            json!({"process": {"cmd": "sh", "args": ["-c", "pwd"]}}),
+        );
+        assert!(end.get("error").is_none(), "{end}");
+        let stdout: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| m.pointer("/event/data/stdout"))
+            .flat_map(|data| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(data.as_str().unwrap_or(""))
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(stdout, format!("{}\n", dir.display()).into_bytes());
+
+        for bad in [
+            json!({"defaultUser": "nobody"}),
+            json!({"defaultWorkdir": "relative/dir"}),
+            json!({"defaultWorkdir": dir.join("missing")}),
+        ] {
+            let reply = exchange(
+                &shared,
+                &raw(
+                    "POST",
+                    "/init",
+                    "application/json",
+                    bad.to_string().as_bytes(),
+                ),
+            );
+            assert!(reply.starts_with(b"HTTP/1.1 400"), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_process_started_through_a_link_sees_the_link_as_its_pwd() {
+        let shared = shared_of(&test_ctx());
+        let base = std::env::temp_dir().join(format!("apz-envd-pwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        let link = base.join("link");
+        let (messages, end) = stream_on(
+            &shared,
+            "/process.Process/Start",
+            json!({"process": {"cmd": "sh", "args": ["-c", "pwd"], "cwd": link}}),
+        );
+        assert!(end.get("error").is_none(), "{end}");
+        let stdout: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| m.pointer("/event/data/stdout"))
+            .flat_map(|data| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(data.as_str().unwrap_or(""))
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(stdout, format!("{}\n", link.display()).into_bytes());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

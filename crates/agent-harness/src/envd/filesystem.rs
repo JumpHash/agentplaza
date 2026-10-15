@@ -613,6 +613,9 @@ pub(super) mod test_support {
                 home: self.0.clone(),
                 uid: meta.uid(),
                 gid: meta.gid(),
+                user_uid: meta.uid(),
+                user_gid: meta.gid(),
+                workdir: None,
                 env: Vec::new(),
             }
         }
