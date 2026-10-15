@@ -10,8 +10,12 @@ apz-http.workspace = true
 apz-os = { path = "../apz-os" }
 apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }
+# Transfers carry their chunks as base64 in JSON (`migrate`).
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Warm templates are keyed by the SHA-256 of their images and shape (`templates`).
+sha2.workspace = true
 vmm = { path = "../vmm" }
 
 [lib]

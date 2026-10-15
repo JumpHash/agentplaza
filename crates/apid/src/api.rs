@@ -43,6 +43,25 @@ pub fn router() -> Router<App> {
                 &format!("/v1/runs/{}/input", p.get("id")),
                 &req.body,
             )
+        })
+        // The hub machine's shared data volumes: read-only images agents mount at /data/<name>.
+        .get("/v1/volumes", |app, _, _| {
+            app.noded.proxy("GET", "/v1/volumes", b"")
+        })
+        .post("/v1/volumes", |app, req, _| {
+            app.noded.proxy("POST", "/v1/volumes", &req.body)
+        })
+        .delete("/v1/volumes/{name}", |app, _, p| {
+            app.noded
+                .proxy("DELETE", &format!("/v1/volumes/{}", p.get("name")), b"")
+        })
+        // The hub machine's warm templates (new agents and sandboxes restore one instead of booting).
+        .get("/v1/templates", |app, _, _| {
+            app.noded.proxy("GET", "/v1/templates", b"")
+        })
+        .delete("/v1/templates/{key}", |app, _, p| {
+            app.noded
+                .proxy("DELETE", &format!("/v1/templates/{}", p.get("key")), b"")
         });
     let router = events::routes(router);
     let router = settings::routes(router);
@@ -72,6 +91,11 @@ pub fn router() -> Router<App> {
     let router = crate::rules::routes(router);
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
+    let router = crate::sleep::routes(router);
+    let router = crate::placement::routes(router);
+    let router = crate::vm_snapshots::routes(router);
+    let router = crate::e2b::routes(router);
+    let router = crate::egress_inject::routes(router);
     let router = crate::roles_custom::routes(router);
     let router = crate::agent_proposals::routes(router);
     let router = crate::nodes::routes(router);

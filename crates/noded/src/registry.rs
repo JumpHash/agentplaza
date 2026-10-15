@@ -30,7 +30,9 @@
 //! keepalive agent of that role, booted exactly as the role fleet boots its VMs.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,10 +41,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
 use crate::fleet::{Fleet, agent_flags};
+use crate::snapshots::{self, SnapshotStore, SnapshotView};
+use crate::volumes::VolumeStore;
+use vmm::clonefile::clone_file;
 use vmm::spawner::{
-    self, MAX_GUEST_CID, MIN_GUEST_CID, SpawnError, VmExit, VmHandle, VmRuntime, VmSpec,
-    VsockConfig,
+    self, DataVolume, MAX_GUEST_CID, MIN_GUEST_CID, SnapshotInfo, SnapshotKind, SpawnError, VmExit,
+    VmHandle, VmRuntime, VmSpec, VsockConfig,
 };
+
+/// The most forks one `fork` request may make.
+pub const MAX_FORKS: u32 = 8;
+
+/// The states a VM may be in while a restart, wipe or stop operates on it: every state but asleep,
+/// which has no process to stop.
+const AWAKE: [VmState; 4] = [
+    VmState::Running,
+    VmState::Paused,
+    VmState::Exited,
+    VmState::Killed,
+];
 
 /// The most VMs one run may have (`n`).
 pub const MAX_VMS: u32 = 64;
@@ -78,6 +95,32 @@ const CONSOLE: &str = "console=ttyS0";
 /// long *outside* the run's lock, so its polls stay non-blocking and no other
 /// caller of the run can be starved by them.
 const WATCH_INTERVAL: Duration = Duration::from_millis(5);
+
+/// The newest a snapshot may be for a recovery to boot from it, in milliseconds: a day. An older
+/// snapshot is a stale copy of an agent, so the recovery boots the VM cold instead.
+const RECOVERY_SNAPSHOT_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// How many recoveries one VM may have within [`RECOVERY_WINDOW_MS`]. A VM that keeps crashing
+/// is a crash loop: past this it stays exited, so the node does not boot it again in a tight loop.
+const RECOVERY_LIMIT: usize = 3;
+
+/// The window [`RECOVERY_LIMIT`] counts recoveries in, in milliseconds: ten minutes.
+const RECOVERY_WINDOW_MS: u64 = 10 * 60 * 1000;
+
+/// Whether noded recovers a VM that stops by itself (see [`set_crash_recovery`]). Set once at
+/// start-up from `--no-recover`, and on by default.
+static CRASH_RECOVERY: AtomicBool = AtomicBool::new(true);
+
+/// Turns crash recovery on or off for the whole daemon: `--no-recover` turns it off. A VM that
+/// stops by itself while it is off stays exited, as it did before recovery existed.
+pub fn set_crash_recovery(on: bool) {
+    CRASH_RECOVERY.store(on, Ordering::SeqCst);
+}
+
+/// Whether crash recovery is on (see [`set_crash_recovery`]).
+fn crash_recovery() -> bool {
+    CRASH_RECOVERY.load(Ordering::SeqCst)
+}
 
 /// The guest images every run boots from.
 #[derive(Debug, Clone)]
@@ -135,6 +178,15 @@ pub struct CreateRun {
     /// a balloon.
     #[serde(default)]
     pub balloon_usable_mib: Option<u32>,
+    /// Whether the run's guests are sandboxes: E2B-compatible VMs whose guest runs the envd-compatible
+    /// daemon (`plaza.sandbox=1`) in place of an agent session. A sandbox has no role and is never a
+    /// keepalive agent; its workspace is a per-run copy of the base image, never a persistent one.
+    #[serde(default)]
+    pub sandbox: bool,
+    /// Shared data volumes (see [`crate::volumes`]) every VM of the run mounts read-only at
+    /// `/data/<name>`, by name. A VM with volumes boots cold: warm templates carry none.
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// The longest role name a run may carry.
@@ -188,6 +240,16 @@ impl CreateRun {
                 ));
             }
         }
+        if self.sandbox {
+            if self.role.is_some() {
+                return Err("a sandbox has no role".to_string());
+            }
+            if self.keepalive == Some(true) {
+                return Err(
+                    "a sandbox is not a keepalive agent: keepalive cannot be true".to_string(),
+                );
+            }
+        }
         if let Some(role) = &self.role {
             checked_role(role)?;
             if self.keepalive == Some(false) {
@@ -204,12 +266,20 @@ impl CreateRun {
     }
 
     /// Whether the run's guests are keepalive agents: always for a roled run,
-    /// otherwise the request's choice or the default its session implies.
+    /// never for a sandbox, otherwise the request's choice or the default its
+    /// session implies.
     fn keepalive(&self, session: RunSession) -> bool {
+        if self.sandbox {
+            return false;
+        }
         self.role.is_some() || self.keepalive.unwrap_or(session == RunSession::Agent)
     }
 
     /// The kernel command line of VM `index` of the run.
+    ///
+    /// A sandbox's VM names the harness and the sandbox flag, which makes its
+    /// guest run the envd-compatible daemon instead of an agent session; it is
+    /// never a keepalive agent, so it carries no keepalive flag.
     ///
     /// A roled VM is the role fleet's VM, flag for flag (see [`agent_flags`]),
     /// behind the console device and the churn count when the run has one. Any
@@ -220,6 +290,9 @@ impl CreateRun {
             Some(beats) => format!(" plaza.beats={beats}"),
             None => String::new(),
         };
+        if self.sandbox {
+            return format!("{CONSOLE}{beats} plaza.harness=1 plaza.sandbox=1 plaza.vm={index}");
+        }
         match &self.role {
             // An agent's console carries its session: kernel chatter below warnings
             // (the balloon's inflate retries, for one) stays out of it.
@@ -400,6 +473,19 @@ impl CidBook {
         held.retain(|(id, _)| id != run);
         held.len() != before
     }
+
+    /// Holds `cids` for `run` unless one of them is held already, and returns whether it did. The
+    /// check and the hold are one step under the book's lock, so two imports racing for one CID
+    /// cannot both take it.
+    fn hold_unless_busy(&self, run: &str, cids: Vec<u64>) -> bool {
+        let mut held = self.held();
+        let busy = busy(&held);
+        if cids.iter().any(|cid| busy.contains(cid)) {
+            return false;
+        }
+        put(&mut held, run, cids);
+        true
+    }
 }
 
 /// Every CID the runs in `held` hold.
@@ -433,6 +519,10 @@ struct RunMeta {
     keepalive: bool,
     /// The usable guest memory per VM at boot, when the VMs get a balloon.
     balloon_usable_mib: Option<u32>,
+    /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
+    sandbox: bool,
+    /// The shared data volumes every VM of the run carries (see [`CreateRun::volumes`]).
+    volumes: Vec<DataVolume>,
 }
 
 /// One VM of a run, as the creation paths build it: its own command line, its
@@ -541,6 +631,10 @@ impl std::error::Error for RefusedTransition {}
 pub enum VmState {
     /// The VM is up.
     Running,
+    /// The VM is up but paused: its vCPUs and devices are stopped, its process is not.
+    Paused,
+    /// The VM is stopped with a sleep snapshot, and wakes from it (see [`Registry::wake_vm`]).
+    Asleep,
     /// The VM stopped by itself (a guest shutdown, reset or fault).
     Exited,
     /// The VM was stopped by the host.
@@ -552,6 +646,8 @@ impl VmState {
     pub fn as_str(self) -> &'static str {
         match self {
             VmState::Running => "running",
+            VmState::Paused => "paused",
+            VmState::Asleep => "asleep",
             VmState::Exited => "exited",
             VmState::Killed => "killed",
         }
@@ -642,6 +738,8 @@ pub struct RunView<'a> {
     pub beats: Option<u32>,
     /// The role every VM of the run runs as, or `null`.
     pub role: Option<&'a str>,
+    /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
+    pub sandbox: bool,
     /// When the run was created, in milliseconds since the Unix epoch.
     pub created_at: u64,
     /// When the run ended, in milliseconds since the Unix epoch, or `null`.
@@ -794,6 +892,64 @@ fn persistent_workspace_path(persist_dir: &std::path::Path, cid: u64) -> PathBuf
         .join(format!("cid-{cid}.ext4"))
 }
 
+/// Whether a VM's kernel command line makes its guest a sandbox (`plaza.sandbox=1`).
+fn is_sandbox_cmdline(cmdline: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|word| word == "plaza.sandbox=1")
+}
+
+/// The workspace image of VM `index` of a sandbox run: `run_dir/workspace-{index}.ext4`. It is the
+/// name [`spawner::materialize_workspaces`] gives a run's copies, so a sandbox's copy and a template's
+/// clone of the same VM land at one path.
+fn sandbox_workspace_path(run_dir: &Path, index: usize) -> PathBuf {
+    run_dir.join(format!("workspace-{index}.ext4"))
+}
+
+/// The template start of one new VM of the shape `shape` (guest CID `cid`), whose workspace is `target`
+/// (`None` for a VM with no workspace volume): the template for the shape (built on first use) with
+/// `target` laid down as a clone of its disk. The result is the template's snapshot to restore the VM
+/// from, or `None` when the VM boots cold.
+fn template_start(
+    templates: &crate::templates::Templates,
+    shape: &crate::templates::Shape,
+    cid: u64,
+    target: Option<&Path>,
+) -> Option<PathBuf> {
+    let template = match templates.get_or_build(shape) {
+        Ok(template) => template,
+        Err(err) => {
+            eprintln!("noded: no warm template for cid {cid} ({err}); booting it cold");
+            return None;
+        }
+    };
+    let laid = match (target, template.workspace.as_deref()) {
+        (Some(target), Some(disk)) => target
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| vmm::clonefile::clone_file(disk, target))
+            .map(|_| ()),
+        // No disk on either side: the VM has no workspace volume, so there is nothing to lay down.
+        (None, None) => Ok(()),
+        // The template is of the VM's own shape, so its disk and the VM's always agree.
+        _ => Err(std::io::Error::other(
+            "the template and the VM disagree on a workspace volume",
+        )),
+    };
+    match laid {
+        Ok(()) => Some(template.snapshot),
+        Err(err) => {
+            if let Some(target) = target {
+                let _ = std::fs::remove_file(target);
+            }
+            eprintln!(
+                "noded: cannot copy the template disk for cid {cid} ({err}); booting it cold"
+            );
+            None
+        }
+    }
+}
+
 /// Replaces the workspace image `image` with a fresh copy of the base image
 /// `base`. The copy is made under a partial name and renamed over the image, as
 /// [`prepare_persistent_workspace`] makes its copies, so an interrupted wipe
@@ -809,6 +965,250 @@ fn replace_workspace(base: &std::path::Path, image: &std::path::Path) -> std::io
     std::fs::rename(&partial, image)
 }
 
+/// A VM an import brings to this node, its files already verified and staged (see `crate::migrate`).
+#[derive(Debug, Clone)]
+pub struct ImportedVm {
+    /// The guest CID the VM keeps (the hub's choice).
+    pub cid: u64,
+    /// The role the VM runs as, when it has one.
+    pub role: Option<String>,
+    /// vCPUs, as the source reported them.
+    pub vcpus: u32,
+    /// Guest memory in MiB, as the source reported it.
+    pub memory_mib: u32,
+    /// The usable guest memory at boot, when the VM has a balloon.
+    pub balloon_usable_mib: Option<u32>,
+    /// The VM's kernel command line.
+    pub cmdline: String,
+    /// A staged directory holding `memory.img` and `vmstate.json`: moved into the CID's sleep snapshot.
+    pub sleep_dir: PathBuf,
+    /// The staged `workspace.img`, moved to the VM's workspace image on this node. `None` for a VM
+    /// with no workspace volume: its export carries no workspace image.
+    pub workspace: Option<PathBuf>,
+}
+
+/// An asleep VM, as an export reads it (see [`Registry::asleep_vm`]).
+#[derive(Debug, Clone)]
+pub struct AsleepVm {
+    /// The VM's guest CID.
+    pub cid: u64,
+    /// The role the VM runs as, when it has one.
+    pub role: Option<String>,
+    /// The VM's cold spec: its command line, shape, balloon and workspace image.
+    pub spec: VmSpec,
+    /// The directory holding the VM's sleep snapshot.
+    pub sleep_dir: PathBuf,
+}
+
+/// Checks the shape an imported VM must have, as a create request would: a CID the guest range
+/// holds, a role, and the vCPUs and memory the spawner takes.
+pub fn check_import_shape(
+    cid: u64,
+    role: Option<&str>,
+    vcpus: u32,
+    memory_mib: u32,
+) -> Result<(), VmOpError> {
+    checked_base(cid, 1).map_err(VmOpError::Invalid)?;
+    if let Some(role) = role {
+        checked_role(role).map_err(VmOpError::Invalid)?;
+    }
+    spawner_vcpus(vcpus).map_err(VmOpError::Invalid)?;
+    spawner_memory_mib(memory_mib).map_err(VmOpError::Invalid)?;
+    Ok(())
+}
+
+/// Moves the file `from` to `to`, replacing it. A rename that cannot cross the file system is a
+/// sparse copy, then a removal of the original.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let partial = PathBuf::from(format!("{}.partial", to.display()));
+    vmm::spawner::copy_sparse(from, &partial)?;
+    fs::rename(&partial, to)?;
+    fs::remove_file(from)
+}
+
+/// A VM's control handle, and what an operation on the VM needs, taken out of its slot so the
+/// operation runs outside the run's lock. The slot is seated again by the operation's end.
+struct Held {
+    handle: VmHandle,
+    /// The spec the VM was booted from (its cold command line and its workspace image).
+    spec: VmSpec,
+    /// The snapshot directory the VM was restored from: the base its next snapshot is a diff over.
+    restored_from: Option<PathBuf>,
+    /// The state the VM was in when it was taken.
+    state: VmState,
+}
+
+/// A fork's VM, booted but not yet a run: it is registered only once every fork has booted.
+struct PreparedFork {
+    /// The fork run's id.
+    id: String,
+    cid: u64,
+    handle: VmHandle,
+    spec: VmSpec,
+    /// The fork's own workspace image, when the fork has a workspace volume.
+    workspace: Option<PathBuf>,
+    /// The fork's diff base (see [`SnapshotStore::stage_base`]); none for a fork booted cold from a
+    /// disk-only checkpoint.
+    base: Option<PathBuf>,
+}
+
+/// The state a VM is in once an operation that paused it is over: a running VM is resumed (a
+/// snapshot leaves its VM paused), a paused one stays paused.
+fn thaw(state: VmState, handle: &VmHandle) -> VmState {
+    match state {
+        VmState::Running => match handle.resume() {
+            Ok(()) => VmState::Running,
+            Err(err) => {
+                eprintln!("noded: a VM did not resume after its snapshot: {err}");
+                VmState::Paused
+            }
+        },
+        other => other,
+    }
+}
+
+/// Writes a snapshot of a VM into `dir` (created). A VM restored from a snapshot always writes a
+/// diff, over the memory it was restored from, so that memory is copied into `dir` first: `base` is
+/// the directory holding it.
+fn write_snapshot(
+    handle: &VmHandle,
+    base: Option<&Path>,
+    dir: &Path,
+) -> Result<SnapshotInfo, VmOpError> {
+    if let Some(base) = base {
+        snapshots::private_dir(dir)
+            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
+        clone_file(
+            &base.join(snapshots::MEMORY_FILE),
+            &dir.join(snapshots::MEMORY_FILE),
+        )
+        .map_err(|err| {
+            VmOpError::Failed(format!(
+                "cannot copy the memory the VM was restored from: {err}"
+            ))
+        })?;
+    }
+    handle
+        .snapshot(dir, SnapshotKind::Diff)
+        .map_err(|err| VmOpError::Failed(format!("the VM did not snapshot: {err}")))
+}
+
+/// Boots a VM from the checkpoint directory `snapshot`, with its workspace copied back from it, and
+/// returns the VM with the diff base its next snapshot is written over (staged from `snapshot`'s
+/// memory). Used by a restore (and its fallback) and by a fork. A disk-only checkpoint boots the VM
+/// cold from its disk, with no diff base.
+fn boot_from(
+    store: &SnapshotStore,
+    cid: u64,
+    spec: &VmSpec,
+    snapshot: &Path,
+) -> Result<(VmHandle, Option<PathBuf>), String> {
+    if let Some(workspace) = &spec.workspace {
+        clone_file(&snapshot.join(snapshots::WORKSPACE_FILE), workspace)
+            .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
+    }
+    if snapshots::is_disk_only(snapshot) {
+        let handle = spawner::spawn(spec.clone()).map_err(|err| err.to_string())?;
+        return Ok((handle, None));
+    }
+    let base = store
+        .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+        .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
+    let handle = spawner::spawn(VmSpec {
+        restore: Some(snapshot.to_path_buf()),
+        ..spec.clone()
+    })
+    .map_err(|err| err.to_string())?;
+    Ok((handle, Some(base)))
+}
+
+/// What a recovery of a VM that stopped by itself boots it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// The snapshot named `name`: the sleep snapshot, or a checkpoint.
+    From(String),
+    /// No snapshot is fresh enough: the VM boots cold from its spec.
+    Cold,
+    /// The VM has been recovered too often lately: it stays exited.
+    GiveUp,
+}
+
+/// Decides how to recover a VM that stopped by itself, from the snapshots it has (`snapshots`, its
+/// checkpoints and sleep snapshot) and the times its earlier recoveries started (`recent`, all of
+/// them; only those inside [`RECOVERY_WINDOW_MS`] count). The rate limit comes first: a VM in a
+/// crash loop is given up on whatever it has. Otherwise the newest snapshot taken within
+/// [`RECOVERY_SNAPSHOT_AGE_MS`] that has memory is the one to boot from, and with none the VM boots
+/// cold. A disk-only checkpoint (kind `disk`) has no memory to resume a running VM from, so it is
+/// never picked.
+pub(crate) fn recovery_decision(now: u64, snapshots: &[SnapshotView], recent: &[u64]) -> Recovery {
+    let recovered = recent
+        .iter()
+        .filter(|&&at| now.saturating_sub(at) < RECOVERY_WINDOW_MS)
+        .count();
+    if recovered >= RECOVERY_LIMIT {
+        return Recovery::GiveUp;
+    }
+    snapshots
+        .iter()
+        .filter(|view| view.kind != "disk")
+        .filter(|view| now.saturating_sub(view.taken_at_ms) <= RECOVERY_SNAPSHOT_AGE_MS)
+        .max_by_key(|view| view.taken_at_ms)
+        .map_or(Recovery::Cold, |view| Recovery::From(view.name.clone()))
+}
+
+/// Whether a run's VMs are recovered when they stop by themselves: a keepalive agent or a sandbox
+/// that does not churn. A frozen demo session and a churn run (`beats`) end by design, so their
+/// exit is their normal end and is never recovered.
+pub(crate) fn is_recoverable_run(keepalive: bool, sandbox: bool, beats: Option<u32>) -> bool {
+    (keepalive || sandbox) && beats.is_none()
+}
+
+/// Whether a VM's stop is one recovery takes over. Only a guest-initiated exit of a VM that was
+/// running counts: a kill (the host's stop, a wipe, a restart, a sleep, a move) is reported as
+/// [`VmExit::Killed`], and a paused or asleep VM is not one that ran on its own.
+pub(crate) fn recovers(exit: VmExit, state: VmState, recoverable: bool, enabled: bool) -> bool {
+    matches!(exit, VmExit::GuestExited { .. })
+        && state == VmState::Running
+        && recoverable
+        && enabled
+}
+
+/// Boots a recovered VM from its snapshot `name` in `store`, with the same CID and spec. A
+/// checkpoint's workspace is copied back, as a restore does; the sleep snapshot leaves the
+/// workspace as the stopped VM had it, as a wake does. Returns the VM and the diff base its next
+/// snapshot is written over.
+fn boot_recovered(
+    store: &SnapshotStore,
+    cid: u64,
+    spec: &VmSpec,
+    name: &str,
+) -> Result<(VmHandle, PathBuf), String> {
+    let snapshot = store.dir(cid, name);
+    let base = if name == snapshots::SLEEP {
+        snapshot.clone()
+    } else {
+        if let Some(workspace) = &spec.workspace {
+            let saved = snapshot.join(snapshots::WORKSPACE_FILE);
+            if saved.is_file() {
+                clone_file(&saved, workspace)
+                    .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
+            }
+        }
+        store
+            .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+            .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?
+    };
+    let handle = spawner::spawn(VmSpec {
+        restore: Some(snapshot),
+        ..spec.clone()
+    })
+    .map_err(|err| err.to_string())?;
+    Ok((handle, base))
+}
+
 /// The daemon's runs, in creation order.
 pub struct Registry {
     images: VmImages,
@@ -817,6 +1217,14 @@ pub struct Registry {
     /// Where keepalive runs' workspace images persist (`--persist-dir`), or
     /// `None` for the per-run copies.
     persist_dir: Option<PathBuf>,
+    /// Where VM snapshots are kept (`--snapshot-dir`), or `None` for a node that keeps none: every
+    /// snapshot operation is then refused with [`VmOpError::NoSnapshots`].
+    snapshots: Option<SnapshotStore>,
+    /// Warm templates (`crate::templates`): a new keepalive agent VM starts by restoring one instead
+    /// of booting. `None` boots every VM cold.
+    templates: Option<Arc<crate::templates::Templates>>,
+    /// The node's shared data volumes (`--volume-dir`), or `None` for a node that keeps none.
+    volumes: Option<Arc<VolumeStore>>,
     /// When this daemon started, in milliseconds since the Unix epoch: part of
     /// a run's workspace-directory name, because run ids restart with the
     /// daemon (a bare `run-{id}` would collide with the previous daemon's
@@ -845,6 +1253,9 @@ impl Registry {
             images,
             uds_dir,
             persist_dir: None,
+            snapshots: None,
+            templates: None,
+            volumes: None,
             epoch_ms: now_ms(),
             events,
             cids: Arc::new(CidBook::default()),
@@ -861,6 +1272,180 @@ impl Registry {
     pub fn with_persist_dir(mut self, persist_dir: Option<PathBuf>) -> Self {
         self.persist_dir = persist_dir;
         self
+    }
+
+    /// Keeps VM snapshots in `store` (see [`crate::snapshots`]); `None` keeps none.
+    pub fn with_snapshots(mut self, store: Option<SnapshotStore>) -> Self {
+        self.snapshots = store;
+        self
+    }
+
+    /// Keeps the node's shared data volumes in `store` (see [`crate::volumes`]); `None` keeps none, and
+    /// a run that names a volume is refused.
+    pub fn with_volumes(mut self, store: Option<VolumeStore>) -> Self {
+        self.volumes = store.map(Arc::new);
+        self
+    }
+
+    /// The node's volume store, if it keeps volumes.
+    pub fn volume_store(&self) -> Option<&VolumeStore> {
+        self.volumes.as_deref()
+    }
+
+    /// The data volumes a live run's VMs carry: volume name to the guest CIDs that mount it.
+    pub fn volumes_in_use(&self) -> std::collections::BTreeMap<String, Vec<u64>> {
+        let mut used: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+        for run in self.list() {
+            if run.volumes.is_empty() {
+                continue;
+            }
+            let inner = run.lock();
+            if !matches!(inner.state, RunState::Starting | RunState::Running) {
+                continue;
+            }
+            for cid in inner.vms.iter().filter_map(|slot| slot.guest_cid) {
+                for volume in &run.volumes {
+                    used.entry(volume.name.clone()).or_default().push(cid);
+                }
+            }
+        }
+        used
+    }
+
+    /// The volumes `names` name, as the VMs' specs carry them: each must be in the node's store.
+    fn resolve_volumes(&self, names: &[String]) -> Result<Vec<DataVolume>, String> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let store = self
+            .volumes
+            .as_deref()
+            .ok_or_else(|| "this node keeps no volumes".to_string())?;
+        let volumes = names
+            .iter()
+            .map(|name| {
+                store
+                    .image(name)
+                    .map(|image| DataVolume {
+                        name: name.clone(),
+                        image,
+                    })
+                    .ok_or_else(|| format!("no volume {name}"))
+            })
+            .collect::<Result<Vec<DataVolume>, String>>()?;
+        spawner::check_volumes(&volumes)?;
+        Ok(volumes)
+    }
+
+    /// Starts new keepalive agent VMs from warm templates kept in `templates` (see
+    /// [`crate::templates`]); `None` boots every VM cold.
+    pub fn with_templates(mut self, templates: Option<crate::templates::Templates>) -> Self {
+        self.templates = templates.map(Arc::new);
+        self
+    }
+
+    /// The node's warm templates, when it keeps them.
+    pub fn templates(&self) -> Option<&crate::templates::Templates> {
+        self.templates.as_deref()
+    }
+
+    /// For each planned VM of a keepalive run on a node with templates and persistent workspaces, and
+    /// for each VM of a sandbox run on a node with templates: the template to restore it from, when
+    /// its workspace could be laid down as a clone of the template's disk. A keepalive VM is new when
+    /// it has no persistent workspace yet; one that already has one (an agent coming back after a
+    /// restart of the node) boots cold from its own disk. A sandbox's workspace is its run's own, so
+    /// it is always new. A template that cannot be built is logged and the VM boots cold too.
+    ///
+    /// A node with no base image gives its keepalive VMs no workspace volume at all (their
+    /// `/workspace` lives in guest RAM): their template has no disk to lay down, and a new VM is
+    /// simply one being created now, whether or not the node has a persist directory.
+    fn template_starts(
+        &self,
+        id: &str,
+        meta: &RunMeta,
+        plans: &[VmPlan],
+        vcpus: u8,
+        memory_mib: usize,
+    ) -> Vec<Option<PathBuf>> {
+        let none = || vec![None; plans.len()];
+        let Some(templates) = &self.templates else {
+            return none();
+        };
+        // Templates carry no data volumes, and a restore must describe the machine it was taken of.
+        if !meta.volumes.is_empty() {
+            return none();
+        }
+        let base = self.images.workspace.as_deref();
+        if meta.sandbox {
+            // A sandbox's copy is the base image cloned into its run's directory, so without a base
+            // image there is no disk for its template to lay down.
+            let Some(base) = base else {
+                return none();
+            };
+            let run_dir = self.run_dir(id);
+            if let Err(err) = snapshots::private_dir(&run_dir) {
+                eprintln!(
+                    "noded: run {id}: cannot create {} ({err}); its sandboxes boot cold",
+                    run_dir.display()
+                );
+                return none();
+            }
+            return plans
+                .iter()
+                .enumerate()
+                .map(|(index, plan)| {
+                    let target = sandbox_workspace_path(&run_dir, index);
+                    let shape = self.template_shape(Some(base), meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, Some(&target))
+                })
+                .collect();
+        }
+        if !meta.keepalive {
+            return none();
+        }
+        match (base, &self.persist_dir) {
+            (None, _) => plans
+                .iter()
+                .map(|plan| {
+                    let shape = self.template_shape(None, meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, None)
+                })
+                .collect(),
+            (Some(_), None) => none(),
+            (Some(base), Some(persist)) => plans
+                .iter()
+                .map(|plan| {
+                    let image = persistent_workspace_path(persist, plan.vsock_cid);
+                    if image.exists() {
+                        return None;
+                    }
+                    let shape = self.template_shape(Some(base), meta, plan, vcpus, memory_mib);
+                    template_start(templates, &shape, plan.vsock_cid, Some(&image))
+                })
+                .collect(),
+        }
+    }
+
+    /// The template shape of one planned VM: the run's kernel, initrd and base image (none for a VM
+    /// with no workspace volume), and the VM's own command line (sandbox or agent, whichever the plan
+    /// carries).
+    fn template_shape(
+        &self,
+        base: Option<&Path>,
+        meta: &RunMeta,
+        plan: &VmPlan,
+        vcpus: u8,
+        memory_mib: usize,
+    ) -> crate::templates::Shape {
+        crate::templates::Shape {
+            kernel: self.images.kernel.clone(),
+            initrd: Some(self.images.initrd.clone()),
+            workspace_base: base.map(Path::to_path_buf),
+            vcpus,
+            memory_mib,
+            balloon: meta.balloon_usable_mib,
+            cmdline: plan.cmdline.clone(),
+        }
     }
 
     /// Draws the runs' CIDs (those whose create request names none) from
@@ -900,6 +1485,7 @@ impl Registry {
     pub fn create_run(&self, request: &CreateRun) -> Result<Arc<Run>, String> {
         let (vms, named) = request.checked()?;
         let count = u32::try_from(vms).map_err(|_| "n is too large".to_string())?;
+        let volumes = self.resolve_volumes(&request.volumes)?;
         // The id is reserved before the CIDs, because the book keys a span by
         // the run that holds it: allocating and holding happen under the
         // book's lock, so two creates racing here never draw the same span.
@@ -931,6 +1517,8 @@ impl Registry {
                 role: request.role.clone(),
                 keepalive,
                 balloon_usable_mib: request.balloon_usable_mib,
+                sandbox: request.sandbox,
+                volumes,
             },
             plans,
         )
@@ -967,6 +1555,8 @@ impl Registry {
                 // Fleet VMs are long-lived keepalive agents.
                 keepalive: true,
                 balloon_usable_mib: fleet.balloon_usable_mib(),
+                sandbox: false,
+                volumes: Vec::new(),
             },
             plans,
         )
@@ -1003,6 +1593,11 @@ impl Registry {
         let memory_mib =
             spawner_memory_mib(meta.memory_mib).map_err(|err| self.give_back(&id, err))?;
         let vms = plans.len();
+        // New agent VMs and sandboxes start from a warm template where the node keeps them: their
+        // workspace is laid down here as a clone of the template's disk, which the workspace step
+        // below then finds in place (a keepalive one by `prepare_persistent_workspace`, a sandbox's
+        // by the sandbox branch).
+        let starts = self.template_starts(&id, &meta, &plans, vcpus, memory_mib);
         // A run's workspace volume is writable, so every VM of the run gets its
         // own copy of the base image: one copy per VM, in the run's own
         // directory under the daemon's UDS root. The directory is created
@@ -1026,6 +1621,30 @@ impl Registry {
                         )
                     })?,
             ),
+            // A sandbox's workspaces are per run, never the persistent images: each VM's copy is the
+            // base image cloned into the run's directory, except a VM a template started, whose copy
+            // is already the template's disk (see `template_starts`).
+            (Some(base), _) if meta.sandbox => {
+                let run_dir = self.run_dir(&id);
+                let copies = snapshots::private_dir(&run_dir)
+                    .map_err(|err| format!("cannot create {}: {err}", run_dir.display()))
+                    .and_then(|()| {
+                        (0..vms)
+                            .map(|index| {
+                                let copy = sandbox_workspace_path(&run_dir, index);
+                                if starts[index].is_some() {
+                                    return Ok(copy);
+                                }
+                                vmm::clonefile::clone_file(base, &copy)
+                                    .map(|_| copy)
+                                    .map_err(|err| {
+                                        format!("cannot prepare the run's workspace images: {err}")
+                                    })
+                            })
+                            .collect::<Result<Vec<PathBuf>, String>>()
+                    });
+                Some(copies.map_err(|err| self.give_back(&id, err))?)
+            }
             (Some(base), _) => {
                 // The directory name carries the daemon's start stamp as well
                 // as the run id: run ids restart with the daemon, so a bare
@@ -1070,13 +1689,20 @@ impl Registry {
                         .and_then(|images| images.get(i))
                         .cloned(),
                     balloon,
+                    restore: None,
+                    volumes: meta.volumes.clone(),
                 }
             })
             .collect();
         let run = self.insert(id, meta);
         // `spawn_each` calls this exactly `vms` times with the ids `0..vms`, and
-        // `specs` has `vms` entries: the index is in range.
-        let boot = spawner::spawn_each(vms, |i| specs[i as usize].clone());
+        // `specs` has `vms` entries: the index is in range. A VM with a template start is restored
+        // from it; the spec kept in its slot stays the cold one, so a restart boots it as usual.
+        let boot = spawner::spawn_each(vms, |i| {
+            let mut spec = specs[i as usize].clone();
+            spec.restore = starts[i as usize].clone();
+            spec
+        });
         match boot {
             Ok(handles) => {
                 let mut inner = run.lock();
@@ -1116,6 +1742,7 @@ impl Registry {
                         // The capture was empty at boot (the serial delta
                         // ticker starts at the first byte the guest writes).
                         serial_seen: 0,
+                        restored_from: None,
                     })
                     .collect();
                 // The run is `running` and every VM with it: published under
@@ -1187,13 +1814,802 @@ impl Registry {
     /// the run's other VMs carry on. Nothing boots it again.
     pub fn stop_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
-        let (mut handle, _spec) = run.take_vm(vm)?;
+        let mut handle = run.take_vm(vm, &AWAKE)?.handle;
         if let Err(err) = handle.kill() {
             run.return_vm(vm, handle);
             return Err(VmOpError::Refused(err.to_string()));
         }
         run.set_vm_killed(vm, handle);
         Ok(run)
+    }
+
+    /// Pauses VM `vm` of run `run`: its vCPUs and devices stop, its process stays. Only a running VM
+    /// pauses; [`Registry::resume_vm`] lets it run again.
+    pub fn pause_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Running])?;
+        if let Err(err) = held.handle.pause() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        run.return_vm_in(vm, held.handle, VmState::Paused);
+        Ok(run)
+    }
+
+    /// Lets paused VM `vm` of run `run` run again.
+    pub fn resume_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Paused])?;
+        if let Err(err) = held.handle.resume() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        run.return_vm_in(vm, held.handle, VmState::Running);
+        Ok(run)
+    }
+
+    /// Puts VM `vm` of run `run` to sleep: its state goes to the sleep snapshot, its process stops,
+    /// and it waits as `asleep` until [`Registry::wake_vm`]. A paused VM is snapshotted as it is; a
+    /// running one is paused for the snapshot. The sleep snapshot is written beside the old one and
+    /// renamed over it once the VM is stopped (see [`crate::snapshots`]). With `keep_memory` false
+    /// the VM is stopped without a memory image, any sleep snapshot is removed, and it returns no
+    /// snapshot: it wakes cold.
+    pub fn sleep_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        keep_memory: bool,
+    ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let Held {
+            mut handle,
+            restored_from,
+            state,
+            ..
+        } = held;
+        if !keep_memory {
+            if let Err(err) = handle.kill() {
+                let state = thaw(state, &handle);
+                run.return_vm_in(vm, handle, state);
+                return Err(VmOpError::Refused(err.to_string()));
+            }
+            if store.view(cid, snapshots::SLEEP).is_some() {
+                if let Err(err) = store.remove(cid, snapshots::SLEEP) {
+                    run.set_vm_killed(vm, handle);
+                    return Err(VmOpError::Failed(format!(
+                        "VM {vm} stopped, but its stale sleep snapshot could not be removed: {err}"
+                    )));
+                }
+            }
+            run.return_vm_in(vm, handle, VmState::Asleep);
+            return Ok((run, None));
+        }
+        let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
+        let _ = fs::remove_dir_all(&partial);
+        let info = match write_snapshot(&handle, restored_from.as_deref(), &partial) {
+            Ok(info) => info,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&partial);
+                let state = thaw(state, &handle);
+                run.return_vm_in(vm, handle, state);
+                return Err(err);
+            }
+        };
+        if let Err(err) = handle.kill() {
+            let _ = fs::remove_dir_all(&partial);
+            let state = thaw(state, &handle);
+            run.return_vm_in(vm, handle, state);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        if let Err(err) = store.install(cid, &partial, snapshots::SLEEP) {
+            run.set_vm_killed(vm, handle);
+            return Err(VmOpError::Failed(format!(
+                "VM {vm} stopped, but its sleep snapshot could not be kept: {err}"
+            )));
+        }
+        run.return_vm_in(vm, handle, VmState::Asleep);
+        let Some(mut view) = store.view(cid, snapshots::SLEEP) else {
+            return Err(VmOpError::Failed(format!(
+                "VM {vm} is asleep, but its sleep snapshot cannot be read"
+            )));
+        };
+        view.paused_ms = info.paused_ms;
+        Ok((run, Some(view)))
+    }
+
+    /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
+    /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
+    /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
+    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<Arc<Run>, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let sleep = store.dir(cid, snapshots::SLEEP);
+        // A cold wake, or a VM with no sleep snapshot, boots from its spec; the sleep snapshot itself
+        // is left as it is.
+        let warm = (!cold && store.view(cid, snapshots::SLEEP).is_some()).then(|| sleep.clone());
+        // A VM that arrived asleep from another node has never run here: there is no old handle to
+        // swap out, only its spec.
+        if let Some(spec) = run.take_unbooted(vm)? {
+            return match spawner::spawn(VmSpec {
+                restore: warm.clone(),
+                ..spec.clone()
+            }) {
+                Ok(fresh) => {
+                    run.seat_first(vm, spec, fresh, warm);
+                    Ok(run)
+                }
+                Err(err) => {
+                    run.untake_unbooted(vm, spec);
+                    Err(VmOpError::Failed(format!(
+                        "VM {vm} did not wake from its imported snapshot: {err}"
+                    )))
+                }
+            };
+        }
+        let Held {
+            handle: killed,
+            spec,
+            ..
+        } = run.take_vm(vm, &[VmState::Asleep])?;
+        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawner::spawn(VmSpec {
+            restore: None,
+            ..spec
+        }) {
+            Ok(fresh) => Ok((fresh, None)),
+            Err(cold) => Err(VmOpError::Failed(match warm_err {
+                Some(err) => format!("VM {vm} did not wake ({err}) and did not boot ({cold})"),
+                None => format!("VM {vm} did not boot ({cold})"),
+            })),
+        };
+        let woken = match warm {
+            Some(base) => match spawner::spawn(VmSpec {
+                restore: Some(base.clone()),
+                ..spec.clone()
+            }) {
+                Ok(fresh) => Ok((fresh, Some(base))),
+                Err(err) => {
+                    eprintln!(
+                        "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
+                        run.id
+                    );
+                    boot_cold(spec, Some(err.to_string()))
+                }
+            },
+            None => boot_cold(spec, None),
+        };
+        match woken {
+            Ok((fresh, base)) => {
+                run.seat_vm(vm, killed, fresh, base);
+                Ok(run)
+            }
+            Err(err) => {
+                run.return_vm(vm, killed);
+                Err(err)
+            }
+        }
+    }
+
+    /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
+    /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
+    /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
+    /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
+    /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
+    /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
+    pub fn checkpoint_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        label: &str,
+        keep_memory: bool,
+    ) -> Result<SnapshotView, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let taken = if keep_memory {
+            Self::checkpoint_held(store, cid, &held, label)
+        } else {
+            Self::checkpoint_disk(store, cid, &held, label)
+        };
+        let state = thaw(held.state, &held.handle);
+        run.return_vm_in(vm, held.handle, state);
+        let view = taken?;
+        store.prune(cid);
+        Ok(view)
+    }
+
+    /// A disk-only checkpoint of a held VM: its workspace copied while the VM is paused (left paused,
+    /// as [`Registry::checkpoint_held`] leaves it), and the marker that says there is no memory.
+    fn checkpoint_disk(
+        store: &SnapshotStore,
+        cid: u64,
+        held: &Held,
+        label: &str,
+    ) -> Result<SnapshotView, VmOpError> {
+        let Some(workspace) = &held.spec.workspace else {
+            return Err(VmOpError::Invalid(
+                "this VM has no workspace volume, so there is no disk to keep".to_string(),
+            ));
+        };
+        store.prepare(cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
+        })?;
+        let taken_at_ms = now_ms();
+        let name = SnapshotStore::checkpoint_name(label, taken_at_ms);
+        let dir = store.dir(cid, &name);
+        held.handle
+            .pause()
+            .map_err(|err| VmOpError::Refused(err.to_string()))?;
+        let kept = snapshots::private_dir(&dir)
+            .and_then(|()| clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)).map(|_| ()))
+            .and_then(|()| {
+                fs::File::open(dir.join(snapshots::WORKSPACE_FILE)).and_then(|copy| copy.sync_all())
+            })
+            .and_then(|()| snapshots::write_disk_marker(&dir, taken_at_ms));
+        if let Err(err) = kept {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(VmOpError::Failed(format!(
+                "cannot copy the workspace into checkpoint {name}: {err}"
+            )));
+        }
+        store
+            .view(cid, &name)
+            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))
+    }
+
+    /// The checkpoints of VM `vm` of run `run`, newest first.
+    pub fn checkpoints(&self, run: &str, vm: u32) -> Result<Vec<SnapshotView>, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        Ok(store.checkpoints(run.vm_cid(vm)?))
+    }
+
+    /// Deletes checkpoint `name` of VM `vm` of run `run`. The sleep snapshot is not a checkpoint and
+    /// is not deleted this way.
+    pub fn delete_checkpoint(&self, run: &str, vm: u32, name: &str) -> Result<(), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        if !snapshots::is_checkpoint_name(name) || store.view(cid, name).is_none() {
+            return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+        }
+        store
+            .remove(cid, name)
+            .map_err(|err| VmOpError::Failed(format!("cannot delete checkpoint {name}: {err}")))
+    }
+
+    /// Restores VM `vm` of run `run` to checkpoint `name`: the VM is checkpointed first (the
+    /// `before-restore` checkpoint, returned), then stopped and booted from `name` with its workspace
+    /// copied back. If the restore fails, the VM is put back on the `before-restore` checkpoint (or
+    /// booted cold, if that fails too) and the restore's error is returned.
+    pub fn restore_checkpoint(
+        &self,
+        run: &str,
+        vm: u32,
+        name: &str,
+    ) -> Result<(Arc<Run>, SnapshotView), VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        if !snapshots::is_checkpoint_name(name) || store.view(cid, name).is_none() {
+            return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+        }
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        let safety = match Self::checkpoint_held(store, cid, &held, "before-restore") {
+            Ok(view) => view,
+            Err(err) => {
+                let state = thaw(held.state, &held.handle);
+                run.return_vm_in(vm, held.handle, state);
+                return Err(err);
+            }
+        };
+        let Held {
+            mut handle,
+            spec,
+            state,
+            ..
+        } = held;
+        if let Err(err) = handle.kill() {
+            let state = thaw(state, &handle);
+            run.return_vm_in(vm, handle, state);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        let snapshot = store.dir(cid, name);
+        match boot_from(store, cid, &spec, &snapshot) {
+            Ok((fresh, base)) => {
+                run.seat_vm(vm, handle, fresh, base);
+                store.prune(cid);
+                Ok((run, safety))
+            }
+            Err(err) => {
+                let before = store.dir(cid, &safety.name);
+                let (fresh, base, back) = match boot_from(store, cid, &spec, &before) {
+                    Ok((fresh, base)) => (fresh, base, safety.name.clone()),
+                    Err(back) => match spawner::spawn(spec.clone()) {
+                        Ok(fresh) => {
+                            eprintln!(
+                                "noded: run {}: VM {vm} did not return to {} ({back}); booted it cold",
+                                run.id, safety.name
+                            );
+                            (fresh, None, "a cold boot".to_string())
+                        }
+                        Err(cold) => {
+                            run.set_vm_killed(vm, handle);
+                            return Err(VmOpError::Failed(format!(
+                                "cannot restore checkpoint {name} ({err}), and VM {vm} did not start again ({back}; {cold})"
+                            )));
+                        }
+                    },
+                };
+                run.seat_vm(vm, handle, fresh, base);
+                Err(VmOpError::Failed(format!(
+                    "cannot restore checkpoint {name}: {err}; VM {vm} runs again from {back}"
+                )))
+            }
+        }
+    }
+
+    /// Forks VM `vm` of run `run` into `n` new single-VM runs: a checkpoint of the VM is taken, and each
+    /// fork boots from it with a CID of its own and a copy of its workspace. The forks are all made or
+    /// none is: a fork that cannot boot takes the ones made before it down. Returns the checkpoint and
+    /// each fork's run and CID.
+    pub fn fork_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        n: u32,
+        from: Option<&str>,
+    ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
+        if !(1..=MAX_FORKS).contains(&n) {
+            return Err(VmOpError::Invalid(format!(
+                "n must be between 1 and {MAX_FORKS}"
+            )));
+        }
+        let store = self.snapshot_store()?;
+        let source = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = source.vm_cid(vm)?;
+        let (checkpoint, meta, has_workspace) = match from {
+            // A named checkpoint is forked as it is: the source VM is not taken, so it may be running,
+            // paused or asleep.
+            Some(name) => {
+                if !snapshots::is_checkpoint_name(name) {
+                    return Err(VmOpError::UnknownCheckpoint(name.to_string()));
+                }
+                let view = store
+                    .view(cid, name)
+                    .ok_or_else(|| VmOpError::UnknownCheckpoint(name.to_string()))?;
+                let (meta, has_workspace) = source.fork_shape(vm)?;
+                (view, meta, has_workspace)
+            }
+            None => {
+                let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+                let meta = source.meta(held.spec.balloon);
+                let has_workspace = held.spec.workspace.is_some();
+                let taken = Self::checkpoint_held(store, cid, &held, "fork");
+                let state = thaw(held.state, &held.handle);
+                source.return_vm_in(vm, held.handle, state);
+                let checkpoint = taken?;
+                store.prune(cid);
+                (checkpoint, meta, has_workspace)
+            }
+        };
+        let snapshot = store.dir(cid, &checkpoint.name);
+        let mut forks = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            match self.boot_fork(store, &meta, &snapshot, has_workspace) {
+                Ok(fork) => forks.push(fork),
+                Err(err) => {
+                    self.discard_forks(store, forks);
+                    return Err(err);
+                }
+            }
+        }
+        let made = forks
+            .into_iter()
+            .map(|fork| {
+                let cid = fork.cid;
+                (self.adopt_fork(fork, &meta), cid)
+            })
+            .collect();
+        Ok((checkpoint, made))
+    }
+
+    /// The store, or [`VmOpError::NoSnapshots`] when the node keeps none.
+    fn snapshot_store(&self) -> Result<&SnapshotStore, VmOpError> {
+        self.snapshots.as_ref().ok_or(VmOpError::NoSnapshots)
+    }
+
+    /// The node's snapshot root, where a transfer stages the files it receives (see `crate::migrate`).
+    pub fn snapshot_root(&self) -> Result<&Path, VmOpError> {
+        Ok(self.snapshot_store()?.root())
+    }
+
+    /// Whether a live run of this node holds guest CID `cid`.
+    pub fn cid_in_use(&self, cid: u64) -> bool {
+        busy(&self.cids.held()).contains(&cid)
+    }
+
+    /// The asleep VM `vm` of run `run`, as an export reads it: its guest CID, role, cold spec and
+    /// the directory holding its sleep snapshot. The VM must be asleep.
+    pub fn asleep_vm(&self, run: &str, vm: u32) -> Result<AsleepVm, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let (cid, role, spec) = run.asleep_slot(vm)?;
+        Ok(AsleepVm {
+            sleep_dir: store.dir(cid, snapshots::SLEEP),
+            cid,
+            role,
+            spec,
+        })
+    }
+
+    /// Makes an imported VM this node's: its sleep snapshot and workspace image are moved into
+    /// place, its CID is held, and a run of its own holds it asleep - a `running` run whose one VM
+    /// sleeps, as a sleep leaves it, so `wake` restores it here. The files are already verified
+    /// (see `crate::migrate`); a failure here leaves the node as it was, with the CID released.
+    pub fn import_run(&self, vm: ImportedVm) -> Result<Arc<Run>, VmOpError> {
+        check_import_shape(vm.cid, vm.role.as_deref(), vm.vcpus, vm.memory_mib)?;
+        let vcpus = spawner_vcpus(vm.vcpus).map_err(VmOpError::Invalid)?;
+        let memory_mib = spawner_memory_mib(vm.memory_mib).map_err(VmOpError::Invalid)?;
+        let store = self.snapshot_store()?;
+        let id = self.reserve_run_id();
+        // A sandbox travels with its command line: its import is a sandbox, never a keepalive agent.
+        let sandbox = is_sandbox_cmdline(&vm.cmdline);
+        // The CID is the hub's choice, so it may sit outside the run range; the book holds it all
+        // the same, for as long as the run lives.
+        if !self.cids.hold_unless_busy(&id, vec![vm.cid]) {
+            return Err(VmOpError::CidInUse(vm.cid));
+        }
+        let workspace = match self.place_import(&id, &vm, store) {
+            Ok(workspace) => workspace,
+            Err(err) => {
+                self.cids.release(&id);
+                return Err(err);
+            }
+        };
+        let spec = VmSpec {
+            kernel: self.images.kernel.clone(),
+            cmdline: vm.cmdline.clone(),
+            vcpus,
+            memory_mib,
+            initrd: Some(self.images.initrd.clone()),
+            gic: None,
+            vsock: Some(VsockConfig {
+                guest_cid: vm.cid,
+                uds_path: self.uds_dir.join(format!("vm{}", vm.cid)),
+            }),
+            workspace,
+            balloon: vm.balloon_usable_mib,
+            restore: None,
+            volumes: Vec::new(),
+        };
+        let run = self.insert(
+            id,
+            RunMeta {
+                vcpus: vm.vcpus,
+                memory_mib: vm.memory_mib,
+                beats: None,
+                role: vm.role.clone(),
+                keepalive: !sandbox,
+                balloon_usable_mib: vm.balloon_usable_mib,
+                sandbox,
+                volumes: Vec::new(),
+            },
+        );
+        {
+            let mut inner = run.lock();
+            // `insert` registered the run in `starting`; an imported run begins `running` with its
+            // one VM asleep, the state a sleep leaves a run in.
+            inner.state = RunState::Running;
+            inner.vms = vec![VmSlot::asleep(0, vm.cid, vm.role, spec)];
+            run.events.publish(Event::Run {
+                id: run.id.clone(),
+                state: RunState::Running.as_str(),
+            });
+            run.events.publish(Event::Vm {
+                run: run.id.clone(),
+                vm: 0,
+                state: VmState::Asleep.as_str(),
+            });
+        }
+        Ok(run)
+    }
+
+    /// Moves an imported VM's files into the node's places for guest CID `vm.cid` and returns the
+    /// workspace image's path, or `None` for a VM with no workspace volume: the sleep snapshot takes
+    /// the CID's `sleep` directory, and the workspace image the CID's persistent image (or the run's
+    /// directory without a persist dir).
+    fn place_import(
+        &self,
+        id: &str,
+        vm: &ImportedVm,
+        store: &SnapshotStore,
+    ) -> Result<Option<PathBuf>, VmOpError> {
+        store.prepare(vm.cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create VM {}'s directory: {err}", vm.cid))
+        })?;
+        store
+            .install(vm.cid, &vm.sleep_dir, snapshots::SLEEP)
+            .map_err(|err| VmOpError::Failed(format!("cannot keep the sleep snapshot: {err}")))?;
+        let Some(staged) = &vm.workspace else {
+            return Ok(None);
+        };
+        let dest = match &self.persist_dir {
+            // A sandbox's workspace is its run's own copy, never the persistent image.
+            Some(persist) if !is_sandbox_cmdline(&vm.cmdline) => {
+                let image = persistent_workspace_path(persist, vm.cid);
+                if let Some(dir) = image.parent() {
+                    snapshots::private_dir(dir).map_err(|err| {
+                        VmOpError::Failed(format!("cannot create {}: {err}", dir.display()))
+                    })?;
+                }
+                image
+            }
+            _ => {
+                let dir = self.run_dir(id);
+                snapshots::private_dir(&dir).map_err(|err| {
+                    VmOpError::Failed(format!("cannot create {}: {err}", dir.display()))
+                })?;
+                // The run's copies are named by VM index, and this run's one VM is index 0.
+                dir.join("workspace-0.ext4")
+            }
+        };
+        if let Err(err) = move_file(staged, &dest) {
+            // The sleep snapshot was kept for this VM; it goes with the workspace it cannot be paired with.
+            let _ = store.remove(vm.cid, snapshots::SLEEP);
+            return Err(VmOpError::Failed(format!(
+                "cannot place the workspace image: {err}"
+            )));
+        }
+        Ok(Some(dest))
+    }
+
+    /// A running run whose one VM is in `state`, with no handle or spec: a stand-in for the
+    /// registry's tests of the operations that refuse a VM by its state.
+    #[cfg(test)]
+    pub(crate) fn stand_in_run(&self, cid: u64, state: VmState) -> Arc<Run> {
+        let id = self.reserve_run_id();
+        let run = self.insert(
+            id,
+            RunMeta {
+                vcpus: 1,
+                memory_mib: MIN_MEMORY_MIB,
+                beats: None,
+                role: None,
+                keepalive: true,
+                balloon_usable_mib: None,
+                sandbox: false,
+                volumes: Vec::new(),
+            },
+        );
+        {
+            let mut inner = run.lock();
+            inner.state = RunState::Running;
+            inner.vms = vec![VmSlot {
+                id: 0,
+                guest_cid: Some(cid),
+                role: None,
+                runtime: Arc::new(VmRuntime::new(0)),
+                handle: None,
+                spec: None,
+                state,
+                serial_seen: 0,
+                restored_from: None,
+            }];
+        }
+        run
+    }
+
+    /// Removes the snapshots of every VM of `run`: what deleting the run does with them.
+    pub fn drop_snapshots(&self, run: &Run) {
+        let Some(store) = &self.snapshots else {
+            return;
+        };
+        let cids: Vec<u64> = run
+            .lock()
+            .vms
+            .iter()
+            .filter_map(|slot| slot.guest_cid)
+            .collect();
+        for cid in cids {
+            if let Err(err) = store.remove_all(cid) {
+                eprintln!(
+                    "noded: run {}: cannot remove VM CID {cid}'s snapshots: {err}",
+                    run.id
+                );
+            }
+        }
+    }
+
+    /// Takes a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
+    /// workspace. The VM is left paused; the caller resumes it.
+    fn checkpoint_held(
+        store: &SnapshotStore,
+        cid: u64,
+        held: &Held,
+        label: &str,
+    ) -> Result<SnapshotView, VmOpError> {
+        store.prepare(cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
+        })?;
+        let name = SnapshotStore::checkpoint_name(label, now_ms());
+        let dir = store.dir(cid, &name);
+        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir) {
+            Ok(info) => info,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(err);
+            }
+        };
+        if let Some(workspace) = &held.spec.workspace {
+            if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(VmOpError::Failed(format!(
+                    "cannot copy the workspace into checkpoint {name}: {err}"
+                )));
+            }
+        }
+        let mut view = store
+            .view(cid, &name)
+            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))?;
+        view.paused_ms = info.paused_ms;
+        Ok(view)
+    }
+
+    /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and, when
+    /// the forked VM has a workspace volume (`workspace`), a copy of the checkpoint's workspace. A fork
+    /// of a VM with no workspace volume has none either. Nothing is registered until every fork has
+    /// booted.
+    fn boot_fork(
+        &self,
+        store: &SnapshotStore,
+        meta: &RunMeta,
+        snapshot: &Path,
+        workspace: bool,
+    ) -> Result<PreparedFork, VmOpError> {
+        let id = self.reserve_run_id();
+        let cid = self.cids.allocate(&id, 1).map_err(VmOpError::Failed)?;
+        let workspace = workspace.then(|| self.fork_workspace(&id, cid, meta.keepalive));
+        match self.boot_fork_vm(store, meta, snapshot, cid, workspace.as_deref()) {
+            Ok((handle, spec, base)) => Ok(PreparedFork {
+                id,
+                cid,
+                handle,
+                spec,
+                workspace,
+                base,
+            }),
+            Err(err) => {
+                self.cids.release(&id);
+                if let Some(workspace) = &workspace {
+                    let _ = fs::remove_file(workspace);
+                }
+                let _ = fs::remove_dir_all(store.dir(cid, snapshots::BASE));
+                Err(err)
+            }
+        }
+    }
+
+    /// The VM of a fork: restored from `snapshot`, with its workspace copied from it when it has one.
+    fn boot_fork_vm(
+        &self,
+        store: &SnapshotStore,
+        meta: &RunMeta,
+        snapshot: &Path,
+        cid: u64,
+        workspace: Option<&Path>,
+    ) -> Result<(VmHandle, VmSpec, Option<PathBuf>), VmOpError> {
+        if let Some(parent) = workspace.and_then(Path::parent) {
+            snapshots::private_dir(parent).map_err(|err| {
+                VmOpError::Failed(format!("cannot create {}: {err}", parent.display()))
+            })?;
+        }
+        // The fork's spec is the one a restart would boot it from: the cold command line, no restore.
+        let request = CreateRun {
+            n: 1,
+            vcpus: meta.vcpus,
+            memory_mib: meta.memory_mib,
+            beats: meta.beats,
+            vsock_cid: None,
+            role: meta.role.clone(),
+            keepalive: Some(meta.keepalive),
+            balloon_usable_mib: meta.balloon_usable_mib,
+            // A fork of a sandbox is a sandbox: its command line is the sandbox's, so a restart of
+            // the fork boots the same daemon.
+            sandbox: meta.sandbox,
+            volumes: meta.volumes.iter().map(|v| v.name.clone()).collect(),
+        };
+        let spec = VmSpec {
+            kernel: self.images.kernel.clone(),
+            cmdline: request.vm_cmdline(0, meta.keepalive),
+            vcpus: spawner_vcpus(meta.vcpus).map_err(VmOpError::Failed)?,
+            memory_mib: spawner_memory_mib(meta.memory_mib).map_err(VmOpError::Failed)?,
+            initrd: Some(self.images.initrd.clone()),
+            gic: None,
+            vsock: Some(VsockConfig {
+                guest_cid: cid,
+                uds_path: self.uds_dir.join(format!("vm{cid}")),
+            }),
+            workspace: workspace.map(Path::to_path_buf),
+            balloon: meta.balloon_usable_mib,
+            restore: None,
+            volumes: meta.volumes.clone(),
+        };
+        let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
+        Ok((handle, spec, base))
+    }
+
+    /// The workspace image of a fork on `cid`: the CID's persistent image for a keepalive run on a
+    /// node with `--persist-dir` when none exists yet (so the image persists like any keepalive
+    /// agent's), otherwise a file in the fork's run directory. A persistent image that already exists
+    /// belongs to an earlier agent on that CID, and is never overwritten.
+    fn fork_workspace(&self, id: &str, cid: u64, keepalive: bool) -> PathBuf {
+        if let (Some(persist), true) = (&self.persist_dir, keepalive) {
+            let image = persistent_workspace_path(persist, cid);
+            if !image.exists() {
+                return image;
+            }
+        }
+        self.run_dir(id).join(format!("fork-{cid}.ext4"))
+    }
+
+    /// Registers a fork as a run: `starting`, then `running` with its one VM, watched like any run.
+    fn adopt_fork(&self, fork: PreparedFork, meta: &RunMeta) -> Arc<Run> {
+        let PreparedFork {
+            id,
+            cid,
+            handle,
+            spec,
+            base,
+            ..
+        } = fork;
+        let run = self.insert(id, meta.clone());
+        let mut inner = run.lock();
+        if let Err(refused) = inner.transition(RunState::Running) {
+            eprintln!("noded: run {}: {refused}", run.id);
+        }
+        inner.vms = vec![VmSlot {
+            id: 0,
+            guest_cid: Some(cid),
+            role: meta.role.clone(),
+            runtime: handle.runtime(),
+            handle: Some(handle),
+            spec: Some(spec),
+            state: VmState::Running,
+            serial_seen: 0,
+            restored_from: base,
+        }];
+        run.events.publish(Event::Run {
+            id: run.id.clone(),
+            state: RunState::Running.as_str(),
+        });
+        run.events.publish(Event::Vm {
+            run: run.id.clone(),
+            vm: 0,
+            state: VmState::Running.as_str(),
+        });
+        drop(inner);
+        watch(Arc::clone(&run));
+        run
+    }
+
+    /// Stops and removes forks that were booted before a later one failed: their VMs stop, their CIDs
+    /// go back to the book and their workspace copies and bases are removed.
+    fn discard_forks(&self, store: &SnapshotStore, forks: Vec<PreparedFork>) {
+        for mut fork in forks {
+            if let Err(err) = fork.handle.kill() {
+                eprintln!("noded: fork {}: VM did not stop: {err}", fork.id);
+            }
+            self.cids.release(&fork.id);
+            if let Some(workspace) = &fork.workspace {
+                let _ = fs::remove_file(workspace);
+            }
+            let _ = fs::remove_dir_all(store.dir(fork.cid, snapshots::BASE));
+        }
     }
 
     /// The restart and wipe of one VM: stops it, resets its workspace when
@@ -1204,7 +2620,11 @@ impl Registry {
             (true, Some(base)) => Some(base.clone()),
             (false, _) => None,
         };
-        let (mut killed, spec) = run.take_vm(vm)?;
+        let Held {
+            handle: mut killed,
+            spec,
+            ..
+        } = run.take_vm(vm, &AWAKE)?;
         if let Err(err) = killed.kill() {
             run.return_vm(vm, killed);
             return Err(VmOpError::Refused(err.to_string()));
@@ -1219,7 +2639,7 @@ impl Registry {
         }
         match spawner::spawn(spec) {
             Ok(fresh) => {
-                run.seat_vm(vm, killed, fresh);
+                run.seat_vm(vm, killed, fresh, None);
                 Ok(())
             }
             Err(err) => {
@@ -1310,9 +2730,13 @@ impl Registry {
             beats: meta.beats,
             role: meta.role,
             keepalive: meta.keepalive,
+            sandbox: meta.sandbox,
+            volumes: meta.volumes,
             created_at: now_ms(),
             events: Arc::clone(&self.events),
             cids: Arc::clone(&self.cids),
+            snapshots: self.snapshots.clone(),
+            recoveries: Mutex::new(Vec::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -1354,16 +2778,37 @@ pub enum VmOpError {
     Refused(String),
     /// The VM could not be prepared or booted again.
     Failed(String),
+    /// The node keeps no snapshots (it was started with `--no-snapshots`).
+    NoSnapshots,
+    /// The VM has no snapshot of that name.
+    UnknownCheckpoint(String),
+    /// The request asks for something the node cannot do (an out-of-range count).
+    Invalid(String),
+    /// The VM is in a state the operation does not apply to (a paused VM cannot be paused again).
+    WrongState { vm: u32, state: VmState },
+    /// The VM has no vsock CID, which the snapshot operation needs.
+    Unsupported(String),
+    /// An import named a guest CID a run of this node already holds.
+    CidInUse(u64),
 }
 
 impl VmOpError {
-    /// The HTTP status this error is reported as: 404 for a run or VM the node
-    /// does not have, 409 for one whose state refuses the operation now, 500
-    /// when the VM itself could not be stopped or booted.
+    /// The HTTP status this error is reported as: 404 for a run, VM or checkpoint the node does
+    /// not have, 400 for a request out of range, 409 for one whose state refuses the operation
+    /// now, 500 when the VM itself could not be stopped or booted.
     pub fn status(&self) -> u16 {
         match self {
-            VmOpError::UnknownRun | VmOpError::UnknownVm(_) => 404,
-            VmOpError::RunEnded(_) | VmOpError::Busy(_) | VmOpError::NoBaseImage => 409,
+            VmOpError::UnknownRun | VmOpError::UnknownVm(_) | VmOpError::UnknownCheckpoint(_) => {
+                404
+            }
+            VmOpError::Invalid(_) => 400,
+            VmOpError::RunEnded(_)
+            | VmOpError::Busy(_)
+            | VmOpError::NoBaseImage
+            | VmOpError::NoSnapshots
+            | VmOpError::WrongState { .. }
+            | VmOpError::Unsupported(_) => 409,
+            VmOpError::CidInUse(_) => 409,
             VmOpError::Refused(_) | VmOpError::Failed(_) => 500,
         }
     }
@@ -1393,6 +2838,26 @@ impl std::fmt::Display for VmOpError {
             }
             VmOpError::Refused(reason) => write!(formatter, "VM did not stop: {reason}"),
             VmOpError::Failed(reason) => write!(formatter, "{reason}"),
+            VmOpError::NoSnapshots => write!(
+                formatter,
+                "this node keeps no snapshots: it was started with --no-snapshots"
+            ),
+            VmOpError::UnknownCheckpoint(name) => {
+                write!(formatter, "the VM has no snapshot named {name}")
+            }
+            VmOpError::Invalid(reason) => write!(formatter, "{reason}"),
+            VmOpError::WrongState { vm, state } => write!(
+                formatter,
+                "VM {vm} is {}, so this operation does not apply to it",
+                state.as_str()
+            ),
+            VmOpError::Unsupported(reason) => write!(formatter, "{reason}"),
+            VmOpError::CidInUse(cid) => {
+                write!(
+                    formatter,
+                    "guest CID {cid} is already held by a run of this node"
+                )
+            }
         }
     }
 }
@@ -1410,12 +2875,23 @@ pub struct Run {
     /// Whether the run's guests are keepalive agents: their workspace images
     /// are persistent, so a wipe copies the base image over the persistent one.
     keepalive: bool,
+    /// Whether the run's guests are sandboxes: never keepalive, and their
+    /// workspaces are per-run copies of the base image.
+    sandbox: bool,
+    /// The shared data volumes every VM of the run carries.
+    volumes: Vec<DataVolume>,
     created_at: u64,
     /// Where this run's state, VM and serial-delta events are published.
     events: Arc<EventBus>,
     /// The node's CID book: this run's span is held there for the run's
     /// lifetime and released when it ends ([`Run::release_cids`]).
     cids: Arc<CidBook>,
+    /// The node's snapshot store, or `None` for a node that keeps none: where a
+    /// recovery looks for the VM's newest snapshot.
+    snapshots: Option<SnapshotStore>,
+    /// The recoveries this run's VMs have started, as `(VM index, when)`, kept
+    /// for the last [`RECOVERY_WINDOW_MS`] (the crash-loop limit counts them).
+    recoveries: Mutex<Vec<(u32, u64)>>,
     inner: Mutex<RunInner>,
 }
 
@@ -1452,6 +2928,28 @@ struct VmSlot {
     /// (read and written under the run's lock): the serial-delta ticker's
     /// bookmark.
     serial_seen: usize,
+    /// The snapshot directory holding the memory this VM was restored from (its
+    /// wake's sleep snapshot, or its restore's staged base): the base its next
+    /// snapshot is written as a diff over. `None` for a VM booted cold.
+    restored_from: Option<PathBuf>,
+}
+
+impl VmSlot {
+    /// A VM that is asleep on this node: stopped, its sleep snapshot kept under its CID's directory,
+    /// and no control handle (no process runs it). `spec` is the cold spec a wake restores from.
+    fn asleep(id: u32, cid: u64, role: Option<String>, spec: VmSpec) -> Self {
+        Self {
+            id,
+            guest_cid: Some(cid),
+            role,
+            runtime: Arc::new(VmRuntime::new(id)),
+            handle: None,
+            spec: Some(spec),
+            state: VmState::Asleep,
+            serial_seen: 0,
+            restored_from: None,
+        }
+    }
 }
 
 impl RunInner {
@@ -1477,9 +2975,12 @@ impl RunInner {
         }
     }
 
-    /// Whether every VM of the run has stopped.
+    /// Whether every VM of the run has stopped. A paused or asleep VM has not: it is the run's
+    /// to wake or resume, so its run goes on.
     fn all_vms_stopped(&self) -> bool {
-        self.vms.iter().all(|slot| slot.state != VmState::Running)
+        self.vms
+            .iter()
+            .all(|slot| matches!(slot.state, VmState::Exited | VmState::Killed))
     }
 }
 
@@ -1511,6 +3012,7 @@ impl Run {
             memory_mib: self.memory_mib,
             beats: self.beats,
             role: self.role.as_deref(),
+            sandbox: self.sandbox,
             created_at: self.created_at,
             ended_at: inner.ended_at,
             vms: inner
@@ -1616,8 +3118,10 @@ impl Run {
             .iter_mut()
             .enumerate()
             .filter_map(|(index, slot)| match slot.state {
-                VmState::Running => slot.handle.take().map(|handle| (index, handle)),
-                VmState::Exited | VmState::Killed => None,
+                VmState::Running | VmState::Paused => {
+                    slot.handle.take().map(|handle| (index, handle))
+                }
+                VmState::Asleep | VmState::Exited | VmState::Killed => None,
             })
             .collect();
         drop(inner);
@@ -1628,6 +3132,18 @@ impl Run {
         }
 
         let mut inner = self.lock();
+        // A sleeping VM has no process to stop: its sleep snapshot is its whole life, and the kill
+        // ends it.
+        for slot in inner.vms.iter_mut() {
+            if slot.state == VmState::Asleep {
+                slot.state = VmState::Killed;
+                self.events.publish(Event::Vm {
+                    run: self.id.clone(),
+                    vm: slot.id,
+                    state: VmState::Killed.as_str(),
+                });
+            }
+        }
         for (index, outcome, handle) in stopped {
             let Some(slot) = inner.vms.get_mut(index) else {
                 continue;
@@ -1668,7 +3184,7 @@ impl Run {
     /// booted from, so the VM can be stopped outside the run's lock. The slot
     /// keeps its state; the watcher skips a slot with no handle until
     /// [`Run::seat_vm`] or [`Run::set_vm_killed`] puts one back.
-    fn take_vm(&self, vm: u32) -> Result<(VmHandle, VmSpec), VmOpError> {
+    fn take_vm(&self, vm: u32, allowed: &[VmState]) -> Result<Held, VmOpError> {
         let mut inner = self.lock();
         if inner.state != RunState::Running {
             return Err(VmOpError::RunEnded(inner.state));
@@ -1678,11 +3194,66 @@ impl Run {
             .iter_mut()
             .find(|slot| slot.id == vm)
             .ok_or(VmOpError::UnknownVm(vm))?;
+        if !allowed.contains(&slot.state) {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
         let spec = slot.spec.clone().ok_or_else(|| {
             VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from"))
         })?;
         let handle = slot.handle.take().ok_or(VmOpError::Busy(vm))?;
-        Ok((handle, spec))
+        Ok(Held {
+            handle,
+            spec,
+            restored_from: slot.restored_from.clone(),
+            state: slot.state,
+        })
+    }
+
+    /// The guest CID of VM `vm`: the key of its snapshots.
+    fn vm_cid(&self, vm: u32) -> Result<u64, VmOpError> {
+        let inner = self.lock();
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        slot.guest_cid.ok_or_else(|| {
+            VmOpError::Unsupported(format!("VM {vm} has no vsock CID, so it has no snapshots"))
+        })
+    }
+
+    /// The meta and workspace flag a fork of VM `vm` takes, read from its spec without taking the VM.
+    fn fork_shape(&self, vm: u32) -> Result<(RunMeta, bool), VmOpError> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        let spec = slot.spec.as_ref().ok_or_else(|| {
+            VmOpError::Failed(format!("VM {vm} has no saved spec to boot again from"))
+        })?;
+        Ok((self.meta(spec.balloon), spec.workspace.is_some()))
+    }
+
+    /// The run's shape as a run booted from it would be: what a fork of one of its VMs shares.
+    fn meta(&self, balloon_usable_mib: Option<u32>) -> RunMeta {
+        RunMeta {
+            vcpus: self.vcpus,
+            memory_mib: self.memory_mib,
+            beats: self.beats,
+            role: self.role.clone(),
+            keepalive: self.keepalive,
+            balloon_usable_mib,
+            sandbox: self.sandbox,
+            volumes: self.volumes.clone(),
+        }
     }
 
     /// Puts back the handle of a VM whose stop was refused: it is still running.
@@ -1690,6 +3261,23 @@ impl Run {
         let mut inner = self.lock();
         if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
             slot.handle = Some(handle);
+        }
+    }
+
+    /// Puts back the handle of VM `vm` and sets its state to `state` (a paused VM, a resumed one).
+    fn return_vm_in(&self, vm: u32, handle: VmHandle, state: VmState) {
+        let mut inner = self.lock();
+        let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) else {
+            return;
+        };
+        slot.handle = Some(handle);
+        if slot.state != state {
+            slot.state = state;
+            self.events.publish(Event::Vm {
+                run: self.id.clone(),
+                vm,
+                state: state.as_str(),
+            });
         }
     }
 
@@ -1718,7 +3306,13 @@ impl Run {
     /// Seats a restarted VM: `fresh` becomes the slot's running VM, and
     /// `killed` (the handle of the VM it replaces) stays with the slot as a
     /// stopped VM. A run that ended while the VM was booting takes it back down.
-    fn seat_vm(&self, vm: u32, killed: VmHandle, mut fresh: VmHandle) {
+    fn seat_vm(
+        &self,
+        vm: u32,
+        killed: VmHandle,
+        mut fresh: VmHandle,
+        restored_from: Option<PathBuf>,
+    ) {
         let mut inner = self.lock();
         if inner.state != RunState::Running {
             drop(inner);
@@ -1734,12 +3328,92 @@ impl Run {
             slot.handle = Some(fresh);
             slot.state = VmState::Running;
             slot.serial_seen = 0;
+            slot.restored_from = restored_from;
             self.events.publish(Event::Vm {
                 run: self.id.clone(),
                 vm,
                 state: VmState::Running.as_str(),
             });
         }
+    }
+
+    /// For an asleep VM that has never run on this node (imported, so its slot has no handle): takes
+    /// its spec out of the slot, so a second wake finds it busy, and returns it. `None` for a VM that
+    /// has a handle (the usual wake path).
+    fn take_unbooted(&self, vm: u32) -> Result<Option<VmSpec>, VmOpError> {
+        let mut inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter_mut()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        if slot.handle.is_some() {
+            return Ok(None);
+        }
+        if slot.state != VmState::Asleep {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
+        slot.spec.take().map(Some).ok_or(VmOpError::Busy(vm))
+    }
+
+    /// Puts back the spec [`Run::take_unbooted`] took (its wake failed).
+    fn untake_unbooted(&self, vm: u32, spec: VmSpec) {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            slot.spec = Some(spec);
+        }
+    }
+
+    /// Seats the first VM an imported slot runs: its spec back, its handle, running.
+    fn seat_first(&self, vm: u32, spec: VmSpec, fresh: VmHandle, restored_from: Option<PathBuf>) {
+        let mut inner = self.lock();
+        if let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) {
+            slot.spec = Some(spec);
+            slot.runtime = fresh.runtime();
+            slot.handle = Some(fresh);
+            slot.state = VmState::Running;
+            slot.serial_seen = 0;
+            slot.restored_from = restored_from;
+            self.events.publish(Event::Vm {
+                run: self.id.clone(),
+                vm,
+                state: VmState::Running.as_str(),
+            });
+        }
+    }
+
+    /// The guest CID, role and cold spec of VM `vm`, which must be asleep: what an export reads. The
+    /// run must be running, as a sleep leaves it.
+    fn asleep_slot(&self, vm: u32) -> Result<(u64, Option<String>, VmSpec), VmOpError> {
+        let inner = self.lock();
+        if inner.state != RunState::Running {
+            return Err(VmOpError::RunEnded(inner.state));
+        }
+        let slot = inner
+            .vms
+            .iter()
+            .find(|slot| slot.id == vm)
+            .ok_or(VmOpError::UnknownVm(vm))?;
+        if slot.state != VmState::Asleep {
+            return Err(VmOpError::WrongState {
+                vm,
+                state: slot.state,
+            });
+        }
+        let cid = slot
+            .guest_cid
+            .ok_or_else(|| VmOpError::Unsupported(format!("VM {vm} has no vsock CID")))?;
+        let spec = slot
+            .spec
+            .clone()
+            .ok_or_else(|| VmOpError::Failed(format!("VM {vm} has no saved spec to export")))?;
+        Ok((cid, slot.role.clone(), spec))
     }
 
     /// Releases this run's guest CIDs: the run has ended, so its span is the
@@ -1751,6 +3425,67 @@ impl Run {
     /// second run off its CIDs.
     fn release_cids(&self) {
         self.cids.release(&self.id);
+    }
+
+    /// Whether this run's VMs are recovered when they stop by themselves (see [`is_recoverable_run`]).
+    fn recoverable(&self) -> bool {
+        is_recoverable_run(self.keepalive, self.sandbox, self.beats)
+    }
+
+    /// Whether the run is still running: a recovery that boots a VM for it checks this first.
+    fn is_running(&self) -> bool {
+        self.lock().state == RunState::Running
+    }
+
+    /// Records that a recovery of VM `vm` started at `at`, and forgets the recoveries outside the
+    /// window (the crash-loop limit only counts the ones inside it).
+    fn record_recovery(&self, vm: u32, at: u64) {
+        let mut recoveries = self
+            .recoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recoveries.retain(|(_, when)| at.saturating_sub(*when) < RECOVERY_WINDOW_MS);
+        recoveries.push((vm, at));
+    }
+
+    /// When VM `vm`'s recent recoveries started, for [`recovery_decision`].
+    fn recent_recoveries(&self, vm: u32) -> Vec<u64> {
+        let recoveries = self
+            .recoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recoveries
+            .iter()
+            .filter(|(index, _)| *index == vm)
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
+    /// Puts back the handle of VM `vm` that a recovery could not boot, and sets it `exited`: it
+    /// stays as the guest left it. A run a kill ended while the recovery ran leaves the VM `killed`
+    /// instead, and gives its CIDs back once its VMs are all stopped.
+    fn set_vm_exited(&self, vm: u32, handle: VmHandle) {
+        let mut inner = self.lock();
+        let run_state = inner.state;
+        let Some(slot) = inner.vms.iter_mut().find(|slot| slot.id == vm) else {
+            return;
+        };
+        slot.handle = Some(handle);
+        slot.state = if run_state == RunState::Running {
+            VmState::Exited
+        } else {
+            VmState::Killed
+        };
+        self.events.publish(Event::Vm {
+            run: self.id.clone(),
+            vm,
+            state: slot.state.as_str(),
+        });
+        let release = run_state.is_finished() && inner.all_vms_stopped();
+        drop(inner);
+        if release {
+            self.release_cids();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, RunInner> {
@@ -1789,7 +3524,7 @@ fn watch(run: Arc<Run>) {
     thread::spawn(move || watch_run(&run));
 }
 
-fn watch_run(run: &Run) {
+fn watch_run(run: &Arc<Run>) {
     loop {
         {
             let mut inner = run.lock();
@@ -1802,7 +3537,8 @@ fn watch_run(run: &Run) {
                 // capture one last time, and that last stretch is exactly
                 // what the run's transcript wants.
                 publish_serial_delta(&run.events, &run.id, slot);
-                if slot.state != VmState::Running {
+                // A paused VM's process is still there to exit, so it is watched too.
+                if !matches!(slot.state, VmState::Running | VmState::Paused) {
                     continue;
                 }
                 let Some(handle) = slot.handle.as_mut() else {
@@ -1815,14 +3551,28 @@ fn watch_run(run: &Run) {
                 // and nothing else: a GET or a kill of the run never waits
                 // behind the watcher.
                 match handle.wait_timeout(Duration::ZERO) {
-                    Ok(Some(exit)) => {
-                        slot.state = VmState::from_exit(exit);
-                        run.events.publish(Event::Vm {
-                            run: run.id.clone(),
-                            vm: slot.id,
-                            state: slot.state.as_str(),
-                        });
-                    }
+                    Ok(Some(exit)) => match (slot.spec.clone(), slot.guest_cid) {
+                        // A keepalive agent or sandbox that stopped by itself is recovered, not
+                        // left exited: its handle goes to the recovery, and the slot keeps its
+                        // state with no handle, which the watcher skips and the run waits on.
+                        (Some(spec), Some(cid))
+                            if recovers(exit, slot.state, run.recoverable(), crash_recovery()) =>
+                        {
+                            if let Some(exited) = slot.handle.take() {
+                                let run = Arc::clone(run);
+                                let vm = slot.id;
+                                thread::spawn(move || recover_vm(run, vm, cid, spec, exited));
+                            }
+                        }
+                        _ => {
+                            slot.state = VmState::from_exit(exit);
+                            run.events.publish(Event::Vm {
+                                run: run.id.clone(),
+                                vm: slot.id,
+                                state: slot.state.as_str(),
+                            });
+                        }
+                    },
                     Ok(None) => {}
                     Err(err) => {
                         eprintln!(
@@ -1862,6 +3612,86 @@ fn watch_run(run: &Run) {
         // for longer than it holds it.
         thread::sleep(WATCH_INTERVAL);
     }
+}
+
+/// Recovers VM `vm` of `run` after it stopped by itself: boots it again with the CID, workspace and
+/// spec it had, from its newest snapshot taken in the last day or cold (see [`recovery_decision`]).
+///
+/// It runs on its own thread, outside the run's lock, since a boot takes a while. Meanwhile the VM's
+/// slot keeps its state with no handle, which is how the watcher and the host's own operations leave
+/// a VM they are working on alone, and the run stays up for it.
+fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) {
+    let mut exited = exited;
+    // The stop is idempotent for a process that has exited. A failure means it is still there, and a
+    // boot on the same CID would fail on its muxer socket, so the VM stays exited.
+    if let Err(err) = exited.kill() {
+        eprintln!(
+            "noded: run {}: VM {vm} stopped by itself, and its process did not go ({err}); it stays exited",
+            run.id
+        );
+        run.set_vm_exited(vm, exited);
+        return;
+    }
+    let views = match &run.snapshots {
+        Some(store) => {
+            let mut views = store.checkpoints(cid);
+            views.extend(store.view(cid, snapshots::SLEEP));
+            views
+        }
+        None => Vec::new(),
+    };
+    let now = now_ms();
+    let decision = recovery_decision(now, &views, &run.recent_recoveries(vm));
+    if decision == Recovery::GiveUp {
+        eprintln!(
+            "noded: run {}: VM {vm} stopped by itself again, after {RECOVERY_LIMIT} recoveries in {} minutes; it stays exited",
+            run.id,
+            RECOVERY_WINDOW_MS / 60_000
+        );
+        run.set_vm_exited(vm, exited);
+        return;
+    }
+    run.record_recovery(vm, now);
+    // A kill that landed while the snapshots were read ended the run: the VM is the kill's to stop.
+    if !run.is_running() {
+        run.set_vm_killed(vm, exited);
+        return;
+    }
+    let restored = match (&decision, &run.snapshots) {
+        (Recovery::From(name), Some(store)) => match boot_recovered(store, cid, &spec, name) {
+            Ok((fresh, base)) => Some((fresh, base, name.clone())),
+            Err(err) => {
+                eprintln!(
+                    "noded: run {}: VM {vm} did not recover from {name} ({err}); booting it cold",
+                    run.id
+                );
+                None
+            }
+        },
+        _ => None,
+    };
+    let (fresh, base, from) = match restored {
+        Some((fresh, base, name)) if name == snapshots::SLEEP => {
+            (fresh, Some(base), "the sleep snapshot".to_string())
+        }
+        Some((fresh, base, name)) => (fresh, Some(base), format!("checkpoint {name}")),
+        None => match spawner::spawn(spec.clone()) {
+            Ok(fresh) => (fresh, None, "a cold boot".to_string()),
+            Err(err) => {
+                eprintln!(
+                    "noded: run {}: VM {vm} stopped by itself and did not boot again ({err}); it stays exited",
+                    run.id
+                );
+                run.set_vm_exited(vm, exited);
+                return;
+            }
+        },
+    };
+    eprintln!(
+        "noded: run {}: VM {vm} stopped by itself; recovered from {from}",
+        run.id
+    );
+    run.seat_vm(vm, exited, fresh, base);
 }
 
 /// Publishes the part of the VM's serial capture that grew since the last
@@ -1995,7 +3825,9 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -2124,9 +3956,13 @@ mod tests {
             beats: None,
             role: role.map(str::to_string),
             keepalive: false,
+            sandbox: false,
+            volumes: Vec::new(),
             created_at: now_ms(),
             events: EventBus::new(),
             cids,
+            snapshots: None,
+            recoveries: Mutex::new(Vec::new()),
             inner: Mutex::new(RunInner {
                 state: run_state,
                 ended_at: None,
@@ -2139,6 +3975,7 @@ mod tests {
                     handle: None,
                     state: vm_state,
                     serial_seen: 0,
+                    restored_from: None,
                 }],
             }),
         })
@@ -2157,6 +3994,199 @@ mod tests {
         assert_eq!(VmState::from_exit(VmExit::Killed), VmState::Killed);
     }
 
+    const MINUTE: u64 = 60 * 1000;
+    const HOUR: u64 = 60 * MINUTE;
+    const NOW: u64 = 1_000 * HOUR;
+
+    /// A snapshot named `name`, taken at `taken_at_ms`, as a view reads it back from disk.
+    fn snapshot(name: &str, taken_at_ms: u64) -> SnapshotView {
+        SnapshotView {
+            name: name.to_string(),
+            cid: 7,
+            label: String::new(),
+            kind: "diff".to_string(),
+            taken_at_ms,
+            memory_written: 0,
+            disk_bytes: 0,
+            paused_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_recovery_boots_from_the_newest_snapshot_of_the_last_day_or_cold() {
+        assert_eq!(recovery_decision(NOW, &[], &[]), Recovery::Cold);
+
+        let checkpoints = [
+            snapshot("cp-a", NOW - 5 * HOUR),
+            snapshot("cp-b", NOW - 2 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &checkpoints, &[]),
+            Recovery::From("cp-b".to_string()),
+            "the newest checkpoint"
+        );
+
+        let sleep_newer = [
+            snapshot("cp-b", NOW - 2 * HOUR),
+            snapshot(snapshots::SLEEP, NOW - HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &sleep_newer, &[]),
+            Recovery::From(snapshots::SLEEP.to_string()),
+            "the sleep snapshot, when it is newer"
+        );
+
+        let sleep_older = [
+            snapshot(snapshots::SLEEP, NOW - 3 * HOUR),
+            snapshot("cp-b", NOW - 2 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &sleep_older, &[]),
+            Recovery::From("cp-b".to_string()),
+            "a checkpoint newer than the sleep snapshot"
+        );
+    }
+
+    #[test]
+    fn a_disk_only_checkpoint_is_never_booted_from() {
+        let disk_only = SnapshotView {
+            kind: "disk".to_string(),
+            ..snapshot("cp-disk", NOW - MINUTE)
+        };
+        assert_eq!(
+            recovery_decision(NOW, std::slice::from_ref(&disk_only), &[]),
+            Recovery::Cold,
+            "a disk-only checkpoint alone leaves the VM cold"
+        );
+
+        let views = [disk_only, snapshot("cp-mem", NOW - HOUR)];
+        assert_eq!(
+            recovery_decision(NOW, &views, &[]),
+            Recovery::From("cp-mem".to_string()),
+            "the newest checkpoint with memory, past a newer disk-only one"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_older_than_a_day_is_never_booted_from() {
+        let stale = [snapshot("cp-stale", NOW - 25 * HOUR)];
+        assert_eq!(recovery_decision(NOW, &stale, &[]), Recovery::Cold);
+
+        let mixed = [
+            snapshot("cp-stale", NOW - 30 * HOUR),
+            snapshot("cp-day", NOW - 24 * HOUR),
+        ];
+        assert_eq!(
+            recovery_decision(NOW, &mixed, &[]),
+            Recovery::From("cp-day".to_string()),
+            "a snapshot a day old still counts; the older one does not"
+        );
+    }
+
+    #[test]
+    fn a_vm_recovered_three_times_in_ten_minutes_stays_exited() {
+        let views = [snapshot("cp-a", NOW - HOUR)];
+        let from_a = Recovery::From("cp-a".to_string());
+
+        assert_eq!(
+            recovery_decision(NOW, &views, &[NOW - MINUTE, NOW - 5 * MINUTE]),
+            from_a,
+            "two recent recoveries are under the limit"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &views,
+                &[NOW - MINUTE, NOW - 5 * MINUTE, NOW - 9 * MINUTE]
+            ),
+            Recovery::GiveUp,
+            "the third recovery in the window is refused"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &[],
+                &[NOW - MINUTE, NOW - 2 * MINUTE, NOW - 3 * MINUTE]
+            ),
+            Recovery::GiveUp,
+            "the limit holds with no snapshot to boot from too"
+        );
+        assert_eq!(
+            recovery_decision(
+                NOW,
+                &views,
+                &[
+                    NOW - MINUTE,
+                    NOW - 2 * MINUTE,
+                    NOW - 11 * MINUTE,
+                    NOW - 12 * MINUTE
+                ]
+            ),
+            from_a,
+            "recoveries older than ten minutes do not count"
+        );
+    }
+
+    #[test]
+    fn recoveries_are_counted_per_vm_and_the_old_ones_are_forgotten() {
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Running,
+            Some(7),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        run.record_recovery(0, 1_000);
+        run.record_recovery(1, 2_000);
+        assert_eq!(run.recent_recoveries(0), vec![1_000]);
+        assert_eq!(run.recent_recoveries(1), vec![2_000]);
+
+        let later = 1_000 + 11 * MINUTE;
+        run.record_recovery(0, later);
+        assert_eq!(
+            run.recent_recoveries(0),
+            vec![later],
+            "the recovery eleven minutes back is out of the window"
+        );
+    }
+
+    #[test]
+    fn only_a_guest_stop_of_a_running_recoverable_vm_is_recovered() {
+        let guest = VmExit::GuestExited { reset: false };
+        assert!(recovers(guest, VmState::Running, true, true));
+        assert!(
+            recovers(
+                VmExit::GuestExited { reset: true },
+                VmState::Running,
+                true,
+                true
+            ),
+            "a guest reset is a crash too"
+        );
+        // A host's stop, kill, wipe, restart, sleep or move kills the VM's process, which reports
+        // as `Killed`, never as a guest exit.
+        assert!(!recovers(VmExit::Killed, VmState::Running, true, true));
+        // A paused or asleep VM is not one that ran on its own.
+        assert!(!recovers(guest, VmState::Paused, true, true));
+        assert!(!recovers(guest, VmState::Asleep, true, true));
+        assert!(!recovers(guest, VmState::Killed, true, true));
+        // Not a keepalive agent or sandbox, or with recovery turned off (`--no-recover`).
+        assert!(!recovers(guest, VmState::Running, false, true));
+        assert!(!recovers(guest, VmState::Running, true, false));
+    }
+
+    #[test]
+    fn keepalive_agents_and_sandboxes_are_recovered_unless_the_run_churns() {
+        assert!(is_recoverable_run(true, false, None));
+        assert!(is_recoverable_run(false, true, None));
+        assert!(
+            !is_recoverable_run(false, false, None),
+            "the frozen demo session ends by design"
+        );
+        assert!(!is_recoverable_run(true, false, Some(3)), "a churn run");
+        assert!(!is_recoverable_run(false, true, Some(3)), "a churn sandbox");
+    }
+
     /// A run whose CIDs the caller pins is the demo task's frozen session, and
     /// its VMs carry the harness; a run the node allocates CIDs for is an
     /// operator run, and its VMs are keepalive agents. Both command lines name
@@ -2171,7 +4201,9 @@ mod tests {
             vsock_cid: None,
             role: role.map(str::to_string),
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
         assert_eq!(
             request(None, None).vm_cmdline(0, false),
@@ -2217,7 +4249,9 @@ mod tests {
             vsock_cid: None,
             role: None,
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
 
         let (vms, named) = request(2, 2, 512)
@@ -2256,7 +4290,9 @@ mod tests {
             vsock_cid,
             role: None,
             keepalive: None,
+            sandbox: false,
             balloon_usable_mib: None,
+            volumes: Vec::new(),
         };
 
         // A CID inside the valid range is accepted, base + n - 1 included.
@@ -2398,7 +4434,9 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .err()
             .expect("the workspace copies cannot be prepared");
@@ -2449,7 +4487,9 @@ mod tests {
                 vsock_cid: None,
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .err()
             .expect("the run range is full");
@@ -2484,7 +4524,9 @@ mod tests {
                 vsock_cid: Some(crate::DEFAULT_AGENTS_CID_BASE),
                 role: None,
                 keepalive: None,
+                sandbox: false,
                 balloon_usable_mib: None,
+                volumes: Vec::new(),
             })
             .expect("a pinned run does not need the run range");
 
@@ -2507,7 +4549,9 @@ mod tests {
                     vsock_cid: None,
                     role: None,
                     keepalive: None,
+                    sandbox: false,
                     balloon_usable_mib: None,
+                    volumes: Vec::new(),
                 })
                 .expect("the run exists even when its VMs cannot boot");
             assert_eq!(run.view(Detail::Summary).state, "failed");
@@ -2665,6 +4709,382 @@ mod tests {
         let stopped = run.set_memory(0, 256).expect_err("the VM has no handle");
         assert_eq!(stopped, MemoryError::Stopped(0));
         assert_eq!(stopped.status(), 409);
+    }
+
+    /// A registry holding run `r1` with one stand-in VM in `state` (no handle, no spec), with the
+    /// snapshot store at `store` when given.
+    fn registry_with_run(state: VmState, store: Option<SnapshotStore>) -> (Registry, Arc<Run>) {
+        let registry =
+            Registry::new(images(), PathBuf::from("uds"), EventBus::new()).with_snapshots(store);
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            state,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        registry.lock().runs.push(Arc::clone(&run));
+        (registry, run)
+    }
+
+    #[test]
+    fn the_snapshot_states_and_refusals_have_their_api_names() {
+        assert_eq!(VmState::Paused.as_str(), "paused");
+        assert_eq!(VmState::Asleep.as_str(), "asleep");
+        let refused = VmOpError::NoSnapshots;
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "this node keeps no snapshots: it was started with --no-snapshots"
+        );
+        assert_eq!(VmOpError::UnknownCheckpoint("cp-1".into()).status(), 404);
+        assert_eq!(VmOpError::Invalid("n".into()).status(), 400);
+    }
+
+    #[test]
+    fn snapshot_operations_are_refused_on_a_node_with_no_snapshot_dir() {
+        let (registry, _run) = registry_with_run(VmState::Running, None);
+        let none = Some(VmOpError::NoSnapshots);
+        assert_eq!(registry.checkpoints("r1", 0).err(), none);
+        assert_eq!(registry.checkpoint_vm("r1", 0, "x", true).err(), none);
+        assert_eq!(registry.sleep_vm("r1", 0, true).err(), none);
+        assert_eq!(registry.wake_vm("r1", 0, false).err(), none);
+        assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
+        assert_eq!(registry.delete_checkpoint("r1", 0, "cp-1").err(), none);
+        assert_eq!(registry.fork_vm("r1", 0, 2, None).err(), none);
+    }
+
+    #[test]
+    fn a_snapshot_operation_on_an_unknown_run_vm_or_checkpoint_is_a_404() {
+        let dir = scratch("unknown");
+        let (registry, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        assert_eq!(
+            registry.pause_vm("r9", 0).err(),
+            Some(VmOpError::UnknownRun)
+        );
+        assert_eq!(
+            registry.sleep_vm("r1", 3, true).err(),
+            Some(VmOpError::UnknownVm(3))
+        );
+        let missing = VmOpError::UnknownCheckpoint("cp-1-nope".into());
+        assert_eq!(missing.status(), 404);
+        assert_eq!(
+            registry.restore_checkpoint("r1", 0, "cp-1-nope").err(),
+            Some(missing.clone())
+        );
+        assert_eq!(
+            registry.delete_checkpoint("r1", 0, "cp-1-nope").err(),
+            Some(missing)
+        );
+        assert_eq!(
+            registry.restore_checkpoint("r1", 0, "sleep").err(),
+            Some(VmOpError::UnknownCheckpoint("sleep".into()))
+        );
+        assert_eq!(registry.checkpoints("r1", 0).ok(), Some(Vec::new()));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fork_count_out_of_range_is_a_400_and_takes_no_checkpoint() {
+        let dir = scratch("fork-count");
+        let (registry, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        for n in [0, MAX_FORKS + 1] {
+            let refused = registry
+                .fork_vm("r1", 0, n, None)
+                .err()
+                .expect("out of range");
+            assert_eq!(refused.status(), 400);
+        }
+        assert!(
+            registry
+                .checkpoints("r1", 0)
+                .ok()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_vm_in_the_wrong_state_is_refused_with_that_state() {
+        let dir = scratch("wrong-state");
+        let (asleep, _run) =
+            registry_with_run(VmState::Asleep, Some(SnapshotStore::new(dir.clone())));
+        let state = VmState::Asleep;
+        let wrong = Some(VmOpError::WrongState { vm: 0, state });
+        assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.sleep_vm("r1", 0, true).err(), wrong);
+        assert_eq!(asleep.checkpoint_vm("r1", 0, "x", true).err(), wrong);
+
+        let (running, _run) =
+            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+        let state = VmState::Running;
+        assert_eq!(
+            running.wake_vm("r1", 0, false).err(),
+            Some(VmOpError::WrongState { vm: 0, state })
+        );
+        assert_eq!(
+            running.resume_vm("r1", 0).err(),
+            Some(VmOpError::WrongState { vm: 0, state })
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_paused_or_asleep_vm_keeps_its_run_going() {
+        let run = run_with_one_vm_and_book(
+            RunState::Running,
+            VmState::Paused,
+            Some(RUN_CID_BASE),
+            None,
+            Arc::new(CidBook::default()),
+        );
+        assert!(!run.lock().all_vms_stopped());
+        run.lock().vms[0].state = VmState::Asleep;
+        assert!(!run.lock().all_vms_stopped());
+        run.lock().vms[0].state = VmState::Exited;
+        assert!(run.lock().all_vms_stopped());
+    }
+
+    #[test]
+    fn a_fork_takes_the_cids_persistent_image_only_when_none_exists() {
+        let dir = scratch("fork-workspace");
+        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new())
+            .with_persist_dir(Some(dir.clone()));
+        let image = persistent_workspace_path(&dir, 40);
+        assert_eq!(registry.fork_workspace("r7", 40, true), image);
+        fs::create_dir_all(image.parent().expect("the workspaces directory"))
+            .expect("the workspaces directory");
+        fs::write(&image, b"an earlier agent's files").expect("the earlier image");
+        let fallback = registry.fork_workspace("r7", 40, true);
+        assert_ne!(
+            fallback, image,
+            "an earlier agent's image is never overwritten"
+        );
+        assert!(fallback.starts_with(registry.run_dir("r7")));
+        assert_eq!(
+            registry.fork_workspace("r7", 40, false),
+            registry.run_dir("r7").join("fork-40.ext4")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    /// A one-VM sandbox request on the given CID span.
+    fn sandbox_request() -> CreateRun {
+        CreateRun {
+            n: 1,
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            vsock_cid: None,
+            role: None,
+            keepalive: None,
+            balloon_usable_mib: None,
+            sandbox: true,
+            volumes: Vec::new(),
+        }
+    }
+
+    fn sandbox_meta() -> RunMeta {
+        RunMeta {
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            role: None,
+            keepalive: false,
+            balloon_usable_mib: None,
+            sandbox: true,
+            volumes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_sandbox_is_refused_with_a_role_and_with_keepalive() {
+        let request = |role: Option<&str>, keepalive: Option<bool>| CreateRun {
+            role: role.map(str::to_string),
+            keepalive,
+            ..sandbox_request()
+        };
+        assert_eq!(
+            request(Some("builder"), None).checked(),
+            Err("a sandbox has no role".to_string())
+        );
+        assert_eq!(
+            request(None, Some(true)).checked(),
+            Err("a sandbox is not a keepalive agent: keepalive cannot be true".to_string())
+        );
+        assert!(request(None, None).checked().is_ok());
+        assert!(request(None, Some(false)).checked().is_ok());
+    }
+
+    /// A sandbox boots the harness in sandbox mode with no keepalive flag, under either session: a
+    /// pinned CID (the frozen session) and an allocated one (the agent session) both give it no keepalive.
+    #[test]
+    fn a_sandbox_boots_the_sandbox_cmdline_and_is_never_keepalive() {
+        let request = sandbox_request();
+        assert_eq!(
+            request.vm_cmdline(0, false),
+            "console=ttyS0 plaza.harness=1 plaza.sandbox=1 plaza.vm=0"
+        );
+        let beaten = CreateRun {
+            beats: Some(3),
+            ..sandbox_request()
+        };
+        assert_eq!(
+            beaten.vm_cmdline(2, false),
+            "console=ttyS0 plaza.beats=3 plaza.harness=1 plaza.sandbox=1 plaza.vm=2"
+        );
+        assert!(!request.keepalive(RunSession::Agent));
+        assert!(!request.keepalive(RunSession::Frozen));
+    }
+
+    #[test]
+    fn the_sandbox_flag_is_optional_on_the_wire_and_defaults_to_false() {
+        let plain: CreateRun =
+            serde_json::from_str(r#"{"n":1,"vcpus":1,"memory_mib":128}"#).expect("a create body");
+        assert!(!plain.sandbox);
+        let sandbox: CreateRun =
+            serde_json::from_str(r#"{"n":1,"vcpus":1,"memory_mib":128,"sandbox":true}"#)
+                .expect("a sandbox body");
+        assert!(sandbox.sandbox);
+        assert!(sandbox.checked().is_ok());
+    }
+
+    #[test]
+    fn a_sandbox_run_view_reports_its_sandbox_flag() {
+        let run = |sandbox: bool| Run {
+            id: "r1".to_string(),
+            vcpus: 1,
+            memory_mib: MIN_MEMORY_MIB,
+            beats: None,
+            role: None,
+            keepalive: false,
+            sandbox,
+            volumes: Vec::new(),
+            created_at: now_ms(),
+            events: EventBus::new(),
+            cids: Arc::new(CidBook::default()),
+            snapshots: None,
+            recoveries: Mutex::new(Vec::new()),
+            inner: Mutex::new(RunInner {
+                state: RunState::Running,
+                ended_at: None,
+                vms: Vec::new(),
+            }),
+        };
+        let view = |run: &Run| {
+            serde_json::to_value(run.view(Detail::Summary)).expect("a run view")["sandbox"].clone()
+        };
+        assert_eq!(view(&run(true)), serde_json::Value::Bool(true));
+        assert_eq!(view(&run(false)), serde_json::Value::Bool(false));
+    }
+
+    /// A sandbox's template shape is the sandbox's own command line over the run's base image, so a
+    /// template built for it is never one an agent restores, and the other way round.
+    #[test]
+    fn a_sandbox_template_shape_is_built_from_the_sandbox_cmdline() {
+        let dir =
+            std::env::temp_dir().join(format!("apz-noded-sandbox-shape-{}", std::process::id()));
+        let registry = Registry::new(
+            VmImages {
+                kernel: PathBuf::from("kernel"),
+                initrd: PathBuf::from("initrd"),
+                workspace: Some(PathBuf::from("base.ext4")),
+            },
+            dir,
+            EventBus::new(),
+        );
+        let meta = sandbox_meta();
+        let plans: Vec<VmPlan> = (0..2)
+            .map(|index| VmPlan {
+                cmdline: sandbox_request().vm_cmdline(index, false),
+                vsock_cid: 20 + index as u64,
+                role: None,
+            })
+            .collect();
+        let shape = registry.template_shape(Some(Path::new("base.ext4")), &meta, &plans[1], 1, 128);
+        assert_eq!(shape.cmdline, plans[1].cmdline);
+        assert!(shape.cmdline.contains("plaza.sandbox=1") && !shape.cmdline.contains("keepalive"));
+        assert_eq!(shape.workspace_base, Some(PathBuf::from("base.ext4")));
+        assert_eq!(shape.balloon, None);
+        // The agent shape of the same index is a different one.
+        let agent = VmPlan {
+            cmdline: CreateRun {
+                sandbox: false,
+                ..sandbox_request()
+            }
+            .vm_cmdline(1, true),
+            vsock_cid: 21,
+            role: None,
+        };
+        assert_ne!(
+            registry.template_shape(Some(Path::new("base.ext4")), &meta, &agent, 1, 128),
+            shape
+        );
+    }
+
+    /// A sandbox's workspace is its run's own copy, and it is never a persistent image: with a
+    /// stand-in template store whose kernel is missing, no template can be had, so every VM boots
+    /// cold and no workspace is laid down.
+    #[test]
+    fn a_sandbox_with_no_template_boots_cold_and_lays_no_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("apz-noded-sandbox-cold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let base = dir.join("base.ext4");
+        std::fs::write(&base, b"base").expect("the base image");
+        let registry = Registry::new(
+            VmImages {
+                kernel: dir.join("missing-kernel"),
+                initrd: dir.join("initrd"),
+                workspace: Some(base),
+            },
+            dir.join("uds"),
+            EventBus::new(),
+        )
+        .with_templates(Some(crate::templates::Templates::new(
+            dir.join("snapshots"),
+        )))
+        .with_persist_dir(Some(dir.join("persist")));
+        let meta = sandbox_meta();
+        let plans = vec![VmPlan {
+            cmdline: sandbox_request().vm_cmdline(0, false),
+            vsock_cid: 20,
+            role: None,
+        }];
+        let starts = registry.template_starts("r1", &meta, &plans, 1, MIN_MEMORY_MIB as usize);
+        assert_eq!(starts, vec![None]);
+        assert!(!registry.run_dir("r1").join("workspace-0.ext4").exists());
+        assert!(
+            !dir.join("persist")
+                .join("workspaces")
+                .join("cid-20.ext4")
+                .exists()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sandbox_copies_and_imports_are_recognised_by_their_command_line() {
+        assert!(is_sandbox_cmdline(
+            "console=ttyS0 plaza.harness=1 plaza.sandbox=1 plaza.vm=0"
+        ));
+        assert!(!is_sandbox_cmdline(
+            "console=ttyS0 plaza.harness=1 plaza.keepalive=1 plaza.vm=0"
+        ));
+        assert_eq!(
+            sandbox_workspace_path(Path::new("/run"), 2),
+            PathBuf::from("/run/workspace-2.ext4")
+        );
     }
 }
 

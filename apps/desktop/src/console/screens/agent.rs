@@ -12,9 +12,10 @@ use iced::widget::{
     Space, button, checkbox, column, container, row, scrollable, text, text_editor, text_input,
 };
 use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Id, agent_side, ide, sanctions};
+use super::{Id, agent_side, ide, lab_common, nodes, sanctions};
 use crate::console::engine::world::layout::{agent_hue, role_hue};
 use crate::console::rich;
 use crate::console::{Ctx, client, events, ui};
@@ -49,6 +50,14 @@ pub enum Dialog {
     Retire,
     /// Lift the suspension with this sanction id; the reason is typed in the card.
     Lift(u64),
+    /// Roll the VM back to this checkpoint (by name). A safety checkpoint is taken first.
+    Restore(String),
+    /// Delete this checkpoint (by name).
+    Delete(String),
+    /// Fork the agent into the count typed in the card (`State::fork_n`).
+    Fork,
+    /// Move the agent to the node picked in the card (`State::move_to`).
+    Move,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +71,46 @@ pub enum Wipe {
 pub enum Act {
     Cancel,
     Stop,
+    Sleep,
+    Wake,
+}
+
+/// What a move did (`POST /v1/agents/{cid}/move`): the node it moved the agent from and to, the bytes it sent, and how
+/// long it took.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Moved {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub ms: u64,
+}
+
+/// One VM checkpoint, as `GET /v1/agents/{cid}/vm-checkpoints` lists it (apid's `SnapshotView`).
+/// The `sleep` snapshot is listed too, with an empty label.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Checkpoint {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    /// `full` or `diff`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub taken_at_ms: u64,
+    #[serde(default)]
+    pub memory_written: u64,
+    #[serde(default)]
+    pub disk_bytes: u64,
+    /// How long the VM was paused for the snapshot, in milliseconds.
+    #[serde(default)]
+    pub paused_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct CheckpointList {
+    checkpoints: Vec<Checkpoint>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +144,19 @@ pub struct State {
     /// The reason typed for a lift, and the lift's error (shown in its card).
     pub lift_reason: String,
     pub lift_error: Option<String>,
+    /// The VM checkpoints, newest first, refreshed with the profile (`checkpoints_error` when the read failed).
+    pub checkpoints: Vec<Checkpoint>,
+    pub checkpoints_error: Option<String>,
+    /// The label typed for the next checkpoint, and the count typed for a fork (its error in the card).
+    pub checkpoint_label: String,
+    pub fork_n: String,
+    pub fork_error: Option<String>,
+    /// The names of the agents the last fork made, listed under the checkpoints.
+    pub forked: Vec<String>,
+    /// The nodes the Move card lists (loaded when it opens), the one picked, and the move's error.
+    pub move_nodes: Option<Vec<nodes::NodeView>>,
+    pub move_to: Option<String>,
+    pub move_error: Option<String>,
     /// The reply text the hub streams (`delta` events) before the transcript holds it.
     pub live: Vec<LiveTurn>,
     /// Set once the reader scrolls away from the bottom; until then the transcript follows new text.
@@ -115,6 +177,7 @@ pub struct Snapshot {
 pub struct Extras {
     pub profile: Option<Value>,
     pub infractions: Result<Vec<Value>, String>,
+    pub checkpoints: Result<Vec<Checkpoint>, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +206,22 @@ pub enum Msg {
     Conduct(Result<sanctions::Register, String>),
     LiftReason(String),
     Lifted(Result<sanctions::Sanction, String>),
+    /// The checkpoint label typed for the next one.
+    CheckpointLabel(String),
+    /// Takes a checkpoint now, with the label typed (if any).
+    Take,
+    /// The fork count typed in the card.
+    ForkCount(String),
+    /// A fork answered: the names of the agents it made.
+    Forked(Result<Vec<String>, String>),
+    /// The nodes the Move card lists, loaded when it opens.
+    MoveNodes(Result<Vec<nodes::NodeView>, String>),
+    /// A node picked in the Move card.
+    PickNode(String),
+    /// Moves the agent to the node picked.
+    Move,
+    /// The move answered: where the agent went, or the hub's error.
+    Moved(Result<Moved, String>),
     /// One event from the hub's stream (only `delta` matters here).
     Event(events::Event),
     /// The transcript was scrolled.
@@ -342,9 +421,13 @@ fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<
             .get::<Value>(&format!("/v1/agents/{cid}/profile"))
             .ok();
         let infractions = client.get::<Vec<Value>>(&format!("/v1/agents/{cid}/infractions"));
+        let checkpoints = client
+            .get::<Value>(&format!("/v1/agents/{cid}/vm-checkpoints"))
+            .and_then(parse_checkpoints);
         Extras {
             profile,
             infractions,
+            checkpoints,
         }
     });
     Ok(Snapshot {
@@ -387,9 +470,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     if let Some(Extras {
                         profile,
                         infractions,
+                        checkpoints,
                     }) = snap.extras
                     {
                         state.profile = profile;
+                        match checkpoints {
+                            Ok(list) => {
+                                state.checkpoints = list;
+                                state.checkpoints_error = None;
+                            }
+                            Err(e) => {
+                                // Nothing stale under the error line, as the infractions do.
+                                state.checkpoints.clear();
+                                state.checkpoints_error = Some(e);
+                            }
+                        }
                         match infractions {
                             Ok(list) => {
                                 state.infractions = list;
@@ -466,6 +561,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let (verb, note) = match act {
                 Act::Cancel => ("cancel", "Cancelled"),
                 Act::Stop => ("stop", "Stopped"),
+                Act::Sleep => ("sleep", "Sleeping"),
+                Act::Wake => ("wake", "Waking"),
             };
             let path = format!("/v1/agents/{}/{verb}", state.cid);
             dispatch(state, ctx, path, json!({}), false, note)
@@ -474,6 +571,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if matches!(dialog, Dialog::Lift(_)) {
                 state.lift_reason.clear();
                 state.lift_error = None;
+            }
+            if matches!(dialog, Dialog::Move) {
+                state.move_nodes = None;
+                state.move_to = None;
+                state.move_error = None;
+                state.dialog = Some(dialog);
+                return move_nodes_task(ctx);
+            }
+            if matches!(dialog, Dialog::Fork) {
+                state.fork_n = "1".to_string();
+                state.fork_error = None;
             }
             state.dialog = Some(dialog);
             Task::none()
@@ -511,6 +619,27 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 let client = ctx.client.clone();
                 return client::task(move || sanctions::lift(&client, id, &reason), Msg::Lifted);
             }
+            // The fork card stays open until the hub answers, so a refused count can be read and corrected.
+            if let Some(Dialog::Fork) = state.dialog.clone() {
+                let Some(n) = fork_count(&state.fork_n) else {
+                    return Task::none();
+                };
+                if state.busy {
+                    return Task::none();
+                }
+                state.busy = true;
+                state.fork_error = None;
+                let client = ctx.client.clone();
+                let path = format!("/v1/agents/{cid}/fork");
+                return client::task(
+                    move || {
+                        client
+                            .post::<Value>(&path, &json!({ "n": n }))
+                            .and_then(|v| fork_names(&v))
+                    },
+                    Msg::Forked,
+                );
+            }
             match state.dialog.take() {
                 Some(Dialog::Restart) => dispatch(
                     state,
@@ -544,8 +673,121 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     true,
                     "Retired",
                 ),
-                None | Some(Dialog::Lift(_)) => Task::none(),
+                Some(Dialog::Restore(name)) => dispatch(
+                    state,
+                    ctx,
+                    format!("/v1/agents/{cid}/vm-checkpoints/{name}/restore"),
+                    json!({}),
+                    false,
+                    "Rolled back",
+                ),
+                Some(Dialog::Delete(name)) => {
+                    let path = format!("/v1/agents/{cid}/vm-checkpoints/{name}");
+                    dispatch_with(state, ctx, false, "Checkpoint deleted", move |c| {
+                        c.delete(&path).map(|_| ())
+                    })
+                }
+                None | Some(Dialog::Lift(_)) | Some(Dialog::Fork) | Some(Dialog::Move) => {
+                    Task::none()
+                }
             }
+        }
+        Msg::MoveNodes(Ok(list)) => {
+            state.move_nodes = Some(list);
+            Task::none()
+        }
+        Msg::MoveNodes(Err(e)) => {
+            state.move_nodes = Some(Vec::new());
+            state.move_error = Some(e);
+            Task::none()
+        }
+        Msg::PickNode(id) => {
+            state.move_to = Some(id);
+            Task::none()
+        }
+        Msg::Move => {
+            let Some(to) = state.move_to.clone() else {
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            state.busy = true;
+            state.move_error = None;
+            let client = ctx.client.clone();
+            let path = format!("/v1/agents/{}/move", state.cid);
+            let body = json!({ "node": to });
+            client::task(move || client.post::<Moved>(&path, &body), Msg::Moved)
+        }
+        Msg::Moved(Ok(done)) => {
+            state.busy = false;
+            state.dialog = None;
+            state.move_to = None;
+            state.move_nodes = None;
+            state.error = None;
+            state.notice = Some(format!(
+                "Moved from {} to {} ({} in {} ms)",
+                done.from,
+                done.to,
+                size_text(done.bytes),
+                done.ms
+            ));
+            // The agent's node changed: read the page again now, not on the next tick.
+            state.extras_at = None;
+            load(state, ctx)
+        }
+        Msg::Moved(Err(e)) => {
+            state.busy = false;
+            state.move_error = Some(e);
+            Task::none()
+        }
+        Msg::CheckpointLabel(label) => {
+            state.checkpoint_label = label;
+            Task::none()
+        }
+        Msg::Take => {
+            let cid = state.cid;
+            let label = match checkpoint_label(&state.checkpoint_label) {
+                Ok(label) => label,
+                Err(e) => {
+                    state.error = Some(e);
+                    return Task::none();
+                }
+            };
+            state.checkpoint_label.clear();
+            let body = match label {
+                Some(label) => json!({ "label": label }),
+                None => json!({}),
+            };
+            dispatch(
+                state,
+                ctx,
+                format!("/v1/agents/{cid}/vm-checkpoints"),
+                body,
+                false,
+                "Checkpoint taken",
+            )
+        }
+        Msg::ForkCount(text) => {
+            state.fork_n = text;
+            Task::none()
+        }
+        Msg::Forked(result) => {
+            state.busy = false;
+            match result {
+                Ok(names) => {
+                    state.dialog = None;
+                    state.fork_n.clear();
+                    state.fork_error = None;
+                    state.forked = names;
+                    state.notice = Some("Forked".to_string());
+                    // The fork took a checkpoint of its own, and the new agents join the roster.
+                    state.extras_at = None;
+                    return load(state, ctx);
+                }
+                Err(e) => state.fork_error = Some(e),
+            }
+            Task::none()
         }
         Msg::LiftReason(reason) => {
             state.lift_reason = reason;
@@ -587,6 +829,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         return Task::done(Msg::Go(Id::Agents));
                     }
                     state.notice = Some(note.to_string());
+                    // Sleep, wake and the checkpoints change what the page shows: read them now, not on the next tick.
+                    state.extras_at = None;
+                    return load(state, ctx);
                 }
                 Err(e) => state.error = Some(e),
             }
@@ -620,15 +865,28 @@ fn dispatch(
     retired: bool,
     note: &'static str,
 ) -> Task<Msg> {
+    dispatch_with(state, ctx, retired, note, move |client| {
+        client.post::<Value>(&path, &body).map(|_| ())
+    })
+}
+
+/// Runs one head action on the client and reports it as `Msg::Done`; the head buttons stay disabled until it answers.
+fn dispatch_with(
+    state: &mut State,
+    ctx: &Ctx,
+    retired: bool,
+    note: &'static str,
+    call: impl FnOnce(&client::Client) -> Result<(), String> + Send + 'static,
+) -> Task<Msg> {
     state.busy = true;
     state.notice = None;
     let client = ctx.client.clone();
     client::task(
-        move || client.post::<Value>(&path, &body),
-        move |r| Msg::Done {
+        move || call(&client),
+        move |result| Msg::Done {
             retired,
             note,
-            result: r.map(|_| ()),
+            result,
         },
     )
 }
@@ -645,6 +903,15 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         .agent
         .as_ref()
         .is_some_and(|a| s(a, "status") == "working");
+    let asleep = state
+        .agent
+        .as_ref()
+        .is_some_and(|a| s(a, "status") == "asleep");
+    // The hub refuses a sleep while the agent works or has queued work (409), so the button is off then.
+    let sleep_blocked = state
+        .agent
+        .as_ref()
+        .is_some_and(|a| s(a, "status") == "working" || u(a, "queue") > 0);
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
     if state.agent.is_some() {
         let workspace = ide::target(&format!("agent:{}", state.cid), false, None);
@@ -662,11 +929,32 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 pick(Msg::Run(Act::Cancel)),
             ));
         }
+        if asleep {
+            actions.push(ui::btn(
+                "Wake",
+                None,
+                ui::Kind::Secondary,
+                pick(Msg::Run(Act::Wake)),
+            ));
+        } else {
+            let sleep = if sleep_blocked {
+                None
+            } else {
+                pick(Msg::Run(Act::Sleep))
+            };
+            actions.push(ui::btn("Sleep", None, ui::Kind::Secondary, sleep));
+        }
         actions.push(ui::btn(
             "Restart",
             None,
             ui::Kind::Secondary,
             pick(Msg::Ask(Dialog::Restart)),
+        ));
+        actions.push(ui::btn(
+            "Move…",
+            None,
+            ui::Kind::Secondary,
+            pick(Msg::Ask(Dialog::Move)),
         ));
         actions.push(ui::btn(
             "Stop",
@@ -731,6 +1019,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(a) = state.agent.as_ref() {
         side.push(details_card(a));
         side.push(queue_card(a));
+        side.push(checkpoints_card(state));
     }
     let side = container(column(side).spacing(16)).width(Length::Fixed(SIDE_WIDTH));
     body.push(row![main, side].spacing(24).into());
@@ -800,6 +1089,7 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             );
             ui::card(&format!("Lift {name}'s suspension?"), body.into())
         }
+        Dialog::Move => move_card(state, name),
         Dialog::Restart => ui::card(
             &format!("Restart {name}?"),
             column![
@@ -853,6 +1143,64 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             .spacing(10)
             .into(),
         ),
+        Dialog::Restore(checkpoint) => ui::card(
+            &format!("Roll back {checkpoint} to this checkpoint?"),
+            column![
+                ui::faint(
+                    "Its VM — memory, disk and running processes — returns to that moment. A safety checkpoint is taken first, so you can undo this."
+                ),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Roll back", None, ui::Kind::Primary, proceed)
+                ]
+                .spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        ),
+        Dialog::Delete(checkpoint) => ui::card(
+            &format!("Delete checkpoint {checkpoint}?"),
+            column![
+                ui::faint("The checkpoint is removed for good. The VM is not changed."),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Delete", None, ui::Kind::Danger, proceed)
+                ]
+                .spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        ),
+        Dialog::Fork => {
+            let count = fork_count(&state.fork_n);
+            let input = text_input("1–8", &state.fork_n)
+                .on_input(Msg::ForkCount)
+                .size(13.0)
+                .style(crate::theme::input);
+            let fork = if busy || count.is_none() {
+                None
+            } else {
+                Some(Msg::Proceed)
+            };
+            let mut body = column![
+                ui::faint(
+                    "Makes new agents from a checkpoint taken now, each a copy of this one. How many (1 to 8)?"
+                ),
+                input
+            ]
+            .spacing(10);
+            if let Some(e) = &state.fork_error {
+                body = body.push(ui::error_line(e));
+            }
+            body = body.push(
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+                    ui::btn("Fork", None, ui::Kind::Primary, fork)
+                ]
+                .spacing(8),
+            );
+            ui::card(&format!("Fork {name}"), body.into())
+        }
     }
 }
 
@@ -868,11 +1216,7 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     } else {
         role_hue(s(a, "role"))
     };
-    let (status_text, status_tone) = match s(a, "status") {
-        "working" => ("Working", ui::Tone::Info),
-        "idle" => ("Idle", ui::Tone::Ok),
-        _ => ("Offline", ui::Tone::Muted),
-    };
+    let (status_text, status_tone) = status_label(s(a, "status"));
 
     let name = agent_name(a);
     let initial = name
@@ -1620,6 +1964,143 @@ fn mix(base: Color, over: Color, amount: f32) -> Color {
     }
 }
 
+/// The profile's word and tone for an agent status. Asleep is its own state: its VM is snapshotted and stopped.
+fn status_label(status: &str) -> (&'static str, ui::Tone) {
+    match status {
+        "working" => ("Working", ui::Tone::Info),
+        "idle" => ("Idle", ui::Tone::Ok),
+        "asleep" => ("Asleep", ui::Tone::Muted),
+        _ => ("Offline", ui::Tone::Muted),
+    }
+}
+
+/// The checkpoint list's body, read into the checkpoints (`{checkpoints: [...]}`, newest first).
+fn parse_checkpoints(body: Value) -> Result<Vec<Checkpoint>, String> {
+    serde_json::from_value::<CheckpointList>(body)
+        .map(|list| list.checkpoints)
+        .map_err(|e| e.to_string())
+}
+
+/// The names of the agents a fork made (`{forks: [{cid, run, name}], checkpoint}`).
+fn fork_names(reply: &Value) -> Result<Vec<String>, String> {
+    let forks = reply
+        .get("forks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the fork reply has no forks".to_string())?;
+    Ok(forks.iter().map(|f| s(f, "name").to_string()).collect())
+}
+
+/// A fork's count: 1 to 8 copies, as the hub takes them.
+fn fork_count(text: &str) -> Option<u64> {
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|n| (1..=8).contains(n))
+}
+
+/// A checkpoint's label, as the hub takes it: 1 to 40 characters with no control characters. Blank means none given.
+fn checkpoint_label(text: &str) -> Result<Option<String>, String> {
+    let label = text.trim();
+    if label.is_empty() {
+        return Ok(None);
+    }
+    if label.chars().count() > 40 {
+        return Err("A checkpoint label is 1 to 40 characters.".to_string());
+    }
+    if label.chars().any(char::is_control) {
+        return Err("A checkpoint label has no control characters.".to_string());
+    }
+    Ok(Some(label.to_string()))
+}
+
+/// One checkpoint's row in the side column: its label (its name when it has none), its age and kind, what it
+/// wrote and what it paused the VM for, then Restore and Delete, which ask first.
+fn checkpoint_row<'a>(cp: &'a Checkpoint, busy: bool) -> Element<'a, Msg> {
+    let pick = |m: Msg| if busy { None } else { Some(m) };
+    let title = if cp.label.is_empty() {
+        cp.name.clone()
+    } else {
+        cp.label.clone()
+    };
+    let facts = format!(
+        "{} · memory {} · disk {} · paused {} ms",
+        ago(cp.taken_at_ms),
+        lab_common::size(cp.memory_written),
+        lab_common::size(cp.disk_bytes),
+        cp.paused_ms
+    );
+    column![
+        row![
+            ui::sans(title, 13.0, crate::theme::palette().ink).width(Length::Fill),
+            ui::badge(&cp.kind, ui::Tone::Muted)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        ui::faint(facts),
+        row![
+            ui::btn(
+                "Restore…",
+                None,
+                ui::Kind::Secondary,
+                pick(Msg::Ask(Dialog::Restore(cp.name.clone())))
+            ),
+            ui::btn(
+                "Delete…",
+                None,
+                ui::Kind::Danger,
+                pick(Msg::Ask(Dialog::Delete(cp.name.clone())))
+            ),
+        ]
+        .spacing(8),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// The machine checkpoints (`GET /v1/agents/{cid}/vm-checkpoints`): take one with an optional label, roll back to
+/// one, delete one, or fork the agent. The fork's new agents are named under the card.
+fn checkpoints_card<'a>(state: &'a State) -> Element<'a, Msg> {
+    let busy = state.busy;
+    let pick = |m: Msg| if busy { None } else { Some(m) };
+    let mut items: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(e) = &state.checkpoints_error {
+        items.push(ui::error_line(e));
+    }
+    if state.checkpoints.is_empty() && state.checkpoints_error.is_none() {
+        items.push(ui::faint("No checkpoints yet").into());
+    }
+    for cp in &state.checkpoints {
+        items.push(checkpoint_row(cp, busy));
+    }
+    let label = text_input("Label (optional)", &state.checkpoint_label)
+        .on_input(Msg::CheckpointLabel)
+        .size(13.0)
+        .style(crate::theme::input);
+    items.push(label.into());
+    items.push(
+        row![
+            ui::btn(
+                "Take checkpoint",
+                None,
+                ui::Kind::Secondary,
+                pick(Msg::Take)
+            ),
+            ui::btn(
+                "Fork…",
+                None,
+                ui::Kind::Secondary,
+                pick(Msg::Ask(Dialog::Fork))
+            ),
+        ]
+        .spacing(8)
+        .into(),
+    );
+    if !state.forked.is_empty() {
+        items.push(ui::faint(format!("Forked: {}", state.forked.join(", "))).into());
+    }
+    ui::card("Machine checkpoints", column(items).spacing(12).into())
+}
+
 fn offline(state: &State) -> bool {
     state
         .agent
@@ -1727,9 +2208,126 @@ fn when(a: &Value, key: &str) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
+/// The Move card: the nodes the agent may move to, one picked, then Move. The list is read when the card opens.
+fn move_card<'a>(state: &'a State, name: &str) -> Element<'a, Msg> {
+    let current = state
+        .agent
+        .as_ref()
+        .map(|a| s(a, "node").to_string())
+        .unwrap_or_default();
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    match &state.move_nodes {
+        None => body.push(ui::loading()),
+        Some(list) => {
+            let targets = move_targets(list, &current);
+            if targets.is_empty() {
+                body.push(
+                    ui::faint(
+                        "No other node can take it: each one is draining, revoked, or the one it is on now.",
+                    )
+                    .into(),
+                );
+            }
+            for node in targets {
+                let kind = if state.move_to.as_deref() == Some(node.id.as_str()) {
+                    ui::Kind::Primary
+                } else {
+                    ui::Kind::Secondary
+                };
+                let pick = (!state.busy).then(|| Msg::PickNode(node.id.clone()));
+                body.push(ui::btn(&node_label(node), None, kind, pick));
+            }
+        }
+    }
+    if let Some(e) = &state.move_error {
+        body.push(ui::error_line(e));
+    }
+    let can_move = !state.busy && state.move_to.is_some();
+    body.push(
+        row![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
+            ui::btn(
+                "Move",
+                None,
+                ui::Kind::Primary,
+                can_move.then_some(Msg::Move)
+            ),
+        ]
+        .spacing(8)
+        .into(),
+    );
+    ui::card(
+        &format!("Move {name}"),
+        column(body).spacing(10).width(Length::Fill).into(),
+    )
+}
+
+/// The nodes an agent on `current` may move to: not draining, not revoked, and not the node it is on.
+pub fn move_targets<'a>(all: &'a [nodes::NodeView], current: &str) -> Vec<&'a nodes::NodeView> {
+    all.iter()
+        .filter(|node| !node.draining && !node.revoked && node.id != current)
+        .collect()
+}
+
+/// A node as the Move card names it: its name and id, or the id alone when it has no name.
+fn node_label(node: &nodes::NodeView) -> String {
+    if node.name.is_empty() {
+        node.id.clone()
+    } else {
+        format!("{} ({})", node.name, node.id)
+    }
+}
+
+/// Reads the plaza's nodes for the Move card.
+fn move_nodes_task(ctx: &Ctx) -> Task<Msg> {
+    let client = ctx.client.clone();
+    client::task(
+        move || client.get::<Vec<nodes::NodeView>>("/v1/nodes"),
+        Msg::MoveNodes,
+    )
+}
+
+/// A byte count in the words the console uses: megabytes with one decimal, or kilobytes.
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_move_targets_skip_draining_revoked_and_the_current_node() {
+        let all: Vec<nodes::NodeView> = serde_json::from_value(json!([
+            {"id": "n0", "name": "hub"},
+            {"id": "n1", "name": "busy", "draining": true},
+            {"id": "n2", "name": "gone", "revoked": true},
+            {"id": "n3", "name": "free"},
+        ]))
+        .expect("the nodes parse");
+        let ids: Vec<&str> = move_targets(&all, "n0")
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["n3"]);
+        assert_eq!(node_label(&all[3]), "free (n3)");
+        assert_eq!(node_label(&all[0]), "hub (n0)");
+    }
+
+    #[test]
+    fn agent_move_result_parses_and_reads_in_words() {
+        let done: Moved =
+            serde_json::from_str(r#"{"ok":true,"from":"n0","to":"n3","bytes":2097152,"ms":412}"#)
+                .expect("the move answer parses");
+        assert_eq!((done.from.as_str(), done.to.as_str()), ("n0", "n3"));
+        assert_eq!(size_text(done.bytes), "2.0 MB");
+        assert_eq!(size_text(5 * 1024), "5 KB");
+        assert_eq!(done.ms, 412);
+    }
 
     #[test]
     fn conduct_bands_match_the_web() {
@@ -1802,5 +2400,68 @@ mod tests {
     fn previews_cut_on_characters() {
         assert_eq!(preview("héllo", 3), "hél…");
         assert_eq!(preview("abc", 3), "abc");
+    }
+
+    #[test]
+    fn checkpoints_read_in_the_hubs_order_with_the_sleep_snapshot() {
+        let list = json!({"checkpoints": [
+            {"name": "cp-2000-before-lunch", "cid": 7, "label": "before lunch", "kind": "diff",
+             "taken_at_ms": 2000, "memory_written": 1536, "disk_bytes": 8192, "paused_ms": 41},
+            {"name": "sleep", "cid": 7, "label": "", "kind": "full",
+             "taken_at_ms": 1000, "memory_written": 0, "disk_bytes": 0, "paused_ms": 0}
+        ]});
+        let cps = parse_checkpoints(list).unwrap();
+        assert_eq!(cps.len(), 2);
+        assert_eq!(cps[0].name, "cp-2000-before-lunch");
+        assert_eq!(cps[0].label, "before lunch");
+        assert_eq!(cps[0].kind, "diff");
+        assert_eq!(cps[0].memory_written, 1536);
+        assert_eq!(cps[0].paused_ms, 41);
+        assert_eq!(cps[1].name, "sleep");
+        assert!(cps[1].label.is_empty());
+    }
+
+    #[test]
+    fn a_checkpoint_list_without_the_array_is_an_error() {
+        assert!(parse_checkpoints(json!({"error": "no agent"})).is_err());
+    }
+
+    #[test]
+    fn asleep_has_its_own_status_word() {
+        assert_eq!(status_label("asleep").0, "Asleep");
+        assert_eq!(status_label("working").0, "Working");
+        assert_eq!(status_label("gone").0, "Offline");
+    }
+
+    #[test]
+    fn a_fork_makes_one_to_eight_copies() {
+        assert_eq!(fork_count("1"), Some(1));
+        assert_eq!(fork_count(" 8 "), Some(8));
+        assert_eq!(fork_count("0"), None);
+        assert_eq!(fork_count("9"), None);
+        assert_eq!(fork_count("two"), None);
+        assert_eq!(fork_count(""), None);
+    }
+
+    #[test]
+    fn a_fork_reply_names_its_new_agents() {
+        let reply = json!({
+            "forks": [{"cid": 8, "run": "r1", "name": "Ada 2"}, {"cid": 9, "run": "r1", "name": "Ada 3"}],
+            "checkpoint": {"name": "cp-1-fork"}
+        });
+        assert_eq!(fork_names(&reply).unwrap(), vec!["Ada 2", "Ada 3"]);
+        assert!(fork_names(&json!({"ok": true})).is_err());
+    }
+
+    #[test]
+    fn checkpoint_labels_follow_the_hub() {
+        assert_eq!(checkpoint_label("  "), Ok(None));
+        assert_eq!(
+            checkpoint_label(" before lunch "),
+            Ok(Some("before lunch".to_string()))
+        );
+        assert!(checkpoint_label(&"x".repeat(41)).is_err());
+        assert!(checkpoint_label(&"x".repeat(40)).is_ok());
+        assert!(checkpoint_label("tab\there").is_err());
     }
 }

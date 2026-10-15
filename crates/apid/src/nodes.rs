@@ -13,7 +13,7 @@
 //!   GET    /v1/nodes/codes                → [CodeView] (no secrets)
 //!   DELETE /v1/nodes/codes/{id}           → revokes an unused code
 //!   POST   /v1/nodes/{id}/revoke          → the node's signatures stop working at once
-//!   POST   /v1/nodes/{id}/drain  {on}     → no new agents are placed on it
+//!   POST   /v1/nodes/{id}/drain  {on}     → no new agents are placed on it; on, its agents are moved off (`placement`)
 //! Node routes (public, rate-limited / signed):
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
@@ -148,6 +148,10 @@ pub struct CommandResult {
 struct Persisted {
     nodes: Vec<Node>,
     codes: Vec<Code>,
+    /// Agents moved off their CID range: cid → the node that runs them now (`placement::move_agent`).
+    /// Saved with the rest, so a restart keeps every moved agent on its node.
+    #[serde(default)]
+    overrides: BTreeMap<u64, String>,
 }
 
 #[derive(Default)]
@@ -194,6 +198,18 @@ impl Store {
         self.list()
             .into_iter()
             .find(|n| !n.revoked && cid >= n.cid_base && cid < n.cid_base + n.cid_count)
+    }
+    /// The node a moved agent runs on, when it was moved off its CID range (None: the range decides).
+    pub fn override_of(&self, cid: u64) -> Option<String> {
+        self.inner.lock().ok()?.overrides.get(&cid).cloned()
+    }
+    /// Records where agent `cid` runs (None clears the record, back to its range); returns what it was.
+    pub fn set_override(&self, cid: u64, node: Option<&str>) -> Option<String> {
+        let mut p = self.inner.lock().ok()?;
+        match node {
+            Some(node) => p.overrides.insert(cid, node.to_string()),
+            None => p.overrides.remove(&cid),
+        }
     }
 
     /// Issues a code: returns its id, the token text (shown once) and its expiry.
@@ -286,7 +302,7 @@ impl Store {
         let hash = hex(&apz_trust::sha256(&secret));
 
         let mut p = self.inner.lock().map_err(|e| e.to_string())?;
-        let Persisted { nodes, codes } = &mut *p;
+        let Persisted { nodes, codes, .. } = &mut *p;
         let mut found = None;
         for (i, code) in codes.iter().enumerate() {
             if apz_trust::ct_eq(code.secret_sha256.as_bytes(), hash.as_bytes()) {
@@ -616,6 +632,39 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
 }
 
+/// `n0`, the hub's own machine, as a node record: never stored (it is always there), online while
+/// its noded answers. Its `machine` is its noded's view (`workstation_backends` among the facts)
+/// over the hub's own summary.
+pub(crate) fn local_node(app: &App) -> Node {
+    let now = apz_plaza::now_ms();
+    let noded = app.noded.get("/v1/machine");
+    let local_up = matches!(noded, Ok((200, _)));
+    let mut machine = local_summary();
+    if let (Ok((200, serde_json::Value::Object(facts))), serde_json::Value::Object(summary)) =
+        (noded, &mut machine)
+    {
+        for (key, value) in facts {
+            summary.entry(key).or_insert(value);
+        }
+    }
+    Node {
+        id: "n0".into(),
+        name: local_summary()["host"]
+            .as_str()
+            .unwrap_or("this hub")
+            .to_string(),
+        public_key: String::new(),
+        cid_base: 0,
+        cid_count: REMOTE_CID_BASE,
+        joined_ms: 0,
+        last_seen_ms: if local_up { now } else { 0 },
+        machine,
+        draining: false,
+        revoked: false,
+        address: "loopback".into(),
+    }
+}
+
 /// The plaza's machines: `n0`, the hub's own (never stored: it is always there, online while
 /// its noded answers), then every joined node.
 fn views(app: &App) -> Vec<NodeView> {
@@ -753,6 +802,9 @@ fn drain_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     match app.nodes.drain(p.get("id"), body.on.unwrap_or(true)) {
         Ok(node) => {
+            if node.draining {
+                crate::placement::spawn_drain(app, &node.id);
+            }
             app.bus.publish("node", &node);
             Response::json(200, &view_of(app, node))
         }

@@ -36,12 +36,29 @@ struct Gone {
     reason: String,
 }
 
-/// The egress proxy's question before it dials: may agent `cid` connect to `host`? The port is
-/// not part of the decision (the proxy gates ports itself), so it is not read here.
+/// The egress proxy's question before it dials: may agent `cid` connect to `host:port`, and should the
+/// proxy intercept that connection for an egress credential rule?
 #[derive(Deserialize)]
 struct EgressCheck {
     cid: u64,
     host: String,
+    #[serde(default = "crate::egress_inject::default_port")]
+    port: u16,
+}
+
+/// The egress proxy asks for the leaf certificate of an intercepted host.
+#[derive(Deserialize)]
+struct EgressCert {
+    cid: u64,
+    host: String,
+}
+
+/// The egress proxy asks which header to add to one request on an intercepted host.
+#[derive(Deserialize)]
+struct EgressInject {
+    cid: u64,
+    #[serde(flatten)]
+    ask: crate::egress_inject::Ask,
 }
 
 /// One egress decision and its outcome, reported by the hub's egress proxy.
@@ -113,7 +130,30 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(e) => return Response::error(400, &e.to_string()),
             };
             authorized(app, req, &check.cid.to_string(), |cid| {
-                Ok(Response::json(200, &egress_check(app, cid, &check.host)))
+                Ok(Response::json(
+                    200,
+                    &egress_check(app, cid, &check.host, check.port),
+                ))
+            })
+        })
+        // The egress proxy's leaf certificate for an intercepted host (the hub signs it with the egress CA).
+        .post("/internal/egress/cert", |app, req, _p| {
+            let cert: EgressCert = match req.json() {
+                Ok(cert) => cert,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            authorized(app, req, &cert.cid.to_string(), |cid| {
+                Ok(crate::egress_inject::cert_reply(app, cid, &cert.host))
+            })
+        })
+        // The egress proxy's header for one request on an intercepted host: the secret is read here, never sent to the guest.
+        .post("/internal/egress/inject", |app, req, _p| {
+            let inject: EgressInject = match req.json() {
+                Ok(inject) => inject,
+                Err(e) => return Response::error(400, &e.to_string()),
+            };
+            authorized(app, req, &inject.cid.to_string(), |cid| {
+                Ok(crate::egress_inject::inject_reply(app, cid, &inject.ask))
             })
         })
         // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
@@ -126,6 +166,21 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        // vsockd's gateway asks for a sandbox's CID and envd access token by its id (`sb…`).
+        .get("/internal/e2b/sandboxes/{id}", |app, req, p| {
+            let presented = req
+                .header("x-apz-internal")
+                .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes()));
+            if !presented {
+                return Response::error(403, "missing or wrong internal token");
+            }
+            match crate::e2b::lookup(app, p.get("id")) {
+                Some((cid, access_token)) => {
+                    Response::json(200, &json!({"cid": cid, "access_token": access_token}))
+                }
+                None => Response::error(404, "no such sandbox"),
+            }
+        })
 }
 
 /// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal
@@ -153,6 +208,10 @@ pub(crate) fn authorized(
         .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), app.token.as_bytes()))
     {
         return Response::error(403, "missing or wrong internal token");
+    }
+    // A sandbox's CID has no agent session: the agent routes refuse it (its egress routes still answer).
+    if req.path.starts_with("/internal/v1/") && crate::e2b::sandbox_by_cid(app, cid).is_some() {
+        return Response::error(403, "a sandbox has no agent session");
     }
     f(cid).unwrap_or_else(|response| response)
 }
@@ -225,12 +284,17 @@ pub(crate) fn egress_verdict(
 /// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
-fn egress_check(app: &App, cid: u64, host: &str) -> Value {
-    let role = app
-        .agents
-        .get(cid)
-        .map(|agent| agent.role)
-        .unwrap_or_default();
+fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
+    // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
+    let sandbox = crate::e2b::sandbox_by_cid(app, cid);
+    let role = match &sandbox {
+        Some(_) => "sandbox".to_string(),
+        None => app
+            .agents
+            .get(cid)
+            .map(|agent| agent.role)
+            .unwrap_or_default(),
+    };
     let resource = jhrl::authz::Entity {
         ty: "Host".into(),
         id: host.into(),
@@ -243,8 +307,29 @@ fn egress_check(app: &App, cid: u64, host: &str) -> Value {
         .laws
         .refuse_op(cid, &role, "egress.connect", resource, attrs, &Value::Null);
     let blocked = on_fetch_blocklist(&app.settings.get().fetch_block, host);
-    let verdict = egress_verdict(blocked, refusal, host);
-    json!({ "allow": verdict.allow, "law": verdict.law, "reason": verdict.reason })
+    let verdict = match &sandbox {
+        Some(sandbox) => crate::e2b::sandbox_verdict(sandbox, blocked, refusal, host),
+        None => egress_verdict(blocked, refusal, host),
+    };
+    // Whether the proxy terminates this connection's TLS to add a credential (see egress_inject).
+    let intercept = sandbox.is_none() && crate::egress_inject::intercepts(app, cid, host, port);
+    // The denyOut blocks vsockd checks the addresses a name resolves to against (see e2b_net).
+    let deny_cidrs = match &sandbox {
+        Some(sandbox) if verdict.allow => {
+            crate::e2b_net::deny_blocks(&sandbox.allow_out, &sandbox.deny_out, host)
+        }
+        _ => Vec::new(),
+    };
+    let mut reply = json!({
+        "allow": verdict.allow,
+        "law": verdict.law,
+        "reason": verdict.reason,
+        "intercept": intercept,
+    });
+    if !deny_cidrs.is_empty() {
+        reply["deny_cidrs"] = json!(deny_cidrs);
+    }
+    reply
 }
 
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.
@@ -545,6 +630,10 @@ fn tool_request(
     } else {
         None
     };
+    // An allowed call that may not be undone starts only after its VM is checkpointed (`vm_snapshots`).
+    if verdict.is_ok() && gate.is_none() {
+        crate::vm_snapshots::auto_checkpoint(app, cid, name);
+    }
     let mut program = None;
     let (decision, output, is_error) = match verdict {
         _ if gate.is_some() => (Decision::Deny, gate.unwrap_or_default(), true),

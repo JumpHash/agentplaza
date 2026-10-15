@@ -24,6 +24,11 @@ use serde_json::json;
 use crate::apid::{Apid, EgressAnswer, TOKEN_HEADER};
 use crate::sys;
 
+/// The TLS intercept for an allowed CONNECT whose decision says `intercept`. Declared here, by path,
+/// so the CONNECT path owns it; its module docs say how it works.
+#[path = "egress_tls.rs"]
+mod egress_tls;
+
 /// The vsock port the guest's proxy traffic arrives on.
 pub const EGRESS_PORT: u32 = 5001;
 /// The request head (request line and headers) is capped at this many bytes.
@@ -76,10 +81,43 @@ const ALLOW_TTL: Duration = Duration::from_secs(60);
 const DENY_TTL: Duration = Duration::from_secs(10);
 /// The most decisions kept at once. Past it a decision is asked of apid and not kept.
 const MAX_DECISIONS: usize = 4096;
+/// The most decisions kept for one CID, so one guest cannot fill the table. Past it a decision is
+/// asked of apid and not kept, and the other CIDs' decisions are unaffected.
+const MAX_DECISIONS_PER_CID: usize = 512;
 
-/// Apid's decisions by (CID, host, port), kept for their TTL and shared by every connection thread.
-static DECISIONS: Mutex<BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>> =
-    Mutex::new(BTreeMap::new());
+/// Kept decisions: (CID, host, port) to when the decision expires and the decision.
+type Kept = BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>;
+
+/// Apid's decisions, kept for their TTL and shared by every connection thread.
+static DECISIONS: Mutex<Kept> = Mutex::new(BTreeMap::new());
+/// Each CID's generation, moved by [`forget`]. A decision asked of apid before a `forget` is not kept
+/// after it (see [`keep_decision`]).
+static GENERATIONS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
+
+/// Forgets every decision kept for guest `cid`: its rules changed (an E2B sandbox's network update),
+/// so its next connection asks apid again. Returns how many were dropped. A decision asked of apid
+/// before this call is not kept either.
+pub fn forget(cid: u32) -> usize {
+    let mut kept = DECISIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut generations = GENERATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *generations.entry(cid).or_insert(0) += 1;
+    drop(generations);
+    let before = kept.len();
+    kept.retain(|key, _| key.0 != cid);
+    before - kept.len()
+}
+
+/// The generation of guest `cid`: it moves on each [`forget`].
+fn generation(cid: u32) -> u64 {
+    let generations = GENERATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    generations.get(&cid).copied().unwrap_or(0)
+}
 
 /// The two sockets of a tunnel, cloned so either pump can hang both up, and
 /// the flag that tells the other pump to stop. The flag is what ends the other
@@ -257,6 +295,10 @@ pub struct Audit {
     host: String,
     port: u16,
     allowed: bool,
+    /// The TLS was terminated and credentials were injected (`injected` counts the requests).
+    /// Never a header value.
+    intercepted: bool,
+    injected: u64,
     up: u64,
     down: u64,
 }
@@ -265,8 +307,8 @@ impl Audit {
     fn report(&self, cid: u32, elapsed: Duration, apid: &Apid) {
         let ms = elapsed.as_millis() as u64;
         println!(
-            "vsockd: egress cid={cid} host={} port={} allowed={} bytes_up={} bytes_down={} ms={ms}",
-            self.host, self.port, self.allowed, self.up, self.down
+            "vsockd: egress cid={cid} host={} port={} allowed={} intercepted={} injected={} bytes_up={} bytes_down={} ms={ms}",
+            self.host, self.port, self.allowed, self.intercepted, self.injected, self.up, self.down
         );
         if apid.enabled() {
             let record = json!({
@@ -274,6 +316,8 @@ impl Audit {
                 "host": self.host,
                 "port": self.port,
                 "allowed": self.allowed,
+                "intercepted": self.intercepted,
+                "injected": self.injected,
                 "bytes_up": self.up,
                 "bytes_down": self.down,
                 "ms": ms,
@@ -290,8 +334,16 @@ impl Audit {
 
 /// Accepts guest proxy connections for one CID, each served on its own
 /// thread, until a stop request.
-pub fn accept_loop(cid: u32, listener: UnixListener, policy: Arc<Policy>, apid: Apid) {
-    while !sys::shutdown_requested() {
+pub fn accept_loop(
+    cid: u32,
+    listener: UnixListener,
+    policy: Arc<Policy>,
+    apid: Apid,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) {
+    // `stop` is the CID's own stop request (it is no longer served), checked on every poll like
+    // the daemon-wide shutdown.
+    while !sys::shutdown_requested() && !stop.load(std::sync::atomic::Ordering::SeqCst) {
         if let Err(err) = sys::poll_readable(&listener, super::ACCEPT_POLL_MS) {
             eprintln!("vsockd: egress poll failed: {err}");
         }
@@ -366,8 +418,33 @@ fn proxy(
         );
         return Err(Stop::Refused(answer.reason));
     }
-    let addrs = checked_addrs(policy, &host, port)?;
+    let addrs = checked_addrs(policy, &host, port, &answer.deny_cidrs)?;
     audit.allowed = true;
+
+    // A CONNECT apid wants intercepted: the guest is answered, then its TLS is terminated and each
+    // request is injected (see `egress_tls`). A failure after the answer cannot be an HTTP answer,
+    // so the connection is closed and the reason logged.
+    if let (true, Head::Connect { .. }) = (answer.intercept, &parsed) {
+        guest
+            .write_all(ESTABLISHED)
+            .map_err(|_| Stop::Unreachable)?;
+        audit.intercepted = true;
+        let target = egress_tls::Target {
+            cid,
+            host: &host,
+            port,
+            addrs: &addrs,
+        };
+        let mut tally = egress_tls::Tally::default();
+        let result = egress_tls::intercept(guest, &target, apid, &mut tally);
+        audit.up = tally.up;
+        audit.down = tally.down;
+        audit.injected = tally.injected;
+        if let Err(reason) = result {
+            println!("vsockd: egress intercept cid={cid} host={host} port={port} closed: {reason}");
+        }
+        return Ok(());
+    }
 
     let mut upstream = None;
     for addr in &addrs {
@@ -852,29 +929,47 @@ fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer
             }
         }
     }
+    // Read before apid is asked: a `forget` that runs meanwhile moves the generation, so the answer is not kept.
+    let seen = generation(cid);
     let answer = apid.check_egress(cid, host, port).unwrap_or_else(|err| {
         println!("vsockd: warning: egress check for cid {cid} failed, refusing: {err}");
         EgressAnswer {
             allow: false,
             reason: "refused: apid could not decide".to_string(),
+            intercept: false,
+            deny_cidrs: Vec::new(),
         }
     });
-    let now = Instant::now();
     let ttl = if answer.allow { ALLOW_TTL } else { DENY_TTL };
+    keep_decision(key, seen, &answer, ttl);
+    answer
+}
+
+/// Keeps `answer` for `key` for `ttl`. It is not kept when the CID's generation has moved since `seen`
+/// (a `forget` ran while apid was asked), or when the CID already holds [`MAX_DECISIONS_PER_CID`] live
+/// decisions, or when the table is full.
+fn keep_decision(key: (u32, String, u16), seen: u64, answer: &EgressAnswer, ttl: Duration) {
+    let now = Instant::now();
+    let cid = key.0;
     let mut kept = DECISIONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     kept.retain(|_, (expires, _)| *expires > now);
-    if kept.len() < MAX_DECISIONS {
+    let held = kept.keys().filter(|held| held.0 == cid).count();
+    if generation(cid) == seen && held < MAX_DECISIONS_PER_CID && kept.len() < MAX_DECISIONS {
         kept.insert(key, (now + ttl, answer.clone()));
     }
-    answer
 }
 
 /// Resolves `host:port` and checks every address. One refused address refuses
 /// the destination. The returned addresses are the ones that were checked, and
 /// they are the only ones connected to.
-fn checked_addrs(policy: &Policy, host: &str, port: u16) -> Result<Vec<SocketAddr>, Stop> {
+fn checked_addrs(
+    policy: &Policy,
+    host: &str,
+    port: u16,
+    deny: &[(IpAddr, u8)],
+) -> Result<Vec<SocketAddr>, Stop> {
     let addrs: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
         .map_err(|_| Stop::Unreachable)?
@@ -882,10 +977,37 @@ fn checked_addrs(policy: &Policy, host: &str, port: u16) -> Result<Vec<SocketAdd
     if addrs.is_empty() {
         return Err(Stop::Unreachable);
     }
-    if addrs.iter().any(|addr| policy.refusal(addr.ip()).is_some()) {
+    let refused = addrs.iter().any(|addr| {
+        policy.refusal(addr.ip()).is_some() || deny.iter().any(|block| in_cidr(addr.ip(), *block))
+    });
+    if refused {
         return Err(Stop::Forbidden);
     }
     Ok(addrs)
+}
+
+/// Whether `ip` lies in the deny block `block` (see `apid::cidr_of`). An IPv4-mapped IPv6 address is
+/// compared as its IPv4 address, and an IPv4 address never matches an IPv6 block, or the reverse.
+fn in_cidr(ip: IpAddr, (net, len): (IpAddr, u8)) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    };
+    match (ip, net) {
+        (IpAddr::V4(ip), IpAddr::V4(net)) => {
+            let mask = u32::MAX
+                .checked_shl(32u32.saturating_sub(u32::from(len)))
+                .unwrap_or(0);
+            u32::from(ip) & mask == u32::from(net) & mask
+        }
+        (IpAddr::V6(ip), IpAddr::V6(net)) => {
+            let mask = u128::MAX
+                .checked_shl(128u32.saturating_sub(u32::from(len)))
+                .unwrap_or(0);
+            u128::from(ip) & mask == u128::from(net) & mask
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1454,6 +1576,122 @@ mod tests {
             std::io::ErrorKind::WouldBlock,
             "the host was dialled without apid"
         );
+    }
+
+    #[test]
+    fn a_deny_block_refuses_the_address_a_name_resolves_to_without_dialling() {
+        let (echo, port) = quiet_listener();
+        let (apid, _checks, token) = fake_apid(
+            "deny-block",
+            |_| json!({ "allow": true, "deny_cidrs": ["127.0.0.0/8"] }),
+        );
+        let (answer, audit) = serve_one(
+            7_005,
+            loopback_policy(port),
+            &apid,
+            &connect_request("127.0.0.1", port),
+        );
+        let _ = std::fs::remove_file(&token);
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(
+            answer.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{answer:?}"
+        );
+        assert!(!audit.allowed, "{audit:?}");
+        assert_eq!(
+            echo.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "the denied address was dialled"
+        );
+    }
+
+    #[test]
+    fn a_deny_block_matches_by_prefix_and_never_across_address_families() {
+        let block = |text: &str, len: u8| (text.parse::<IpAddr>().unwrap(), len);
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let v4 = block("8.8.8.0", 24);
+        let v6 = block("2001:db8::", 32);
+        assert!(in_cidr(ip("8.8.8.8"), v4));
+        assert!(
+            in_cidr(ip("::ffff:8.8.8.8"), v4),
+            "a mapped address is its IPv4 address"
+        );
+        assert!(!in_cidr(ip("8.8.9.8"), v4));
+        assert!(in_cidr(ip("2001:db8::1"), v6));
+        assert!(!in_cidr(ip("2001:db9::1"), v6));
+        assert!(
+            !in_cidr(ip("8.8.8.8"), v6),
+            "an IPv4 address never matches an IPv6 block"
+        );
+        assert!(!in_cidr(ip("2001:db8::1"), v4));
+        assert!(
+            !in_cidr(ip("::ffff:8.8.8.8"), block("::", 0)),
+            "a mapped address is IPv4, so no IPv6 block holds it"
+        );
+        assert!(in_cidr(ip("1.2.3.4"), block("0.0.0.0", 0)));
+    }
+
+    #[test]
+    fn a_decision_asked_across_a_forget_is_not_kept() {
+        const CID: u32 = 9_301;
+        let key = (CID, "example.test".to_string(), 443);
+        let answer = EgressAnswer {
+            allow: true,
+            reason: String::new(),
+            intercept: false,
+            deny_cidrs: Vec::new(),
+        };
+        let seen = generation(CID);
+        forget(CID);
+        assert_ne!(generation(CID), seen, "a forget moves the generation");
+        keep_decision(key.clone(), seen, &answer, ALLOW_TTL);
+        assert!(
+            !DECISIONS.lock().unwrap().contains_key(&key),
+            "a decision that straddled a forget was kept"
+        );
+        keep_decision(key.clone(), generation(CID), &answer, ALLOW_TTL);
+        assert!(
+            DECISIONS.lock().unwrap().contains_key(&key),
+            "a decision asked after the forget is kept"
+        );
+        forget(CID);
+    }
+
+    #[test]
+    fn one_cid_keeps_at_most_512_decisions_and_others_are_unaffected() {
+        const CID: u32 = 9_302;
+        let answer = EgressAnswer {
+            allow: true,
+            reason: String::new(),
+            intercept: false,
+            deny_cidrs: Vec::new(),
+        };
+        for n in 0..=MAX_DECISIONS_PER_CID {
+            keep_decision(
+                (CID, format!("h{n}.test"), 443),
+                generation(CID),
+                &answer,
+                ALLOW_TTL,
+            );
+        }
+        let held = |cid: u32| {
+            DECISIONS
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|key| key.0 == cid)
+                .count()
+        };
+        assert_eq!(held(CID), MAX_DECISIONS_PER_CID, "the 513th was kept");
+        keep_decision(
+            (CID + 1, "other.test".to_string(), 443),
+            generation(CID + 1),
+            &answer,
+            ALLOW_TTL,
+        );
+        assert_eq!(held(CID + 1), 1, "another CID's decision was refused");
+        forget(CID);
+        forget(CID + 1);
     }
 
     #[test]

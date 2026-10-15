@@ -51,18 +51,20 @@ jobs:
     uses: ./.github/workflows/guest.yml
   relay:
     uses: ./.github/workflows/relay.yml
+  console:
+    uses: ./.github/workflows/console.yml
   linux:
-    needs: [version, guest, relay]
+    needs: [version, guest, relay, console]
     uses: ./.github/workflows/linux.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   macos:
-    needs: [version, guest, relay]
+    needs: [version, guest, relay, console]
     uses: ./.github/workflows/macos.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
   windows:
-    needs: [version, guest, relay]
+    needs: [version, guest, relay, console]
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
@@ -73,25 +75,12 @@ jobs:
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
 
-  web:
-    name: web console
-    runs-on: [self-hosted, Linux, X64, hetzner]
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-      - name: CI image
-        run: .github/ci/image.sh
-      # The console is built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
-      - run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run build && npm test'
-        env:
-          APZ_REQUIRE_ENGINE: "1"
-
   publish:
-    needs: [version, linux, macos, windows, raspberry-pi, web]
+    needs: [version, linux, macos, windows, raspberry-pi, console]
     # Every platform passed; macOS may also have been switched off.
     if: >-
       !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' &&
-      needs.raspberry-pi.result == 'success' && needs.web.result == 'success' &&
+      needs.raspberry-pi.result == 'success' && needs.console.result == 'success' &&
       (needs.macos.result == 'success' || needs.macos.result == 'skipped')
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15

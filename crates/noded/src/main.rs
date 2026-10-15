@@ -13,16 +13,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
-use noded::registry::Detail;
+use noded::registry::{self, Detail};
 use noded::{Config, Server};
 
 const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
              [--workspace IMAGE] [--persist-dir DIR] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
-             [--agents-balloon-mib N]
+             [--agents-balloon-mib N] [--no-snapshots]
 
-  --port PORT      port to listen on, on 127.0.0.1 (default 8899)
+  --port PORT     port to listen on, on 127.0.0.1 (default 8899)
   --kernel PATH    guest kernel image (default guest/ARCH/vmlinux of the installed resources
                    when present, else /boot/vmlinuz-linux)
   --initrd PATH    guest initrd (default guest/ARCH/initrd.gz of the installed resources when
@@ -32,6 +32,18 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    --workspace, for the runs' image copies
                    (default /tmp/plaza-vsock on Linux and macOS, the state directory's
                    vsock on Windows; VM i's muxer binds DIR/vm{cid})
+  --snapshot-dir DIR keep VM snapshots in DIR (default: snapshots/ under --persist-dir, else
+                   under the state directory)
+  --volume-dir DIR keep the shared data volumes in DIR (default: volumes/ under --persist-dir,
+                   else under the state directory)
+  --no-snapshots   keep no VM snapshots: sleep, checkpoint, restore, fork and export are
+                   refused, and no warm templates are kept either
+  --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
+  --no-recover    leave a keepalive agent or sandbox that stops by itself exited, instead of
+                  recovering it from its newest snapshot (or cold)
+  --vm-processes   run each VM in its own apz-vmm process (jailed), with its own cgroup v2
+                   limits (memory, CPU, pids) under agentplaza.slice when the user's cgroup
+                   tree is delegated
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
@@ -94,6 +106,30 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), String> {
     let config = parse_args(args)?;
+    // One process per VM (the flag, or `APZ_VMM_SPAWN=process` as the service plans set it): the
+    // shape the jailer applies to, and the one cgroup limits need.
+    if config.vm_processes {
+        vmm::spawner::set_spawn_mode(vmm::spawner::SpawnMode::Process);
+    }
+    if matches!(
+        vmm::spawner::spawn_mode(),
+        Ok(vmm::spawner::SpawnMode::Process)
+    ) {
+        let root = vmm::cgroup::CgroupRoot::detect();
+        match &root {
+            Some(root) => eprintln!(
+                "noded: per-VM processes, cgroup limits under {}",
+                root.path().display()
+            ),
+            None => {
+                eprintln!("noded: per-VM processes; no delegated cgroup tree, so no cgroup limits")
+            }
+        }
+        vmm::spawner::set_cgroup_root(root);
+    }
+    // The VMs' snapshots and the warm templates live under the snapshot dir: a per-VM process's jail
+    // binds it, so the process can write snapshots there and restore from them.
+    vmm::spawner::set_snapshot_root(config.snapshot_dir.clone());
     // F4: the per-VM muxer binds `{uds_dir}/vm{cid}` with a deterministic
     // name, and the default is under world-writable `/tmp`. Create the
     // directory 0700 first, so another local user cannot squat a VM's path
@@ -105,6 +141,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
             config.uds_dir.display()
         )
     })?;
+    // The copies of workstation disks and snapshots land in the guest directory: say once whether
+    // they are reflinks (a copy is free until written) or sparse copies (a copy costs its data).
+    println!(
+        "noded: disk copies: {}",
+        if vmm::clonefile::reflink_supported(&config.workstation.dir) {
+            "reflink"
+        } else {
+            "sparse copy"
+        }
+    );
     let server = Server::start(config.clone()).map_err(|err| format!("cannot listen: {err}"))?;
     // The initial role fleet is the service's setup: it is booted before the
     // daemon is left to serve, and a node that cannot stand it up says so and
@@ -187,6 +233,8 @@ fn defaults() -> Config {
 /// Reads `--port`, `--kernel` and `--initrd`, leaving the rest at its default.
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = defaults();
+    let mut no_snapshots = false;
+    let mut no_recover = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         let mut value = |flag: &str| {
@@ -204,6 +252,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
+            "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
+            "--volume-dir" => config.volume_dir = Some(PathBuf::from(value("--volume-dir")?)),
+            "--no-snapshots" => no_snapshots = true,
+            "--no-recover" => no_recover = true,
+            "--no-warm-templates" => config.warm_templates = false,
+            "--vm-processes" => config.vm_processes = true,
             "--agents" => config.agents = Some(PathBuf::from(value("--agents")?)),
             "--agents-cid-base" => {
                 config.agents_cid_base = value("--agents-cid-base")?
@@ -241,7 +295,49 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    // A keepalive agent or sandbox that stops by itself is recovered unless `--no-recover` says not.
+    // The setting is the daemon's own (`Registry` reads it when a VM stops), so it is set here, as
+    // the snapshot root is.
+    registry::set_crash_recovery(!no_recover);
+    // Snapshots go where the flag names; otherwise with the persistent state when there is one, else
+    // under the node's state directory, so a node started with no state flags keeps them too.
+    // `--no-snapshots` keeps none, and the warm templates live under the snapshot dir, so they go too.
+    config.snapshot_dir = snapshot_dir(
+        no_snapshots,
+        config.snapshot_dir.take(),
+        config.persist_dir.as_deref(),
+        &apz_os::dirs::state(),
+    )?;
+    // Data volumes live beside the snapshots unless the flag names a place.
+    if config.volume_dir.is_none() {
+        config.volume_dir = Some(match config.persist_dir.as_deref() {
+            Some(persist) => persist.join("volumes"),
+            None => apz_os::dirs::state().join("volumes"),
+        });
+    }
     Ok(config)
+}
+
+/// The snapshot directory a node runs with (see [`parse_args`]): `None` with `--no-snapshots`, which
+/// may not be combined with `--snapshot-dir`; the flag's directory when it is given; else
+/// `persist/snapshots` under `--persist-dir`; else `snapshots` under the state directory `state`.
+fn snapshot_dir(
+    no_snapshots: bool,
+    flag: Option<PathBuf>,
+    persist: Option<&std::path::Path>,
+    state: &std::path::Path,
+) -> Result<Option<PathBuf>, String> {
+    if no_snapshots {
+        if flag.is_some() {
+            return Err("--no-snapshots and --snapshot-dir cannot both be given".to_string());
+        }
+        return Ok(None);
+    }
+    Ok(Some(match (flag, persist) {
+        (Some(dir), _) => dir,
+        (None, Some(persist)) => persist.join("snapshots"),
+        (None, None) => state.join("snapshots"),
+    }))
 }
 
 /// Reads `A-B`, an inclusive CID range: both ends are numbers, `A` is at least
@@ -358,5 +454,58 @@ mod tests {
         ] {
             assert!(parse_args(args.clone()).is_err(), "{args:?}");
         }
+    }
+
+    fn args_of(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn snapshots_default_to_the_state_directory_or_the_persist_dir() {
+        let state = std::path::Path::new("/var/lib/apz");
+        let persist = std::path::Path::new("/persist");
+        assert_eq!(
+            snapshot_dir(false, None, None, state),
+            Ok(Some(PathBuf::from("/var/lib/apz/snapshots")))
+        );
+        assert_eq!(
+            snapshot_dir(false, None, Some(persist), state),
+            Ok(Some(PathBuf::from("/persist/snapshots")))
+        );
+        // The flag names the directory whatever the persist dir is.
+        assert_eq!(
+            snapshot_dir(false, Some(PathBuf::from("/snaps")), Some(persist), state),
+            Ok(Some(PathBuf::from("/snaps")))
+        );
+    }
+
+    #[test]
+    fn no_snapshots_keeps_none_and_cannot_name_a_snapshot_dir() {
+        let state = std::path::Path::new("/var/lib/apz");
+        assert_eq!(snapshot_dir(true, None, None, state), Ok(None));
+        assert_eq!(
+            snapshot_dir(true, None, Some(std::path::Path::new("/persist")), state),
+            Ok(None)
+        );
+        assert!(snapshot_dir(true, Some(PathBuf::from("/snaps")), None, state).is_err());
+    }
+
+    #[test]
+    fn the_snapshot_flags_parse_into_the_config() {
+        let config = parse_args(Vec::new()).expect("no arguments is the default");
+        assert_eq!(
+            config.snapshot_dir,
+            Some(apz_os::dirs::state().join("snapshots"))
+        );
+        let config = parse_args(args_of(&["--no-snapshots"])).expect("--no-snapshots parses");
+        assert_eq!(config.snapshot_dir, None);
+        let config = parse_args(args_of(&["--persist-dir", "/p", "--no-snapshots"]))
+            .expect("--no-snapshots with a persist dir parses");
+        assert_eq!(config.snapshot_dir, None);
+        let config = parse_args(args_of(&["--snapshot-dir", "/s"])).expect("--snapshot-dir parses");
+        assert_eq!(config.snapshot_dir, Some(PathBuf::from("/s")));
+        let config = parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
+        assert_eq!(config.snapshot_dir, Some(PathBuf::from("/p/snapshots")));
+        assert!(parse_args(args_of(&["--no-snapshots", "--snapshot-dir", "/s"])).is_err());
     }
 }

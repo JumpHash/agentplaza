@@ -67,6 +67,12 @@ pub enum WhpError {
         /// Its result.
         hresult: u32,
     },
+    /// This Windows has no vCPU state calls, which a snapshot needs.
+    #[error(
+        "this Windows has no WHvGetVirtualProcessorState: VM snapshots on WHP need Windows 10 2004 \
+         or later"
+    )]
+    NoStateCalls,
     /// The instruction emulator could not complete an access.
     #[error("the WHP instruction emulator could not complete a {what} access (status {status:#x})")]
     Emulation {
@@ -126,6 +132,21 @@ type WHvSetVirtualProcessorRegistersFn = unsafe extern "system" fn(
     u32,
     *const WHV_REGISTER_VALUE,
 ) -> HRESULT;
+type WHvGetVirtualProcessorStateFn = unsafe extern "system" fn(
+    WHV_PARTITION_HANDLE,
+    u32,
+    WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+    *mut c_void,
+    u32,
+    *mut u32,
+) -> HRESULT;
+type WHvSetVirtualProcessorStateFn = unsafe extern "system" fn(
+    WHV_PARTITION_HANDLE,
+    u32,
+    WHV_VIRTUAL_PROCESSOR_STATE_TYPE,
+    *const c_void,
+    u32,
+) -> HRESULT;
 type WHvRequestInterruptFn =
     unsafe extern "system" fn(WHV_PARTITION_HANDLE, *const WHV_INTERRUPT_CONTROL, u32) -> HRESULT;
 type WHvTranslateGvaFn = unsafe extern "system" fn(
@@ -176,6 +197,10 @@ pub struct Api {
     pub WHvEmulatorDestroyEmulator: WHvEmulatorDestroyEmulatorFn,
     pub WHvEmulatorTryIoEmulation: WHvEmulatorTryIoEmulationFn,
     pub WHvEmulatorTryMmioEmulation: WHvEmulatorTryMmioEmulationFn,
+    /// The vCPU state calls a snapshot needs (the local APIC and the XSAVE area). Windows 10 2004
+    /// and later have them; an older Windows boots VMs and refuses to snapshot them.
+    pub WHvGetVirtualProcessorState: Option<WHvGetVirtualProcessorStateFn>,
+    pub WHvSetVirtualProcessorState: Option<WHvSetVirtualProcessorStateFn>,
 }
 
 const PLATFORM_DLL: &str = "WinHvPlatform.dll";
@@ -289,6 +314,14 @@ impl Api {
                 EMULATION_DLL,
                 "WHvEmulatorTryMmioEmulation"
             ),
+            // SAFETY: the SDK signatures of the exports with these names.
+            WHvGetVirtualProcessorState: unsafe {
+                symbol(platform, PLATFORM_DLL, "WHvGetVirtualProcessorState\0").ok()
+            },
+            // SAFETY: as above.
+            WHvSetVirtualProcessorState: unsafe {
+                symbol(platform, PLATFORM_DLL, "WHvSetVirtualProcessorState\0").ok()
+            },
         })
     }
 }

@@ -79,6 +79,23 @@ pub fn discard(host: *mut u8, len: usize) -> io::Result<()> {
     }
 }
 
+/// Makes `dst` share `src`'s extents (`ioctl(FICLONE)`): afterwards `dst` holds
+/// `src`'s bytes at no copy cost, and the two diverge block by block as either is
+/// written. The kernel refuses a filesystem that cannot share extents
+/// (`EOPNOTSUPP`), a source on another filesystem (`EXDEV`) and a file it cannot
+/// clone (`EINVAL`, `ENOTTY`, `EBADF`); the caller decides what those mean.
+#[cfg(target_os = "linux")]
+pub fn ficlone(dst: &std::fs::File, src: &std::fs::File) -> io::Result<()> {
+    // SAFETY: `FICLONE` takes one integer argument, the source descriptor, and
+    // touches no memory through it. Both descriptors are borrowed from live
+    // `File`s for the duration of the call, and the return value is checked.
+    if unsafe { libc::ioctl(dst.as_raw_fd(), libc::FICLONE, src.as_raw_fd()) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// The running kernel's release string (`uname -r`), or `None` if the
 /// syscall fails.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]

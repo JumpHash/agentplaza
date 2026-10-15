@@ -11,14 +11,26 @@
 
 //! The virtio-mmio face of the block device.
 
-use vmm_sys_util::eventfd::EventFd;
+use std::num::Wrapping;
+
+use crate::pal::eventfd::EventFd;
+use serde_json::Value;
 
 use super::device::VirtioBlock;
 use super::{BLOCK_QUEUE_NUM, BLOCK_QUEUE_SIZE, VIRTIO_ID_BLOCK, VirtioBlockError};
 use crate::devices::virtio::VirtioError;
 use crate::devices::virtio::ack_feature_page;
-use crate::devices::virtio::mmio::{QueueConfig, VirtioDevice};
+use crate::devices::virtio::mmio::{DeviceSnapshot, QueueConfig, QueuePosition, VirtioDevice};
+use crate::devices::virtio::queue::Queue;
 use crate::vstate::memory::{GuestAddress, GuestMemoryMmap};
+
+/// The queue's position, as a snapshot carries it.
+fn queue_position(queue: &Queue) -> QueuePosition {
+    QueuePosition {
+        next_avail: queue.next_avail.0,
+        next_used: queue.next_used.0,
+    }
+}
 
 /// The virtio-mmio device that hands the block device to the transport.
 ///
@@ -103,6 +115,35 @@ impl VirtioDevice for BlockMmioDevice {
             .map_err(VirtioError::from)
     }
 
+    fn acked_features(&self) -> u64 {
+        self.device.acked_features()
+    }
+
+    fn save_device_state(&self) -> DeviceSnapshot {
+        if !self.device.is_activated() {
+            return DeviceSnapshot::default();
+        }
+        DeviceSnapshot {
+            queues: vec![queue_position(self.device.queue())],
+            extra: Value::Null,
+        }
+    }
+
+    fn restore_device_state(&mut self, state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        let expected = if self.device.is_activated() {
+            BLOCK_QUEUE_NUM
+        } else {
+            0
+        };
+        crate::devices::virtio::mmio::check_snapshot_queue_count(expected, state.queues.len())?;
+        if let Some(position) = state.queues.first() {
+            let queue = self.device.queue_mut();
+            queue.next_avail = Wrapping(position.next_avail);
+            queue.next_used = Wrapping(position.next_used);
+        }
+        Ok(())
+    }
+
     fn activate(&mut self, mem: &GuestMemoryMmap, irq: &EventFd) -> Result<(), VirtioError> {
         let queue = self.device.queue_mut();
         // `config.size` is already validated to be a non-zero power of two no
@@ -125,7 +166,7 @@ impl VirtioDevice for BlockMmioDevice {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::FileExt;
 
@@ -184,6 +225,68 @@ mod tests {
         let mut bytes = [0u8; 8];
         transport.read(0, offset, &mut bytes);
         u64::from_le_bytes(bytes)
+    }
+
+    /// A block device over a small volume, its queue programmed over `vq` and
+    /// activated against `mem`. The volume is returned so it outlives the device.
+    fn activated_block(mem: &GuestMemoryMmap, vq: &VirtQueue<'_>) -> (TempFile, BlockMmioDevice) {
+        let file = TempFile::new().expect("a temporary file");
+        file.as_file().set_len(512).expect("a sized volume");
+        let volume = VirtioBlock::new(file.as_path()).expect("a block device over the volume");
+        let mut device = BlockMmioDevice::new(volume);
+        let regs = &mut device.queues_mut()[0];
+        regs.size = u32::from(BLOCK_QUEUE_SIZE);
+        regs.ready = true;
+        regs.desc = vq.desc_table_addr().0;
+        regs.avail = vq.avail_ring_addr().0;
+        regs.used = vq.used_ring_addr().0;
+        let irq = EventFd::new(libc::EFD_NONBLOCK).expect("an interrupt event fd");
+        VirtioDevice::activate(&mut device, mem, &irq).expect("the device activates");
+        (file, device)
+    }
+
+    #[test]
+    fn a_block_device_saves_no_queue_position_before_activation() {
+        let file = TempFile::new().expect("a temporary file");
+        let device = BlockMmioDevice::new(
+            VirtioBlock::new(file.as_path()).expect("a block device over the volume"),
+        );
+        assert_eq!(device.save_device_state(), DeviceSnapshot::default());
+    }
+
+    #[test]
+    fn a_snapshot_restores_the_request_queue_position() {
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, BLOCK_QUEUE_SIZE);
+        let (_source_file, mut source) = activated_block(&mem, &vq);
+        source.device.queue_mut().next_avail = Wrapping(4);
+        source.device.queue_mut().next_used = Wrapping(3);
+        let saved = source.save_device_state();
+        assert_eq!(
+            saved.queues,
+            vec![QueuePosition {
+                next_avail: 4,
+                next_used: 3
+            }]
+        );
+
+        let (_restored_file, mut restored) = activated_block(&mem, &vq);
+        restored
+            .restore_device_state(&saved)
+            .expect("the snapshot restores onto the activated device");
+        assert_eq!(restored.save_device_state(), saved);
+    }
+
+    #[test]
+    fn restore_refuses_a_snapshot_with_the_wrong_queue_count() {
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, BLOCK_QUEUE_SIZE);
+        let (_file, mut device) = activated_block(&mem, &vq);
+        let state = DeviceSnapshot {
+            queues: Vec::new(),
+            extra: Value::Null,
+        };
+        assert!(device.restore_device_state(&state).is_err());
     }
 
     /// The whole path a driver takes through the transport: the register

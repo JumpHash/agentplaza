@@ -25,8 +25,21 @@ import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import '../styles/agents.css';
 
-const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted' };
+const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted', asleep: 'muted' };
 const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted', motion: 'warn' };
+
+/**
+ * The status pill: the dot in the status's tone, and a word for the states the dot alone does not tell apart
+ * (asleep and offline are both muted, so asleep also reads its word). The word is calm: a muted badge.
+ */
+export function statusPill(status: AgentStatus): { tone: Tone; word: string | null } {
+  return { tone: STATUS_TONE[status], word: status === 'asleep' ? 'Asleep' : null };
+}
+
+function pillWord(a: Agent): HTMLElement | null {
+  const { word, tone } = statusPill(a.status);
+  return word ? badge(word, tone) : null;
+}
 
 export function mountAgentList(root: HTMLElement): Cleanup {
   let roleFilter = '';
@@ -38,6 +51,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     { value: 'all', label: 'All statuses' },
     { value: 'working', label: 'Working' },
     { value: 'idle', label: 'Idle' },
+    { value: 'asleep', label: 'Asleep' },
     { value: 'offline', label: 'Offline' },
   ]);
   const body = h('div');
@@ -60,7 +74,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
           'div.row.agent-cell',
           null,
           avatar(a, 40),
-          h('div', null, h('div.row', null, dot(STATUS_TONE[a.status]), h('strong.truncate', null, agentName(a))), h('div.faint.truncate', null, roleLabel(a.role))),
+          h('div', null, h('div.row', null, dot(statusPill(a.status).tone), h('strong.truncate', null, agentName(a)), pillWord(a)), h('div.faint.truncate', null, roleLabel(a.role))),
         ),
     },
     {

@@ -4,6 +4,7 @@
 //!   POST   /v1/stations/vms       {node, os: linux|windows|macos, name, cpus, ram_mb, disk_gb, gpu?, image?, backend?} → 201 VmView
 //!   GET    /v1/stations/vms       → [VmView]
 //!   DELETE /v1/stations/vms/{id}  → the removed VmView (its VM is removed from the node first)
+//!   POST   /v1/stations/vms/{id}/sleep|wake → the node's view (`state`: running|asleep|stopped); plaza VMs only
 //!
 //! A VM is made on a node by noded (`POST /v1/workstations`) with a join code the hub issues for it, so its daemon
 //! enrols as a workstation. The station that enrols with that code is this VM: its facts say `form: vm`, and its
@@ -297,6 +298,37 @@ pub fn around(calls: &dyn NodeCalls, node: &str, vm: &str, work: Step) -> Result
     worked.and(started)
 }
 
+/// How a reset step ran: live on the running VM (a plaza VM's memory and disk; it never stopped for a snapshot, and
+/// resumes without a boot after a revert), or as stop, disk step, start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ran {
+    Live,
+    Around,
+}
+
+/// Runs `work` live on the running VM when its node can (a plaza VM), else [`around`] it: a node that needs the VM
+/// stopped for it (a QEMU VM, or a revert to a disk-only snapshot) answers 409, and then the VM is stopped for it.
+pub fn live_or_around(
+    calls: &dyn NodeCalls,
+    node: &str,
+    vm: &str,
+    work: Step,
+) -> Result<Ran, String> {
+    match calls.call(node, "POST", &work.path(vm)) {
+        Ok((status, _)) if (200..300).contains(&status) => Ok(Ran::Live),
+        Ok((409, _)) => around(calls, node, vm, work).map(|()| Ran::Around),
+        Ok((status, body)) => {
+            let reason = body
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| body.to_string());
+            Err(format!("{work:?} on {node} answered {status}: {reason}"))
+        }
+        Err(reason) => Err(format!("{work:?} on {node}: {reason}")),
+    }
+}
+
 /// The snapshot or the revert a lease hook runs for `station`'s VM, when the station is a VM whose setting asks for
 /// resets. The reset is the disk step of [`around`].
 fn reset_vm(app: &App, station: &str) -> Option<VmRecord> {
@@ -348,10 +380,11 @@ pub fn before_lease(app: &App, station: &str) -> Result<(), Failure> {
             "this workstation is resetting after its last lease; try again shortly".into(),
         ));
     }
-    let made = around(&Through(app), &vm.node, &vm.vm, Step::Snapshot);
-    let back = wait_for_return(app, station);
+    let made = live_or_around(&Through(app), &vm.node, &vm.vm, Step::Snapshot);
+    // A live snapshot never takes the station down, so there is nothing to wait for.
+    let back = matches!(made, Ok(Ran::Live)) || wait_for_return(app, station);
     app.stations.end_reset(station);
-    made.map_err(|reason| {
+    made.map(|_| ()).map_err(|reason| {
         (
             502,
             format!("the snapshot before this lease failed: {reason}"),
@@ -382,7 +415,9 @@ pub fn after_lease(app: &App, station: &str) {
     let station = station.to_string();
     std::thread::spawn(move || {
         let Some(app) = weak.upgrade() else { return };
-        let reverted = around(&Through(&app), &vm.node, &vm.vm, Step::Revert);
+        // A live revert restarts the VMM from the snapshot's memory, so the station's link drops and comes back
+        // as it does after a stop and start.
+        let reverted = live_or_around(&Through(&app), &vm.node, &vm.vm, Step::Revert).map(|_| ());
         let back = wait_for_return(&app, &station);
         app.stations.end_reset(&station);
         let (kind, data) = match (reverted, back) {
@@ -423,10 +458,14 @@ pub fn adopt(app: &App, station: Station) -> Station {
 /// Makes a workstation VM on a node and issues its join code: noded boots it with the code, and the VM's daemon
 /// enrols as a workstation with it.
 pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Failure> {
-    let node = app
-        .nodes
-        .get(&request.node)
-        .ok_or((404, format!("no node {}", request.node)))?;
+    // The hub's own machine is a node too, though the node store never keeps it.
+    let node = if request.node == fleet::LOCAL {
+        crate::nodes::local_node(app)
+    } else {
+        app.nodes
+            .get(&request.node)
+            .ok_or((404, format!("no node {}", request.node)))?
+    };
     if node.revoked {
         return Err((409, format!("node {} is revoked", node.id)));
     }
@@ -608,6 +647,76 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .delete("/v1/stations/vms/{id}", |app, _, p| {
             remove_route(app, p.get("id"))
         })
+        // A plaza VM sleeps with its memory kept, and wakes from it in a fraction of a second.
+        .post("/v1/stations/vms/{id}/sleep", |app, _, p| {
+            power_route(app, p.get("id"), Power::Sleep)
+        })
+        .post("/v1/stations/vms/{id}/wake", |app, _, p| {
+            power_route(app, p.get("id"), Power::Wake)
+        })
+}
+
+/// What the owner asks of a workstation VM's power.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Power {
+    Sleep,
+    Wake,
+}
+
+impl Power {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Sleep => "sleep",
+            Self::Wake => "wake",
+        }
+    }
+}
+
+/// Puts workstation VM `id` to sleep or wakes it, through its node. Refused while the VM is being reset after a lease,
+/// and a sleep while a lease is open on its station (the lease's work would stop under it). Returns the node's view.
+pub fn power(app: &App, id: &str, what: Power, actor: &str) -> Result<Value, Failure> {
+    let record = app
+        .stations
+        .vm(id)
+        .ok_or((404, format!("no workstation VM {id}")))?;
+    if let Some(station) = &record.station {
+        if app.stations.is_resetting(station) {
+            return Err((
+                409,
+                "this workstation is resetting after a lease; try again once the reset is done"
+                    .into(),
+            ));
+        }
+        if what == Power::Sleep && busy(app, station) {
+            return Err((409, "a lease is open on this workstation".into()));
+        }
+    }
+    let answer = match fleet::noded(
+        app,
+        &record.node,
+        "POST",
+        &format!("/v1/workstations/{}/{}", record.vm, what.action()),
+        None,
+    ) {
+        Ok((status, body)) if (200..300).contains(&status) => body,
+        other => return Err(refusal_of(other)),
+    };
+    let row = json!({"vm": record.id, "node": record.node, "node_vm": record.vm});
+    let kind = match what {
+        Power::Sleep => "vm_sleep",
+        Power::Wake => "vm_wake",
+    };
+    if let Err(reason) = ops::audit(app, record.station.as_deref(), None, kind, actor, row) {
+        eprintln!("apid: workstation VM {id}: its {kind} is not in the audit: {reason}");
+    }
+    Ok(answer)
+}
+
+fn power_route(app: &App, id: &str, what: Power) -> Response {
+    match power(app, id, what, super::api::OWNER) {
+        Ok(view) => Response::json(200, &view),
+        Err((status, message)) => Response::error(status, &message),
+    }
 }
 
 fn create_route(app: &App, req: &Request) -> Response {
@@ -729,6 +838,71 @@ mod tests {
 
     fn all_ok(_: &str) -> (u16, Value) {
         (200, json!({}))
+    }
+
+    #[test]
+    fn a_live_step_runs_alone_and_a_409_falls_back_to_stop_step_start() {
+        let fake = Fake {
+            calls: RefCell::new(Vec::new()),
+            answer: all_ok,
+        };
+        assert_eq!(
+            live_or_around(&fake, "n1", "wv3", Step::Snapshot),
+            Ok(Ran::Live)
+        );
+        assert_eq!(
+            *fake.calls.borrow(),
+            ["n1 POST /v1/workstations/wv3/snapshot".to_string()]
+        );
+        fn needs_stopped(path: &str) -> (u16, Value) {
+            (409, json!({"error": format!("{path}: must be stopped")}))
+        }
+        let calls = RefCell::new(Vec::new());
+        let first = std::cell::Cell::new(true);
+        struct Once<'a> {
+            calls: &'a RefCell<Vec<String>>,
+            first: &'a std::cell::Cell<bool>,
+        }
+        impl NodeCalls for Once<'_> {
+            fn call(&self, node: &str, method: &str, path: &str) -> Result<(u16, Value), String> {
+                self.calls
+                    .borrow_mut()
+                    .push(format!("{node} {method} {path}"));
+                if self.first.replace(false) {
+                    Ok(needs_stopped(path))
+                } else {
+                    Ok((200, json!({})))
+                }
+            }
+        }
+        let once = Once {
+            calls: &calls,
+            first: &first,
+        };
+        assert_eq!(
+            live_or_around(&once, "n1", "wv3", Step::Revert),
+            Ok(Ran::Around)
+        );
+        assert_eq!(
+            *calls.borrow(),
+            [
+                "n1 POST /v1/workstations/wv3/revert",
+                "n1 POST /v1/workstations/wv3/stop",
+                "n1 POST /v1/workstations/wv3/revert",
+                "n1 POST /v1/workstations/wv3/start",
+            ]
+        );
+        let failing = Fake {
+            calls: RefCell::new(Vec::new()),
+            answer: |_| (500, json!({"error": "disk full"})),
+        };
+        let err = live_or_around(&failing, "n1", "wv3", Step::Snapshot).unwrap_err();
+        assert!(err.contains("disk full"), "{err}");
+        assert_eq!(
+            failing.calls.borrow().len(),
+            1,
+            "a refusal that is not 409 stops nothing"
+        );
     }
 
     #[test]

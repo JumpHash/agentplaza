@@ -300,11 +300,13 @@ dependencies = [
  "base64 0.22.1",
  "blake2",
  "chacha20poly1305",
+ "flate2",
  "hkdf",
  "hmac 0.12.1",
  "jhrl",
  "libc",
  "postgres",
+ "rcgen",
  "secrecy",
  "serde",
  "serde_json",
@@ -4039,7 +4041,9 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3819cba3d5b448587dbed4b186fb61b0a8d02c5eb88846c9463aa514afe61a8"
 dependencies = [
+ "serde",
  "vmm-sys-util",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4649,8 +4653,10 @@ dependencies = [
  "apz-os",
  "apz-station",
  "apz-uds",
+ "base64 0.22.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "vmm",
 ]
 
@@ -8162,6 +8168,8 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "linux-loader",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "vm-fdt",
  "vm-memory",
@@ -8190,8 +8198,11 @@ dependencies = [
  "apz-proto",
  "apz-uds",
  "libc",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
+ "webpki-roots",
  "windows-sys 0.61.2",
 ]
 

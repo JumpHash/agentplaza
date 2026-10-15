@@ -306,6 +306,8 @@ impl App {
         agents::load_roster(&app);
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
+        crate::sleep::spawn_sweeper(Arc::clone(&app));
+        crate::e2b::start(&app);
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));

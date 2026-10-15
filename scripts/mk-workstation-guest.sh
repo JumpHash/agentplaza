@@ -32,7 +32,8 @@
 # Not built here:
 #   - GPU passthrough. noded validates a vfio GPU and refuses the boot until apz-vmm can attach a PCI device.
 #   - The image's own init. The initramfs execs /sbin/init of the disk, which is Alpine's busybox init with OpenRC
-#     (its /etc/inittab runs the default runlevel, which starts the `local` service below). Not yet booted end to end.
+#     (its /etc/inittab runs the default runlevel, which starts the `local` service below). Booted end to end under
+#     a scratch hub: the station joins through the node's relay, and sleeps, wakes and reverts live.
 set -eu
 
 tarball=${1:?usage: mk-workstation-guest.sh <alpine-minirootfs.tar.gz> <apz-workstation> [out-dir]}
@@ -65,6 +66,9 @@ install -m 0755 "$binary" "$root/usr/local/bin/apz-workstation"
 install -d -m 0755 "$root/etc/local.d" "$root/etc/runlevels/default" "$root/var/lib/apz"
 # No /etc/machine-id in the image: the start script makes one per disk.
 rm -f "$root/etc/machine-id"
+# A workstation VM has a serial console and no virtual terminals: Alpine's gettys on tty1..tty6 would fail and be
+# respawned forever, flooding the console. They go; the console stays the kernel's and init's.
+sed -i '/^tty[0-9]*::respawn:/d' "$root/etc/inittab"
 
 cat > "$root/etc/local.d/apz-workstation.start" <<'EOF'
 #!/bin/sh
@@ -96,7 +100,8 @@ i=0
 while [ ! -S /tmp/.X11-unix/X99 ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
 
 if [ -n "$node" ] && [ ! -e /var/lib/apz/joined ]; then
-    if su agents -c "apz-workstation join --from-node '$node' --name '$name' --account agent:agents --state-dir /var/lib/apz/state"; then
+    if su agents -c "apz-workstation join --from-node '$node' --name '$name' --account agent:agents --state-dir /var/lib/apz/state" \
+        > /var/log/apz-join.log 2>&1; then
         touch /var/lib/apz/joined
     else
         echo "apz-workstation: the join did not complete" >&2
@@ -159,6 +164,12 @@ if ! mount -t ext4 /dev/vda /newroot; then
     exec /bin/sh
 fi
 echo "plaza workstation: the desktop disk is mounted; switching root" > /dev/console
+# The mounts made here go with the root: the disk's own /dev is empty (no udev or mdev runs in the image), so without
+# the device filesystem the desktop's services cannot open /dev/null.
+for fs in dev proc sys; do
+    mkdir -p "/newroot/$fs"
+    mount --move "/$fs" "/newroot/$fs"
+done
 exec switch_root /newroot /sbin/init
 EOF
 chmod 0755 "$initrd_root/init"

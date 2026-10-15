@@ -56,6 +56,7 @@
 pub mod exit;
 pub mod gic;
 pub mod psci;
+pub mod snapshot_state;
 // The serial device is built on `vstate::bus`, which exists on Linux and macOS only.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod uart;
@@ -63,6 +64,8 @@ pub mod wait;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod boot;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod snapshot;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod sys;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

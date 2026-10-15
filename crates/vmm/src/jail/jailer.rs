@@ -164,6 +164,27 @@ const OLD_ROOT: &str = "oldroot";
 /// budget.
 const RUN_TMPFS: &str = "size=64m,mode=0700";
 
+/// The directories every jail planned in this process binds, after the VM's own
+/// (see [`bind_in_every_jail`]).
+static PROCESS_BINDS: Mutex<Vec<Bind>> = Mutex::new(Vec::new());
+
+/// Binds `source` at its own path in every jail this process plans from now on.
+///
+/// The per-VM process (`apz-vmm --restore`, `--snapshot-root`) names directories
+/// its VM needs that the boot's jail plan does not know about: the plan is built
+/// inside the boot, from the spec, and the child's command line never reaches it.
+/// A child process holds exactly one VM, so a process-wide list is that VM's list.
+pub fn bind_in_every_jail(source: impl Into<PathBuf>, access: Access) {
+    PROCESS_BINDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Bind {
+            source: source.into(),
+            access,
+            dir: true,
+        });
+}
+
 /// A source to bind into the per-VM root, with how it is seen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bind {
@@ -195,7 +216,10 @@ impl Jailer {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            binds: Vec::new(),
+            binds: PROCESS_BINDS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             tmpfs: Vec::new(),
         }
     }

@@ -1,0 +1,23 @@
+name: console
+
+# The web console (apps/web/dist): built once per commit with its wasm engine and the IDE's wasm, tested, and
+# saved to the Actions cache (no artifact storage) under this commit, for every package to ship. The build is not
+# committed: each platform job restores it from here before it stages.
+on:
+  workflow_call:
+
+jobs:
+  console:
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      # The console is built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
+      - name: Build and test the console
+        run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run build && npm test'
+        env:
+          APZ_REQUIRE_ENGINE: "1"
+      - uses: actions/cache/save@v4
+        with: { path: apps/web/dist, key: "console-${{ github.sha }}", enableCrossOsArchive: true }

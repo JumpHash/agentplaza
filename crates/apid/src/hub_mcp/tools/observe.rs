@@ -245,13 +245,25 @@ impl Plaza for App {
     }
 
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String> {
-        gateway_reply(crate::fleet::gateway(
+        // The owner's message, queued as a chat turn on the agent's operator thread (the gateway's
+        // `/tell` runs a named tool, not a message). Queuing also wakes a sleeping agent.
+        if self.agents.get(cid).is_none() {
+            return Err(format!("no agent {cid} on the roster"));
+        }
+        let origin = crate::scheduler::Origin {
+            owner: true,
+            mcp: true,
+            ..Default::default()
+        };
+        let work = self.work.enqueue(
             self,
             cid,
-            "POST",
-            &format!("/v1/agents/{cid}/tell"),
-            Some(&json!({ "text": text })),
-        ))
+            apz_proto::wire::WorkKind::Chat,
+            format!("op-{cid}"),
+            text.to_string(),
+            origin,
+        );
+        Ok(json!({ "work": work, "cid": cid }))
     }
 
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String> {

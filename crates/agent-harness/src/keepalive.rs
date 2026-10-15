@@ -17,15 +17,21 @@ use apz_proto::wire::{AgentProfile, GuestMessage, HostMessage, WELCOME_ECHO};
 
 use crate::files::Workspace;
 use crate::lane::Duplex;
+use crate::restore;
 use crate::session::{
     Identity, SessionError, await_host, escape_for_transcript, note, send, wrong_echo,
 };
+use crate::trust;
 
 pub const HEARTBEAT_SECS: u64 = 5;
 /// The first reconnect delay.
 pub const BACKOFF_MIN_MS: u64 = 250;
 /// The reconnect delay's cap.
 pub const BACKOFF_MAX_MS: u64 = 30_000;
+/// The fixed retry interval of a warm template waiting for its first welcome. A template is
+/// snapshotted in that wait and restored later, so its next attempt after a restore should land
+/// within one short interval rather than somewhere on the backoff schedule.
+pub const TEMPLATE_RETRY_MS: u64 = 25;
 
 pub fn heartbeat_interval() -> Duration {
     Duration::from_secs(HEARTBEAT_SECS)
@@ -68,6 +74,10 @@ pub fn session<S: Duplex, W: Write + Send>(
     heartbeat: Duration,
 ) -> Result<u64, KeepaliveError> {
     let profile = handshake(lines, log, identity, role)?;
+    if let Some(profile) = &profile {
+        // The profile's CA is what the guest trusts from now on; `None` retires a rule that was removed.
+        trust::install(workspace, profile.egress_ca.as_deref());
+    }
     crate::agent::serve(lines, log, workspace, profile, heartbeat).map_err(|error| KeepaliveError {
         adopted: true,
         error,
@@ -95,14 +105,20 @@ fn handshake<S: Read + Write, W: Write>(
             keepalive: Some(true),
             role: hub_role,
             profile,
+            host,
             ..
-        } => Some(Ok((hub_role, profile))),
+        } => Some(Ok((hub_role, profile, host))),
         HostMessage::Welcome { keepalive, .. } => Some(Err(SessionError::Protocol(format!(
             "the hub did not confirm a keepalive session (welcome.keepalive is {keepalive:?})"
         )))),
         _ => None,
     })?;
-    let (accepted, profile) = accepted;
+    let (accepted, profile, host) = accepted;
+    // Before anything else: a restored guest's clock and random state are the snapshot's until
+    // the host's are applied.
+    if let Some(facts) = &host {
+        restore::apply(facts, log);
+    }
     match accepted.or_else(|| role.map(str::to_string)) {
         Some(role) => note(
             log,
@@ -134,6 +150,17 @@ pub fn backoff_delay(failures: u32, jitter: u64) -> Duration {
         .min(BACKOFF_MAX_MS);
     let spread = nominal / 8 + 1;
     Duration::from_millis(nominal - jitter % spread)
+}
+
+/// The delay before the next attempt. A template still waiting for its first welcome retries every
+/// [`TEMPLATE_RETRY_MS`]; every other guest, and a template once the hub has accepted it, follows
+/// [`backoff_delay`].
+pub fn reconnect_delay(template_waiting: bool, failures: u32, jitter: u64) -> Duration {
+    if template_waiting {
+        Duration::from_millis(TEMPLATE_RETRY_MS)
+    } else {
+        backoff_delay(failures, jitter)
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +342,43 @@ mod tests {
             }
         }
         assert_ne!(backoff_delay(1, 5), backoff_delay(1, 9));
+    }
+
+    #[test]
+    fn a_template_retries_every_25_ms_until_its_first_welcome_then_backs_off() {
+        for failures in [1u32, 2, 40] {
+            assert_eq!(
+                reconnect_delay(true, failures, 7),
+                Duration::from_millis(25)
+            );
+        }
+        assert_eq!(reconnect_delay(false, 2, 0), backoff_delay(2, 0));
+        assert_eq!(reconnect_delay(false, 40, 3), backoff_delay(40, 3));
+    }
+
+    #[test]
+    fn a_welcome_with_host_facts_is_applied_and_the_session_goes_on() {
+        // The facts agree with this process's clock and carry no entropy, so the restore
+        // touches nothing outside the test.
+        let host_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_millis() as u64;
+        let (result, log) = run_session(&Workspace::default(), Some("builder"), move |mut host| {
+            next(&mut host);
+            host.send(&format!(
+                r#"{{"type":"welcome","echo":"plaza-orchestrator","role":"builder","keepalive":true,"host":{{"time_ms":{host_ms},"entropy":""}}}}"#
+            ))
+            .unwrap();
+            next_kind(&mut host, "heartbeat");
+            host.send(r#"{"type":"stop"}"#).unwrap();
+            next_kind(&mut host, "bye");
+        });
+        assert_eq!(result.expect("a clean stop"), 0);
+        assert!(
+            log.contains("agent-harness: host entropy not mixed"),
+            "{log}"
+        );
+        assert!(!log.contains("clock set"), "{log}");
     }
 }

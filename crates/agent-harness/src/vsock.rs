@@ -292,6 +292,91 @@ impl Drop for VsockStream {
     }
 }
 
+/// How many connections may wait for `accept` before the kernel refuses more.
+const LISTEN_BACKLOG: libc::c_int = 64;
+
+/// A listening AF_VSOCK socket: the sandbox daemon's accept loop (see [`crate::envd`]).
+///
+/// The peer is the host's gateway, the only thing the device routes to this guest, so the
+/// listener does not check which CID a connection came from.
+#[derive(Debug)]
+pub struct VsockListener {
+    fd: RawFd,
+}
+
+impl VsockListener {
+    /// Listens on `port` for connections from any CID.
+    pub fn bind(port: u32) -> io::Result<Self> {
+        // SAFETY: `socket` is called with valid constants and only creates a new file
+        // descriptor; the result is checked, and owned by `listener` from here on, so an
+        // early return closes it.
+        let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let listener = Self { fd };
+        let addr = libc::sockaddr_vm {
+            svm_family: libc::AF_VSOCK as libc::sa_family_t,
+            svm_reserved1: 0,
+            svm_port: port,
+            svm_cid: CID_ANY,
+            svm_zero: [0; 4],
+        };
+        // SAFETY: `addr` is a fully initialised `sockaddr_vm`, `fd` a live socket of the
+        // matching family, and the length is exactly `size_of::<sockaddr_vm>()`.
+        let rc = unsafe {
+            libc::bind(
+                fd,
+                std::ptr::from_ref(&addr).cast(),
+                std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is a live socket that is bound and not yet listening.
+        let rc = unsafe { libc::listen(fd, LISTEN_BACKLOG) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(listener)
+    }
+
+    /// Waits for the next connection. The returned stream has no read timeout: an idle
+    /// keepalive client is not an error.
+    pub fn accept(&self) -> io::Result<VsockStream> {
+        loop {
+            // SAFETY: `fd` is the live listening socket this type owns. Null address pointers
+            // are allowed by `accept4` when the peer's address is not wanted. The new
+            // descriptor is owned by the returned stream, which closes it.
+            let fd = unsafe {
+                libc::accept4(
+                    self.fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    libc::SOCK_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            return Ok(VsockStream { fd });
+        }
+    }
+}
+
+impl Drop for VsockListener {
+    fn drop(&mut self) {
+        // SAFETY: `self.fd` is the listening descriptor this type owns and closes exactly once,
+        // here.
+        unsafe { libc::close(self.fd) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

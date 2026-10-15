@@ -401,7 +401,7 @@ fn card<'a>(state: &'a State, l: &Label, w: f32, h: f32) -> Element<'a, Msg> {
         .unwrap_or_default();
     let tone = match status.as_str() {
         "working" => ui::Tone::Signal,
-        "offline" => ui::Tone::Muted,
+        "offline" | "asleep" => ui::Tone::Muted,
         _ => ui::Tone::Ok,
     };
     let body = column![

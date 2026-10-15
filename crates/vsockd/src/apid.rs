@@ -4,7 +4,7 @@
 //! only. Every request carries the internal token, read from its file on each
 //! call, so an apid that restarted with a new token is picked up at once.
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -24,12 +24,46 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const GONE_TIMEOUT: Duration = Duration::from_secs(2);
 /// An egress check is made before a connection is dialled, so it is kept short.
 const EGRESS_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+/// A leaf certificate is fetched once per host and kept, so this is rarely waited on.
+const EGRESS_CERT_TIMEOUT: Duration = Duration::from_secs(5);
+/// An injection is asked per intercepted request, and the request waits for it.
+const EGRESS_INJECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// An E2B request waits on the sandbox lookup before it can be relayed, so it is kept short.
+const E2B_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// apid's decision on one egress connection: allowed, or refused with the reason the guest is told.
+/// `intercept` says a credential rule could match this agent and host, so the proxy must terminate
+/// the guest's TLS and ask per request (see `egress_tls`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressAnswer {
     pub allow: bool,
     pub reason: String,
+    pub intercept: bool,
+    /// Blocks (address and prefix length) that no resolved address of the connection may lie in: a
+    /// sandbox's denyOut. Empty otherwise.
+    pub deny_cidrs: Vec<(IpAddr, u8)>,
+}
+
+/// The leaf certificate and key apid signed for one host. Holds a private key, so it has no `Debug`
+/// and nothing logs it.
+pub struct EgressLeaf {
+    pub cert_pem: String,
+    pub key_pem: String,
+}
+
+/// The header apid says to add to one intercepted request. The value is a secret: no `Debug`, and
+/// nothing logs it.
+pub struct Injection {
+    pub header: String,
+    pub value: String,
+}
+
+/// A plaza sandbox as apid names it to the E2B gateway: the guest CID its VM is served at, and the
+/// access token its requests must carry (empty when the sandbox is not secured).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct E2bSandbox {
+    pub cid: u32,
+    pub access_token: String,
 }
 
 /// Where apid's internal surface is, and the file that holds its token.
@@ -112,16 +146,79 @@ impl Apid {
     pub fn check_egress(&self, cid: u32, host: &str, port: u16) -> Result<EgressAnswer, String> {
         let body = json!({ "cid": cid, "host": host, "port": port }).to_string();
         let reply = self.post("/internal/egress/check", &body, EGRESS_CHECK_TIMEOUT)?;
-        let allow = reply
-            .get("allow")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or("apid's egress answer names no allow")?;
-        let reason = reply
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("refused")
-            .to_string();
-        Ok(EgressAnswer { allow, reason })
+        egress_answer_of(&reply)
+    }
+
+    /// The leaf certificate apid signs for `host` as the agent at `cid` (`POST /internal/egress/cert`).
+    /// apid answers 403 when the agent may not be intercepted for that host.
+    pub fn egress_cert(&self, cid: u32, host: &str) -> Result<EgressLeaf, String> {
+        let body = json!({ "cid": cid, "host": host }).to_string();
+        let reply = self.post("/internal/egress/cert", &body, EGRESS_CERT_TIMEOUT)?;
+        let text = |key: &str| {
+            reply
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("apid's egress certificate names no {key}"))
+        };
+        Ok(EgressLeaf {
+            cert_pem: text("cert_pem")?,
+            key_pem: text("key_pem")?,
+        })
+    }
+
+    /// The header to add to one request of the agent at `cid` to `host:port` (`method`, origin-form
+    /// `path` without its query): `Ok(None)` when no rule matches. The path is what the rules match.
+    pub fn egress_inject(
+        &self,
+        cid: u32,
+        host: &str,
+        port: u16,
+        method: &str,
+        path: &str,
+    ) -> Result<Option<Injection>, String> {
+        let body =
+            json!({ "cid": cid, "host": host, "port": port, "method": method, "path": path })
+                .to_string();
+        let reply = self.post("/internal/egress/inject", &body, EGRESS_INJECT_TIMEOUT)?;
+        injection_of(&reply)
+    }
+
+    /// Asks apid for the sandbox `id`: `Ok(None)` when apid does not know it, `Err` when apid
+    /// cannot be asked or answers anything but 200 or 404. The caller validates `id` first, since
+    /// it becomes part of the path.
+    pub fn e2b_sandbox(&self, id: &str) -> Result<Option<E2bSandbox>, String> {
+        let token = self.token()?;
+        let path = format!("/internal/e2b/sandboxes/{id}");
+        let reply = send_with(
+            self.port,
+            "GET",
+            &path,
+            &[(TOKEN_HEADER, &token)],
+            None,
+            E2B_LOOKUP_TIMEOUT,
+        )
+        .map_err(|err| format!("apid unreachable: {err}"))?;
+        match reply.status {
+            404 => Ok(None),
+            200 => {
+                let body = reply
+                    .json()
+                    .map_err(|err| format!("apid's sandbox answer: {err}"))?;
+                let cid = body
+                    .get("cid")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|cid| u32::try_from(cid).ok())
+                    .ok_or("apid's sandbox answer names no cid")?;
+                let access_token = body
+                    .get("access_token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                Ok(Some(E2bSandbox { cid, access_token }))
+            }
+            other => Err(format!("apid answered {other} to the sandbox lookup")),
+        }
     }
 
     /// A plain TCP connection to apid's internal surface, for a relay that
@@ -163,6 +260,96 @@ impl Apid {
         }
         Ok(token.to_string())
     }
+}
+
+/// The decision in apid's answer (`{allow, reason, intercept, deny_cidrs}`). A deny rule that does not
+/// read as a block makes the whole answer a refusal, so a rule apid meant cannot leave its block open.
+fn egress_answer_of(reply: &serde_json::Value) -> Result<EgressAnswer, String> {
+    let allow = reply
+        .get("allow")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("apid's egress answer names no allow")?;
+    let reason = reply
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("refused")
+        .to_string();
+    // Absent means no interception: the tunnel stays opaque, as before rules existed.
+    let intercept = reply
+        .get("intercept")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    // Absent means no deny blocks (only sandboxes have them).
+    let deny_cidrs: Option<Vec<(IpAddr, u8)>> = match reply.get("deny_cidrs") {
+        None | Some(serde_json::Value::Null) => Some(Vec::new()),
+        Some(serde_json::Value::Array(rules)) => rules
+            .iter()
+            .map(|rule| rule.as_str().and_then(cidr_of))
+            .collect(),
+        Some(_) => None,
+    };
+    Ok(match deny_cidrs {
+        Some(deny_cidrs) => EgressAnswer {
+            allow,
+            reason,
+            intercept,
+            deny_cidrs,
+        },
+        None => EgressAnswer {
+            allow: false,
+            reason: "refused: apid sent a bad deny rule".to_string(),
+            intercept: false,
+            deny_cidrs: Vec::new(),
+        },
+    })
+}
+
+/// A deny rule `addr/len` (`"8.8.8.0/24"`, `"2001:db8::/32"`), or `None` when it does not read as a
+/// block. An IPv4-mapped IPv6 block whose prefix is 96 bits or more is stored as the IPv4 block.
+fn cidr_of(text: &str) -> Option<(IpAddr, u8)> {
+    let (addr, len) = text.split_once('/')?;
+    let addr: IpAddr = addr.parse().ok()?;
+    let len: u8 = len.parse().ok()?;
+    match addr {
+        IpAddr::V4(_) => (len <= 32).then_some((addr, len)),
+        IpAddr::V6(v6) => {
+            if len > 128 {
+                return None;
+            }
+            match v6.to_ipv4_mapped() {
+                Some(v4) if len >= 96 => Some((IpAddr::V4(v4), len - 96)),
+                _ => Some((addr, len)),
+            }
+        }
+    }
+}
+
+/// The injection in apid's answer (`{header, value, rule}`), or `None` for the `{}` of no rule. The
+/// header must be a plain token and the value free of line breaks, so a bad answer cannot split the
+/// guest's request. Errors never repeat the value.
+fn injection_of(reply: &serde_json::Value) -> Result<Option<Injection>, String> {
+    let Some(header) = reply.get("header").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let value = reply
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("apid's injection names no value")?;
+    let plain_header = !header.is_empty()
+        && header
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    if !plain_header
+        || value
+            .bytes()
+            .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
+    {
+        return Err("apid's injection is not a header".to_string());
+    }
+    Ok(Some(Injection {
+        header: header.to_string(),
+        value: value.to_string(),
+    }))
 }
 
 /// The port of `http://127.0.0.1:PORT` (a trailing `/` is allowed).
@@ -226,5 +413,63 @@ mod tests {
             "the paths are fixed"
         );
         assert!(!Apid::off().enabled() && Apid::off().token().is_err());
+    }
+
+    #[test]
+    fn a_deny_rule_is_an_address_block_and_a_bad_one_refuses_the_answer() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let answer = egress_answer_of(&json!({
+            "allow": true,
+            "deny_cidrs": ["8.8.8.0/24", "2001:db8::/32", "::ffff:10.0.0.0/104"]
+        }))
+        .unwrap();
+        assert!(answer.allow);
+        assert_eq!(
+            answer.deny_cidrs,
+            vec![
+                (ip("8.8.8.0"), 24),
+                (ip("2001:db8::"), 32),
+                (ip("10.0.0.0"), 8)
+            ]
+        );
+        for bad in [
+            json!({ "allow": true, "deny_cidrs": ["8.8.8.0/33"] }),
+            json!({ "allow": true, "deny_cidrs": ["8.8.8.0"] }),
+            json!({ "allow": true, "deny_cidrs": ["2001:db8::/129"] }),
+            json!({ "allow": true, "deny_cidrs": [7] }),
+            json!({ "allow": true, "deny_cidrs": "8.8.8.0/24" }),
+        ] {
+            let answer = egress_answer_of(&bad).unwrap();
+            assert!(
+                !answer.allow
+                    && answer.reason == "refused: apid sent a bad deny rule"
+                    && answer.deny_cidrs.is_empty(),
+                "{bad} must be refused"
+            );
+        }
+        let plain = egress_answer_of(&json!({ "allow": true })).unwrap();
+        assert!(plain.allow && plain.deny_cidrs.is_empty() && !plain.intercept);
+    }
+
+    #[test]
+    fn an_injection_answer_is_a_plain_header_or_nothing() {
+        let rule = json!({ "header": "x-api-key", "value": "sk-test", "rule": "r1" });
+        let injection = injection_of(&rule).unwrap().expect("a header");
+        assert_eq!(
+            (injection.header.as_str(), injection.value.as_str()),
+            ("x-api-key", "sk-test")
+        );
+        assert!(
+            injection_of(&json!({})).unwrap().is_none(),
+            "no rule, no header"
+        );
+        for bad in [
+            json!({ "header": "x:y", "value": "v" }),
+            json!({ "header": "", "value": "v" }),
+            json!({ "header": "x-a", "value": "v\r\nX-Evil: 1" }),
+            json!({ "header": "x-a" }),
+        ] {
+            assert!(injection_of(&bad).is_err(), "{bad} must be refused");
+        }
     }
 }

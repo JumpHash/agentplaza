@@ -56,7 +56,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
 
   function render(): void {
     errors.clear();
-    replace(body, policyCard(), defaultsCard(), limitsCard(), pricesCard());
+    replace(body, policyCard(), defaultsCard(), limitsCard(), sleepCard(), pricesCard());
     sync();
   }
 
@@ -247,13 +247,40 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     );
   }
 
+  /** The sleep settings: how long an idle agent's VM waits before it sleeps, who never sleeps, and the checkpoints. */
+  function sleepCard(): HTMLElement {
+    const idle = numeric('idle_sleep_min', 0, 1440, copy.idle_sleep_min, (n) => {
+      copy.idle_sleep_min = n;
+    });
+    const roles = input({ placeholder: 'coder, reviewer', spellcheck: 'false', value: copy.sleep_never_roles.join(', ') });
+    roles.addEventListener('input', () => {
+      copy.sleep_never_roles = sleepRoles(roles.value);
+      sync();
+    });
+    const auto = input({ type: 'checkbox', style: 'width:auto' });
+    auto.checked = copy.vm_auto_checkpoints === true;
+    auto.addEventListener('change', () => {
+      copy.vm_auto_checkpoints = auto.checked;
+      sync();
+    });
+    return card(
+      'Sleep and checkpoints',
+      h(
+        'div.stack',
+        null,
+        field('Sleep after idle (minutes, 0 = never)', idle),
+        field('Roles that never sleep (comma-separated)', roles),
+        h('div.stack', null, h('label', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' }, auto, h('span', null, 'Checkpoint before irreversible actions')), h('p.faint', null, "A checkpoint of the agent's VM is taken before each irreversible tool call.")),
+      ),
+    );
+  }
+
   function numeric(key: string, min: number, max: number, value: number, set: (n: number) => void): HTMLInputElement {
     const el = input({ type: 'number', min, max, step: 1, value });
     el.addEventListener('input', () => {
-      const n = Number(el.value);
-      const ok = el.value.trim() !== '' && Number.isInteger(n) && n >= min && n <= max;
-      if (ok) set(n);
-      toggleError(el, key, !ok);
+      const n = wholeInRange(el.value, min, max);
+      if (n !== null) set(n);
+      toggleError(el, key, n === null);
     });
     return el;
   }
@@ -295,6 +322,17 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   }
 
   render();
+}
+
+/** A whole number in [min, max] from a field's text, or null when the text is blank, not whole, or out of range. */
+export function wholeInRange(text: string, min: number, max: number): number | null {
+  const n = Number(text);
+  return text.trim() !== '' && Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+/** The roles a comma-separated field names: trimmed, without blanks or repeats, in the order typed. */
+export function sleepRoles(text: string): string[] {
+  return [...new Set(text.split(',').map((s) => s.trim()).filter((s) => s !== ''))];
 }
 
 /** Splits `provider/model[@effort]` into its base id and its pinned effort. */

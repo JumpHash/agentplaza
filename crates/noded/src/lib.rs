@@ -20,9 +20,13 @@
 
 pub mod events;
 pub mod fleet;
+pub mod migrate;
 pub mod registry;
+pub mod snapshots;
 pub mod stats;
+pub mod templates;
 pub mod train;
+pub mod volumes;
 pub mod workstation;
 pub mod ws_qemu;
 pub mod ws_relay;
@@ -86,6 +90,18 @@ pub struct Config {
     /// Where keepalive agents' workspace images persist across restarts
     /// (`DIR/workspaces/cid-<guest_cid>.ext4`); `None` keeps per-run copies.
     pub persist_dir: Option<PathBuf>,
+    /// Where VM snapshots are kept (`--snapshot-dir`; by default `snapshots` under the persist
+    /// directory, else under the daemon's state directory); `None` (`--no-snapshots`) keeps none, and
+    /// every snapshot operation is refused.
+    pub snapshot_dir: Option<PathBuf>,
+    /// Where the node's shared data volumes are kept (`--volume-dir`; by default `volumes` beside the
+    /// snapshots); `None` keeps none, and a run that names a volume is refused.
+    pub volume_dir: Option<PathBuf>,
+    /// Start new keepalive agent VMs from warm templates kept under `<snapshot_dir>/templates`
+    /// (`--no-warm-templates` turns it off). Needs a snapshot dir.
+    pub warm_templates: bool,
+    /// Run each VM in its own `apz-vmm` process with cgroup limits (`--vm-processes`).
+    pub vm_processes: bool,
     /// The roles manifest whose fleet boots at start.
     pub agents: Option<PathBuf>,
     pub agents_cid_base: u64,
@@ -110,6 +126,10 @@ impl Default for Config {
             uds_dir: apz_os::dirs::vsock_sockets(),
             workspace: None,
             persist_dir: None,
+            snapshot_dir: None,
+            volume_dir: None,
+            warm_templates: true,
+            vm_processes: false,
             agents: None,
             agents_cid_base: DEFAULT_AGENTS_CID_BASE,
             agents_memory_mib: DEFAULT_AGENTS_MEMORY_MIB,
@@ -131,6 +151,8 @@ pub struct Node {
     fabric: Mutex<Option<(Instant, Vec<String>)>>,
     /// The workstation VMs this node makes for the hub (workstation.rs).
     workstations: workstation::Store,
+    /// The exports and imports of sleeping VMs in flight (migrate.rs).
+    migrations: migrate::Migrations,
 }
 
 /// `GET /v1/machine`.
@@ -183,12 +205,31 @@ impl Node {
         Self {
             registry: Registry::new(images, config.uds_dir, events::EventBus::new())
                 .with_persist_dir(config.persist_dir)
+                .with_templates(
+                    config
+                        .snapshot_dir
+                        .as_ref()
+                        .filter(|_| config.warm_templates)
+                        .map(|dir| crate::templates::Templates::new(dir.join("templates"))),
+                )
+                .with_snapshots(config.snapshot_dir.map(snapshots::SnapshotStore::new))
+                .with_volumes(config.volume_dir.and_then(|dir| {
+                    volumes::VolumeStore::open(dir.clone())
+                        .map_err(|err| {
+                            eprintln!(
+                                "noded: no data volumes: cannot open {}: {err}",
+                                dir.display()
+                            )
+                        })
+                        .ok()
+                }))
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
             probed: probe_host(&apz_os::dirs::state()),
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
+            migrations: migrate::Migrations::new(),
         }
     }
 
@@ -1675,6 +1716,30 @@ fn router() -> Router<Node> {
             )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
+        // Shared data volumes: read-only images agent VMs mount at /data/<name>.
+        .get("/v1/volumes", |node, _, _| list_volumes(node))
+        .post("/v1/volumes", |node, request, _| {
+            create_volume(node, &request.body)
+        })
+        .delete("/v1/volumes/{name}", |node, _, params| {
+            delete_volume(node, params.get("name"))
+        })
+        // Warm templates: the ones built, and removing one (a VM restored from it keeps running).
+        .get("/v1/templates", |node, _, _| {
+            match node.registry().templates() {
+                Some(templates) => Response::json(200, &templates.list()),
+                None => Response::json(200, &Vec::<crate::templates::TemplateView>::new()),
+            }
+        })
+        .delete("/v1/templates/{key}", |node, _, params| {
+            match node.registry().templates() {
+                Some(templates) => match templates.remove(params.get("key")) {
+                    Ok(()) => Response::json(200, &serde_json::json!({ "removed": true })),
+                    Err(err) => Response::error(400, &err.to_string()),
+                },
+                None => Response::error(409, "this node keeps no warm templates"),
+            }
+        })
         .get("/v1/runs", |node, _, _| list_runs(node))
         .post("/v1/runs", |node, request, _| {
             create_run(node, &request.body)
@@ -1693,6 +1758,25 @@ fn router() -> Router<Node> {
         })
         .post("/v1/workstations/{id}/start", |node, _, params| {
             workstation_answer(node.workstations.start(params.get("id")))
+        })
+        // A plaza VM sleeps (its memory kept) and a start, or a wake, resumes it from there.
+        .post("/v1/workstations/{id}/sleep", |node, _, params| {
+            workstation_answer(node.workstations.sleep(params.get("id")))
+        })
+        .post("/v1/workstations/{id}/wake", |node, _, params| {
+            workstation_answer(node.workstations.start(params.get("id")))
+        })
+        // The serial console's tail (`?bytes=`, default 16 KiB), as text.
+        .get("/v1/workstations/{id}/console", |node, request, params| {
+            let bytes = request
+                .query_param("bytes")
+                .and_then(|b| b.parse::<usize>().ok())
+                .unwrap_or(16 * 1024)
+                .min(1 << 20);
+            match node.workstations.console(params.get("id"), bytes) {
+                Ok(text) => Response::text(200, &text),
+                Err((status, message)) => Response::error(status, &message),
+            }
         })
         .post("/v1/workstations/{id}/stop", |node, _, params| {
             workstation_answer(node.workstations.stop(params.get("id")))
@@ -1729,6 +1813,102 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/vms/{index}/stop", |node, _, params| {
             stop_vm(node, params.get("id"), params.get("index"))
         })
+        // One VM's snapshots: pause and resume it; sleep it to a snapshot and wake it from there;
+        // take checkpoints, restore one, delete one; fork the VM into new single-VM runs.
+        .post("/v1/runs/{id}/vms/{index}/pause", |node, _, params| {
+            vm_op(
+                node,
+                params.get("id"),
+                params.get("index"),
+                Registry::pause_vm,
+            )
+        })
+        .post("/v1/runs/{id}/vms/{index}/resume", |node, _, params| {
+            vm_op(
+                node,
+                params.get("id"),
+                params.get("index"),
+                Registry::resume_vm,
+            )
+        })
+        .post(
+            "/v1/runs/{id}/vms/{index}/sleep",
+            |node, request, params| {
+                sleep_vm(node, params.get("id"), params.get("index"), &request.body)
+            },
+        )
+        .post("/v1/runs/{id}/vms/{index}/wake", |node, request, params| {
+            wake_vm(node, params.get("id"), params.get("index"), &request.body)
+        })
+        // A sleeping VM moves between nodes (migrate.rs): export it here and read its files in
+        // chunks; import them on the target, which makes the VM asleep there. A finish is registered
+        // before the chunk route below, which would match it too: the first match wins.
+        .post("/v1/runs/{id}/vms/{index}/export", |node, _, params| {
+            export_vm(node, params.get("id"), params.get("index"))
+        })
+        .get("/v1/exports/{export}/{name}", |node, request, params| {
+            read_export(
+                node,
+                params.get("export"),
+                params.get("name"),
+                &request.query,
+            )
+        })
+        .delete("/v1/exports/{export}", |node, _, params| {
+            delete_export(node, params.get("export"))
+        })
+        .post("/v1/imports", |node, request, _| {
+            create_import(node, &request.body)
+        })
+        .post("/v1/imports/{import}/finish", |node, _, params| {
+            finish_import(node, params.get("import"))
+        })
+        .post("/v1/imports/{import}/{name}", |node, request, params| {
+            write_import(
+                node,
+                params.get("import"),
+                params.get("name"),
+                &request.body,
+            )
+        })
+        .delete("/v1/imports/{import}", |node, _, params| {
+            abort_import(node, params.get("import"))
+        })
+        .get(
+            "/v1/runs/{id}/vms/{index}/checkpoints",
+            |node, _, params| checkpoint_list(node, params.get("id"), params.get("index")),
+        )
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints",
+            |node, request, params| {
+                checkpoint_create(node, params.get("id"), params.get("index"), &request.body)
+            },
+        )
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}/restore",
+            |node, _, params| {
+                checkpoint_restore(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                )
+            },
+        )
+        .delete(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}",
+            |node, _, params| {
+                checkpoint_delete(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                )
+            },
+        )
+        .post("/v1/runs/{id}/vms/{index}/fork", |node, request, params| {
+            fork_vm(node, params.get("id"), params.get("index"), &request.body)
+        })
         // Trainer jobs: a container per job (or the native runner on macOS); see `train`.
         .get("/v1/train", |node, _, _| train::list(node))
         .post("/v1/train", |node, request, _| {
@@ -1764,6 +1944,327 @@ fn wipe_vm(node: &Node, id: &str, index: &str) -> Response {
 /// other VMs; a keepalive VM stopped this way is not brought back).
 fn stop_vm(node: &Node, id: &str, index: &str) -> Response {
     vm_op(node, id, index, Registry::stop_vm)
+}
+
+/// A VM index from a route, or the 404 an index that is not a number gets, like an unknown VM.
+fn vm_index(id: &str, index: &str) -> Result<u32, Response> {
+    index
+        .parse::<u32>()
+        .map_err(|_| Response::error(404, &format!("no VM {index} in run {id}")))
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/sleep` → 200 with `{"run": <summary>, "snapshot": <view>}`: the
+/// VM is snapshotted to its sleep snapshot and stopped, and waits there until it is woken. The
+/// optional body `{"memory": false}` stops it without a memory image instead: `snapshot` is `null`
+/// and the VM wakes cold.
+fn sleep_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let keep_memory = match memory_flag(body) {
+        Ok(keep) => keep,
+        Err(err) => return Response::error(400, &format!("invalid sleep request: {err}")),
+    };
+    match node.registry().sleep_vm(id, vm, keep_memory) {
+        Ok((run, snapshot)) => Response::json(
+            200,
+            &serde_json::json!({"run": run.view(Detail::Summary), "snapshot": snapshot}),
+        ),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The optional `{"memory": bool}` body of a sleep or wake; a missing field means true.
+#[derive(Debug, Deserialize)]
+struct SleepWakeRequest {
+    #[serde(default = "keeps_memory")]
+    memory: bool,
+}
+
+fn keeps_memory() -> bool {
+    true
+}
+
+/// Reads the optional memory flag of a sleep or wake body: true for an empty body.
+fn memory_flag(body: &[u8]) -> Result<bool, String> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(true);
+    }
+    serde_json::from_slice::<SleepWakeRequest>(body)
+        .map(|request| request.memory)
+        .map_err(|err| err.to_string())
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/wake` → 200 with the run view. The optional body
+/// `{"memory": false}` boots the VM cold from its spec instead of restoring its sleep snapshot.
+fn wake_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let cold = match memory_flag(body) {
+        Ok(keep) => !keep,
+        Err(err) => return Response::error(400, &format!("invalid wake request: {err}")),
+    };
+    match node.registry().wake_vm(id, vm, cold) {
+        Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// Serializes a transfer step's answer: `status` with its value, or the error's status and message.
+fn migrate_answer<T: Serialize>(status: u16, answer: Result<T, migrate::MigrateError>) -> Response {
+    match answer {
+        Ok(value) => Response::json(status, &value),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/export` → 201 with `{"export", "files", "meta"}`: the files of the
+/// asleep VM, kept for an hour for chunked reads.
+fn export_vm(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    migrate_answer(
+        201,
+        migrate::export_vm(&node.migrations, node.registry(), id, vm),
+    )
+}
+
+/// `GET /v1/exports/{export}/{name}?offset=O&len=L` → 200 with `{"data": <base64>, "eof": bool}`.
+fn read_export(node: &Node, export: &str, name: &str, query: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::read_export(&node.migrations, export, name, query),
+    )
+}
+
+/// `DELETE /v1/exports/{export}` → 200 with `{"deleted": export}`.
+fn delete_export(node: &Node, export: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::delete_export(&node.migrations, export)
+            .map(|()| serde_json::json!({"deleted": export})),
+    )
+}
+
+/// `POST /v1/imports` → 201 with `{"import": id}`: the VM's shape and file list, refused for a CID
+/// a run of this node holds.
+fn create_import(node: &Node, body: &[u8]) -> Response {
+    migrate_answer(
+        201,
+        migrate::create_import(&node.migrations, node.registry(), body)
+            .map(|import| serde_json::json!({"import": import})),
+    )
+}
+
+/// `POST /v1/imports/{import}/{name}` → 200 with `{"import", "name", "written"}`.
+fn write_import(node: &Node, import: &str, name: &str, body: &[u8]) -> Response {
+    migrate_answer(
+        200,
+        migrate::write_import(&node.migrations, import, name, body),
+    )
+}
+
+/// `POST /v1/imports/{import}/finish` → 201 with `{"run", "cid"}`: the VM is asleep on this node.
+fn finish_import(node: &Node, import: &str) -> Response {
+    migrate_answer(
+        201,
+        migrate::finish_import(&node.migrations, node.registry(), import),
+    )
+}
+
+/// `DELETE /v1/imports/{import}` → 200 with `{"aborted": import}`.
+fn abort_import(node: &Node, import: &str) -> Response {
+    migrate_answer(
+        200,
+        migrate::abort_import(&node.migrations, import)
+            .map(|()| serde_json::json!({"aborted": import})),
+    )
+}
+
+/// `GET /v1/runs/{id}/vms/{index}/checkpoints` → 200 with `{"checkpoints": [<view>, ...]}`, newest first.
+fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().checkpoints(id, vm) {
+        Ok(checkpoints) => Response::json(200, &serde_json::json!({"checkpoints": checkpoints})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The `POST .../checkpoints` body: a label for the checkpoint's name (optional).
+#[derive(Debug, Default, Deserialize)]
+struct CheckpointRequest {
+    #[serde(default)]
+    label: String,
+    /// `false` keeps the VM's disk only: a restore or a fork of it boots cold from that disk.
+    #[serde(default = "keep_memory")]
+    memory: bool,
+}
+
+fn keep_memory() -> bool {
+    true
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints` → 201 with the checkpoint's view. The body is
+/// optional; `{"label": "..."}` names the checkpoint, and `"memory": false` keeps the disk only.
+fn checkpoint_create(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let (label, memory) = if body.iter().all(u8::is_ascii_whitespace) {
+        (String::new(), true)
+    } else {
+        match serde_json::from_slice::<CheckpointRequest>(body) {
+            Ok(request) => (request.label, request.memory),
+            Err(err) => {
+                return Response::error(400, &format!("invalid checkpoint request: {err}"));
+            }
+        }
+    };
+    match node.registry().checkpoint_vm(id, vm, &label, memory) {
+        Ok(view) => Response::json(201, &view),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/restore` → 200 with
+/// `{"run": <summary>, "snapshot": <view>}`, where `snapshot` is the `before-restore` checkpoint
+/// taken first.
+fn checkpoint_restore(node: &Node, id: &str, index: &str, name: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().restore_checkpoint(id, vm, name) {
+        Ok((run, snapshot)) => Response::json(
+            200,
+            &serde_json::json!({"run": run.view(Detail::Summary), "snapshot": snapshot}),
+        ),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `DELETE /v1/runs/{id}/vms/{index}/checkpoints/{name}` → 200 with `{"deleted": name}`.
+fn checkpoint_delete(node: &Node, id: &str, index: &str, name: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().delete_checkpoint(id, vm, name) {
+        Ok(()) => Response::json(200, &serde_json::json!({"deleted": name})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// The `POST .../fork` body: how many forks to make (1 to 8), and optionally the name of an existing
+/// checkpoint to fork from instead of taking a new one.
+#[derive(Debug, Deserialize)]
+struct ForkRequest {
+    n: u32,
+    checkpoint: Option<String>,
+}
+
+/// `GET /v1/volumes` → 200 with every data volume and the guest CIDs of the live VMs that mount it.
+fn list_volumes(node: &Node) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::json(200, &Vec::<serde_json::Value>::new());
+    };
+    let used = node.registry().volumes_in_use();
+    let listed: Vec<serde_json::Value> = store
+        .list()
+        .into_iter()
+        .map(|volume| {
+            let in_use = used.get(&volume.name).cloned().unwrap_or_default();
+            serde_json::json!({
+                "name": volume.name,
+                "size_bytes": volume.size_bytes,
+                "created_ms": volume.created_ms,
+                "source": volume.source,
+                "in_use": in_use,
+            })
+        })
+        .collect();
+    Response::json(200, &listed)
+}
+
+/// The `POST /v1/volumes` body: the volume's name and the absolute path, on this node, of an ext4
+/// image (cloned) or a directory (packed into a new image).
+#[derive(Debug, serde::Deserialize)]
+struct CreateVolume {
+    name: String,
+    source: PathBuf,
+}
+
+/// The HTTP status of a refused volume operation.
+fn volume_status(err: &volumes::VolumeError) -> u16 {
+    match err {
+        volumes::VolumeError::Invalid(_) => 400,
+        volumes::VolumeError::NotFound(_) => 404,
+        volumes::VolumeError::Exists(_) | volumes::VolumeError::InUse(_) => 409,
+        volumes::VolumeError::Io(_) => 500,
+    }
+}
+
+/// `POST /v1/volumes` → 201 with the new volume.
+fn create_volume(node: &Node, body: &[u8]) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::error(409, "this node keeps no volumes");
+    };
+    let request: CreateVolume = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid volume request: {err}")),
+    };
+    match store.create(&request.name, &request.source) {
+        Ok(view) => Response::json(201, &view),
+        Err(err) => Response::error(volume_status(&err), &err.to_string()),
+    }
+}
+
+/// `DELETE /v1/volumes/{name}` → 200 `{"removed": true}`; 409 while a live VM mounts it.
+fn delete_volume(node: &Node, name: &str) -> Response {
+    let Some(store) = node.registry().volume_store() else {
+        return Response::error(409, "this node keeps no volumes");
+    };
+    let in_use = node.registry().volumes_in_use().contains_key(name);
+    match store.remove(name, in_use) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "removed": true })),
+        Err(err) => Response::error(volume_status(&err), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/fork` → 201 with `{"forks": [{"run": id, "cid": n}, ...],
+/// "checkpoint": name}`: a checkpoint of the VM, and one new single-VM run per fork.
+fn fork_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    let request: ForkRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => return Response::error(400, &format!("invalid fork request: {err}")),
+    };
+    let from = request.checkpoint.as_deref();
+    match node.registry().fork_vm(id, vm, request.n, from) {
+        Ok((checkpoint, forks)) => {
+            let forks: Vec<serde_json::Value> = forks
+                .iter()
+                .map(|(run, cid)| serde_json::json!({"run": run.id(), "cid": cid}))
+                .collect();
+            Response::json(
+                201,
+                &serde_json::json!({"forks": forks, "checkpoint": checkpoint.name}),
+            )
+        }
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
 }
 
 /// Runs one per-VM operation on VM `index` of run `id`. An index that is not a
@@ -1922,9 +2423,127 @@ fn delete_run(node: &Node, id: &str) -> Response {
     match node.registry().find(id) {
         Some(run) => {
             run.kill();
+            // A deleted run's VMs take their snapshots with them.
+            node.registry().drop_snapshots(&run);
             Response::json(200, &run.view(Detail::Full))
         }
         None => Response::error(404, &format!("no run with id {id}")),
+    }
+}
+
+#[cfg(test)]
+mod snapshot_route_tests {
+    use super::*;
+
+    /// A node that keeps its snapshots under `snapshot_dir` (none when `None`).
+    fn node(snapshot_dir: Option<PathBuf>) -> Node {
+        Node::new(Config {
+            snapshot_dir,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn a_node_with_no_snapshot_dir_refuses_every_snapshot_route_with_409() {
+        let node = node(None);
+        assert_eq!(sleep_vm(&node, "r1", "0", b"").status, 409);
+        assert_eq!(checkpoint_list(&node, "r1", "0").status, 409);
+        assert_eq!(checkpoint_create(&node, "r1", "0", b"").status, 409);
+        assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
+        assert_eq!(checkpoint_delete(&node, "r1", "0", "cp-1-x").status, 409);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 2}"#).status, 409);
+    }
+
+    /// A JSON response's body.
+    fn body_json(response: &Response) -> serde_json::Value {
+        match &response.body {
+            apz_http::Body::Bytes(bytes) => serde_json::from_slice(bytes).expect("a JSON body"),
+            other => panic!("not a byte body: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn data_volumes_are_made_listed_and_removed_through_the_routes() {
+        let root = std::env::temp_dir().join(format!("apz-noded-volumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let image = root.join("source.ext4");
+        std::fs::write(&image, vec![0u8; 1 << 20]).expect("a 1 MiB image");
+        let node = Node::new(Config {
+            volume_dir: Some(root.join("volumes")),
+            ..Config::default()
+        });
+        assert_eq!(body_json(&list_volumes(&node)), serde_json::json!([]));
+        let body = serde_json::json!({"name": "datasets", "source": image}).to_string();
+        assert_eq!(create_volume(&node, body.as_bytes()).status, 201);
+        assert_eq!(
+            create_volume(&node, body.as_bytes()).status,
+            409,
+            "the name is taken"
+        );
+        let bad = serde_json::json!({"name": "Bad Name", "source": image}).to_string();
+        assert_eq!(create_volume(&node, bad.as_bytes()).status, 400);
+        let listed = body_json(&list_volumes(&node));
+        assert_eq!(listed[0]["name"], "datasets");
+        assert_eq!(listed[0]["size_bytes"], 1 << 20);
+        assert_eq!(listed[0]["in_use"], serde_json::json!([]));
+        assert_eq!(delete_volume(&node, "datasets").status, 200);
+        assert_eq!(delete_volume(&node, "datasets").status, 404);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_node_with_no_volume_dir_lists_none_and_refuses_to_make_one() {
+        let node = node(None);
+        assert_eq!(body_json(&list_volumes(&node)), serde_json::json!([]));
+        assert_eq!(
+            create_volume(&node, br#"{"name":"a","source":"/x"}"#).status,
+            409
+        );
+    }
+
+    #[test]
+    fn a_vm_index_that_is_not_a_number_is_a_404() {
+        let node = node(None);
+        assert_eq!(sleep_vm(&node, "r1", "x", b"").status, 404);
+        assert_eq!(checkpoint_list(&node, "r1", "x").status, 404);
+        assert_eq!(checkpoint_create(&node, "r1", "x", b"").status, 404);
+        assert_eq!(fork_vm(&node, "r1", "x", br#"{"n": 1}"#).status, 404);
+    }
+
+    #[test]
+    fn a_malformed_snapshot_body_is_a_400() {
+        let dir = std::env::temp_dir().join(format!("apz-noded-routes-{}", std::process::id()));
+        let node = node(Some(dir));
+        assert_eq!(checkpoint_create(&node, "r1", "0", b"{").status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", b"not json").status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 0}"#).status, 400);
+        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 9}"#).status, 400);
+    }
+
+    #[test]
+    fn the_sleep_wake_and_fork_bodies_default_to_memory_and_no_checkpoint() {
+        assert!(memory_flag(b"").unwrap());
+        assert!(memory_flag(b" \n").unwrap());
+        assert!(memory_flag(b"{}").unwrap());
+        assert!(!memory_flag(br#"{"memory": false}"#).unwrap());
+        assert!(memory_flag(b"not json").is_err());
+        let plain: ForkRequest = serde_json::from_slice(br#"{"n": 2}"#).unwrap();
+        assert_eq!(plain.n, 2);
+        assert!(plain.checkpoint.is_none());
+        let named: ForkRequest =
+            serde_json::from_slice(br#"{"n": 1, "checkpoint": "cp-1-x"}"#).unwrap();
+        assert_eq!(named.checkpoint.as_deref(), Some("cp-1-x"));
+    }
+
+    #[test]
+    fn a_snapshot_route_on_an_unknown_run_is_a_404() {
+        let dir = std::env::temp_dir().join(format!("apz-noded-unknown-{}", std::process::id()));
+        let node = node(Some(dir));
+        assert_eq!(sleep_vm(&node, "r9", "0", b"").status, 404);
+        assert_eq!(checkpoint_list(&node, "r9", "0").status, 404);
+        assert_eq!(checkpoint_restore(&node, "r9", "0", "cp-1-x").status, 404);
+        assert_eq!(checkpoint_delete(&node, "r9", "0", "cp-1-x").status, 404);
     }
 }
 

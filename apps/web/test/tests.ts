@@ -34,6 +34,13 @@ import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, sta
 import { lookOfSpec, specKey, type PictureSpec } from '../src/views/machine-picture';
 import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
 import type { NodeView, StationVm } from '../src/api';
+import { api, e2bApi, egressApi } from '../src/api';
+import { statusPill } from '../src/views/agent-list';
+import { sleepRoles, wholeInRange } from '../src/views/models-policy';
+import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
+import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
+import { movableNodes, moveText } from '../src/views/agent-detail';
+import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -1355,6 +1362,168 @@ sectionEnd('ide stored terminals tests: ok');
   eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
 }
 sectionEnd('board owner composer tests: ok');
+
+{
+  // Sleep, VM checkpoints and forks: the requests the console sends, against a recorded fetch (the paths are escaped
+  // as the hub reads them, and a label or a fork count goes in the body only when it is given).
+  const sent: { method: string; url: string; body: unknown }[] = [];
+  const realFetch = globalThis.fetch;
+  let reply: unknown = {};
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent.push({ method: init?.method ?? 'GET', url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
+    return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    await api.sleepAgent(7);
+    await api.wakeAgent(7);
+    reply = { checkpoints: [] };
+    await api.vmCheckpoints(7);
+    await api.takeVmCheckpoint(7, 'before deploy');
+    await api.takeVmCheckpoint(7);
+    await api.restoreVmCheckpoint(7, 'ck 1/x');
+    await api.deleteVmCheckpoint(7, 'ck-1');
+    await api.forkAgent(7, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  eq(
+    sent,
+    [
+      { method: 'POST', url: '/v1/agents/7/sleep', body: {} },
+      { method: 'POST', url: '/v1/agents/7/wake', body: {} },
+      { method: 'GET', url: '/v1/agents/7/vm-checkpoints', body: null },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints', body: { label: 'before deploy' } },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints', body: {} },
+      { method: 'POST', url: '/v1/agents/7/vm-checkpoints/ck%201%2Fx/restore', body: {} },
+      { method: 'DELETE', url: '/v1/agents/7/vm-checkpoints/ck-1', body: null },
+      { method: 'POST', url: '/v1/agents/7/fork', body: { n: 3 } },
+    ],
+    'vm api: each checkpoint, sleep and fork call goes to its endpoint with its body',
+  );
+  // The roster's status pill: asleep reads as its own word, in the muted tone the offline agents use.
+  eq(statusPill('asleep'), { tone: 'muted', word: 'Asleep' }, 'status pill: asleep is muted and says so');
+  eq(statusPill('offline'), { tone: 'muted', word: null }, 'status pill: offline needs no word');
+  eq([statusPill('working').tone, statusPill('idle').tone], ['info', 'ok'], 'status pill: working and idle keep their tones');
+  // The sleep settings' validation, as the policy form reads its fields: whole numbers in range, blanks refused.
+  eq([wholeInRange('0', 0, 1440), wholeInRange('1440', 0, 1440), wholeInRange(' 30 ', 0, 1440)], [0, 1440, 30], 'wholeInRange: the bounds and a padded whole number are accepted');
+  eq([wholeInRange('1441', 0, 1440), wholeInRange('-1', 0, 1440), wholeInRange('2.5', 0, 1440), wholeInRange('', 0, 1440), wholeInRange('   ', 0, 1440), wholeInRange('x', 0, 1440)], [null, null, null, null, null, null], 'wholeInRange: out of range, negative, fractional, blank or text is refused');
+  eq(sleepRoles('coder, reviewer,, coder ,'), ['coder', 'reviewer'], 'sleepRoles: trimmed, blanks and repeats dropped, order kept');
+  eq(sleepRoles('   '), [], 'sleepRoles: a blank field names no role');
+  eq([volumeNameOk('deps'), volumeNameOk('a'.repeat(20)), volumeNameOk('a'.repeat(21)), volumeNameOk('Deps'), volumeNameOk('-deps'), volumeNameOk('')], [true, true, false, false, false, false], 'volumes: a name is a-z, 0-9 and dashes, 1 to 20 characters, not starting with a dash');
+  eq(parseVolumeList('deps, models  ,, ci-2').names, ['deps', 'models', 'ci-2'], 'volumes: a role list splits on commas and spaces, blanks dropped, order kept');
+  eq(parseVolumeList('   ').names, [], 'volumes: a blank role list names no volume');
+  eq([parseVolumeList('deps, Data').error === undefined, parseVolumeList('a,a').error === undefined, parseVolumeList('a,b,c,d,e').error === undefined], [false, false, false], 'volumes: a bad name, a repeat, or a fifth volume is refused');
+}
+sectionEnd('sleep and checkpoint tests: ok');
+
+{
+  // Egress credentials and the E2B API: the requests the owner's screens send (ids escaped, bodies as the hub reads them).
+  const sent: { method: string; url: string; body: unknown }[] = [];
+  const realFetch = globalThis.fetch;
+  let reply: unknown = {};
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent.push({ method: init?.method ?? 'GET', url, body: typeof init?.body === 'string' ? JSON.parse(init.body) : null });
+    return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    reply = { rules: [] };
+    await egressApi.rules();
+    await egressApi.addRule({ roles: [], host: 'a.example', port: 443, methods: [], path_prefix: '/', header: 'Authorization', format: 'Bearer ${SECRET}', secret: 'tok', enabled: true });
+    await egressApi.patchRule('r 1/x', { enabled: false });
+    await egressApi.deleteRule('r1');
+    reply = { keys: [] };
+    await e2bApi.keys();
+    await e2bApi.createKey('ci');
+    await e2bApi.revokeKey('k1');
+    reply = { sandboxes: [] };
+    await e2bApi.sandboxes();
+    await e2bApi.pauseSandbox('sb1');
+    await e2bApi.resumeSandbox('sb1');
+    await e2bApi.endSandbox('sb1');
+    reply = { ok: true, from: 'n1', to: 'n2', bytes: 1, ms: 1 };
+    await api.moveAgent(7, 'n2');
+    reply = [];
+    await api.nodes();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  eq(
+    sent,
+    [
+      { method: 'GET', url: '/v1/egress/inject', body: null },
+      { method: 'POST', url: '/v1/egress/inject', body: { roles: [], host: 'a.example', port: 443, methods: [], path_prefix: '/', header: 'Authorization', format: 'Bearer ${SECRET}', secret: 'tok', enabled: true } },
+      { method: 'PATCH', url: '/v1/egress/inject/r%201%2Fx', body: { enabled: false } },
+      { method: 'DELETE', url: '/v1/egress/inject/r1', body: null },
+      { method: 'GET', url: '/v1/e2b/keys', body: null },
+      { method: 'POST', url: '/v1/e2b/keys', body: { label: 'ci' } },
+      { method: 'DELETE', url: '/v1/e2b/keys/k1', body: null },
+      { method: 'GET', url: '/v1/e2b/sandboxes', body: null },
+      { method: 'POST', url: '/v1/e2b/sandboxes/sb1/pause', body: {} },
+      { method: 'POST', url: '/v1/e2b/sandboxes/sb1/resume', body: {} },
+      { method: 'DELETE', url: '/v1/e2b/sandboxes/sb1', body: null },
+      { method: 'POST', url: '/v1/agents/7/move', body: { node: 'n2' } },
+      { method: 'GET', url: '/v1/nodes', body: null },
+    ],
+    'egress and e2b api: each call goes to its endpoint with its body',
+  );
+  // The rule form: the defaults, the normalised body, and each refusal the owner sees before a request.
+  const good: RuleForm = { ...defaultRuleForm(), host: ' API.Example.com ', path_prefix: '/v1', methods: 'get, post, get', roles: 'coder, reviewer,, coder', secret: 'github_token' };
+  eq(defaultRuleForm(), { host: '', port: '443', methods: '', path_prefix: '/', roles: '', header: 'Authorization', format: 'Bearer ${SECRET}', secret: '', enabled: true }, 'egress form: the defaults are port 443, path /, Authorization and Bearer ${SECRET}');
+  eq(ruleProblem(good), null, 'egress form: a complete rule is accepted');
+  eq(
+    ruleBody(good),
+    { roles: ['coder', 'reviewer'], host: 'api.example.com', port: 443, methods: ['GET', 'POST'], path_prefix: '/v1', header: 'Authorization', format: 'Bearer ${SECRET}', secret: 'github_token', enabled: true },
+    'egress form: the body has the host lower-cased, the lists split and de-duplicated, and the methods upper-cased',
+  );
+  const refused = (over: Partial<RuleForm>, start: string): boolean => ruleProblem({ ...good, ...over })?.startsWith(start) === true;
+  eq(refused({ port: '80' }, 'Port 80 is refused'), true, 'egress form: port 80 is refused client-side too');
+  eq([refused({ port: '0' }, 'The port'), refused({ port: '65536' }, 'The port'), refused({ port: '44.3' }, 'The port'), refused({ port: 'https' }, 'The port')], [true, true, true, true], 'egress form: a port that is not a whole number from 1 to 65535 is refused');
+  eq(ruleProblem({ ...good, port: '8443' }), null, 'egress form: another TLS port is accepted');
+  eq([refused({ header: 'Bad Header' }, 'The header is a name'), refused({ header: 'a:b' }, 'The header is a name'), refused({ header: '' }, 'The header is a name')], [true, true, true], 'egress form: a header with a space, a colon or nothing is refused');
+  eq(ruleProblem({ ...good, header: 'X-Api-Key' }), null, 'egress form: a token header name is accepted');
+  eq([refused({ format: 'Bearer token' }, 'The format must contain'), refused({ format: '' }, 'The format must contain')], [true, true], 'egress form: a format without ${SECRET} is refused');
+  eq(ruleProblem({ ...good, format: 'Token ${SECRET}' }), null, 'egress form: a format with ${SECRET} is accepted');
+  eq([refused({ host: '*' }, 'The host is a name'), refused({ host: '*.' }, 'The host is a name'), refused({ host: 'a..b' }, 'The host is a name'), refused({ host: 'exa mple.com' }, 'The host is a name'), refused({ host: '' }, 'Enter the host')], [true, true, true, true, true], 'egress form: a host that is not exact or *.suffix is refused');
+  eq(ruleProblem({ ...good, host: '*.example.com' }), null, 'egress form: a *.suffix host is accepted');
+  eq(refused({ path_prefix: 'v1' }, 'The path prefix'), true, 'egress form: a path prefix without a slash is refused');
+  eq(refused({ methods: 'GET POST' }, 'Methods are names'), true, 'egress form: methods must be comma-separated names');
+  eq(refused({ secret: '  ' }, 'Enter the name of the vault secret'), true, 'egress form: a blank secret name is refused');
+  eq([methodsText([]), methodsText(['GET']), rolesText([]), rolesText(['coder'])], ['Any', 'GET', 'Every role', 'coder'], 'egress table: an empty method or role list reads as any or every');
+  eq(listOf(' a, b ,a,, '), ['a', 'b'], 'listOf: trimmed, blanks and repeats dropped, order kept');
+  // The E2B screens: the setup text, the buttons a sandbox row offers, the memory and time text.
+  eq(e2bSetupText('https://hub.example', 'e2b_key'), 'E2B_API_URL=https://hub.example/e2b\nE2B_API_KEY=e2b_key\nE2B_SANDBOX_URL=http://127.0.0.1:49982', 'e2b setup: the API under the origin, the key, and the local gateway');
+  eq(e2bSetupText('https://hub.example', null).split('\n')[1], 'E2B_API_KEY=<your key>', 'e2b setup: without a key shown, the placeholder asks for one');
+  eq([sandboxActions('running'), sandboxActions('paused')], [['pause', 'end'], ['resume', 'end']], 'e2b sandboxes: a running one pauses, a paused one resumes, and either ends');
+  eq([memoryText(512), memoryText(1536), memoryText(2048)], ['512 MB', '1.5 GB', '2.0 GB'], 'e2b sandboxes: memory reads in MB below a gibibyte, then GB');
+  eq(sandboxTime('not a time'), '—', 'e2b sandboxes: an unreadable time shows a dash');
+  // The templates: the newest build, the tags of the ready builds, and the failure of a newest build that failed.
+  const buildSample = (over: Partial<E2bBuild>): E2bBuild => ({ buildID: 'b', status: 'ready', createdAt: '2026-10-01T00:00:00Z', finishedAt: null, cpuCount: 2, memoryMB: 512, tags: [], reason: null, ...over });
+  const tplSample: E2bTemplate = {
+    templateID: 't1',
+    name: 'base',
+    createdAt: '2026-10-01T00:00:00Z',
+    updatedAt: '2026-10-02T00:00:00Z',
+    builds: [
+      buildSample({ buildID: 'b3', status: 'error', tags: ['v3'], reason: { message: 'step 4 failed', step: 'RUN npm ci' } }),
+      buildSample({ buildID: 'b2', tags: ['v2', 'latest'] }),
+      buildSample({ buildID: 'b1', tags: ['latest', 'v1'] }),
+    ],
+  };
+  eq(latestBuild(tplSample)?.buildID, 'b3', 'e2b templates: the newest build is the first one listed');
+  eq(templateTags(tplSample), ['v2', 'latest', 'v1'], 'e2b templates: the tags of the ready builds, each once, in listed order');
+  eq(templateFailure(tplSample), 'step 4 failed', 'e2b templates: a newest build that failed shows its reason');
+  eq(templateFailure({ ...tplSample, builds: [buildSample({ status: 'error' })] }), 'The build failed.', 'e2b templates: a failed build without a reason still says it failed');
+  eq([templateFailure({ ...tplSample, builds: [buildSample({ status: 'ready' })] }), latestBuild({ ...tplSample, builds: [] }), templateTags({ ...tplSample, builds: [] })], [null, null, []], 'e2b templates: a ready newest build has no failure, and no builds means no latest build and no tags');
+  // Move: the nodes an agent can move to, and the outcome line.
+  const nodes = [
+    { id: 'n1', name: 'alpha', draining: false, revoked: false },
+    { id: 'n2', name: 'beta', draining: true, revoked: false },
+    { id: 'n3', name: 'gamma', draining: false, revoked: true },
+  ] as unknown as NodeView[];
+  eq(movableNodes(nodes).map((n) => n.id), ['n1'], 'move: a draining or revoked node is not offered');
+  eq(moveText({ from: 'n1', to: 'n2', bytes: 3 * 1048576, ms: 2500 }, (id) => id.toUpperCase()), 'Moved from N1 to N2: 3.0 MB in 2.5 s.', 'move: the outcome names both nodes, the MB moved and the seconds');
+}
+sectionEnd('egress credentials and e2b tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

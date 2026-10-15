@@ -161,6 +161,94 @@ pub trait VirtioDevice: Send {
 
     /// The driver reset the device: return to the state before activation.
     fn reset(&mut self);
+
+    /// The device's own snapshot state beyond the transport's: its queues' positions
+    /// (`next_avail`/`next_used`) once activated, and anything device-specific in `extra`. Called
+    /// with the VM paused. The default is for a device with no state of its own.
+    /// The features the driver acknowledged (both pages), for the snapshot: a restored transport
+    /// acknowledges them again through [`VirtioDevice::ack_features_by_page`].
+    fn acked_features(&self) -> u64 {
+        0
+    }
+
+    fn save_device_state(&self) -> DeviceSnapshot {
+        DeviceSnapshot::default()
+    }
+
+    /// Restores [`VirtioDevice::save_device_state`]'s state. Called by
+    /// [`VirtioMmioTransport::restore`] after the transport state is back and, for a device the driver
+    /// had activated, after [`VirtioDevice::activate`], so the queues exist to be repositioned.
+    fn restore_device_state(&mut self, _state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        Ok(())
+    }
+
+    /// Called once a restored VM is about to run again: a device whose host side did not survive
+    /// the snapshot (the vsock muxer's connections) tells the guest so here.
+    fn on_restored(&mut self) -> Result<(), VirtioError> {
+        Ok(())
+    }
+}
+
+/// Refuses a device snapshot whose queue count is not the device's: an activated device has one
+/// position per queue, an inactive one none. Shared by the devices' `restore_device_state`.
+pub(crate) fn check_snapshot_queue_count(expected: usize, found: usize) -> Result<(), VirtioError> {
+    if expected == found {
+        Ok(())
+    } else {
+        Err(VirtioError::SnapshotQueueCount { expected, found })
+    }
+}
+
+/// One virtqueue's position, as a device's snapshot carries it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueuePosition {
+    /// The next available-ring index the device will read.
+    pub next_avail: u16,
+    /// The next used-ring index the device will write.
+    pub next_used: u16,
+}
+
+/// A device's own snapshot state (see [`VirtioDevice::save_device_state`]).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceSnapshot {
+    /// Each activated queue's position, in queue order; empty before activation.
+    pub queues: Vec<QueuePosition>,
+    /// Device-specific state (the balloon's target and actual sizes, …).
+    #[serde(default)]
+    pub extra: serde_json::Value,
+}
+
+/// One queue's transport registers, as a snapshot carries them (see [`QueueConfig`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueueConfigState {
+    pub max_size: u32,
+    pub size: u32,
+    pub ready: bool,
+    pub desc: u64,
+    pub avail: u64,
+    pub used: u64,
+}
+
+/// The transport's registers, as a snapshot carries them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MmioTransportState {
+    pub device_type: u32,
+    pub features_select: u32,
+    pub acked_features_select: u32,
+    pub queue_select: u32,
+    pub device_status: u32,
+    pub config_generation: u32,
+    pub interrupt_status: u32,
+    /// The features the driver acknowledged, as the device recorded them.
+    pub acked_features: u64,
+    pub queues: Vec<QueueConfigState>,
+}
+
+/// A virtio-mmio device in a snapshot: its transport and its own state.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MmioDeviceState {
+    pub transport: MmioTransportState,
+    pub device: DeviceSnapshot,
 }
 
 /// The virtio-mmio transport of one device.
@@ -197,6 +285,107 @@ pub struct VirtioMmioTransport {
 }
 
 impl VirtioMmioTransport {
+    /// The transport's and its device's snapshot state. Called with the VM paused.
+    pub fn save_state(&self) -> MmioDeviceState {
+        let queues = self
+            .device
+            .queues()
+            .iter()
+            .map(|queue| QueueConfigState {
+                max_size: queue.max_size,
+                size: queue.size,
+                ready: queue.ready,
+                desc: queue.desc,
+                avail: queue.avail,
+                used: queue.used,
+            })
+            .collect();
+        MmioDeviceState {
+            transport: MmioTransportState {
+                device_type: self.device.device_type(),
+                features_select: self.features_select,
+                acked_features_select: self.acked_features_select,
+                queue_select: self.queue_select,
+                device_status: self.device_status,
+                config_generation: self.config_generation,
+                interrupt_status: self.interrupt_status.load(Ordering::SeqCst),
+                acked_features: self.device.acked_features(),
+                queues,
+            },
+            device: self.device.save_device_state(),
+        }
+    }
+
+    /// Rebuilds the transport of `device` from `state`: the registers, the queue configuration and,
+    /// when the driver had brought the device up (`DRIVER_OK`), the device's activation and its own
+    /// state ([`VirtioDevice::restore_device_state`]). Refuses a state of another device type.
+    pub fn restore(
+        device: Box<dyn VirtioDevice>,
+        mem: GuestMemoryMmap,
+        irq: EventFd,
+        state: &MmioDeviceState,
+    ) -> Result<Self, VirtioError> {
+        let saved = &state.transport;
+        let device_type = device.device_type();
+        if saved.device_type != device_type {
+            return Err(VirtioError::SnapshotDeviceType {
+                expected: device_type,
+                found: saved.device_type,
+            });
+        }
+        let queues = device.queues().len();
+        if saved.queues.len() != queues {
+            return Err(VirtioError::SnapshotQueueCount {
+                expected: queues,
+                found: saved.queues.len(),
+            });
+        }
+
+        let mut transport = Self::new(device, mem, irq);
+        transport.features_select = saved.features_select;
+        transport.acked_features_select = saved.acked_features_select;
+        transport.queue_select = saved.queue_select;
+        transport.device_status = saved.device_status;
+        transport.config_generation = saved.config_generation;
+        transport
+            .interrupt_status
+            .store(saved.interrupt_status, Ordering::SeqCst);
+        for (queue, saved_queue) in transport.device.queues_mut().iter_mut().zip(&saved.queues) {
+            *queue = QueueConfig {
+                max_size: saved_queue.max_size,
+                size: saved_queue.size,
+                ready: saved_queue.ready,
+                desc: saved_queue.desc,
+                avail: saved_queue.avail,
+                used: saved_queue.used,
+            };
+        }
+        // The device takes the acknowledged features back the way the driver gave them: both
+        // pages, so a device whose acknowledgement is per page sees its whole set.
+        if saved.acked_features != 0 {
+            transport
+                .device
+                .ack_features_by_page(0, saved.acked_features as u32)?;
+            transport
+                .device
+                .ack_features_by_page(1, (saved.acked_features >> 32) as u32)?;
+        }
+        // A device the driver had brought up is activated again over its restored queues, the
+        // same call the status write makes, and only then repositioned (its queues exist from
+        // activation on). One whose activation had failed (`FAILED` beside `DRIVER_OK`) stays as
+        // the driver left it. Nothing else from the status write is replayed.
+        if transport.check_device_status(device_status::DRIVER_OK, device_status::FAILED) {
+            transport.device.activate(&transport.mem, &transport.irq)?;
+            transport.device.restore_device_state(&state.device)?;
+        }
+        Ok(transport)
+    }
+
+    /// Tells the device its VM is about to run again (see [`VirtioDevice::on_restored`]).
+    pub fn on_restored(&mut self) -> Result<(), VirtioError> {
+        self.device.on_restored()
+    }
+
     /// Builds the transport of `device`. `mem` is the guest memory its rings
     /// live in and `irq` its interrupt — already registered with the
     /// hypervisor for the device's GSI.
@@ -555,6 +744,8 @@ mod tests {
         notified: Vec<u32>,
         resets: usize,
         config_written: Vec<(u64, Vec<u8>)>,
+        /// The device's own snapshot state, as `restore_device_state` was handed it.
+        restored: Option<DeviceSnapshot>,
     }
 
     /// A device that records what the transport asks of it, so the register
@@ -637,6 +828,39 @@ mod tests {
                 queue.reset();
             }
         }
+
+        fn acked_features(&self) -> u64 {
+            self.state.lock().expect("mock state").acked
+        }
+
+        fn save_device_state(&self) -> DeviceSnapshot {
+            let activated = self.state.lock().expect("mock state").activated;
+            DeviceSnapshot {
+                queues: Vec::new(),
+                extra: serde_json::json!({ "activated": activated }),
+            }
+        }
+
+        fn restore_device_state(&mut self, state: &DeviceSnapshot) -> Result<(), VirtioError> {
+            self.state.lock().expect("mock state").restored = Some(state.clone());
+            Ok(())
+        }
+    }
+
+    /// A mock device of `queues` queues that records into `state`.
+    fn mock_device(
+        features: u64,
+        queues: usize,
+        state: &Arc<Mutex<MockState>>,
+    ) -> Box<dyn VirtioDevice> {
+        Box::new(MockDevice {
+            features,
+            queues: (0..queues)
+                .map(|_| QueueConfig::new(256))
+                .collect::<Vec<_>>(),
+            refuse_features: false,
+            state: Arc::clone(state),
+        })
     }
 
     /// A transport over a mock device with `queues` queues, plus the mock's
@@ -646,16 +870,8 @@ mod tests {
         queues: usize,
     ) -> (VirtioMmioTransport, Arc<Mutex<MockState>>) {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let device = MockDevice {
-            features,
-            queues: (0..queues)
-                .map(|_| QueueConfig::new(256))
-                .collect::<Vec<_>>(),
-            refuse_features: false,
-            state: Arc::clone(&state),
-        };
         let transport = VirtioMmioTransport::new(
-            Box::new(device),
+            mock_device(features, queues, &state),
             single_region_mem(0x1000),
             EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
         );
@@ -917,6 +1133,141 @@ mod tests {
         write_u32(&mut transport, 0x50, 1);
         write_u32(&mut transport, 0x50, 2);
         assert_eq!(state.lock().expect("state").notified, vec![1, 2]);
+    }
+
+    /// A running device's snapshot restores into a fresh device of the same type: the registers,
+    /// the queues, the acknowledged features and the device's own state come back, the device is
+    /// activated once, and saving the restored transport gives the same state back.
+    #[test]
+    fn a_running_device_round_trips_through_its_snapshot() {
+        let features = 0x0000_0001_0000_0003;
+        let (mut transport, _state) = mock_transport(features, 3);
+        acknowledge_driver(&mut transport);
+        write_u32(&mut transport, 0x24, 0);
+        write_u32(&mut transport, 0x20, 0x3);
+        write_u32(&mut transport, 0x24, 1);
+        write_u32(&mut transport, 0x20, 0x1);
+        negotiate(&mut transport);
+        write_u32(&mut transport, 0x30, 1);
+        write_u32(&mut transport, 0x38, 128);
+        write_u32(&mut transport, 0x80, 0x1234_5000);
+        write_u32(&mut transport, 0x84, 0x1);
+        write_u32(&mut transport, 0x90, 0x2000);
+        write_u32(&mut transport, 0x94, 0);
+        write_u32(&mut transport, 0xa0, 0x3000);
+        write_u32(&mut transport, 0xa4, 0);
+        write_u32(&mut transport, 0x44, 1);
+        write_u32(&mut transport, 0x30, 2);
+        write_u32(&mut transport, 0x14, 1);
+        write_u32(&mut transport, 0x70, driver_ok());
+        transport
+            .interrupt_status_handle()
+            .fetch_or(VIRTIO_MMIO_INT_CONFIG, Ordering::SeqCst);
+        let saved = transport.save_state();
+        assert_eq!(saved.transport.device_type, 19);
+        assert_eq!(saved.transport.acked_features, features);
+        assert_eq!(saved.transport.queues[1].size, 128);
+        assert_eq!(saved.device.extra, serde_json::json!({ "activated": 1 }));
+
+        let restored_state = Arc::new(Mutex::new(MockState::default()));
+        let mut restored = VirtioMmioTransport::restore(
+            mock_device(features, 3, &restored_state),
+            single_region_mem(0x1000),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
+            &saved,
+        )
+        .unwrap_or_else(|err| panic!("restore failed: {err}"));
+
+        assert_eq!(restored.save_state(), saved);
+        let restored_state = restored_state.lock().expect("state");
+        assert_eq!(restored_state.acked, features);
+        assert_eq!(restored_state.activated, 1);
+        assert_eq!(restored_state.restored, Some(saved.device.clone()));
+        drop(restored_state);
+        // The restored registers answer the driver as the original's did.
+        assert_eq!(read_u32(&mut restored, 0x70), driver_ok());
+        assert_eq!(
+            read_u32(&mut restored, 0x60),
+            VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG
+        );
+        assert_eq!(restored.features_select, 1);
+        assert_eq!(restored.queue_select, 2);
+    }
+
+    /// A state saved before `DRIVER_OK` restores the negotiation as it stood, without activating
+    /// the device: the driver's next status write does that, as it would have on the source.
+    #[test]
+    fn a_state_saved_before_driver_ok_restores_without_activating() {
+        let features = 1 << 32;
+        let (mut transport, _state) = mock_transport(features, 2);
+        negotiate(&mut transport);
+        write_u32(&mut transport, 0x30, 0);
+        write_u32(&mut transport, 0x38, 64);
+        write_u32(&mut transport, 0x44, 1);
+        let saved = transport.save_state();
+        assert_eq!(
+            saved.transport.device_status,
+            device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK
+        );
+
+        let restored_state = Arc::new(Mutex::new(MockState::default()));
+        let restored = VirtioMmioTransport::restore(
+            mock_device(features, 2, &restored_state),
+            single_region_mem(0x1000),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
+            &saved,
+        )
+        .unwrap_or_else(|err| panic!("restore failed: {err}"));
+
+        assert_eq!(restored.save_state(), saved);
+        let restored_state = restored_state.lock().expect("state");
+        assert_eq!(restored_state.activated, 0);
+        assert_eq!(restored_state.acked, 0);
+    }
+
+    /// A state of another device type, or with another queue count, is refused rather than
+    /// restored into a device it does not describe.
+    #[test]
+    fn a_state_of_another_device_type_or_queue_count_is_refused() {
+        let (mut transport, _state) = mock_transport(1 << 32, 2);
+        negotiate(&mut transport);
+        let saved = transport.save_state();
+
+        let mut other_type = saved.clone();
+        other_type.transport.device_type = 20;
+        let Err(err) = VirtioMmioTransport::restore(
+            mock_device(1 << 32, 2, &Arc::new(Mutex::new(MockState::default()))),
+            single_region_mem(0x1000),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
+            &other_type,
+        ) else {
+            panic!("a snapshot of device type 20 restored into a device of type 19");
+        };
+        assert!(matches!(
+            err,
+            VirtioError::SnapshotDeviceType {
+                expected: 19,
+                found: 20
+            }
+        ));
+
+        let mut fewer_queues = saved.clone();
+        fewer_queues.transport.queues.pop();
+        let Err(err) = VirtioMmioTransport::restore(
+            mock_device(1 << 32, 2, &Arc::new(Mutex::new(MockState::default()))),
+            single_region_mem(0x1000),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
+            &fewer_queues,
+        ) else {
+            panic!("a snapshot with one queue restored into a device of two");
+        };
+        assert!(matches!(
+            err,
+            VirtioError::SnapshotQueueCount {
+                expected: 2,
+                found: 1
+            }
+        ));
     }
 
     #[test]

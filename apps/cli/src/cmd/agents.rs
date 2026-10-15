@@ -1,7 +1,8 @@
 //! `agentplaza agents`: Agents: list, inspect, create, talk to, stop, restart, set models; cancel
-//! their work, retire or wipe them, drive their harness and loops, set permissions, read their
-//! infractions, sanctions and memory, and decide the proposals they make. The submodules hold the
-//! larger areas: `lifecycle`, `harness`, `oversight` and `records`.
+//! their work, retire or wipe them, put them to sleep or wake them, checkpoint, roll back and fork
+//! their VMs, drive their harness and loops, set permissions, read their infractions, sanctions and
+//! memory, and decide the proposals they make. The submodules hold the larger areas: `lifecycle`,
+//! `harness`, `oversight` and `records`.
 
 pub mod harness;
 pub mod lifecycle;
@@ -27,7 +28,7 @@ pub enum Cmd {
         /// Only agents of this role (its id, such as "orchestrator").
         #[arg(long)]
         role: Option<String>,
-        /// Only agents in this status: working, idle or offline.
+        /// Only agents in this status: working, idle, offline or asleep.
         #[arg(long)]
         status: Option<String>,
     },
@@ -126,6 +127,65 @@ pub enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Put an agent to sleep: its VM pauses with its memory kept, and wakes where it was.
+    Sleep {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// Wake a sleeping agent.
+    Wake {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// Checkpoint an agent's whole VM (disk and memory), to roll back to later.
+    Checkpoint {
+        /// The agent's cid.
+        cid: u64,
+        /// A label for the checkpoint, to find it by in `agents checkpoints`.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// An agent's VM checkpoints: name, label, age, kind, memory and disk written, and pause.
+    Checkpoints {
+        /// The agent's cid.
+        cid: u64,
+    },
+    /// Roll an agent's VM back to a checkpoint. A safety checkpoint of its current state is taken
+    /// first. Asks to confirm unless --yes.
+    Rollback {
+        /// The agent's cid.
+        cid: u64,
+        /// The checkpoint's name (see `agents checkpoints`).
+        checkpoint: String,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete a VM checkpoint. Asks to confirm unless --yes.
+    CheckpointDelete {
+        /// The agent's cid.
+        cid: u64,
+        /// The checkpoint's name (see `agents checkpoints`).
+        checkpoint: String,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Fork an agent into copies: a checkpoint of its VM is taken, and each copy starts from it.
+    Fork {
+        /// The agent's cid.
+        cid: u64,
+        /// How many copies, 1 to 8.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=8))]
+        n: u64,
+    },
+    /// Move an agent's VM to another node. The hub copies it over and reports the bytes moved and the time taken.
+    Move {
+        /// The agent's cid.
+        cid: u64,
+        /// The node to move it to, by its id (see `nodes list`).
+        node: String,
+    },
     /// An agent's harness limits. Add `set`, `compress`, `extend` or `steer` to change them or its
     /// running work.
     Harness {
@@ -204,6 +264,22 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             },
             yes,
         ),
+        Cmd::Sleep { cid } => lifecycle::sleep(ctx, cid),
+        Cmd::Wake { cid } => lifecycle::wake(ctx, cid),
+        Cmd::Checkpoint { cid, label } => lifecycle::checkpoint(ctx, cid, label.as_deref()),
+        Cmd::Checkpoints { cid } => lifecycle::checkpoints(ctx, cid),
+        Cmd::Rollback {
+            cid,
+            checkpoint,
+            yes,
+        } => lifecycle::rollback(ctx, cid, &checkpoint, yes),
+        Cmd::CheckpointDelete {
+            cid,
+            checkpoint,
+            yes,
+        } => lifecycle::checkpoint_delete(ctx, cid, &checkpoint, yes),
+        Cmd::Fork { cid, n } => lifecycle::fork(ctx, cid, n),
+        Cmd::Move { cid, node } => lifecycle::move_to(ctx, cid, &node),
         Cmd::Harness { cid, action } => harness::harness(ctx, cid, action),
         Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
         Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),

@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::line::{Lines, ReadTimeout, Recv};
-use apz_proto::wire::{GuestMessage, HostMessage};
+use apz_proto::wire::{AgentProfile, GuestMessage, HostFacts, HostMessage};
 
 use crate::apid::{self, Apid};
 use crate::hub::{Command, Hub, ToolReply};
@@ -177,7 +177,7 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
     lines
         .get_ref()
         .set_read_timeout(Some(limits.keepalive_read_slice))?;
-    let outcome = session.keepalive(lines, role.as_deref().unwrap_or(""), idle, hub, clock);
+    let outcome = session.keepalive(lines, role.as_deref(), idle, hub, clock);
     session.gone(hub, &outcome);
     outcome
 }
@@ -252,17 +252,42 @@ impl Session<'_> {
     fn keepalive<S: Read + Write>(
         &self,
         lines: &mut Lines<S>,
-        role: &str,
+        role: Option<&str>,
         idle: Duration,
         hub: &Hub,
         clock: &dyn Clock,
     ) -> Result<SessionSummary, HostError> {
         let cid = self.cid;
         let mut last_heartbeat = clock.now();
-        // Registered before the welcome; the guard unregisters on every exit.
-        let (token, steering) = hub.connect(cid, role, last_heartbeat);
-        let _registered = Registration { hub, cid, token };
         let apid = hub.apid();
+        // A hello that names its role registers first, as it always has. One without a role
+        // (a guest restored from a warm template boots without `plaza.role=`) asks apid first:
+        // the profile names the role the agent is registered under, and with no profile there
+        // is no role to register it with, so the session is refused rather than registered
+        // with an empty one.
+        let (token, steering, role, profile, mut next_hello) = match role.filter(|r| !r.is_empty())
+        {
+            Some(role) => {
+                let (token, steering) = hub.connect(cid, role, last_heartbeat);
+                let (profile, next_hello) = self.ask_apid(&apid, role, clock);
+                (token, steering, role.to_string(), profile, next_hello)
+            }
+            None => {
+                let (profile, _) = self.ask_apid(&apid, "", clock);
+                let role = match &profile {
+                    Some(found) if !found.role.is_empty() => found.role.clone(),
+                    _ => {
+                        return Err(violation(
+                            "a keepalive hello without a role needs the hub to name the agent's role",
+                        ));
+                    }
+                };
+                let (token, steering) = hub.connect(cid, &role, last_heartbeat);
+                (token, steering, role, profile, None)
+            }
+        };
+        // Registered before the welcome; the guard unregisters on every exit.
+        let _registered = Registration { hub, cid, token };
         let (settled_tx, settled) = channel();
         let bridge = Bridge {
             apid: Arc::clone(&apid),
@@ -270,24 +295,12 @@ impl Session<'_> {
             settled_tx,
             settled,
         };
-        // The profile is asked for before the welcome. Without one (apid down, or none
-        // for this agent) the hub asks again every HELLO_RETRY until one comes.
-        let mut profile = None;
-        let mut next_hello = None;
-        if apid.enabled() {
-            match apid.hello(cid, role, self.vm) {
-                Ok(found) => profile = found,
-                Err(err) => self
-                    .log
-                    .line(&format!("vsockd: agent {cid} hello to apid failed: {err}")),
-            }
-            if profile.is_none() {
-                next_hello = Some(clock.now() + HELLO_RETRY);
-            }
-        }
+        // The welcome carries the host's clock and fresh entropy, so a guest restored from a
+        // snapshot resumes with the right time and its own random stream.
         self.send(
             lines,
-            &HostMessage::welcome(Some(role.to_string()), Some(true), profile),
+            &HostMessage::welcome(Some(role.clone()), Some(true), profile)
+                .with_host(HostFacts::now()),
         )?;
 
         let mut calls = 0u64;
@@ -311,7 +324,7 @@ impl Session<'_> {
             }
             if next_hello.is_some_and(|due| clock.now() >= due) {
                 next_hello = Some(clock.now() + HELLO_RETRY);
-                bridge.hello(cid, role, self.vm);
+                bridge.hello(cid, &role, self.vm);
             }
             // Once a stop is out, nothing more is dispatched.
             while !stopping && let Ok(command) = steering.try_recv() {
@@ -410,6 +423,31 @@ impl Session<'_> {
                 }
             }
         }
+    }
+
+    /// Asks apid for the agent's profile. Without one (apid off, down, or none for this agent)
+    /// the second value is when the hub asks again, every `HELLO_RETRY`, until one comes.
+    fn ask_apid(
+        &self,
+        apid: &Apid,
+        role: &str,
+        clock: &dyn Clock,
+    ) -> (Option<AgentProfile>, Option<Instant>) {
+        if !apid.enabled() {
+            return (None, None);
+        }
+        let profile = match apid.hello(self.cid, role, self.vm) {
+            Ok(found) => found,
+            Err(err) => {
+                self.log.line(&format!(
+                    "vsockd: agent {} hello to apid failed: {err}",
+                    self.cid
+                ));
+                None
+            }
+        };
+        let next_hello = profile.is_none().then(|| clock.now() + HELLO_RETRY);
+        (profile, next_hello)
     }
 
     /// Hands one v3 line to apid on a thread, so the session keeps reading. Over
@@ -771,6 +809,135 @@ mod tests {
         assert_eq!(json_line(body), json!({ "role": "builder", "vm": 0 }));
     }
 
+    /// A keepalive hello that names no role, as a guest restored from a warm template sends it.
+    const ROLELESS_KEEPALIVE_HELLO: &str =
+        r#"{"type":"hello","vm":0,"guest_cid":3,"keepalive":true}"#;
+    const REFUSED_ROLELESS: &str =
+        "a keepalive hello without a role needs the hub to name the agent's role";
+
+    /// A keepalive welcome without its `host`, for the tests that are not about the host facts.
+    fn without_host(line: &str) -> Value {
+        let mut welcome = json_line(line);
+        welcome
+            .as_object_mut()
+            .expect("a welcome is an object")
+            .remove("host");
+        welcome
+    }
+
+    #[test]
+    fn a_roleless_keepalive_hello_is_registered_under_the_role_apid_names() {
+        let profile = json!({
+            "name": "reviewer-1", "role": "reviewer", "model": "anthropic/claude-opus-5-5",
+            "system": "You review.", "tools": [], "max_turns": 8
+        });
+        let fake = fake_apid(move |_, _| json!({ "profile": profile }).to_string());
+        let (mut guest, hub, _log, session) = keepalive_session(fake.apid.clone());
+        guest.send(ROLELESS_KEEPALIVE_HELLO).unwrap();
+        let welcome = json_line(&recv(&mut guest));
+        assert_eq!(
+            (
+                welcome["role"].as_str(),
+                welcome["profile"]["role"].as_str()
+            ),
+            (Some("reviewer"), Some("reviewer")),
+            "{welcome}"
+        );
+        let registered: Vec<(u32, String)> = hub
+            .snapshot()
+            .rows
+            .into_iter()
+            .map(|row| (row.cid, row.role))
+            .collect();
+        assert_eq!(registered, [(3, "reviewer".to_string())]);
+        guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+        session.join().unwrap().expect("a clean end");
+        let seen = fake.seen.lock().unwrap();
+        let (path, token, body) = &seen[0];
+        assert_eq!(
+            (path.as_str(), token.as_deref()),
+            ("/internal/v1/agents/3/hello", Some("s3cret"))
+        );
+        assert_eq!(json_line(body), json!({ "role": "", "vm": 0 }));
+    }
+
+    #[test]
+    fn a_roleless_keepalive_hello_with_no_profile_is_refused_and_never_registered() {
+        let fake = fake_apid(|_, _| json!({ "profile": null }).to_string());
+        let (mut guest, hub, _log, session) = keepalive_session(fake.apid.clone());
+        guest.send(ROLELESS_KEEPALIVE_HELLO).unwrap();
+        let Err(err) = session.join().unwrap() else {
+            panic!("a session with no role and no profile was not refused");
+        };
+        assert!(err.to_string().contains(REFUSED_ROLELESS), "{err}");
+        assert!(hub.snapshot().rows.is_empty(), "nothing registered");
+        // apid is asked for the profile first; the session-end notice follows it.
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "/internal/v1/agents/3/hello", "{seen:?}");
+    }
+
+    #[test]
+    fn with_apid_off_a_roleless_keepalive_hello_is_refused_with_no_welcome() {
+        let (result, log, sent) = scripted(
+            &[ROLELESS_KEEPALIVE_HELLO],
+            true,
+            keepalive_limits(),
+            &SystemClock,
+        );
+        let Err(err) = result else {
+            panic!("a session with no role and no apid was not refused");
+        };
+        assert!(err.to_string().contains(REFUSED_ROLELESS), "{err}");
+        assert!(sent.is_empty(), "no welcome: {sent:?}");
+        assert!(!log.contains("[<-]"), "{log}");
+    }
+
+    #[test]
+    fn a_keepalive_welcome_carries_the_hosts_clock_and_fresh_entropy() {
+        let epoch_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let mut entropies = Vec::new();
+        for _ in 0..2 {
+            let before = epoch_ms();
+            let (mut guest, _hub, _log, session) = keepalive_session(Apid::off());
+            guest.send(KEEPALIVE_HELLO).unwrap();
+            let welcome = json_line(&recv(&mut guest));
+            let after = epoch_ms();
+            let host = &welcome["host"];
+            let time_ms = host["time_ms"].as_u64().expect("a host clock");
+            assert!(
+                (before..=after).contains(&time_ms),
+                "{time_ms} is not between {before} and {after}: {welcome}"
+            );
+            let entropy = host["entropy"].as_str().expect("host entropy");
+            assert_eq!(entropy.len(), 64, "{welcome}");
+            assert!(entropy.bytes().all(|b| b.is_ascii_hexdigit()), "{entropy}");
+            entropies.push(entropy.to_string());
+            guest.send(r#"{"type":"bye","calls":0}"#).unwrap();
+            session.join().unwrap().expect("a clean end");
+        }
+        assert_ne!(
+            entropies[0], entropies[1],
+            "two welcomes, one random stream"
+        );
+    }
+
+    #[test]
+    fn the_v1_welcome_carries_no_host() {
+        let (result, _, sent) = scripted(
+            &[HELLO, r#"{"type":"bye","calls":0}"#],
+            true,
+            v1_limits(),
+            &SystemClock,
+        );
+        result.expect("a v1 session");
+        assert!(json_line(&sent[0]).get("host").is_none(), "{}", sent[0]);
+    }
+
     #[test]
     fn a_model_call_is_forwarded_and_its_reply_written_while_heartbeats_are_still_read() {
         let (release, gate) = channel::<()>();
@@ -1101,7 +1268,8 @@ mod tests {
         let (result, _, sent) = scripted(&script, true, keepalive_limits(), &SystemClock);
         let err = result.expect_err("the connection dropped");
         assert!(err.to_string().starts_with("connection lost:"), "{err}");
-        assert_eq!(sent, [KEEPALIVE_WELCOME]);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(without_host(&sent[0]), json_line(KEEPALIVE_WELCOME));
 
         /// Every reading is 100 s after the last.
         struct StepClock(Mutex<Instant>);
@@ -1143,7 +1311,10 @@ mod tests {
         };
         let mut guest = Lines::new(guest);
         guest.send(KEEPALIVE_HELLO).unwrap();
-        assert_eq!(recv(&mut guest), KEEPALIVE_WELCOME);
+        assert_eq!(
+            without_host(&recv(&mut guest)),
+            json_line(KEEPALIVE_WELCOME)
+        );
         guest
             .send(r#"{"type":"heartbeat","seq":1,"busy":true}"#)
             .unwrap();

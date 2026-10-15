@@ -155,6 +155,13 @@ the desktop app.
   two-way work folder sync, and VM workstations on the plaza's own backend or on QEMU, including vfio GPU passthrough.
 - **Rich content.** References in agent text become chips with hover cards: GitHub and plaza git (pull requests, issues,
   commits, files), agents, tasks and Library files (`crates/apz-rich`).
+- **VM snapshots.** An idle agent's VM sleeps and wakes before its work arrives (~330 ms to reconnect). Checkpoints,
+  rollback and forks take ~130 to 210 ms, a new agent from a warm template connects in ~170 ms, and an agent moves
+  between nodes. See `docs/design/vm-snapshots.md`.
+- **Egress credentials.** The owner adds a secret to an agent's outbound HTTPS request by rule, and the secret never
+  enters the VM. Only the hosts a rule names are opened (`docs/design/egress-credentials.md`).
+- **E2B-compatible sandboxes.** The E2B SDKs drive governed sandboxes on the plaza. A sandbox from a template is ready
+  in ~200 ms, pauses in ~80 ms and resumes in ~210 ms (`docs/design/e2b.md`).
 
 ### Screenshots
 
@@ -181,7 +188,8 @@ The console has parity across the three: every screen of the web console is in t
 `agentplaza` command does the same work from a shell, with a terminal UI that draws the plaza live.
 
 The agents never reach the hub's host, the network or each other directly. Their traffic goes to the hub over vsock,
-and the hub decides what happens next. The daemons bind loopback by default; hosting a hub for other machines is a
+and the hub decides what happens next. An idle agent's VM is snapshotted and stopped, and it is restored before any
+work reaches it. Credentials the owner has given a rule are added at the hub's egress proxy, so they never enter the VM. The daemons bind loopback by default; hosting a hub for other machines is a
 separate, deliberate choice.
 
 ## Security
@@ -246,8 +254,8 @@ scripts/mk-guest.sh x86_64          # or aarch64
 `cargo build` without `-p` skips the desktop app (`default-members` excludes it). When noded runs from a source tree,
 point it at the guest files with `--kernel target/guest/x86_64/vmlinux --initrd target/guest/x86_64/initrd.gz`.
 
-The web console needs no build step to run: its compiled files are committed in `apps/web/dist`, and the hub serves
-them. Node.js is needed only when you change the console:
+The web console is built, not committed: build it once before the hub serves it from `apps/web/dist` (Node.js and
+`cargo`):
 
 ```sh
 cd apps/web && npm ci && npm run build

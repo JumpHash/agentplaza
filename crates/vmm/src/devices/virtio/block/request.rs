@@ -50,6 +50,9 @@ pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
 pub const VIRTIO_BLK_T_GET_ID: u32 = 8;
 /// `VIRTIO_BLK_T_DISCARD`: discard a range of sectors.
 pub const VIRTIO_BLK_T_DISCARD: u32 = 11;
+/// `VIRTIO_BLK_T_WRITE_ZEROES`: write zeroes to a range of sectors. The device
+/// does not serve it, but a read-only volume refuses it as a write.
+pub const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
 
 /// `VIRTIO_BLK_S_OK`: the request was executed.
 pub const VIRTIO_BLK_S_OK: u8 = 0;
@@ -74,6 +77,9 @@ pub enum IoErr {
     /// The driver asked for a request type this device does not serve: {0}
     #[error("unsupported request type {0}")]
     UnsupportedRequest(u32),
+    /// The volume is read-only (`VIRTIO_BLK_F_RO`) and the request would write to it.
+    #[error("the volume is read-only")]
+    ReadOnly,
     /// The guest's buffer is not in guest memory: {0}
     #[error("the driver's buffer is not in guest memory: {0}")]
     GuestMemory(vm_memory::GuestMemoryError),
@@ -495,6 +501,13 @@ impl Request {
         Ok(())
     }
 
+    /// Whether the request writes to the volume: a write, a discard or a
+    /// write-zeroes.
+    fn is_write_type(&self) -> bool {
+        matches!(self.r#type, RequestType::Out | RequestType::Discard)
+            || self.r#type == RequestType::Unsupported(VIRTIO_BLK_T_WRITE_ZEROES)
+    }
+
     /// The byte offset of the request in the volume.
     fn offset(&self) -> u64 {
         self.sector << SECTOR_SHIFT
@@ -523,6 +536,16 @@ impl Request {
         mem: &GuestMemoryMmap,
     ) -> FinishedRequest {
         let pending = self.to_pending_request(desc_idx);
+        // A read-only volume refuses every write-type request before the file
+        // is touched. The status is written directly, so a write the device
+        // does not serve (`WRITE_ZEROES`) is an I/O error, not "unsupported".
+        if disk.is_read_only() && self.is_write_type() {
+            let status = Status::IoErr {
+                num_bytes_to_mem: 0,
+                err: IoErr::ReadOnly,
+            };
+            return pending.write_status_and_finish(&status, mem);
+        }
         let res = match self.r#type {
             RequestType::In => disk.read(self.offset(), mem, self.data_addr, self.data_len),
             RequestType::Out => disk.write(self.offset(), mem, self.data_addr, self.data_len),
