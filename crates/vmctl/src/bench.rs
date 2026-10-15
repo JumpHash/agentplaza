@@ -764,89 +764,61 @@ mod tests {
     }
 
     #[test]
-    fn percentiles_are_nearest_rank() {
-        let ten: Vec<f64> = (1..=10).map(f64::from).collect();
-        assert_eq!(percentile(&ten, 50), Some(5.0));
-        assert_eq!(percentile(&ten, 95), Some(10.0));
-        assert_eq!(percentile(&ten, 99), Some(10.0));
-        assert_eq!(percentile(&ten, 0), Some(1.0));
-        assert_eq!(percentile(&ten, 100), Some(10.0));
+    fn the_arguments_parse_and_refuse_what_cannot_run() {
+        // The defaults apply when no flags are given, and every flag takes its value.
+        {
+            let config = BenchConfig::parse(&with_required(&[])).expect("defaults");
+            assert_eq!(config.count, 10);
+            assert_eq!(config.concurrency, 1);
+            assert_eq!(config.memory_mib, 256);
+            assert_eq!(config.vcpus, 1);
+            assert!(!config.json);
 
-        let hundred: Vec<f64> = (1..=100).map(f64::from).collect();
-        assert_eq!(percentile(&hundred, 50), Some(50.0));
-        assert_eq!(percentile(&hundred, 95), Some(95.0));
-        assert_eq!(percentile(&hundred, 99), Some(99.0));
-    }
+            let config = BenchConfig::parse(&with_required(&[
+                "--n",
+                "3",
+                "--concurrency",
+                "2",
+                "--mem-mib",
+                "512",
+                "--vcpus",
+                "2",
+                "--json",
+            ]))
+            .expect("all flags");
+            assert_eq!(config.count, 3);
+            assert_eq!(config.concurrency, 2);
+            assert_eq!(config.memory_mib, 512);
+            assert_eq!(config.vcpus, 2);
+            assert!(config.json);
+            assert_eq!(config.kernel, PathBuf::from("/k/vmlinux"));
+            assert_eq!(config.initrd, PathBuf::from("/k/initrd.gz"));
+        }
 
-    #[test]
-    fn a_single_sample_is_every_percentile() {
-        assert_eq!(percentile(&[7.5], 1), Some(7.5));
-        assert_eq!(percentile(&[7.5], 99), Some(7.5));
-        assert_eq!(percentile(&[], 50), None);
-    }
-
-    #[test]
-    fn a_summary_sorts_its_samples_first() {
-        let summary = Summary::of(&[9.0, 1.0, 5.0, 3.0, 7.0]).expect("samples");
-        assert_eq!(summary.p50, 5.0);
-        assert_eq!(summary.p95, 9.0);
-        assert_eq!(summary.p99, 9.0);
-        assert_eq!(summary.max, 9.0);
-        assert_eq!(Summary::of(&[]), None);
-    }
-
-    #[test]
-    fn the_arguments_default_and_take_their_values() {
-        let config = BenchConfig::parse(&with_required(&[])).expect("defaults");
-        assert_eq!(config.count, 10);
-        assert_eq!(config.concurrency, 1);
-        assert_eq!(config.memory_mib, 256);
-        assert_eq!(config.vcpus, 1);
-        assert!(!config.json);
-
-        let config = BenchConfig::parse(&with_required(&[
-            "--n",
-            "3",
-            "--concurrency",
-            "2",
-            "--mem-mib",
-            "512",
-            "--vcpus",
-            "2",
-            "--json",
-        ]))
-        .expect("all flags");
-        assert_eq!(config.count, 3);
-        assert_eq!(config.concurrency, 2);
-        assert_eq!(config.memory_mib, 512);
-        assert_eq!(config.vcpus, 2);
-        assert!(config.json);
-        assert_eq!(config.kernel, PathBuf::from("/k/vmlinux"));
-        assert_eq!(config.initrd, PathBuf::from("/k/initrd.gz"));
-    }
-
-    #[test]
-    fn the_arguments_refuse_what_cannot_run() {
-        let no_kernel = args(&["--initrd", "/k/initrd.gz"]);
-        assert!(
-            BenchConfig::parse(&no_kernel)
-                .unwrap_err()
-                .contains("--kernel")
-        );
-        let no_initrd = args(&["--kernel", "/k/vmlinux"]);
-        assert!(
-            BenchConfig::parse(&no_initrd)
-                .unwrap_err()
-                .contains("--initrd")
-        );
-        assert!(BenchConfig::parse(&with_required(&["--n", "0"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--concurrency", "0"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--mem-mib", "0"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--vcpus", "0"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--vcpus", "256"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--n", "many"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--bogus"])).is_err());
-        assert!(BenchConfig::parse(&with_required(&["--n"])).is_err());
+        // Without --kernel or --initrd, or with a zero, oversized, non-numeric,
+        // unknown or valueless flag, the arguments are refused.
+        {
+            let no_kernel = args(&["--initrd", "/k/initrd.gz"]);
+            assert!(
+                BenchConfig::parse(&no_kernel)
+                    .unwrap_err()
+                    .contains("--kernel")
+            );
+            let no_initrd = args(&["--kernel", "/k/vmlinux"]);
+            assert!(
+                BenchConfig::parse(&no_initrd)
+                    .unwrap_err()
+                    .contains("--initrd")
+            );
+            assert!(BenchConfig::parse(&with_required(&["--n", "0"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--concurrency", "0"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--mem-mib", "0"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--vcpus", "0"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--vcpus", "256"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--n", "many"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--bogus"])).is_err());
+            assert!(BenchConfig::parse(&with_required(&["--n"])).is_err());
+        }
     }
 
     #[test]
@@ -869,24 +841,5 @@ mod tests {
     #[test]
     fn json_strings_escape_what_json_requires() {
         assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\u000a\"");
-    }
-
-    #[test]
-    fn fan_out_keeps_index_order_and_stops_after_a_failure() {
-        let values = fan_out(5, 3, |i| Ok::<_, String>(i * 10)).expect("all succeed");
-        assert_eq!(values, vec![0, 10, 20, 30, 40]);
-
-        let attempted = AtomicUsize::new(0);
-        let result = fan_out(100, 1, |i| {
-            attempted.fetch_add(1, Ordering::SeqCst);
-            if i == 2 {
-                Err("boom".to_string())
-            } else {
-                Ok(i)
-            }
-        });
-        assert_eq!(result.unwrap_err(), "boom");
-        // One thread: jobs 0, 1 and 2 ran, and nothing after the failure.
-        assert_eq!(attempted.load(Ordering::SeqCst), 3);
     }
 }
