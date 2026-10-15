@@ -776,11 +776,26 @@ pub fn starter_pins() -> Vec<Pin> {
     ]
 }
 
-/// The live push (`metrics` event on `/v1/ws`): new points for the panels of a watched scope.
+/// The live push (`metrics` event on `/v1/ws`): the live panels of a watched scope and tab, recomposed every 2 s
+/// while a console holds a lease on it (`POST /v1/metrics/live`). Consoles replace those panels' bodies and redraw
+/// them at most once a second.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LiveFrame {
     pub scope: String,
+    pub tab: String,
+    pub group: String,
+    pub range: String,
     pub t_ms: u64,
-    /// (panel id, series name, value).
-    pub points: Vec<(String, String, Option<f64>)>,
+    pub panels: Vec<Panel>,
+}
+
+/// A console's lease on live frames for a scope and tab, renewed every 10 s while the view is visible and live;
+/// it lapses 15 s after the last renewal.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LiveLease {
+    pub scope: String,
+    pub tab: String,
+    pub group: String,
+    /// `15m` or `1h`.
+    pub range: String,
 }

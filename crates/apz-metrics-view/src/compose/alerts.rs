@@ -264,13 +264,17 @@ fn metric_unit(metric: &str) -> Unit {
 
 /// The tab an alert on a metric opens, by the family the metric id starts with.
 fn family_tab(metric: &str) -> &'static str {
+    if metric.contains("spend") || metric.contains("cost") {
+        return "capacity";
+    }
     match metric.split('.').next().unwrap_or("") {
         "llm" => "latency",
         "volume" => "storage",
         "ctx" => "context",
         "life" => "lifecycle",
-        "spend" => "capacity",
-        "link" => "hub",
+        "link" | "hub" => "hub",
+        "host" | "vm" | "svc" => "compute",
+        "work" | "agent" | "approval" | "law" => "agents",
         _ => "overview",
     }
 }
