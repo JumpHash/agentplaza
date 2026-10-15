@@ -235,7 +235,8 @@ in the web console, the Sleep and Wake buttons in the desktop app, and `agentpla
 
 A Linux VM has no NIC (rule 0010), so its daemon reaches the hub over vsock through its node. The node relays the
 station link to the hub byte for byte (`noded`'s `ws_relay`, at most four connections per VM), and the daemon's pinned
-TLS runs end to end with the hub; the relay never reads it. The hub is `vsock://2:5100` as the VM dials it. The join
+TLS runs end to end with the hub; the relay never reads it. To a hub on its own machine the relay first writes
+`APZ-RELAY/1`, so the VM gets none of the trust a caller on the hub's machine has. The hub is `vsock://2:5100` as the VM dials it. The join
 config (that address, the hub's pin and the join code) is served once on `vsock://2:5101` and never rides on the kernel
 command line. The guest recipe is `scripts/mk-workstation-guest.sh`, which also builds the initramfs that mounts the
 desktop disk.
@@ -278,9 +279,13 @@ revert takes about 0.45 s and it is back online in about 1.8 s. Running it found
   facts;
 - the relay's requests named the TLS name `hub` as their `Host`, which the hub's guard refuses from loopback; they now
   send `localhost` (TLS still checks `hub`);
-- the join came from loopback, which the hub refuses as the hub's own machine. A loopback join is now let through only
-  when its code is a VM's code on `n0` whose station has not joined yet. The VM has its own machine id, so the hello's
-  check that a station is never the hub's own machine still holds.
+- the join came from loopback, which the hub refuses as the hub's own machine; and worse, everything the guest sent
+  through the relay arrived from loopback, which the hub trusts as its own console, so the guest could have called the
+  owner's routes without the owner token. The relay now opens a connection to a hub on its own machine with
+  `APZ-RELAY/1` (`apz_http::RELAY_PREFACE`). The hub consumes it and serves the connection as one from elsewhere
+  (peer `0.0.0.0`): the owner token is required, and the join is an ordinary remote join. Checked live: the desktop
+  joins and is driven as before, and an owner route asked through a relayed connection gets 401 while a plain
+  loopback caller gets 200.
 
 ## 11. Phases
 
