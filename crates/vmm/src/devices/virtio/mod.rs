@@ -105,6 +105,22 @@ pub enum VirtioError {
     /// The device has no queue {0}
     #[error("the device has no queue {0}")]
     NoSuchQueue(u32),
+    /// A snapshot of a device of another type cannot restore into this one
+    #[error("the snapshot is of virtio device type {found}, not {expected}")]
+    SnapshotDeviceType {
+        /// The type of the device being restored into.
+        expected: u32,
+        /// The type recorded in the snapshot.
+        found: u32,
+    },
+    /// A snapshot with another number of queues cannot restore into this device
+    #[error("the snapshot has {found} virtqueues, but the device has {expected}")]
+    SnapshotQueueCount {
+        /// The number of queues the device has.
+        expected: usize,
+        /// The number of queues recorded in the snapshot.
+        found: usize,
+    },
     /// The vhost backend: {0}
     #[error("vhost: {0}")]
     #[cfg(target_os = "linux")]
