@@ -26,6 +26,7 @@ mod control;
 mod db;
 mod decisions;
 mod deliverables;
+mod egress_inject;
 mod events;
 mod fleet;
 mod foundry;

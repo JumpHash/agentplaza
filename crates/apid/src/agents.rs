@@ -411,6 +411,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         keep_recent: limits
             .keep_recent
             .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
+        egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
     }
 }
 

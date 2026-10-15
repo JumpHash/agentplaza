@@ -235,6 +235,12 @@ pub struct AgentProfile {
     /// when compressing; older ones are folded into a summary.
     #[serde(default)]
     pub keep_recent: u32,
+    /// v4: the hub's egress CA certificate (PEM), present when the owner gave this agent's role an
+    /// egress credential rule. The hub's egress proxy terminates TLS only for hosts with such a rule
+    /// (to add the credential the guest never sees) and signs their certificates with this CA, so
+    /// the harness adds it to the guest's trust store. Every other host stays an opaque tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_ca: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
