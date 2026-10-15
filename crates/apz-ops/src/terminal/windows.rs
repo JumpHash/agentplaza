@@ -21,7 +21,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,6 +64,8 @@ const WRITE_WAIT: Duration = Duration::from_secs(2);
 /// How long a closing shell has to exit on its own before its job is killed.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
+/// How long a resize waits for a new console to finish starting (see [`Shared::wait_started`]).
+const STARTUP_WAIT: Duration = Duration::from_secs(5);
 /// The shells tried in order: PowerShell, then `cmd.exe` where PowerShell is missing.
 const SHELLS: [&str; 2] = ["powershell.exe -NoLogo", "cmd.exe"];
 /// Names for the input pipes, which must be unique for the life of the process.
@@ -95,6 +97,9 @@ struct Shared {
     ring: Mutex<Ring>,
     /// The shell's exit code, once it has exited.
     exit: Mutex<Option<i32>>,
+    /// Whether the console has started: set by the reader at its first output (or when the output ends).
+    started: Mutex<bool>,
+    started_cv: Condvar,
 }
 
 /// A pseudo console. Dropping it closes it.
@@ -103,6 +108,24 @@ struct Conpty(HPCON);
 impl Shared {
     fn exit_code(&self) -> Option<i32> {
         *locked(&self.exit)
+    }
+
+    fn mark_started(&self) {
+        let mut started = locked(&self.started);
+        if !*started {
+            *started = true;
+            self.started_cv.notify_all();
+        }
+    }
+
+    /// Waits, at most `limit`, until the console has started. A console resized before it has started can lose the
+    /// resize: conhost sets its buffer up from the size it was created with as it starts (a race in conhost's startup),
+    /// so the shell then reports the old size. Its first output (the screen clear it starts with) means it is up.
+    fn wait_started(&self, limit: Duration) {
+        let started = locked(&self.started);
+        let _ = self
+            .started_cv
+            .wait_timeout_while(started, limit, |started| !*started);
     }
 }
 
@@ -205,11 +228,15 @@ impl Terminals {
         })
     }
 
-    /// Sets the terminal's size. The console tells the shell, as a unix terminal's resize signals its group.
+    /// Sets the terminal's size. The console tells the shell, as a unix terminal's resize signals its group. On a
+    /// console that is still starting, it first waits (at most [`STARTUP_WAIT`]) for the console to be up, outside the
+    /// table's lock: a client sends its real size right after it opens a terminal, and a resize that early can be lost.
     pub fn resize(&self, term: &str, cols: u64, rows: u64) -> Result<TermResized, OpError> {
         sweep(&self.table, retire);
         let cols = size(cols, "cols")?;
         let rows = size(rows, "rows")?;
+        let shared = with_term(&self.table, term, |term| Arc::clone(&term.shared))?;
+        shared.wait_started(STARTUP_WAIT);
         with_term(&self.table, term, |term| -> Result<(), OpError> {
             let coord = COORD {
                 X: cols as i16,
@@ -496,6 +523,8 @@ fn spawn(env: &Env, dir: &Path, cols: u16, rows: u16) -> Result<Term, OpError> {
     let shared = Arc::new(Shared {
         ring: Mutex::new(Ring::default()),
         exit: Mutex::new(None),
+        started: Mutex::new(false),
+        started_cv: Condvar::new(),
     });
     let pumped = Arc::clone(&shared);
     thread::spawn(move || pump(output_reader, pumped));
@@ -513,18 +542,23 @@ fn spawn(env: &Env, dir: &Path, cols: u16, rows: u16) -> Result<Term, OpError> {
     })
 }
 
-/// Reads the console's output into the ring until the console closes its end.
+/// Reads the console's output into the ring until the console closes its end. The first output marks the console
+/// started, and so does the end of the output, so a resize waiting for it never waits on a console that is gone.
 fn pump(mut output: io::PipeReader, shared: Arc<Shared>) {
     let mut chunk = [0u8; 8192];
     loop {
         match output.read(&mut chunk) {
             Ok(0) => break,
-            Ok(read) => locked(&shared.ring).append(&chunk[..read]),
+            Ok(read) => {
+                locked(&shared.ring).append(&chunk[..read]);
+                shared.mark_started();
+            }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             // A broken pipe: the console has closed its output, so nothing more will come.
             Err(_) => break,
         }
     }
+    shared.mark_started();
 }
 
 /// Notes the shell's exit when it comes.
