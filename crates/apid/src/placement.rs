@@ -205,14 +205,6 @@ pub fn status_refusal(cid: u64, status: Status) -> Option<(u16, String)> {
     }
 }
 
-/// The node that hosts `cid` from what the store knows (pure): a recorded move wins over the CID
-/// ranges, and a CID in no range is on `n0`.
-pub fn node_for(moved_to: Option<String>, range_owner: Option<String>) -> String {
-    moved_to
-        .or(range_owner)
-        .unwrap_or_else(|| LOCAL.to_string())
-}
-
 /// The agents whose move is in flight. A move holds its agent here, so a second move of it is refused.
 static MOVING: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 
@@ -756,6 +748,8 @@ fn move_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use crate::fleet::node_for;
+
     fn b64(bytes: &[u8]) -> String {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(bytes)
