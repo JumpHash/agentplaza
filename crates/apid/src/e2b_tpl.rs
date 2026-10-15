@@ -1423,13 +1423,29 @@ fn ids_of(user: &str) -> &'static str {
     if user == "root" { "0:0" } else { "1000:1000" }
 }
 
-/// `path` against the working directory `cwd` when it is relative.
+/// `path` against the working directory `cwd` when it is relative, normalised: empty and `.`
+/// segments drop, `..` pops one segment (never above `/`), and a trailing `/` is kept.
 fn absolute(cwd: &str, path: &str) -> String {
-    if path.starts_with('/') {
+    let joined = if path.starts_with('/') {
         path.to_string()
     } else {
         format!("{}/{path}", cwd.trim_end_matches('/'))
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in joined.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
     }
+    let mut out = format!("/{}", parts.join("/"));
+    if joined.ends_with('/') && !parts.is_empty() {
+        out.push('/');
+    }
+    out
 }
 
 /// The shell script a `COPY` runs as root: unpacks the archive, then copies what `$SRC` matches in
@@ -1440,6 +1456,7 @@ fn absolute(cwd: &str, path: &str) -> String {
 const COPY_SCRIPT: &str = r#"set -e
 if ! command -v chown >/dev/null 2>&1; then chown() { busybox chown "$@"; }; fi
 work="$ARCHIVE.d"
+trap 'rm -rf "$work"' EXIT
 rm -rf "$work"; mkdir -p "$work"
 tar -xf "$ARCHIVE" -C "$work"
 rm -f "$ARCHIVE"
@@ -1474,11 +1491,14 @@ src=${SRC%/}
 case "$src" in
   *[*?[]*)
     found=0
+    saved_ifs=$IFS
+    IFS=
     for match in $src; do
       [ -e "$match" ] || continue
       found=1
       into "$work/$match"
     done
+    IFS=$saved_ifs
     [ "$found" = 1 ] || { echo "COPY: nothing matches $SRC" >&2; exit 1; }
     ;;
   *)
@@ -1545,6 +1565,9 @@ fn copy(
     }
 }
 
+/// The most an archive may unpack to: a bigger one is refused rather than filling the disk.
+const MAX_UNPACKED: u64 = 2 << 30;
+
 /// The archive at `archive` as a plain tar: itself, or gunzipped to `plain` when it is gzip.
 fn unpack(archive: &Path, plain: &Path) -> io::Result<PathBuf> {
     let mut file = File::open(archive)?;
@@ -1553,9 +1576,14 @@ fn unpack(archive: &Path, plain: &Path) -> io::Result<PathBuf> {
     if read < 2 || magic != [0x1f, 0x8b] {
         return Ok(archive.to_path_buf());
     }
-    let mut decoder = flate2::read::GzDecoder::new(File::open(archive)?);
+    let decoder = flate2::read::GzDecoder::new(File::open(archive)?);
     let mut out = File::create(plain)?;
-    io::copy(&mut decoder, &mut out)?;
+    let written = io::copy(&mut decoder.take(MAX_UNPACKED + 1), &mut out)?;
+    if written > MAX_UNPACKED {
+        drop(out);
+        let _ = std::fs::remove_file(plain);
+        return Err(io::Error::other("the archive unpacks to more than 2 GiB"));
+    }
     out.flush()?;
     Ok(plain.to_path_buf())
 }
@@ -1889,7 +1917,14 @@ impl Output {
             line(String::from_utf8_lossy(&text).trim_end_matches(['\n', '\r']));
         }
         if buffer.len() > MAX_LOG_LINE {
-            let text: Vec<u8> = std::mem::take(buffer);
+            // The cut stops before a character it would split; with no whole character to cut at,
+            // everything goes (the bytes are invalid UTF-8).
+            let cut = std::str::from_utf8(buffer).map_or_else(|e| e.valid_up_to(), |_| buffer.len());
+            let text: Vec<u8> = if cut > 0 {
+                buffer.drain(..cut).collect()
+            } else {
+                std::mem::take(buffer)
+            };
             line(&String::from_utf8_lossy(&text));
         }
     }
@@ -1914,11 +1949,20 @@ fn query_escape(text: &str) -> String {
         .collect()
 }
 
-fn query_number(req: &Request, name: &str) -> Option<usize> {
-    req.query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == name).then(|| value.parse().ok()).flatten()
-    })
+/// The number in the query's `name`: `Ok(None)` when it is absent, a refusal when it is present but
+/// is not a non-negative integer.
+fn query_count(req: &Request, name: &str) -> Result<Option<usize>, Refused> {
+    let value = req.query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (key == name).then_some(value)
+    });
+    value
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| e2b::invalid(format!("{name} must be a non-negative integer")))
+        })
+        .transpose()
 }
 
 /// `GET /e2b/templates/{id}/builds/{build}/status`: the build's status and its log from `logsOffset`.
@@ -1927,8 +1971,8 @@ fn status(app: &App, req: &Request, id: &str, build_id: &str) -> Result<Response
     let build = template
         .build(build_id)
         .ok_or_else(|| build_not_found(build_id))?;
-    let offset = query_number(req, "logsOffset").unwrap_or(0);
-    let limit = query_number(req, "limit")
+    let offset = query_count(req, "logsOffset")?.unwrap_or(0);
+    let limit = query_count(req, "limit")?
         .unwrap_or(STATUS_PAGE)
         .clamp(1, STATUS_PAGE);
     let lines: Vec<LogLine> = e2b::lock(&LOGS)
@@ -1995,7 +2039,9 @@ struct RemoveBody {
 
 /// `POST /e2b/templates/tags`: the tags move to the build `target` (`name:tag`) names.
 fn assign_tags(app: &App, req: &Request) -> Result<Response, Refused> {
-    let body: AssignBody = e2b::json_body(req)?;
+    let mut body: AssignBody = e2b::json_body(req)?;
+    let mut seen = BTreeSet::new();
+    body.tags.retain(|tag| seen.insert(tag.clone()));
     for tag in &body.tags {
         check_tag(tag)?;
     }
@@ -2055,30 +2101,54 @@ fn remove_tags(app: &App, req: &Request) -> Result<Response, Refused> {
 /// Deletes the template `id` (its id or its name) with its builds' snapshots; `None` when no
 /// template has it, so the caller may take it for a snapshot.
 pub(crate) fn delete(app: &App, id: &str, key: &str) -> Option<Result<Response, Refused>> {
-    let template = templates(app)
+    if !templates(app)
         .list()
-        .into_iter()
-        .find(|t| t.id == id || t.name == id)?;
-    if template.builds.iter().any(|b| b.status == Status::Building) {
-        return Some(Err(Refused::new(
-            409,
-            "template_build_running",
-            format!("template {id} has a build running"),
-        )));
+        .iter()
+        .any(|t| t.id == id || t.name == id)
+    {
+        return None;
     }
+    // The checks and the removal are one edit, so no build can start between them.
+    let removed = templates(app).edit(|set| {
+        let at = set
+            .iter()
+            .position(|t| t.id == id || t.name == id)
+            .ok_or_else(|| template_not_found(id))?;
+        let template = &set[at];
+        if template.builds.iter().any(|b| b.status == Status::Building) {
+            return Err(Refused::new(
+                409,
+                "template_build_running",
+                format!("template {id} has a build running"),
+            ));
+        }
+        if template
+            .builds
+            .iter()
+            .filter_map(|b| b.snapshot.as_deref())
+            .any(pinned)
+        {
+            return Err(Refused::new(
+                409,
+                "template_in_use",
+                format!("template {id} is in use by a running build"),
+            ));
+        }
+        Ok(set.remove(at))
+    });
+    let template = match removed {
+        Ok(template) => template,
+        Err(refused) => return Some(Err(refused)),
+    };
     for snapshot in template.builds.iter().filter_map(|b| b.snapshot.as_deref()) {
         if e2b::snapshot_source(app, snapshot).is_some()
             && let Err(refused) = e2b::delete_snapshot(app, snapshot, key)
         {
-            return Some(Err(refused));
+            eprintln!(
+                "template {id}: its snapshot {snapshot} was not deleted: {}",
+                refused.message()
+            );
         }
-    }
-    let removed = templates(app).edit(|set| {
-        set.retain(|t| t.id != template.id);
-        Ok(())
-    });
-    if let Err(refused) = removed {
-        return Some(Err(refused));
     }
     let mut logs = e2b::lock(&LOGS);
     for build in &template.builds {
@@ -2284,6 +2354,23 @@ mod tests {
         assert_eq!(absolute("/home/user", "app"), "/home/user/app");
         assert_eq!(absolute("/home/user/", "app/"), "/home/user/app/");
         assert_eq!(absolute("/w", "/abs"), "/abs");
+        assert_eq!(absolute("/home/user", "../x"), "/home/x");
+        assert_eq!(absolute("/a", "./b/../c/"), "/a/c/");
+        assert_eq!(absolute("/", "../.."), "/");
         assert_eq!(query_escape("/tmp/a b.tar"), "/tmp/a%20b.tar");
+    }
+
+    #[test]
+    fn a_forced_flush_keeps_a_split_character_whole() {
+        let mut output = Output::default();
+        let mut lines: Vec<String> = Vec::new();
+        let mut line = |text: &str| lines.push(text.to_string());
+        // A three-byte character (€) whose first two bytes sit on the forced cut.
+        let mut first = vec![b'a'; MAX_LOG_LINE - 1];
+        first.extend_from_slice(&[0xE2, 0x82]);
+        output.push("stdout", &first, &mut line);
+        output.push("stdout", &[0xAC], &mut line);
+        output.flush(&mut line);
+        assert_eq!(lines, vec!["a".repeat(MAX_LOG_LINE - 1), "€".to_string()]);
     }
 }
