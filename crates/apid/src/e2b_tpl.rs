@@ -2471,10 +2471,7 @@ mod tests {
         assert!(referenced(&set, "sb:b"));
         assert!(!referenced(&set, "sb:c"));
         assert_eq!(
-            unreferenced(
-                &set,
-                vec!["sb:c".into(), "sb:c".into(), "sb:a".into()]
-            ),
+            unreferenced(&set, vec!["sb:c".into(), "sb:c".into(), "sb:a".into()]),
             vec!["sb:c".to_string()]
         );
     }
