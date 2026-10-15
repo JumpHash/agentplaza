@@ -606,6 +606,8 @@ An unserved CID is 404, a served one with no session 409.
   `POST /v1/workstations/{id}/{start,stop,snapshot,revert}`.
 - Training: `GET/POST /v1/train`, `GET /v1/train/{job_id}/events?after=`, `POST /v1/train/{job_id}/stop`, `DELETE /v1/train/{job_id}`.
 
+Workspace and persistence: with no flags, `noded` keeps its persistent state (agents' workspace images, snapshots, volumes) in `node/` under the plaza's data directory, and gives every run's VMs a writable `/workspace` copied from `workspace.ext4` in that directory, which it makes with `mkfs.ext4` the first time when it is missing (`--no-workspace` runs without either; `--workspace` and `--persist-dir` override).
+
 Agent fleet balloon: `noded --agents-balloon-mib N` (default 32) boots each agent VM with N MiB usable and a virtio balloon holding the rest of `--agents-memory-mib` (default 1024), so the agent can grow to its full memory; `0`, or at least the memory, boots without one.
 
 Guest driver: `scripts/mk-initrd.sh` puts the guest's `virtio_balloon` (with the virtio modules it needs) in the initramfs when the host kernel ships it as a module, and skips it with a message when the kernel builds it in or lacks it.

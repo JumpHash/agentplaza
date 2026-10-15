@@ -9,16 +9,17 @@
 //! documentation). Guest images are read relative to the working directory,
 //! so the daemon is started from the repository root.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use noded::fleet::Fleet;
 use noded::registry::{self, Detail};
-use noded::{Config, Server};
+use noded::{Config, Server, workspace_image};
 
 const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
-             [--workspace IMAGE] [--persist-dir DIR] [--agents MANIFEST]
+             [--workspace IMAGE | --no-workspace] [--persist-dir DIR] [--agents MANIFEST]
              [--agents-cid-base N] [--agents-memory-mib N] [--agents-vcpus N]
              [--agents-balloon-mib N] [--no-snapshots]
 
@@ -46,9 +47,13 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    tree is delegated
   --persist-dir DIR  keep keepalive agents' workspace images in DIR/workspaces/
                      (cid-<guest_cid>.ext4): copied once, reused across restarts
+                     (default: node/ under the plaza's data directory)
   --workspace IMAGE  base ext4 image of every run's writable workspace volume:
                    each run copies it once per VM into DIR/run-{id}/
-                   (default: no block device in the guests)
+                   (default: workspace.ext4 in the persist directory, made with
+                   mkfs.ext4 when missing)
+  --no-workspace   no workspace volume and no default persist directory: the
+                   guests have no block device, as before
   --agents MANIFEST  roles manifest (docs/agents/initial-roles.json): the
                    daemon boots one long-lived keepalive VM per role at
                    startup, in slot order (alphabetical if no role has a slot),
@@ -105,7 +110,36 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let config = parse_args(args)?;
+    let mut config = parse_args(args)?;
+    if let Some(persist) = config.persist_dir.as_deref() {
+        fs::create_dir_all(persist).map_err(|err| {
+            format!(
+                "cannot create the persist directory {}: {err}",
+                persist.display()
+            )
+        })?;
+    }
+    // The default workspace image is made here when it is missing; a failure leaves the node without a
+    // workspace volume rather than without a node. An image named by `--workspace` is never made.
+    let default_image = config
+        .persist_dir
+        .as_deref()
+        .map(workspace_image::default_path);
+    if let Some(image) = config
+        .workspace
+        .clone()
+        .filter(|image| Some(image) == default_image.as_ref())
+    {
+        if let Err(why) = workspace_image::ensure(&image) {
+            eprintln!("noded: no workspace image: {why}; agents run without a workspace volume");
+            config.workspace = None;
+        }
+    }
+    println!(
+        "noded: workspace image {}, persist dir {}",
+        shown(config.workspace.as_deref()),
+        shown(config.persist_dir.as_deref())
+    );
     // One process per VM (the flag, or `APZ_VMM_SPAWN=process` as the service plans set it): the
     // shape the jailer applies to, and the one cgroup limits need.
     if config.vm_processes {
@@ -163,6 +197,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
         config.initrd.display()
     );
     server.wait().map_err(|err| format!("server error: {err}"))
+}
+
+/// A path for the start line, or `none`.
+fn shown(path: Option<&Path>) -> String {
+    path.map_or_else(|| "none".to_string(), |path| path.display().to_string())
 }
 
 /// Boots the initial role fleet, or reports why the node cannot serve it.
@@ -235,6 +274,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = defaults();
     let mut no_snapshots = false;
     let mut no_recover = false;
+    let mut no_workspace = false;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         let mut value = |flag: &str| {
@@ -251,6 +291,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--initrd" => config.initrd = PathBuf::from(value("--initrd")?),
             "--uds-dir" => config.uds_dir = PathBuf::from(value("--uds-dir")?),
             "--workspace" => config.workspace = Some(PathBuf::from(value("--workspace")?)),
+            "--no-workspace" => no_workspace = true,
             "--persist-dir" => config.persist_dir = Some(PathBuf::from(value("--persist-dir")?)),
             "--snapshot-dir" => config.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--volume-dir" => config.volume_dir = Some(PathBuf::from(value("--volume-dir")?)),
@@ -299,6 +340,24 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
     // The setting is the daemon's own (`Registry` reads it when a VM stops), so it is set here, as
     // the snapshot root is.
     registry::set_crash_recovery(!no_recover);
+    // The persist directory and the workspace image default to the node's own data directory, unless
+    // `--no-workspace` keeps the node as it was: no volume and no persist directory. The image is made
+    // at start (see `run`), not here, so parsing never touches the disk.
+    if no_workspace {
+        if config.workspace.is_some() {
+            return Err("--no-workspace and --workspace cannot both be given".to_string());
+        }
+    } else {
+        if config.persist_dir.is_none() {
+            config.persist_dir = Some(apz_os::dirs::data().join("node"));
+        }
+        if config.workspace.is_none() {
+            config.workspace = config
+                .persist_dir
+                .as_deref()
+                .map(workspace_image::default_path);
+        }
+    }
     // Snapshots go where the flag names; otherwise with the persistent state when there is one, else
     // under the node's state directory, so a node started with no state flags keeps them too.
     // `--no-snapshots` keeps none, and the warm templates live under the snapshot dir, so they go too.
@@ -381,6 +440,10 @@ mod tests {
         assert_eq!(config.agents_memory_mib, 1024);
         assert_eq!(config.agents_vcpus, 1);
         assert_eq!(config.agents_balloon_mib, 32);
+        // The node's state and its workspace image default to the data directory.
+        let node = apz_os::dirs::data().join("node");
+        assert_eq!(config.persist_dir, Some(node.clone()));
+        assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
     }
 
     #[test]
@@ -495,6 +558,11 @@ mod tests {
         let config = parse_args(Vec::new()).expect("no arguments is the default");
         assert_eq!(
             config.snapshot_dir,
+            Some(apz_os::dirs::data().join("node").join("snapshots"))
+        );
+        let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
+        assert_eq!(
+            config.snapshot_dir,
             Some(apz_os::dirs::state().join("snapshots"))
         );
         let config = parse_args(args_of(&["--no-snapshots"])).expect("--no-snapshots parses");
@@ -507,5 +575,33 @@ mod tests {
         let config = parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
         assert_eq!(config.snapshot_dir, Some(PathBuf::from("/p/snapshots")));
         assert!(parse_args(args_of(&["--no-snapshots", "--snapshot-dir", "/s"])).is_err());
+    }
+
+    #[test]
+    fn the_workspace_defaults_to_an_image_in_the_persist_dir() {
+        let node = apz_os::dirs::data().join("node");
+        let config = parse_args(Vec::new()).expect("no arguments is the default");
+        assert_eq!(config.persist_dir, Some(node.clone()));
+        assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
+        // An explicit persist directory moves the default image with it.
+        let config = parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
+        assert_eq!(config.workspace, Some(PathBuf::from("/p/workspace.ext4")));
+        // An explicit image wins over the default, and the persist directory stays the default.
+        let config = parse_args(args_of(&["--workspace", "/w.ext4"])).expect("--workspace parses");
+        assert_eq!(config.workspace, Some(PathBuf::from("/w.ext4")));
+        assert_eq!(config.persist_dir, Some(node));
+    }
+
+    #[test]
+    fn no_workspace_keeps_the_old_behaviour() {
+        let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
+        assert_eq!(config.workspace, None);
+        assert_eq!(config.persist_dir, None);
+        // An explicit persist directory is still honoured, with no workspace image in it.
+        let config = parse_args(args_of(&["--no-workspace", "--persist-dir", "/p"]))
+            .expect("--no-workspace with a persist dir parses");
+        assert_eq!(config.workspace, None);
+        assert_eq!(config.persist_dir, Some(PathBuf::from("/p")));
+        assert!(parse_args(args_of(&["--no-workspace", "--workspace", "/w.ext4"])).is_err());
     }
 }

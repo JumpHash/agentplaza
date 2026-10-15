@@ -27,6 +27,7 @@ pub mod stats;
 pub mod templates;
 pub mod train;
 pub mod volumes;
+pub mod workspace_image;
 pub mod workstation;
 pub mod ws_qemu;
 pub mod ws_relay;
