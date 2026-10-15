@@ -57,6 +57,10 @@ pub struct Call {
     /// The task the call was charged to, if any.
     #[serde(default)]
     pub task: Option<String>,
+    /// The work item the call ran under, 0 for none. The gateway's engine calls carry theirs, so
+    /// [`Ledger::work_totals`] can give a work's usage.
+    #[serde(default)]
+    pub work: u64,
     /// "harness" (the agent's own loop) or "gateway" (the proxy agents' tools call through).
     pub via: String,
     /// The rung of the model that served the call ("cheap", "mid" or "frontier"), from its output
@@ -145,12 +149,24 @@ pub struct CallsPage {
 /// An hour row's key: (hour start, model, cid).
 pub type HourKey = (u64, String, u64);
 
+/// One work item's usage: the calls made under it that carry a work id.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkRow {
+    pub cid: u64,
+    pub work: u64,
+    pub totals: Totals,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LedgerState {
     pub next_id: u64,
     pub calls: VecDeque<Call>,
     #[serde(with = "hour_list", default)]
     pub hours: BTreeMap<HourKey, HourRow>,
+    /// The totals of every work item that made a metered call, by (cid, work). Not pruned with the
+    /// call rows: a work's usage must not shrink while the plaza keeps the work.
+    #[serde(with = "work_list", default)]
+    pub works: BTreeMap<(u64, u64), WorkRow>,
 }
 
 /// The hour rows live in a map internally and are saved as a list.
@@ -175,6 +191,32 @@ mod hour_list {
         Ok(rows
             .into_iter()
             .map(|row| ((row.hour_ms, row.model.clone(), row.cid), row))
+            .collect())
+    }
+}
+
+/// The work rows live in a map internally and are saved as a list (JSON keys are strings).
+mod work_list {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::WorkRow;
+
+    pub fn serialize<S: Serializer>(
+        works: &BTreeMap<(u64, u64), WorkRow>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        s.collect_seq(works.values())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<(u64, u64), WorkRow>, D::Error> {
+        let rows = Vec::<WorkRow>::deserialize(d)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ((row.cid, row.work), row))
             .collect())
     }
 }
@@ -216,8 +258,29 @@ impl Ledger {
                 totals: Totals::default(),
             });
         row.totals.add_call(&call);
+        if call.work > 0 {
+            state
+                .works
+                .entry((call.cid, call.work))
+                .or_insert_with(|| WorkRow {
+                    cid: call.cid,
+                    work: call.work,
+                    totals: Totals::default(),
+                })
+                .totals
+                .add_call(&call);
+        }
         state.calls.push_back(call.clone());
         call
+    }
+
+    /// The totals of the calls filed under work `work` of agent `cid` (zero when it made none).
+    pub fn work_totals(&self, cid: u64, work: u64) -> Totals {
+        self.lock()
+            .works
+            .get(&(cid, work))
+            .map(|row| row.totals)
+            .unwrap_or_default()
     }
 
     /// Totals over the hours overlapping [from, to), grouped four ways.
@@ -550,6 +613,14 @@ fn groups(by_key: BTreeMap<String, Totals>) -> Vec<Group> {
     out
 }
 
+/// What a metered call is charged to: the task it belongs to and the work item it ran under (0 for
+/// none).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Charge {
+    pub task: Option<String>,
+    pub work: u64,
+}
+
 /// Builds a [`Call`] for one metered call (role and provider looked up from the roster and the
 /// providers, the estimate from the price catalog and the manual prices) and records it.
 pub fn meter(
@@ -559,6 +630,27 @@ pub fn meter(
     tokens: Tokens,
     cost_usd: Option<f64>,
     task: Option<String>,
+    via: &str,
+) {
+    meter_charged(
+        app,
+        cid,
+        model,
+        tokens,
+        cost_usd,
+        Charge { task, work: 0 },
+        via,
+    );
+}
+
+/// [`meter`] for a call charged to a work item as well as its task.
+pub fn meter_charged(
+    app: &App,
+    cid: u64,
+    model: &str,
+    tokens: Tokens,
+    cost_usd: Option<f64>,
+    charge: Charge,
     via: &str,
 ) {
     let settings = app.settings.get();
@@ -579,7 +671,8 @@ pub fn meter(
         tokens,
         cost_usd,
         est_usd: priced.map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens)),
-        task,
+        task: charge.task,
+        work: charge.work,
         via: via.to_string(),
         rung,
         escalated: false,
@@ -729,10 +822,40 @@ mod tests {
             cost_usd,
             est_usd,
             task: None,
+            work: 0,
             via: "harness".into(),
             rung: None,
             escalated: false,
         }
+    }
+
+    #[test]
+    fn a_works_calls_are_summed_per_cid_and_work_and_survive_pruning() {
+        let ledger = Ledger::default();
+        let on_work = |cid, work, input| Call {
+            work,
+            ..call(H, cid, "a/x", tok(input, 1, 0, 0), None, 0.0)
+        };
+        ledger.file(on_work(1, 3, 10));
+        ledger.file(on_work(1, 3, 5));
+        ledger.file(on_work(1, 4, 7));
+        ledger.file(on_work(2, 3, 100));
+        ledger.file(call(H, 1, "a/x", tok(1000, 0, 0, 0), None, 0.0));
+
+        let mine = ledger.work_totals(1, 3);
+        assert_eq!(mine.calls, 2);
+        assert_eq!(mine.tokens.input, 15);
+        assert_eq!(mine.tokens.output, 2);
+        assert_eq!(ledger.work_totals(1, 4).calls, 1);
+        assert_eq!(ledger.work_totals(2, 3).tokens.input, 100);
+        assert_eq!(ledger.work_totals(1, 9), Totals::default());
+
+        let restored = Ledger::default();
+        restored.restore(&ledger.snapshot()).unwrap();
+        assert_eq!(restored.work_totals(1, 3), mine);
+
+        ledger.prune(H + HOUR_MS, 0, 0);
+        assert_eq!(ledger.work_totals(1, 3), mine);
     }
 
     #[test]

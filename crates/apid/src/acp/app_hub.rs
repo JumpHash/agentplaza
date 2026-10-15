@@ -153,7 +153,13 @@ impl Hub for AppHub<'_> {
             output += entry.data["usage"]["output_tokens"].as_u64().unwrap_or(0);
             calls += 1;
         }
-        (calls > 0).then(|| json!({"input_tokens": input, "output_tokens": output}))
+        // The gateway's engine calls of the work are in the usage ledger, not the transcript: they
+        // are filed under no work there, so the feed never shows them as the agent's own text.
+        let engine = self.app.usage.work_totals(cid, work);
+        combined_usage(
+            (input, output, calls),
+            (engine.tokens.input, engine.tokens.output, engine.calls),
+        )
     }
 
     fn control(
@@ -296,9 +302,44 @@ fn parse_mode(name: &str) -> Option<Mode> {
     }
 }
 
+/// The usage an editor is told for a work, from the harness's model calls and the gateway's engine
+/// calls, each as (input, output, calls). `input_tokens` and `output_tokens` are both parts; the
+/// engine part is also reported apart. `None` when neither made a call.
+fn combined_usage(harness: (u64, u64, u64), engine: (u64, u64, u64)) -> Option<Value> {
+    let (h_input, h_output, h_calls) = harness;
+    let (e_input, e_output, e_calls) = engine;
+    (h_calls + e_calls > 0).then(|| {
+        json!({
+            "input_tokens": h_input + e_input,
+            "output_tokens": h_output + e_output,
+            "engine_input_tokens": e_input,
+            "engine_output_tokens": e_output,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_usage_combines_the_harness_calls_and_the_engine_calls_of_a_work() {
+        let both = combined_usage((100, 20, 2), (30, 5, 1)).unwrap();
+        assert_eq!(both["input_tokens"], 130);
+        assert_eq!(both["output_tokens"], 25);
+        assert_eq!(both["engine_input_tokens"], 30);
+        assert_eq!(both["engine_output_tokens"], 5);
+
+        let engine_only = combined_usage((0, 0, 0), (30, 5, 1)).unwrap();
+        assert_eq!(engine_only["input_tokens"], 30);
+        assert_eq!(engine_only["engine_output_tokens"], 5);
+
+        let harness_only = combined_usage((100, 20, 2), (0, 0, 0)).unwrap();
+        assert_eq!(harness_only["input_tokens"], 100);
+        assert_eq!(harness_only["engine_input_tokens"], 0);
+
+        assert_eq!(combined_usage((0, 0, 0), (0, 0, 0)), None);
+    }
 
     #[test]
     fn modes_use_the_approvals_api_spelling() {

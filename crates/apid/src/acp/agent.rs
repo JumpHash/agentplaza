@@ -334,6 +334,7 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
     };
     let input = usage["input_tokens"].as_u64().unwrap_or(0);
     let output = usage["output_tokens"].as_u64().unwrap_or(0);
+    // `used` counts both parts; the engine part (the gateway's calls) is reported apart as well.
     notify_update(
         peer,
         session_id,
@@ -341,7 +342,12 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
             "sessionUpdate": "usage_update",
             "used": input + output,
             "size": 0,
-            "_meta": {"agentplaza": {"input_tokens": input, "output_tokens": output}},
+            "_meta": {"agentplaza": {
+                "input_tokens": input,
+                "output_tokens": output,
+                "engine_input_tokens": usage["engine_input_tokens"].as_u64().unwrap_or(0),
+                "engine_output_tokens": usage["engine_output_tokens"].as_u64().unwrap_or(0),
+            }},
         }),
     );
 }

@@ -371,18 +371,21 @@ pub fn tokens_in_sse(text: &str) -> Option<Metered> {
 }
 
 /// Usage read from streams and sockets, waiting to be recorded: the stream writer has no
-/// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]).
-fn pending_usage() -> &'static std::sync::Mutex<Vec<(u64, String, Metered)>> {
-    static PENDING: std::sync::OnceLock<std::sync::Mutex<Vec<(u64, String, Metered)>>> =
+/// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]). Each
+/// entry names the work item the call started under (0 for none), read when the call started.
+type PendingUsage = Vec<(u64, u64, String, Metered)>;
+
+fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingUsage>> =
         std::sync::OnceLock::new();
     PENDING.get_or_init(Default::default)
 }
 
-fn defer_usage(cid: u64, model: String, metered: Metered) {
+fn defer_usage(cid: u64, work: u64, model: String, metered: Metered) {
     pending_usage()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((cid, model, metered));
+        .push((cid, work, model, metered));
 }
 
 /// The usage of one Gemini `usageMetadata` object. Gemini's prompt count includes the cached part
@@ -448,14 +451,16 @@ pub fn drain_usage(app: &App) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (cid, model, metered) in done {
-        record_usage(app, cid, &model, metered);
+    for (cid, work, model, metered) in done {
+        record_usage(app, cid, work, &model, metered);
     }
 }
 
 /// Adds one call's usage to the agent's usage, records it in the transcript and meters it into
-/// the usage ledger, under the task the agent is working on (if any).
-fn record_usage(app: &App, cid: u64, model: &str, metered: Metered) {
+/// the usage ledger, under the task the agent is working on (if any) and the work item the call
+/// started under (`work`, 0 for none). The transcript entry stays under no work: a work's
+/// transcript is the agent's own text, and the feed would show these calls as that.
+fn record_usage(app: &App, cid: u64, work: u64, model: &str, metered: Metered) {
     let t = metered.tokens;
     let usage = serde_json::from_value(json!({
         "input_tokens": t.input,
@@ -484,12 +489,19 @@ fn record_usage(app: &App, cid: u64, model: &str, metered: Metered) {
     );
     let task = current_task(app, cid);
     bill_call(app, cid, task.as_deref(), model, t, metered.cost_usd);
-    crate::usage::meter(app, cid, model, t, metered.cost_usd, task, "gateway");
+    let charge = crate::usage::Charge { task, work };
+    crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
 }
 
 /// The task agent `cid` is working on, if any: the one its usage is charged to.
 fn current_task(app: &App, cid: u64) -> Option<String> {
     app.work.current(cid).and_then(|item| item.origin.task)
+}
+
+/// The work item agent `cid` is running (0 for none): the one its engine's calls are metered
+/// under. Read when a call starts, since the usage is recorded only after the call ends.
+fn current_work(app: &App, cid: u64) -> u64 {
+    app.work.current(cid).map_or(0, |item| item.id)
 }
 
 /// The 402 message when agent `cid` cannot pay for a model call, or `None` when it can (or when
@@ -752,6 +764,7 @@ fn relay(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    let work = current_work(app, cid);
     let mut body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
@@ -794,7 +807,7 @@ fn relay(
             // The stream's tail carries its usage; it is metered once the stream ends.
             let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
             if let Some(tokens) = tokens_in_sse(&tail) {
-                defer_usage(cid, model, tokens);
+                defer_usage(cid, work, model, tokens);
             }
             Ok(())
         }));
@@ -808,7 +821,7 @@ fn relay(
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in(&value) {
-            record_usage(app, cid, &model, tokens);
+            record_usage(app, cid, work, &model, tokens);
         }
     }
     Ok(Response::json(status, &value))
@@ -834,6 +847,7 @@ fn relay_gemini(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    let work = current_work(app, cid);
     let body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
@@ -870,7 +884,7 @@ fn relay_gemini(
             // The stream's last event carries the usage; it is metered once the stream ends.
             let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
             if let Some(tokens) = tokens_in_gemini_sse(&tail) {
-                defer_usage(cid, model, tokens);
+                defer_usage(cid, work, model, tokens);
             }
             Ok(())
         }));
@@ -884,7 +898,7 @@ fn relay_gemini(
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in_gemini(&value) {
-            record_usage(app, cid, &model, tokens);
+            record_usage(app, cid, work, &model, tokens);
         }
     }
     Ok(Response::json(status, &value))
@@ -962,7 +976,8 @@ fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant
 /// The gateway's policy for one WebSocket call, as over HTTP, read live: STOP ALL holds the call,
 /// the agent's current model and the list it is held to apply (a change since the socket opened
 /// counts), and an agent that cannot pay is refused with the same message as over HTTP's 402.
-fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<(), String> {
+/// The work item the call starts under (0 for none) is returned: its usage is metered under it.
+fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<u64, String> {
     let app = grant.app.upgrade().ok_or("the hub is shutting down")?;
     if app.control.paused() {
         return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
@@ -976,7 +991,10 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<(), String> 
             &list,
         )?;
     }
-    payment_refusal(&app, grant.cid).map_or(Ok(()), Err)
+    if let Some(message) = payment_refusal(&app, grant.cid) {
+        return Err(message);
+    }
+    Ok(current_work(&app, grant.cid))
 }
 
 fn limits() -> ws::Limits {
@@ -1043,7 +1061,7 @@ fn sse_frame(id: &Value, event: &str, data: &str) -> Value {
 }
 
 /// Meters a `response.completed` event's usage, as the HTTP path meters a response.
-fn meter_responses(cid: u64, model: &str, frame: &str) {
+fn meter_responses(cid: u64, work: u64, model: &str, frame: &str) {
     let Ok(event) = serde_json::from_str::<Value>(frame) else {
         return;
     };
@@ -1051,7 +1069,7 @@ fn meter_responses(cid: u64, model: &str, frame: &str) {
         return;
     }
     if let Some(tokens) = tokens_in(&event) {
-        defer_usage(cid, model.to_string(), tokens);
+        defer_usage(cid, work, model.to_string(), tokens);
     }
 }
 
@@ -1078,6 +1096,8 @@ fn relay_responses(mut client: Socket, grant: Grant) {
     };
     let started = Instant::now();
     let mut model = String::new();
+    // The work item of the call in flight, read when its `response.create` was admitted.
+    let mut work = 0;
     loop {
         if started.elapsed() >= LIFETIME {
             client.close(1001, "reconnect");
@@ -1104,17 +1124,20 @@ fn relay_responses(mut client: Socket, grant: Grant) {
                         return;
                     }
                 };
-                if let Err(message) = admit(&grant, "openai", &mut body) {
-                    if client
-                        .send(&text(
-                            json!({ "type": "error", "error": { "message": message } }),
-                        ))
-                        .is_err()
-                    {
-                        upstream.close(1000, "");
-                        return;
+                match admit(&grant, "openai", &mut body) {
+                    Ok(admitted) => work = admitted,
+                    Err(message) => {
+                        if client
+                            .send(&text(
+                                json!({ "type": "error", "error": { "message": message } }),
+                            ))
+                            .is_err()
+                        {
+                            upstream.close(1000, "");
+                            return;
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 model = body
                     .get("model")
@@ -1135,7 +1158,7 @@ fn relay_responses(mut client: Socket, grant: Grant) {
             Ok(None) => {}
             Ok(Some(message)) => {
                 if let Message::Text(frame) = &message {
-                    meter_responses(grant.cid, &model, frame);
+                    meter_responses(grant.cid, work, &model, frame);
                 }
                 if client.send(&message).is_err() {
                     upstream.close(1000, "");
@@ -1219,7 +1242,7 @@ fn stream_messages(
     id: &Value,
     request: &mut Value,
 ) -> Result<(), String> {
-    admit(grant, "anthropic", request)?;
+    let work = admit(grant, "anthropic", request)?;
     let model = request
         .get("model")
         .and_then(Value::as_str)
@@ -1247,7 +1270,7 @@ fn stream_messages(
     })
     .map_err(|e| e.to_string())?;
     if let Some(tokens) = tokens_in_sse(&tail) {
-        defer_usage(grant.cid, model, tokens);
+        defer_usage(grant.cid, work, model, tokens);
     }
     Ok(())
 }
@@ -1420,6 +1443,40 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         ]);
         let metered = tokens_in_gemini(&chunks).expect("usage");
         assert_eq!((metered.tokens.input, metered.tokens.output), (5, 2));
+    }
+
+    #[test]
+    fn a_deferred_call_keeps_the_work_it_started_under() {
+        // The queue is shared by the process, so the test takes back only its own agent's entries.
+        let cid = 9_100_001;
+        let tokens = Tokens {
+            input: 3,
+            output: 4,
+            cache_read: 0,
+            cache_write: 0,
+        };
+        defer_usage(
+            cid,
+            42,
+            "anthropic/x".into(),
+            Metered {
+                tokens,
+                cost_usd: None,
+            },
+        );
+        let mut pending = pending_usage()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+            .into_iter()
+            .partition(|entry| entry.0 == cid);
+        *pending = rest;
+        drop(pending);
+        assert_eq!(mine.len(), 1);
+        let (_, work, model, metered) = &mine[0];
+        assert_eq!(*work, 42);
+        assert_eq!(model, "anthropic/x");
+        assert_eq!(metered.tokens, tokens);
     }
 
     #[test]
