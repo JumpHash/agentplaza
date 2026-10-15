@@ -447,6 +447,12 @@ fn sandboxes(app: &App) -> &'static Sandboxes {
     })
 }
 
+/// Loads the hub's sandboxes at start, which starts the reaper: sandboxes persisted by an earlier run
+/// end on time even before the first `/e2b` request.
+pub(crate) fn start(app: &App) {
+    let _ = sandboxes(app);
+}
+
 fn spawn_reaper(app: Weak<App>) {
     let spawned = std::thread::Builder::new()
         .name("e2b-reaper".into())
