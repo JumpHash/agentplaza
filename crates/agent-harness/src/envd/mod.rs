@@ -481,26 +481,65 @@ fn stream_rpc<W: Write>(
         b"HTTP/1.1 200 OK\r\nContent-Type: application/connect+json\r\n\
           Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
     )?;
-    let result = match decode_one(&request.body) {
-        Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
-            Ok(message) => {
-                let mut sink = EnvelopeSink { out: &mut *out };
-                rpc_stream(service, method, &message, ctx, &mut sink)
-            }
-            Err(err) => Err(RpcError::new(
+    let result = if service == PROCESS_SERVICE && method == "StreamInput" {
+        stream_input_rpc(&mut *out, &request.body)?
+    } else {
+        match decode_one(&request.body) {
+            Ok((0, payload)) => match serde_json::from_slice::<Value>(payload) {
+                Ok(message) => {
+                    let mut sink = EnvelopeSink { out: &mut *out };
+                    rpc_stream(service, method, &message, ctx, &mut sink)
+                }
+                Err(err) => Err(RpcError::new(
+                    "invalid_argument",
+                    format!("the message is not JSON: {err}"),
+                )),
+            },
+            Ok(_) => Err(RpcError::new(
                 "invalid_argument",
-                format!("the message is not JSON: {err}"),
+                "a request envelope must be an uncompressed message",
             )),
-        },
-        Ok(_) => Err(RpcError::new(
-            "invalid_argument",
-            "a request envelope must be an uncompressed message",
-        )),
-        Err(reason) => Err(RpcError::new("invalid_argument", reason)),
+            Err(reason) => Err(RpcError::new("invalid_argument", reason)),
+        }
     };
     write_chunk(out, &end_envelope(result.as_ref().err()))?;
     out.write_all(b"0\r\n\r\n")?;
     out.flush()
+}
+
+/// Answers `StreamInput`, the client-streaming call: the request's envelopes are its messages. On
+/// success the answer's one `{}` message is written here; the caller writes the end envelope.
+fn stream_input_rpc<W: Write>(out: &mut W, body: &[u8]) -> io::Result<Result<(), RpcError>> {
+    let result = stream_input_messages(body).and_then(|messages| process::stream_input(&messages));
+    if result.is_ok() {
+        write_chunk(out, &encode_envelope(0, b"{}"))?;
+    }
+    Ok(result)
+}
+
+/// The messages of a `StreamInput` body: each request envelope's JSON, in order. An end-of-stream
+/// envelope (flags `0x02`) carries nothing and is skipped.
+fn stream_input_messages(body: &[u8]) -> Result<Vec<Value>, RpcError> {
+    let envelopes = decode_all(body).map_err(|reason| RpcError::new("invalid_argument", reason))?;
+    let mut messages = Vec::new();
+    for (flags, payload) in envelopes {
+        match flags {
+            FLAG_END => {}
+            0 => messages.push(serde_json::from_slice::<Value>(payload).map_err(|err| {
+                RpcError::new(
+                    "invalid_argument",
+                    format!("the message is not JSON: {err}"),
+                )
+            })?),
+            _ => {
+                return Err(RpcError::new(
+                    "invalid_argument",
+                    "a request envelope must be an uncompressed message",
+                ));
+            }
+        }
+    }
+    Ok(messages)
 }
 
 /// Writes each message as one envelope in its own HTTP chunk.
@@ -531,20 +570,45 @@ pub fn encode_envelope(flags: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Decodes bytes that are exactly one envelope into its flags and body.
-pub fn decode_one(bytes: &[u8]) -> Result<(u8, &[u8]), String> {
+/// Splits the envelope at the front of `bytes`: its flags, its body, and the bytes after it.
+fn split_envelope(bytes: &[u8]) -> Result<(u8, &[u8], &[u8]), String> {
     if bytes.len() < 5 {
         return Err("the envelope is shorter than its 5-byte header".to_string());
     }
     let length = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-    let payload = &bytes[5..];
-    if payload.len() != length {
+    let rest = &bytes[5..];
+    if rest.len() < length {
         return Err(format!(
             "the envelope says {length} bytes but carries {}",
-            payload.len()
+            rest.len()
         ));
     }
-    Ok((bytes[0], payload))
+    let (payload, after) = rest.split_at(length);
+    Ok((bytes[0], payload, after))
+}
+
+/// Decodes bytes that are exactly one envelope into its flags and body.
+pub fn decode_one(bytes: &[u8]) -> Result<(u8, &[u8]), String> {
+    let (flags, payload, after) = split_envelope(bytes)?;
+    if !after.is_empty() {
+        return Err(format!(
+            "the envelope says {} bytes but carries {}",
+            payload.len(),
+            payload.len() + after.len()
+        ));
+    }
+    Ok((flags, payload))
+}
+
+/// Decodes bytes that are a run of envelopes: each one's flags and body, in order.
+pub fn decode_all(mut bytes: &[u8]) -> Result<Vec<(u8, &[u8])>, String> {
+    let mut envelopes = Vec::new();
+    while !bytes.is_empty() {
+        let (flags, payload, after) = split_envelope(bytes)?;
+        envelopes.push((flags, payload));
+        bytes = after;
+    }
+    Ok(envelopes)
 }
 
 /// The end-of-stream envelope: `{}`, or `{"error": {code, message}}` when the call failed.
@@ -1015,6 +1079,46 @@ mod tests {
             json!({"error": {"code": "not_found", "message": "gone"}})
         );
         assert_eq!(decode_one(&end_envelope(None)).expect("one").1, b"{}");
+    }
+
+    #[test]
+    fn a_run_of_envelopes_decodes_to_each_of_them() {
+        let mut body = encode_envelope(0, b"{\"a\":1}");
+        body.extend(encode_envelope(0, b"{}"));
+        body.extend(end_envelope(None));
+        let envelopes = decode_all(&body).expect("three envelopes");
+        assert_eq!(
+            envelopes,
+            vec![
+                (0, &b"{\"a\":1}"[..]),
+                (0, &b"{}"[..]),
+                (FLAG_END, &b"{}"[..])
+            ]
+        );
+        assert_eq!(decode_all(&[]), Ok(Vec::new()));
+        assert!(decode_all(&body[..body.len() - 1]).is_err(), "a truncated run");
+    }
+
+    #[test]
+    fn stream_input_refuses_a_stream_that_does_not_start_with_start() {
+        let shared = shared_of(&test_ctx());
+        let mut body = encode_envelope(0, br#"{"data":{"input":{"stdin":""}}}"#);
+        body.extend(end_envelope(None));
+        let response = exchange(
+            &shared,
+            &raw(
+                "POST",
+                "/process.Process/StreamInput",
+                "application/connect+json",
+                &body,
+            ),
+        );
+        let (head, payload) = split_response(&response);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let (flags, end) = decode_one(&payload).expect("the end envelope alone");
+        assert_eq!(flags, FLAG_END);
+        let end: Value = serde_json::from_slice(end).expect("JSON");
+        assert_eq!(end.pointer("/error/code"), Some(&json!("invalid_argument")));
     }
 
     #[test]

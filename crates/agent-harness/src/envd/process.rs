@@ -503,16 +503,51 @@ fn send_input(request: &Value) -> Result<(), RpcError> {
     let input = request
         .get("input")
         .ok_or_else(|| invalid("input is required"))?;
+    let (kind, data) = input_bytes(input)?;
+    write_input(&proc, kind, &data)
+}
+
+/// `StreamInput`, the client-streaming form of `SendInput`. The first message is `start`, which names
+/// the process; each `data` message writes its input to it as `SendInput` does; `keepalive` is
+/// ignored. Any other event is refused.
+pub fn stream_input(messages: &[Value]) -> Result<(), RpcError> {
+    let start = messages
+        .first()
+        .and_then(|message| message.get("start"))
+        .ok_or_else(|| invalid("StreamInput starts with a start event"))?;
+    let proc = find(&selector(start.get("process"))?)?;
+    for message in &messages[1..] {
+        match (message.get("data"), message.get("keepalive")) {
+            (Some(data), _) => {
+                let input = data
+                    .get("input")
+                    .ok_or_else(|| invalid("data needs an input"))?;
+                let (kind, bytes) = input_bytes(input)?;
+                write_input(&proc, kind, &bytes)?;
+            }
+            (None, Some(_)) => {}
+            (None, None) => return Err(invalid("unknown StreamInput event")),
+        }
+    }
+    Ok(())
+}
+
+/// The kind of an `input` (`stdin` or `pty`) and its decoded bytes.
+fn input_bytes(input: &Value) -> Result<(&'static str, Vec<u8>), RpcError> {
     let (kind, encoded) = match (input.get("stdin"), input.get("pty")) {
         (Some(data), _) => ("stdin", data),
         (None, Some(data)) => ("pty", data),
         (None, None) => return Err(invalid("input needs stdin or pty bytes")),
     };
-    let data = decode(encoded, "input")?;
+    Ok((kind, decode(encoded, "input")?))
+}
+
+/// Writes input bytes to a process: to its PTY when it has one, else to its stdin pipe.
+fn write_input(proc: &Proc, kind: &str, data: &[u8]) -> Result<(), RpcError> {
     if let Some(master) = &proc.master {
         let mut file: &File = master;
         return file
-            .write_all(&data)
+            .write_all(data)
             .map_err(|err| RpcError::io(&err, "cannot write to the terminal"));
     }
     if kind == "pty" {
@@ -520,7 +555,7 @@ fn send_input(request: &Value) -> Result<(), RpcError> {
     }
     match lock(&proc.stdin).as_mut() {
         Some(pipe) => pipe
-            .write_all(&data)
+            .write_all(data)
             .map_err(|err| RpcError::io(&err, "cannot write to stdin")),
         None => Err(invalid("stdin is closed")),
     }
@@ -839,6 +874,59 @@ mod tests {
             json!({"process": {"pid": 2_000_000_000u64}}),
         );
         assert_eq!(end.pointer("/error/code"), Some(&json!("not_found")));
+    }
+
+    #[test]
+    fn stream_input_writes_each_data_message_to_the_process_stdin() {
+        let ctx = test_ctx();
+        let tag = "cat-stream-input";
+        let starting = {
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                call_stream(
+                    &ctx,
+                    "/process.Process/Start",
+                    json!({
+                        "process": {"cmd": "cat"},
+                        "tag": tag,
+                        "stdin": true,
+                    }),
+                )
+            })
+        };
+        wait_for_tag(&ctx, tag);
+
+        let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+        let messages = [
+            json!({"start": {"process": {"tag": tag}}}),
+            json!({"data": {"input": {"stdin": encode("hello\n")}}}),
+            json!({"keepalive": {}}),
+            json!({"data": {"input": {"stdin": encode("world\n")}}}),
+        ];
+        stream_input(&messages).expect("both inputs are written");
+        let closed = call(
+            &ctx,
+            "/process.Process/CloseStdin",
+            json!({"process": {"tag": tag}}),
+        );
+        assert!(closed.starts_with(b"HTTP/1.1 200"));
+
+        let (events, end) = starting.join().expect("the start thread");
+        assert!(end.get("error").is_none(), "{end}");
+        assert_eq!(output_of(&events, "stdout"), b"hello\nworld\n");
+    }
+
+    #[test]
+    fn stream_input_refuses_a_stream_that_does_not_start_with_start() {
+        let data = json!({"data": {"input": {"stdin": ""}}});
+        assert_eq!(
+            stream_input(&[]).expect_err("refused").code,
+            "invalid_argument"
+        );
+        assert_eq!(
+            stream_input(&[data]).expect_err("refused").code,
+            "invalid_argument"
+        );
     }
 
     #[test]
