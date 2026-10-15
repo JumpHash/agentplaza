@@ -2119,10 +2119,17 @@ mod tests {
         commands.send(Command::Kill).unwrap();
         until(&mut out_rx, &mut seen, |link| matches!(link, Link::Killed));
 
-        let sent: Vec<Value> = frames_rx
-            .try_iter()
-            .filter_map(|text| serde_json::from_str(&text).ok())
-            .collect();
+        // The view reports the kill once it is sent; the hub's thread records the frame a moment later, so
+        // the frames are read until the kill is among them (or a deadline passes) rather than sampled once.
+        let mut sent: Vec<Value> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !sent.iter().any(|frame| frame["t"] == "kill") {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match frames_rx.recv_timeout(left) {
+                Ok(text) => sent.extend(serde_json::from_str::<Value>(&text).ok()),
+                Err(_) => break,
+            }
+        }
         let kinds: Vec<&str> = sent
             .iter()
             .filter_map(|frame| frame["t"].as_str())
