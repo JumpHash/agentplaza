@@ -193,57 +193,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_lines() {
-        let doc =
-            Doc::parse("# Title\n\nText\n- item\n  2. sub\n```rust\nlet x = 1;\n```\n#nospace\n");
-        let kinds: Vec<_> = doc.lines.iter().map(|l| &l.block).collect();
-        assert_eq!(
-            kinds[0],
-            &Block::Heading {
-                level: 1,
-                text: "Title".into()
-            }
-        );
-        assert_eq!(kinds[1], &Block::Blank);
-        assert_eq!(kinds[2], &Block::Text);
-        assert_eq!(
-            kinds[3],
-            &Block::Item {
-                indent: 0,
-                text: "item".into()
-            }
-        );
-        assert_eq!(
-            kinds[4],
-            &Block::Item {
-                indent: 2,
-                text: "sub".into()
-            }
-        );
-        assert_eq!(
-            kinds[5],
-            &Block::Fence {
-                opening: true,
-                lang: "rust".into()
-            }
-        );
-        assert_eq!(kinds[6], &Block::Code);
-        assert_eq!(
-            kinds[7],
-            &Block::Fence {
-                opening: false,
-                lang: String::new()
-            }
-        );
-        assert_eq!(kinds[8], &Block::Text);
-        assert!(!doc.open_fence);
-    }
-
-    #[test]
-    fn a_hash_inside_a_fence_is_code() {
-        let doc = Doc::parse("```\n# not a heading\n");
-        assert_eq!(doc.headings().count(), 0);
-        assert!(doc.open_fence);
+    fn doc_parse_classifies_lines_and_code_fences() {
+        // classifies_lines: each line gets its block kind
+        {
+            let doc = Doc::parse(
+                "# Title\n\nText\n- item\n  2. sub\n```rust\nlet x = 1;\n```\n#nospace\n",
+            );
+            let kinds: Vec<_> = doc.lines.iter().map(|l| &l.block).collect();
+            assert_eq!(
+                kinds[0],
+                &Block::Heading {
+                    level: 1,
+                    text: "Title".into()
+                }
+            );
+            assert_eq!(kinds[1], &Block::Blank);
+            assert_eq!(kinds[2], &Block::Text);
+            assert_eq!(
+                kinds[3],
+                &Block::Item {
+                    indent: 0,
+                    text: "item".into()
+                }
+            );
+            assert_eq!(
+                kinds[4],
+                &Block::Item {
+                    indent: 2,
+                    text: "sub".into()
+                }
+            );
+            assert_eq!(
+                kinds[5],
+                &Block::Fence {
+                    opening: true,
+                    lang: "rust".into()
+                }
+            );
+            assert_eq!(kinds[6], &Block::Code);
+            assert_eq!(
+                kinds[7],
+                &Block::Fence {
+                    opening: false,
+                    lang: String::new()
+                }
+            );
+            assert_eq!(kinds[8], &Block::Text);
+            assert!(!doc.open_fence);
+        }
+        // a_hash_inside_a_fence_is_code: a # inside an open fence is not a heading
+        {
+            let doc = Doc::parse("```\n# not a heading\n");
+            assert_eq!(doc.headings().count(), 0);
+            assert!(doc.open_fence);
+        }
     }
 
     #[test]

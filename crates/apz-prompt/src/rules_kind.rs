@@ -265,21 +265,75 @@ fn is_bare_command(plain: &str, is_item: bool) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn section_words_match_at_word_starts_only() {
-        let body = "# Notes\n\n## Latest digital news\n\nText.\n";
-        let missing: Vec<_> = found(Kind::AgentsMd, body, "agents-md-sections")
-            .into_iter()
-            .map(|f| f.message)
-            .collect();
-        assert!(missing.iter().any(|m| m.contains("testing")), "{missing:?}");
-        assert!(
-            found(
+    fn section_rules_report_missing_sections_and_accept_any_case() {
+        // Section words match at word starts only: "Latest digital news" gives no
+        // testing section, and "make sure" in prose is not a bare command.
+        {
+            let body = "# Notes\n\n## Latest digital news\n\nText.\n";
+            let missing: Vec<_> = found(Kind::AgentsMd, body, "agents-md-sections")
+                .into_iter()
+                .map(|f| f.message)
+                .collect();
+            assert!(missing.iter().any(|m| m.contains("testing")), "{missing:?}");
+            assert!(
+                found(
+                    Kind::AgentsMd,
+                    "# A\n\n- make sure the suite passes\n",
+                    "bare-command"
+                )
+                .is_empty()
+            );
+        }
+        // Each missing system section is reported once, in order, at line 0.
+        {
+            let f = found(
+                Kind::System,
+                "# Role\n\n## Purpose\nDo the job.\n",
+                "system-sections",
+            );
+            assert_eq!(f.len(), 3);
+            assert!(
+                f.iter()
+                    .all(|x| x.line == 0 && x.severity == Severity::Warning)
+            );
+            assert!(f[0].message.contains("Responsibilities"));
+            assert!(f[1].message.contains("Deliverables"));
+            assert!(f[2].message.contains("Boundaries"));
+        }
+        // The agents.md sections warn on a missing setup or testing section and
+        // only inform on the rest.
+        {
+            let f = found(
                 Kind::AgentsMd,
-                "# A\n\n- make sure the suite passes\n",
-                "bare-command"
-            )
-            .is_empty()
-        );
+                "# Repo\n\n## Security\nKeep keys out of git.\n",
+                "agents-md-sections",
+            );
+            assert_eq!(f.len(), 5);
+            assert_eq!(f[0].severity, Severity::Warning);
+            assert!(f[0].message.contains("setup or build"));
+            assert_eq!(f[1].severity, Severity::Warning);
+            assert!(f[1].message.contains("testing"));
+            assert!(f[2..].iter().all(|x| x.severity == Severity::Info));
+        }
+        // Section names are accepted in any case, including the synonyms.
+        {
+            for (case, kind, rule, body) in [
+                (
+                    "system synonyms",
+                    Kind::System,
+                    "system-sections",
+                    "# Role\n\n## MISSION\n\n## Duties\n\n## Results\n\n## Constraints\n",
+                ),
+                (
+                    "agents.md sections",
+                    Kind::AgentsMd,
+                    "agents-md-sections",
+                    "## Overview\n## Getting started\n## TESTING\n## Lint rules\n## Pull request guidelines\n## Secrets\n",
+                ),
+            ] {
+                assert!(found(kind, body, rule).is_empty(), "{case}");
+            }
+        }
     }
 
     use super::*;
@@ -293,96 +347,47 @@ mod tests {
     }
 
     #[test]
-    fn system_sections_fire_for_each_missing_section() {
-        let f = found(
-            Kind::System,
-            "# Role\n\n## Purpose\nDo the job.\n",
-            "system-sections",
-        );
-        assert_eq!(f.len(), 3);
-        assert!(
-            f.iter()
-                .all(|x| x.line == 0 && x.severity == Severity::Warning)
-        );
-        assert!(f[0].message.contains("Responsibilities"));
-        assert!(f[1].message.contains("Deliverables"));
-        assert!(f[2].message.contains("Boundaries"));
-    }
-
-    #[test]
-    fn second_person_fires_once_at_the_first_third_person_line() {
-        let body = "# Role\n\nYou review code.\n\n- The agent should check the diff.\n- The assistant replies in English.\n";
-        let f = found(Kind::System, body, "second-person");
-        assert_eq!(f.len(), 1);
-        assert_eq!(f[0].line, 5);
-        assert_eq!(f[0].severity, Severity::Info);
-        assert!(f[0].message.contains('2'));
-    }
-
-    #[test]
-    fn second_person_ignores_code_blocks() {
-        let body = "You review the code.\n\n```\nthe agent should not count\n```\n";
-        assert!(found(Kind::System, body, "second-person").is_empty());
-    }
-
-    #[test]
-    fn agents_md_sections_warn_on_missing_setup_and_testing_and_inform_on_the_rest() {
-        let f = found(
-            Kind::AgentsMd,
-            "# Repo\n\n## Security\nKeep keys out of git.\n",
-            "agents-md-sections",
-        );
-        assert_eq!(f.len(), 5);
-        assert_eq!(f[0].severity, Severity::Warning);
-        assert!(f[0].message.contains("setup or build"));
-        assert_eq!(f[1].severity, Severity::Warning);
-        assert!(f[1].message.contains("testing"));
-        assert!(f[2..].iter().all(|x| x.severity == Severity::Info));
-    }
-
-    #[test]
-    fn section_names_are_accepted_in_any_case() {
-        for (case, kind, rule, body) in [
-            (
-                "system synonyms",
-                Kind::System,
-                "system-sections",
-                "# Role\n\n## MISSION\n\n## Duties\n\n## Results\n\n## Constraints\n",
-            ),
-            (
-                "agents.md sections",
-                Kind::AgentsMd,
-                "agents-md-sections",
-                "## Overview\n## Getting started\n## TESTING\n## Lint rules\n## Pull request guidelines\n## Secrets\n",
-            ),
-        ] {
-            assert!(found(kind, body, rule).is_empty(), "{case}");
+    fn second_person_rule_fires_once_and_skips_code_blocks() {
+        // Fires once, at the first third-person line of a system prompt.
+        {
+            let body = "# Role\n\nYou review code.\n\n- The agent should check the diff.\n- The assistant replies in English.\n";
+            let f = found(Kind::System, body, "second-person");
+            assert_eq!(f.len(), 1);
+            assert_eq!(f[0].line, 5);
+            assert_eq!(f[0].severity, Severity::Info);
+            assert!(f[0].message.contains('2'));
+        }
+        // Lines inside code blocks are not counted.
+        {
+            let body = "You review the code.\n\n```\nthe agent should not count\n```\n";
+            assert!(found(Kind::System, body, "second-person").is_empty());
         }
     }
 
     #[test]
-    fn bare_command_fires_on_commands_outside_formatting() {
-        let body = "# Repo\n\n- cargo test before you hand over\n$ npm start\n- make build\npytest runs the suite\nShare it with git push\n- make\n";
-        let f = found(Kind::AgentsMd, body, "bare-command");
-        let lines: Vec<u32> = f.iter().map(|x| x.line).collect();
-        assert_eq!(lines, vec![3, 4, 5, 6, 7, 8]);
-        assert!(f.iter().all(|x| x.severity == Severity::Warning));
-        assert_eq!(
-            f[0].message,
-            "Put the command in backticks or a ```bash block so it is copied exactly."
-        );
-    }
-
-    #[test]
-    fn bare_command_leaves_formatted_and_plain_prose_alone() {
-        let body = "- Install the dependencies: `npm install`\n- Run the suite with `cargo test`\n- `$ cargo test` runs everything\n```bash\ncargo test\n```\n- The cargo workspace has three crates.\nmake test\n- Make sure the suite passes\n";
-        assert!(found(Kind::AgentsMd, body, "bare-command").is_empty());
-    }
-
-    #[test]
-    fn an_unpaired_backtick_does_not_hide_a_command() {
-        let f = found(Kind::AgentsMd, "Run `cargo test\n", "bare-command");
-        assert_eq!(f.len(), 1);
-        assert_eq!(f[0].line, 1);
+    fn bare_command_rule_fires_only_on_bare_commands() {
+        // Commands outside formatting are flagged, with the fixed message.
+        {
+            let body = "# Repo\n\n- cargo test before you hand over\n$ npm start\n- make build\npytest runs the suite\nShare it with git push\n- make\n";
+            let f = found(Kind::AgentsMd, body, "bare-command");
+            let lines: Vec<u32> = f.iter().map(|x| x.line).collect();
+            assert_eq!(lines, vec![3, 4, 5, 6, 7, 8]);
+            assert!(f.iter().all(|x| x.severity == Severity::Warning));
+            assert_eq!(
+                f[0].message,
+                "Put the command in backticks or a ```bash block so it is copied exactly."
+            );
+        }
+        // Formatted commands, fenced blocks and plain prose are left alone.
+        {
+            let body = "- Install the dependencies: `npm install`\n- Run the suite with `cargo test`\n- `$ cargo test` runs everything\n```bash\ncargo test\n```\n- The cargo workspace has three crates.\nmake test\n- Make sure the suite passes\n";
+            assert!(found(Kind::AgentsMd, body, "bare-command").is_empty());
+        }
+        // An unpaired backtick does not hide a command.
+        {
+            let f = found(Kind::AgentsMd, "Run `cargo test\n", "bare-command");
+            assert_eq!(f.len(), 1);
+            assert_eq!(f[0].line, 1);
+        }
     }
 }

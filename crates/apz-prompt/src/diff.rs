@@ -105,41 +105,42 @@ mod tests {
     }
 
     #[test]
-    fn equal_texts_are_all_same() {
-        let d = diff("a\nb\n", "a\nb\n");
-        assert_eq!(ops(&d), "==");
-        assert_eq!((d[1].old, d[1].new), (Some(2), Some(2)));
-    }
-
-    #[test]
-    fn an_edit_in_the_middle() {
-        let d = diff("a\nb\nc\nd", "a\nB\nc\nd\ne");
-        assert_eq!(ops(&d), "=+-==+");
-        assert_eq!(
-            d[1],
-            DiffLine {
-                op: Op::Add,
-                old: None,
-                new: Some(2),
-                text: "B".into()
-            }
-        );
-        assert_eq!(
-            d[2],
-            DiffLine {
-                op: Op::Del,
-                old: Some(2),
-                new: None,
-                text: "b".into()
-            }
-        );
-        assert_eq!((d[4].old, d[4].new), (Some(4), Some(4)));
-        assert_eq!(d[5].new, Some(5));
-    }
-
-    #[test]
-    fn from_and_to_empty() {
-        assert_eq!(ops(&diff("", "x\ny")), "++");
-        assert_eq!(ops(&diff("x\ny", "")), "--");
+    fn diff_marks_lines_as_same_add_or_del() {
+        // equal_texts_are_all_same: identical texts give only Same lines, numbered on both sides
+        {
+            let d = diff("a\nb\n", "a\nb\n");
+            assert_eq!(ops(&d), "==");
+            assert_eq!((d[1].old, d[1].new), (Some(2), Some(2)));
+        }
+        // an_edit_in_the_middle: an added and a removed line carry the right numbers
+        {
+            let d = diff("a\nb\nc\nd", "a\nB\nc\nd\ne");
+            assert_eq!(ops(&d), "=+-==+");
+            assert_eq!(
+                d[1],
+                DiffLine {
+                    op: Op::Add,
+                    old: None,
+                    new: Some(2),
+                    text: "B".into()
+                }
+            );
+            assert_eq!(
+                d[2],
+                DiffLine {
+                    op: Op::Del,
+                    old: Some(2),
+                    new: None,
+                    text: "b".into()
+                }
+            );
+            assert_eq!((d[4].old, d[4].new), (Some(4), Some(4)));
+            assert_eq!(d[5].new, Some(5));
+        }
+        // from_and_to_empty: an empty side gives only Add or only Del lines
+        {
+            assert_eq!(ops(&diff("", "x\ny")), "++");
+            assert_eq!(ops(&diff("x\ny", "")), "--");
+        }
     }
 }

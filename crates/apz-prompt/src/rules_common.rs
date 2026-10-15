@@ -611,169 +611,210 @@ mod tests {
     }
 
     #[test]
-    fn rules_fire_at_their_line_and_stay_silent_on_clean_text() {
-        /// `rule` reports on `body` at `line`, or stays silent when `line` is `None`.
-        struct Case {
-            rule: &'static str,
-            kind: Kind,
-            body: &'static str,
-            line: Option<u32>,
-        }
-        const CASES: &[Case] = &[
-            Case {
-                rule: "empty",
-                kind: Kind::Fragment,
-                body: " \n\t\n",
-                line: Some(0),
-            },
-            Case {
-                rule: "empty",
-                kind: Kind::Fragment,
-                body: "Some text",
-                line: None,
-            },
-            Case {
-                rule: "unclosed-fence",
-                kind: Kind::Fragment,
-                body: "# T\n\n```bash\nls -la",
-                line: Some(3),
-            },
-            Case {
-                rule: "unclosed-fence",
-                kind: Kind::Fragment,
-                body: "```bash\nls -la\n```",
-                line: None,
-            },
-            Case {
-                rule: "heading-first",
-                kind: Kind::System,
-                body: "Some text\n# Title",
-                line: Some(1),
-            },
-            Case {
-                rule: "heading-first",
-                kind: Kind::System,
-                body: "# Title\nSome text",
-                line: None,
-            },
-            Case {
-                rule: "heading-first",
-                kind: Kind::Fragment,
-                body: "Some text",
-                line: None,
-            },
-            Case {
-                rule: "heading-skip",
-                kind: Kind::Fragment,
-                body: "# A\ntext\n### B\ntext",
-                line: Some(3),
-            },
-            Case {
-                rule: "heading-skip",
-                kind: Kind::Fragment,
-                body: "### Only\ntext",
-                line: None,
-            },
-            Case {
-                rule: "heading-skip",
-                kind: Kind::Fragment,
-                body: "# A\n## B\n### C\n## D",
-                line: None,
-            },
-            Case {
-                rule: "empty-section",
-                kind: Kind::Fragment,
-                body: "# A\n## B\n\n## C\ntext",
-                line: Some(2),
-            },
-            Case {
-                rule: "empty-section",
-                kind: Kind::Fragment,
-                body: "# A\n\ntext",
-                line: None,
-            },
-            Case {
-                rule: "duplicate-heading",
-                kind: Kind::Fragment,
-                body: "# A\ntext\n# a",
-                line: Some(3),
-            },
-            Case {
-                rule: "duplicate-heading",
-                kind: Kind::Fragment,
-                body: "# A\n## A",
-                line: None,
-            },
-            Case {
-                rule: "duplicate-line",
-                kind: Kind::Fragment,
-                body: "Always run the test suite first.\n\nAlways run the test suite first.",
-                line: Some(3),
-            },
-            Case {
-                rule: "duplicate-line",
-                kind: Kind::Fragment,
-                body: "Short\nShort",
-                line: None,
-            },
-            Case {
-                rule: "shouting",
-                kind: Kind::Fragment,
-                body: "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.",
-                line: Some(0),
-            },
-            Case {
-                rule: "shouting",
-                kind: Kind::Fragment,
-                body: "Use `MUST`, `NEVER`, `ALWAYS`, `IMPORTANT`, `CRITICAL` and `MUST` in code only. Call the API and read JSON over HTTP.",
-                line: None,
-            },
-            Case {
-                rule: "negative-only",
-                kind: Kind::Fragment,
-                body: "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.",
-                line: Some(1),
-            },
-            Case {
-                rule: "negative-only",
-                kind: Kind::Fragment,
-                body: "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.",
-                line: None,
-            },
-            Case {
-                rule: "fence-language",
-                kind: Kind::Fragment,
-                body: "```\nx\n```",
-                line: Some(1),
-            },
-            Case {
-                rule: "fence-language",
-                kind: Kind::Fragment,
-                body: "```rust\nx\n```",
-                line: None,
-            },
-        ];
-        for case in CASES {
-            let f = fired(case.kind, case.body, case.rule);
-            let name = format!("{} on {:?}", case.rule, case.body);
-            match case.line {
-                Some(line) => {
-                    let severity = RULES.iter().find(|r| r.id == case.rule).unwrap().severity;
-                    assert_eq!(f.len(), 1, "{name}: {f:?}");
-                    assert_eq!((f[0].line, f[0].severity), (line, severity), "{name}");
+    fn rules_fire_on_the_right_line_and_stay_silent_on_clean_text() {
+        // rules_fire_at_their_line_and_stay_silent_on_clean_text: each rule fires once at its line and stays silent on clean text
+        {
+            /// `rule` reports on `body` at `line`, or stays silent when `line` is `None`.
+            struct Case {
+                rule: &'static str,
+                kind: Kind,
+                body: &'static str,
+                line: Option<u32>,
+            }
+            const CASES: &[Case] = &[
+                Case {
+                    rule: "empty",
+                    kind: Kind::Fragment,
+                    body: " \n\t\n",
+                    line: Some(0),
+                },
+                Case {
+                    rule: "empty",
+                    kind: Kind::Fragment,
+                    body: "Some text",
+                    line: None,
+                },
+                Case {
+                    rule: "unclosed-fence",
+                    kind: Kind::Fragment,
+                    body: "# T\n\n```bash\nls -la",
+                    line: Some(3),
+                },
+                Case {
+                    rule: "unclosed-fence",
+                    kind: Kind::Fragment,
+                    body: "```bash\nls -la\n```",
+                    line: None,
+                },
+                Case {
+                    rule: "heading-first",
+                    kind: Kind::System,
+                    body: "Some text\n# Title",
+                    line: Some(1),
+                },
+                Case {
+                    rule: "heading-first",
+                    kind: Kind::System,
+                    body: "# Title\nSome text",
+                    line: None,
+                },
+                Case {
+                    rule: "heading-first",
+                    kind: Kind::Fragment,
+                    body: "Some text",
+                    line: None,
+                },
+                Case {
+                    rule: "heading-skip",
+                    kind: Kind::Fragment,
+                    body: "# A\ntext\n### B\ntext",
+                    line: Some(3),
+                },
+                Case {
+                    rule: "heading-skip",
+                    kind: Kind::Fragment,
+                    body: "### Only\ntext",
+                    line: None,
+                },
+                Case {
+                    rule: "heading-skip",
+                    kind: Kind::Fragment,
+                    body: "# A\n## B\n### C\n## D",
+                    line: None,
+                },
+                Case {
+                    rule: "empty-section",
+                    kind: Kind::Fragment,
+                    body: "# A\n## B\n\n## C\ntext",
+                    line: Some(2),
+                },
+                Case {
+                    rule: "empty-section",
+                    kind: Kind::Fragment,
+                    body: "# A\n\ntext",
+                    line: None,
+                },
+                Case {
+                    rule: "duplicate-heading",
+                    kind: Kind::Fragment,
+                    body: "# A\ntext\n# a",
+                    line: Some(3),
+                },
+                Case {
+                    rule: "duplicate-heading",
+                    kind: Kind::Fragment,
+                    body: "# A\n## A",
+                    line: None,
+                },
+                Case {
+                    rule: "duplicate-line",
+                    kind: Kind::Fragment,
+                    body: "Always run the test suite first.\n\nAlways run the test suite first.",
+                    line: Some(3),
+                },
+                Case {
+                    rule: "duplicate-line",
+                    kind: Kind::Fragment,
+                    body: "Short\nShort",
+                    line: None,
+                },
+                Case {
+                    rule: "shouting",
+                    kind: Kind::Fragment,
+                    body: "MUST do a. MUST do b. MUST do c. MUST do d. MUST do e. MUST do f.",
+                    line: Some(0),
+                },
+                Case {
+                    rule: "shouting",
+                    kind: Kind::Fragment,
+                    body: "Use `MUST`, `NEVER`, `ALWAYS`, `IMPORTANT`, `CRITICAL` and `MUST` in code only. Call the API and read JSON over HTTP.",
+                    line: None,
+                },
+                Case {
+                    rule: "negative-only",
+                    kind: Kind::Fragment,
+                    body: "# Rules\n- Don't lie.\n- Never guess.\n- Avoid fluff.\n- Use JSON.",
+                    line: Some(1),
+                },
+                Case {
+                    rule: "negative-only",
+                    kind: Kind::Fragment,
+                    body: "# Rules\n- Be brief.\n- Never guess.\n- Cite sources.",
+                    line: None,
+                },
+                Case {
+                    rule: "fence-language",
+                    kind: Kind::Fragment,
+                    body: "```\nx\n```",
+                    line: Some(1),
+                },
+                Case {
+                    rule: "fence-language",
+                    kind: Kind::Fragment,
+                    body: "```rust\nx\n```",
+                    line: None,
+                },
+            ];
+            for case in CASES {
+                let f = fired(case.kind, case.body, case.rule);
+                let name = format!("{} on {:?}", case.rule, case.body);
+                match case.line {
+                    Some(line) => {
+                        let severity = RULES.iter().find(|r| r.id == case.rule).unwrap().severity;
+                        assert_eq!(f.len(), 1, "{name}: {f:?}");
+                        assert_eq!((f[0].line, f[0].severity), (line, severity), "{name}");
+                    }
+                    None => assert!(f.is_empty(), "{name}: {f:?}"),
                 }
-                None => assert!(f.is_empty(), "{name}: {f:?}"),
             }
         }
-    }
 
-    #[test]
-    fn too_long_warns_above_32k_and_errors_above_200k() {
-        let warn = fired(Kind::Fragment, &"a".repeat(33_000), "too-long");
-        assert_eq!((warn.len(), warn[0].severity), (1, Severity::Warning));
-        let error = fired(Kind::Fragment, &"a".repeat(200_001), "too-long");
-        assert_eq!((error.len(), error[0].severity), (1, Severity::Error));
-        assert!(fired(Kind::Fragment, &"a".repeat(1_000), "too-long").is_empty());
+        // too_long_warns_above_32k_and_errors_above_200k: a long body warns, a very long one errors
+        {
+            let warn = fired(Kind::Fragment, &"a".repeat(33_000), "too-long");
+            assert_eq!((warn.len(), warn[0].severity), (1, Severity::Warning));
+            let error = fired(Kind::Fragment, &"a".repeat(200_001), "too-long");
+            assert_eq!((error.len(), error[0].severity), (1, Severity::Error));
+            assert!(fired(Kind::Fragment, &"a".repeat(1_000), "too-long").is_empty());
+        }
+
+        // template_var_fires_on_unknown_names: unknown template names fire, known ones do not
+        {
+            let f = fired(Kind::Fragment, "Hello\nHi {{nope}}", "template-var");
+            assert_eq!((f.len(), f[0].line, f[0].severity), (1, 2, Severity::Error));
+            assert!(f[0].message.starts_with("{{nope}}"));
+            assert!(fired(Kind::Fragment, "Hi {{name}} from {{plaza}}", "template-var").is_empty());
+        }
+
+        // vague_lists_the_hedges_on_a_line: the hedges on a line are all listed
+        {
+            let f = fired(
+                Kind::Fragment,
+                "Try to keep it short, if possible.",
+                "vague",
+            );
+            assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
+            assert!(
+                f[0].message.contains("\"try to\"") && f[0].message.contains("\"if possible\"")
+            );
+            assert!(fired(Kind::Fragment, "Keep it short and specific.", "vague").is_empty());
+            assert!(fired(Kind::Fragment, "Retry to keep it short.", "vague").is_empty());
+        }
+
+        // long_line_fires_above_400_characters: 401 characters fire, 400 do not
+        {
+            let f = fired(Kind::Fragment, &"a".repeat(401), "long-line");
+            assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
+            assert!(fired(Kind::Fragment, &"a".repeat(400), "long-line").is_empty());
+        }
+
+        // trailing_space_reports_once_with_the_count: trailing spaces are reported once with the line count
+        {
+            let f = fired(Kind::Fragment, "first \nsecond\nthird\t", "trailing-space");
+            assert_eq!((f.len(), f[0].line), (1, 1));
+            assert!(f[0].message.contains("2 line"));
+            assert!(fired(Kind::Fragment, "clean\nlines", "trailing-space").is_empty());
+        }
     }
 
     #[test]
@@ -810,41 +851,5 @@ mod tests {
             )
             .is_empty()
         );
-    }
-
-    #[test]
-    fn template_var_fires_on_unknown_names() {
-        let f = fired(Kind::Fragment, "Hello\nHi {{nope}}", "template-var");
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 2, Severity::Error));
-        assert!(f[0].message.starts_with("{{nope}}"));
-        assert!(fired(Kind::Fragment, "Hi {{name}} from {{plaza}}", "template-var").is_empty());
-    }
-
-    #[test]
-    fn vague_lists_the_hedges_on_a_line() {
-        let f = fired(
-            Kind::Fragment,
-            "Try to keep it short, if possible.",
-            "vague",
-        );
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
-        assert!(f[0].message.contains("\"try to\"") && f[0].message.contains("\"if possible\""));
-        assert!(fired(Kind::Fragment, "Keep it short and specific.", "vague").is_empty());
-        assert!(fired(Kind::Fragment, "Retry to keep it short.", "vague").is_empty());
-    }
-
-    #[test]
-    fn long_line_fires_above_400_characters() {
-        let f = fired(Kind::Fragment, &"a".repeat(401), "long-line");
-        assert_eq!((f.len(), f[0].line, f[0].severity), (1, 1, Severity::Info));
-        assert!(fired(Kind::Fragment, &"a".repeat(400), "long-line").is_empty());
-    }
-
-    #[test]
-    fn trailing_space_reports_once_with_the_count() {
-        let f = fired(Kind::Fragment, "first \nsecond\nthird\t", "trailing-space");
-        assert_eq!((f.len(), f[0].line), (1, 1));
-        assert!(f[0].message.contains("2 line"));
-        assert!(fired(Kind::Fragment, "clean\nlines", "trailing-space").is_empty());
     }
 }

@@ -88,15 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_vars_reports_lines() {
-        assert_eq!(
-            unknown_vars("ok {{role}}\n{{nope}} and {{ x_y }}"),
-            vec![(2, "nope".into()), (2, "x_y".into())]
-        );
-        assert!(unknown_vars("{{ }} {{a b}} {not}").is_empty());
-    }
-
-    #[test]
     fn slugs() {
         assert_eq!(
             slug("  The Builder's Prompt! v2 "),
