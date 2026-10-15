@@ -229,13 +229,15 @@ mod tests {
 
     #[test]
     fn the_hello_body_carries_caps_only_when_the_harness_sent_some() {
+        // Compared as JSON: the key order depends on serde_json's features in the build.
+        let parsed = |body: String| serde_json::from_str::<serde_json::Value>(&body).unwrap();
         assert_eq!(
-            hello_body("builder", 0, &[]),
-            r#"{"role":"builder","vm":0}"#
+            parsed(hello_body("builder", 0, &[])),
+            serde_json::json!({"role": "builder", "vm": 0})
         );
         assert_eq!(
-            hello_body("builder", 0, &["acp".to_string()]),
-            r#"{"caps":["acp"],"role":"builder","vm":0}"#
+            parsed(hello_body("builder", 0, &["acp".to_string()])),
+            serde_json::json!({"role": "builder", "vm": 0, "caps": ["acp"]})
         );
     }
 
