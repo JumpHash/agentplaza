@@ -10,6 +10,8 @@
 //!
 //! A command that outlives its timeout is killed with its whole process group (the
 //! shell and everything it started), through kill(1) since the crate forbids `unsafe`.
+//! A root guest also kills every engine process still alive (see [`kill_engine_processes`]),
+//! since one that left its process group would outlive its turn.
 
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -20,6 +22,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::wire::{MAX_TOOL_OUTPUT, cap_output};
+use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 
 use crate::files::Workspace;
@@ -193,12 +196,18 @@ pub(crate) fn coding_engine_env(home: &Path) -> Result<apz_ops::Env, String> {
 
 /// Makes sure `/etc/passwd` and `/etc/group` name the engine user, as root only and idempotently:
 /// a missing line is appended, and a file is replaced through a rename so a reader sees one or the other.
+/// Then, best effort, the kernel refuses hard and symbolic links that the linking user could not
+/// make on its own (a link from the agent's commands to a root file would otherwise reach the engine).
 pub(crate) fn ensure_engine_user() -> Result<(), String> {
     if !runs_as_root()? {
         return Ok(());
     }
     ensure_line(Path::new("/etc/passwd"), ENGINE_PASSWD)?;
-    ensure_line(Path::new("/etc/group"), ENGINE_GROUP)
+    ensure_line(Path::new("/etc/group"), ENGINE_GROUP)?;
+    for knob in ["protected_hardlinks", "protected_symlinks"] {
+        let _ = std::fs::write(format!("/proc/sys/fs/{knob}"), "1");
+    }
+    Ok(())
 }
 
 fn ensure_line(path: &Path, line: &str) -> Result<(), String> {
@@ -365,6 +374,70 @@ pub(crate) fn runs_as_root() -> Result<bool, String> {
     }
 }
 
+/// How many rounds the engine kill makes at most, and the pause between two of them.
+const KILL_ROUNDS: usize = 20;
+const KILL_PAUSE: Duration = Duration::from_millis(50);
+
+/// Kills every engine process on the guest until a scan finds none (root only; a no-op otherwise).
+/// A turn's engine dies with its process group, but one that left the group (`setsid`) outlives
+/// the turn, and it could swap a folder the harness is about to walk or install into. Engine
+/// processes are those with [`ENGINE_UID`] as any of their uids.
+pub(crate) fn kill_engine_processes() -> Result<(), String> {
+    if !runs_as_root()? {
+        return Ok(());
+    }
+    for _ in 0..KILL_ROUNDS {
+        let pids = engine_pids()?;
+        if pids.is_empty() {
+            return Ok(());
+        }
+        for pid in pids {
+            // A process that exits before this signal is no longer ours to stop.
+            if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+                let _ = kill_process(pid, Signal::KILL);
+            }
+        }
+        thread::sleep(KILL_PAUSE);
+    }
+    if engine_pids()?.is_empty() {
+        return Ok(());
+    }
+    Err("unavailable: engine processes are still running after the kill".to_string())
+}
+
+/// The pids of the live engine processes on the guest, the harness's own excepted. A process
+/// that vanishes during the scan is not one.
+pub(crate) fn engine_pids() -> Result<Vec<u32>, String> {
+    let me = std::process::id();
+    let procs = std::fs::read_dir("/proc")
+        .map_err(|err| format!("unavailable: cannot list the processes: {err}"))?;
+    Ok(procs
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let status = std::fs::read_to_string(entry.path().join("status")).ok()?;
+            (pid != me && is_live_engine(&status)).then_some(pid)
+        })
+        .collect())
+}
+
+/// Whether a `/proc/<pid>/status` is a live engine process: [`ENGINE_UID`] as one of its real,
+/// effective, saved or filesystem uids, and not a zombie (a zombie is dead and only its parent
+/// can reap it).
+fn is_live_engine(status: &str) -> bool {
+    let engine = status.lines().any(|line| {
+        line.strip_prefix("Uid:").is_some_and(|ids| {
+            ids.split_whitespace()
+                .any(|id| id.parse::<u32>() == Ok(ENGINE_UID))
+        })
+    });
+    let zombie = status.lines().any(|line| {
+        line.strip_prefix("State:")
+            .is_some_and(|state| state.trim_start().starts_with('Z'))
+    });
+    engine && !zombie
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +549,75 @@ mod tests {
         ] {
             assert!(!package_name_ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_engine_process_is_one_with_its_uid_in_any_field_and_not_a_zombie() {
+        assert!(is_live_engine(
+            "Name:\tsleep\nState:\tS (sleeping)\nUid:\t0\t1100\t0\t0\n"
+        ));
+        assert!(is_live_engine(
+            "Uid:\t1100\t1100\t1100\t1100\nState:\tS (sleeping)\n"
+        ));
+        assert!(!is_live_engine(
+            "Uid:\t1000\t1000\t1000\t1000\nState:\tS (sleeping)\n"
+        ));
+        assert!(!is_live_engine(
+            "Uid:\t1100\t1100\t1100\t1100\nState:\tZ (zombie)\n"
+        ));
+    }
+
+    /// A folder for a root test, removed by the test before it returns.
+    fn root_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-root-bash-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        dir
+    }
+
+    #[test]
+    #[ignore = "needs root: scripts/test-harness-root.sh"]
+    fn root_a_coding_engine_command_runs_as_uid_1100() {
+        assert!(
+            runs_as_root().expect("the uid"),
+            "needs root: run scripts/test-harness-root.sh"
+        );
+        let dir = root_scratch("uid");
+        let output = command("id", &["-u"], &dir, Privilege::Engine(dir.join("home")))
+            .expect("the command")
+            .output()
+            .expect("it runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1100");
+    }
+
+    #[test]
+    #[ignore = "needs root: scripts/test-harness-root.sh"]
+    fn root_kill_engine_processes_stops_a_setsid_sleep() {
+        assert!(
+            runs_as_root().expect("the uid"),
+            "needs root: run scripts/test-harness-root.sh"
+        );
+        let dir = root_scratch("kill");
+        // The shell ends and its `setsid sleep` stays behind, as an engine that left its group does.
+        let shell = command(
+            "/bin/sh",
+            &["-c", "setsid sleep 60 </dev/null >/dev/null 2>&1 &"],
+            &dir,
+            Privilege::Engine(dir.join("home")),
+        )
+        .expect("the command")
+        .status()
+        .expect("the shell runs");
+        assert!(shell.success());
+        assert!(
+            !engine_pids().expect("the scan").is_empty(),
+            "the sleep runs"
+        );
+        kill_engine_processes().expect("the kill");
+        let left = engine_pids().expect("the scan");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(left.is_empty(), "{left:?}");
     }
 }
 

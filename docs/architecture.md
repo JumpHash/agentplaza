@@ -142,7 +142,10 @@ on first use and checked before it runs. There are three ways to install one:
 `/workspace/.engines/<id>-<version>`, root-owned and read-only to it) are out of its reach, and the
 workspace root is sticky (mode 1777) so it cannot rename them. Installs run as the engine user into a
 folder it owns only for the install, and root takes that folder back afterwards, so no install script
-runs as root. The engine's own tools (its built-in edit and shell tools) never ask the client, so these
+runs as root. Root's walks over those folders never follow a link and never hand the engine a file
+with another hard link, and an engine process left behind is killed before the folders are prepared,
+after an install and when a session ends. The root tests of this layout run in a user namespace with
+`scripts/test-harness-root.sh`. The engine's own tools (its built-in edit and shell tools) never ask the client, so these
 permissions are what bound them; the actions it routes through ACP (`session/request_permission`,
 `fs/*`, `terminal/*`) still pass the per-action gate.
 

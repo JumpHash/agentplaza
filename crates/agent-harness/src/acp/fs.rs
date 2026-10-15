@@ -108,9 +108,9 @@ pub fn write_text_file(workspace: &Workspace, params: &Value) -> Result<Value, S
     write_atomic(&file, content.as_bytes())
         .map_err(|err| format!("cannot write {label}: {err}"))?;
     if let Some(top) = new_top {
-        layout::give_to_engine(&top)?;
+        layout::give_to_engine(workspace.dir(), &top)?;
     }
-    layout::give_to_engine(&file)?;
+    layout::give_to_engine(workspace.dir(), &file)?;
     Ok(Value::Null)
 }
 

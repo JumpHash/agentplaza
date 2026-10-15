@@ -208,7 +208,7 @@ pub(crate) fn write_vibe_config(workspace: &Workspace, model: Option<&str>) -> R
     std::fs::write(home.join("config.toml"), config)
         .map_err(|err| format!("unavailable: cannot write {}: {err}", home.display()))?;
     // The harness wrote it as root; the engine keeps its own settings folder (see `acp::layout`).
-    layout::give_to_engine(&home)
+    layout::give_to_engine(workspace.dir(), &home)
 }
 
 /// The route for Mistral Vibe, which runs over ACP only and reads its provider and model from the file

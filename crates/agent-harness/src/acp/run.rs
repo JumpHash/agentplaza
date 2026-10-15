@@ -80,7 +80,12 @@ pub fn run(
             .map(|session| session.summary.clone()),
         deadline: Instant::now() + Duration::from_secs(request.timeout_s),
     };
-    let outcome = session::prompt_turn(&options, &request.prompt, link)?;
+    let turn = session::prompt_turn(&options, &request.prompt, link);
+    // The turn's engine is dropped by now on every path (its group is killed then). A process that
+    // left the group is killed here, before the workspace is read or written again.
+    let stopped = bash::kill_engine_processes();
+    let outcome = turn?;
+    stopped?;
 
     let message = keep_end(outcome.turn.message.trim(), STORED_SUMMARY_BYTES);
     let recorded = record_turn(
