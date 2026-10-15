@@ -43,6 +43,8 @@
 //   * `vstate::vcpu` — `dup(2)` of the KVM fd and `create_vcpu_from_rawfd`.
 //   * `vstate::vm` — `KVM_SET_USER_MEMORY_REGION` (a raw-pointer ioctl).
 //   * `arch::x86_64::xstate` — `arch_prctl(2)` for dynamic XSAVE features.
+//   * `arch::x86_64::vcpu` — `KVM_GET_XSAVE2`/`KVM_SET_XSAVE` (raw-pointer ioctls in `kvm-ioctls`)
+//     and the XSAVE area's flexible-array header, for the vCPU's snapshot state.
 //   * `arch::x86_64::mptable` — the upstream `ByteValued` impls for the `mpspec`
 //     tables (upstream-copied, unchanged).
 //   * `arch::aarch64::gic::regs` — `KVM_GET_DEVICE_ATTR`, which `kvm-ioctls`
@@ -80,6 +82,12 @@ mod sys;
 
 /// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`).
 pub mod clonefile;
+/// Pausing, resuming and snapshotting a running in-process VM (the builder installs it).
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub mod control;
 pub mod devices;
 /// The host end of a vhost-vsock guest's connections (Linux): the `AF_VSOCK` listeners a QEMU workstation VM's relay
 /// serves. See the allowlist above.
