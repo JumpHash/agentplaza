@@ -250,6 +250,9 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
 
   /** The coding engines an agent may run, and how they run. At least one engine stays on (the last box is locked). */
   function enginesCard(): HTMLElement {
+    // A hub from before the engine settings sends neither field: it runs the three engines over ACP.
+    copy.engines_enabled ??= ENGINES.map((engine) => engine.value);
+    copy.engines_mode ??= 'acp';
     const enabled = copy.engines_enabled;
     const boxes = ENGINES.map((engine) => {
       const on = enabled.includes(engine.value);
