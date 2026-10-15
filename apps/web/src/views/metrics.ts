@@ -223,7 +223,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   async function loadScopes(): Promise<void> {
     scopesAt = Date.now();
     try {
-      scopes = await api.metricsScopes();
+      scopes = await api.metricsScopes(state.fixture);
       if (!disposed) renderTreeList();
     } catch {
       scopesAt = 0;

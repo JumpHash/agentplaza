@@ -853,7 +853,7 @@ export const api = {
   // pins and settings, alert rules. The types are in metrics/model.ts.
   metricsView: (q: MetricsQuery) => get<MetricsView>(`/v1/metrics/view${metricsQuery(q)}`),
   metricsAround: (q: MetricsQuery, t: number) => get<MetricsAround>(`/v1/metrics/around${metricsQuery(q)}&t=${t}`),
-  metricsScopes: () => get<MetricsScopeNode[]>('/v1/metrics/scopes'),
+  metricsScopes: (fixture = false) => get<MetricsScopeNode[]>(`/v1/metrics/scopes${fixture ? '?fixture=1' : ''}`),
   metricsCatalog: () => get<MetricDef[]>('/v1/metrics/catalog'),
   metricsCalls: (scope: string, before: number, limit = 50) => get<{ calls: MetricsCallRow[] }>(`/v1/metrics/calls${query({ scope, before, limit })}`),
   metricsLive: (lease: LiveLease) => post<{ ok: boolean }>('/v1/metrics/live', lease),
