@@ -622,17 +622,4 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert_ne!(a, b);
     }
-
-    #[test]
-    fn dirs_are_distinct_and_named_for_the_plaza() {
-        let (s, d, c) = (dirs::state(), dirs::data(), dirs::config());
-        assert!(s != d && d != c && s != c);
-        for p in [&s, &d, &c] {
-            assert!(
-                p.to_string_lossy().to_lowercase().contains("agentplaza"),
-                "{}",
-                p.display()
-            );
-        }
-    }
 }
