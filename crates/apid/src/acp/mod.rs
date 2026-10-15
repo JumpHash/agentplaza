@@ -28,7 +28,7 @@ pub mod feed;
 pub mod store;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -58,7 +58,7 @@ const POLL: Duration = Duration::from_millis(250);
 static SOCKETS: Slots = Slots::new();
 
 /// What a connection's handlers share: the app, the agent the editor asked for, its client name, who it acts
-/// for, and the protocol version `initialize` negotiated (1 until then).
+/// for, the protocol version `initialize` negotiated (1 until then), and how many v2 turns it runs.
 struct ConnState {
     app: Arc<App>,
     agent: Option<String>,
@@ -66,6 +66,7 @@ struct ConnState {
     editor_writes: AtomicBool,
     version: AtomicU16,
     caller: Caller,
+    turns: Arc<AtomicUsize>,
 }
 
 /// Hands a v2 prompt's turn to a thread of its own, once the request is answered. The thread builds the hub
@@ -155,6 +156,7 @@ fn admit(record: &TokenRecord) -> Result<Caller, (u16, &'static str)> {
     }
     Ok(Caller::Token {
         id: record.id.clone(),
+        name: record.name.clone(),
         scope: record.scope,
         agents: agents_of(&record.allowlist),
     })
@@ -187,6 +189,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
         editor_writes: AtomicBool::new(false),
         version: AtomicU16::new(1),
         caller,
+        turns: Arc::new(AtomicUsize::new(0)),
     });
     let on_request = {
         let state = Arc::clone(&state);
@@ -203,6 +206,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
                 allow_v2: state.app.settings.get().acp_v2,
                 detach: &detach,
                 caller: state.caller.clone(),
+                turns: &state.turns,
             };
             metered(&state.app, &state.caller, method, params, |params| {
                 agent::request(&conn, peer, method, params)
@@ -224,6 +228,7 @@ fn serve(socket: &mut Socket, app: Arc<App>, agent: Option<String>, caller: Call
                 allow_v2: state.app.settings.get().acp_v2,
                 detach: &detach,
                 caller: state.caller.clone(),
+                turns: &state.turns,
             };
             // A notification has no answer, so a refused one is only audited.
             let _ = metered(&state.app, &state.caller, method, params, |params| {
@@ -317,9 +322,10 @@ fn write_message(stream: &mut impl Write, text: &str) -> io::Result<()> {
 }
 
 /// Reads the lines of `stream` on a thread of its own, so the socket loop can poll them. The
-/// channel disconnects when the stream ends.
+/// channel disconnects when the stream ends. It holds up to 1024 lines: past that the reader waits for
+/// the socket to take them, rather than the editor's backlog growing without bound.
 fn line_reader(stream: impl Read + Send + 'static) -> Receiver<String> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(1024);
     thread::spawn(move || {
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else { break };
@@ -389,6 +395,7 @@ mod tests {
                 admit(&token(scope, &[])),
                 Ok(Caller::Token {
                     id: "mcp_test".into(),
+                    name: "editor".into(),
                     scope,
                     agents: Vec::new(),
                 })
@@ -407,6 +414,7 @@ mod tests {
             admitted,
             Caller::Token {
                 id: "mcp_test".into(),
+                name: "editor".into(),
                 scope: Scope::Operate,
                 agents: vec!["research".into()],
             }

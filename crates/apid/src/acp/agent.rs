@@ -15,9 +15,9 @@
 
 use std::collections::HashSet;
 use std::path::{Component, Path};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,13 +62,15 @@ pub trait Hub: Sync {
     /// None when the work made no model call.
     fn usage(&self, cid: u64, work: u64) -> Option<Value>;
     /// Sends a control to agent `cid`'s work `work` (the one in progress for `None`): one of
-    /// [`COMMANDS`] with its argument. Ok and Err both carry the text to show the editor.
+    /// [`COMMANDS`] with its argument. `from` says who sent it (see [`Caller::label`]), as a steer's note
+    /// shows it. Ok and Err both carry the text to show the editor.
     fn control(
         &self,
         cid: u64,
         work: Option<u64>,
         command: &str,
         arg: &str,
+        from: &str,
     ) -> Result<String, String>;
     /// The model agent `cid` runs now, and the models its tier allows.
     fn models(&self, cid: u64) -> (String, Vec<String>);
@@ -108,6 +110,8 @@ pub enum Caller {
     Owner,
     Token {
         id: String,
+        /// The token's name; its id stands in when the name is empty.
+        name: String,
         scope: Scope,
         /// The agents the token's `acp:<name or cid>` entries name, without the prefix. Empty means every agent.
         agents: Vec<String>,
@@ -115,6 +119,33 @@ pub enum Caller {
 }
 
 impl Caller {
+    /// The `opener` of a session this caller opens: `owner`, or `token:<id>`.
+    pub fn opener(&self) -> String {
+        match self {
+            Caller::Owner => "owner".to_string(),
+            Caller::Token { id, .. } => format!("token:{id}"),
+        }
+    }
+
+    /// Whether the caller may use `session`: the owner every session, a token only the ones it opened.
+    pub fn owns(&self, session: &Session) -> bool {
+        match self {
+            Caller::Owner => true,
+            Caller::Token { .. } => session.opener == self.opener(),
+        }
+    }
+
+    /// Who a steer from this caller is noted as: `owner`, or the editor and the token it acts with.
+    pub fn label(&self) -> String {
+        match self {
+            Caller::Owner => "owner".to_string(),
+            Caller::Token { id, name, .. } => {
+                let who = if name.is_empty() { id } else { name };
+                format!("editor (token {who})")
+            }
+        }
+    }
+
     /// Whether the caller may drive agent `cid`: its sessions, its work, and its settings. An entry is
     /// the agent's CID when it is a number, else its name, which the hub resolves.
     pub fn may_drive(&self, hub: &dyn Hub, cid: u64) -> bool {
@@ -158,6 +189,8 @@ pub struct Conn<'h> {
     /// Runs a v2 prompt's turn once its reply is out, on a thread of its own (see [`Detached`]).
     pub detach: &'h dyn Fn(Detached),
     pub caller: Caller,
+    /// The connection's running v2 turns, which it caps at [`MAX_TURNS`] (see [`TurnSlot`]).
+    pub turns: &'h Arc<AtomicUsize>,
 }
 
 impl Conn<'_> {
@@ -178,6 +211,31 @@ impl Conn<'_> {
 /// A v2 prompt's turn, handed to a thread of its own: it gets the hub and the editor's peer when it runs.
 /// The request is answered before the turn runs, so the turn's updates follow the reply.
 pub type Detached = Box<dyn FnOnce(&dyn Hub, &Peer) + Send>;
+
+/// The most v2 prompts one connection runs at once. A prompt past that is refused until a turn ends.
+const MAX_TURNS: usize = 4;
+
+/// One of a connection's running v2 turns. It is taken when the prompt is answered and given back when the
+/// turn ends; the drop does that on a panic too, since the turn's thread unwinds through it.
+pub struct TurnSlot(Arc<AtomicUsize>);
+
+impl TurnSlot {
+    /// A slot, or None when the connection already runs [`MAX_TURNS`] turns.
+    pub fn take(running: &Arc<AtomicUsize>) -> Option<TurnSlot> {
+        running
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_TURNS).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| TurnSlot(Arc::clone(running)))
+    }
+}
+
+impl Drop for TurnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// How one update reaches the editor. v1 sends it as it is. v2 sends it as v2 updates (see
 /// [`apz_acp::compat::update_to_v2`]), and a chunk takes the message id of the work it belongs to; without a
@@ -240,7 +298,7 @@ pub fn request(
     } else if method == names.session_load {
         load(conn, peer, &params)
     } else if method == names.session_resume {
-        resume(conn, &params)
+        resume(conn, peer, &params)
     } else if method == names.session_list {
         list(conn, &params)
     } else if method == names.session_close {
@@ -318,8 +376,10 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
     }
     let cwd = params["cwd"].as_str().unwrap_or_default();
     let client = lock(conn.client).clone();
-    let session = conn.sessions.open(cid, cwd, &client, conn.hub.now_ms());
-    if let Some(link) = repo_of(params) {
+    let session = conn
+        .sessions
+        .open(cid, cwd, &client, &conn.caller.opener(), conn.hub.now_ms());
+    if let Some(link) = repo_link(conn, peer, &session.id, params) {
         conn.sessions.set_repo(&session.id, link);
     }
     // The notice goes before the reply: the editor reads it as the session's first message.
@@ -354,7 +414,7 @@ fn new_session(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, ty
 
 fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let mut session = open_session_of(conn, params)?;
-    if let Some(link) = repo_of(params) {
+    if let Some(link) = repo_link(conn, peer, &session.id, params) {
         conn.sessions.set_repo(&session.id, link.clone());
         session.repo = Some(link);
     }
@@ -362,6 +422,15 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     if let Some((command, arg)) = slash_command(&text) {
         return command_turn(conn, peer, &session, command, arg);
     }
+    // A v2 turn takes one of the connection's slots before its work is queued, so a refused prompt queues nothing.
+    let slot = if conn.is_v2() {
+        Some(
+            TurnSlot::take(conn.turns)
+                .ok_or_else(|| invalid("too many prompts running on this connection"))?,
+        )
+    } else {
+        None
+    };
     // Subscribed before the work is queued: the frames wait in the channel until the stream reads
     // them, so none is lost while `chat` returns.
     let frames = conn.hub.subscribe();
@@ -403,6 +472,7 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
             work,
             frames,
             govern: conn.caller.may_govern(),
+            _slot: slot,
         };
         (conn.detach)(Box::new(move |hub: &dyn Hub, peer: &Peer| {
             turn.run(hub, peer)
@@ -437,6 +507,8 @@ struct Turn {
     work: u64,
     frames: Receiver<Frame>,
     govern: bool,
+    /// Given back when the turn ends (its drop), so the connection may run another prompt.
+    _slot: Option<TurnSlot>,
 }
 
 impl Turn {
@@ -494,6 +566,64 @@ impl Turn {
         });
         send_update(peer, &self.session.id, idle_update(&stop, usage.as_ref()));
     }
+}
+
+/// The repository the editor linked in `_meta.agentplaza.repo` for session `session_id`, when the caller may
+/// govern: an operate token's link is dropped without a word. A link that the plaza does not take (see
+/// [`repo_link_problem`]) is dropped too, and the editor is told why.
+fn repo_link(conn: &Conn<'_>, peer: &Peer, session_id: &str, params: &Value) -> Option<RepoLink> {
+    if !conn.caller.may_govern() {
+        return None;
+    }
+    let link = repo_of(params)?;
+    match repo_link_problem(&link) {
+        None => Some(link),
+        Some(why) => {
+            notify_update(
+                peer,
+                session_id,
+                conn.wire(None),
+                json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": format!("the repository link was ignored: {why}")},
+                }),
+            );
+            None
+        }
+    }
+}
+
+/// Why the plaza does not take `link`, or None when it does. The name is a plaza repository's name: lower case
+/// letters, digits, `.`, `_` and `-`, at most 100 characters, starting with a letter or digit (so `.` and `..`
+/// are refused too). The branch is an `editor/` branch of at most 200 characters, with no `..` and no `//`.
+fn repo_link_problem(link: &RepoLink) -> Option<&'static str> {
+    if !valid_repo_name(&link.name) {
+        return Some("the name is not a plaza repository name");
+    }
+    if !valid_editor_branch(&link.branch) {
+        return Some("the branch is not an editor/ branch name");
+    }
+    None
+}
+
+fn valid_repo_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= 100
+        && matches!(chars.next(), Some(first) if first.is_ascii_lowercase() || first.is_ascii_digit())
+        && chars
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+fn valid_editor_branch(branch: &str) -> bool {
+    let Some(rest) = branch.strip_prefix("editor/") else {
+        return false;
+    };
+    (1..=200).contains(&rest.len())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'))
+        && !rest.contains("..")
+        && !rest.contains("//")
 }
 
 /// The repository the editor linked in `_meta.agentplaza.repo`, when it names a repository and a branch.
@@ -713,8 +843,16 @@ fn command_turn(
     command: &str,
     arg: &str,
 ) -> Result<Value, types::Error> {
-    let said = match conn.hub.control(session.cid, None, command, arg) {
-        Ok(said) | Err(said) => said,
+    // Extending the turns spends the owner's model calls, so it needs govern; the refusal is the command's answer.
+    let said = if command == "extend-turns" && !conn.caller.may_govern() {
+        "this token's scope is operate; extending turns needs govern".to_string()
+    } else {
+        match conn
+            .hub
+            .control(session.cid, None, command, arg, &conn.caller.label())
+        {
+            Ok(said) | Err(said) => said,
+        }
     };
     if !conn.is_v2() {
         notify_update(
@@ -785,7 +923,8 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
 
 /// Sends the work item's updates as they come, asks the approvals it waits on, and returns the
 /// turn's outcome when the item ends. The approvals are asked only when `govern` is set: otherwise
-/// they stay pending for the owner to decide in the console.
+/// they stay pending for the owner to decide in the console. An answer to an ask is decided as it comes in,
+/// while the turn runs; an answer that comes after the turn ends is dropped, and the owner decides it there.
 fn stream(
     hub: &dyn Hub,
     peer: &Peer,
@@ -798,70 +937,69 @@ fn stream(
     let mut feed = Feed::new(session.cid, work);
     let mut asked = HashSet::new();
     let mut checked = Instant::now();
-    thread::scope(|scope| -> Result<Value, types::Error> {
-        loop {
-            match frames.recv_timeout(POLL) {
-                Ok(frame) => {
-                    let data: Value = serde_json::from_str(&frame.data).unwrap_or(Value::Null);
-                    for update in feed.frame(&frame.kind, &data) {
-                        notify_update(peer, &session.id, wire, update);
-                    }
-                    if frame.kind == "transcript" {
-                        if govern {
-                            ask_approvals(
-                                scope,
-                                peer,
-                                hub,
-                                session.cid,
-                                &session.id,
-                                &mut asked,
-                                wire.v2,
-                            );
-                        }
-                        checked = Instant::now();
-                    }
-                    if let Some(end) = feed.end(&frame.kind, &data) {
-                        return finish(end);
-                    }
+    let (answers_tx, answers_rx) = mpsc::channel();
+    loop {
+        decide_answers(hub, &answers_rx);
+        match frames.recv_timeout(POLL) {
+            Ok(frame) => {
+                let data: Value = serde_json::from_str(&frame.data).unwrap_or(Value::Null);
+                for update in feed.frame(&frame.kind, &data) {
+                    notify_update(peer, &session.id, wire, update);
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(internal("the plaza's event bus closed"));
+                if frame.kind == "transcript" {
+                    if govern {
+                        ask_approvals(
+                            peer,
+                            hub,
+                            session.cid,
+                            &session.id,
+                            &mut asked,
+                            &answers_tx,
+                            wire.v2,
+                        );
+                    }
+                    checked = Instant::now();
+                }
+                if let Some(end) = feed.end(&frame.kind, &data) {
+                    return finish(end);
                 }
             }
-            // The work goes on without the editor; its updates have nowhere to go, so the turn ends.
-            if peer.is_closed() {
-                return Err(internal("the editor disconnected"));
-            }
-            if govern && checked.elapsed() >= APPROVALS_EVERY {
-                ask_approvals(
-                    scope,
-                    peer,
-                    hub,
-                    session.cid,
-                    &session.id,
-                    &mut asked,
-                    wire.v2,
-                );
-                checked = Instant::now();
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(internal("the plaza's event bus closed"));
             }
         }
-    })
+        // The work goes on without the editor; its updates have nowhere to go, so the turn ends.
+        if peer.is_closed() {
+            return Err(internal("the editor disconnected"));
+        }
+        if govern && checked.elapsed() >= APPROVALS_EVERY {
+            ask_approvals(
+                peer,
+                hub,
+                session.cid,
+                &session.id,
+                &mut asked,
+                &answers_tx,
+                wire.v2,
+            );
+            checked = Instant::now();
+        }
+    }
 }
 
-/// Asks the editor for each approval the session's thread holds that has not been asked yet. Each
-/// ask runs on its own thread, so the stream keeps flowing while the editor decides.
-fn ask_approvals<'scope, 'env>(
-    scope: &'scope thread::Scope<'scope, 'env>,
-    peer: &'env Peer,
-    hub: &'env dyn Hub,
+/// Asks the editor for each approval the session's thread holds that has not been asked yet. Each ask runs
+/// on a thread of its own and sends its answer on `answers`: the turn does not wait for it. The ask may wait
+/// the editor's whole [`PERMISSION_TIMEOUT`]; the thread ends then, and nothing waits on it.
+fn ask_approvals(
+    peer: &Peer,
+    hub: &dyn Hub,
     cid: u64,
     session_id: &str,
     asked: &mut HashSet<String>,
+    answers: &Sender<(String, bool)>,
     v2: bool,
-) where
-    'env: 'scope,
-{
+) {
     for approval in hub.pending_approvals(cid, session_id) {
         let Some(id) = approval["id"].as_str() else {
             continue;
@@ -888,25 +1026,31 @@ fn ask_approvals<'scope, 'env>(
                 {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
             ],
         });
-        scope.spawn(move || answer_approval(peer, hub, &approval_id, params, v2));
+        let (peer, answers) = (peer.clone(), answers.clone());
+        thread::spawn(move || {
+            if let Some(approve) = ask_approval(&peer, params, v2) {
+                let _ = answers.send((approval_id, approve));
+            }
+        });
     }
 }
 
-/// Asks the editor one approval and decides it for the owner. A cancelled or failed ask leaves the
-/// approval pending, for the owner to decide in the console. On v2 the ask and its answer are the v2 shapes.
-fn answer_approval(peer: &Peer, hub: &dyn Hub, approval_id: &str, params: Value, v2: bool) {
+/// Asks the editor one approval and returns its answer: `Some(true)` to allow it, `Some(false)` to reject it.
+/// None when the ask is cancelled, fails or times out, and the approval then stays pending for the owner to
+/// decide in the console. On v2 the ask and its answer are the v2 shapes.
+fn ask_approval(peer: &Peer, params: Value, v2: bool) -> Option<bool> {
     let asked = if v2 {
         permission_request_to_v2(&params)
     } else {
         params
     };
-    let Ok(reply) = peer.call(
-        CLIENT_METHOD_NAMES.session_request_permission,
-        asked,
-        PERMISSION_TIMEOUT,
-    ) else {
-        return;
-    };
+    let reply = peer
+        .call(
+            CLIENT_METHOD_NAMES.session_request_permission,
+            asked,
+            PERMISSION_TIMEOUT,
+        )
+        .ok()?;
     let reply = if v2 {
         permission_response_to_v1(&reply)
     } else {
@@ -914,14 +1058,20 @@ fn answer_approval(peer: &Peer, hub: &dyn Hub, approval_id: &str, params: Value,
     };
     let outcome = &reply["outcome"];
     if outcome["outcome"].as_str() != Some("selected") {
-        return;
+        return None;
     }
-    let approve = match outcome["optionId"].as_str() {
-        Some("allow") => true,
-        Some("reject") => false,
-        _ => return,
-    };
-    let _ = hub.decide(approval_id, approve, "from the editor");
+    match outcome["optionId"].as_str() {
+        Some("allow") => Some(true),
+        Some("reject") => Some(false),
+        _ => None,
+    }
+}
+
+/// Decides the answers the asks have brought back so far, for the owner.
+fn decide_answers(hub: &dyn Hub, answers: &Receiver<(String, bool)>) {
+    while let Ok((approval_id, approve)) = answers.try_recv() {
+        let _ = hub.decide(&approval_id, approve, "from the editor");
+    }
 }
 
 fn finish(end: End) -> Result<Value, types::Error> {
@@ -934,7 +1084,7 @@ fn finish(end: End) -> Result<Value, types::Error> {
 
 fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let session = session_of(conn, params)?;
-    if let Some(link) = repo_of(params) {
+    if let Some(link) = repo_link(conn, peer, &session.id, params) {
         conn.sessions.set_repo(&session.id, link);
     }
     let entries = conn.hub.entries(session.cid, &session.works);
@@ -950,9 +1100,9 @@ fn load(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Er
     }))
 }
 
-fn resume(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
+fn resume(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::Error> {
     let session = session_of(conn, params)?;
-    if let Some(link) = repo_of(params) {
+    if let Some(link) = repo_link(conn, peer, &session.id, params) {
         conn.sessions.set_repo(&session.id, link);
     }
     Ok(json!({"modes": modes(conn.hub, session.cid)}))
@@ -963,7 +1113,7 @@ fn list(conn: &Conn<'_>, params: &Value) -> Result<Value, types::Error> {
         .sessions
         .list(params["cwd"].as_str())
         .iter()
-        .filter(|s| conn.caller.may_drive(conn.hub, s.cid))
+        .filter(|s| conn.caller.owns(s) && conn.caller.may_drive(conn.hub, s.cid))
         .map(|s| {
             json!({
                 "sessionId": s.id,
@@ -1057,12 +1207,14 @@ fn commands_update() -> Value {
     json!({"sessionUpdate": "available_commands_update", "availableCommands": commands()})
 }
 
-/// The session `params` name, open or closed, when the caller may drive its agent.
+/// The session `params` name, open or closed, when the caller may drive its agent. A session another caller
+/// opened is "no session" too, the same error as an unknown id, so an id tells the caller nothing.
 fn session_of(conn: &Conn<'_>, params: &Value) -> Result<Session, types::Error> {
     let id = params["sessionId"].as_str().unwrap_or_default();
     let session = conn
         .sessions
         .get(id)
+        .filter(|s| conn.caller.owns(s))
         .ok_or_else(|| invalid(format!("no session {id}")))?;
     if conn.caller.may_drive(conn.hub, session.cid) {
         Ok(session)
@@ -1227,7 +1379,7 @@ mod tests {
 
     use apz_acp::rpc;
     use apz_acp::testing::{ClientConfig, FakeClient, PermissionAnswer};
-    use apz_acp::types::PermissionOptionKind;
+    use apz_acp::types::{PermissionOptionKind, SessionId};
 
     use super::*;
 
@@ -1242,12 +1394,13 @@ mod tests {
         allow_v2: bool,
         agent: Option<String>,
         caller: Caller,
+        turns: Arc<AtomicUsize>,
     }
 
     struct FakeHub {
         calls: Mutex<Vec<String>>,
-        /// The bus receiver, handed out once by `subscribe`; the test keeps the sender.
-        frames: Mutex<Option<Receiver<Frame>>>,
+        /// The bus receivers, one handed out per `subscribe`, first in first out; the test keeps the senders.
+        frames: Mutex<Vec<Receiver<Frame>>>,
         mode: Mutex<String>,
         /// What `usage` reports for any work (None: no model call).
         usage: Mutex<Option<Value>>,
@@ -1282,9 +1435,9 @@ mod tests {
         }
 
         fn subscribe(&self) -> Receiver<Frame> {
-            lock(&self.frames)
-                .take()
-                .expect("the fake hub hands out one receiver")
+            let mut frames = lock(&self.frames);
+            assert!(!frames.is_empty(), "the fake hub has no receiver left");
+            frames.remove(0)
         }
 
         fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String> {
@@ -1334,8 +1487,11 @@ mod tests {
             work: Option<u64>,
             command: &str,
             arg: &str,
+            from: &str,
         ) -> Result<String, String> {
-            self.record(format!("control {cid} {work:?} {command}({arg})"));
+            self.record(format!(
+                "control {cid} {work:?} {command}({arg}) from {from}"
+            ));
             if arg == "refused" {
                 return Err("agent 7 has no running work".to_string());
             }
@@ -1401,7 +1557,7 @@ mod tests {
         let plaza = Arc::new(Plaza {
             hub: FakeHub {
                 calls: Mutex::default(),
-                frames: Mutex::new(Some(rx)),
+                frames: Mutex::new(vec![rx]),
                 mode: Mutex::new("autonomous".to_string()),
                 usage: Mutex::default(),
                 models: Mutex::new((
@@ -1422,6 +1578,7 @@ mod tests {
             allow_v2,
             agent: agent.map(str::to_string),
             caller,
+            turns: Arc::default(),
         });
         (plaza, frames)
     }
@@ -1472,6 +1629,7 @@ mod tests {
             allow_v2: plaza.allow_v2,
             detach,
             caller: plaza.caller.clone(),
+            turns: &plaza.turns,
         }
     }
 
@@ -1481,6 +1639,7 @@ mod tests {
     fn operate() -> Caller {
         Caller::Token {
             id: "mcp_test".into(),
+            name: "editor".into(),
             scope: Scope::Operate,
             agents: Vec::new(),
         }
@@ -1543,28 +1702,46 @@ mod tests {
         assert!(!calls.iter().any(|c| c.starts_with("decide")), "{calls:?}");
     }
 
+    /// Prompts `session` on a thread, and ends the work once the answer to approval `ap1` is decided. The
+    /// answer comes while the turn runs, so the turn is still open when it is decided.
+    fn decide_during_the_turn(h: &Harness, session: SessionId) {
+        let client = h.client.clone();
+        let prompt = thread::spawn(move || client.prompt(&session, "write it"));
+        let start = Instant::now();
+        while !h
+            .plaza
+            .hub
+            .calls()
+            .contains(&"decide ap1 true from the editor".to_string())
+        {
+            assert!(
+                start.elapsed() < WAIT,
+                "the answer was not decided: {:?}",
+                h.plaza.hub.calls()
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        h.frames.send(work_end()).expect("the bus is open");
+        prompt
+            .join()
+            .expect("the prompt thread")
+            .expect("session/prompt");
+    }
+
     #[test]
     fn the_owner_is_asked_the_approval_and_the_answer_decides_it() {
         // The control for the test above: the same approval, asked when the caller may govern.
         let h = harness_with(None, Caller::Owner, ClientConfig::default());
         *lock(&h.plaza.hub.approvals) = vec![json!({"id": "ap1", "subject": "Write a file"})];
         let session = h.client.new_session("/work/app").expect("session/new");
-        h.frames.send(work_end()).expect("the bus is open");
-        h.client
-            .prompt(&session, "write it")
-            .expect("session/prompt");
-        assert!(
-            h.plaza
-                .hub
-                .calls()
-                .contains(&"decide ap1 true from the editor".to_string())
-        );
+        decide_during_the_turn(&h, session);
     }
 
     #[test]
     fn a_govern_token_is_asked_the_approval_and_changes_the_mode() {
         let govern = Caller::Token {
             id: "mcp_test".into(),
+            name: "editor".into(),
             scope: Scope::Govern,
             agents: Vec::new(),
         };
@@ -1580,16 +1757,7 @@ mod tests {
             )
             .expect("a govern token sets the mode");
         assert!(h.plaza.hub.calls().contains(&"set_mode 7 ask".to_string()));
-        h.frames.send(work_end()).expect("the bus is open");
-        h.client
-            .prompt(&session, "write it")
-            .expect("session/prompt");
-        assert!(
-            h.plaza
-                .hub
-                .calls()
-                .contains(&"decide ap1 true from the editor".to_string())
-        );
+        decide_during_the_turn(&h, session);
     }
 
     #[test]
@@ -1597,11 +1765,13 @@ mod tests {
         let h = harness(None);
         let named = Caller::Token {
             id: "mcp_test".into(),
+            name: "editor".into(),
             scope: Scope::Operate,
             agents: vec!["research".into()],
         };
         let by_cid = Caller::Token {
             id: "mcp_test".into(),
+            name: "editor".into(),
             scope: Scope::Operate,
             agents: vec!["8".into()],
         };
@@ -1617,6 +1787,7 @@ mod tests {
     fn a_token_is_refused_a_session_on_an_agent_its_allowlist_does_not_name() {
         let allowed = Caller::Token {
             id: "mcp_test".into(),
+            name: "editor".into(),
             scope: Scope::Operate,
             agents: vec!["research".into()],
         };
@@ -1629,6 +1800,281 @@ mod tests {
             .expect_err("agent other is not on the allowlist");
         assert!(matches!(refused, rpc::Error::Remote(_)), "{refused:?}");
         assert!(format!("{refused:?}").contains("may not drive that agent"));
+    }
+
+    #[test]
+    fn a_token_uses_only_the_sessions_it_opened_and_another_id_looks_the_same() {
+        let mine = Caller::Token {
+            id: "mcp_a".into(),
+            name: "laptop".into(),
+            scope: Scope::Operate,
+            agents: Vec::new(),
+        };
+        let h = harness_with(None, mine, ClientConfig::default());
+        h.client.new_session("/work/app").expect("session/new");
+        let own = h.plaza.sessions.list(None)[0].id.clone();
+        let owners = h.plaza.sessions.open(7, "/work/app", "", "owner", 0).id;
+        let others = h
+            .plaza
+            .sessions
+            .open(7, "/work/app", "", "token:mcp_b", 0)
+            .id;
+        let listed = h
+            .client
+            .peer()
+            .call("session/list", json!({}), WAIT)
+            .expect("session/list");
+        let ids: Vec<&str> = listed["sessions"]
+            .as_array()
+            .expect("the sessions")
+            .iter()
+            .filter_map(|s| s["sessionId"].as_str())
+            .collect();
+        assert_eq!(ids, [own.as_str()]);
+        // The owner's session, another token's and an unknown id are refused the same way.
+        for id in [owners.as_str(), others.as_str(), "acp-nope"] {
+            for (method, params) in [
+                (
+                    "session/load",
+                    json!({"sessionId": id, "cwd": "/work/app", "mcpServers": []}),
+                ),
+                ("session/resume", json!({"sessionId": id})),
+                (
+                    "session/prompt",
+                    json!({"sessionId": id, "prompt": [{"type": "text", "text": "hi"}]}),
+                ),
+                ("session/close", json!({"sessionId": id})),
+            ] {
+                let err = h
+                    .client
+                    .peer()
+                    .call(method, params, WAIT)
+                    .expect_err("another caller's session is refused");
+                assert!(matches!(err, rpc::Error::Remote(_)), "{method}: {err:?}");
+                assert!(
+                    format!("{err:?}").contains(&format!("no session {id}")),
+                    "{method}: {err:?}"
+                );
+            }
+        }
+        assert!(!h.plaza.sessions.get(&owners).unwrap().closed);
+        assert!(!h.plaza.sessions.get(&others).unwrap().closed);
+        // Its own session is still its to use.
+        h.client
+            .peer()
+            .call("session/resume", json!({"sessionId": own}), WAIT)
+            .expect("its own session resumes");
+    }
+
+    #[test]
+    fn a_repo_link_needs_govern_and_a_name_the_plaza_does_not_take_is_ignored_with_why() {
+        // An operate token's link is dropped without a word.
+        let operating = harness_with(None, operate(), ClientConfig::default());
+        let mut params = repo_meta("app", "editor/main", "", false);
+        params["cwd"] = json!("/work/app");
+        let created = operating
+            .client
+            .peer()
+            .call("session/new", params, WAIT)
+            .expect("session/new");
+        let id = created["sessionId"].as_str().expect("a session id");
+        assert_eq!(operating.plaza.sessions.get(id).unwrap().repo, None);
+        let said = serde_json::to_string(&operating.client.updates()).expect("serialize");
+        assert!(!said.contains("repository link"), "{said}");
+
+        // A govern token's link is kept when the plaza takes it, and one it does not take is ignored with why.
+        let govern = Caller::Token {
+            id: "mcp_test".into(),
+            name: "editor".into(),
+            scope: Scope::Govern,
+            agents: Vec::new(),
+        };
+        let h = harness_with(None, govern, ClientConfig::default());
+        for (name, branch) in [
+            ("Bad Name!", "editor/main"),
+            ("..", "editor/main"),
+            ("app", "main"),
+            ("app", "editor/a..b"),
+        ] {
+            let mut params = repo_meta(name, branch, "", false);
+            params["cwd"] = json!("/work/app");
+            let created = h
+                .client
+                .peer()
+                .call("session/new", params, WAIT)
+                .expect("session/new");
+            let id = created["sessionId"].as_str().expect("a session id");
+            assert_eq!(
+                h.plaza.sessions.get(id).unwrap().repo,
+                None,
+                "{name} {branch}"
+            );
+        }
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(
+            said.contains(
+                "the repository link was ignored: the name is not a plaza repository name"
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains(
+                "the repository link was ignored: the branch is not an editor/ branch name"
+            ),
+            "{said}"
+        );
+        let mut good = repo_meta("app", "editor/main", "abc1234def", false);
+        good["cwd"] = json!("/work/app");
+        let created = h
+            .client
+            .peer()
+            .call("session/new", good, WAIT)
+            .expect("session/new");
+        let id = created["sessionId"].as_str().expect("a session id");
+        assert_eq!(
+            h.plaza.sessions.get(id).unwrap().repo.map(|link| link.name),
+            Some("app".to_string())
+        );
+    }
+
+    #[test]
+    fn a_turn_ends_without_waiting_for_an_unanswered_ask() {
+        let (plaza, frames) = plaza(None, Caller::Owner, false);
+        let (_server, client_in, client_out) = serve(&plaza);
+        // The editor holds its answer to the permission request until the test lets it go.
+        let (release, held) = mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let editor = Peer::new(
+            client_in,
+            client_out,
+            move |_peer: &Peer, method: &str, _params: Value| {
+                if method != CLIENT_METHOD_NAMES.session_request_permission {
+                    return Err(types::Error::method_not_found());
+                }
+                let _ = lock(&held).recv_timeout(WAIT);
+                Ok(json!({"outcome": {"outcome": "selected", "optionId": "allow"}}))
+            },
+            |_peer: &Peer, _method: &str, _params: Value| {},
+        );
+        let created = editor
+            .call(
+                AGENT_METHOD_NAMES.session_new,
+                json!({"cwd": "/work/app", "mcpServers": []}),
+                WAIT,
+            )
+            .expect("session/new");
+        let session = created["sessionId"].as_str().expect("a session id");
+        *lock(&plaza.hub.approvals) = vec![json!({"id": "ap1", "subject": "Write a file"})];
+        frames.send(work_end()).expect("the bus is open");
+        // The turn ends although the ask is unanswered: the work's end does not wait for the editor.
+        let answer = editor
+            .call(
+                AGENT_METHOD_NAMES.session_prompt,
+                json!({"sessionId": session, "prompt": [{"type": "text", "text": "write it"}]}),
+                WAIT,
+            )
+            .expect("the turn ends");
+        assert_eq!(answer["stopReason"], "end_turn");
+        // The editor's answer comes after the turn, so it is dropped: the owner decides in the console.
+        release.send(()).expect("the editor is waiting");
+        thread::sleep(Duration::from_millis(100));
+        let calls = plaza.hub.calls();
+        assert!(!calls.iter().any(|c| c.starts_with("decide")), "{calls:?}");
+    }
+
+    #[test]
+    fn a_token_steers_as_the_editor_and_cannot_extend_the_turns() {
+        let h = harness_with(None, operate(), ClientConfig::default());
+        let session = h.client.new_session("/work/app").expect("session/new");
+        h.client
+            .prompt(&session, "/steer use the other module")
+            .expect("session/prompt");
+        let calls = h.plaza.hub.calls();
+        assert!(
+            calls.contains(
+                &"control 7 None steer(use the other module) from editor (token editor)"
+                    .to_string()
+            ),
+            "{calls:?}"
+        );
+        h.client
+            .prompt(&session, "/extend-turns 5")
+            .expect("session/prompt");
+        let calls = h.plaza.hub.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("control 7 None extend-turns")),
+            "{calls:?}"
+        );
+        let said = serde_json::to_string(&h.client.updates()).expect("serialize");
+        assert!(
+            said.contains("this token's scope is operate; extending turns needs govern"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_fifth_v2_prompt_is_refused_while_four_turns_run() {
+        let (plaza, editor, frames, _server) = v2_harness(true);
+        // Each turn takes the next bus receiver; the test keeps the sender of each one.
+        let extra: Vec<Sender<Frame>> = (0..4)
+            .map(|_| {
+                let (tx, rx) = mpsc::channel();
+                lock(&plaza.hub.frames).push(rx);
+                tx
+            })
+            .collect();
+        editor
+            .peer
+            .call("initialize", initialize_v2(), WAIT)
+            .expect("initialize");
+        let session = editor
+            .peer
+            .call(
+                "session/new",
+                json!({"cwd": "/work/app", "mcpServers": []}),
+                WAIT,
+            )
+            .expect("session/new")["sessionId"]
+            .as_str()
+            .expect("a session id")
+            .to_string();
+        let prompt =
+            |text: &str| json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]});
+        for n in 0..4 {
+            editor
+                .peer
+                .call("session/prompt", prompt(&format!("turn {n}")), WAIT)
+                .expect("a prompt under the cap is answered");
+        }
+        let refused = editor
+            .peer
+            .call("session/prompt", prompt("turn 4"), WAIT)
+            .expect_err("a fifth prompt is refused");
+        assert!(
+            format!("{refused:?}").contains("too many prompts running on this connection"),
+            "{refused:?}"
+        );
+        // The four turns end; the connection then takes a prompt again.
+        frames.send(work_end()).expect("the bus is open");
+        for tx in &extra[..3] {
+            tx.send(work_end()).expect("the bus is open");
+        }
+        wait_for_updates(&editor.updates, |seen| {
+            seen.iter().filter(|u| u["state"] == "idle").count() >= 4
+        });
+        editor
+            .peer
+            .call("session/prompt", prompt("turn 5"), WAIT)
+            .expect("a prompt after the turns end is answered");
+        let chats = plaza
+            .hub
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("chat "))
+            .count();
+        assert_eq!(chats, 5);
     }
 
     #[test]
@@ -1928,7 +2374,7 @@ mod tests {
     #[test]
     fn session_cancel_asks_the_hub_to_cancel_the_last_work_queued_or_not() {
         let h = harness(None);
-        let session = h.plaza.sessions.open(7, "/work/app", "", 0);
+        let session = h.plaza.sessions.open(7, "/work/app", "", "owner", 0);
         h.plaza.sessions.add_work(&session.id, 42, "fix it", 0);
         let detach = detacher_for(&h.plaza, &h._server);
         notification(
@@ -1950,7 +2396,7 @@ mod tests {
         );
         let calls = h.plaza.hub.calls();
         assert!(
-            calls.contains(&"control 7 None stop()".to_string()),
+            calls.contains(&"control 7 None stop() from owner".to_string()),
             "{calls:?}"
         );
         assert!(!calls.iter().any(|c| c.starts_with("chat")), "{calls:?}");

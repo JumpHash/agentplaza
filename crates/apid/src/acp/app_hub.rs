@@ -175,6 +175,7 @@ impl Hub for AppHub<'_> {
         work: Option<u64>,
         command: &str,
         arg: &str,
+        from: &str,
     ) -> Result<String, String> {
         let running = self.app.work.current(cid);
         if let Some(work) = work {
@@ -194,7 +195,7 @@ impl Hub for AppHub<'_> {
                     return Err("steer text is over 2000 characters".to_string());
                 }
                 let note = Control::Steer {
-                    from: "owner".to_string(),
+                    from: from.to_string(),
                     text: text.to_string(),
                 };
                 crate::harness_control::control(self.app, cid, note)

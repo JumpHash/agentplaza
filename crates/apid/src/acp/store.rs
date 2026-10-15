@@ -41,6 +41,11 @@ pub struct Session {
     /// agent works on a branch of it. Snapshots from before the link existed have none.
     #[serde(default)]
     pub repo: Option<RepoLink>,
+    /// Who opened it: `owner`, or `token:<id>` for the editor of a hub MCP token. Only the opener and
+    /// the owner may use the session. A snapshot from before this field existed has `""`, which is
+    /// the owner's.
+    #[serde(default)]
+    pub opener: String,
 }
 
 /// The plaza repository a session's project is mirrored to (`_meta.agentplaza.repo`).
@@ -66,8 +71,8 @@ impl Sessions {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Opens a new session on agent `cid`.
-    pub fn open(&self, cid: u64, cwd: &str, client: &str, now_ms: u64) -> Session {
+    /// Opens a new session on agent `cid` for `opener` (see [`Session::opener`]).
+    pub fn open(&self, cid: u64, cwd: &str, client: &str, opener: &str, now_ms: u64) -> Session {
         let mut inner = self.lock();
         let id = new_id(&inner, now_ms);
         let session = Session {
@@ -81,6 +86,7 @@ impl Sessions {
             updated_ms: now_ms,
             closed: false,
             repo: None,
+            opener: opener.to_string(),
         };
         inner.insert(id.clone(), session.clone());
         trim(&mut inner, &id);
@@ -226,8 +232,8 @@ mod tests {
     #[test]
     fn open_gives_a_fresh_id_and_no_title() {
         let sessions = Sessions::default();
-        let first = sessions.open(7, "/work/a", "zed 0.1", 1_000);
-        let second = sessions.open(7, "/work/a", "zed 0.1", 1_000);
+        let first = sessions.open(7, "/work/a", "zed 0.1", "owner", 1_000);
+        let second = sessions.open(7, "/work/a", "zed 0.1", "owner", 1_000);
         assert!(is_id(&first.id), "{}", first.id);
         assert_ne!(first.id, second.id);
         assert_eq!(
@@ -241,9 +247,9 @@ mod tests {
     #[test]
     fn list_is_newest_first_and_filters_by_cwd() {
         let sessions = Sessions::default();
-        let a = sessions.open(1, "/a", "zed", 10);
-        let b = sessions.open(1, "/b", "zed", 20);
-        let c = sessions.open(1, "/a", "zed", 30);
+        let a = sessions.open(1, "/a", "zed", "owner", 10);
+        let b = sessions.open(1, "/b", "zed", "owner", 20);
+        let c = sessions.open(1, "/a", "zed", "owner", 30);
         sessions.add_work(&a.id, 5, "hi", 40);
         let ids: Vec<String> = sessions.list(None).into_iter().map(|s| s.id).collect();
         assert_eq!(ids, [a.id.clone(), c.id.clone(), b.id.clone()]);
@@ -259,7 +265,7 @@ mod tests {
     #[test]
     fn the_first_prompt_line_becomes_the_title() {
         let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", 10);
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
         sessions.add_work(&s.id, 1, "\n   \n  Fix the parser  \nmore detail", 20);
         sessions.add_work(&s.id, 2, "a second prompt", 30);
         let got = sessions.get(&s.id).unwrap();
@@ -271,7 +277,7 @@ mod tests {
     #[test]
     fn a_title_is_at_most_80_characters() {
         let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", 10);
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
         sessions.add_work(&s.id, 1, &"é".repeat(100), 20);
         assert_eq!(
             sessions.get(&s.id).unwrap().title.chars().count(),
@@ -282,7 +288,7 @@ mod tests {
     #[test]
     fn close_marks_a_session_and_refuses_an_unknown_one() {
         let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", 10);
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
         assert!(sessions.close(&s.id, 20));
         assert!(sessions.get(&s.id).unwrap().closed);
         assert!(!sessions.close("acp-nope", 20));
@@ -291,11 +297,11 @@ mod tests {
     #[test]
     fn past_keep_the_oldest_closed_session_goes_first() {
         let sessions = Sessions::default();
-        let old = sessions.open(1, "/a", "zed", 1);
+        let old = sessions.open(1, "/a", "zed", "owner", 1);
         sessions.close(&old.id, 2);
         let mut kept = Vec::new();
         for t in 0..KEEP as u64 {
-            kept.push(sessions.open(1, "/a", "zed", 100 + t));
+            kept.push(sessions.open(1, "/a", "zed", "owner", 100 + t));
         }
         assert_eq!(sessions.list(None).len(), KEEP);
         assert!(sessions.get(&old.id).is_none());
@@ -305,10 +311,10 @@ mod tests {
     #[test]
     fn past_keep_with_none_closed_the_oldest_goes() {
         let sessions = Sessions::default();
-        let first = sessions.open(1, "/a", "zed", 1);
+        let first = sessions.open(1, "/a", "zed", "owner", 1);
         let mut last = None;
         for t in 0..KEEP as u64 {
-            last = Some(sessions.open(1, "/a", "zed", 10 + t));
+            last = Some(sessions.open(1, "/a", "zed", "owner", 10 + t));
         }
         assert_eq!(sessions.list(None).len(), KEEP);
         assert!(sessions.get(&first.id).is_none());
@@ -319,7 +325,7 @@ mod tests {
     fn snapshot_round_trips_and_an_empty_one_is_empty() {
         assert_eq!(Sessions::default().snapshot(), "");
         let sessions = Sessions::default();
-        let s = sessions.open(3, "/a", "zed 1", 10);
+        let s = sessions.open(3, "/a", "zed 1", "token:mcp_a", 10);
         sessions.add_work(&s.id, 9, "hello", 20);
         let other = Sessions::default();
         other.restore(&sessions.snapshot()).unwrap();
@@ -329,9 +335,24 @@ mod tests {
     }
 
     #[test]
+    fn a_session_names_its_opener_and_an_older_one_is_the_owners() {
+        let sessions = Sessions::default();
+        let s = sessions.open(1, "/a", "zed", "token:mcp_a", 10);
+        assert_eq!(s.opener, "token:mcp_a");
+        // A snapshot saved before the field existed restores with no opener, which is the owner's.
+        let id = &s.id;
+        let old = format!(
+            "{{\"{id}\":{{\"id\":\"{id}\",\"cid\":1,\"cwd\":\"/a\",\"client\":\"zed\",\"title\":\"\",\"works\":[],\"created_ms\":10,\"updated_ms\":10,\"closed\":false}}}}"
+        );
+        let restored = Sessions::default();
+        restored.restore(&old).unwrap();
+        assert_eq!(restored.get(id).unwrap().opener, "");
+    }
+
+    #[test]
     fn a_repo_link_is_recorded_and_an_older_snapshot_has_none() {
         let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", 10);
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
         assert_eq!(s.repo, None);
         let link = RepoLink {
             name: "app".into(),
@@ -354,7 +375,7 @@ mod tests {
     #[test]
     fn a_bad_snapshot_changes_nothing() {
         let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", 10);
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
         assert!(sessions.restore("{not json").is_err());
         assert_eq!(sessions.get(&s.id), Some(s));
     }
