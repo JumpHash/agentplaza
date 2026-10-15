@@ -790,6 +790,15 @@ pub fn spawn_reconcile(app: Arc<App>) {
     });
 }
 
+/// What a reconcile pass compares for an agent a node reported a VM for.
+struct Placed {
+    cid: u64,
+    role: String,
+    species: String,
+    run: Option<String>,
+    vm: Option<u32>,
+}
+
 /// One reconcile pass over every node (`fleet::reports`). A node whose gateway or noded did not
 /// answer changes nothing: its agents are only marked gone when its own gateway says so.
 fn reconcile_once(app: &App) {
@@ -797,7 +806,7 @@ fn reconcile_once(app: &App) {
     for (node, status, runs) in crate::fleet::reports(app) {
         // Sessions: register unknown or offline sessions, then mark this node's vanished agents offline.
         if let Some(rows) = status["agents"].as_array() {
-            let live: Vec<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
+            let live: BTreeSet<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
             for row in rows {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
@@ -811,13 +820,15 @@ fn reconcile_once(app: &App) {
                     hello(app, cid, role, 0, &[]);
                 }
             }
-            for agent in app.agents.list() {
-                // An asleep agent has no session by design: it is not gone.
-                if !matches!(agent.status, Status::Offline | Status::Asleep)
-                    && crate::fleet::node_of(app, agent.cid) == node
-                    && !live.contains(&agent.cid)
-                {
-                    gone(app, agent.cid, "session not on its node's gateway");
+            // An asleep agent has no session by design: it is not gone.
+            let missing = app.agents.select(|agent| {
+                (!matches!(agent.status, Status::Offline | Status::Asleep)
+                    && !live.contains(&agent.cid))
+                .then_some(agent.cid)
+            });
+            for cid in missing {
+                if crate::fleet::node_of(app, cid) == node {
+                    gone(app, cid, "session not on its node's gateway");
                 }
             }
         }
@@ -844,7 +855,17 @@ fn reconcile_once(app: &App) {
             }
         }
     }
-    for agent in app.agents.list() {
+    // Only the agents a node reported a VM for, and only the fields compared below.
+    let placed = app.agents.select(|agent| {
+        placements.contains_key(&agent.cid).then(|| Placed {
+            cid: agent.cid,
+            role: agent.role.clone(),
+            species: agent.species.clone(),
+            run: agent.run.clone(),
+            vm: agent.vm,
+        })
+    });
+    for agent in placed {
         let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
             continue;
         };
