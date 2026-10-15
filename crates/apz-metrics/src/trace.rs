@@ -97,12 +97,18 @@ pub struct TailSampler {
 
 impl TailSampler {
     pub fn new(seed: u64) -> TailSampler {
-        TailSampler { roles: HashMap::new(), rng: seed.max(1), keep_all: false }
+        TailSampler {
+            roles: HashMap::new(),
+            rng: seed.max(1),
+            keep_all: false,
+        }
     }
 
     /// Why to keep `t`, or `None` to drop it. `open` says whether the agent is open in a console right now.
     pub fn decide(&mut self, t: &Trace, open: bool) -> Option<Keep> {
         let _ = (t, open);
-        todo!("check error, open, slow (p95 of role before recording this one), sampled; keep_all -> Sampled for the rest; then record dur into the role histogram")
+        todo!(
+            "check error, open, slow (p95 of role before recording this one), sampled; keep_all -> Sampled for the rest; then record dur into the role histogram"
+        )
     }
 }

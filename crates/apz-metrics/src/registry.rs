@@ -116,7 +116,10 @@ impl Default for Registry {
 impl Registry {
     /// A registry allowing `cap` series per entity kind.
     pub fn new(cap: usize) -> Registry {
-        Registry { inner: Mutex::new(Inner::default()), cap }
+        Registry {
+            inner: Mutex::new(Inner::default()),
+            cap,
+        }
     }
 
     /// The counter for `key` (created on first use; the overflow series past the cap).

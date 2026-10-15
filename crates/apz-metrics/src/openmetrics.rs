@@ -5,8 +5,8 @@
 //! Names: the metric id with `.` replaced by `_`, prefixed `apz_`. Counters get `_total`; histograms are written
 //! as summaries with `quantile="0.5"|"0.95"|"0.99"` plus `_sum` and `_count`; gauges as gauges. Ends with `# EOF`.
 
-use crate::agg::Agg;
 use crate::SeriesKey;
+use crate::agg::Agg;
 
 /// Renders the latest aggregate of each series (counters as their running totals).
 pub fn render(series: &[(SeriesKey, Agg)]) -> String {

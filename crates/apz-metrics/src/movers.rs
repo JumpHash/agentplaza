@@ -16,7 +16,12 @@ pub struct Mover {
 /// The `n` series with the largest absolute relative change between `before` and `after` (matched by key; a key
 /// missing on one side counts as 0 there). Series below `floor` on both sides are ignored as noise. Ties keep
 /// key order.
-pub fn top(before: &[(SeriesKey, f64)], after: &[(SeriesKey, f64)], n: usize, floor: f64) -> Vec<Mover> {
+pub fn top(
+    before: &[(SeriesKey, f64)],
+    after: &[(SeriesKey, f64)],
+    n: usize,
+    floor: f64,
+) -> Vec<Mover> {
     let _ = (before, after, n, floor);
     todo!()
 }

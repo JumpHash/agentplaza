@@ -4,7 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 /// How much is collected. Ordered: `Off < Basic < Standard < Full`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     /// Only what billing needs (model calls); alert rules on spend still run.
@@ -127,11 +129,18 @@ mod tests {
     fn the_governor_steps_down_after_five_minutes_over_and_back_up_after_thirty_under() {
         let mut g = Governor::new(Level::Standard, 0);
         assert_eq!(g.observe(true, 1_000), None);
-        assert_eq!(g.observe(true, 1_000 + STEP_DOWN_AFTER_MS), Some(Level::Basic));
+        assert_eq!(
+            g.observe(true, 1_000 + STEP_DOWN_AFTER_MS),
+            Some(Level::Basic)
+        );
         assert_eq!(g.observe(false, 1_000 + STEP_DOWN_AFTER_MS + 1), None);
         let t = 1_000 + STEP_DOWN_AFTER_MS + 1 + STEP_UP_AFTER_MS;
         assert_eq!(g.observe(false, t), Some(Level::Standard));
-        assert_eq!(g.observe(false, t + STEP_UP_AFTER_MS), None, "never above the chosen level");
+        assert_eq!(
+            g.observe(false, t + STEP_UP_AFTER_MS),
+            None,
+            "never above the chosen level"
+        );
     }
 
     #[test]

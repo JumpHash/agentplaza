@@ -130,7 +130,12 @@ pub struct SeriesKey {
 
 impl SeriesKey {
     pub fn new(metric: &str, kind: EntityKind, entity: &str) -> SeriesKey {
-        SeriesKey { metric: metric.to_string(), kind, entity: entity.to_string(), labels: Vec::new() }
+        SeriesKey {
+            metric: metric.to_string(),
+            kind,
+            entity: entity.to_string(),
+            labels: Vec::new(),
+        }
     }
 
     /// Adds a label, keeping labels sorted by name; a label past [`MAX_LABELS`] is ignored and an existing
@@ -147,7 +152,10 @@ impl SeriesKey {
 
     /// The value of a label, if set.
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.labels.iter().find(|l| l.0 == name).map(|l| l.1.as_str())
+        self.labels
+            .iter()
+            .find(|l| l.0 == name)
+            .map(|l| l.1.as_str())
     }
 
     /// The scope id of the entity (`node:n1`, `agent:4417`, `global`).
@@ -160,8 +168,18 @@ impl SeriesKey {
 
     /// A stable one-line text form, used as the storage key: `metric|kind|entity|name=value,name=value`.
     pub fn id(&self) -> String {
-        let labels: Vec<String> = self.labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{}|{}|{}|{}", self.metric, self.kind.prefix(), self.entity, labels.join(","))
+        let labels: Vec<String> = self
+            .labels
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        format!(
+            "{}|{}|{}|{}",
+            self.metric,
+            self.kind.prefix(),
+            self.entity,
+            labels.join(",")
+        )
     }
 
     /// Parses [`SeriesKey::id`].
@@ -171,7 +189,12 @@ impl SeriesKey {
         let kind = EntityKind::from_prefix(parts.next()?)?;
         let entity = parts.next()?;
         let mut key = SeriesKey::new(metric, kind, entity);
-        for pair in parts.next().unwrap_or("").split(',').filter(|s| !s.is_empty()) {
+        for pair in parts
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter(|s| !s.is_empty())
+        {
             let (k, v) = pair.split_once('=')?;
             key = key.label(k, v);
         }
@@ -243,7 +266,13 @@ mod tests {
             .label("provider", "anthropic")
             .label("model", "opus")
             .label("extra", "ignored");
-        assert_eq!(k.labels, vec![("model".into(), "opus".into()), ("provider".into(), "anthropic".into())]);
+        assert_eq!(
+            k.labels,
+            vec![
+                ("model".into(), "opus".into()),
+                ("provider".into(), "anthropic".into())
+            ]
+        );
         assert_eq!(SeriesKey::parse(&k.id()), Some(k.clone()));
         assert_eq!(k.scope(), "agent:4417");
     }

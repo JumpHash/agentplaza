@@ -48,7 +48,11 @@ pub struct Notify {
 
 impl Default for Notify {
     fn default() -> Self {
-        Notify { console: true, desktop: true, board: false }
+        Notify {
+            console: true,
+            desktop: true,
+            board: false,
+        }
     }
 }
 
@@ -85,10 +89,17 @@ fn yes() -> bool {
 pub enum State {
     Ok,
     /// The condition holds, not yet for long enough.
-    Pending { since_ms: u64 },
-    Firing { since_ms: u64 },
+    Pending {
+        since_ms: u64,
+    },
+    Firing {
+        since_ms: u64,
+    },
     /// Was firing; the condition has been clear since `clear_ms`, not yet for long enough.
-    Clearing { since_ms: u64, clear_ms: u64 },
+    Clearing {
+        since_ms: u64,
+        clear_ms: u64,
+    },
 }
 
 /// A change worth recording and telling the owner about.
@@ -110,14 +121,25 @@ pub struct Tracker {
 
 impl Tracker {
     /// Feeds one reading of a rule for a subject. Returns a transition when the subject fired or resolved.
-    pub fn observe(&mut self, rule: &Rule, subject: &str, value: f64, now_ms: u64) -> Option<Transition> {
+    pub fn observe(
+        &mut self,
+        rule: &Rule,
+        subject: &str,
+        value: f64,
+        now_ms: u64,
+    ) -> Option<Transition> {
         let _ = (rule, subject, value, now_ms);
-        todo!("key = rule id, U+001F, subject; implement the ok/pending/firing/clearing machine with for_ms both ways")
+        todo!(
+            "key = rule id, U+001F, subject; implement the ok/pending/firing/clearing machine with for_ms both ways"
+        )
     }
 
     /// The state of a rule's subject.
     pub fn state(&self, rule: &str, subject: &str) -> State {
-        self.states.get(&format!("{rule}\u{1f}{subject}")).copied().unwrap_or(State::Ok)
+        self.states
+            .get(&format!("{rule}\u{1f}{subject}"))
+            .copied()
+            .unwrap_or(State::Ok)
     }
 
     /// Every firing (or clearing) subject of a rule with its since time.
@@ -163,7 +185,9 @@ pub struct SloStatus {
 /// The status of a service level from its 5-minute window values (in the month so far).
 pub fn slo_status(slo: &Slo, windows: &[f64]) -> SloStatus {
     let _ = (slo, windows);
-    todo!("met = count holding / len * 100; allowed bad = (100-goal)/100; budget_left = 1 - bad_share/allowed (1.0 when no windows)")
+    todo!(
+        "met = count holding / len * 100; allowed bad = (100-goal)/100; budget_left = 1 - bad_share/allowed (1.0 when no windows)"
+    )
 }
 
 /// The starter service levels: wake p95 < 1 s 99 %, first token p95 < 3 s 98 %, hub API p95 < 200 ms 99.9 %,

@@ -2,9 +2,9 @@
 //! series; a window closes when a sample past its end plus the late allowance arrives, or when `flush_due` is
 //! called after that time. Each closed window is written once; nothing re-reads raw data to roll it up.
 
+use crate::SeriesKey;
 use crate::hist::HistSnapshot;
 use crate::registry::{Sample, Value};
-use crate::SeriesKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -66,7 +66,9 @@ impl Agg {
     /// The aggregate of one scraped value.
     pub fn of(value: &Value) -> Agg {
         let _ = value;
-        todo!("Counter(d) -> count 1, sum d, min=max=last=d; Gauge(v) -> count 1, sum v, min=max=last=v; Hist(h) -> hist Some, count/sum/min/max from h, last = h.max")
+        todo!(
+            "Counter(d) -> count 1, sum d, min=max=last=d; Gauge(v) -> count 1, sum v, min=max=last=v; Hist(h) -> hist Some, count/sum/min/max from h, last = h.max"
+        )
     }
 
     /// Adds a later aggregate into this one (`last` follows the later one).
@@ -125,7 +127,10 @@ impl Rollup {
 
     /// Every open window at a tier (for overview tiles and alert checks, which read no table).
     pub fn open_at(&self, tier: Tier) -> impl Iterator<Item = (&SeriesKey, u64, &Agg)> {
-        self.open.iter().filter(move |((_, t), _)| *t == tier).map(|((k, _), (s, a))| (k, *s, a))
+        self.open
+            .iter()
+            .filter(move |((_, t), _)| *t == tier)
+            .map(|((k, _), (s, a))| (k, *s, a))
     }
 
     /// Points that arrived past the late allowance.

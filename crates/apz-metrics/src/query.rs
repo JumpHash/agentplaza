@@ -43,7 +43,9 @@ impl AggFn {
 /// the 10 s tier for a range longer than 6 h.
 pub fn pick_tier(range_ms: u64, width_px: u32) -> Tier {
     let _ = (range_ms, width_px);
-    todo!("needed step = range / (width/2); choose the coarsest tier with step <= needed; Raw10s only when range <= 6 h, else Min1 at finest")
+    todo!(
+        "needed step = range / (width/2); choose the coarsest tier with step <= needed; Raw10s only when range <= 6 h, else Min1 at finest"
+    )
 }
 
 /// One number from a window's aggregate. Percentiles need a histogram (`None` without one). `Rate` divides the
@@ -55,7 +57,13 @@ pub fn reduce(agg: &Agg, f: AggFn, step_ms: u64) -> Option<f64> {
 
 /// Buckets stored windows `(start_ms, Agg)` of one series into `[from, to)` by `step_ms` (each window merged into
 /// the bucket holding its start), then reduces each bucket. Empty buckets are `None` (a gap, never zero).
-pub fn bucketize(rows: &[(u64, Agg)], from_ms: u64, to_ms: u64, step_ms: u64, f: AggFn) -> Vec<Option<f64>> {
+pub fn bucketize(
+    rows: &[(u64, Agg)],
+    from_ms: u64,
+    to_ms: u64,
+    step_ms: u64,
+    f: AggFn,
+) -> Vec<Option<f64>> {
     let _ = (rows, from_ms, to_ms, step_ms, f);
     todo!()
 }
