@@ -1,8 +1,8 @@
 # VM snapshots, warm templates and sleep
 
-Status (2026-10-15): built on Linux x86_64 with KVM, tested end to end on that machine. The VMM code for aarch64 KVM is
-ported and compiles, and it has not been run on hardware. Hypervisor.framework and WHP have no snapshot support (see
-"Platform support").
+Status (2026-10-15): built on Linux x86_64 with KVM, tested end to end on that machine. aarch64 KVM is verified end to end
+on an emulated arm64 host, not on arm64 hardware. Hypervisor.framework and WHP snapshots exist and compile for their
+targets, but they have not run on their hardware (see "Platform support").
 
 An agent's microVM can be paused, written to disk, restored, copied, forked and moved to another node. The same
 machinery gives the plaza warm starts: a new agent restores from a template instead of booting. The hub puts an agent
@@ -34,16 +34,18 @@ A snapshot is a directory. The VMM writes two files into it:
 
 | file | what it holds |
 |---|---|
-| `vmstate.json` | `VmSnapshot` as JSON: the format version, the VMM version and architecture, the memory layout, the VM's and every vCPU's KVM state, and the device state. |
+| `vmstate.json` | `VmSnapshot` as JSON: the format version, the VMM version and architecture, the `backend` (`kvm`, `whp` or `hvf`), the memory layout, the VM's and every vCPU's state for that backend, and the device state. |
 | `memory.img` | Guest memory, each region at its offset. Pages the guest never touched are holes, so the file is sparse. |
 
 The workspace volume is not in the VMM's files. The caller copies it (a reflink) beside the snapshot while the VM is
 paused, and hands the copy back on restore. On the node, a checkpoint also holds `workspace.img`. A sleep snapshot does
 not need one: the stopped VM's own workspace image stays unwritten until it wakes.
 
+Shared read-only data volumes are part of the VM's machine too. A snapshot saves their transports, and a restore needs the same number of them (see [`volumes.md`](volumes.md)).
+
 **Pause.** The vCPUs leave `KVM_RUN`, so no guest code runs. The snapshot holds the write half of the VM's device gate
 for its whole length. The vsock device's event thread takes the read half around each pass, so no packet lands between
-the device state and the memory dump.
+the device state and the memory dump. WHP and Hypervisor.framework park their vCPUs differently (see "Platform support").
 
 **Full and diff.** `SnapshotKind::Full` writes every page the guest has touched. A VM that was booted has anonymous
 memory, so the pages are found in `/proc/self/pagemap` and written as they are. `SnapshotKind::Diff` writes only the
@@ -59,7 +61,7 @@ of the file it was restored from. The control keeps that file open, so the copy 
 was removed.
 
 **Versioning refusals.** `read_state` refuses a snapshot of another format, another VMM version or another
-architecture (`SnapshotError::Incompatible`). A restore of state whose layout may have changed would corrupt the guest
+architecture (`SnapshotError::Incompatible`). A snapshot restores only on the backend that wrote it. A snapshot with no `backend` field reads as `kvm`. A restore of state whose layout may have changed would corrupt the guest
 silently, so the refusal comes first. The warm template key carries the same version (see below). A snapshot that does
 not fit the VM it restores into (devices, vCPUs, memory) is refused as a mismatch.
 
@@ -123,6 +125,25 @@ snapshot. The harness reconnects within moments, its hello marks it idle, and th
 | `POST /v1/agents/{cid}/wake` (apid) | The owner wakes the agent. |
 | `POST /v1/runs/{id}/vms/{index}/sleep` (noded) | Snapshots the VM and stops it. |
 | `POST /v1/runs/{id}/vms/{index}/wake` (noded) | Restores the VM from its sleep snapshot. |
+
+## Workstations
+
+On the plaza backend, a running workstation VM takes live snapshots of its memory and its disk. The steps take these times:
+
+| step | what it does | time |
+|---|---|---|
+| live snapshot | Snapshots memory and disk while the VM runs. | paused ~0.1 s |
+| revert | Resumes the VM from a snapshot, without a boot. | ~90 ms |
+| sleep | Snapshots the VM and stops it. | ~160 ms |
+| start | Wakes the VM from its memory (a warm start). | ~100 ms |
+
+A restored VM runs from a private copy of its image, in `running/`. Its later snapshots are diffs, so they never write a
+file the VM maps.
+
+QEMU workstation VMs keep the disk-only steps.
+
+The hub's lease hooks (`snapshot_reset`) run these steps. When the node can take them live, the hook snapshots and
+reverts live. Otherwise it stops the VM, copies the image and starts it again.
 
 ## Crash recovery
 
@@ -227,9 +248,48 @@ time. The owner's console and `agentplaza nodes` expose it.
 | platform | backend | state |
 |---|---|---|
 | Linux x86_64 | KVM | Snapshot, restore, diff, sleep, checkpoints, forks, moves. Tested end to end on this machine. |
-| Linux aarch64 | KVM | The aarch64 state ported and compiled (`cargo check --target aarch64-unknown-linux-gnu`). Not run on hardware here. |
-| macOS (Apple Silicon) | Hypervisor.framework (`crates/vmm/src/hvf`) | No snapshots. Pause and snapshot calls answer that the backend cannot (`SpawnError::NoSnapshots`). |
-| Windows | WHP (`crates/vmm/src/whp`) | No snapshots, the same answer. The snapshot format builds on every platform, so a Windows or macOS daemon can read snapshot metadata. |
+| Linux aarch64 | KVM | Boot, full snapshot, restore, and diff snapshot and its restore, verified on an emulated arm64 host. Not run on arm64 hardware. |
+| macOS (Apple Silicon) | Hypervisor.framework (`crates/vmm/src/hvf`) | Snapshot and restore code, compile-checked for `aarch64-apple-darwin`. Not run on a Mac. |
+| Windows | WHP (`crates/vmm/src/whp`) | Snapshot and restore code, compile-checked for `x86_64-pc-windows-msvc`. Not run on Windows. The snapshot format builds on every platform, so a Windows or macOS daemon can read snapshot metadata. |
+
+### aarch64 KVM
+
+aarch64 KVM was verified end to end on an emulated arm64 host: `qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu max`,
+with a 6.18 host kernel that has KVM, nested. The run covered boot, a full snapshot (43 MB written, paused ~230 ms under
+emulation), a restore under another CID (the console answered 148 ms after the restore), and a diff snapshot and its
+restore.
+
+That run found a bug, now fixed. The vGIC names a vCPU by its MPIDR affinity, packed into the top 32 bits
+(`KVM_DEV_ARM_VGIC_V3_MPIDR_MASK`, as Firecracker's `construct_kvm_mpidrs` does). The raw MPIDR was masked to zero, so
+every vCPU's redistributor state was saved from and restored to vCPU 0, and a restored VM's other vCPUs got no timer
+interrupt. The snapshot test now also builds for aarch64. `APZ_VMM_TEST_SLOWDOWN` scales its timeouts on an emulated host.
+
+### WHP (Windows)
+
+Snapshots exist and are compile-checked for `x86_64-pc-windows-msvc`. They have not run on Windows. A pause parks each
+vCPU at its next exit: a running vCPU is cancelled, and a halted one is woken. A snapshot holds:
+
+- each vCPU's registers, by name;
+- each vCPU's local APIC (`WHvGetVirtualProcessorState`, InterruptControllerState2) and its XSAVE area;
+- the userspace I/O APIC, the UART and the vsock transport;
+- a full memory image, with zero pages left out.
+
+Some registers are written best-effort on restore: TSC, TSC_AUX, the debug registers, and the activity and
+pending-event registers. Windows without the state calls (before 10 2004) boots VMs and refuses snapshots.
+
+### Hypervisor.framework (Apple Silicon)
+
+Snapshots exist and are compile-checked for `aarch64-apple-darwin`. They have not run on a Mac. Only a vCPU's own thread
+may touch its registers. So a pause has each vCPU thread read its own state as it parks. Running, halted and powered-off
+vCPUs are all woken. A restore gives each thread its state to write before its first run. A snapshot holds:
+
+- X0 to X30, PC, FPCR, FPSR, CPSR, and Q0 to Q31;
+- the EL0 and EL1 system registers, including the pointer-authentication keys and the virtual timer;
+- the userspace GICv3, the UART, the PSCI power states, and the guest's virtual counter. A restore sets the timer
+  offset so the counter goes on;
+- a full memory image.
+
+`hv_vcpu_set_simd_fp_reg` takes a NEON vector by value, so it is called through a small inline-assembly shim.
 
 ## Measured
 
