@@ -23,6 +23,7 @@ use std::time::Duration;
 use apz_http::ws::{self, Limits, Message, Socket};
 use serde_json::{Value, json};
 
+use super::acp_git;
 use crate::cmd::mcp::bridge::error_line;
 use crate::ctx::{self, Client, Ctx};
 
@@ -493,15 +494,14 @@ impl Mirror for Plaza {
     }
 
     fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String> {
-        let url = format!("{}/v1/git/smart/{name}", self.client.base());
-        push_to(top, &url, refspec, self.client.target.bearer.as_deref())
+        acp_git::push(&self.client, top, name, refspec)
     }
 }
 
 /// Runs git in `dir` and returns its trimmed stdout. Git gets no stdin (the editor's protocol
 /// runs on it) and never prompts, and its output is captured, so none of it reaches stdout. A
 /// failure is the tail of git's stderr.
-fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+pub(super) fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -531,24 +531,6 @@ fn stderr_tail(text: &str) -> String {
     } else {
         tail.join("; ")
     }
-}
-
-/// Force-pushes `refspec` to the git repository at `url`. The owner token, when there is one,
-/// goes in git's environment as an HTTP header: never in the URL, nor in argv where `ps` shows it.
-fn push_to(top: &Path, url: &str, refspec: &str, token: Option<&str>) -> Result<(), String> {
-    let header = token.map(|token| format!("Authorization: Bearer {token}"));
-    let mut env = Vec::new();
-    if let Some(header) = &header {
-        env.push(("GIT_CONFIG_COUNT", "1"));
-        env.push(("GIT_CONFIG_KEY_0", "http.extraHeader"));
-        env.push(("GIT_CONFIG_VALUE_0", header.as_str()));
-    }
-    git(top, &["push", "--force", "--quiet", url, refspec], &env)
-        .map(|_| ())
-        .map_err(|reason| match token {
-            Some(token) => reason.replace(token, "<token>"),
-            None => reason,
-        })
 }
 
 /// What a mirror pushed: the plaza branch, the commit, and whether the editor's working tree had
@@ -1255,7 +1237,8 @@ mod tests {
         assert!(mirror.dirty(&top).unwrap(), "an untracked file is a change");
 
         let refspec = format!("HEAD:refs/heads/{}", branch_ref(Some("main"), &commit));
-        push_to(&top, &format!("file://{}", hub.display()), &refspec, None).expect("pushes");
+        let url = format!("file://{}", hub.display());
+        git(&top, &["push", "--force", "--quiet", &url, &refspec], &[]).expect("pushes");
         assert_eq!(
             git(&hub, &["rev-parse", "refs/heads/editor/main"], &[]).unwrap(),
             commit
