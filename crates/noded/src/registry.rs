@@ -1862,6 +1862,49 @@ impl Registry {
         Ok(run)
     }
 
+    /// Dozes VM `vm` of run `run`: pauses it if it runs, then pages its guest memory out of host RAM
+    /// (`VmHandle::reclaim`). The VM stays paused, and [`Registry::resume_vm`] wakes it. A reclaim that
+    /// fails leaves the VM paused and is refused. Returns the run and the bytes advised.
+    pub fn doze_vm(&self, run: &str, vm: u32) -> Result<(Arc<Run>, u64), VmOpError> {
+        let mut phases = apz_metrics::Phases::start("doze", format!("{run}/{vm}"));
+        let result = self.doze_vm_timed(run, vm, &mut phases);
+        let ok = result.is_ok();
+        let reclaimed = result.as_ref().map_or(0, |(_, bytes)| *bytes);
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::DOZE)
+            } else {
+                None
+            },
+            &[("ok", &ok), ("reclaimed_bytes", &reclaimed)],
+        );
+        result
+    }
+
+    /// The work of [`Registry::doze_vm`], with its pause and reclaim marked on `phases`.
+    fn doze_vm_timed(
+        &self,
+        run: &str,
+        vm: u32,
+        phases: &mut apz_metrics::Phases,
+    ) -> Result<(Arc<Run>, u64), VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        if let Err(err) = held.handle.pause() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        phases.mark("pause");
+        let reclaimed = held.handle.reclaim();
+        // Paused in every case: a reclaim that failed leaves the VM as the pause left it.
+        run.return_vm_in(vm, held.handle, VmState::Paused);
+        phases.mark("reclaim");
+        match reclaimed {
+            Ok(bytes) => Ok((run, bytes)),
+            Err(err) => Err(VmOpError::Refused(err.to_string())),
+        }
+    }
+
     /// Puts VM `vm` of run `run` to sleep (see `sleep_vm_inner`), timed: one `timing op=sleep` line and
     /// `crate::metrics::SLEEP`.
     pub fn sleep_vm(
@@ -4919,6 +4962,7 @@ mod tests {
                 registry.pause_vm("r9", 0).err(),
                 Some(VmOpError::UnknownRun)
             );
+            assert_eq!(registry.doze_vm("r9", 0).err(), Some(VmOpError::UnknownRun));
             assert_eq!(
                 registry.sleep_vm("r1", 3, true).err(),
                 Some(VmOpError::UnknownVm(3))
@@ -4971,6 +5015,7 @@ mod tests {
         let state = VmState::Asleep;
         let wrong = Some(VmOpError::WrongState { vm: 0, state });
         assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.doze_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.sleep_vm("r1", 0, true).err(), wrong);
         assert_eq!(asleep.checkpoint_vm("r1", 0, "x", true).err(), wrong);

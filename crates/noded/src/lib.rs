@@ -1859,6 +1859,10 @@ fn router() -> Router<Node> {
                 Registry::resume_vm,
             )
         })
+        // A dozing VM is a paused VM whose guest memory is paged out of host RAM; resume wakes it.
+        .post("/v1/runs/{id}/vms/{index}/doze", |node, _, params| {
+            doze_vm(node, params.get("id"), params.get("index"))
+        })
         .post(
             "/v1/runs/{id}/vms/{index}/sleep",
             |node, request, params| {
@@ -2314,6 +2318,25 @@ fn vm_op(
     };
     match op(node.registry(), id, vm) {
         Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/doze`: pauses the VM and pages its guest memory out of host RAM.
+/// The answer is the run, as pause answers it, with `reclaimed_bytes` added.
+fn doze_vm(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().doze_vm(id, vm) {
+        Ok((run, reclaimed)) => {
+            let mut body = serde_json::to_value(run.view(Detail::Summary)).unwrap_or_default();
+            if let Some(map) = body.as_object_mut() {
+                map.insert("reclaimed_bytes".into(), serde_json::json!(reclaimed));
+            }
+            Response::json(200, &body)
+        }
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }

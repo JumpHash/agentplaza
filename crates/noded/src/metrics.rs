@@ -18,6 +18,11 @@ pub static SLEEP: Histogram = Histogram::new(
     "apz_node_sleep_seconds",
     "A VM sleep: its snapshot and its stop",
 );
+/// A doze: the VM paused and its guest memory paged out of host RAM.
+pub static DOZE: Histogram = Histogram::new(
+    "apz_node_doze_seconds",
+    "A VM doze: its pause and the page-out of its memory",
+);
 /// A checkpoint: the VM's memory and disk copied while it is paused.
 pub static CHECKPOINT: Histogram = Histogram::new("apz_node_checkpoint_seconds", "A VM checkpoint");
 /// A fork: the copies made and started.
@@ -35,6 +40,7 @@ pub fn render() -> String {
         &WAKE as &dyn Metric,
         &WAKE_COLD,
         &SLEEP,
+        &DOZE,
         &CHECKPOINT,
         &FORK,
         &SPAWN,
