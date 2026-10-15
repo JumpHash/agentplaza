@@ -32,7 +32,8 @@
 # Not built here:
 #   - GPU passthrough. noded validates a vfio GPU and refuses the boot until apz-vmm can attach a PCI device.
 #   - The image's own init. The initramfs execs /sbin/init of the disk, which is Alpine's busybox init with OpenRC
-#     (its /etc/inittab runs the default runlevel, which starts the `local` service below). Not yet booted end to end.
+#     (its /etc/inittab runs the default runlevel, which starts the `local` service below). Booted end to end under
+#     a scratch hub: the station joins through the node's relay, and sleeps, wakes and reverts live.
 set -eu
 
 tarball=${1:?usage: mk-workstation-guest.sh <alpine-minirootfs.tar.gz> <apz-workstation> [out-dir]}

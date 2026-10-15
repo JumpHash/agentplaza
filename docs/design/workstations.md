@@ -23,7 +23,8 @@ installed there (Blender, compilers, browsers, anything).
 ## Known limits
 
 - Not yet run on real macOS, Windows or Wayland hardware. The tests use fakes and the hosts the code runs on.
-- The vsock and QEMU paths are not tested on a real node.
+- The QEMU path is not tested on a real node. The plaza VM path is: the desktop guest boots, joins and is driven
+  end to end under a scratch hub (section 10).
 - GPU time is not charged. Only the lease's wall time is charged (`stations/hooks.rs`), and a rate of 0 is free.
 - The Floor shows a workstation's state as its screen's glow: dark when offline, dim when up, lit while a lease is
   active. It does not show the live picture. The live thumbnail is on Machines and in the Workstations list.
@@ -262,6 +263,24 @@ session. Windows has no kernel command line, so its daemon uses the node address
 `vsock://2:5101` directly. The Windows daemon connects through the viosock provider (`apz-workstation`'s `vsock.rs`: a
 WinSock AF_VSOCK socket, family 40, with the same `SOCKADDR_VM` layout as Linux). A guest without the driver fails with
 a message that names it. The node side is the same for both backends.
+
+**The desktop guest, booted.** The image `scripts/mk-workstation-guest.sh` builds (Alpine with Xvfb, Openbox, the
+AT-SPI bus and the daemon) was booted as a plaza VM under a scratch hub on the hub's own machine, its node `n0`. The
+station is online about 2.2 s after the create. A sleep takes about 0.3 s and the station goes offline; after a wake
+(about 0.3 s) it is back online in about 1.4 s. A live snapshot takes about 0.7 s and the station stays online; a live
+revert takes about 0.45 s and it is back online in about 1.8 s. Running it found and fixed:
+
+- the image's `inittab` started a getty on every tty, which flooded the serial console; those lines are removed;
+- `/dev`, `/proc` and `/sys` were left behind by `switch_root`, so dbus had no `/dev`; the initramfs now moves them into
+  the new root first;
+- the join's output now goes to `/var/log/apz-join.log`;
+- a VM created on the local node (`n0`) was refused as "no node n0": the hub now takes `n0` with the noded machine's
+  facts;
+- the relay's requests named the TLS name `hub` as their `Host`, which the hub's guard refuses from loopback; they now
+  send `localhost` (TLS still checks `hub`);
+- the join came from loopback, which the hub refuses as the hub's own machine. A loopback join is now let through only
+  when its code is a VM's code on `n0` whose station has not joined yet. The VM has its own machine id, so the hello's
+  check that a station is never the hub's own machine still holds.
 
 ## 11. Phases
 
