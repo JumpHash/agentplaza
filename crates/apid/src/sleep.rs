@@ -16,6 +16,7 @@
 //! POST /v1/agents/{cid}/wake  → {ok}      (the owner wakes it)
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
@@ -100,21 +101,70 @@ pub fn wake(app: &App, cid: u64) {
             return;
         }
     }
+    if HUB.get().and_then(Weak::upgrade).is_none() {
+        book().waking.remove(&cid);
+        eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
+        return;
+    }
+    if wake_queue().try_send(cid).is_err() {
+        book().waking.remove(&cid);
+        eprintln!("apid: cannot wake agent {cid}: {WAKE_QUEUE} wakes are already queued");
+    }
+}
+
+/// How many threads run wakes. A wake is one noded call that restores a VM, so a few at a time is
+/// enough; the rest wait in the queue.
+const WAKE_WORKERS: usize = 8;
+
+/// How many wakes may wait for a worker. A wake beyond this is refused: the agent stays asleep and
+/// the next request or dispatch asks again.
+const WAKE_QUEUE: usize = 4096;
+
+/// The queue of agents to wake, drained by the wake workers. Started on first use.
+static WAKES: OnceLock<SyncSender<u64>> = OnceLock::new();
+
+/// The wake queue's sender. The first call starts [`WAKE_WORKERS`] named worker threads.
+fn wake_queue() -> &'static SyncSender<u64> {
+    WAKES.get_or_init(|| {
+        let (tx, rx) = sync_channel::<u64>(WAKE_QUEUE);
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..WAKE_WORKERS {
+            let rx = Arc::clone(&rx);
+            std::thread::Builder::new()
+                .name(format!("apid-wake-{i}"))
+                .spawn(move || {
+                    loop {
+                        let cid = {
+                            let queue = rx.lock().unwrap_or_else(PoisonError::into_inner);
+                            match queue.recv() {
+                                Ok(cid) => cid,
+                                Err(_) => break,
+                            }
+                        };
+                        run_wake(cid);
+                    }
+                })
+                .expect("apid: cannot start a wake worker");
+        }
+        tx
+    })
+}
+
+/// Runs one wake on a worker: noded restores `cid`'s VM, then the wake is recorded.
+fn run_wake(cid: u64) {
     let Some(hub) = HUB.get().and_then(Weak::upgrade) else {
         book().waking.remove(&cid);
         eprintln!("apid: cannot wake agent {cid}: the sleep sweeper is not running");
         return;
     };
-    std::thread::spawn(move || {
-        let result = noded_post(&hub, cid, "wake");
-        book().waking.remove(&cid);
-        match result {
-            Ok(_) => {
-                hub.transcripts.record(&hub.bus, cid, 0, "wake", json!({}));
-            }
-            Err(err) => eprintln!("apid: could not wake agent {cid}: {err}"),
+    let result = noded_post(&hub, cid, "wake");
+    book().waking.remove(&cid);
+    match result {
+        Ok(_) => {
+            hub.transcripts.record(&hub.bus, cid, 0, "wake", json!({}));
         }
-    });
+        Err(err) => eprintln!("apid: could not wake agent {cid}: {err}"),
+    }
 }
 
 /// Wakes `cid` if it is asleep and waits until it is connected again, up to `timeout`. Ok when the
@@ -376,6 +426,11 @@ fn wake_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wake_queue_is_one_shared_sender() {
+        assert!(std::ptr::eq(super::wake_queue(), super::wake_queue()));
+    }
+
     use super::*;
 
     fn check<'a>(never: &'a [String]) -> SleepCheck<'a> {
