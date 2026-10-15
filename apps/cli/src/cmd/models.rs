@@ -173,6 +173,15 @@ pub enum PolicyCmd {
         /// Whether contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries.
         #[arg(long, value_name = "true|false")]
         allow_training_models: Option<bool>,
+        /// Minutes an agent idles before it sleeps (its VM snapshotted and stopped until work comes); 0 = never.
+        #[arg(long, value_name = "MINUTES")]
+        idle_sleep_min: Option<u32>,
+        /// Roles whose agents never sleep, comma-separated (an empty value clears the list).
+        #[arg(long, value_name = "ROLES")]
+        sleep_never_roles: Option<String>,
+        /// Whether the hub checkpoints an agent's whole VM before each irreversible tool call.
+        #[arg(long, value_name = "true|false")]
+        vm_auto_checkpoints: Option<bool>,
     },
 }
 
@@ -448,6 +457,9 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 role_models,
                 prices,
                 allow_training_models,
+                idle_sleep_min,
+                sleep_never_roles,
+                vm_auto_checkpoints,
             } => {
                 let mut settings = ctx.client.get("/v1/settings")?;
                 let root = settings
@@ -465,6 +477,15 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 }
                 if let Some(n) = max_turns {
                     root.insert("max_turns".into(), json!(n));
+                }
+                if let Some(minutes) = idle_sleep_min {
+                    root.insert("idle_sleep_min".into(), json!(minutes));
+                }
+                if let Some(roles) = sleep_never_roles {
+                    root.insert("sleep_never_roles".into(), json!(split_list(&roles)));
+                }
+                if let Some(on) = vm_auto_checkpoints {
+                    root.insert("vm_auto_checkpoints".into(), json!(on));
                 }
                 if let Some(n) = max_tokens {
                     root.insert("max_tokens".into(), json!(n));
