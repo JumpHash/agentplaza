@@ -121,6 +121,8 @@ pub struct Settings {
     pub engines_enabled: Vec<String>,
     /// How the engines run: `acp` (the Agent Client Protocol) or `headless` (one process per job).
     pub engines_mode: String,
+    /// Whether editors may connect to the hub's ACP server (`/v1/acp`). Off until the owner turns it on.
+    pub acp_enabled: bool,
 }
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
@@ -214,6 +216,7 @@ impl Default for Settings {
             board_pauses: BoardPauses::default(),
             engines_enabled: ENGINE_IDS.map(String::from).to_vec(),
             engines_mode: ENGINE_MODES[0].into(),
+            acp_enabled: false,
         }
     }
 }
