@@ -1433,22 +1433,34 @@ mod tests {
     }
 
     #[test]
-    fn gemini_usage_is_read_from_usage_metadata_with_cached_and_thinking_tokens() {
-        let body = json!({
-            "candidates": [],
-            "usageMetadata": {
-                "promptTokenCount": 1200,
-                "cachedContentTokenCount": 200,
-                "candidatesTokenCount": 50,
-                "thoughtsTokenCount": 30,
-            }
-        });
-        let metered = tokens_in_gemini(&body).expect("usage");
-        assert_eq!(metered.tokens.input, 1000);
-        assert_eq!(metered.tokens.output, 80);
-        assert_eq!(metered.tokens.cache_read, 200);
-        assert_eq!(metered.cost_usd, None);
-        assert!(tokens_in_gemini(&json!({ "candidates": [] })).is_none());
+    fn gemini_usage_is_read_from_usage_metadata_in_bodies_and_streams() {
+        // Usage in one body: cached and thinking tokens are metered outside input and output; no usage meters nothing.
+        {
+            let body = json!({
+                "candidates": [],
+                "usageMetadata": {
+                    "promptTokenCount": 1200,
+                    "cachedContentTokenCount": 200,
+                    "candidatesTokenCount": 50,
+                    "thoughtsTokenCount": 30,
+                }
+            });
+            let metered = tokens_in_gemini(&body).expect("usage");
+            assert_eq!(metered.tokens.input, 1000);
+            assert_eq!(metered.tokens.output, 80);
+            assert_eq!(metered.tokens.cache_read, 200);
+            assert_eq!(metered.cost_usd, None);
+            assert!(tokens_in_gemini(&json!({ "candidates": [] })).is_none());
+        }
+        // A buffered stream takes its usage from the last chunk that carries it.
+        {
+            let chunks = json!([
+                { "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 2 } },
+                { "candidates": [] }
+            ]);
+            let metered = tokens_in_gemini(&chunks).expect("usage");
+            assert_eq!((metered.tokens.input, metered.tokens.output), (5, 2));
+        }
     }
 
     #[test]
@@ -1461,16 +1473,6 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         let metered = tokens_in_gemini_sse(sse).expect("usage");
         assert_eq!((metered.tokens.input, metered.tokens.output), (10, 7));
         assert!(tokens_in_gemini_sse("data: {\"candidates\":[]}\n\n").is_none());
-    }
-
-    #[test]
-    fn a_buffered_gemini_stream_takes_its_usage_from_the_last_chunk_that_has_it() {
-        let chunks = json!([
-            { "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 2 } },
-            { "candidates": [] }
-        ]);
-        let metered = tokens_in_gemini(&chunks).expect("usage");
-        assert_eq!((metered.tokens.input, metered.tokens.output), (5, 2));
     }
 
     #[test]
@@ -1533,20 +1535,108 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[test]
-    fn gemini_calls_are_held_to_the_gemini_list() {
-        let list = vec!["gemini/gemini-3-flash".to_string()];
-        assert_eq!(
-            decide_model("gemini", "gemini-3-flash", "anthropic/claude-x", &list),
-            Decision::Allow
-        );
-        assert_eq!(
-            decide_model("gemini", "gemini-3-pro", "gemini/gemini-3-flash", &list),
-            Decision::Rewrite("gemini-3-flash".to_string())
-        );
-        assert!(matches!(
-            decide_model("gemini", "gemini-3-pro", "anthropic/claude-x", &list),
-            Decision::Refuse(_)
-        ));
+    fn decide_model_holds_calls_to_their_list_and_rewrites_or_refuses() {
+        // A gemini call is held to the gemini list: a listed model passes, an unlisted gemini model is rewritten, another provider is refused.
+        {
+            let list = vec!["gemini/gemini-3-flash".to_string()];
+            assert_eq!(
+                decide_model("gemini", "gemini-3-flash", "anthropic/claude-x", &list),
+                Decision::Allow
+            );
+            assert_eq!(
+                decide_model("gemini", "gemini-3-pro", "gemini/gemini-3-flash", &list),
+                Decision::Rewrite("gemini-3-flash".to_string())
+            );
+            assert!(matches!(
+                decide_model("gemini", "gemini-3-pro", "anthropic/claude-x", &list),
+                Decision::Refuse(_)
+            ));
+        }
+        // A listed model passes untouched, and effort suffixes do not matter.
+        {
+            let list = allowed(&[
+                "anthropic/claude-haiku-5-5",
+                "anthropic/claude-opus-5-5@low",
+            ]);
+            assert_eq!(
+                decide_model(
+                    "anthropic",
+                    "claude-haiku-5-5",
+                    "anthropic/claude-haiku-5-5",
+                    &list
+                ),
+                Decision::Allow
+            );
+            assert_eq!(
+                decide_model(
+                    "anthropic",
+                    "claude-opus-5-5",
+                    "anthropic/claude-haiku-5-5",
+                    &list
+                ),
+                Decision::Allow
+            );
+        }
+        // An unlisted model is rewritten to the agent's own model on the same provider.
+        {
+            let list = allowed(&["anthropic/claude-haiku-5-5", "openai/gpt-6-luna"]);
+            assert_eq!(
+                decide_model(
+                    "anthropic",
+                    "claude-fable-5-1",
+                    "anthropic/claude-haiku-5-5@low",
+                    &list
+                ),
+                Decision::Rewrite("claude-haiku-5-5".to_string())
+            );
+            // A missing model is an unlisted one: the agent's own model answers.
+            assert_eq!(
+                decide_model("openai", "", "openai/gpt-6-luna", &list),
+                Decision::Rewrite("gpt-6-luna".to_string())
+            );
+        }
+        // An unlisted model with no same-provider fallback is refused, naming the allowed models.
+        {
+            let list = allowed(&["anthropic/claude-haiku-5-5", "openai/gpt-6-luna"]);
+            let Decision::Refuse(message) =
+                decide_model("openai", "gpt-9", "anthropic/claude-haiku-5-5", &list)
+            else {
+                panic!("expected a refusal");
+            };
+            assert!(message.contains("openai/gpt-6-luna"), "{message}");
+            assert!(message.contains("anthropic/claude-haiku-5-5"), "{message}");
+        }
+        // An openrouter model is policed as its provider-prefixed id.
+        {
+            let own = "openrouter/anthropic/claude-y";
+            assert_eq!(
+                decide_model(
+                    "openrouter",
+                    "anthropic/claude-x",
+                    own,
+                    &allowed(&["openrouter/anthropic/claude-x"])
+                ),
+                Decision::Allow
+            );
+            assert_eq!(
+                decide_model(
+                    "openrouter",
+                    "anthropic/claude-x",
+                    own,
+                    &allowed(&["openrouter/anthropic/claude-z"])
+                ),
+                Decision::Rewrite("anthropic/claude-y".into())
+            );
+            assert!(matches!(
+                decide_model(
+                    "openrouter",
+                    "anthropic/claude-x",
+                    "anthropic/claude-y",
+                    &allowed(&["openrouter/anthropic/claude-z"])
+                ),
+                Decision::Refuse(_)
+            ));
+        }
     }
 
     /// A booted vault in `dir` with one Anthropic key entry in `scope`.
@@ -1639,32 +1729,6 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[test]
-    fn a_listed_model_passes_untouched_and_effort_suffixes_do_not_matter() {
-        let list = allowed(&[
-            "anthropic/claude-haiku-5-5",
-            "anthropic/claude-opus-5-5@low",
-        ]);
-        assert_eq!(
-            decide_model(
-                "anthropic",
-                "claude-haiku-5-5",
-                "anthropic/claude-haiku-5-5",
-                &list
-            ),
-            Decision::Allow
-        );
-        assert_eq!(
-            decide_model(
-                "anthropic",
-                "claude-opus-5-5",
-                "anthropic/claude-haiku-5-5",
-                &list
-            ),
-            Decision::Allow
-        );
-    }
-
-    #[test]
     fn workers_are_not_held_to_a_model_list_and_the_orchestrator_is() {
         let policy = ModelPolicy::default();
         // Workers may run any model: no list is handed to the relay for them, dev models neither.
@@ -1694,37 +1758,6 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
             ),
             Decision::Refuse(_)
         ));
-    }
-
-    #[test]
-    fn an_unlisted_model_is_rewritten_to_the_agents_own_on_the_same_provider() {
-        let list = allowed(&["anthropic/claude-haiku-5-5", "openai/gpt-6-luna"]);
-        assert_eq!(
-            decide_model(
-                "anthropic",
-                "claude-fable-5-1",
-                "anthropic/claude-haiku-5-5@low",
-                &list
-            ),
-            Decision::Rewrite("claude-haiku-5-5".to_string())
-        );
-        // A missing model is an unlisted one: the agent's own model answers.
-        assert_eq!(
-            decide_model("openai", "", "openai/gpt-6-luna", &list),
-            Decision::Rewrite("gpt-6-luna".to_string())
-        );
-    }
-
-    #[test]
-    fn an_unlisted_model_with_no_same_provider_fallback_is_refused_naming_the_allowed() {
-        let list = allowed(&["anthropic/claude-haiku-5-5", "openai/gpt-6-luna"]);
-        let Decision::Refuse(message) =
-            decide_model("openai", "gpt-9", "anthropic/claude-haiku-5-5", &list)
-        else {
-            panic!("expected a refusal");
-        };
-        assert!(message.contains("openai/gpt-6-luna"), "{message}");
-        assert!(message.contains("anthropic/claude-haiku-5-5"), "{message}");
     }
 
     #[test]
@@ -1763,53 +1796,46 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[test]
-    fn an_openrouter_model_is_policed_as_its_provider_prefixed_id() {
-        let own = "openrouter/anthropic/claude-y";
-        assert_eq!(
-            decide_model(
-                "openrouter",
-                "anthropic/claude-x",
-                own,
-                &allowed(&["openrouter/anthropic/claude-x"])
-            ),
-            Decision::Allow
-        );
-        assert_eq!(
-            decide_model(
-                "openrouter",
-                "anthropic/claude-x",
-                own,
-                &allowed(&["openrouter/anthropic/claude-z"])
-            ),
-            Decision::Rewrite("anthropic/claude-y".into())
-        );
-        assert!(matches!(
-            decide_model(
-                "openrouter",
-                "anthropic/claude-x",
-                "anthropic/claude-y",
-                &allowed(&["openrouter/anthropic/claude-z"])
-            ),
-            Decision::Refuse(_)
-        ));
-    }
-
-    #[test]
-    fn opencode_calls_go_to_the_endpoint_their_model_is_served_on() {
-        assert_eq!(opencode_endpoint_error("/v1/messages", "claude-x"), None);
-        assert!(opencode_endpoint_error("/v1/messages", "gpt-5.6-terra").is_some());
-        assert!(opencode_endpoint_error("/v1/messages", "deepseek-v4-pro").is_some());
-        assert_eq!(
-            opencode_endpoint_error("/v1/responses", "gpt-5.6-terra"),
-            None
-        );
-        assert!(opencode_endpoint_error("/v1/responses", "claude-x").is_some());
-        assert_eq!(
-            opencode_endpoint_error("/v1/chat/completions", "deepseek-v4-pro"),
-            None
-        );
-        assert!(opencode_endpoint_error("/v1/chat/completions", "claude-x").is_some());
-        assert!(opencode_endpoint_error("/v1/chat/completions", "gemini-3-flash").is_some());
+    fn opencode_calls_and_refusals_name_the_endpoint_their_model_is_served_on() {
+        // Opencode calls go to the endpoint their model is served on.
+        {
+            assert_eq!(opencode_endpoint_error("/v1/messages", "claude-x"), None);
+            assert!(opencode_endpoint_error("/v1/messages", "gpt-5.6-terra").is_some());
+            assert!(opencode_endpoint_error("/v1/messages", "deepseek-v4-pro").is_some());
+            assert_eq!(
+                opencode_endpoint_error("/v1/responses", "gpt-5.6-terra"),
+                None
+            );
+            assert!(opencode_endpoint_error("/v1/responses", "claude-x").is_some());
+            assert_eq!(
+                opencode_endpoint_error("/v1/chat/completions", "deepseek-v4-pro"),
+                None
+            );
+            assert!(opencode_endpoint_error("/v1/chat/completions", "claude-x").is_some());
+            assert!(opencode_endpoint_error("/v1/chat/completions", "gemini-3-flash").is_some());
+        }
+        // Opencode refusals name the endpoint the model is served on, and not the wrong one.
+        {
+            // (endpoint called, model, the endpoint the refusal names, an endpoint it must not name)
+            let cases = [
+                (
+                    "/v1/messages",
+                    "deepseek-v4-pro",
+                    "/v1/chat/completions",
+                    Some("/v1/responses"),
+                ),
+                ("/v1/responses", "claude-sonnet-5-5", "/v1/messages", None),
+                ("/v1/messages", "gpt-5.6-terra", "/v1/responses", None),
+            ];
+            for (called, model, names, not) in cases {
+                let message = opencode_endpoint_error(called, model).expect("refused");
+                assert!(message.contains(names), "{message}");
+                assert!(message.contains(model), "{message}");
+                if let Some(other) = not {
+                    assert!(!message.contains(other), "{message}");
+                }
+            }
+        }
     }
 
     /// Reads one HTTP request: its head, and a body as long as its Content-Length says.
@@ -1857,30 +1883,30 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
     }
 
     #[test]
-    fn an_anthropic_stream_meters_its_cache_reads_and_writes_outside_its_input() {
-        let tail = "event: message_start\n\
+    fn token_usage_is_metered_per_provider_stream_and_body() {
+        // An anthropic stream meters its cache reads and writes outside its input.
+        {
+            let tail = "event: message_start\n\
 data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"cache_read_input_tokens\":300,\"cache_creation_input_tokens\":40,\"output_tokens\":1}}}\n\n\
 event: message_delta\n\
 data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":15}}\n\n";
-        // Anthropic's input_tokens already excludes its cache reads and writes.
-        assert_eq!(tokens_in_sse(tail), Some(metered(25, 15, 300, 40, None)));
-    }
-
-    #[test]
-    fn openai_chat_stream_usage_chunk_meters_cached_tokens() {
-        let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+            // Anthropic's input_tokens already excludes its cache reads and writes.
+            assert_eq!(tokens_in_sse(tail), Some(metered(25, 15, 300, 40, None)));
+        }
+        // An openai chat stream's usage chunk meters cached tokens.
+        {
+            let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
 data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2000,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":1920}}}\n\n\
 data: [DONE]\n\n";
-        assert_eq!(tokens_in_sse(tail), Some(metered(80, 9, 1920, 0, None)));
-    }
-
-    #[test]
-    fn openrouter_reports_the_cost_of_a_call_in_usd() {
-        let body =
-            json!({ "usage": { "prompt_tokens": 10, "completion_tokens": 2, "cost": 0.00042 } });
-        assert_eq!(tokens_in(&body), Some(metered(10, 2, 0, 0, Some(0.00042))));
-        let tail = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"cost\":0.5}}\n\n";
-        assert_eq!(tokens_in_sse(tail), Some(metered(10, 2, 0, 0, Some(0.5))));
+            assert_eq!(tokens_in_sse(tail), Some(metered(80, 9, 1920, 0, None)));
+        }
+        // openrouter reports the cost of a call in usd, in a body and a stream.
+        {
+            let body = json!({ "usage": { "prompt_tokens": 10, "completion_tokens": 2, "cost": 0.00042 } });
+            assert_eq!(tokens_in(&body), Some(metered(10, 2, 0, 0, Some(0.00042))));
+            let tail = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"cost\":0.5}}\n\n";
+            assert_eq!(tokens_in_sse(tail), Some(metered(10, 2, 0, 0, Some(0.5))));
+        }
     }
 
     #[test]
@@ -1965,36 +1991,38 @@ data: [DONE]\n\n";
     }
 
     #[test]
-    fn a_broke_agent_is_refused_and_a_funded_one_passes() {
-        let message = refusal(true, None, 0, 0).expect("no wallet, no task: refused");
-        assert!(message.starts_with("cannot pay for this model call"));
-        assert!(
-            refusal(true, Some("job"), 0, 0)
-                .expect("an empty escrow and no wallet: refused")
-                .contains("escrow has 0")
-        );
-        assert_eq!(refusal(true, None, 0, 25), None);
-        assert_eq!(
-            refusal(true, Some("job"), 40, 0),
-            None,
-            "the task's escrow pays"
-        );
-        assert_eq!(
-            refusal(true, Some("job"), 0, 25),
-            None,
-            "an empty escrow falls back to the wallet"
-        );
-    }
-
-    #[test]
-    fn charging_off_never_refuses_and_charges_nothing() {
-        assert_eq!(refusal(false, None, 0, 0), None);
-        let treasury = funded(100);
-        assert_eq!(
-            charge_model_call(&treasury, false, |_, _| {}, PAYER, None, 50, "m"),
-            None
-        );
-        assert_eq!(treasury.wallet(PAYER), 100);
+    fn refusal_gate_refuses_broke_agents_and_never_refuses_with_charging_off() {
+        // A broke agent is refused and a funded one passes.
+        {
+            let message = refusal(true, None, 0, 0).expect("no wallet, no task: refused");
+            assert!(message.starts_with("cannot pay for this model call"));
+            assert!(
+                refusal(true, Some("job"), 0, 0)
+                    .expect("an empty escrow and no wallet: refused")
+                    .contains("escrow has 0")
+            );
+            assert_eq!(refusal(true, None, 0, 25), None);
+            assert_eq!(
+                refusal(true, Some("job"), 40, 0),
+                None,
+                "the task's escrow pays"
+            );
+            assert_eq!(
+                refusal(true, Some("job"), 0, 25),
+                None,
+                "an empty escrow falls back to the wallet"
+            );
+        }
+        // Charging off never refuses and charges nothing.
+        {
+            assert_eq!(refusal(false, None, 0, 0), None);
+            let treasury = funded(100);
+            assert_eq!(
+                charge_model_call(&treasury, false, |_, _| {}, PAYER, None, 50, "m"),
+                None
+            );
+            assert_eq!(treasury.wallet(PAYER), 100);
+        }
     }
 
     #[test]
@@ -2032,44 +2060,47 @@ data: [DONE]\n\n";
     }
 
     #[test]
-    fn a_call_is_charged_its_credits_from_the_wallet() {
-        let treasury = funded(100);
-        let settled = crate::payments::settle(&treasury, PAYER, None, 50, "model call");
-        assert_eq!((settled.wanted, settled.charged), (50, 50));
-        assert_eq!(settled.error, None);
-        assert_eq!(treasury.wallet(PAYER), 50);
-    }
-
-    #[test]
-    fn a_charge_larger_than_the_balance_is_capped_and_never_negative() {
-        let treasury = funded(30);
-        let settled = charge_model_call(&treasury, true, |_, _| {}, PAYER, None, 50, "model call")
-            .expect("short, so noted");
-        assert_eq!(
-            (settled.wanted, settled.charged, settled.available),
-            (50, 30, 30)
-        );
-        assert_eq!(treasury.wallet(PAYER), 0);
-        // A broke agent is charged nothing, and the call still goes through.
-        let broke = funded(0);
-        let settled = charge_model_call(&broke, true, |_, _| {}, PAYER, None, 5, "model call")
-            .expect("short, so noted");
-        assert_eq!((settled.charged, settled.available), (0, 0));
-        assert_eq!(broke.wallet(PAYER), 0);
-    }
-
-    #[test]
-    fn a_task_escrow_pays_first_and_is_capped_there() {
-        let treasury = funded(30);
-        // The task keeps 1000 in escrow: a 1200 charge is capped there, the wallet is untouched.
-        let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 1200, "model call");
-        assert_eq!((settled.charged, settled.available), (1000, 1000));
-        assert_eq!(treasury.escrow_balance("job"), 0);
-        assert_eq!(treasury.wallet(PAYER), 30);
-        // With the escrow empty, the wallet pays.
-        let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 10, "model call");
-        assert_eq!((settled.charged, settled.available), (10, 30));
-        assert_eq!(treasury.wallet(PAYER), 20);
+    fn model_call_charges_come_from_the_wallet_or_escrow_and_are_capped() {
+        // A call is charged its credits from the wallet.
+        {
+            let treasury = funded(100);
+            let settled = crate::payments::settle(&treasury, PAYER, None, 50, "model call");
+            assert_eq!((settled.wanted, settled.charged), (50, 50));
+            assert_eq!(settled.error, None);
+            assert_eq!(treasury.wallet(PAYER), 50);
+        }
+        // A charge larger than the balance is capped and never negative.
+        {
+            let treasury = funded(30);
+            let settled =
+                charge_model_call(&treasury, true, |_, _| {}, PAYER, None, 50, "model call")
+                    .expect("short, so noted");
+            assert_eq!(
+                (settled.wanted, settled.charged, settled.available),
+                (50, 30, 30)
+            );
+            assert_eq!(treasury.wallet(PAYER), 0);
+            // A broke agent is charged nothing, and the call still goes through.
+            let broke = funded(0);
+            let settled = charge_model_call(&broke, true, |_, _| {}, PAYER, None, 5, "model call")
+                .expect("short, so noted");
+            assert_eq!((settled.charged, settled.available), (0, 0));
+            assert_eq!(broke.wallet(PAYER), 0);
+        }
+        // A task escrow pays first and is capped there.
+        {
+            let treasury = funded(30);
+            // The task keeps 1000 in escrow: a 1200 charge is capped there, the wallet is untouched.
+            let settled =
+                crate::payments::settle(&treasury, PAYER, Some("job"), 1200, "model call");
+            assert_eq!((settled.charged, settled.available), (1000, 1000));
+            assert_eq!(treasury.escrow_balance("job"), 0);
+            assert_eq!(treasury.wallet(PAYER), 30);
+            // With the escrow empty, the wallet pays.
+            let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 10, "model call");
+            assert_eq!((settled.charged, settled.available), (10, 30));
+            assert_eq!(treasury.wallet(PAYER), 20);
+        }
     }
 
     /// What a mock upstream saw of one call: the request line and the whole head, lowercased.
@@ -2234,28 +2265,6 @@ data: [DONE]\n\n";
         }
     }
 
-    #[test]
-    fn opencode_refusals_name_the_endpoint_the_model_is_served_on() {
-        // (endpoint called, model, the endpoint the refusal names, an endpoint it must not name)
-        let cases = [
-            (
-                "/v1/messages",
-                "deepseek-v4-pro",
-                "/v1/chat/completions",
-                Some("/v1/responses"),
-            ),
-            ("/v1/responses", "claude-sonnet-5-5", "/v1/messages", None),
-            ("/v1/messages", "gpt-5.6-terra", "/v1/responses", None),
-        ];
-        for (called, model, names, not) in cases {
-            let message = opencode_endpoint_error(called, model).expect("refused");
-            assert!(message.contains(names), "{message}");
-            assert!(message.contains(model), "{message}");
-            if let Some(other) = not {
-                assert!(!message.contains(other), "{message}");
-            }
-        }
-    }
     #[test]
     fn buffered_bodies_meter_each_providers_usage_shape() {
         // (body, the usage it meters): input excludes the cached tokens in every shape.

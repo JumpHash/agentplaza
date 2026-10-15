@@ -744,74 +744,75 @@ mod tests {
     }
 
     #[test]
-    fn while_the_owner_has_the_screen_the_agents_screenshots_and_pointer_wait_and_the_refusal_is_audited()
-     {
-        let (link, daemon) = online();
-        let mut hub = hub(Some(link));
-        let lease = pixel_lease(&hub, 7, 9);
-        hub.screen_taken = true;
-        let (status, message) =
-            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap_err();
-        assert_eq!(
-            (status, message.as_str()),
-            (409, "the owner has the screen; wait")
-        );
-        let (status, message) =
-            run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
-        assert_eq!(
-            (status, message.as_str()),
-            (409, "the owner has the screen; wait")
-        );
-        assert!(
-            daemon.hears.try_recv().is_err(),
-            "nothing reached the station"
-        );
-        assert_eq!(
-            last_audit(&hub)["data"]["ok"],
-            false,
-            "the refused click is audited"
-        );
-        assert!(
-            last_audit(&hub)["data"]["error"]
-                .as_str()
-                .unwrap()
-                .contains("the owner has the screen")
-        );
+    fn the_owners_screen_and_pointer_takeovers_pause_only_what_they_take() {
+        // The owner has the screen: the agent's screenshots and clicks wait, and the refused click is audited.
+        {
+            let (link, daemon) = online();
+            let mut hub = hub(Some(link));
+            let lease = pixel_lease(&hub, 7, 9);
+            hub.screen_taken = true;
+            let (status, message) =
+                run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).unwrap_err();
+            assert_eq!(
+                (status, message.as_str()),
+                (409, "the owner has the screen; wait")
+            );
+            let (status, message) =
+                run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+            assert_eq!(
+                (status, message.as_str()),
+                (409, "the owner has the screen; wait")
+            );
+            assert!(
+                daemon.hears.try_recv().is_err(),
+                "nothing reached the station"
+            );
+            assert_eq!(
+                last_audit(&hub)["data"]["ok"],
+                false,
+                "the refused click is audited"
+            );
+            assert!(
+                last_audit(&hub)["data"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the owner has the screen")
+            );
 
-        hub.screen_taken = false;
-        let asked = answer(
-            daemon,
-            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
-        );
-        assert!(
-            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
-            "back when the owner gives it back"
-        );
-        asked.join().unwrap();
-    }
-
-    #[test]
-    fn under_a_pointer_pause_the_screenshots_go_on_and_only_the_pointer_waits() {
-        let (link, daemon) = online();
-        let mut hub = hub(Some(link));
-        let lease = pixel_lease(&hub, 7, 9);
-        hub.pointer_taken = true;
-        let asked = answer(
-            daemon,
-            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
-        );
-        assert!(
-            run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
-            "screenshots continue"
-        );
-        asked.join().unwrap();
-        let (status, message) =
-            run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
-        assert_eq!(
-            (status, message.as_str()),
-            (409, "the owner has the screen; wait"),
-            "the pointer waits"
-        );
+            hub.screen_taken = false;
+            let asked = answer(
+                daemon,
+                json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+            );
+            assert!(
+                run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
+                "back when the owner gives it back"
+            );
+            asked.join().unwrap();
+        }
+        // Under a pointer pause the screenshots go on, and only the pointer waits.
+        {
+            let (link, daemon) = online();
+            let mut hub = hub(Some(link));
+            let lease = pixel_lease(&hub, 7, 9);
+            hub.pointer_taken = true;
+            let asked = answer(
+                daemon,
+                json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+            );
+            assert!(
+                run_op(&hub, 7, "builder", "w1", Some(&lease), screenshot(9)).is_ok(),
+                "screenshots continue"
+            );
+            asked.join().unwrap();
+            let (status, message) =
+                run_op(&hub, 7, "builder", "w1", Some(&lease), click(9)).unwrap_err();
+            assert_eq!(
+                (status, message.as_str()),
+                (409, "the owner has the screen; wait"),
+                "the pointer waits"
+            );
+        }
     }
 
     #[test]
@@ -1012,58 +1013,60 @@ mod tests {
     }
 
     #[test]
-    fn station_files_happy_path_lists_a_directory() {
-        let (link, daemon) = online();
-        let hub = hub(Some(link));
-        let Call::Op { station, lease, op } = parse(
-            "station_files",
-            &json!({"station": "w1", "cmd": "list", "path": "."}),
-        )
-        .unwrap() else {
-            panic!("an operation");
-        };
-        let asked = answer(
-            daemon,
-            json!({"entries": [{"name": "a.txt", "kind": "file"}]}),
-        );
-        let listed = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
-        assert_eq!(listed["entries"][0]["name"], "a.txt");
-        let (op, _) = asked.join().unwrap();
-        assert_eq!(
-            op,
-            Op::Files(FilesOp::List {
-                path: ".".into(),
-                cursor: None
-            })
-        );
-    }
-
-    #[test]
-    fn app_script_happy_path_runs_through_its_bridge() {
-        let (link, daemon) = online();
-        let hub = hub(Some(link));
-        let Call::Op { station, lease, op } = parse(
-            "app_script",
-            &json!({"station": "w1", "bridge": "cli", "script": "ffmpeg -version", "timeout_ms": 30000}),
-        )
-        .unwrap() else {
-            panic!("an operation");
-        };
-        let asked = answer(
-            daemon,
-            json!({"exit_code": 0, "output": "ffmpeg version 7", "timed_out": false}),
-        );
-        let ran = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
-        assert_eq!(ran["exit_code"], 0);
-        let (op, _) = asked.join().unwrap();
-        assert_eq!(
-            op,
-            Op::Script {
-                bridge: apz_station::Bridge::Cli,
-                app: None,
-                code: "ffmpeg -version".into(),
-                timeout_s: 30
-            }
-        );
+    fn station_files_and_app_script_happy_paths_run_through_the_hub() {
+        // Station files: a directory listing comes back, and the station is asked for a list.
+        {
+            let (link, daemon) = online();
+            let hub = hub(Some(link));
+            let Call::Op { station, lease, op } = parse(
+                "station_files",
+                &json!({"station": "w1", "cmd": "list", "path": "."}),
+            )
+            .unwrap() else {
+                panic!("an operation");
+            };
+            let asked = answer(
+                daemon,
+                json!({"entries": [{"name": "a.txt", "kind": "file"}]}),
+            );
+            let listed = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
+            assert_eq!(listed["entries"][0]["name"], "a.txt");
+            let (op, _) = asked.join().unwrap();
+            assert_eq!(
+                op,
+                Op::Files(FilesOp::List {
+                    path: ".".into(),
+                    cursor: None
+                })
+            );
+        }
+        // An app script runs through its bridge: the exit code comes back, and the bridge is asked.
+        {
+            let (link, daemon) = online();
+            let hub = hub(Some(link));
+            let Call::Op { station, lease, op } = parse(
+                "app_script",
+                &json!({"station": "w1", "bridge": "cli", "script": "ffmpeg -version", "timeout_ms": 30000}),
+            )
+            .unwrap() else {
+                panic!("an operation");
+            };
+            let asked = answer(
+                daemon,
+                json!({"exit_code": 0, "output": "ffmpeg version 7", "timed_out": false}),
+            );
+            let ran = run_op(&hub, 7, "builder", &station, lease.as_deref(), op).unwrap();
+            assert_eq!(ran["exit_code"], 0);
+            let (op, _) = asked.join().unwrap();
+            assert_eq!(
+                op,
+                Op::Script {
+                    bridge: apz_station::Bridge::Cli,
+                    app: None,
+                    code: "ffmpeg -version".into(),
+                    timeout_s: 30
+                }
+            );
+        }
     }
 }

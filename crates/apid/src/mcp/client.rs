@@ -309,36 +309,40 @@ pub(crate) mod tests {
         Duration::from_secs(5)
     }
 
+    /// The client agrees a protocol version with the server and sends the initialized note; a server
+    /// that answers with an older protocol is agreed to that protocol.
     #[test]
-    fn initialize_agrees_a_protocol_and_sends_the_initialized_note() {
-        let (script, sent) = Script::new(vec![ok(
-            json!({"protocolVersion": "2025-06-18", "serverInfo": {"name": "fx", "version": "1"}}),
-        )]);
-        let mut client = Client::new(Box::new(script));
-        let info = client.initialize("agentplaza", "0", timeout()).unwrap();
-        assert_eq!(
-            (info.name.as_str(), info.protocol.as_str()),
-            ("fx", "2025-06-18")
-        );
-        let sent = sent.lock().unwrap();
-        assert_eq!(sent[0]["method"], "initialize");
-        assert_eq!(sent[1]["method"], "notifications/initialized");
-        assert!(sent[1].get("id").is_none());
-    }
-
-    #[test]
-    fn initialize_falls_back_to_the_older_protocol() {
-        let (script, sent) = Script::new(vec![
-            ok(json!({"protocolVersion": "2024-11-05", "serverInfo": {}})),
-            ok(json!({"protocolVersion": "2025-03-26", "serverInfo": {"name": "old"}})),
-        ]);
-        let mut client = Client::new(Box::new(script));
-        let info = client.initialize("agentplaza", "0", timeout()).unwrap();
-        assert_eq!(info.protocol, "2025-03-26");
-        assert_eq!(
-            sent.lock().unwrap()[1]["params"]["protocolVersion"],
-            "2025-03-26"
-        );
+    fn initialize_negotiates_the_protocol_version() {
+        // The server's protocol is agreed, and the initialized notification is sent without an id.
+        {
+            let (script, sent) = Script::new(vec![ok(
+                json!({"protocolVersion": "2025-06-18", "serverInfo": {"name": "fx", "version": "1"}}),
+            )]);
+            let mut client = Client::new(Box::new(script));
+            let info = client.initialize("agentplaza", "0", timeout()).unwrap();
+            assert_eq!(
+                (info.name.as_str(), info.protocol.as_str()),
+                ("fx", "2025-06-18")
+            );
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent[0]["method"], "initialize");
+            assert_eq!(sent[1]["method"], "notifications/initialized");
+            assert!(sent[1].get("id").is_none());
+        }
+        // An older protocol from the server is agreed, and the client asks for it in the next request.
+        {
+            let (script, sent) = Script::new(vec![
+                ok(json!({"protocolVersion": "2024-11-05", "serverInfo": {}})),
+                ok(json!({"protocolVersion": "2025-03-26", "serverInfo": {"name": "old"}})),
+            ]);
+            let mut client = Client::new(Box::new(script));
+            let info = client.initialize("agentplaza", "0", timeout()).unwrap();
+            assert_eq!(info.protocol, "2025-03-26");
+            assert_eq!(
+                sent.lock().unwrap()[1]["params"]["protocolVersion"],
+                "2025-03-26"
+            );
+        }
     }
 
     #[test]
@@ -355,46 +359,49 @@ pub(crate) mod tests {
         assert_eq!(sent.lock().unwrap()[1]["params"]["cursor"], "1");
     }
 
+    /// A tool call returns its reply: a JSON-RPC error is reported with its code, notifications and
+    /// replies with other ids before the reply are skipped, and a silent server is a timeout.
     #[test]
-    fn a_json_rpc_error_is_reported_with_its_code() {
-        let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| {
-            vec![
-                json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32602, "message": "no such tool"}}),
-            ]
-        });
-        let (script, _) = Script::new(vec![reply]);
-        let mut client = Client::new(Box::new(script));
-        assert_eq!(
-            client.call_tool("nope", json!({}), timeout()),
-            Err(Error::Rpc {
-                code: -32602,
-                message: "no such tool".into()
-            })
-        );
-    }
-
-    #[test]
-    fn server_notifications_before_the_reply_are_skipped() {
-        let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| {
-            vec![
-                json!({"jsonrpc": "2.0", "method": "notifications/message", "params": {}}),
-                json!({"jsonrpc": "2.0", "id": 99, "result": {"wrong": true}}),
-                json!({"jsonrpc": "2.0", "id": req["id"], "result": {"content": [], "isError": false}}),
-            ]
-        });
-        let (script, _) = Script::new(vec![reply]);
-        let mut client = Client::new(Box::new(script));
-        let result = client.call_tool("echo", json!({}), timeout()).unwrap();
-        assert_eq!(result["isError"], false);
-    }
-
-    #[test]
-    fn a_silent_server_is_a_timeout() {
-        let (script, _) = Script::new(vec![]);
-        let mut client = Client::new(Box::new(script));
-        assert_eq!(
-            client.call_tool("slow", json!({}), timeout()),
-            Err(Error::Timeout)
-        );
+    fn call_tool_reports_errors_skips_notifications_and_times_out() {
+        // A JSON-RPC error is reported with its code and message.
+        {
+            let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| {
+                vec![
+                    json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32602, "message": "no such tool"}}),
+                ]
+            });
+            let (script, _) = Script::new(vec![reply]);
+            let mut client = Client::new(Box::new(script));
+            assert_eq!(
+                client.call_tool("nope", json!({}), timeout()),
+                Err(Error::Rpc {
+                    code: -32602,
+                    message: "no such tool".into()
+                })
+            );
+        }
+        // Server notifications before the reply are skipped, and so is a reply with another id.
+        {
+            let reply: Box<dyn Fn(&Value) -> Vec<Value> + Send> = Box::new(|req| {
+                vec![
+                    json!({"jsonrpc": "2.0", "method": "notifications/message", "params": {}}),
+                    json!({"jsonrpc": "2.0", "id": 99, "result": {"wrong": true}}),
+                    json!({"jsonrpc": "2.0", "id": req["id"], "result": {"content": [], "isError": false}}),
+                ]
+            });
+            let (script, _) = Script::new(vec![reply]);
+            let mut client = Client::new(Box::new(script));
+            let result = client.call_tool("echo", json!({}), timeout()).unwrap();
+            assert_eq!(result["isError"], false);
+        }
+        // A silent server is a timeout.
+        {
+            let (script, _) = Script::new(vec![]);
+            let mut client = Client::new(Box::new(script));
+            assert_eq!(
+                client.call_tool("slow", json!({}), timeout()),
+                Err(Error::Timeout)
+            );
+        }
     }
 }

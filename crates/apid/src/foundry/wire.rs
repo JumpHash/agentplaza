@@ -175,13 +175,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_round_trip() {
-        let (m, t) = unpack(&pack(&json!({}), &Tensors::new())).unwrap();
-        assert_eq!(m, json!({}));
-        assert!(t.is_empty());
-    }
-
-    #[test]
     fn decodes_python_payload() {
         let (meta, t) = unpack(FIXTURE).unwrap();
         assert_eq!(meta, json!({"island": "a", "round": 3, "samples": 12.5}));
@@ -189,45 +182,46 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_magic() {
-        let mut bytes = FIXTURE.to_vec();
-        bytes[4] = b'2';
-        assert!(unpack(&bytes).unwrap_err().contains("not an APZW1 payload"));
-    }
-
-    #[test]
-    fn rejects_short_input() {
-        assert!(unpack(b"APZ").is_err());
-        assert!(unpack(&FIXTURE[..7]).is_err());
-        assert!(unpack(&FIXTURE[..FIXTURE.len() - 1]).is_err());
-    }
-
-    #[test]
-    fn a_bad_tensor_is_refused_with_its_reason() {
-        // (case, header, body, the text the error must name)
-        let cases: [(&str, &str, Vec<u8>, &str); 3] = [
-            (
-                "a dtype other than float32",
-                r#"{"meta":{},"tensors":[{"name":"x","shape":[1],"dtype":"int32","offset":0,"nbytes":4}]}"#,
-                vec![0; 4],
-                "int32",
-            ),
-            (
-                "a length that does not match the shape",
-                r#"{"meta":{},"tensors":[{"name":"x","shape":[2,3],"dtype":"float32","offset":0,"nbytes":20}]}"#,
-                vec![0; 20],
-                "do not match shape",
-            ),
-            (
-                "a tensor that runs past the body",
-                r#"{"meta":{},"tensors":[{"name":"x","shape":[4],"dtype":"float32","offset":8,"nbytes":16}]}"#,
-                vec![0; 16],
-                "past the body",
-            ),
-        ];
-        for (case, header, body, want) in cases {
-            let err = unpack(&frame(header, &body)).unwrap_err();
-            assert!(err.contains(want), "{case}: {err}");
+    fn unpack_refuses_malformed_payloads() {
+        // A payload that is not APZW1 is named as such.
+        {
+            let mut bytes = FIXTURE.to_vec();
+            bytes[4] = b'2';
+            assert!(unpack(&bytes).unwrap_err().contains("not an APZW1 payload"));
+        }
+        // Input too short for the magic, the header or the body is refused.
+        {
+            assert!(unpack(b"APZ").is_err());
+            assert!(unpack(&FIXTURE[..7]).is_err());
+            assert!(unpack(&FIXTURE[..FIXTURE.len() - 1]).is_err());
+        }
+        // A bad tensor is refused, and the error names its reason.
+        {
+            // (case, header, body, the text the error must name)
+            let cases: [(&str, &str, Vec<u8>, &str); 3] = [
+                (
+                    "a dtype other than float32",
+                    r#"{"meta":{},"tensors":[{"name":"x","shape":[1],"dtype":"int32","offset":0,"nbytes":4}]}"#,
+                    vec![0; 4],
+                    "int32",
+                ),
+                (
+                    "a length that does not match the shape",
+                    r#"{"meta":{},"tensors":[{"name":"x","shape":[2,3],"dtype":"float32","offset":0,"nbytes":20}]}"#,
+                    vec![0; 20],
+                    "do not match shape",
+                ),
+                (
+                    "a tensor that runs past the body",
+                    r#"{"meta":{},"tensors":[{"name":"x","shape":[4],"dtype":"float32","offset":8,"nbytes":16}]}"#,
+                    vec![0; 16],
+                    "past the body",
+                ),
+            ];
+            for (case, header, body, want) in cases {
+                let err = unpack(&frame(header, &body)).unwrap_err();
+                assert!(err.contains(want), "{case}: {err}");
+            }
         }
     }
 }

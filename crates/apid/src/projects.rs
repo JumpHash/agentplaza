@@ -1080,14 +1080,64 @@ mod tests {
     }
 
     #[test]
-    fn advance_refused_without_research() {
-        let (_dir, store) = fresh("gate");
-        let p = store.open(&lead(), "Ship", "Goal", "other", false).unwrap();
-        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
-        store.advance(&p.id, &lead(), "").unwrap();
-        let err = store.advance(&p.id, &lead(), "").unwrap_err();
-        assert!(err.contains("research"), "{err}");
-        assert_eq!(store.get(&p.id).unwrap().stage, "research");
+    fn advance_gates_hold_a_project_until_its_documents_are_in() {
+        // Advance refused without research.
+        {
+            let (_dir, store) = fresh("gate");
+            let p = store.open(&lead(), "Ship", "Goal", "other", false).unwrap();
+            store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+            store.advance(&p.id, &lead(), "").unwrap();
+            let err = store.advance(&p.id, &lead(), "").unwrap_err();
+            assert!(err.contains("research"), "{err}");
+            assert_eq!(store.get(&p.id).unwrap().stage, "research");
+        }
+
+        // Revise blocks until revision is approved.
+        {
+            let (_dir, store) = fresh("revise");
+            let id = to_critique(&store, "other", false);
+            store
+                .critique(&id, &critic(), "revise", "The tasks miss the tests.")
+                .unwrap();
+            assert!(store.advance(&id, &lead(), "").is_err());
+            store
+                .attach(&id, &planner(), doc("revision", "Revision"))
+                .unwrap();
+            assert!(store.advance(&id, &lead(), "").is_err());
+            store.critique(&id, &critic(), "approve", "Fixed.").unwrap();
+            assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
+            // A revision attached at approval sends the plan back to critique.
+            let p = store
+                .attach(&id, &planner(), doc("revision", "Second revision"))
+                .unwrap();
+            assert_eq!(p.stage, "critique");
+        }
+
+        // Code needs a spec to leave proposal.
+        {
+            let (_dir, store) = fresh("code");
+            let p = store
+                .open(&lead(), "Code thing", "Goal", "code", false)
+                .unwrap();
+            store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
+            store.advance(&p.id, &lead(), "").unwrap();
+            store
+                .attach(&p.id, &researcher(), doc("research", "Research"))
+                .unwrap();
+            store.advance(&p.id, &lead(), "").unwrap();
+            store
+                .attach(&p.id, &planner(), doc("proposal", "Proposal"))
+                .unwrap();
+            store
+                .attach(&p.id, &planner(), doc("tasks", "Tasks"))
+                .unwrap();
+            let err = store.advance(&p.id, &lead(), "").unwrap_err();
+            assert!(err.contains("spec"), "{err}");
+            store
+                .attach(&p.id, &planner(), doc("spec", "Spec"))
+                .unwrap();
+            assert_eq!(store.advance(&p.id, &lead(), "").unwrap().stage, "critique");
+        }
     }
 
     #[test]
@@ -1116,27 +1166,6 @@ mod tests {
     }
 
     #[test]
-    fn revise_blocks_until_revision_is_approved() {
-        let (_dir, store) = fresh("revise");
-        let id = to_critique(&store, "other", false);
-        store
-            .critique(&id, &critic(), "revise", "The tasks miss the tests.")
-            .unwrap();
-        assert!(store.advance(&id, &lead(), "").is_err());
-        store
-            .attach(&id, &planner(), doc("revision", "Revision"))
-            .unwrap();
-        assert!(store.advance(&id, &lead(), "").is_err());
-        store.critique(&id, &critic(), "approve", "Fixed.").unwrap();
-        assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
-        // A revision attached at approval sends the plan back to critique.
-        let p = store
-            .attach(&id, &planner(), doc("revision", "Second revision"))
-            .unwrap();
-        assert_eq!(p.stage, "critique");
-    }
-
-    #[test]
     fn owner_approval_refuses_a_mayor() {
         let (_dir, store) = fresh("owner");
         let id = to_critique(&store, "other", true);
@@ -1148,32 +1177,6 @@ mod tests {
             store.approve(&id, &Actor::owner(), "").unwrap().stage,
             "implementation"
         );
-    }
-
-    #[test]
-    fn code_needs_a_spec_to_leave_proposal() {
-        let (_dir, store) = fresh("code");
-        let p = store
-            .open(&lead(), "Code thing", "Goal", "code", false)
-            .unwrap();
-        store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
-        store.advance(&p.id, &lead(), "").unwrap();
-        store
-            .attach(&p.id, &researcher(), doc("research", "Research"))
-            .unwrap();
-        store.advance(&p.id, &lead(), "").unwrap();
-        store
-            .attach(&p.id, &planner(), doc("proposal", "Proposal"))
-            .unwrap();
-        store
-            .attach(&p.id, &planner(), doc("tasks", "Tasks"))
-            .unwrap();
-        let err = store.advance(&p.id, &lead(), "").unwrap_err();
-        assert!(err.contains("spec"), "{err}");
-        store
-            .attach(&p.id, &planner(), doc("spec", "Spec"))
-            .unwrap();
-        assert_eq!(store.advance(&p.id, &lead(), "").unwrap().stage, "critique");
     }
 
     #[test]

@@ -1347,31 +1347,83 @@ mod tests {
     }
 
     #[test]
-    fn the_consumers_list_follows_the_providers() {
-        let dir = scratch("consumers");
-        let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        let wants = |vault: &crate::vault::Store| -> Vec<String> {
-            vault
-                .consumers(&[])
-                .unwrap()
-                .iter()
-                .filter(|c| c["binding"] == "provider:local-x")
-                .map(|c| c["wants"].as_str().unwrap_or_default().to_string())
-                .collect()
-        };
-        let mut local = ProviderConfig::new("local-x", ProviderKind::OpenAiCompatible);
-        local.auth = Auth::Env("LOCAL_X_KEY".to_string());
-        store.insert(local.clone()).unwrap();
-        assert_eq!(wants(&vault), vec!["LOCAL_X_KEY".to_string()]);
-        // A changed secret name replaces the registration.
-        local.auth = Auth::Secret("other-key".to_string());
-        store.replace("local-x", local).unwrap();
-        assert_eq!(wants(&vault), vec!["OTHER_KEY".to_string()]);
-        // A removed provider leaves nothing behind.
-        store.remove("local-x").unwrap();
-        assert!(wants(&vault).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
+    fn consumers_follow_provider_registrations() {
+        // The consumers list follows the providers.
+        {
+            let dir = scratch("consumers");
+            let vault = vault_in(&dir);
+            let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+            let wants = |vault: &crate::vault::Store| -> Vec<String> {
+                vault
+                    .consumers(&[])
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["binding"] == "provider:local-x")
+                    .map(|c| c["wants"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            };
+            let mut local = ProviderConfig::new("local-x", ProviderKind::OpenAiCompatible);
+            local.auth = Auth::Env("LOCAL_X_KEY".to_string());
+            store.insert(local.clone()).unwrap();
+            assert_eq!(wants(&vault), vec!["LOCAL_X_KEY".to_string()]);
+            // A changed secret name replaces the registration.
+            local.auth = Auth::Secret("other-key".to_string());
+            store.replace("local-x", local).unwrap();
+            assert_eq!(wants(&vault), vec!["OTHER_KEY".to_string()]);
+            // A removed provider leaves nothing behind.
+            store.remove("local-x").unwrap();
+            assert!(wants(&vault).is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // Each bedrock provider registers its own aws pair and renames and removals keep it right.
+        {
+            let dir = scratch("bedrock-consumers");
+            let vault = vault_in(&dir);
+            let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+            let wants = |vault: &crate::vault::Store, id: &str| -> Vec<String> {
+                vault
+                    .consumers(&[])
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["binding"] == provider_binding(id))
+                    .map(|c| c["wants"].as_str().unwrap_or_default().to_string())
+                    .collect()
+            };
+            let all = BEDROCK_KEYS.map(String::from);
+            store
+                .insert(ProviderConfig::new("aws-a", ProviderKind::Bedrock))
+                .unwrap();
+            store
+                .insert(ProviderConfig::new("aws-b", ProviderKind::Bedrock))
+                .unwrap();
+            assert_eq!(wants(&vault, "aws-a"), all);
+            assert_eq!(wants(&vault, "aws-b"), all);
+            // Renamed: aws-a leaves its binding, the new id registers the pair, aws-b keeps its own.
+            store.remove("aws-a").unwrap();
+            store
+                .insert(ProviderConfig::new("aws-c", ProviderKind::Bedrock))
+                .unwrap();
+            assert!(wants(&vault, "aws-a").is_empty());
+            assert_eq!(wants(&vault, "aws-c"), all);
+            assert_eq!(wants(&vault, "aws-b"), all);
+            // A plain edit keeps the registration; a provider that stops being Bedrock-kind drops it.
+            let mut edited = ProviderConfig::new("aws-c", ProviderKind::Bedrock);
+            edited.base_url = Some("https://bedrock.example".to_string());
+            store.replace("aws-c", edited).unwrap();
+            assert_eq!(wants(&vault, "aws-c"), all);
+            store
+                .replace(
+                    "aws-b",
+                    ProviderConfig::new("aws-b", ProviderKind::OpenAiCompatible),
+                )
+                .unwrap();
+            assert!(wants(&vault, "aws-b").is_empty());
+            assert_eq!(wants(&vault, "aws-c"), all);
+            store.remove("aws-c").unwrap();
+            assert!(wants(&vault, "aws-c").is_empty());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1479,55 +1531,6 @@ mod tests {
             read("aws-b", "AWS_SECRET_ACCESS_KEY", "n3").as_deref(),
             Some(plaza[1])
         );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn each_bedrock_provider_registers_its_own_aws_pair_and_renames_and_removals_keep_it_right() {
-        let dir = scratch("bedrock-consumers");
-        let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
-        let wants = |vault: &crate::vault::Store, id: &str| -> Vec<String> {
-            vault
-                .consumers(&[])
-                .unwrap()
-                .iter()
-                .filter(|c| c["binding"] == provider_binding(id))
-                .map(|c| c["wants"].as_str().unwrap_or_default().to_string())
-                .collect()
-        };
-        let all = BEDROCK_KEYS.map(String::from);
-        store
-            .insert(ProviderConfig::new("aws-a", ProviderKind::Bedrock))
-            .unwrap();
-        store
-            .insert(ProviderConfig::new("aws-b", ProviderKind::Bedrock))
-            .unwrap();
-        assert_eq!(wants(&vault, "aws-a"), all);
-        assert_eq!(wants(&vault, "aws-b"), all);
-        // Renamed: aws-a leaves its binding, the new id registers the pair, aws-b keeps its own.
-        store.remove("aws-a").unwrap();
-        store
-            .insert(ProviderConfig::new("aws-c", ProviderKind::Bedrock))
-            .unwrap();
-        assert!(wants(&vault, "aws-a").is_empty());
-        assert_eq!(wants(&vault, "aws-c"), all);
-        assert_eq!(wants(&vault, "aws-b"), all);
-        // A plain edit keeps the registration; a provider that stops being Bedrock-kind drops it.
-        let mut edited = ProviderConfig::new("aws-c", ProviderKind::Bedrock);
-        edited.base_url = Some("https://bedrock.example".to_string());
-        store.replace("aws-c", edited).unwrap();
-        assert_eq!(wants(&vault, "aws-c"), all);
-        store
-            .replace(
-                "aws-b",
-                ProviderConfig::new("aws-b", ProviderKind::OpenAiCompatible),
-            )
-            .unwrap();
-        assert!(wants(&vault, "aws-b").is_empty());
-        assert_eq!(wants(&vault, "aws-c"), all);
-        store.remove("aws-c").unwrap();
-        assert!(wants(&vault, "aws-c").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1803,80 +1806,83 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_of_the_view_keeps_the_redacted_values_and_extra_body() {
-        let dir = scratch("edit-redacted");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
-        let stored = stored_gateway();
-        store.insert(stored.clone()).unwrap();
+    fn redacted_values_are_restored_or_refused() {
+        // An edit of the view keeps the redacted values and extra body.
+        {
+            let dir = scratch("edit-redacted");
+            let store = Store::load(&dir, vault_in(&dir)).unwrap();
+            let stored = stored_gateway();
+            store.insert(stored.clone()).unwrap();
 
-        // The view shows the markers and the extra body, never the command or the header values.
-        let view = store.views().into_iter().find(|v| v["id"] == "gw").unwrap();
-        assert_eq!(view["auth"], json!({ "command": REDACTED }));
-        assert_eq!(
-            view["extra_headers"],
-            json!({ "HTTP-Referer": REDACTED, "X-Title": REDACTED })
-        );
-        assert_eq!(view["extra_body"], stored.extra_body);
-        assert!(!view.to_string().contains(SENTINEL));
+            // The view shows the markers and the extra body, never the command or the header values.
+            let view = store.views().into_iter().find(|v| v["id"] == "gw").unwrap();
+            assert_eq!(view["auth"], json!({ "command": REDACTED }));
+            assert_eq!(
+                view["extra_headers"],
+                json!({ "HTTP-Referer": REDACTED, "X-Title": REDACTED })
+            );
+            assert_eq!(view["extra_body"], stored.extra_body);
+            assert!(!view.to_string().contains(SENTINEL));
 
-        // An Edit that sends the view back as it is changes nothing it redacted.
-        let mut body = stored.clone();
-        body.auth = Auth::Command(REDACTED.to_string());
-        body.extra_headers = stored
-            .extra_headers
-            .keys()
-            .map(|k| (k.clone(), REDACTED.to_string()))
-            .collect();
-        body.extra_body = Value::Null;
-        store.replace("gw", body).unwrap();
-        assert_eq!(store.find("gw").unwrap(), stored);
+            // An Edit that sends the view back as it is changes nothing it redacted.
+            let mut body = stored.clone();
+            body.auth = Auth::Command(REDACTED.to_string());
+            body.extra_headers = stored
+                .extra_headers
+                .keys()
+                .map(|k| (k.clone(), REDACTED.to_string()))
+                .collect();
+            body.extra_body = Value::Null;
+            store.replace("gw", body).unwrap();
+            assert_eq!(store.find("gw").unwrap(), stored);
 
-        // A real value replaces the stored one; the other redacted header and the command keep theirs.
-        let mut edited = stored.clone();
-        edited
-            .extra_headers
-            .insert("X-Title".to_string(), "Renamed".to_string());
-        edited.auth = Auth::Command(REDACTED.to_string());
-        edited.extra_body = json!({ "reasoning": { "effort": "high" } });
-        store.replace("gw", edited).unwrap();
-        let after = store.find("gw").unwrap();
-        assert_eq!(after.auth, stored.auth);
-        assert_eq!(
-            after.extra_headers.get("HTTP-Referer"),
-            stored.extra_headers.get("HTTP-Referer")
-        );
-        assert_eq!(
-            after.extra_headers.get("X-Title").map(String::as_str),
-            Some("Renamed")
-        );
-        assert_eq!(
-            after.extra_body,
-            json!({ "reasoning": { "effort": "high" } })
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+            // A real value replaces the stored one; the other redacted header and the command keep theirs.
+            let mut edited = stored.clone();
+            edited
+                .extra_headers
+                .insert("X-Title".to_string(), "Renamed".to_string());
+            edited.auth = Auth::Command(REDACTED.to_string());
+            edited.extra_body = json!({ "reasoning": { "effort": "high" } });
+            store.replace("gw", edited).unwrap();
+            let after = store.find("gw").unwrap();
+            assert_eq!(after.auth, stored.auth);
+            assert_eq!(
+                after.extra_headers.get("HTTP-Referer"),
+                stored.extra_headers.get("HTTP-Referer")
+            );
+            assert_eq!(
+                after.extra_headers.get("X-Title").map(String::as_str),
+                Some("Renamed")
+            );
+            assert_eq!(
+                after.extra_body,
+                json!({ "reasoning": { "effort": "high" } })
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
 
-    #[test]
-    fn a_redacted_value_with_nothing_stored_is_refused() {
-        let stored = stored_gateway();
-        let mut header = stored.clone();
-        header
-            .extra_headers
-            .insert("X-New".to_string(), REDACTED.to_string());
-        assert_eq!(restore_redacted(&stored, header).unwrap_err().0, 400);
+        // A redacted value with nothing stored is refused.
+        {
+            let stored = stored_gateway();
+            let mut header = stored.clone();
+            header
+                .extra_headers
+                .insert("X-New".to_string(), REDACTED.to_string());
+            assert_eq!(restore_redacted(&stored, header).unwrap_err().0, 400);
 
-        let mut plain = stored.clone();
-        plain.auth = Auth::None;
-        let mut command = plain.clone();
-        command.auth = Auth::Command(REDACTED.to_string());
-        assert_eq!(restore_redacted(&plain, command).unwrap_err().0, 400);
+            let mut plain = stored.clone();
+            plain.auth = Auth::None;
+            let mut command = plain.clone();
+            command.auth = Auth::Command(REDACTED.to_string());
+            assert_eq!(restore_redacted(&plain, command).unwrap_err().0, 400);
 
-        // A body that omits extra_body keeps the stored one; a real command is taken as it is.
-        let mut body = stored.clone();
-        body.auth = Auth::Command("echo fresh".to_string());
-        body.extra_body = Value::Null;
-        let merged = restore_redacted(&stored, body).unwrap();
-        assert_eq!(merged.auth, Auth::Command("echo fresh".to_string()));
-        assert_eq!(merged.extra_body, stored.extra_body);
+            // A body that omits extra_body keeps the stored one; a real command is taken as it is.
+            let mut body = stored.clone();
+            body.auth = Auth::Command("echo fresh".to_string());
+            body.extra_body = Value::Null;
+            let merged = restore_redacted(&stored, body).unwrap();
+            assert_eq!(merged.auth, Auth::Command("echo fresh".to_string()));
+            assert_eq!(merged.extra_body, stored.extra_body);
+        }
     }
 }

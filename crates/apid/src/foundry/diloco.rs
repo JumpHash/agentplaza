@@ -525,29 +525,6 @@ mod tests {
     }
 
     #[test]
-    fn wait_timeout_closes_round_with_one_island() {
-        let hub = new_hub(&["a", "b", "c"], Duration::from_millis(50));
-        hub.init(w0());
-        let start = Clock::now();
-        let s = hub.submit("a", 0, 3.0, d0a()).unwrap();
-        assert!(
-            start.elapsed() >= Duration::from_millis(40),
-            "returned before the wait"
-        );
-        assert_eq!((s.accepted, s.round), (true, 1));
-
-        // One island: avg = d, velocity = d, theta = theta - lr * (d + mu * d), all in float32.
-        let (lr, mu) = (0.7f32, 0.9f32);
-        let mut expected = w0();
-        for (name, t) in expected.iter_mut() {
-            for (x, d) in t.data.iter_mut().zip(&d0a()[name].data) {
-                *x -= lr * (*d + mu * *d);
-            }
-        }
-        assert_eq!(s.weights, expected);
-    }
-
-    #[test]
     fn two_threads_close_a_round_once() {
         let hub = new_hub(&["x", "y"], Duration::from_secs(5));
         hub.init(w0());

@@ -722,124 +722,136 @@ mod tests {
     }
 
     #[test]
-    fn a_good_stdio_and_http_server_validate() {
-        assert!(validate(&stdio("github")).is_ok());
-        assert!(validate(&http("linear", "https://mcp.linear.app/mcp")).is_ok());
-    }
-
-    #[test]
-    fn ids_follow_the_pattern() {
-        assert!(valid_id("ab"));
-        assert!(!valid_id("a"));
-        assert!(!valid_id("1abc"));
-        assert!(!valid_id("Abc"));
-        assert!(!valid_id("a_b"));
-        assert!(!valid_id(&"a".repeat(33)));
-        let mut server = stdio("x");
-        server.id = "Bad_Id".into();
-        assert_eq!(field(&server), "id");
-    }
-
-    #[test]
-    fn the_message_names_the_bad_field() {
-        let mut server = stdio("github");
-        server.transport = Transport::Stdio {
-            image: "-rm".into(),
-            command: vec![],
-            workdir: None,
-        };
-        assert_eq!(
-            validate(&server).unwrap_err().to_string(),
-            "transport.image: a container image name such as ghcr.io/org/server:1.0"
-        );
-        let mut server = stdio("github");
-        server
-            .env
-            .insert("lower".into(), Setting::Value { value: "x".into() });
-        assert_eq!(field(&server), "env");
-        let mut server = stdio("github");
-        server.env.insert(
-            "OK".into(),
-            Setting::Value {
-                value: "two\nlines".into(),
-            },
-        );
-        assert_eq!(field(&server), "env.OK");
-    }
-
-    #[test]
-    fn secrets_must_name_vault_entries_and_formats_fit_headers() {
-        let mut server = stdio("github");
-        server.env.insert(
-            "TOKEN".into(),
-            Setting::Secret {
-                secret: "lower".into(),
-                format: None,
-            },
-        );
-        assert_eq!(field(&server), "env.TOKEN");
-        let mut server = stdio("github");
-        server.env.insert(
-            "TOKEN".into(),
-            Setting::Secret {
-                secret: "GITHUB_TOKEN".into(),
-                format: Some("Bearer {}".into()),
-            },
-        );
-        assert_eq!(field(&server), "env.TOKEN");
-        let mut server = http("linear", "https://mcp.linear.app/mcp");
-        server.headers.insert(
-            "Authorization".into(),
-            Setting::Secret {
-                secret: "LINEAR_KEY".into(),
-                format: Some("Bearer".into()),
-            },
-        );
-        assert_eq!(field(&server), "headers.Authorization");
-    }
-
-    #[test]
-    fn transports_do_not_mix_settings() {
-        let mut server = http("linear", "https://mcp.linear.app/mcp");
-        server
-            .env
-            .insert("X".into(), Setting::Value { value: "1".into() });
-        assert_eq!(field(&server), "env");
-        let mut server = stdio("github");
-        server
-            .headers
-            .insert("X-Key".into(), Setting::Value { value: "1".into() });
-        assert_eq!(field(&server), "headers");
-    }
-
-    #[test]
-    fn urls_must_be_https_without_credentials() {
-        assert_eq!(
-            field(&http("linear", "http://mcp.linear.app/mcp")),
-            "transport.url"
-        );
-        assert!(validate(&http("linear", "http://127.0.0.1:9000/mcp")).is_err());
-        let mut local = http("local", "http://127.0.0.1:9000/mcp");
-        local.allow_private = true;
-        assert!(validate(&local).is_ok());
-        assert_eq!(
-            field(&http("linear", "https://user:pw@mcp.linear.app/mcp")),
-            "transport.url"
-        );
-        assert_eq!(
-            field(&http("linear", "mcp.linear.app/mcp")),
-            "transport.url"
-        );
-    }
-
-    #[test]
-    fn limits_and_access_are_bounded() {
-        let mut server = stdio("github");
-        server.limits.timeout_s = 0;
-        assert_eq!(field(&server), "limits.timeout_s");
-        let mut server = stdio("github");
-        server.access.roles = Pick::Only(vec!["bad role!".into()]);
-        assert_eq!(field(&server), "access.roles");
+    fn server_config_validation_names_each_bad_field() {
+        // a_good_stdio_and_http_server_validate
+        {
+            assert!(validate(&stdio("github")).is_ok());
+            assert!(validate(&http("linear", "https://mcp.linear.app/mcp")).is_ok());
+        }
+        // ids_follow_the_pattern
+        {
+            assert!(valid_id("ab"));
+            assert!(!valid_id("a"));
+            assert!(!valid_id("1abc"));
+            assert!(!valid_id("Abc"));
+            assert!(!valid_id("a_b"));
+            assert!(!valid_id(&"a".repeat(33)));
+            let mut server = stdio("x");
+            server.id = "Bad_Id".into();
+            assert_eq!(field(&server), "id");
+        }
+        // the_message_names_the_bad_field
+        {
+            let mut server = stdio("github");
+            server.transport = Transport::Stdio {
+                image: "-rm".into(),
+                command: vec![],
+                workdir: None,
+            };
+            assert_eq!(
+                validate(&server).unwrap_err().to_string(),
+                "transport.image: a container image name such as ghcr.io/org/server:1.0"
+            );
+            let mut server = stdio("github");
+            server
+                .env
+                .insert("lower".into(), Setting::Value { value: "x".into() });
+            assert_eq!(field(&server), "env");
+            let mut server = stdio("github");
+            server.env.insert(
+                "OK".into(),
+                Setting::Value {
+                    value: "two\nlines".into(),
+                },
+            );
+            assert_eq!(field(&server), "env.OK");
+        }
+        // secrets_must_name_vault_entries_and_formats_fit_headers
+        {
+            let mut server = stdio("github");
+            server.env.insert(
+                "TOKEN".into(),
+                Setting::Secret {
+                    secret: "lower".into(),
+                    format: None,
+                },
+            );
+            assert_eq!(field(&server), "env.TOKEN");
+            let mut server = stdio("github");
+            server.env.insert(
+                "TOKEN".into(),
+                Setting::Secret {
+                    secret: "GITHUB_TOKEN".into(),
+                    format: Some("Bearer {}".into()),
+                },
+            );
+            assert_eq!(field(&server), "env.TOKEN");
+            let mut server = http("linear", "https://mcp.linear.app/mcp");
+            server.headers.insert(
+                "Authorization".into(),
+                Setting::Secret {
+                    secret: "LINEAR_KEY".into(),
+                    format: Some("Bearer".into()),
+                },
+            );
+            assert_eq!(field(&server), "headers.Authorization");
+        }
+        // transports_do_not_mix_settings
+        {
+            let mut server = http("linear", "https://mcp.linear.app/mcp");
+            server
+                .env
+                .insert("X".into(), Setting::Value { value: "1".into() });
+            assert_eq!(field(&server), "env");
+            let mut server = stdio("github");
+            server
+                .headers
+                .insert("X-Key".into(), Setting::Value { value: "1".into() });
+            assert_eq!(field(&server), "headers");
+        }
+        // urls_must_be_https_without_credentials
+        {
+            assert_eq!(
+                field(&http("linear", "http://mcp.linear.app/mcp")),
+                "transport.url"
+            );
+            assert!(validate(&http("linear", "http://127.0.0.1:9000/mcp")).is_err());
+            let mut local = http("local", "http://127.0.0.1:9000/mcp");
+            local.allow_private = true;
+            assert!(validate(&local).is_ok());
+            assert_eq!(
+                field(&http("linear", "https://user:pw@mcp.linear.app/mcp")),
+                "transport.url"
+            );
+            assert_eq!(
+                field(&http("linear", "mcp.linear.app/mcp")),
+                "transport.url"
+            );
+        }
+        // limits_and_access_are_bounded
+        {
+            let mut server = stdio("github");
+            server.limits.timeout_s = 0;
+            assert_eq!(field(&server), "limits.timeout_s");
+            let mut server = stdio("github");
+            server.access.roles = Pick::Only(vec!["bad role!".into()]);
+            assert_eq!(field(&server), "access.roles");
+        }
+        // a_volume_is_for_stdio_servers_and_the_proxy_names_are_reserved
+        {
+            let mut server = http("linear", "https://mcp.linear.app/mcp");
+            server.storage.volume = true;
+            assert_eq!(field(&server), "storage");
+            let mut server = stdio("github");
+            server
+                .env
+                .insert("HTTP_PROXY".into(), Setting::Value { value: "x".into() });
+            assert_eq!(field(&server), "env");
+            let mut server = stdio("memory");
+            server.storage.volume = true;
+            assert!(validate(&server).is_ok());
+            assert_eq!(volume_name("memory"), "apz-mcp-memory");
+        }
     }
 
     #[test]
@@ -899,21 +911,5 @@ mod tests {
         let mut renamed = stdio("github");
         renamed.name = "Renamed".into();
         assert_eq!(store.replace("github", renamed).unwrap().name, "Renamed");
-    }
-
-    #[test]
-    fn a_volume_is_for_stdio_servers_and_the_proxy_names_are_reserved() {
-        let mut server = http("linear", "https://mcp.linear.app/mcp");
-        server.storage.volume = true;
-        assert_eq!(field(&server), "storage");
-        let mut server = stdio("github");
-        server
-            .env
-            .insert("HTTP_PROXY".into(), Setting::Value { value: "x".into() });
-        assert_eq!(field(&server), "env");
-        let mut server = stdio("memory");
-        server.storage.volume = true;
-        assert!(validate(&server).is_ok());
-        assert_eq!(volume_name("memory"), "apz-mcp-memory");
     }
 }

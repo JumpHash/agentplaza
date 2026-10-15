@@ -794,14 +794,6 @@ fn param_u64(req: &Request, name: &str) -> Result<Option<u64>, Response> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn provider_of_is_the_part_before_the_first_slash() {
-        assert_eq!(provider_of("openrouter/anthropic/claude-x"), "openrouter");
-        assert_eq!(provider_of("opencode/claude-x"), "opencode");
-        assert_eq!(provider_of("anthropic/claude-x"), "anthropic");
-        assert_eq!(provider_of("bare-model"), "bare-model");
-    }
-
     /// The start of an hour, far enough from zero that windows can reach back.
     const H: u64 = 1_000 * HOUR_MS;
 

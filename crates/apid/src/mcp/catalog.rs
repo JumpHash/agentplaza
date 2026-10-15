@@ -227,68 +227,71 @@ mod tests {
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
     }
 
+    /// Presets have valid unique ids, known statuses and transports, docs links and copy; the transport
+    /// fields match the transport; and env and header specs are well formed.
     #[test]
-    fn presets_have_valid_unique_ids_known_fields_and_docs() {
-        let mut seen = HashSet::new();
-        for p in PRESETS {
-            assert!(valid_id(p.id), "bad id {}", p.id);
-            assert!(seen.insert(p.id), "duplicate id {}", p.id);
-            assert!(
-                p.status == "verified" || p.status == "custom image needed",
-                "{}",
-                p.id
-            );
-            assert!(p.transport == "stdio" || p.transport == "http", "{}", p.id);
-            assert!(p.docs.starts_with("https://"), "{} docs", p.id);
-            assert!(
-                !p.name.is_empty() && !p.description.is_empty() && !p.note.is_empty(),
-                "{}",
-                p.id
-            );
-        }
-    }
-
-    #[test]
-    fn transport_fields_match_the_transport() {
-        for p in PRESETS {
-            if p.transport == "stdio" {
+    fn preset_catalog_is_well_formed() {
+        // Ids are valid and unique, statuses and transports are known, docs link to https, and the copy is filled in.
+        {
+            let mut seen = HashSet::new();
+            for p in PRESETS {
+                assert!(valid_id(p.id), "bad id {}", p.id);
+                assert!(seen.insert(p.id), "duplicate id {}", p.id);
                 assert!(
-                    p.image.is_some() || p.status == "custom image needed",
+                    p.status == "verified" || p.status == "custom image needed",
                     "{}",
                     p.id
                 );
-                if p.status == "verified" {
-                    assert!(p.image.is_some(), "{} verified without image", p.id);
-                }
-                assert!(p.url.is_none(), "{} stdio with url", p.id);
-                assert!(p.headers.is_empty(), "{} stdio with headers", p.id);
-            } else {
-                let url = p.url.unwrap_or_else(|| panic!("{} http without url", p.id));
-                assert!(url.starts_with("https://"), "{} url {}", p.id, url);
-                assert!(p.image.is_none(), "{} http with image", p.id);
-                assert!(p.env.is_empty(), "{} http with env", p.id);
-            }
-        }
-    }
-
-    #[test]
-    fn env_and_header_specs_are_well_formed() {
-        for p in PRESETS {
-            for s in p.env {
-                assert!(valid_env_name(s.name), "{} env {}", p.id, s.name);
-            }
-            for s in p.headers {
+                assert!(p.transport == "stdio" || p.transport == "http", "{}", p.id);
+                assert!(p.docs.starts_with("https://"), "{} docs", p.id);
                 assert!(
-                    !s.name.is_empty() && !s.name.contains(' ') && !s.name.contains(':'),
-                    "{} header {}",
-                    p.id,
-                    s.name
+                    !p.name.is_empty() && !p.description.is_empty() && !p.note.is_empty(),
+                    "{}",
+                    p.id
                 );
             }
-            for s in p.env.iter().chain(p.headers.iter()) {
-                assert!(!s.help.is_empty(), "{} spec {} has no help", p.id, s.name);
-                if let Some(f) = s.format {
-                    assert!(f.contains("{}"), "{} format {}", p.id, f);
+        }
+        // stdio presets have an image and no url or headers; http presets have an https url and no image or env.
+        {
+            for p in PRESETS {
+                if p.transport == "stdio" {
+                    assert!(
+                        p.image.is_some() || p.status == "custom image needed",
+                        "{}",
+                        p.id
+                    );
+                    if p.status == "verified" {
+                        assert!(p.image.is_some(), "{} verified without image", p.id);
+                    }
+                    assert!(p.url.is_none(), "{} stdio with url", p.id);
+                    assert!(p.headers.is_empty(), "{} stdio with headers", p.id);
+                } else {
+                    let url = p.url.unwrap_or_else(|| panic!("{} http without url", p.id));
+                    assert!(url.starts_with("https://"), "{} url {}", p.id, url);
+                    assert!(p.image.is_none(), "{} http with image", p.id);
+                    assert!(p.env.is_empty(), "{} http with env", p.id);
+                }
+            }
+        }
+        // Env names are valid, header names are plain, every spec has help, and formats hold a placeholder.
+        {
+            for p in PRESETS {
+                for s in p.env {
+                    assert!(valid_env_name(s.name), "{} env {}", p.id, s.name);
+                }
+                for s in p.headers {
+                    assert!(
+                        !s.name.is_empty() && !s.name.contains(' ') && !s.name.contains(':'),
+                        "{} header {}",
+                        p.id,
+                        s.name
+                    );
+                }
+                for s in p.env.iter().chain(p.headers.iter()) {
+                    assert!(!s.help.is_empty(), "{} spec {} has no help", p.id, s.name);
+                    if let Some(f) = s.format {
+                        assert!(f.contains("{}"), "{} format {}", p.id, f);
+                    }
                 }
             }
         }

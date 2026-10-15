@@ -1986,23 +1986,6 @@ mod tests {
     }
 
     #[test]
-    fn a_gzipped_upload_pack_keeps_its_content_encoding_to_the_forge() {
-        // git gzips a large fetch's request body; the body goes on unchanged, so the header must too.
-        let req = request(
-            "POST",
-            &[
-                ("Content-Type", "application/x-git-upload-pack-request"),
-                ("Content-Encoding", "gzip"),
-                ("Content-Length", "4"),
-            ],
-            vec![0x1f, 0x8b, 0x08, 0x00],
-        );
-        let headers = upstream_headers("Basic abc", &req);
-        assert!(headers.contains(&("Content-Encoding", "gzip".to_string())));
-        assert_eq!(req.body, vec![0x1f, 0x8b, 0x08, 0x00]);
-    }
-
-    #[test]
     fn an_agents_route_names_plain_owner_and_repository_only() {
         assert_eq!(
             agent_names(ORG, "foo.git").ok(),

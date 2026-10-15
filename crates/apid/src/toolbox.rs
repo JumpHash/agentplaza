@@ -510,46 +510,50 @@ mod tests {
     }
 
     #[test]
-    fn same_agent_resharing_updates_in_place() {
-        let store = Store::load(&temp_dir("same"));
-        store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
-        let mut again = input("ffmpeg", "cli");
-        again["verdict"] = json!("works, slow on large files");
-        let d = store.share(1, "alpha", &again).unwrap();
-        assert_eq!(d.id, "d1");
-        assert_eq!(store.list().len(), 1);
-        assert_eq!(
-            store.search("slow")[0].verdict,
-            "works, slow on large files"
-        );
-    }
-
-    #[test]
-    fn another_agent_endorses_the_same_name() {
-        let store = Store::load(&temp_dir("endorse"));
-        store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
-        let mut beta = input("FFMPEG", "cli");
-        beta["verdict"] = json!("also works, used it for podcasts");
-        store.share(2, "beta", &beta).unwrap();
-        let items = store.list();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].endorsed_by, vec![2]);
-        assert!(items[0].verdict.contains("works on a 4 GB VM"));
-        assert!(
-            items[0]
-                .verdict
-                .contains("\n— beta: also works, used it for podcasts")
-        );
-    }
-
-    #[test]
-    fn bad_kind_is_refused() {
-        let store = Store::load(&temp_dir("kind"));
-        let err = store
-            .share(1, "alpha", &input("Dance", "dance"))
-            .unwrap_err();
-        assert!(err.contains("kind"), "error names the field: {err}");
-        assert!(store.list().is_empty());
+    fn share_rules() {
+        // same_agent_resharing_updates_in_place: resharing the same name by the
+        // same agent updates the entry in place.
+        {
+            let store = Store::load(&temp_dir("same"));
+            store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+            let mut again = input("ffmpeg", "cli");
+            again["verdict"] = json!("works, slow on large files");
+            let d = store.share(1, "alpha", &again).unwrap();
+            assert_eq!(d.id, "d1");
+            assert_eq!(store.list().len(), 1);
+            assert_eq!(
+                store.search("slow")[0].verdict,
+                "works, slow on large files"
+            );
+        }
+        // another_agent_endorses_the_same_name: another agent sharing the same
+        // name endorses the entry and appends its verdict.
+        {
+            let store = Store::load(&temp_dir("endorse"));
+            store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+            let mut beta = input("FFMPEG", "cli");
+            beta["verdict"] = json!("also works, used it for podcasts");
+            store.share(2, "beta", &beta).unwrap();
+            let items = store.list();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].endorsed_by, vec![2]);
+            assert!(items[0].verdict.contains("works on a 4 GB VM"));
+            assert!(
+                items[0]
+                    .verdict
+                    .contains("\n— beta: also works, used it for podcasts")
+            );
+        }
+        // bad_kind_is_refused: an unknown kind is refused, names the field, and
+        // stores nothing.
+        {
+            let store = Store::load(&temp_dir("kind"));
+            let err = store
+                .share(1, "alpha", &input("Dance", "dance"))
+                .unwrap_err();
+            assert!(err.contains("kind"), "error names the field: {err}");
+            assert!(store.list().is_empty());
+        }
     }
 
     #[test]

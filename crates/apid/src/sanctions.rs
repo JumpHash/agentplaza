@@ -1062,20 +1062,40 @@ mod tests {
     }
 
     #[test]
-    fn a_minor_violation_is_a_warning_only() {
-        let w = world("minor", 300);
-        assert_eq!(
-            w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
-            ["warning"]
-        );
-        assert_eq!(w.wallet(), 300);
-        assert!(w.fines_in_journal().is_empty());
-        assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW).is_none());
-        assert_eq!(
-            w.memory.list(CID).len(),
-            1,
-            "the warning is noted in memory"
-        );
+    fn minor_violations_warn_and_repeats_escalate() {
+        // A minor violation is a warning only: no fine, no suspension, and the warning is noted.
+        {
+            let w = world("minor", 300);
+            assert_eq!(
+                w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
+                ["warning"]
+            );
+            assert_eq!(w.wallet(), 300);
+            assert!(w.fines_in_journal().is_empty());
+            assert!(w.ledger.suspended(&w.settings, CID, "bash", NOW).is_none());
+            assert_eq!(
+                w.memory.list(CID).len(),
+                1,
+                "the warning is noted in memory"
+            );
+        }
+        // Repeated violations escalate with the offence count: warnings, then a fine.
+        {
+            let w = world("repeat", 300);
+            assert_eq!(
+                w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
+                ["warning"]
+            );
+            assert_eq!(
+                w.sanctions(&case("T-001", Severity::Info, 2, "bash")),
+                ["warning"]
+            );
+            assert_eq!(
+                w.sanctions(&case("T-001", Severity::Info, 3, "bash")),
+                ["fine:50"]
+            );
+            assert_eq!(w.wallet(), 250);
+        }
     }
 
     #[test]
@@ -1098,24 +1118,6 @@ mod tests {
             fines[0].contains("T-004"),
             "the fine's memo names the law: {fines:?}"
         );
-    }
-
-    #[test]
-    fn repeated_violations_escalate_with_the_offence_count() {
-        let w = world("repeat", 300);
-        assert_eq!(
-            w.sanctions(&case("T-001", Severity::Info, 1, "bash")),
-            ["warning"]
-        );
-        assert_eq!(
-            w.sanctions(&case("T-001", Severity::Info, 2, "bash")),
-            ["warning"]
-        );
-        assert_eq!(
-            w.sanctions(&case("T-001", Severity::Info, 3, "bash")),
-            ["fine:50"]
-        );
-        assert_eq!(w.wallet(), 250);
     }
 
     #[test]
@@ -1187,39 +1189,41 @@ mod tests {
     }
 
     #[test]
-    fn disabled_sanctions_apply_nothing() {
-        let mut w = world("disabled", 300);
-        w.apply(&case("C-001a", Severity::Critical, 1, "bash"));
-        w.settings.enabled = false;
-        assert!(
-            w.apply(&case("T-004", Severity::Medium, 1, "read_file"))
-                .is_empty()
-        );
-        assert_eq!(w.wallet(), 300);
-        assert!(w.fines_in_journal().is_empty());
-        assert!(
-            w.ledger
-                .suspended(&w.settings, CID, "bash", NOW + 1)
-                .is_none(),
-            "a suspension stops with sanctions off"
-        );
-    }
-
-    #[test]
-    fn fines_and_suspensions_can_be_switched_off_separately() {
-        let mut w = world("switches", 300);
-        w.settings.fines = false;
-        w.settings.suspensions = false;
-        assert_eq!(
-            w.sanctions(&case("T-010", Severity::Low, 3, "bash")),
-            ["probation:3d"]
-        );
-        assert_eq!(w.wallet(), 300);
-        assert!(
-            w.ledger
-                .suspended(&w.settings, CID, "bash", NOW + 1)
-                .is_none()
-        );
+    fn sanction_switches_stop_what_they_name() {
+        // Disabled sanctions apply nothing, and a running suspension stops with them.
+        {
+            let mut w = world("disabled", 300);
+            w.apply(&case("C-001a", Severity::Critical, 1, "bash"));
+            w.settings.enabled = false;
+            assert!(
+                w.apply(&case("T-004", Severity::Medium, 1, "read_file"))
+                    .is_empty()
+            );
+            assert_eq!(w.wallet(), 300);
+            assert!(w.fines_in_journal().is_empty());
+            assert!(
+                w.ledger
+                    .suspended(&w.settings, CID, "bash", NOW + 1)
+                    .is_none(),
+                "a suspension stops with sanctions off"
+            );
+        }
+        // Fines and suspensions can be switched off separately: only probation applies.
+        {
+            let mut w = world("switches", 300);
+            w.settings.fines = false;
+            w.settings.suspensions = false;
+            assert_eq!(
+                w.sanctions(&case("T-010", Severity::Low, 3, "bash")),
+                ["probation:3d"]
+            );
+            assert_eq!(w.wallet(), 300);
+            assert!(
+                w.ledger
+                    .suspended(&w.settings, CID, "bash", NOW + 1)
+                    .is_none()
+            );
+        }
     }
 
     #[test]

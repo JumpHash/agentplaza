@@ -238,25 +238,28 @@ mod tests {
     }
 
     #[test]
-    fn an_approved_payment_moves_the_credits() {
-        let treasury = funded();
-        let payment =
-            Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 10, "memo": "thanks"}))
-                .expect("detail");
-        assert_eq!(payment.describe(), "10 to 8");
-        execute(&treasury, 7, &payment).expect("approved payment executes");
-        assert_eq!(treasury.wallet(7), 10);
-        assert_eq!(treasury.wallet(8), 10);
-    }
-
-    #[test]
-    fn an_approved_payment_the_wallet_cannot_cover_fails_and_moves_nothing() {
-        let treasury = funded();
-        let payment = Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 25, "memo": ""}))
-            .expect("detail");
-        assert!(execute(&treasury, 7, &payment).is_err());
-        assert_eq!(treasury.wallet(7), 20);
-        assert_eq!(treasury.wallet(8), 0);
+    fn an_approved_payment_moves_the_credits_and_an_uncovered_one_moves_nothing() {
+        // An approved payment moves the credits from the payer to the payee.
+        {
+            let treasury = funded();
+            let payment =
+                Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 10, "memo": "thanks"}))
+                    .expect("detail");
+            assert_eq!(payment.describe(), "10 to 8");
+            execute(&treasury, 7, &payment).expect("approved payment executes");
+            assert_eq!(treasury.wallet(7), 10);
+            assert_eq!(treasury.wallet(8), 10);
+        }
+        // An approved payment the wallet cannot cover fails and moves nothing.
+        {
+            let treasury = funded();
+            let payment =
+                Payment::from_detail(&json!({"cid": 7, "to": 8, "amount": 25, "memo": ""}))
+                    .expect("detail");
+            assert!(execute(&treasury, 7, &payment).is_err());
+            assert_eq!(treasury.wallet(7), 20);
+            assert_eq!(treasury.wallet(8), 0);
+        }
     }
 
     #[test]
@@ -273,111 +276,112 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_loop_charge_comes_off_the_escrow_and_is_metered_spend_when_charging_is_on() {
-        let treasury = task_funded();
-        let mut metered = Vec::new();
-        let settled = charge_model_call(
-            &treasury,
-            true,
-            |task, credits| metered.push((task.to_string(), credits)),
-            7,
-            Some("t1"),
-            40,
-            "model m",
-        )
-        .expect("charging is on, so the call is charged");
-        assert_eq!(
-            (settled.wanted, settled.charged, settled.task_paid),
-            (40, 40, true)
-        );
-        assert_eq!(settled.error, None);
-        assert_eq!(treasury.escrow_balance("t1"), 260);
-        assert_eq!(
-            metered,
-            vec![("t1".to_string(), 40)],
-            "the task's metered spend is updated"
-        );
-        assert_eq!(treasury.view().spent, 40, "the Spent total counts it");
-        let kinds: Vec<_> = treasury
-            .journal(10)
-            .entries
-            .iter()
-            .map(|e| e.kind.to_string())
-            .collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "mint".to_string(),
-                "subcontract".to_string(),
-                "model".to_string()
-            ],
-            "the funding entries, then one model entry and no spend entry"
-        );
-    }
+    fn model_call_charges_settle_against_escrow_wallet_and_spend() {
+        // The agent loop charge comes off the escrow and is metered spend when charging is on.
+        {
+            let treasury = task_funded();
+            let mut metered = Vec::new();
+            let settled = charge_model_call(
+                &treasury,
+                true,
+                |task, credits| metered.push((task.to_string(), credits)),
+                7,
+                Some("t1"),
+                40,
+                "model m",
+            )
+            .expect("charging is on, so the call is charged");
+            assert_eq!(
+                (settled.wanted, settled.charged, settled.task_paid),
+                (40, 40, true)
+            );
+            assert_eq!(settled.error, None);
+            assert_eq!(treasury.escrow_balance("t1"), 260);
+            assert_eq!(
+                metered,
+                vec![("t1".to_string(), 40)],
+                "the task's metered spend is updated"
+            );
+            assert_eq!(treasury.view().spent, 40, "the Spent total counts it");
+            let kinds: Vec<_> = treasury
+                .journal(10)
+                .entries
+                .iter()
+                .map(|e| e.kind.to_string())
+                .collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    "mint".to_string(),
+                    "subcontract".to_string(),
+                    "model".to_string()
+                ],
+                "the funding entries, then one model entry and no spend entry"
+            );
+        }
+        // With charging off, neither a task call nor a wallet call is charged.
+        {
+            let treasury = task_funded();
+            assert_eq!(
+                charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"),
+                None,
+                "the agent loop call"
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 300);
+            assert_eq!(treasury.view().spent, 0);
 
-    #[test]
-    fn with_charging_off_neither_a_task_call_nor_a_wallet_call_is_charged() {
-        let treasury = task_funded();
-        assert_eq!(
-            charge_model_call(&treasury, false, |_, _| {}, 7, Some("t1"), 40, "model m"),
-            None,
-            "the agent loop call"
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 300);
-        assert_eq!(treasury.view().spent, 0);
-
-        treasury
-            .charge_spend(Some("t1"), 100, "real cost")
-            .expect("the cost is spent");
-        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
-        assert_eq!(
-            charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"),
-            None,
-            "the gateway call from a wallet"
-        );
-        assert_eq!(treasury.wallet(7), 20);
-        assert_eq!(treasury.view().spent, 100);
-    }
-
-    #[test]
-    fn a_gateway_call_from_a_wallet_counts_in_spent_when_charging_is_on() {
-        let treasury = task_funded();
-        treasury
-            .charge_spend(Some("t1"), 100, "real cost")
-            .expect("the cost is spent");
-        treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
-        let mut metered = Vec::new();
-        let settled = charge_model_call(
-            &treasury,
-            true,
-            |task, credits| metered.push((task.to_string(), credits)),
-            7,
-            None,
-            15,
-            "model m",
-        )
-        .expect("charging is on");
-        assert_eq!((settled.charged, settled.task_paid), (15, false));
-        assert_eq!(treasury.wallet(7), 5, "the wallet pays");
-        assert!(metered.is_empty(), "a wallet call is no task's spend");
-        assert_eq!(
-            treasury.view().spent,
-            115,
-            "the 100 spent plus the 15 from the wallet"
-        );
-    }
-
-    #[test]
-    fn a_charge_larger_than_the_escrow_is_capped_and_reported_short() {
-        let treasury = Treasury::new(EventBus::new());
-        treasury.fund_task("t1", 30).expect("fund");
-        let settled = charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 50, "model m")
+            treasury
+                .charge_spend(Some("t1"), 100, "real cost")
+                .expect("the cost is spent");
+            treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
+            assert_eq!(
+                charge_model_call(&treasury, false, |_, _| {}, 7, None, 15, "model m"),
+                None,
+                "the gateway call from a wallet"
+            );
+            assert_eq!(treasury.wallet(7), 20);
+            assert_eq!(treasury.view().spent, 100);
+        }
+        // A gateway call from a wallet counts in Spent when charging is on.
+        {
+            let treasury = task_funded();
+            treasury
+                .charge_spend(Some("t1"), 100, "real cost")
+                .expect("the cost is spent");
+            treasury.pay_agent("t1", 7, 20).expect("the agent is paid");
+            let mut metered = Vec::new();
+            let settled = charge_model_call(
+                &treasury,
+                true,
+                |task, credits| metered.push((task.to_string(), credits)),
+                7,
+                None,
+                15,
+                "model m",
+            )
             .expect("charging is on");
-        assert_eq!(
-            (settled.wanted, settled.charged, settled.available),
-            (50, 30, 30)
-        );
-        assert_eq!(treasury.escrow_balance("t1"), 0, "never negative");
+            assert_eq!((settled.charged, settled.task_paid), (15, false));
+            assert_eq!(treasury.wallet(7), 5, "the wallet pays");
+            assert!(metered.is_empty(), "a wallet call is no task's spend");
+            assert_eq!(
+                treasury.view().spent,
+                115,
+                "the 100 spent plus the 15 from the wallet"
+            );
+        }
+        // A charge larger than the escrow is capped and reported short.
+        {
+            let treasury = Treasury::new(EventBus::new());
+            treasury.fund_task("t1", 30).expect("fund");
+            let settled =
+                charge_model_call(&treasury, true, |_, _| {}, 7, Some("t1"), 50, "model m")
+                    .expect("charging is on");
+            assert_eq!(
+                (settled.wanted, settled.charged, settled.available),
+                (50, 30, 30)
+            );
+            assert_eq!(treasury.escrow_balance("t1"), 0, "never negative");
+        }
     }
 
     #[test]

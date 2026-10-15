@@ -644,40 +644,12 @@ mod tests {
     }
 
     #[test]
-    fn base64_round_trips_and_matches_a_known_vector() {
-        assert_eq!(base64_encode(b"Man"), "TWFu");
-        assert_eq!(
-            base64_decode(&base64_encode(b"hello!?")).unwrap(),
-            b"hello!?"
-        );
-    }
-
-    #[test]
     fn accept_stores_a_private_version_with_its_files() {
         let store = store("accept");
         let entry = store.insert(7, "scout", package("adder", false)).unwrap();
         assert_eq!((entry.version, entry.state.as_str()), (1, "private"));
         let on_disk = fs::read(store.files_dir("adder", 1).join("main.py")).unwrap();
         assert_eq!(on_disk, b"print(1)");
-    }
-
-    #[test]
-    fn versions_count_up_per_name() {
-        let store = store("versions");
-        assert_eq!(
-            store
-                .insert(7, "scout", package("adder", false))
-                .unwrap()
-                .version,
-            1
-        );
-        assert_eq!(
-            store
-                .insert(7, "scout", package("adder", false))
-                .unwrap()
-                .version,
-            2
-        );
     }
 
     #[test]

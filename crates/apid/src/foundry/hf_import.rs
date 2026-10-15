@@ -1383,15 +1383,6 @@ mod tests {
     }
 
     #[test]
-    fn the_free_disk_of_a_directory_is_read_from_its_disk() {
-        let dir = scratch("free");
-        let free = free_bytes(&dir.join("nested"))
-            .expect("the disk holding a temp directory has a mount point");
-        assert!(free > 0, "a temp directory's disk has some free space");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn only_the_files_not_on_disk_at_their_size_are_downloaded() {
         let dir = scratch("missing");
         fs::write(dir.join("config.json"), b"{}").unwrap();

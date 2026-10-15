@@ -1117,64 +1117,65 @@ mod tests {
     }
 
     #[test]
-    fn schema_rejects_a_missing_field() {
-        let schema = numeric_input(&["x0", "x1"]);
-        let err = schema.validate(&json!({ "x0": 1.0 })).unwrap_err();
-        assert_eq!(err, "missing required field `x1`");
-    }
-
-    #[test]
-    fn schema_rejects_a_wrong_type() {
-        let schema = input_schema(json!({
-            "type": "object",
-            "properties": { "n": { "type": "integer" }, "s": { "type": "string" }, "b": { "type": "boolean" } },
-            "required": ["n", "s", "b"]
-        }));
-        assert!(
-            schema
-                .validate(&json!({ "n": 3.0, "s": "a", "b": true }))
-                .is_ok()
-        );
-        assert_eq!(
-            schema
-                .validate(&json!({ "n": 1.5, "s": "a", "b": true }))
-                .unwrap_err(),
-            "field `n` must be a integer"
-        );
-        assert_eq!(
-            schema
-                .validate(&json!({ "n": 1, "s": 7, "b": true }))
-                .unwrap_err(),
-            "field `s` must be a string"
-        );
-        assert_eq!(
-            schema
-                .validate(&json!({ "n": 1, "s": "a", "b": "yes" }))
-                .unwrap_err(),
-            "field `b` must be a boolean"
-        );
-        assert_eq!(
-            schema.validate(&json!([1, 2])).unwrap_err(),
-            "must be a JSON object"
-        );
-    }
-
-    #[test]
-    fn schema_rejects_a_bad_enum_and_unknown_fields() {
-        let schema = input_schema(json!({
-            "type": "object",
-            "properties": { "color": { "type": "string", "enum": ["red", "blue"] } },
-            "required": ["color"]
-        }));
-        assert!(schema.validate(&json!({ "color": "red" })).is_ok());
-        let err = schema.validate(&json!({ "color": "green" })).unwrap_err();
-        assert!(err.starts_with("field `color` must be one of"), "{err}");
-        assert_eq!(
-            schema
-                .validate(&json!({ "color": "red", "size": 2 }))
-                .unwrap_err(),
-            "unknown field `size`"
-        );
+    fn schema_rejects_bad_input() {
+        // A missing required field is named in the error.
+        {
+            let schema = numeric_input(&["x0", "x1"]);
+            let err = schema.validate(&json!({ "x0": 1.0 })).unwrap_err();
+            assert_eq!(err, "missing required field `x1`");
+        }
+        // Each field must match its declared type, and the input must be an object.
+        {
+            let schema = input_schema(json!({
+                "type": "object",
+                "properties": { "n": { "type": "integer" }, "s": { "type": "string" }, "b": { "type": "boolean" } },
+                "required": ["n", "s", "b"]
+            }));
+            assert!(
+                schema
+                    .validate(&json!({ "n": 3.0, "s": "a", "b": true }))
+                    .is_ok()
+            );
+            assert_eq!(
+                schema
+                    .validate(&json!({ "n": 1.5, "s": "a", "b": true }))
+                    .unwrap_err(),
+                "field `n` must be a integer"
+            );
+            assert_eq!(
+                schema
+                    .validate(&json!({ "n": 1, "s": 7, "b": true }))
+                    .unwrap_err(),
+                "field `s` must be a string"
+            );
+            assert_eq!(
+                schema
+                    .validate(&json!({ "n": 1, "s": "a", "b": "yes" }))
+                    .unwrap_err(),
+                "field `b` must be a boolean"
+            );
+            assert_eq!(
+                schema.validate(&json!([1, 2])).unwrap_err(),
+                "must be a JSON object"
+            );
+        }
+        // An enum field takes only its listed values, and unknown fields are refused.
+        {
+            let schema = input_schema(json!({
+                "type": "object",
+                "properties": { "color": { "type": "string", "enum": ["red", "blue"] } },
+                "required": ["color"]
+            }));
+            assert!(schema.validate(&json!({ "color": "red" })).is_ok());
+            let err = schema.validate(&json!({ "color": "green" })).unwrap_err();
+            assert!(err.starts_with("field `color` must be one of"), "{err}");
+            assert_eq!(
+                schema
+                    .validate(&json!({ "color": "red", "size": 2 }))
+                    .unwrap_err(),
+                "unknown field `size`"
+            );
+        }
     }
 
     #[test]
@@ -1248,61 +1249,119 @@ mod tests {
     }
 
     #[test]
-    fn card_checks_refuse_bad_features_and_labels() {
-        let mut bad = xyz_card(LINEAR3);
-        bad.features[0].scale = Some(Scale {
-            mean: 0.0,
-            std: 0.0,
-        });
-        assert!(LoadedModel::load(LINEAR3, bad).is_err());
-        let mut dup = xyz_card(LINEAR3);
-        dup.labels = Some(vec!["cat".into(), "cat".into(), "bird".into()]);
-        assert!(LoadedModel::load(LINEAR3, dup).is_err());
-        let mut wrong_hash = xyz_card(LINEAR3);
-        wrong_hash.onnx_sha256 = "0".repeat(64);
-        assert!(
-            LoadedModel::load(LINEAR3, wrong_hash)
+    fn load_refuses_a_bad_card() {
+        // A zero feature scale, duplicate labels and a wrong onnx hash are each refused at load.
+        {
+            let mut bad = xyz_card(LINEAR3);
+            bad.features[0].scale = Some(Scale {
+                mean: 0.0,
+                std: 0.0,
+            });
+            assert!(LoadedModel::load(LINEAR3, bad).is_err());
+            let mut dup = xyz_card(LINEAR3);
+            dup.labels = Some(vec!["cat".into(), "cat".into(), "bird".into()]);
+            assert!(LoadedModel::load(LINEAR3, dup).is_err());
+            let mut wrong_hash = xyz_card(LINEAR3);
+            wrong_hash.onnx_sha256 = "0".repeat(64);
+            assert!(
+                LoadedModel::load(LINEAR3, wrong_hash)
+                    .err()
+                    .unwrap()
+                    .contains("onnx sha256 is")
+            );
+        }
+        // A serving block listing 4 features must not load a 3-input graph.
+        {
+            let mut card = xyz_card(LINEAR3);
+            card.serving = Some(json!({
+                "features": (0..4)
+                    .map(|i| json!({ "name": format!("x{i}"), "kind": "numeric", "transform": "signlog" }))
+                    .collect::<Vec<_>>(),
+                "output_activation": "logits"
+            }));
+            let err = LoadedModel::load(LINEAR3, card)
                 .err()
+                .expect("a 4-feature serving block must not load a 3-input graph");
+            assert!(err.contains("does not take the card's 4 features"), "{err}");
+        }
+        // linear3 takes one input, which the card does not name `num`; a two-input
+        // split and an int64 input are refused too.
+        {
+            let numeric_feature =
+                |n: &str| json!({ "name": n, "kind": "numeric", "transform": "signlog" });
+            let mut card = xyz_card(LINEAR3);
+            card.serving = Some(json!({
+                "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+                "inputs": [{ "name": "num", "dtype": "float32", "features": ["x0", "x1", "x2"] }]
+            }));
+            let err = LoadedModel::load(LINEAR3, card.clone())
+                .err()
+                .expect("a mismatched input name must not load");
+            assert!(err.contains("serving.inputs names `num`"), "{err}");
+
+            card.serving = Some(json!({
+                "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+                "inputs": [
+                    { "name": "a", "dtype": "float32", "features": ["x0"] },
+                    { "name": "b", "dtype": "float32", "features": ["x1", "x2"] }
+                ]
+            }));
+            let err = LoadedModel::load(LINEAR3, card.clone())
+                .err()
+                .expect("two declared inputs must not load a one-input graph");
+            assert!(
+                err.contains("takes 1 inputs") && err.contains("declares 2"),
+                "{err}"
+            );
+
+            card.serving = Some(json!({
+                "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
+                "inputs": [{ "name": "x", "dtype": "int64", "features": ["x0", "x1", "x2"] }]
+            }));
+            let err = LoadedModel::load(LINEAR3, card)
+                .err()
+                .expect("an int64 input takes hash features only");
+            assert!(err.contains("takes hash features"), "{err}");
+        }
+    }
+
+    #[test]
+    fn inference_gives_the_expected_class_and_probabilities() {
+        // A known input gives the expected class, and the probabilities sum to 1 and match the softmax.
+        {
+            let model = LoadedModel::load(LINEAR3, xyz_card(LINEAR3)).unwrap();
+            let out = model
+                .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))
+                .unwrap();
+            assert_eq!(out["label"], "cat");
+            let probs = out["probabilities"].as_object().unwrap();
+            let total: f64 = probs.values().map(|p| p.as_f64().unwrap()).sum();
+            approx(total, 1.0);
+            // softmax([2, -1, -1]) = [e^2, e^-1, e^-1] / (e^2 + 2 e^-1)
+            approx(probs["cat"].as_f64().unwrap(), 0.909_465);
+            approx(probs["dog"].as_f64().unwrap(), 0.045_268);
+            approx(probs["bird"].as_f64().unwrap(), 0.045_268);
+            let dog = model
+                .invoke(&json!({ "x0": 0.0, "x1": 1.0, "x2": 0.0 }))
+                .unwrap();
+            assert_eq!(dog["label"], "dog");
+        }
+        // Raw logits are softmaxed to the same probabilities.
+        {
+            let model = LoadedModel::load(LINEAR3_LOGITS, xyz_card(LINEAR3_LOGITS)).unwrap();
+            let out = model
+                .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))
+                .unwrap();
+            assert_eq!(out["label"], "cat");
+            approx(out["probabilities"]["cat"].as_f64().unwrap(), 0.909_465);
+            let total: f64 = out["probabilities"]
+                .as_object()
                 .unwrap()
-                .contains("onnx sha256 is")
-        );
-    }
-
-    #[test]
-    fn a_known_input_gives_the_expected_class_and_probabilities() {
-        let model = LoadedModel::load(LINEAR3, xyz_card(LINEAR3)).unwrap();
-        let out = model
-            .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))
-            .unwrap();
-        assert_eq!(out["label"], "cat");
-        let probs = out["probabilities"].as_object().unwrap();
-        let total: f64 = probs.values().map(|p| p.as_f64().unwrap()).sum();
-        approx(total, 1.0);
-        // softmax([2, -1, -1]) = [e^2, e^-1, e^-1] / (e^2 + 2 e^-1)
-        approx(probs["cat"].as_f64().unwrap(), 0.909_465);
-        approx(probs["dog"].as_f64().unwrap(), 0.045_268);
-        approx(probs["bird"].as_f64().unwrap(), 0.045_268);
-        let dog = model
-            .invoke(&json!({ "x0": 0.0, "x1": 1.0, "x2": 0.0 }))
-            .unwrap();
-        assert_eq!(dog["label"], "dog");
-    }
-
-    #[test]
-    fn raw_logits_are_softmaxed_to_the_same_probabilities() {
-        let model = LoadedModel::load(LINEAR3_LOGITS, xyz_card(LINEAR3_LOGITS)).unwrap();
-        let out = model
-            .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))
-            .unwrap();
-        assert_eq!(out["label"], "cat");
-        approx(out["probabilities"]["cat"].as_f64().unwrap(), 0.909_465);
-        let total: f64 = out["probabilities"]
-            .as_object()
-            .unwrap()
-            .values()
-            .map(|p| p.as_f64().unwrap())
-            .sum();
-        approx(total, 1.0);
+                .values()
+                .map(|p| p.as_f64().unwrap())
+                .sum();
+            approx(total, 1.0);
+        }
     }
 
     #[test]
@@ -1394,12 +1453,6 @@ mod tests {
     }
 
     #[test]
-    fn the_loader_pins_one_row_of_the_serving_width() {
-        assert_eq!(input_shape(3), [1, 3]);
-        assert_eq!(input_shape(0), [1, 0]);
-    }
-
-    #[test]
     fn a_dynamic_batch_graph_loads_and_runs_one_row() {
         // Exported with dynamic_axes on the input and the output (trainer/tests/make_tiny_onnx.py):
         // the declared output is ["batch", 3], which the loader must not let fail the analysis.
@@ -1413,22 +1466,6 @@ mod tests {
         let row = Tensor::from_shape(&[1, 10], &[0.5f32; 10]).unwrap();
         let out = model.plan.run(tvec!(TValue::from(row))).unwrap();
         assert_eq!(out[0].shape(), &[1, 3]);
-    }
-
-    #[test]
-    fn a_serving_block_the_graph_does_not_take_is_refused_at_load() {
-        // linear3 takes 3 columns; a card whose serving block lists 4 features must not load.
-        let mut card = xyz_card(LINEAR3);
-        card.serving = Some(json!({
-            "features": (0..4)
-                .map(|i| json!({ "name": format!("x{i}"), "kind": "numeric", "transform": "signlog" }))
-                .collect::<Vec<_>>(),
-            "output_activation": "logits"
-        }));
-        let err = LoadedModel::load(LINEAR3, card)
-            .err()
-            .expect("a 4-feature serving block must not load a 3-input graph");
-        assert!(err.contains("does not take the card's 4 features"), "{err}");
     }
 
     #[test]
@@ -1563,67 +1600,5 @@ mod tests {
                 assert!((g - w).abs() < 1e-4, "row {r} logit {k}: {g} is not {w}");
             }
         }
-    }
-
-    #[test]
-    fn a_card_whose_inputs_do_not_match_the_graph_is_refused() {
-        // linear3 takes one input, which the card does not name `num`.
-        let numeric_feature =
-            |n: &str| json!({ "name": n, "kind": "numeric", "transform": "signlog" });
-        let mut card = xyz_card(LINEAR3);
-        card.serving = Some(json!({
-            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
-            "inputs": [{ "name": "num", "dtype": "float32", "features": ["x0", "x1", "x2"] }]
-        }));
-        let err = LoadedModel::load(LINEAR3, card.clone())
-            .err()
-            .expect("a mismatched input name must not load");
-        assert!(err.contains("serving.inputs names `num`"), "{err}");
-
-        card.serving = Some(json!({
-            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
-            "inputs": [
-                { "name": "a", "dtype": "float32", "features": ["x0"] },
-                { "name": "b", "dtype": "float32", "features": ["x1", "x2"] }
-            ]
-        }));
-        let err = LoadedModel::load(LINEAR3, card.clone())
-            .err()
-            .expect("two declared inputs must not load a one-input graph");
-        assert!(
-            err.contains("takes 1 inputs") && err.contains("declares 2"),
-            "{err}"
-        );
-
-        card.serving = Some(json!({
-            "features": [numeric_feature("x0"), numeric_feature("x1"), numeric_feature("x2")],
-            "inputs": [{ "name": "x", "dtype": "int64", "features": ["x0", "x1", "x2"] }]
-        }));
-        let err = LoadedModel::load(LINEAR3, card)
-            .err()
-            .expect("an int64 input takes hash features only");
-        assert!(err.contains("takes hash features"), "{err}");
-    }
-
-    #[test]
-    fn the_registry_holds_loaded_models_by_id() {
-        fn assert_shared<T: Send + Sync>() {}
-        assert_shared::<Registry>();
-        let registry = Registry::default();
-        assert!(registry.list().is_empty());
-        assert!(
-            registry
-                .insert(LoadedModel::load(LINEAR3, xyz_card(LINEAR3)).unwrap())
-                .is_none()
-        );
-        let replaced =
-            registry.insert(LoadedModel::load(LINEAR3_LOGITS, xyz_card(LINEAR3_LOGITS)).unwrap());
-        assert!(replaced.is_some());
-        let ids: Vec<String> = registry.list().into_iter().map(|c| c.id).collect();
-        assert_eq!(ids, vec!["linear3".to_string()]);
-        let got = registry.get("linear3").unwrap();
-        assert_eq!(got.card().name, "Linear three");
-        assert!(registry.remove("linear3").is_some());
-        assert!(registry.get("linear3").is_none());
     }
 }

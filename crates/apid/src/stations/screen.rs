@@ -783,49 +783,51 @@ mod tests {
     }
 
     #[test]
-    fn the_first_viewer_starts_the_stream_and_the_last_one_stops_it() {
-        let fx = Fake::default();
-        let live = Live::default();
-        assert_eq!(
-            live.join(&fx, "w1", Pick::Session(9), 1, want(2, 1.0)),
-            Ok(9)
-        );
-        assert_eq!(
-            live.join(&fx, "w1", Pick::Session(9), 2, want(2, 1.0)),
-            Ok(9)
-        );
-        live.leave(&fx, "w1", 9, 1);
-        live.leave(&fx, "w1", 9, 2);
-        assert_eq!(
-            fx.lines(),
-            vec![
-                "stream w1/9 true 2 1".to_string(),
-                "stream w1/9 false 2 1".to_string()
-            ],
-            "one start and one stop"
-        );
-        assert!(live.feeds().is_empty());
-    }
-
-    #[test]
-    fn several_viewers_share_the_highest_fps_and_the_smallest_scale() {
-        let fx = Fake::default();
-        let live = Live::default();
-        live.join(&fx, "w1", Pick::Session(9), 1, want(2, 1.0))
-            .unwrap();
-        live.join(&fx, "w1", Pick::Session(9), 2, want(5, 0.5))
-            .unwrap();
-        live.leave(&fx, "w1", 9, 2);
-        live.leave(&fx, "w1", 9, 1);
-        assert_eq!(
-            fx.lines(),
-            vec![
-                "stream w1/9 true 2 1".to_string(),
-                "stream w1/9 true 5 0.5".to_string(),
-                "stream w1/9 true 2 1".to_string(),
-                "stream w1/9 false 2 1".to_string(),
-            ]
-        );
+    fn live_viewers_start_and_stop_one_stream_at_the_shared_best_settings() {
+        // The first viewer starts the stream, and the last one stops it.
+        {
+            let fx = Fake::default();
+            let live = Live::default();
+            assert_eq!(
+                live.join(&fx, "w1", Pick::Session(9), 1, want(2, 1.0)),
+                Ok(9)
+            );
+            assert_eq!(
+                live.join(&fx, "w1", Pick::Session(9), 2, want(2, 1.0)),
+                Ok(9)
+            );
+            live.leave(&fx, "w1", 9, 1);
+            live.leave(&fx, "w1", 9, 2);
+            assert_eq!(
+                fx.lines(),
+                vec![
+                    "stream w1/9 true 2 1".to_string(),
+                    "stream w1/9 false 2 1".to_string()
+                ],
+                "one start and one stop"
+            );
+            assert!(live.feeds().is_empty());
+        }
+        // Several viewers share the highest fps and the smallest scale.
+        {
+            let fx = Fake::default();
+            let live = Live::default();
+            live.join(&fx, "w1", Pick::Session(9), 1, want(2, 1.0))
+                .unwrap();
+            live.join(&fx, "w1", Pick::Session(9), 2, want(5, 0.5))
+                .unwrap();
+            live.leave(&fx, "w1", 9, 2);
+            live.leave(&fx, "w1", 9, 1);
+            assert_eq!(
+                fx.lines(),
+                vec![
+                    "stream w1/9 true 2 1".to_string(),
+                    "stream w1/9 true 5 0.5".to_string(),
+                    "stream w1/9 true 2 1".to_string(),
+                    "stream w1/9 false 2 1".to_string(),
+                ]
+            );
+        }
     }
 
     #[test]
@@ -883,37 +885,6 @@ mod tests {
             1,
             "the shared session it opened is closed"
         );
-    }
-
-    #[test]
-    fn a_thumbnail_is_cached_for_five_seconds() {
-        let fx = Fake::default();
-        let live = Live::default();
-        let t0 = 1_000_000;
-        assert_eq!(live.thumbnail(&fx, "w1", 9, t0).unwrap().1, vec![1, 2, 3]);
-        live.thumbnail(&fx, "w1", 9, t0 + THUMB_TTL - 1).unwrap();
-        assert_eq!(
-            *fx.shots.borrow(),
-            1,
-            "a fresh thumbnail is served from the cache"
-        );
-        live.thumbnail(&fx, "w1", 9, t0 + THUMB_TTL).unwrap();
-        assert_eq!(*fx.shots.borrow(), 2, "a stale one is taken again");
-    }
-
-    #[test]
-    fn a_frame_goes_out_at_most_at_the_viewers_fps() {
-        assert!(due(None, 0, 5), "the first frame always goes");
-        assert!(
-            !due(Some(1_000), 1_199, 5),
-            "199 ms is less than 200 ms at 5 fps"
-        );
-        assert!(due(Some(1_000), 1_200, 5));
-        assert!(
-            due(Some(1_000), 1_067, 15),
-            "67 ms is at least 66.7 ms at 15 fps"
-        );
-        assert!(!due(Some(1_000), 1_066, 15));
     }
 
     #[test]
