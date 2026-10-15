@@ -99,9 +99,25 @@ pub fn vtimer_offset_for(host_now: u64, guest_counter: u64) -> u64 {
     host_now.saturating_sub(guest_counter)
 }
 
+/// The SPIs to raise again after a restore: those of the transports whose interrupt the guest had
+/// not acknowledged when the snapshot was taken (`InterruptStatus` non-zero). Each item is a
+/// transport's saved state (`None`: no such device) and its SPI.
+pub fn unacknowledged_spis<'a>(
+    transports: impl IntoIterator<Item = (Option<&'a MmioDeviceState>, u32)>,
+) -> Vec<u32> {
+    transports
+        .into_iter()
+        .filter(|(state, _)| state.is_some_and(|state| state.transport.interrupt_status != 0))
+        .map(|(_, spi)| spi)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::virtio::mmio::{
+        DeviceSnapshot, MmioTransportState, QueueConfigState, QueuePosition,
+    };
     use crate::hvf::gic::Gic;
     use crate::spawner::SnapshotKind;
     use crate::vstate::snapshot::{BACKEND, meta_now};
@@ -139,5 +155,99 @@ mod tests {
         let offset = vtimer_offset_for(1_000_000, 5_000);
         assert_eq!(1_000_000 - offset, 5_000);
         assert_eq!(vtimer_offset_for(10, 5_000), 0, "never a negative offset");
+    }
+
+    /// A block-like transport with one queue, its interrupt status as given.
+    fn state(interrupt_status: u32) -> MmioDeviceState {
+        MmioDeviceState {
+            transport: MmioTransportState {
+                device_type: 2,
+                features_select: 0,
+                acked_features_select: 0,
+                queue_select: 0,
+                device_status: 0xf,
+                config_generation: 0,
+                interrupt_status,
+                acked_features: 1 << 32,
+                queues: vec![QueueConfigState {
+                    max_size: 256,
+                    size: 256,
+                    ready: true,
+                    desc: 0x8000_0000,
+                    avail: 0x8000_1000,
+                    used: 0x8000_2000,
+                }],
+            },
+            device: DeviceSnapshot {
+                queues: vec![QueuePosition {
+                    next_avail: 3,
+                    next_used: 3,
+                }],
+                extra: serde_json::json!({ "capacity_sectors": 2048 }),
+            },
+        }
+    }
+
+    fn snapshot_with_devices() -> HvfSnapshot {
+        let mut meta = meta_now(SnapshotKind::Full, 2, 512, Vec::new());
+        meta.backend = BACKEND.to_string();
+        HvfSnapshot {
+            meta,
+            vcpus: vec![HvfVcpuState {
+                regs: vec![(0, 7)],
+                simd: vec![[0xab; 16]; 32],
+                sys_regs: vec![(0xc080, 0x30d0_5885)],
+                vtimer_masked: false,
+            }],
+            running: vec![true, false],
+            guest_counter: 123_456_789,
+            gic: Gic::new(2).state(),
+            serial: SerialRegisters::default(),
+            vsock: Some(state(0)),
+            workspace: Some(state(1)),
+            volumes: vec![state(0), state(2)],
+        }
+    }
+
+    #[test]
+    fn the_state_round_trips_with_devices() {
+        let dir = std::env::temp_dir().join(format!("apz-hvf-devices-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let snapshot = snapshot_with_devices();
+        write_state(&dir, &snapshot).expect("written");
+        assert_eq!(read_state(&dir).expect("read back"), snapshot);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_state_without_devices_still_reads() {
+        let dir = std::env::temp_dir().join(format!("apz-hvf-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("created");
+        let mut value = serde_json::to_value(snapshot_with_devices()).expect("serialized");
+        let object = value.as_object_mut().expect("an object");
+        for key in ["vsock", "workspace", "volumes"] {
+            object.remove(key);
+        }
+        let bytes = serde_json::to_vec(&value).expect("bytes");
+        fs::write(dir.join(STATE_FILE), bytes).expect("written");
+        let read = read_state(&dir).expect("an older state reads");
+        assert_eq!(read.vsock, None);
+        assert_eq!(read.workspace, None);
+        assert!(read.volumes.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_unacknowledged_transports_are_raised_again() {
+        assert_eq!(
+            unacknowledged_spis([
+                (Some(&state(1)), 1),
+                (Some(&state(0)), 2),
+                (None, 3),
+                (Some(&state(2)), 8),
+            ]),
+            vec![1, 8]
+        );
     }
 }

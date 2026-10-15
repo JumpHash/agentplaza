@@ -157,6 +157,12 @@ pub enum BootError {
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
 pub fn boot(spec: &VmSpec, id: u32, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+    // A process holds one VM on this backend, and its devices, vsock connections and event
+    // descriptors can outgrow macOS's default of 256 open files; the vsock muxer stops accepting
+    // host connections while it has none left. Raising the soft limit is best effort.
+    if let Err(err) = crate::pal::raise_open_files_limit(crate::pal::OPEN_FILES_CAP) {
+        eprintln!("hvf: VM {id}: cannot raise the open-files limit: {err}");
+    }
     match &spec.restore {
         Some(dir) => restore_inner(spec, dir, id, &runtime),
         None => boot_inner(spec, id, &runtime),
@@ -308,6 +314,12 @@ fn restore_inner(
             snapshot.volumes.len()
         )));
     }
+    if snapshot.running.len() != vcpu_count {
+        return Err(BootError::Snapshot(format!(
+            "the snapshot records the power state of {} vCPUs, not the spec's {vcpu_count}",
+            snapshot.running.len()
+        )));
+    }
     let gic = gic::Gic::from_state(&snapshot.gic, vcpu_count).map_err(BootError::Snapshot)?;
     let memory = guest_memory(spec)?;
     crate::hvf::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
@@ -440,32 +452,14 @@ fn run(
 }
 
 /// The virtio-mmio transports a VM of `spec` carries, as its device tree
-/// describes them: the vsock device, the workspace volume and the shared data
-/// volumes, in the aarch64 layout's slots and GSIs (the KVM backend's).
+/// describes them: the shared aarch64 list (the KVM backend's, built by
+/// `arch::aarch64::virtio_transports`).
 fn transports_of(spec: &VmSpec) -> Vec<VirtioMmioFdtInfo> {
-    let mut transports = Vec::new();
-    if spec.vsock.is_some() {
-        transports.push(VirtioMmioFdtInfo {
-            addr: VSOCK_MMIO_START,
-            len: MMIO_LEN,
-            gsi: VSOCK_GSI,
-        });
-    }
-    if spec.workspace.is_some() {
-        transports.push(VirtioMmioFdtInfo {
-            addr: WORKSPACE_MMIO_START,
-            len: MMIO_LEN,
-            gsi: WORKSPACE_GSI,
-        });
-    }
-    for index in 0..spec.volumes.len() {
-        transports.push(VirtioMmioFdtInfo {
-            addr: DATA_MMIO_START + index as u64 * MMIO_LEN,
-            len: MMIO_LEN,
-            gsi: DATA_GSI_START + index as u32,
-        });
-    }
-    transports
+    crate::arch::aarch64::virtio_transports(
+        spec.vsock.is_some(),
+        spec.workspace.is_some(),
+        spec.volumes.len(),
+    )
 }
 
 /// The VM's virtio transports, held strongly by the VM itself (see
@@ -492,7 +486,7 @@ fn attach_devices(
     // controller's state already unless the relay raised it after the
     // controller was saved; an extra edge is harmless (the driver reads the
     // transport's interrupt status first).
-    let mut pending: Vec<u32> = Vec::new();
+    let mut pending: Vec<(Option<&MmioDeviceState>, u32)> = Vec::new();
 
     // The block devices: the workspace volume and the shared data volumes.
     // Their requests are served on the vCPU that rings their doorbell, so they
@@ -500,7 +494,7 @@ fn attach_devices(
     let workspace = match &spec.workspace {
         Some(image) => {
             let state = restored.and_then(|s| s.workspace.as_ref());
-            note_pending(&mut pending, state, WORKSPACE_GSI);
+            pending.push((state, WORKSPACE_GSI));
             Some(attach_block(
                 shared,
                 image,
@@ -517,7 +511,7 @@ fn attach_devices(
     for (index, volume) in spec.volumes.iter().enumerate() {
         let gsi = DATA_GSI_START + index as u32;
         let state = restored.and_then(|s| s.volumes.get(index));
-        note_pending(&mut pending, state, gsi);
+        pending.push((state, gsi));
         volumes.push(attach_block(
             shared,
             &volume.image,
@@ -568,7 +562,7 @@ fn attach_devices(
                 }
                 None => VirtioMmioTransport::new(device, shared.memory().clone(), irq),
             };
-            note_pending(&mut pending, state, VSOCK_GSI);
+            pending.push((state, VSOCK_GSI));
             Some(attach(shared, transport, VSOCK_MMIO_START)?)
         }
         None => None,
@@ -593,7 +587,7 @@ fn attach_devices(
             .map_err(BootError::Thread)?;
         runtime.add_thread(relay);
     }
-    for spi in pending {
+    for spi in crate::hvf::snapshot_state::unacknowledged_spis(pending) {
         shared.raise_spi(spi);
     }
 
@@ -609,13 +603,6 @@ fn new_irq(irq_sources: &mut Vec<IrqSource>, spi: u32) -> Result<EventFd, BootEr
     let irq = EventFd::new(EFD_NONBLOCK).map_err(BootError::Device)?;
     irq_sources.push((irq.try_clone().map_err(BootError::Device)?, spi));
     Ok(irq)
-}
-
-/// Records `spi` for raising when a restored transport had an unacknowledged interrupt.
-fn note_pending(pending: &mut Vec<u32>, state: Option<&MmioDeviceState>, spi: u32) {
-    if state.is_some_and(|state| state.transport.interrupt_status != 0) {
-        pending.push(spi);
-    }
 }
 
 /// Puts `transport` on the VM's MMIO bus at `base`.
