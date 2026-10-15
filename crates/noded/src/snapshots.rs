@@ -35,6 +35,9 @@ pub const CHECKPOINT_PREFIX: &str = "cp-";
 pub const WORKSPACE_FILE: &str = "workspace.img";
 /// A snapshot's guest memory file (`vmm::vstate::snapshot`).
 pub const MEMORY_FILE: &str = "memory.img";
+/// The marker of a disk-only checkpoint (no memory, no VM state): `{"taken_at_ms": n}`. A VM
+/// restored or forked from one boots cold from the checkpoint's disk.
+pub const DISK_MARKER: &str = "disk.json";
 /// Where a new sleep snapshot is written before it takes the name [`SLEEP`].
 pub const SLEEP_PARTIAL: &str = "sleep.new";
 /// The diff base of a VM restored from a snapshot: a copy of that snapshot's memory (see
@@ -148,7 +151,19 @@ impl SnapshotStore {
             return None;
         }
         let dir = self.dir(cid, name);
-        let meta = read_meta(&dir).ok()?;
+        let Ok(meta) = read_meta(&dir) else {
+            let taken_at_ms = disk_marker(&dir)?;
+            return Some(SnapshotView {
+                name: name.to_string(),
+                cid,
+                label: label_of(name),
+                kind: "disk".to_string(),
+                taken_at_ms,
+                memory_written: 0,
+                disk_bytes: disk_bytes(&dir),
+                paused_ms: 0,
+            });
+        };
         Some(SnapshotView {
             name: name.to_string(),
             cid,
@@ -246,6 +261,28 @@ fn kind_name(kind: SnapshotKind) -> &'static str {
         SnapshotKind::Full => "full",
         SnapshotKind::Diff => "diff",
     }
+}
+
+/// When the disk-only checkpoint in `dir` was taken, if `dir` is one.
+fn disk_marker(dir: &Path) -> Option<u64> {
+    let text = fs::read(dir.join(DISK_MARKER)).ok()?;
+    serde_json::from_slice::<serde_json::Value>(&text)
+        .ok()?
+        .get("taken_at_ms")?
+        .as_u64()
+}
+
+/// Whether the checkpoint in `dir` holds a disk only (see [`DISK_MARKER`]).
+pub fn is_disk_only(dir: &Path) -> bool {
+    !dir.join("vmstate.json").exists() && dir.join(DISK_MARKER).exists()
+}
+
+/// Marks `dir` as a disk-only checkpoint taken at `taken_at_ms`.
+pub fn write_disk_marker(dir: &Path, taken_at_ms: u64) -> io::Result<()> {
+    fs::write(
+        dir.join(DISK_MARKER),
+        serde_json::json!({ "taken_at_ms": taken_at_ms }).to_string(),
+    )
 }
 
 /// The meta of the snapshot in `dir`, read from its `vmstate.json`.

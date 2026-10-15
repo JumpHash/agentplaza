@@ -91,6 +91,16 @@ fn router() -> Router<Surface> {
         .delete("/v1/cids/{cid}", |surface, _, params| {
             unserve_cid(surface, params.get("cid"))
         })
+        // apid: a guest's egress rules changed, so the decisions kept for it go.
+        .post("/v1/egress/forget/{cid}", |_, _, params| {
+            match params.get("cid").parse::<u32>() {
+                Ok(cid) => Response::json(
+                    200,
+                    &serde_json::json!({ "forgotten": crate::egress::forget(cid) }),
+                ),
+                Err(_) => Response::error(404, "not a CID"),
+            }
+        })
         .post("/v1/agents/{cid}/send", |surface, request, params| {
             with_cid(surface, params.get("cid"), |cid| {
                 send(surface, cid, request)

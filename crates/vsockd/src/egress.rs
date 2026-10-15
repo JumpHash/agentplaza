@@ -86,6 +86,17 @@ const MAX_DECISIONS: usize = 4096;
 static DECISIONS: Mutex<BTreeMap<(u32, String, u16), (Instant, EgressAnswer)>> =
     Mutex::new(BTreeMap::new());
 
+/// Forgets every decision kept for guest `cid`: its rules changed (an E2B sandbox's network update),
+/// so its next connection asks apid again. Returns how many were dropped.
+pub fn forget(cid: u32) -> usize {
+    let mut kept = DECISIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let before = kept.len();
+    kept.retain(|key, _| key.0 != cid);
+    before - kept.len()
+}
+
 /// The two sockets of a tunnel, cloned so either pump can hang both up, and
 /// the flag that tells the other pump to stop. The flag is what ends the other
 /// direction: its reads wake every [`PUMP_POLL`] to check it, so no pump

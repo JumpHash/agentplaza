@@ -2091,26 +2091,33 @@ fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
 struct CheckpointRequest {
     #[serde(default)]
     label: String,
+    /// `false` keeps the VM's disk only: a restore or a fork of it boots cold from that disk.
+    #[serde(default = "keep_memory")]
+    memory: bool,
+}
+
+fn keep_memory() -> bool {
+    true
 }
 
 /// `POST /v1/runs/{id}/vms/{index}/checkpoints` → 201 with the checkpoint's view. The body is
-/// optional; `{"label": "..."}` names the checkpoint.
+/// optional; `{"label": "..."}` names the checkpoint, and `"memory": false` keeps the disk only.
 fn checkpoint_create(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
     let vm = match vm_index(id, index) {
         Ok(vm) => vm,
         Err(response) => return response,
     };
-    let label = if body.iter().all(u8::is_ascii_whitespace) {
-        String::new()
+    let (label, memory) = if body.iter().all(u8::is_ascii_whitespace) {
+        (String::new(), true)
     } else {
         match serde_json::from_slice::<CheckpointRequest>(body) {
-            Ok(request) => request.label,
+            Ok(request) => (request.label, request.memory),
             Err(err) => {
                 return Response::error(400, &format!("invalid checkpoint request: {err}"));
             }
         }
     };
-    match node.registry().checkpoint_vm(id, vm, &label) {
+    match node.registry().checkpoint_vm(id, vm, &label, memory) {
         Ok(view) => Response::json(201, &view),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }

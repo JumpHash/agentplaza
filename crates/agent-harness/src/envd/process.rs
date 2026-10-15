@@ -136,6 +136,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The longest command line a log entry repeats.
+const LOGGED_COMMAND_CHARS: usize = 200;
+
 /// The program to run for `cmd`. The E2B SDKs run every command as `/bin/bash -l -c <cmd>` (and a
 /// PTY as `/bin/bash -i -l`); a guest with no bash runs them with its POSIX shell, `/bin/sh`, which
 /// takes the same flags. `exists` is `Path::exists` outside tests.
@@ -222,9 +225,16 @@ fn spawn(request: &Value, ctx: &Ctx) -> Result<Arc<Proc>, RpcError> {
     });
     proc.push(json!({"event": {"start": {"pid": pid}}}));
     lock(&TABLE).insert(pid, Arc::clone(&proc));
+    let line: String = std::iter::once(cmd)
+        .chain(proc.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(LOGGED_COMMAND_CHARS)
+        .collect();
     super::log::record(
         "info",
-        format!("process {pid} started: {cmd}"),
+        format!("process {pid} started: {line}"),
         &[("pid", pid.to_string()), ("cmd", cmd.to_string())],
     );
 

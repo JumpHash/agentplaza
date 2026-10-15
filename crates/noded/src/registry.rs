@@ -1050,8 +1050,9 @@ struct PreparedFork {
     spec: VmSpec,
     /// The fork's own workspace image, when the fork has a workspace volume.
     workspace: Option<PathBuf>,
-    /// The fork's diff base (see [`SnapshotStore::stage_base`]).
-    base: PathBuf,
+    /// The fork's diff base (see [`SnapshotStore::stage_base`]); none for a fork booted cold from a
+    /// disk-only checkpoint.
+    base: Option<PathBuf>,
 }
 
 /// The state a VM is in once an operation that paused it is over: a running VM is resumed (a
@@ -1097,16 +1098,21 @@ fn write_snapshot(
 
 /// Boots a VM from the checkpoint directory `snapshot`, with its workspace copied back from it, and
 /// returns the VM with the diff base its next snapshot is written over (staged from `snapshot`'s
-/// memory). Used by a restore (and its fallback) and by a fork.
+/// memory). Used by a restore (and its fallback) and by a fork. A disk-only checkpoint boots the VM
+/// cold from its disk, with no diff base.
 fn boot_from(
     store: &SnapshotStore,
     cid: u64,
     spec: &VmSpec,
     snapshot: &Path,
-) -> Result<(VmHandle, PathBuf), String> {
+) -> Result<(VmHandle, Option<PathBuf>), String> {
     if let Some(workspace) = &spec.workspace {
         clone_file(&snapshot.join(snapshots::WORKSPACE_FILE), workspace)
             .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
+    }
+    if snapshots::is_disk_only(snapshot) {
+        let handle = spawner::spawn(spec.clone()).map_err(|err| err.to_string())?;
+        return Ok((handle, None));
     }
     let base = store
         .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
@@ -1116,7 +1122,7 @@ fn boot_from(
         ..spec.clone()
     })
     .map_err(|err| err.to_string())?;
-    Ok((handle, base))
+    Ok((handle, Some(base)))
 }
 
 /// What a recovery of a VM that stopped by itself boots it from.
@@ -1986,22 +1992,65 @@ impl Registry {
 
     /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
     /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
+    /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
+    /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
     pub fn checkpoint_vm(
         &self,
         run: &str,
         vm: u32,
         label: &str,
+        keep_memory: bool,
     ) -> Result<SnapshotView, VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
-        let taken = Self::checkpoint_held(store, cid, &held, label);
+        let taken = if keep_memory {
+            Self::checkpoint_held(store, cid, &held, label)
+        } else {
+            Self::checkpoint_disk(store, cid, &held, label)
+        };
         let state = thaw(held.state, &held.handle);
         run.return_vm_in(vm, held.handle, state);
         let view = taken?;
         store.prune(cid);
         Ok(view)
+    }
+
+    /// A disk-only checkpoint of a held VM: its workspace copied while the VM is paused (left paused,
+    /// as [`Registry::checkpoint_held`] leaves it), and the marker that says there is no memory.
+    fn checkpoint_disk(
+        store: &SnapshotStore,
+        cid: u64,
+        held: &Held,
+        label: &str,
+    ) -> Result<SnapshotView, VmOpError> {
+        let Some(workspace) = &held.spec.workspace else {
+            return Err(VmOpError::Invalid(
+                "this VM has no workspace volume, so there is no disk to keep".to_string(),
+            ));
+        };
+        store.prepare(cid).map_err(|err| {
+            VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
+        })?;
+        let taken_at_ms = now_ms();
+        let name = SnapshotStore::checkpoint_name(label, taken_at_ms);
+        let dir = store.dir(cid, &name);
+        held.handle
+            .pause()
+            .map_err(|err| VmOpError::Refused(err.to_string()))?;
+        let kept = snapshots::private_dir(&dir)
+            .and_then(|()| clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)).map(|_| ()))
+            .and_then(|()| snapshots::write_disk_marker(&dir, taken_at_ms));
+        if let Err(err) = kept {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(VmOpError::Failed(format!(
+                "cannot copy the workspace into checkpoint {name}: {err}"
+            )));
+        }
+        store
+            .view(cid, &name)
+            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))
     }
 
     /// The checkpoints of VM `vm` of run `run`, newest first.
@@ -2064,14 +2113,14 @@ impl Registry {
         let snapshot = store.dir(cid, name);
         match boot_from(store, cid, &spec, &snapshot) {
             Ok((fresh, base)) => {
-                run.seat_vm(vm, handle, fresh, Some(base));
+                run.seat_vm(vm, handle, fresh, base);
                 store.prune(cid);
                 Ok((run, safety))
             }
             Err(err) => {
                 let before = store.dir(cid, &safety.name);
                 let (fresh, base, back) = match boot_from(store, cid, &spec, &before) {
-                    Ok((fresh, base)) => (fresh, Some(base), safety.name.clone()),
+                    Ok((fresh, base)) => (fresh, base, safety.name.clone()),
                     Err(back) => match spawner::spawn(spec.clone()) {
                         Ok(fresh) => {
                             eprintln!(
@@ -2445,7 +2494,7 @@ impl Registry {
         snapshot: &Path,
         cid: u64,
         workspace: Option<&Path>,
-    ) -> Result<(VmHandle, VmSpec, PathBuf), VmOpError> {
+    ) -> Result<(VmHandle, VmSpec, Option<PathBuf>), VmOpError> {
         if let Some(parent) = workspace.and_then(Path::parent) {
             snapshots::private_dir(parent).map_err(|err| {
                 VmOpError::Failed(format!("cannot create {}: {err}", parent.display()))
@@ -2524,7 +2573,7 @@ impl Registry {
             spec: Some(spec),
             state: VmState::Running,
             serial_seen: 0,
-            restored_from: Some(base),
+            restored_from: base,
         }];
         run.events.publish(Event::Run {
             id: run.id.clone(),
@@ -4669,7 +4718,7 @@ mod tests {
         let (registry, _run) = registry_with_run(VmState::Running, None);
         let none = Some(VmOpError::NoSnapshots);
         assert_eq!(registry.checkpoints("r1", 0).err(), none);
-        assert_eq!(registry.checkpoint_vm("r1", 0, "x").err(), none);
+        assert_eq!(registry.checkpoint_vm("r1", 0, "x", true).err(), none);
         assert_eq!(registry.sleep_vm("r1", 0, true).err(), none);
         assert_eq!(registry.wake_vm("r1", 0, false).err(), none);
         assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
@@ -4740,7 +4789,7 @@ mod tests {
         assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.sleep_vm("r1", 0, true).err(), wrong);
-        assert_eq!(asleep.checkpoint_vm("r1", 0, "x").err(), wrong);
+        assert_eq!(asleep.checkpoint_vm("r1", 0, "x", true).err(), wrong);
 
         let (running, _run) =
             registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));

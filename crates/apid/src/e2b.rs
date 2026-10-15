@@ -337,6 +337,14 @@ pub struct Snapshot {
     pub name: String,
     pub checkpoint: String,
     pub taken_ms: u64,
+    /// Whether it kept the sandbox's memory. One that did not (`memory: false`) keeps the disk only,
+    /// and a sandbox made from it boots cold from that disk.
+    #[serde(default = "kept_memory")]
+    pub memory: bool,
+}
+
+fn kept_memory() -> bool {
+    true
 }
 
 /// One sandbox. Its envd access token is kept here because vsockd needs it after a hub restart; the
@@ -1537,11 +1545,7 @@ fn connect(app: &App, req: &Request, id: &str, key: &str, v2: bool) -> Result<Re
 
 fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refused> {
     let body: SnapshotBody = body_or_default(req)?;
-    if body.memory == Some(false) {
-        return Err(invalid(
-            "a filesystem-only snapshot is not supported yet; snapshots keep memory",
-        ));
-    }
+    let memory = body.memory.unwrap_or(true);
     let label = match body
         .name
         .as_deref()
@@ -1552,11 +1556,15 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
         None => "snapshot".to_string(),
     };
     let sandbox = find(app, id)?;
+    // A disk-only snapshot is of what the guest has written back: flush it first.
+    if !memory && sandbox.phase == Phase::Running {
+        flush(&sandbox);
+    }
     let view = noded_ok(
         app,
         "POST",
         &vm_path(&sandbox.run, "checkpoints"),
-        &json!({"label": label}),
+        &json!({"label": label, "memory": memory}),
         SNAPSHOT_TIMEOUT,
     )?;
     let checkpoint = view["name"].as_str().unwrap_or(label.as_str()).to_string();
@@ -1565,6 +1573,7 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
         name: label,
         checkpoint,
         taken_ms: apz_plaza::now_ms(),
+        memory,
     };
     let stored = snap.clone();
     sandboxes(app).update(&sandbox.id, |s| s.snapshots.push(stored))?;
@@ -1697,6 +1706,14 @@ fn network(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Re
         s.deny_out = deny_out;
         s.allow_internet = allow_internet;
     })?;
+    // vsockd keeps its egress decisions for a while; the sandbox's go now, so the rules apply to
+    // its next connection.
+    if let Err(why) = app
+        .hub
+        .post(&format!("/v1/egress/forget/{}", updated.cid), &json!({}))
+    {
+        eprintln!("apid: sandbox {id}: vsockd did not forget its egress decisions: {why}");
+    }
     audit(
         app,
         &updated,
@@ -2111,6 +2128,7 @@ mod tests {
             name: name.into(),
             checkpoint: checkpoint.into(),
             taken_ms: 1,
+            memory: true,
         };
         let mut a = sample(true);
         a.snapshots = vec![
@@ -2370,6 +2388,7 @@ mod tests {
             name: "before-deploy".into(),
             checkpoint: "cp-1-x".into(),
             taken_ms: 1,
+            memory: true,
         };
         assert_eq!(snapshot_view(&snap)["names"][0], "before-deploy");
         assert_eq!(
