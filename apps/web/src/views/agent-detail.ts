@@ -1,7 +1,7 @@
 // Agent detail: one agent's transcript, its composer, and its model, details and queue.
 
 import '../styles/agent.css';
-import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type Sanction, type SanctionsView, type Settings, type Suspension, type VmCheckpoint } from '../api';
+import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type MoveResult, type NodeView, type Sanction, type SanctionsView, type Settings, type Suspension, type VmCheckpoint } from '../api';
 import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { agentName } from '../roles';
@@ -76,6 +76,16 @@ export function tierChoices(
 type Section = { root: HTMLElement; head: HTMLElement };
 type LiveTurn = { work: number; el: HTMLElement; text: Text; thinking: Text };
 type Tab = 'transcript' | 'memory';
+
+/** The nodes an agent's VM can move to: those that take work, so not draining and not revoked. */
+export function movableNodes(nodes: NodeView[]): NodeView[] {
+  return nodes.filter((n) => !n.draining && !n.revoked);
+}
+
+/** The outcome of a move as one line: where the VM went, the MB it carried and the seconds it took (`ms` in). */
+export function moveText(r: Pick<MoveResult, 'from' | 'to' | 'bytes' | 'ms'>, nameOf: (id: string) => string): string {
+  return `Moved from ${nameOf(r.from)} to ${nameOf(r.to)}: ${(r.bytes / 1048576).toFixed(1)} MB in ${(r.ms / 1000).toFixed(1)} s.`;
+}
 
 export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const head = h('header.agent-head');
@@ -332,6 +342,67 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     );
   };
 
+  // Move: the VM goes to another node that takes work. The dialog lists those nodes and posts the move. A 409 (the
+  // agent is working, or the node is draining or revoked) is shown as the hub says it. The move can take seconds.
+  const moveDialog = (a: Agent): void => {
+    const list = h('div.stack', null, h('p.muted', null, 'Loading the nodes...'));
+    const problem = h('p.mcp-danger');
+    const outcome = h('div');
+    const moveBtn = button('Move', () => void run(), { kind: 'primary', icon: 'send', disabled: true });
+    let chosen: string | null = null;
+    let nodeNames = new Map<string, string>();
+    let close: () => void = () => {};
+    const run = async (): Promise<void> => {
+      const target = chosen;
+      if (target === null) return;
+      moveBtn.disabled = true;
+      replace(problem);
+      try {
+        const moved = await api.moveAgent(cid, target);
+        replace(outcome, h('p', null, moveText(moved, (id) => nodeNames.get(id) ?? id)));
+        void refreshAgents();
+      } catch (err) {
+        replace(problem, err instanceof Error ? err.message : 'The move failed.');
+        moveBtn.disabled = false;
+      }
+    };
+    close = modal(
+      `Move ${agentName(a)}`,
+      h(
+        'div.stack',
+        null,
+        h('p.muted', null, "The agent's VM moves to the node you pick. It can take seconds, and an agent that is working cannot move."),
+        list,
+        problem,
+        outcome,
+        h('div.row.modal-actions', null, moveBtn, button('Close', () => close(), { kind: 'ghost' })),
+      ),
+    );
+    api
+      .nodes()
+      .then((all) => {
+        nodeNames = new Map(all.map((n) => [n.id, n.name || n.id]));
+        const nodes = movableNodes(all);
+        if (!nodes.length) {
+          replace(list, h('p.muted', null, 'No node takes work right now: each one is draining or revoked.'));
+          return;
+        }
+        replace(
+          list,
+          nodes.map((n) => {
+            const el = input({ type: 'radio', name: `move-node-${cid}`, value: n.id });
+            el.addEventListener('change', () => {
+              if (!el.checked) return;
+              chosen = n.id;
+              moveBtn.disabled = false;
+            });
+            return h('label.check', null, el, h('span', null, n.name || n.id, n.online ? null : ' (offline)'));
+          }),
+        );
+      })
+      .catch((err: unknown) => replace(list, h('p.mcp-danger', null, err instanceof Error ? err.message : 'The nodes could not load.')));
+  };
+
   // A sleep or a wake changes the agent's status, so the roster is read again straight away.
   const sleepAgent = (): void =>
     void act(async () => {
@@ -498,6 +569,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
           ? button('Wake', () => wakeAgent(), { icon: 'sun', disabled: busy })
           : button('Sleep', () => sleepAgent(), { icon: 'moon', title: 'Pause the VM until a chat or task wakes it', disabled: busy || offline || a.status === 'working' }),
         button('Fork…', () => fork(a), { icon: 'copy', disabled: busy }),
+        button('Move…', () => moveDialog(a), { icon: 'send', title: 'Move the VM to another node', disabled: busy || a.status === 'working' }),
         button('Restart', () => restart(a), { disabled: busy }),
         button('Stop', () => void act(() => attempt(() => api.stop(cid), 'Stopped')), { kind: 'danger', icon: 'stop', disabled: busy }),
         button('Wipe…', () => wipe(a), { disabled: busy }),

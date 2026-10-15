@@ -697,6 +697,8 @@ export const api = {
   deleteVmCheckpoint: (cid: number, name: string) => del<{ ok: boolean }>(`/v1/agents/${cid}/vm-checkpoints/${encodeURIComponent(name)}`),
   /** Forks the agent n times (1..8) from a fresh checkpoint of its VM. */
   forkAgent: (cid: number, n: number) => post<ForkResult>(`/v1/agents/${cid}/fork`, { n }),
+  /** Moves the agent's VM to another node. 409 while it works or when the target is draining or revoked; it can take seconds. */
+  moveAgent: (cid: number, node: string) => post<MoveResult>(`/v1/agents/${cid}/move`, { node }),
   roles: () => get<RoleView[]>('/v1/roles'),
   saveRole: (def: RoleDef) => post<RoleDef>('/v1/roles', def),
   deleteRole: (id: string) => del<unknown>(`/v1/roles/${id}`),
@@ -1192,6 +1194,58 @@ export interface McpPreset {
   id: string; name: string; description: string; transport: 'stdio' | 'http'; image: string | null; command: string[];
   url: string | null; env: McpSpec[]; headers: McpSpec[]; docs: string; status: string; note: string;
 }
+
+/** `POST /v1/agents/{cid}/move`: the node the VM left and the one it reached; `bytes` moved and `ms` taken. */
+export interface MoveResult { ok: boolean; from: string; to: string; bytes: number; ms: number }
+
+// ---- Egress credentials and the E2B API (owner screens) ---------------------
+
+/**
+ * A rule the hub uses to add a header to the agent's HTTPS requests to `host`. The secret is a vault secret's name
+ * (bound to the consumer `egress`); the header value is `format` with `${SECRET}` replaced by the secret. The VM
+ * never sees the secret. Empty `roles` or `methods` mean every role or every method.
+ */
+export interface EgressRule {
+  id: string; roles: string[]; host: string; port: number; methods: string[]; path_prefix: string;
+  header: string; format: string; secret: string; enabled: boolean; created_ms: number;
+}
+/** What a new rule or a change to one carries. The server fills the defaults a body leaves out. */
+export type EgressRuleBody = Omit<EgressRule, 'id' | 'created_ms'>;
+
+export interface E2bKey { id: string; label: string; created_ms: number }
+/** A new key: `key` is shown once, in this answer only. */
+export interface E2bKeyCreated extends E2bKey { key: string }
+/**
+ * A sandbox on the hub's E2B gateway. `cid` and `run` say where it runs (the agent's VM, when it is one); the
+ * timestamps are RFC 3339 strings.
+ */
+export interface E2bSandbox {
+  sandboxID: string; templateID: string; state: 'running' | 'paused'; startedAt: string; endAt: string;
+  cpuCount: number; memoryMB: number; metadata: Record<string, string>; cid: number | null; run: string | null;
+  allowInternetAccess: boolean | null; autoPause: boolean;
+}
+
+/** The egress credential rules (`/v1/egress/inject`). `rules` returns the list; a failure throws an `ApiError`. */
+export const egressApi = {
+  rules: () => get<{ rules: EgressRule[] }>('/v1/egress/inject').then((r) => r.rules),
+  addRule: (rule: EgressRuleBody) => post<EgressRule>('/v1/egress/inject', rule),
+  patchRule: (id: string, change: Partial<EgressRuleBody>) => patch<EgressRule>(`/v1/egress/inject/${seg(id)}`, change),
+  deleteRule: (id: string) => del<{ ok: boolean }>(`/v1/egress/inject/${seg(id)}`),
+};
+
+/** The owner's E2B API: its keys (`/v1/e2b/keys`) and the sandboxes the gateway runs (`/v1/e2b/sandboxes`). */
+export const e2bApi = {
+  keys: () => get<{ keys: E2bKey[] }>('/v1/e2b/keys').then((r) => r.keys),
+  createKey: (label: string) => post<E2bKeyCreated>('/v1/e2b/keys', { label }),
+  revokeKey: (id: string) => del<{ ok: boolean }>(`/v1/e2b/keys/${seg(id)}`),
+  sandboxes: () => get<{ sandboxes: E2bSandbox[] }>('/v1/e2b/sandboxes').then((r) => r.sandboxes),
+  /** Ends the sandbox (204). */
+  endSandbox: (id: string) => del<null>(`/v1/e2b/sandboxes/${seg(id)}`),
+  /** Pauses the sandbox (204). */
+  pauseSandbox: (id: string) => post<null>(`/v1/e2b/sandboxes/${seg(id)}/pause`, {}),
+  /** Resumes a paused sandbox (200 or 201). */
+  resumeSandbox: (id: string) => post<unknown>(`/v1/e2b/sandboxes/${seg(id)}/resume`, {}),
+};
 
 export const mcpApi = {
   catalog: () => get<McpPreset[]>('/v1/mcp/catalog'),
