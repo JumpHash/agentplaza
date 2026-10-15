@@ -21,6 +21,7 @@ pub enum AggFn {
     Rate,
     /// Number of readings (histogram: number of values).
     Count,
+    P10,
     P50,
     P90,
     P95,
@@ -31,6 +32,7 @@ impl AggFn {
     /// The quantile of a percentile function.
     pub fn quantile(self) -> Option<f64> {
         match self {
+            AggFn::P10 => Some(0.1),
             AggFn::P50 => Some(0.5),
             AggFn::P90 => Some(0.9),
             AggFn::P95 => Some(0.95),
@@ -77,7 +79,7 @@ pub fn reduce(agg: &Agg, f: AggFn, step_ms: u64) -> Option<f64> {
         AggFn::Last => Some(agg.last),
         AggFn::Count => Some(agg.count as f64),
         AggFn::Rate => (step_ms > 0).then(|| agg.sum / (step_ms as f64 / 1_000.0)),
-        AggFn::P50 | AggFn::P90 | AggFn::P95 | AggFn::P99 => {
+        AggFn::P10 | AggFn::P50 | AggFn::P90 | AggFn::P95 | AggFn::P99 => {
             let q = f.quantile()?;
             agg.hist.as_ref()?.quantile(q)
         }
