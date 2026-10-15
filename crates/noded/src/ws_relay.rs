@@ -44,6 +44,8 @@ const ACCEPT_POLL: Duration = Duration::from_millis(50);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const COPY_BUF: usize = 16 * 1024;
+/// DIAGNOSTIC (branch diag/windows-relay only): when set, each relayed connection says how its directions ended.
+static TRACE: AtomicBool = AtomicBool::new(false);
 
 /// The one place a relay sends bytes: the hub's TCP address, read from its `http(s)://host[:port]` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,14 +323,25 @@ fn forward(guest: Guest, tcp: TcpStream, stop: &Arc<AtomicBool>) {
         let done = Arc::clone(&done);
         let stop = Arc::clone(stop);
         thread::spawn(move || {
-            if pump(&mut guest_in, &mut tcp_out, &done, &stop) == Ended::Eof {
-                let _ = tcp_out.shutdown(Shutdown::Write);
+            let ended = pump(&mut guest_in, &mut tcp_out, &done, &stop, "up");
+            if ended == Ended::Eof {
+                let half = tcp_out.shutdown(Shutdown::Write);
+                if TRACE.load(Ordering::SeqCst) {
+                    eprintln!("TRACE up: Eof; tcp half-close {half:?}");
+                }
             } else {
+                if TRACE.load(Ordering::SeqCst) {
+                    eprintln!("TRACE up: {ended:?}");
+                }
                 done.store(true, Ordering::SeqCst);
             }
         })
     };
-    if pump(&mut tcp_in, &mut guest_out, &done, stop) == Ended::Eof {
+    let ended = pump(&mut tcp_in, &mut guest_out, &done, stop, "down");
+    if TRACE.load(Ordering::SeqCst) {
+        eprintln!("TRACE down: {ended:?}");
+    }
+    if ended == Ended::Eof {
         let _ = guest_out.shutdown(Shutdown::Write);
     }
     done.store(true, Ordering::SeqCst);
@@ -346,15 +359,49 @@ enum Ended {
     Broken,
 }
 
-fn pump(from: &mut impl Read, to: &mut impl Write, done: &AtomicBool, stop: &AtomicBool) -> Ended {
+fn pump(
+    from: &mut impl Read,
+    to: &mut impl Write,
+    done: &AtomicBool,
+    stop: &AtomicBool,
+    dir: &str,
+) -> Ended {
+    let trace = TRACE.load(Ordering::SeqCst);
     let mut buf = vec![0u8; COPY_BUF];
+    let mut timeouts = 0u32;
     while !done.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
         match from.read(&mut buf) {
-            Ok(0) => return Ended::Eof,
+            Ok(0) => {
+                if trace {
+                    eprintln!("TRACE {dir}: read 0 after {timeouts} timeouts");
+                }
+                return Ended::Eof;
+            }
             Ok(n) => {
-                if to.write_all(&buf[..n]).is_err() {
+                if trace {
+                    eprintln!("TRACE {dir}: read {n} bytes");
+                }
+                if let Err(err) = to.write_all(&buf[..n]) {
+                    if trace {
+                        eprintln!(
+                            "TRACE {dir}: write failed: {err} ({:?})",
+                            err.raw_os_error()
+                        );
+                    }
                     return Ended::Broken;
                 }
+            }
+            Err(err)
+                if trace
+                    && !matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::Interrupted
+                    ) =>
+            {
+                eprintln!("TRACE {dir}: read failed: {err} ({:?})", err.raw_os_error());
+                return Ended::Broken;
             }
             Err(err)
                 if matches!(
@@ -362,9 +409,15 @@ fn pump(from: &mut impl Read, to: &mut impl Write, done: &AtomicBool, stop: &Ato
                     io::ErrorKind::WouldBlock
                         | io::ErrorKind::TimedOut
                         | io::ErrorKind::Interrupted
-                ) => {}
+                ) =>
+            {
+                timeouts += 1
+            }
             Err(_) => return Ended::Broken,
         }
+    }
+    if trace {
+        eprintln!("TRACE {dir}: stopped (done or stop) after {timeouts} timeouts");
     }
     Ended::Broken
 }
@@ -809,5 +862,64 @@ mod tests {
         assert!(!socket_path(&dir, 4100, LINK_PORT).exists());
         assert!(!socket_path(&dir, 4100, CONFIG_PORT).exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// DIAGNOSTIC (branch diag/windows-relay only): the half-close test, 100 times, traced. `reply` makes the hub answer
+    /// "pong" (a write on the guest's socket while the relay waits to read it) before the guest half-closes.
+    fn relay_stress(tag: &str, reply: bool) {
+        TRACE.store(true, Ordering::SeqCst);
+        let mut bad = Vec::new();
+        for round in 0..100u32 {
+            let dir = scratch(&format!("{tag}{round}"));
+            let hub = TcpListener::bind("127.0.0.1:0").expect("a hub");
+            let destination = hub_destination(&hub);
+            let relay = Relay::start(&dir, 4097, destination, None).expect("the relay");
+            let hub_thread = thread::spawn(move || -> Result<(), String> {
+                let (mut conn, _) = hub.accept().map_err(|e| format!("accept: {e}"))?;
+                conn.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut preface = vec![0u8; apz_http::RELAY_PREFACE.len()];
+                conn.read_exact(&mut preface)
+                    .map_err(|e| format!("preface: {e}"))?;
+                let mut got = [0u8; 5];
+                conn.read_exact(&mut got)
+                    .map_err(|e| format!("hello: {e}"))?;
+                if reply {
+                    conn.write_all(b"pong").map_err(|e| format!("pong: {e}"))?;
+                }
+                let mut rest = Vec::new();
+                conn.read_to_end(&mut rest)
+                    .map_err(|e| format!("the guest's end: {e}"))?;
+                Ok(())
+            });
+            let mut guest = guest_link(&dir, 4097);
+            guest
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            guest.write_all(b"hello").unwrap();
+            if reply {
+                let mut r = [0u8; 4];
+                guest.read_exact(&mut r).expect("the pong");
+            }
+            eprintln!("TRACE {tag} round {round}: guest half-closes");
+            guest.shutdown(Shutdown::Write).expect("half close");
+            if let Err(why) = hub_thread.join().expect("the hub thread") {
+                eprintln!("TRACE {tag} round {round}: BAD: {why}");
+                bad.push(round);
+            }
+            drop(relay);
+            let _ = fs::remove_dir_all(&dir);
+        }
+        eprintln!("DIAG {tag}: {} of 100 rounds bad: {bad:?}", bad.len());
+        assert!(bad.is_empty(), "DIAG {tag}: bad rounds {bad:?}");
+    }
+
+    #[test]
+    fn diag_relay_half_close_after_reply() {
+        relay_stress("reply", true);
+    }
+
+    #[test]
+    fn diag_relay_half_close_no_reply() {
+        relay_stress("noreply", false);
     }
 }

@@ -94,7 +94,8 @@ jobs:
         with: { tool: nextest }
       - name: Test (the guest harness runs only inside Linux VMs)
         if: matrix.arch == 'x64'
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }}
+        # DIAGNOSTIC branch (diag/windows-relay): only the diag_ stress tests, with their output.
+        run: cargo test --locked --profile release --target ${{ env.TRIPLE }} -p apz-uds -p noded diag_ -- --nocapture --test-threads=1
       - name: Build the tests (arm64 cannot run here)
         if: matrix.arch != 'x64'
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
