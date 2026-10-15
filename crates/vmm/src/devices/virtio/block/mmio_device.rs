@@ -32,6 +32,16 @@ fn queue_position(queue: &Queue) -> QueuePosition {
     }
 }
 
+/// The device id as a snapshot records it: the lowercase hex of `id`'s bytes up
+/// to its last non-zero byte (empty for the workspace's all-zero id).
+fn id_hex(id: &[u8]) -> String {
+    let end = id
+        .iter()
+        .rposition(|&byte| byte != 0)
+        .map_or(0, |last| last + 1);
+    id[..end].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// The virtio-mmio device that hands the block device to the transport.
 ///
 /// Unlike the vsock device's adapter there is no shared state here: the device
@@ -120,16 +130,35 @@ impl VirtioDevice for BlockMmioDevice {
     }
 
     fn save_device_state(&self) -> DeviceSnapshot {
+        // The id is recorded whether or not the device is activated: it names the
+        // volume, and a restore onto another volume must be refused.
+        let extra = serde_json::json!({ "id": id_hex(self.device.image_id()) });
         if !self.device.is_activated() {
-            return DeviceSnapshot::default();
+            return DeviceSnapshot {
+                queues: Vec::new(),
+                extra,
+            };
         }
         DeviceSnapshot {
             queues: vec![queue_position(self.device.queue())],
-            extra: Value::Null,
+            extra,
         }
     }
 
     fn restore_device_state(&mut self, state: &DeviceSnapshot) -> Result<(), VirtioError> {
+        // The queue state a snapshot carries belongs to the volume it was taken
+        // from, so it restores only onto that volume. A snapshot taken before the
+        // id was recorded has none, and restores as it always did.
+        if let Some(saved) = state.extra.get("id").and_then(Value::as_str) {
+            let device = id_hex(self.device.image_id());
+            if saved != device {
+                return Err(VirtioBlockError::SnapshotVolumeMismatch {
+                    saved: saved.to_owned(),
+                    device,
+                }
+                .into());
+            }
+        }
         let expected = if self.device.is_activated() {
             BLOCK_QUEUE_NUM
         } else {
@@ -251,7 +280,9 @@ mod tests {
         let device = BlockMmioDevice::new(
             VirtioBlock::new(file.as_path()).expect("a block device over the volume"),
         );
-        assert_eq!(device.save_device_state(), DeviceSnapshot::default());
+        let saved = device.save_device_state();
+        assert!(saved.queues.is_empty(), "no queue before activation");
+        assert_eq!(saved.extra, serde_json::json!({ "id": "" }));
     }
 
     #[test]
@@ -441,5 +472,55 @@ mod tests {
             0,
             "the driver's queue configuration is dropped"
         );
+    }
+
+    /// A read-only volume opened under `name`, as a data volume is.
+    fn named_volume(file: &TempFile, name: &str) -> BlockMmioDevice {
+        BlockMmioDevice::new(
+            VirtioBlock::new_read_only(file.as_path(), name).expect("a read-only volume"),
+        )
+    }
+
+    /// A snapshot records the volume's device id, and it restores only onto a
+    /// volume with that id: the same name restores, another name is refused.
+    #[test]
+    fn the_device_id_is_saved_and_checked() {
+        let file = TempFile::new().expect("a temporary file");
+        file.as_file().set_len(512).expect("a sized volume");
+
+        let saved = named_volume(&file, "corpus").save_device_state();
+        assert_eq!(saved.extra, serde_json::json!({ "id": "636f72707573" }));
+
+        let mut same = named_volume(&file, "corpus");
+        same.restore_device_state(&saved)
+            .expect("the snapshot restores onto the volume it was taken from");
+
+        let mut other = named_volume(&file, "models");
+        let err = other
+            .restore_device_state(&saved)
+            .expect_err("a snapshot of another volume is refused");
+        assert!(
+            matches!(
+                err,
+                VirtioError::Block(VirtioBlockError::SnapshotVolumeMismatch { .. })
+            ),
+            "the refusal names the volume mismatch, got {err:?}"
+        );
+    }
+
+    /// A snapshot taken before the device id was recorded carries no id, and
+    /// restores onto a volume as it did before the id existed.
+    #[test]
+    fn a_state_without_an_id_still_restores() {
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, BLOCK_QUEUE_SIZE);
+        let (_file, mut device) = activated_block(&mem, &vq);
+        let state = DeviceSnapshot {
+            queues: vec![QueuePosition::default()],
+            extra: Value::Null,
+        };
+        device
+            .restore_device_state(&state)
+            .expect("a snapshot without an id restores");
     }
 }

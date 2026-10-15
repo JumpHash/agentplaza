@@ -109,6 +109,16 @@ pub enum VirtioBlockError {
     /// The driver asked for more descriptors than the ring can hold: {0}
     #[error(transparent)]
     InvalidAvailIdx(#[from] InvalidAvailIdx),
+    /// The snapshot was taken of another volume: its device id is `saved`, this volume's is `device`.
+    #[error(
+        "the snapshot's volume (device id {saved:?}) is not this volume (device id {device:?})"
+    )]
+    SnapshotVolumeMismatch {
+        /// The device id recorded in the snapshot.
+        saved: String,
+        /// The device id of the volume being restored into.
+        device: String,
+    },
 }
 
 /// Errors of [`device::VirtioBlock::activate`], which the transport maps into

@@ -50,8 +50,9 @@ Volumes reach agents by role.
 
 ## Snapshots and moves
 
-- A snapshot saves the transport state of each volume. A restore or a wake must have the same number of volumes. If
-  not, it is refused.
+- A snapshot saves the transport state of each volume, and its device id (the volume's name). A restore or a wake must
+  have the same number of volumes, with the same names in the same order. If not, it is refused. Snapshots taken before
+  the id was saved are checked by count only.
 - Sleep, wake, checkpoints and forks keep the run's volumes.
 - A VM with volumes boots cold. Warm templates carry no volumes.
 - A VM moved to another node needs the same volume name on that node.
