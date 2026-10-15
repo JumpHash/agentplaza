@@ -2,15 +2,19 @@
 //!
 //! | route | does |
 //! |---|---|
-//! | `GET /v1/status` | node facts and one row per connected agent |
+//! | `GET /v1/status` | node facts, the served CIDs, and one row per connected agent |
 //! | `GET /healthz` | `ok` |
+//! | `POST /v1/cids/{cid}` | starts serving the guest CID → `{cid, served: true}` (idempotent) |
+//! | `DELETE /v1/cids/{cid}` | stops serving it → `{cid, served: false}`; 404 when it was not served |
 //! | `POST /v1/agents/{cid}/send` | `{message: HostMessage}`: write one host line to the agent |
 //! | `POST /v1/agents/{cid}/tell` | `{name, args?, timeout_ms?}` → the agent's `{ok, output}` |
 //! | `POST /v1/agents/{cid}/stop` | `{reason?}` → `{cid, stopped, calls}` or `{cid, stopped: false, reason}` |
 //!
 //! A CID the relay does not serve is 404; a served CID with no session, 409. A
 //! tool the agent's role does not grant is 403 `{ok: false, output}` and never
-//! reaches the guest; an agent that does not answer in time is 504.
+//! reaches the guest; an agent that does not answer in time is 504. A CID path
+//! segment below 3 is 400: CIDs 0 to 2 are the hypervisor, local and host, never
+//! a guest.
 
 use std::io;
 use std::sync::Arc;
@@ -21,6 +25,7 @@ use apz_proto::wire::{HostMessage, MAX_LINE_BYTES};
 use serde::{Deserialize, Serialize};
 
 use crate::hub::{Hub, SendOutcome, StopOutcome, TellOutcome};
+use crate::{Registry, RemoveError};
 
 /// The longest a `/tell` may wait for its agent (and its default).
 pub const MAX_TELL_TIMEOUT_MS: u64 = 5_000;
@@ -30,11 +35,13 @@ const SESSION_WAIT: Duration = Duration::from_secs(5);
 const MAX_TOOL_NAME: usize = 256;
 const MAX_STOP_REASON: usize = 256;
 const DEFAULT_STOP_REASON: &str = "the operator stopped this session";
+/// CIDs 0 to 2 are the hypervisor, the local loopback and the host.
+const FIRST_GUEST_CID: u32 = 3;
 
-/// The daemon's own facts, as `/v1/status` reports them.
+/// The daemon's own facts, as `/v1/status` reports them. The served CIDs
+/// change at run time, so they come from the [`Registry`], not from here.
 #[derive(Debug)]
 pub struct NodeFacts {
-    pub cids: Vec<u32>,
     pub port: u32,
     pub started: Instant,
     pub max_sessions: usize,
@@ -43,12 +50,22 @@ pub struct NodeFacts {
 
 struct Surface {
     hub: Arc<Hub>,
+    registry: Arc<Registry>,
     facts: NodeFacts,
 }
 
 /// Serves the surface until the handle is dropped.
-pub fn serve(port: u16, hub: Arc<Hub>, facts: NodeFacts) -> io::Result<Handle> {
-    let surface = Surface { hub, facts };
+pub fn serve(
+    port: u16,
+    hub: Arc<Hub>,
+    registry: Arc<Registry>,
+    facts: NodeFacts,
+) -> io::Result<Handle> {
+    let surface = Surface {
+        hub,
+        registry,
+        facts,
+    };
     let router = router();
     Server::bind(port)?
         .limits(Limits {
@@ -68,6 +85,12 @@ fn router() -> Router<Surface> {
             )
         })
         .get("/healthz", |_, _, _| Response::text(200, "ok"))
+        .post("/v1/cids/{cid}", |surface, _, params| {
+            serve_cid(surface, params.get("cid"))
+        })
+        .delete("/v1/cids/{cid}", |surface, _, params| {
+            unserve_cid(surface, params.get("cid"))
+        })
         .post("/v1/agents/{cid}/send", |surface, request, params| {
             with_cid(surface, params.get("cid"), |cid| {
                 send(surface, cid, request)
@@ -86,15 +109,16 @@ fn router() -> Router<Surface> {
 }
 
 #[derive(Serialize)]
-struct StatusBody<'a> {
-    node: NodeView<'a>,
+struct StatusBody {
+    node: NodeView,
     agents: Vec<crate::hub::Row>,
     sessions_active: usize,
+    cids: Vec<u32>,
 }
 
 #[derive(Serialize)]
-struct NodeView<'a> {
-    cids: &'a [u32],
+struct NodeView {
+    cids: Vec<u32>,
     port: u32,
     uptime_s: u64,
     max_sessions: usize,
@@ -104,9 +128,10 @@ struct NodeView<'a> {
 fn status_json(surface: &Surface, uptime_s: u64) -> String {
     let snapshot = surface.hub.snapshot();
     let facts = &surface.facts;
+    let cids = surface.registry.served_cids();
     let body = StatusBody {
         node: NodeView {
-            cids: &facts.cids,
+            cids: cids.clone(),
             port: facts.port,
             uptime_s,
             max_sessions: facts.max_sessions,
@@ -114,15 +139,63 @@ fn status_json(surface: &Surface, uptime_s: u64) -> String {
         },
         agents: snapshot.rows,
         sessions_active: snapshot.sessions_active,
+        cids,
     };
     serde_json::to_string(&body)
         .unwrap_or_else(|err| serde_json::json!({ "error": err.to_string() }).to_string())
 }
 
+/// Resolves the path's CID for the `/v1/cids` routes: a number of 3 or more.
+fn guest_cid(segment: &str) -> Result<u32, Response> {
+    let cid = segment
+        .parse::<u32>()
+        .map_err(|_| Response::error(400, &format!("{segment} is not a guest CID")))?;
+    if cid < FIRST_GUEST_CID {
+        return Err(Response::error(
+            400,
+            &format!(
+                "CID {cid} is not a guest: CIDs 0 to 2 are reserved, guests start at {FIRST_GUEST_CID}"
+            ),
+        ));
+    }
+    Ok(cid)
+}
+
+fn serve_cid(surface: &Surface, segment: &str) -> Response {
+    let cid = match guest_cid(segment) {
+        Ok(cid) => cid,
+        Err(response) => return response,
+    };
+    match surface.registry.serve(cid) {
+        Ok(_) => Response::json(200, &serde_json::json!({ "cid": cid, "served": true })),
+        Err(err) => Response::error(409, &err),
+    }
+}
+
+fn unserve_cid(surface: &Surface, segment: &str) -> Response {
+    let cid = match guest_cid(segment) {
+        Ok(cid) => cid,
+        Err(response) => return response,
+    };
+    match surface.registry.remove(cid) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "cid": cid, "served": false })),
+        Err(RemoveError::NotServed) => {
+            Response::error(404, &format!("guest CID {cid} is not served"))
+        }
+        // Refused before anything changes: the CID keeps serving both listeners.
+        Err(RemoveError::EgressListener) => Response::error(
+            501,
+            &format!(
+                "guest CID {cid} has an egress listener, which cannot be stopped at run time; it stays served"
+            ),
+        ),
+    }
+}
+
 /// Resolves the path's CID: a number the daemon serves, or a 404.
 fn with_cid(surface: &Surface, segment: &str, handle: impl FnOnce(u32) -> Response) -> Response {
     match segment.parse::<u32>() {
-        Ok(cid) if surface.facts.cids.contains(&cid) => handle(cid),
+        Ok(cid) if surface.registry.is_served(cid) => handle(cid),
         _ => Response::error(404, &format!("no agent with guest CID {segment}")),
     }
 }
@@ -250,27 +323,47 @@ fn stop(surface: &Surface, cid: u32, request: &Request) -> Response {
 mod tests {
     use super::*;
     use crate::apid::Apid;
+    use crate::egress;
     use crate::hub::tests::hub_with;
     use crate::hub::{Command, ToolReply};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::thread;
 
+    /// A fresh socket directory for each registry a test builds.
+    fn socket_dir() -> std::path::PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "plaza-vsockd-http-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, AtomicOrdering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::create_uds_dir(&dir).unwrap();
+        dir
+    }
+
+    /// A surface whose registry serves CIDs 10 and 11 (egress off).
     fn surface(hub: Hub) -> Surface {
-        let facts = NodeFacts {
-            cids: vec![10, 11],
-            port: 5000,
-            started: Instant::now(),
-            max_sessions: 64,
-            keepalive_idle_s: 300,
-        };
+        let hub = Arc::new(hub);
+        let registry = Arc::new(Registry::new(socket_dir(), 5000, None, Arc::clone(&hub)));
+        for cid in [10, 11] {
+            registry.serve(cid).expect("binds");
+        }
         Surface {
-            hub: Arc::new(hub),
-            facts,
+            hub,
+            registry,
+            facts: NodeFacts {
+                port: 5000,
+                started: Instant::now(),
+                max_sessions: 64,
+                keepalive_idle_s: 300,
+            },
         }
     }
 
-    fn post(surface: &Surface, path: &str, body: &str) -> (u16, serde_json::Value) {
+    fn call(surface: &Surface, method: &str, path: &str, body: &str) -> (u16, serde_json::Value) {
         let request = Request {
-            method: "POST".into(),
+            method: method.into(),
             path: path.into(),
             body: body.into(),
             ..Request::default()
@@ -280,6 +373,10 @@ mod tests {
             response.status,
             serde_json::from_slice(response.bytes()).unwrap_or_default(),
         )
+    }
+
+    fn post(surface: &Surface, path: &str, body: &str) -> (u16, serde_json::Value) {
+        call(surface, "POST", path, body)
     }
 
     #[test]
@@ -296,7 +393,7 @@ mod tests {
             concat!(
                 r#"{"node":{"cids":[10,11],"port":5000,"uptime_s":42,"max_sessions":64,"keepalive_idle_s":300},"#,
                 r#""agents":[{"cid":10,"role":"builder","connected_at_ms":1700000000250,"last_heartbeat_ms":1700000000250,"busy":false,"calls":2}],"#,
-                r#""sessions_active":1}"#,
+                r#""sessions_active":1,"cids":[10,11]}"#,
             )
         );
     }
@@ -379,11 +476,81 @@ mod tests {
     }
 
     #[test]
+    fn cids_are_served_and_unserved_over_http_and_a_low_cid_is_refused() {
+        let surface = surface(hub_with(None).1);
+        assert_eq!(
+            post(&surface, "/v1/cids/50", ""),
+            (200, serde_json::json!({ "cid": 50, "served": true }))
+        );
+        // Idempotent: serving it again is the same answer and changes nothing.
+        assert_eq!(
+            post(&surface, "/v1/cids/50", ""),
+            (200, serde_json::json!({ "cid": 50, "served": true }))
+        );
+        let (status, body) = call(&surface, "GET", "/v1/status", "");
+        assert_eq!(
+            (status, &body["cids"]),
+            (200, &serde_json::json!([10, 11, 50]))
+        );
+        assert_eq!(body["node"]["cids"], serde_json::json!([10, 11, 50]));
+        // A run-time CID is routed like a start-up one: served, so 409 with no session.
+        assert_eq!(
+            post(&surface, "/v1/agents/50/tell", r#"{"name":"echo"}"#).0,
+            409
+        );
+
+        for path in ["/v1/cids/2", "/v1/cids/0", "/v1/cids/x"] {
+            assert_eq!(post(&surface, path, "").0, 400, "{path}");
+            assert_eq!(call(&surface, "DELETE", path, "").0, 400, "{path}");
+        }
+
+        assert_eq!(
+            call(&surface, "DELETE", "/v1/cids/50", ""),
+            (200, serde_json::json!({ "cid": 50, "served": false }))
+        );
+        assert_eq!(call(&surface, "DELETE", "/v1/cids/50", "").0, 404);
+        assert_eq!(
+            post(&surface, "/v1/agents/50/tell", r#"{"name":"echo"}"#).0,
+            404
+        );
+        let (_, body) = call(&surface, "GET", "/v1/status", "");
+        assert_eq!(body["cids"], serde_json::json!([10, 11]));
+    }
+
+    #[test]
+    fn with_egress_on_a_run_time_cid_is_kept_because_its_egress_listener_cannot_stop() {
+        let hub = Arc::new(hub_with(None).1);
+        let policy = Arc::new(egress::Policy::new(Vec::new()));
+        let registry = Arc::new(Registry::new(
+            socket_dir(),
+            5000,
+            Some((policy, Apid::off())),
+            Arc::clone(&hub),
+        ));
+        let surface = Surface {
+            hub,
+            registry,
+            facts: NodeFacts {
+                port: 5000,
+                started: Instant::now(),
+                max_sessions: 64,
+                keepalive_idle_s: 300,
+            },
+        };
+        assert_eq!(post(&surface, "/v1/cids/70", "").0, 200);
+        assert_eq!(call(&surface, "DELETE", "/v1/cids/70", "").0, 501);
+        let (_, body) = call(&surface, "GET", "/v1/status", "");
+        assert_eq!(body["cids"], serde_json::json!([70]));
+    }
+
+    #[test]
     fn the_surface_serves_over_loopback() {
+        let surface = surface(hub_with(None).1);
         let handle = serve(
             0,
-            Arc::new(hub_with(None).1),
-            surface(hub_with(None).1).facts,
+            Arc::clone(&surface.hub),
+            Arc::clone(&surface.registry),
+            surface.facts,
         )
         .expect("binds");
         let reply = apz_http::client::send(
