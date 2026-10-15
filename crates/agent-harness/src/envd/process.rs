@@ -745,7 +745,6 @@ fn invalid(message: impl Into<String>) -> RpcError {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
     use serde_json::json;
 
     use super::super::test_support::{call, call_stream, json_body, test_ctx, wait_for_tag};

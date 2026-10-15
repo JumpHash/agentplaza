@@ -222,12 +222,16 @@ pub struct TurnSlot(Arc<AtomicUsize>);
 impl TurnSlot {
     /// A slot, or None when the connection already runs [`MAX_TURNS`] turns.
     pub fn take(running: &Arc<AtomicUsize>) -> Option<TurnSlot> {
-        running
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < MAX_TURNS).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| TurnSlot(Arc::clone(running)))
+        let mut n = running.load(Ordering::SeqCst);
+        loop {
+            if n >= MAX_TURNS {
+                return None;
+            }
+            match running.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(TurnSlot(Arc::clone(running))),
+                Err(now) => n = now,
+            }
+        }
     }
 }
 
