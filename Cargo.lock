@@ -519,6 +519,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-metrics"
+version = "0.1.0"
+
+[[package]]
 name = "apz-ops"
 version = "0.1.0"
 dependencies = [
