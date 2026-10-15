@@ -8,7 +8,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -21,8 +21,13 @@ use crate::ctx::Client;
 pub const MAX_BODY: usize = 256 << 20;
 /// The longest request or header line the relay reads.
 const MAX_LINE: usize = 8 << 10;
-/// The most header lines a request may carry.
+/// The most header lines a request may carry, and the most trailer lines a chunked body may end with.
 const MAX_HEADERS: usize = 100;
+/// The most connections the relay serves at once. Git opens a few per push; a connection past the
+/// cap is closed at once, so a local process that floods the port cannot hold threads open.
+const MAX_CONNECTIONS: usize = 16;
+/// The remote name git pushes to. Its URL comes from the environment's config, never from argv.
+const RELAY_REMOTE: &str = "apzrelay";
 /// How long a connection may stay silent before the relay drops it.
 const IDLE: Duration = Duration::from_secs(60);
 /// How often the listener checks the stop flag while it waits for a connection.
@@ -66,13 +71,22 @@ impl Relay {
         let stop = Arc::new(AtomicBool::new(false));
         let accept = {
             let (stop, repo, key) = (stop.clone(), repo.to_string(), secret.clone());
+            let open = Arc::new(AtomicUsize::new(0));
             thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
+                        // Only this thread takes a slot, so checking the count first is race-free.
+                        Ok((stream, _)) if open.load(Ordering::SeqCst) >= MAX_CONNECTIONS => {
+                            drop(stream)
+                        }
                         Ok((stream, _)) => {
+                            let slot = Slot::take(&open);
                             let (repo, key, upstream) =
                                 (repo.clone(), key.clone(), upstream.clone());
-                            thread::spawn(move || serve(stream, &repo, &key, &upstream));
+                            thread::spawn(move || {
+                                let _slot = slot;
+                                serve(stream, &repo, &key, &upstream)
+                            });
                         }
                         Err(_) => thread::sleep(POLL),
                     }
@@ -99,6 +113,12 @@ impl Relay {
             self.port, self.secret
         )
     }
+
+    /// The text with the relay's secret taken out: git's errors can repeat the URL it was given, and
+    /// those go back to the editor.
+    pub fn scrub(&self, text: &str) -> String {
+        text.replace(&self.secret, "<relay>")
+    }
 }
 
 impl Drop for Relay {
@@ -107,6 +127,22 @@ impl Drop for Relay {
         if let Some(accept) = self.accept.take() {
             let _ = accept.join();
         }
+    }
+}
+
+/// One of the relay's connection slots, held until its connection's thread ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(open: &Arc<AtomicUsize>) -> Slot {
+        open.fetch_add(1, Ordering::SeqCst);
+        Slot(open.clone())
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -126,11 +162,29 @@ pub fn push(client: &Client, top: &Path, name: &str, refspec: &str) -> Result<()
         Relay::start(name, upstream).map_err(|e| format!("cannot start the local relay: {e}"))?;
     let url = relay.url(name);
     let no_proxy = no_proxy();
+    // The URL reaches git through its config, not argv: argv is readable by every local process, and
+    // git repeats the URL it was given in its errors.
     let env = [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "remote.apzrelay.url"),
+        ("GIT_CONFIG_VALUE_0", url.as_str()),
         ("NO_PROXY", no_proxy.as_str()),
         ("no_proxy", no_proxy.as_str()),
     ];
-    git(top, &["push", "--force", "--quiet", &url, refspec], &env).map(|_| ())
+    git(
+        top,
+        &[
+            "push",
+            "--force",
+            "--quiet",
+            "--no-verify",
+            RELAY_REMOTE,
+            refspec,
+        ],
+        &env,
+    )
+    .map(|_| ())
+    .map_err(|e| relay.scrub(&e))
 }
 
 /// libcurl skips a proxy for the hosts in `no_proxy`. A proxy from the environment must never see
@@ -327,8 +381,15 @@ fn read_chunked(input: &mut impl BufRead) -> Result<Vec<u8>, u16> {
         let size = line.split(';').next().unwrap_or_default().trim();
         let size = usize::from_str_radix(size, 16).map_err(bad)?;
         if size == 0 {
-            // The trailers, then the empty line that ends the body.
-            while !read_line(input).map_err(bad)?.is_empty() {}
+            // The trailers, then the empty line that ends the body. Trailers are headers too, so
+            // they are capped the same way.
+            let mut trailers = 0;
+            while !read_line(input).map_err(bad)?.is_empty() {
+                trailers += 1;
+                if trailers > MAX_HEADERS {
+                    return Err(400);
+                }
+            }
             return Ok(body);
         }
         if size > MAX_BODY - body.len() {
@@ -536,6 +597,53 @@ mod tests {
         assert_eq!(unprefixed("/abcd/v1/x", "abc"), None);
         assert_ne!(secret(), secret());
         assert_eq!(secret().len(), 32);
+    }
+
+    #[test]
+    fn a_chunked_body_with_too_many_trailers_is_refused() {
+        let hub =
+            |_: &Forward| -> io::Result<Reply> { panic!("a refused request is never forwarded") };
+        let mut request = String::from(
+            "POST /v1/git/smart/acme/git-receive-pack HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n",
+        );
+        for i in 0..=MAX_HEADERS {
+            request.push_str(&format!("X-Trailer-{i}: 1\r\n"));
+        }
+        request.push_str("\r\n");
+        let out = run(request.as_bytes(), &hub);
+        assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+    }
+
+    #[test]
+    fn the_secret_is_taken_out_of_git_s_error_text() {
+        let hub: Upstream = Arc::new(|_: &Forward| -> io::Result<Reply> { Ok(answer(b"ok")) });
+        let relay = Relay::start("acme", hub).expect("listens on loopback");
+        let text = format!("fatal: unable to access '{}': failed", relay.url("acme"));
+        let scrubbed = relay.scrub(&text);
+        assert!(!scrubbed.contains(&relay.secret), "{scrubbed}");
+        assert!(scrubbed.contains("<relay>"), "{scrubbed}");
+    }
+
+    #[test]
+    fn a_connection_past_the_cap_is_closed_at_once() {
+        let hub: Upstream = Arc::new(|_: &Forward| -> io::Result<Reply> { Ok(answer(b"ok")) });
+        let relay = Relay::start("acme", hub).expect("listens on loopback");
+        // Connections that send nothing hold their slots until they are dropped. The listener takes
+        // them in order, so the extra one is judged after all of them hold a slot.
+        let held: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(("127.0.0.1", relay.port())).expect("connects"))
+            .collect();
+        let mut extra = TcpStream::connect(("127.0.0.1", relay.port())).expect("connects");
+        extra
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("sets a timeout");
+        let mut text = Vec::new();
+        extra
+            .read_to_end(&mut text)
+            .expect("the relay closes the extra connection at once");
+        assert!(text.is_empty(), "{text:?}");
+        drop(held);
+        drop(relay);
     }
 
     #[test]

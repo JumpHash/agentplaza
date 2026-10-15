@@ -8,6 +8,7 @@ import { ago, clip, compact, isTextValue } from '../src/ui/components';
 import { floorName, familyLabel, roleFamily } from '../src/roles';
 import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
 import type { LawInfo, Settings } from '../src/api';
+import { approvalPath } from '../src/api';
 import { checkRetention, clampQuery, mergeNewest, mergeOlder, spanOf } from '../src/views/conversations';
 import { level, membersOf, parentOf, trailOf } from '../src/views/society';
 import type { Bond, Conversation, PriceRates, SocietyAgent, UsageCall } from '../src/api';
@@ -22,7 +23,7 @@ import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snip
 import { DEFAULT_ENGINES, ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
-import { activitySplit, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
+import { activitySplit, approvalIdIn, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
 import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
 import { mentionAt, mentionOptions } from '../src/board/owner';
@@ -1178,7 +1179,7 @@ sectionEnd('station machine tests: ok');
     ev(6, 15, 'engine_update', { call: 'k1', item: 'tool_status', update: { toolCallId: 't1', status: 'completed' } }),
     ev(7, 16, 'engine_update', { call: 'k1', item: 'plan', update: [{ content: 'Find the bug', status: 'completed', priority: 'high' }, { content: 'Fix it', status: 'in_progress', priority: 'medium' }] }),
     ev(8, 17, 'tool_request', { call: 'k1.e2', name: 'engine.exec', input: { engine: 'claude-code', title: 'Run cargo test', locations: [], raw: {} } }),
-    ev(9, 18, 'tool_decision', { call: 'k1.e2', decision: 'pending', output: "waiting for the owner's approval (appr-42)" }),
+    ev(9, 18, 'tool_decision', { call: 'k1.e2', decision: 'pending', output: "waiting for the owner's approval (a42)" }),
     ev(10, 19, 'engine_update', { call: 'k1', item: 'message', text: 'Fixed the parser.' }),
     ev(11, 20, 'tool_request', { id: 'c9', name: 'bash', input: { command: 'ls' } }),
     ev(12, 21, 'tool_result', { id: 'c9', is_error: false }),
@@ -1194,7 +1195,11 @@ sectionEnd('station machine tests: ok');
   eq(block?.kind === 'engine' ? block.tools.map((t) => `${t.title}:${t.status}:${t.locations[0]?.line}`).join(',') : '', 'Edit parser.rs:completed:40', 'buildChat: a tool row takes its later status update');
   eq(block?.kind === 'engine' ? block.tools[0]?.content[0]?.type ?? '' : '', 'diff', 'buildChat: a tool row keeps its diff content');
   eq(block?.kind === 'engine' ? block.plan.map((p) => `${p.content}:${p.status}`).join(',') : '', 'Find the bug:completed,Fix it:in_progress', 'buildChat: the plan is the latest entries');
-  eq(block?.kind === 'engine' ? block.checks.map((c) => `${c.name}:${c.decision}:${c.approval ?? ''}`).join(',') : '', 'engine.read:allow:,engine.exec:pending:appr-42', 'buildChat: nested checks, the held one with its approval id');
+  eq(block?.kind === 'engine' ? block.checks.map((c) => `${c.name}:${c.decision}:${c.approval ?? ''}`).join(',') : '', 'engine.read:allow:,engine.exec:pending:a42', 'buildChat: nested checks, the held one with its approval id');
+  eq(approvalPath('a7/../x y'), '/v1/approvals/a7%2F..%2Fx%20y', 'approvals: the id is one encoded path segment');
+  eq(approvalIdIn("waiting for the owner's approval (a42)") ?? '', 'a42', 'approvals: a hub id is read from the held output');
+  eq(approvalIdIn("waiting for the owner's approval (a42 b)") ?? '', '', 'approvals: an id of another shape is not read');
+  eq(approvalIdIn("waiting for the owner's approval (appr-42)") ?? '', '', 'approvals: an id that is not the hub shape is not read');
   eq(engineRun[1]?.kind === 'steps' ? engineRun[1].steps.length : -1, 1, 'buildChat: nested checks make no steps, only the bash call does');
 
   const deniedRun = buildChat([

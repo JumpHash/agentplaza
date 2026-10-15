@@ -359,8 +359,13 @@ fn discard_rest_of_line<R: BufRead>(input: &mut R) -> io::Result<usize> {
     }
 }
 
-/// Writes one message as one line and flushes, so the editor reads it at once.
+/// Writes one message as one line and flushes, so the editor reads it at once. A message with a raw
+/// break in it would become two lines for the editor, so it is dropped with a note instead.
 pub fn write_line(out: &mut impl Write, text: &str) -> io::Result<()> {
+    if text.contains(['\n', '\r']) {
+        eprintln!("agentplaza acp: dropped a hub message with a raw line break");
+        return Ok(());
+    }
     out.write_all(text.as_bytes())?;
     out.write_all(b"\n")?;
     out.flush()
@@ -502,20 +507,45 @@ impl Mirror for Plaza {
 /// runs on it) and never prompts, and its output is captured, so none of it reaches stdout. A
 /// failure is the tail of git's stderr.
 pub(super) fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .envs(env.iter().copied())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+    // An empty directory for hooks: the repository's own hooks never run. It is made unique per call
+    // (`create_dir` fails on a name that exists), so no other user can plant hooks in it.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let hooks =
+        std::env::temp_dir().join(format!("apz-acp-no-hooks-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&hooks)
+        .map_err(|e| format!("cannot make an empty hooks directory: {e}"))?;
+    let output = git_command(dir, args, env, &hooks).output();
+    let _ = std::fs::remove_dir(&hooks);
+    let output = output.map_err(|e| format!("cannot run git: {e}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         Err(stderr_tail(&String::from_utf8_lossy(&output.stderr)))
     }
+}
+
+/// The command for one git call. The repository's own config can run code (`core.fsmonitor` and the
+/// hooks), so both are switched off, the hooks path naming the empty `hooks` directory. The CLI's hub
+/// settings are removed from git's environment: git never sees the owner token, the hub or the pin.
+fn git_command(dir: &Path, args: &[&str], env: &[(&str, &str)], hooks: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "core.fsmonitor=false"])
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args(args)
+        .envs(env.iter().copied())
+        .env_remove("APZ_TOKEN")
+        .env_remove("APZ_HUB")
+        .env_remove("APZ_PIN")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null());
+    command
 }
 
 /// The last lines of git's stderr: enough to say why, without its progress output.
@@ -717,7 +747,17 @@ fn remember(projects: &mut Projects, text: &str) {
         .session
         .or_else(|| message["result"]["sessionId"].as_str().map(str::to_string));
     if let Some(session) = session {
-        projects.sessions.insert(session, pending.dir);
+        // A session keeps the project it was first mapped to: a later answer naming it does not move
+        // its prompts to another project.
+        if let Some(known) = projects.sessions.get(&session) {
+            if *known != pending.dir {
+                eprintln!(
+                    "agentplaza acp: session {session} is already mapped to another project; keeping the first"
+                );
+            }
+        } else {
+            projects.sessions.insert(session, pending.dir);
+        }
     }
 }
 
@@ -809,6 +849,67 @@ mod tests {
         let mut out = Vec::new();
         write_line(&mut out, "{\"id\":1}").unwrap();
         assert_eq!(out, b"{\"id\":1}\n");
+    }
+
+    #[test]
+    fn a_hub_message_with_a_raw_break_is_dropped_not_split() {
+        for text in ["{\"a\":1}\n{\"b\":2}", "{\"a\":1}\r{\"b\":2}"] {
+            let mut out = Vec::new();
+            write_line(&mut out, text).unwrap();
+            assert!(out.is_empty(), "{text:?} wrote {out:?}");
+        }
+    }
+
+    #[test]
+    fn git_is_run_without_the_owner_token_or_the_hub_settings_and_without_repo_hooks() {
+        let command = git_command(
+            Path::new("/work/app"),
+            &["status"],
+            &[("NO_PROXY", "127.0.0.1")],
+            Path::new("/tmp/no-hooks"),
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.contains(&"core.fsmonitor=false".to_string()),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&"core.hooksPath=/tmp/no-hooks".to_string()),
+            "{args:?}"
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        for name in ["APZ_TOKEN", "APZ_HUB", "APZ_PIN"] {
+            assert!(
+                envs.iter().any(|(k, v)| *k == name && v.is_none()),
+                "{name} is removed from git's environment"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_keeps_the_project_it_was_first_mapped_to() {
+        let mut projects = Projects::default();
+        projects
+            .sessions
+            .insert("s9".into(), PathBuf::from("/work/app"));
+        projects.pending.insert(
+            "1".into(),
+            Pending {
+                dir: PathBuf::from("/work/other"),
+                session: None,
+            },
+        );
+        remember(
+            &mut projects,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
+        );
+        assert_eq!(
+            projects.sessions.get("s9"),
+            Some(&PathBuf::from("/work/app"))
+        );
     }
 
     #[test]

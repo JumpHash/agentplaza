@@ -79,8 +79,12 @@ type EngineItem = Extract<ChatItem, { kind: 'engine' }>;
 
 /** A nested check's call id is its code_engine call's id with `.e<n>` added. */
 const NESTED_CHECK = /\.e\d+$/;
-/** The approval id in a held check's output: "waiting for the owner's approval (<id>)". */
-const APPROVAL_ID = /approval \(([^()\s]+)\)/;
+/** The approval id in a held check's output: "waiting for the owner's approval (<id>)". The hub makes ids as `a` and a counter (crates/apid/src/approvals.rs). */
+const APPROVAL_ID = /approval \((a\d+)\)/;
+/** The approval id a held check's output names, when it has the hub's shape. */
+export function approvalIdIn(output: string): string | undefined {
+  return APPROVAL_ID.exec(output)?.[1];
+}
 const TOOL_STATUSES: readonly ToolStatus[] = ['pending', 'in_progress', 'completed', 'failed'];
 const CHECK_DECISIONS: readonly EngineCheck['decision'][] = ['allow', 'deny', 'pending'];
 
@@ -300,8 +304,8 @@ function applyEngineUpdate(block: EngineItem, d: Record<string, unknown>): void 
 function applyCheck(check: EngineCheck, e: Entry): void {
   if (e.kind === 'tool_decision') {
     check.decision = pick(e.data.decision, CHECK_DECISIONS, check.decision);
-    const found = APPROVAL_ID.exec(str(e.data.output) ?? '');
-    if (found) check.approval = found[1];
+    const found = approvalIdIn(str(e.data.output) ?? '');
+    if (found) check.approval = found;
     else delete check.approval;
   }
 }

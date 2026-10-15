@@ -733,13 +733,18 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The path a decision is posted to: the approval id is one path segment, percent-encoded.
+fn decision_path(id: &str) -> String {
+    format!("/v1/approvals/{}", enc(id))
+}
+
 /// The decisions a coding engine's block sends: an approval is decided as the approvals screen decides it, and a
 /// refused send is said in the notice (the transcript shows the decision once the plaza records it).
 pub(super) fn decision_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         ChatMsg::Decide(id, approve) => {
             let c = ctx.client.clone();
-            let path = format!("/v1/approvals/{id}");
+            let path = decision_path(&id);
             let body = json!({ "approve": approve });
             client::task(
                 move || c.post::<Value>(&path, &body).map(|_| ()),
@@ -760,6 +765,12 @@ pub(super) fn decision_task(st: &mut State, msg: ChatMsg, ctx: &Ctx) -> Task<Msg
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_decision_names_its_approval_as_one_encoded_segment() {
+        assert_eq!(decision_path("a7"), "/v1/approvals/a7");
+        assert_eq!(decision_path("a7/../x y"), "/v1/approvals/a7%2F..%2Fx%20y");
+    }
 
     #[test]
     fn an_engine_block_draws_its_tools_plan_and_pending_checks_with_their_decisions() {

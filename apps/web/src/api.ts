@@ -545,6 +545,8 @@ export interface StationDelivery { id: string; name: string; size: number; kind:
 
 /** One path segment, encoded. */
 const seg = (text: string): string => encodeURIComponent(text);
+/** A decision's path: the approval id is one encoded segment, so no id can reach another route. */
+export const approvalPath = (id: string): string => `/v1/approvals/${seg(id)}`;
 /** A work-folder file's URL: each segment of its path encoded, the slashes kept. */
 const filesUrl = (station: string, path: string): string => `/v1/stations/${seg(station)}/files/${path.split('/').map(seg).join('/')}`;
 
@@ -712,7 +714,7 @@ export const api = {
 
   approvals: () => get<Approval[]>('/v1/approvals'),
   /** `action` picks what a sanction escalation does; left out, approve and deny act as they always have. */
-  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(`/v1/approvals/${id}`, { approve, reason, action }),
+  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(approvalPath(id), { approve, reason, action }),
   /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. `active` answers only the suspensions in force (no sanctions, no limit). */
   sanctions: (q: { cid?: number; law?: string; limit?: number; active?: boolean } = {}) =>
     get<SanctionsView>(`/v1/sanctions${query({ cid: q.cid, law: q.law, limit: q.limit, active: q.active ? 1 : undefined })}`),
