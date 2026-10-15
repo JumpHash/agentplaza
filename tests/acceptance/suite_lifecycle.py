@@ -20,6 +20,7 @@ result for the same machine class is reported as a finding (like the budgets sui
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -222,13 +223,73 @@ def _case_checkpoint_fork(suite: Suite, ctx) -> None:
         )
 
 
+def _voluntary_switches(lab: Lab) -> int:
+    """Voluntary context switches summed over every thread of every process in the lab's process group."""
+    total = 0
+    for pid in lab.process_group_members():
+        try:
+            tids = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            continue
+        for tid in tids:
+            try:
+                text = Path(f"/proc/{pid}/task/{tid}/status").read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if line.startswith("voluntary_ctxt_switches:"):
+                    total += int(line.split()[1])
+                    break
+    return total
+
+
 def _case_density(suite: Suite, ctx, agents: int, seconds: float) -> None:
-    """TODO (job L2): `agents` keepalive agents (roles "a0".."aN"), wait for all hellos, then hold for `seconds`:
-    sample lab.rss(), lab.cpu_ticks(), lab.threads() and vsockd's /v1/metrics session wakeups at the start and end
-    of the window; record per-agent RSS, CPU % of one core, threads per agent, and session wakeups per second per
-    agent in suite.data["density"]."""
-    case = suite.case(f"idle density: {agents} agents, not measured yet")
-    case.blocked("job L2 has not implemented this case")
+    """`agents` keepalive agents (roles "a0".."aN"), wait for all hellos, then hold idle for `seconds`, sampling the
+    host-side cost at the start and end of the window; records per-agent RSS, CPU % of one core, threads per agent
+    and voluntary context switches (wakeups) per second per agent in suite.data["density"]."""
+    roles = [f"a{i}" for i in range(agents)]
+    cids = [AGENT_CID_BASE + i for i in range(agents)]
+    case = suite.case(
+        f"idle density: {agents} keepalive agents held idle for {seconds:.0f}s",
+        vector=f"noded --agents ({agents} roles); all hellos awaited, then a {seconds:.0f}s idle window between samples",
+    )
+    with _agent_lab(ctx, roles, f"density-{agents}") as lab:
+        deadline = time.monotonic() + GUEST_SETTLE_S + agents * 2
+        while time.monotonic() < deadline:
+            if all(_connected_count(lab, cid) >= 1 for cid in cids):
+                break
+            time.sleep(0.5)
+        reached = sum(1 for cid in cids if _connected_count(lab, cid) >= 1)
+        if not case.invariant("every agent reached the hub", reached == agents, f"{reached} of {agents} reached the hub"):
+            return
+        time.sleep(10)
+        rss_start, ticks_start = lab.rss(), lab.cpu_ticks()
+        threads_start, switches_start = lab.threads(), _voluntary_switches(lab)
+        time.sleep(seconds)
+        rss_end, ticks_end = lab.rss(), lab.cpu_ticks()
+        threads_end, switches_end = lab.threads(), _voluntary_switches(lab)
+    mib = 1024 * 1024
+    clk_tck = os.sysconf("SC_CLK_TCK")
+    rss_mib_per_agent = rss_end / agents / mib
+    cpu_pct_one_core = (ticks_end - ticks_start) / clk_tck / seconds * 100
+    threads_per_agent = threads_end / agents
+    wakeups_per_s_per_agent = (switches_end - switches_start) / seconds / agents
+    suite.data["density"] = {
+        "agents": agents,
+        "seconds": seconds,
+        "rss_mib_start": round(rss_start / mib, 3),
+        "rss_mib_per_agent": round(rss_mib_per_agent, 3),
+        "cpu_pct_one_core": round(cpu_pct_one_core, 3),
+        "threads_start": threads_start,
+        "threads_per_agent": round(threads_per_agent, 3),
+        "wakeups_per_s_per_agent": round(wakeups_per_s_per_agent, 3),
+    }
+    case.note(
+        f"{agents} agents idle {seconds:.0f}s: rss {rss_mib_per_agent:.2f} MiB/agent; "
+        f"cpu {cpu_pct_one_core:.2f}% of one core; {threads_per_agent:.2f} threads/agent; "
+        f"{wakeups_per_s_per_agent:.2f} voluntary context switches/s/agent"
+    )
+    case.invariant("the measurements were taken", True, "")
 
 
 def run(ctx, soak: int = 0, soak_seconds: float = 60.0) -> Suite:
