@@ -34,6 +34,16 @@ pub enum Cmd {
         /// The sandbox's id, from `e2b sandboxes`.
         id: String,
     },
+    /// The templates sandboxes are built from: status of the newest build, tags, size.
+    Templates,
+    /// Delete a template. Asks to confirm unless --yes.
+    DeleteTemplate {
+        /// The template's id, from `e2b templates`.
+        id: String,
+        /// Skip the confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -63,6 +73,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Kill { id, yes } => kill(ctx, &id, yes),
         Cmd::Pause { id } => pause_or_resume(ctx, &id, "pause"),
         Cmd::Resume { id } => pause_or_resume(ctx, &id, "resume"),
+        Cmd::Templates => templates(ctx),
+        Cmd::DeleteTemplate { id, yes } => delete_template(ctx, &id, yes),
     }
 }
 
@@ -108,6 +120,56 @@ pub fn sandbox_row(s: &Value) -> Vec<String> {
         ctx::text(s, "startedAt"),
         ctx::text(s, "cid"),
     ]
+}
+
+/// A template's newest build (the hub lists builds newest first).
+fn newest_build(t: &Value) -> Option<&Value> {
+    t["builds"].as_array()?.first()
+}
+
+/// One template as a table row: name, id, status of the newest build, the tags of its ready builds
+/// (comma-joined, each once), the newest build's size, and when it was last changed.
+pub fn template_row(t: &Value) -> Vec<String> {
+    let newest = newest_build(t);
+    let status = newest.map(|b| ctx::text(b, "status")).unwrap_or_default();
+    let size = newest
+        .map(|b| format!("{} vCPU, {} MiB", ctx::text(b, "cpuCount"), ctx::text(b, "memoryMB")))
+        .unwrap_or_default();
+    let mut tags: Vec<String> = Vec::new();
+    let builds = t["builds"].as_array().map(Vec::as_slice).unwrap_or_default();
+    for b in builds.iter().filter(|b| ctx::s(b, "status") == "ready") {
+        for tag in b["tags"].as_array().map(Vec::as_slice).unwrap_or_default() {
+            let tag = tag.as_str().unwrap_or_default();
+            if !tag.is_empty() && !tags.iter().any(|seen| seen.as_str() == tag) {
+                tags.push(tag.to_string());
+            }
+        }
+    }
+    vec![
+        ctx::text(t, "name"),
+        ctx::text(t, "templateID"),
+        status,
+        tags.join(", "),
+        size,
+        ctx::text(t, "updatedAt"),
+    ]
+}
+
+/// The line under a template whose newest build failed: the step and the message, when the hub gave them.
+pub fn template_reason(t: &Value) -> Option<String> {
+    let newest = newest_build(t)?;
+    if ctx::s(newest, "status") != "error" {
+        return None;
+    }
+    let reason = newest.get("reason").filter(|r| !r.is_null())?;
+    let name = ctx::s(t, "name");
+    let message = ctx::s(reason, "message");
+    let step = ctx::s(reason, "step");
+    Some(if step.is_empty() {
+        format!("  {name} failed: {message}")
+    } else {
+        format!("  {name} failed at {step}: {message}")
+    })
 }
 
 /// A sandbox's path on the hub, with an optional action after it (`pause`, `resume`).
@@ -185,6 +247,40 @@ fn sandboxes(ctx: &Ctx) -> Result<(), String> {
             &rows,
         );
     });
+    Ok(())
+}
+
+fn templates(ctx: &Ctx) -> Result<(), String> {
+    let v = ctx.client.get("/v1/e2b/templates")?;
+    ctx.out(&v, |v| {
+        let list = v["templates"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if list.is_empty() {
+            println!("No templates (build one with the E2B SDK's Template.build).");
+            return;
+        }
+        let rows: Vec<Vec<String>> = list.iter().map(template_row).collect();
+        ctx::table(&["NAME", "ID", "STATUS", "TAGS", "SIZE", "UPDATED"], &rows);
+        // The table cuts cells short, so a failed build's reason is printed in full under the table.
+        for reason in list.iter().filter_map(template_reason) {
+            println!("{reason}");
+        }
+    });
+    Ok(())
+}
+
+fn delete_template(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
+    if !confirm(
+        yes,
+        &format!("Delete E2B template {id}? It is removed for good."),
+    )? {
+        println!("cancelled");
+        return Ok(());
+    }
+    let v = ctx.client.delete(&format!("/v1/e2b/templates/{}", seg(id)))?;
+    ctx.out(&v, |_| println!("deleted E2B template {id}"));
     Ok(())
 }
 
@@ -332,6 +428,76 @@ mod tests {
                 "2026-10-15T10:00:00Z",
                 "4"
             ]
+        );
+    }
+
+    #[test]
+    fn templates_and_delete_template_parse() {
+        assert!(matches!(parse(&["templates"]).unwrap(), Cmd::Templates));
+        match parse(&["delete-template", "tp1"]).unwrap() {
+            Cmd::DeleteTemplate { id, yes } => assert_eq!((id.as_str(), yes), ("tp1", false)),
+            other => panic!("not a delete-template: {other:?}"),
+        }
+        match parse(&["delete-template", "tp1", "--yes"]).unwrap() {
+            Cmd::DeleteTemplate { yes, .. } => assert!(yes),
+            other => panic!("not a delete-template: {other:?}"),
+        }
+        assert!(parse(&["delete-template"]).is_err(), "a template needs an id");
+    }
+
+    #[test]
+    fn a_template_row_reads_the_newest_build_and_the_ready_tags() {
+        let t = json!({
+            "templateID": "tp1", "name": "base",
+            "createdAt": "2026-10-14T09:00:00Z", "updatedAt": "2026-10-15T10:00:00Z",
+            "builds": [
+                {"buildID": "b2", "status": "ready", "createdAt": "2026-10-15T10:00:00Z",
+                 "finishedAt": "2026-10-15T10:05:00Z", "cpuCount": 2, "memoryMB": 512,
+                 "tags": ["latest", "v2"], "reason": null},
+                {"buildID": "b1", "status": "ready", "createdAt": "2026-10-14T09:00:00Z",
+                 "finishedAt": "2026-10-14T09:04:00Z", "cpuCount": 1, "memoryMB": 256,
+                 "tags": ["v1", "latest"], "reason": null}
+            ]
+        });
+        assert_eq!(
+            template_row(&t),
+            vec![
+                "base",
+                "tp1",
+                "ready",
+                "latest, v2, v1",
+                "2 vCPU, 512 MiB",
+                "2026-10-15T10:00:00Z"
+            ]
+        );
+        assert_eq!(template_reason(&t), None, "a ready template has no reason line");
+    }
+
+    #[test]
+    fn a_failed_template_row_leaves_tags_empty_and_names_the_reason() {
+        let t = json!({
+            "templateID": "tp2", "name": "gpu",
+            "createdAt": "2026-10-15T11:00:00Z", "updatedAt": "2026-10-15T11:02:00Z",
+            "builds": [
+                {"buildID": "b3", "status": "error", "createdAt": "2026-10-15T11:00:00Z",
+                 "finishedAt": "2026-10-15T11:02:00Z", "cpuCount": 4, "memoryMB": 1024,
+                 "tags": ["next"], "reason": {"message": "out of disk", "step": "RUN pip install"}}
+            ]
+        });
+        assert_eq!(
+            template_row(&t),
+            vec![
+                "gpu",
+                "tp2",
+                "error",
+                "",
+                "4 vCPU, 1024 MiB",
+                "2026-10-15T11:02:00Z"
+            ]
+        );
+        assert_eq!(
+            template_reason(&t).as_deref(),
+            Some("  gpu failed at RUN pip install: out of disk")
         );
     }
 }
