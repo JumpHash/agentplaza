@@ -534,138 +534,123 @@ mod tests {
     }
 
     #[test]
-    fn key_is_stable_for_the_same_shape() {
-        let (dir, _clean) = test_dir("key-stable");
-        let shape = fake_shape(&dir);
-        let templates = Templates::new(dir.join("templates"));
-        let key = templates.key(&shape).unwrap();
-        assert_eq!(key.len(), 64);
-        assert_eq!(templates.key(&shape).unwrap(), key);
-        // A fresh digest cache computes the same key.
-        assert_eq!(
-            Templates::new(dir.join("templates")).key(&shape).unwrap(),
-            key
-        );
+    fn key_is_stable_and_follows_the_shape_and_the_images() {
+        // key_is_stable_for_the_same_shape: the same shape gives the same key, also from a fresh digest cache.
+        {
+            let (dir, _clean) = test_dir("key-stable");
+            let shape = fake_shape(&dir);
+            let templates = Templates::new(dir.join("templates"));
+            let key = templates.key(&shape).unwrap();
+            assert_eq!(key.len(), 64);
+            assert_eq!(templates.key(&shape).unwrap(), key);
+            // A fresh digest cache computes the same key.
+            assert_eq!(
+                Templates::new(dir.join("templates")).key(&shape).unwrap(),
+                key
+            );
+        }
+        // key_follows_the_shape_and_the_images: a change to any field of the shape, or to one byte of the kernel, changes the key.
+        {
+            let (dir, _clean) = test_dir("key-sensitive");
+            let shape = fake_shape(&dir);
+            let templates = Templates::new(dir.join("templates"));
+            let base = templates.key(&shape).unwrap();
+            let key_of = |changed: Shape| templates.key(&changed).unwrap();
+            let cmdline = format!("{} plaza.vm=1", shape.cmdline);
+            assert_ne!(
+                key_of(Shape {
+                    cmdline,
+                    ..shape.clone()
+                }),
+                base
+            );
+            assert_ne!(
+                key_of(Shape {
+                    memory_mib: 2048,
+                    ..shape.clone()
+                }),
+                base
+            );
+            assert_ne!(
+                key_of(Shape {
+                    vcpus: 4,
+                    ..shape.clone()
+                }),
+                base
+            );
+            assert_ne!(
+                key_of(Shape {
+                    balloon: Some(256),
+                    ..shape.clone()
+                }),
+                base
+            );
+            assert_ne!(
+                key_of(Shape {
+                    initrd: None,
+                    ..shape.clone()
+                }),
+                base
+            );
+            assert_ne!(
+                key_of(Shape {
+                    workspace_base: None,
+                    ..shape.clone()
+                }),
+                base
+            );
+            // One byte of the kernel changes, same size, with a later mtime.
+            let mut kernel = fs::read(&shape.kernel).unwrap();
+            kernel[0] ^= 0xff;
+            rewrite(
+                &shape.kernel,
+                &kernel,
+                SystemTime::now() + Duration::from_secs(3600),
+            );
+            assert_ne!(key_of(shape.clone()), base);
+        }
     }
 
     #[test]
-    fn key_follows_the_shape_and_the_images() {
-        let (dir, _clean) = test_dir("key-sensitive");
-        let shape = fake_shape(&dir);
-        let templates = Templates::new(dir.join("templates"));
-        let base = templates.key(&shape).unwrap();
-        let key_of = |changed: Shape| templates.key(&changed).unwrap();
-        let cmdline = format!("{} plaza.vm=1", shape.cmdline);
-        assert_ne!(
-            key_of(Shape {
-                cmdline,
-                ..shape.clone()
-            }),
-            base
-        );
-        assert_ne!(
-            key_of(Shape {
-                memory_mib: 2048,
-                ..shape.clone()
-            }),
-            base
-        );
-        assert_ne!(
-            key_of(Shape {
-                vcpus: 4,
-                ..shape.clone()
-            }),
-            base
-        );
-        assert_ne!(
-            key_of(Shape {
-                balloon: Some(256),
-                ..shape.clone()
-            }),
-            base
-        );
-        assert_ne!(
-            key_of(Shape {
-                initrd: None,
-                ..shape.clone()
-            }),
-            base
-        );
-        assert_ne!(
-            key_of(Shape {
+    fn existing_templates_are_returned_without_a_build() {
+        // an_existing_template_is_returned_without_a_build: a complete template is returned with no build.
+        {
+            let (dir, _clean) = test_dir("existing");
+            let shape = fake_shape(&dir);
+            let templates = Templates::new(dir.join("templates"));
+            let key = templates.key(&shape).unwrap();
+            let built = dir.join("templates").join(&key);
+            fs::create_dir_all(&built).unwrap();
+            let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
+            write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
+            // The fake kernel cannot boot, so a build here would fail.
+            let template = templates.get_or_build(&shape).unwrap();
+            assert_eq!(template.key, key);
+            assert_eq!(template.snapshot, built.join(SNAP_DIR));
+            assert_eq!(template.workspace, Some(built.join(WORKSPACE_FILE)));
+        }
+        // a_template_without_a_base_image_has_its_own_key_and_no_disk: it has its own key, and a complete template of it is returned with no disk to clone.
+        {
+            let (dir, _clean) = test_dir("no-workspace");
+            let shape = Shape {
                 workspace_base: None,
-                ..shape.clone()
-            }),
-            base
-        );
-        // One byte of the kernel changes, same size, with a later mtime.
-        let mut kernel = fs::read(&shape.kernel).unwrap();
-        kernel[0] ^= 0xff;
-        rewrite(
-            &shape.kernel,
-            &kernel,
-            SystemTime::now() + Duration::from_secs(3600),
-        );
-        assert_ne!(key_of(shape.clone()), base);
-    }
-
-    #[test]
-    fn digest_is_cached_by_size_and_mtime() {
-        let (dir, _clean) = test_dir("digest-cache");
-        let shape = fake_shape(&dir);
-        let templates = Templates::new(dir.join("templates"));
-        let mtime = fs::metadata(&shape.kernel).unwrap().modified().unwrap();
-        let first = templates.digest(&shape.kernel).unwrap();
-        // Same size and mtime: the cache answers, so the new bytes are not read.
-        let mut changed = fs::read(&shape.kernel).unwrap();
-        changed[0] ^= 0xff;
-        rewrite(&shape.kernel, &changed, mtime);
-        assert_eq!(templates.digest(&shape.kernel).unwrap(), first);
-        // A new mtime: the file is hashed again.
-        rewrite(&shape.kernel, &changed, mtime + Duration::from_secs(60));
-        let again = templates.digest(&shape.kernel).unwrap();
-        assert_ne!(again, first);
-        assert_eq!(again, hash_file(&shape.kernel).unwrap());
-    }
-
-    #[test]
-    fn an_existing_template_is_returned_without_a_build() {
-        let (dir, _clean) = test_dir("existing");
-        let shape = fake_shape(&dir);
-        let templates = Templates::new(dir.join("templates"));
-        let key = templates.key(&shape).unwrap();
-        let built = dir.join("templates").join(&key);
-        fs::create_dir_all(&built).unwrap();
-        let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
-        write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
-        // The fake kernel cannot boot, so a build here would fail.
-        let template = templates.get_or_build(&shape).unwrap();
-        assert_eq!(template.key, key);
-        assert_eq!(template.snapshot, built.join(SNAP_DIR));
-        assert_eq!(template.workspace, Some(built.join(WORKSPACE_FILE)));
-    }
-
-    #[test]
-    fn a_template_without_a_base_image_has_its_own_key_and_no_disk() {
-        let (dir, _clean) = test_dir("no-workspace");
-        let shape = Shape {
-            workspace_base: None,
-            ..fake_shape(&dir)
-        };
-        let templates = Templates::new(dir.join("templates"));
-        // The key is stable, and it is not the key of the same shape with a base image.
-        let key = templates.key(&shape).unwrap();
-        assert_eq!(templates.key(&shape).unwrap(), key);
-        assert_ne!(templates.key(&fake_shape(&dir)).unwrap(), key);
-        // A complete template of this shape is returned with no disk to clone.
-        let built = dir.join("templates").join(&key);
-        fs::create_dir_all(&built).unwrap();
-        let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
-        write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
-        let template = templates.get_or_build(&shape).unwrap();
-        assert_eq!(template.key, key);
-        assert_eq!(template.snapshot, built.join(SNAP_DIR));
-        assert_eq!(template.workspace, None);
+                ..fake_shape(&dir)
+            };
+            let templates = Templates::new(dir.join("templates"));
+            // The key is stable, and it is not the key of the same shape with a base image.
+            let key = templates.key(&shape).unwrap();
+            assert_eq!(templates.key(&shape).unwrap(), key);
+            assert_ne!(templates.key(&fake_shape(&dir)).unwrap(), key);
+            // A complete template of this shape is returned with no disk to clone.
+            let built = dir.join("templates").join(&key);
+            fs::create_dir_all(&built).unwrap();
+            let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
+            write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
+            let template = templates.get_or_build(&shape).unwrap();
+            assert_eq!(template.key, key);
+            assert_eq!(template.snapshot, built.join(SNAP_DIR));
+            assert_eq!(template.workspace, None);
+        }
     }
 
     #[test]

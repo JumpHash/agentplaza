@@ -1566,73 +1566,91 @@ mod tests {
     }
 
     #[test]
-    fn a_linux_request_is_accepted_and_its_bounds_are_enforced() {
-        let shape = request(Os::Linux).checked().expect("a plain Linux desktop");
-        assert_eq!(
-            (shape.cpus, shape.ram_mb, shape.disk_gb, shape.gpu),
-            (4, 8192, 40, Gpu::None)
-        );
+    fn checked_request_enforces_bounds_os_image_join_code_and_pin() {
+        // a_linux_request_is_accepted_and_its_bounds_are_enforced: a plain Linux request passes and each bound refuses its field.
+        {
+            let shape = request(Os::Linux).checked().expect("a plain Linux desktop");
+            assert_eq!(
+                (shape.cpus, shape.ram_mb, shape.disk_gb, shape.gpu),
+                (4, 8192, 40, Gpu::None)
+            );
 
-        let mut bad_name = request(Os::Linux);
-        for name in [
-            "",
-            "-desk",
-            "desk-",
-            "Desk",
-            "a b",
-            &"x".repeat(MAX_NAME_LEN + 1),
-        ] {
-            bad_name.name = name.into();
-            assert!(bad_name.checked().is_err(), "name {name:?} must be refused");
+            let mut bad_name = request(Os::Linux);
+            for name in [
+                "",
+                "-desk",
+                "desk-",
+                "Desk",
+                "a b",
+                &"x".repeat(MAX_NAME_LEN + 1),
+            ] {
+                bad_name.name = name.into();
+                assert!(bad_name.checked().is_err(), "name {name:?} must be refused");
+            }
+            let mut cpus_zero = request(Os::Linux);
+            cpus_zero.cpus = 0;
+            assert!(cpus_zero.checked().unwrap_err().contains("cpus"));
+            let mut cpus_many = request(Os::Linux);
+            cpus_many.cpus = MAX_CPUS + 1;
+            assert!(cpus_many.checked().unwrap_err().contains("cpus"));
+            let mut ram_small = request(Os::Linux);
+            ram_small.ram_mb = MIN_RAM_MB - 1;
+            assert!(ram_small.checked().unwrap_err().contains("ram_mb"));
+            let mut ram_big = request(Os::Linux);
+            ram_big.ram_mb = MAX_RAM_MB + 1;
+            assert!(ram_big.checked().unwrap_err().contains("ram_mb"));
+            let mut disk_small = request(Os::Linux);
+            disk_small.disk_gb = MIN_DISK_GB - 1;
+            assert!(disk_small.checked().unwrap_err().contains("disk_gb"));
+            let mut disk_big = request(Os::Linux);
+            disk_big.disk_gb = MAX_DISK_GB + 1;
+            assert!(disk_big.checked().unwrap_err().contains("disk_gb"));
         }
-        let mut cpus_zero = request(Os::Linux);
-        cpus_zero.cpus = 0;
-        assert!(cpus_zero.checked().unwrap_err().contains("cpus"));
-        let mut cpus_many = request(Os::Linux);
-        cpus_many.cpus = MAX_CPUS + 1;
-        assert!(cpus_many.checked().unwrap_err().contains("cpus"));
-        let mut ram_small = request(Os::Linux);
-        ram_small.ram_mb = MIN_RAM_MB - 1;
-        assert!(ram_small.checked().unwrap_err().contains("ram_mb"));
-        let mut ram_big = request(Os::Linux);
-        ram_big.ram_mb = MAX_RAM_MB + 1;
-        assert!(ram_big.checked().unwrap_err().contains("ram_mb"));
-        let mut disk_small = request(Os::Linux);
-        disk_small.disk_gb = MIN_DISK_GB - 1;
-        assert!(disk_small.checked().unwrap_err().contains("disk_gb"));
-        let mut disk_big = request(Os::Linux);
-        disk_big.disk_gb = MAX_DISK_GB + 1;
-        assert!(disk_big.checked().unwrap_err().contains("disk_gb"));
-    }
 
-    #[test]
-    fn a_windows_vm_needs_an_image_and_more_memory_and_a_macos_vm_is_refused() {
-        let mut windows = request(Os::Windows);
-        windows.image = None;
-        assert!(windows.checked().unwrap_err().contains("image"));
+        // a_windows_vm_needs_an_image_and_more_memory_and_a_macos_vm_is_refused: Windows needs an absolute image and more RAM, macOS is refused.
+        {
+            let mut windows = request(Os::Windows);
+            windows.image = None;
+            assert!(windows.checked().unwrap_err().contains("image"));
 
-        let mut small = request(Os::Windows);
-        small.ram_mb = MIN_WINDOWS_RAM_MB - 1;
-        assert!(small.checked().unwrap_err().contains("ram_mb"));
+            let mut small = request(Os::Windows);
+            small.ram_mb = MIN_WINDOWS_RAM_MB - 1;
+            assert!(small.checked().unwrap_err().contains("ram_mb"));
 
-        let mut relative = request(Os::Windows);
-        relative.image = Some("win.img".into());
-        assert!(relative.checked().unwrap_err().contains("absolute"));
+            let mut relative = request(Os::Windows);
+            relative.image = Some("win.img".into());
+            assert!(relative.checked().unwrap_err().contains("absolute"));
 
-        assert!(request(Os::Windows).checked().is_ok());
-        let err = request(Os::Macos).checked().unwrap_err();
-        assert!(err.contains("macOS"), "{err}");
-    }
+            assert!(request(Os::Windows).checked().is_ok());
+            let err = request(Os::Macos).checked().unwrap_err();
+            assert!(err.contains("macOS"), "{err}");
+        }
 
-    #[test]
-    fn a_join_code_with_whitespace_or_no_text_is_refused() {
-        let mut r = request(Os::Linux);
-        r.join_code = String::new();
-        assert!(r.checked().is_err());
-        r.join_code = "two words".into();
-        assert!(r.checked().unwrap_err().contains("whitespace"));
-        r.join_code = "x".repeat(MAX_JOIN_CODE + 1);
-        assert!(r.checked().unwrap_err().contains("longer"));
+        // a_join_code_with_whitespace_or_no_text_is_refused: the join code must be non-empty, one word and short.
+        {
+            let mut r = request(Os::Linux);
+            r.join_code = String::new();
+            assert!(r.checked().is_err());
+            r.join_code = "two words".into();
+            assert!(r.checked().unwrap_err().contains("whitespace"));
+            r.join_code = "x".repeat(MAX_JOIN_CODE + 1);
+            assert!(r.checked().unwrap_err().contains("longer"));
+        }
+
+        // a_hub_needs_a_pin_and_a_pin_must_be_base64url: a hub needs a pin, and the pin must be base64url.
+        {
+            let mut unpinned = request(Os::Linux);
+            unpinned.pin = None;
+            assert!(unpinned.checked().unwrap_err().contains("pin"));
+
+            let mut spaced = request(Os::Linux);
+            spaced.pin = Some("two words".into());
+            assert!(spaced.checked().unwrap_err().contains("base64url"));
+
+            let mut long = request(Os::Linux);
+            long.pin = Some("x".repeat(65));
+            assert!(long.checked().is_err());
+        }
     }
 
     #[test]
@@ -1810,21 +1828,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hub_needs_a_pin_and_a_pin_must_be_base64url() {
-        let mut unpinned = request(Os::Linux);
-        unpinned.pin = None;
-        assert!(unpinned.checked().unwrap_err().contains("pin"));
-
-        let mut spaced = request(Os::Linux);
-        spaced.pin = Some("two words".into());
-        assert!(spaced.checked().unwrap_err().contains("base64url"));
-
-        let mut long = request(Os::Linux);
-        long.pin = Some("x".repeat(65));
-        assert!(long.checked().is_err());
-    }
-
-    #[test]
     fn both_backends_hand_the_same_join_config_by_the_same_node_address() {
         let shape = request(Os::Linux).checked().expect("a shape");
         let config = join_config(&shape)
@@ -1983,48 +1986,75 @@ mod tests {
     }
 
     #[test]
-    fn a_create_without_a_kernel_is_refused_before_a_directory_is_made() {
-        let dir = scratch("nokernel");
-        let vms = dir.join("vms");
-        let store = Store::open(Guest {
-            dir: vms.clone(),
-            image: Some(dir.join("base.img")),
-            ..Guest::default()
-        });
-        let err = store.create(&request(Os::Linux), 1).unwrap_err();
-        assert_eq!(err.0, 503);
-        assert!(err.1.contains("kernel"), "{}", err.1);
-        assert!(!vms.exists(), "nothing is written for a refused request");
-        let _ = fs::remove_dir_all(&dir);
-    }
+    fn a_create_is_refused_before_a_directory_is_made_and_says_why() {
+        // a_create_without_a_kernel_is_refused_before_a_directory_is_made: no kernel is a 503 and nothing is written.
+        {
+            let dir = scratch("nokernel");
+            let vms = dir.join("vms");
+            let store = Store::open(Guest {
+                dir: vms.clone(),
+                image: Some(dir.join("base.img")),
+                ..Guest::default()
+            });
+            let err = store.create(&request(Os::Linux), 1).unwrap_err();
+            assert_eq!(err.0, 503);
+            assert!(err.1.contains("kernel"), "{}", err.1);
+            assert!(!vms.exists(), "nothing is written for a refused request");
+            let _ = fs::remove_dir_all(&dir);
+        }
 
-    #[test]
-    fn a_create_for_windows_or_vfio_is_refused_with_the_reason() {
-        let dir = scratch("refuse");
-        let store = Store::open(Guest {
-            dir: dir.join("vms"),
-            sysfs: dir.join("sysfs"),
-            ..Guest::default()
-        });
-        // A node with no QEMU cannot take a Windows guest, and says so: nothing it has can run one.
-        let windows = store.create(&request(Os::Windows), 1).unwrap_err();
-        assert_eq!(windows.0, 503);
-        assert!(windows.1.contains("no QEMU/OVMF"), "{}", windows.1);
-        // Asking plaza for it names plaza's own refusal.
-        let mut plaza_windows = request(Os::Windows);
-        plaza_windows.backend = Some("plaza".into());
-        let refused = store.create(&plaza_windows, 1).unwrap_err();
-        assert_eq!(refused.0, 501);
-        assert!(refused.1.contains("plaza"), "{}", refused.1);
-        let mut vfio = request(Os::Linux);
-        vfio.gpu = Gpu::Vfio("0000:01:00.0".into());
-        assert_eq!(
-            store.create(&vfio, 1).unwrap_err().0,
-            400,
-            "no such device is refused first"
-        );
-        assert!(!dir.join("vms").exists());
-        let _ = fs::remove_dir_all(&dir);
+        // a_create_for_windows_or_vfio_is_refused_with_the_reason: Windows without QEMU, plaza, and a missing VFIO device are each refused.
+        {
+            let dir = scratch("refuse");
+            let store = Store::open(Guest {
+                dir: dir.join("vms"),
+                sysfs: dir.join("sysfs"),
+                ..Guest::default()
+            });
+            // A node with no QEMU cannot take a Windows guest, and says so: nothing it has can run one.
+            let windows = store.create(&request(Os::Windows), 1).unwrap_err();
+            assert_eq!(windows.0, 503);
+            assert!(windows.1.contains("no QEMU/OVMF"), "{}", windows.1);
+            // Asking plaza for it names plaza's own refusal.
+            let mut plaza_windows = request(Os::Windows);
+            plaza_windows.backend = Some("plaza".into());
+            let refused = store.create(&plaza_windows, 1).unwrap_err();
+            assert_eq!(refused.0, 501);
+            assert!(refused.1.contains("plaza"), "{}", refused.1);
+            let mut vfio = request(Os::Linux);
+            vfio.gpu = Gpu::Vfio("0000:01:00.0".into());
+            assert_eq!(
+                store.create(&vfio, 1).unwrap_err().0,
+                400,
+                "no such device is refused first"
+            );
+            assert!(!dir.join("vms").exists());
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        // a_qemu_vm_without_a_kernel_is_refused_before_a_directory_is_made: a QEMU VM without a kernel is a 503 and nothing is written.
+        {
+            let dir = scratch("qemu-nokernel");
+            let vms = dir.join("vms");
+            let store = Store::open(Guest {
+                dir: vms.clone(),
+                image: Some(dir.join("base.img")),
+                qemu: Some(Available {
+                    program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+                    img: PathBuf::from("/usr/bin/qemu-img"),
+                    arch: ws_qemu::Arch::X86_64,
+                    firmware: None,
+                }),
+                ..Guest::default()
+            });
+            let mut linux = request(Os::Linux);
+            linux.backend = Some("qemu".into());
+            let err = store.create(&linux, 1).unwrap_err();
+            assert_eq!(err.0, 503);
+            assert!(err.1.contains("kernel"), "{}", err.1);
+            assert!(!vms.exists(), "nothing is written for a refused request");
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -2110,30 +2140,6 @@ mod tests {
             ..Guest::default()
         });
         assert_eq!(with.backends(), ["plaza", "qemu"]);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_qemu_vm_without_a_kernel_is_refused_before_a_directory_is_made() {
-        let dir = scratch("qemu-nokernel");
-        let vms = dir.join("vms");
-        let store = Store::open(Guest {
-            dir: vms.clone(),
-            image: Some(dir.join("base.img")),
-            qemu: Some(Available {
-                program: PathBuf::from("/usr/bin/qemu-system-x86_64"),
-                img: PathBuf::from("/usr/bin/qemu-img"),
-                arch: ws_qemu::Arch::X86_64,
-                firmware: None,
-            }),
-            ..Guest::default()
-        });
-        let mut linux = request(Os::Linux);
-        linux.backend = Some("qemu".into());
-        let err = store.create(&linux, 1).unwrap_err();
-        assert_eq!(err.0, 503);
-        assert!(err.1.contains("kernel"), "{}", err.1);
-        assert!(!vms.exists(), "nothing is written for a refused request");
         let _ = fs::remove_dir_all(&dir);
     }
 

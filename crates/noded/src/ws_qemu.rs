@@ -973,39 +973,42 @@ mod tests {
     }
 
     #[test]
-    fn a_comma_in_a_path_and_a_long_socket_path_are_refused() {
-        let dir = PathBuf::from("/srv/a,b/wv1");
-        let disk = dir.join("disk.qcow2");
-        let err = argv(&linux_plan(&dir, &disk, "x")).unwrap_err();
-        assert!(err.contains("comma"), "{err}");
+    fn argv_refuses_unsafe_paths_and_a_windows_guest_without_uefi_x86_64() {
+        // a_comma_in_a_path_and_a_long_socket_path_are_refused: a comma in the path and an over-long socket path are refused.
+        {
+            let dir = PathBuf::from("/srv/a,b/wv1");
+            let disk = dir.join("disk.qcow2");
+            let err = argv(&linux_plan(&dir, &disk, "x")).unwrap_err();
+            assert!(err.contains("comma"), "{err}");
 
-        let long = PathBuf::from(format!("/{}", "d".repeat(SOCKET_PATH_MAX)));
-        let disk = long.join("disk.qcow2");
-        let err = argv(&linux_plan(&long, &disk, "x")).unwrap_err();
-        assert!(err.contains("too long"), "{err}");
-    }
+            let long = PathBuf::from(format!("/{}", "d".repeat(SOCKET_PATH_MAX)));
+            let disk = long.join("disk.qcow2");
+            let err = argv(&linux_plan(&long, &disk, "x")).unwrap_err();
+            assert!(err.contains("too long"), "{err}");
+        }
 
-    #[test]
-    fn a_windows_guest_must_boot_uefi_on_x86_64() {
-        let dir = dir_plan();
-        let disk = dir.join("disk.qcow2");
-        let direct_windows = Plan {
-            windows: true,
-            ..linux_plan(&dir, &disk, "x")
-        };
-        assert!(argv(&direct_windows).unwrap_err().contains("UEFI"));
+        // a_windows_guest_must_boot_uefi_on_x86_64: a Windows guest needs UEFI, and on aarch64 it is refused.
+        {
+            let dir = dir_plan();
+            let disk = dir.join("disk.qcow2");
+            let direct_windows = Plan {
+                windows: true,
+                ..linux_plan(&dir, &disk, "x")
+            };
+            assert!(argv(&direct_windows).unwrap_err().contains("UEFI"));
 
-        let vars = dir.join("vars.fd");
-        let arm_windows = Plan {
-            arch: Arch::Aarch64,
-            windows: true,
-            boot: Boot::Uefi {
-                code: Path::new("/c.fd"),
-                vars: &vars,
-            },
-            ..linux_plan(&dir, &disk, "x")
-        };
-        assert!(argv(&arm_windows).unwrap_err().contains("x86_64"));
+            let vars = dir.join("vars.fd");
+            let arm_windows = Plan {
+                arch: Arch::Aarch64,
+                windows: true,
+                boot: Boot::Uefi {
+                    code: Path::new("/c.fd"),
+                    vars: &vars,
+                },
+                ..linux_plan(&dir, &disk, "x")
+            };
+            assert!(argv(&arm_windows).unwrap_err().contains("x86_64"));
+        }
     }
 
     #[test]
@@ -1102,57 +1105,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn qmp_skips_events_and_returns_the_reply_to_a_command() {
-        use std::os::unix::net::UnixStream;
-        let (client, server) = UnixStream::pair().expect("a connected pair");
-        let fake = std::thread::spawn(move || {
-            let mut writer = server.try_clone().expect("a second end");
-            let mut reader = BufReader::new(server);
-            writer
-                .write_all(b"{\"QMP\": {\"version\": {}, \"capabilities\": []}}\n")
-                .unwrap();
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            assert!(line.contains("qmp_capabilities"), "{line}");
-            writer.write_all(b"{\"return\": {}}\n").unwrap();
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            assert!(line.contains("system_powerdown"), "{line}");
-            writer
-                .write_all(
-                    b"{\"event\": \"SHUTDOWN\", \"data\": {}}\n{\"return\": {\"status\": \"ok\"}}\n",
-                )
-                .unwrap();
-        });
-        let mut qmp = Qmp::open(client).expect("a greeted session");
-        let value = qmp.execute("system_powerdown").expect("the reply");
-        assert_eq!(value["status"], "ok");
-        fake.join().expect("the fake server ends cleanly");
-    }
+    fn qmp_execute_skips_events_and_returns_the_reply_or_the_error_text() {
+        // qmp_skips_events_and_returns_the_reply_to_a_command: events are skipped and the command reply is returned.
+        {
+            use std::os::unix::net::UnixStream;
+            let (client, server) = UnixStream::pair().expect("a connected pair");
+            let fake = std::thread::spawn(move || {
+                let mut writer = server.try_clone().expect("a second end");
+                let mut reader = BufReader::new(server);
+                writer
+                    .write_all(b"{\"QMP\": {\"version\": {}, \"capabilities\": []}}\n")
+                    .unwrap();
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.contains("qmp_capabilities"), "{line}");
+                writer.write_all(b"{\"return\": {}}\n").unwrap();
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.contains("system_powerdown"), "{line}");
+                writer
+                    .write_all(
+                        b"{\"event\": \"SHUTDOWN\", \"data\": {}}\n{\"return\": {\"status\": \"ok\"}}\n",
+                    )
+                    .unwrap();
+            });
+            let mut qmp = Qmp::open(client).expect("a greeted session");
+            let value = qmp.execute("system_powerdown").expect("the reply");
+            assert_eq!(value["status"], "ok");
+            fake.join().expect("the fake server ends cleanly");
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_qmp_error_reply_is_the_error_text() {
-        use std::os::unix::net::UnixStream;
-        let (client, server) = UnixStream::pair().expect("a connected pair");
-        let fake = std::thread::spawn(move || {
-            let mut writer = server.try_clone().expect("a second end");
-            let mut reader = BufReader::new(server);
-            writer.write_all(b"{\"QMP\": {}}\n").unwrap();
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            writer.write_all(b"{\"return\": {}}\n").unwrap();
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            writer
-                .write_all(
-                    b"{\"error\": {\"class\": \"GenericError\", \"desc\": \"device busy\"}}\n",
-                )
-                .unwrap();
-        });
-        let mut qmp = Qmp::open(client).expect("a greeted session");
-        assert_eq!(qmp.execute("quit"), Err("device busy".into()));
-        fake.join().expect("the fake server ends cleanly");
+        // a_qmp_error_reply_is_the_error_text: a QMP error reply becomes its desc text.
+        {
+            use std::os::unix::net::UnixStream;
+            let (client, server) = UnixStream::pair().expect("a connected pair");
+            let fake = std::thread::spawn(move || {
+                let mut writer = server.try_clone().expect("a second end");
+                let mut reader = BufReader::new(server);
+                writer.write_all(b"{\"QMP\": {}}\n").unwrap();
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                writer.write_all(b"{\"return\": {}}\n").unwrap();
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                writer
+                    .write_all(
+                        b"{\"error\": {\"class\": \"GenericError\", \"desc\": \"device busy\"}}\n",
+                    )
+                    .unwrap();
+            });
+            let mut qmp = Qmp::open(client).expect("a greeted session");
+            assert_eq!(qmp.execute("quit"), Err("device busy".into()));
+            fake.join().expect("the fake server ends cleanly");
+        }
     }
 
     #[test]

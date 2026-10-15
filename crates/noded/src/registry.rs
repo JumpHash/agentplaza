@@ -3871,59 +3871,61 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_transition_leaves_the_run_alone() {
-        let mut run = inner(RunState::Killed);
-        run.ended_at = Some(7);
-        let refused = run
-            .transition(RunState::Running)
-            .expect_err("killed -> running is refused");
-        assert_eq!(
-            refused,
-            RefusedTransition {
-                from: RunState::Killed,
-                to: RunState::Running
-            }
-        );
-        assert_eq!(
-            refused.to_string(),
-            "a run may not go from killed to running"
-        );
-        assert_eq!(run.state, RunState::Killed);
-        assert_eq!(run.ended_at, Some(7));
-    }
+    fn run_transitions_and_finish_follow_the_state() {
+        // A refused transition leaves the run alone: the error names both
+        // states, and the state and end stamp are unchanged.
+        {
+            let mut run = inner(RunState::Killed);
+            run.ended_at = Some(7);
+            let refused = run
+                .transition(RunState::Running)
+                .expect_err("killed -> running is refused");
+            assert_eq!(
+                refused,
+                RefusedTransition {
+                    from: RunState::Killed,
+                    to: RunState::Running
+                }
+            );
+            assert_eq!(
+                refused.to_string(),
+                "a run may not go from killed to running"
+            );
+            assert_eq!(run.state, RunState::Killed);
+            assert_eq!(run.ended_at, Some(7));
+        }
+        // An ending transition stamps ended_at, and a start does not.
+        {
+            let mut run = inner(RunState::Starting);
+            run.transition(RunState::Running)
+                .expect("starting -> running");
+            assert_eq!(run.state, RunState::Running);
+            assert_eq!(run.ended_at, None);
 
-    #[test]
-    fn an_ending_transition_stamps_ended_at_and_a_start_does_not() {
-        let mut run = inner(RunState::Starting);
-        run.transition(RunState::Running)
-            .expect("starting -> running");
-        assert_eq!(run.state, RunState::Running);
-        assert_eq!(run.ended_at, None);
+            run.transition(RunState::Done).expect("running -> done");
+            assert!(run.ended_at.is_some());
+            assert!(run.state.is_finished());
 
-        run.transition(RunState::Done).expect("running -> done");
-        assert!(run.ended_at.is_some());
-        assert!(run.state.is_finished());
+            let mut failed = inner(RunState::Running);
+            failed
+                .transition(RunState::Failed)
+                .expect("running -> failed");
+            assert!(failed.ended_at.is_some());
 
-        let mut failed = inner(RunState::Running);
-        failed
-            .transition(RunState::Failed)
-            .expect("running -> failed");
-        assert!(failed.ended_at.is_some());
-
-        let mut killed = inner(RunState::Starting);
-        killed
-            .transition(RunState::Killed)
-            .expect("starting -> killed");
-        assert!(killed.ended_at.is_some());
-    }
-
-    #[test]
-    fn finishing_is_a_no_op_once_the_run_has_ended() {
-        let mut run = inner(RunState::Killed);
-        run.ended_at = Some(7);
-        run.finish();
-        assert_eq!(run.state, RunState::Killed);
-        assert_eq!(run.ended_at, Some(7));
+            let mut killed = inner(RunState::Starting);
+            killed
+                .transition(RunState::Killed)
+                .expect("starting -> killed");
+            assert!(killed.ended_at.is_some());
+        }
+        // Finishing is a no-op once the run has ended.
+        {
+            let mut run = inner(RunState::Killed);
+            run.ended_at = Some(7);
+            run.finish();
+            assert_eq!(run.state, RunState::Killed);
+            assert_eq!(run.ended_at, Some(7));
+        }
     }
 
     #[test]
@@ -4013,38 +4015,99 @@ mod tests {
     }
 
     #[test]
-    fn a_recovery_boots_from_the_newest_snapshot_of_the_last_day_or_cold() {
-        assert_eq!(recovery_decision(NOW, &[], &[]), Recovery::Cold);
+    fn a_recovery_boots_from_a_fresh_snapshot_or_gives_up() {
+        // The newest snapshot of the last day is booted from, or the VM goes cold.
+        {
+            assert_eq!(recovery_decision(NOW, &[], &[]), Recovery::Cold);
 
-        let checkpoints = [
-            snapshot("cp-a", NOW - 5 * HOUR),
-            snapshot("cp-b", NOW - 2 * HOUR),
-        ];
-        assert_eq!(
-            recovery_decision(NOW, &checkpoints, &[]),
-            Recovery::From("cp-b".to_string()),
-            "the newest checkpoint"
-        );
+            let checkpoints = [
+                snapshot("cp-a", NOW - 5 * HOUR),
+                snapshot("cp-b", NOW - 2 * HOUR),
+            ];
+            assert_eq!(
+                recovery_decision(NOW, &checkpoints, &[]),
+                Recovery::From("cp-b".to_string()),
+                "the newest checkpoint"
+            );
 
-        let sleep_newer = [
-            snapshot("cp-b", NOW - 2 * HOUR),
-            snapshot(snapshots::SLEEP, NOW - HOUR),
-        ];
-        assert_eq!(
-            recovery_decision(NOW, &sleep_newer, &[]),
-            Recovery::From(snapshots::SLEEP.to_string()),
-            "the sleep snapshot, when it is newer"
-        );
+            let sleep_newer = [
+                snapshot("cp-b", NOW - 2 * HOUR),
+                snapshot(snapshots::SLEEP, NOW - HOUR),
+            ];
+            assert_eq!(
+                recovery_decision(NOW, &sleep_newer, &[]),
+                Recovery::From(snapshots::SLEEP.to_string()),
+                "the sleep snapshot, when it is newer"
+            );
 
-        let sleep_older = [
-            snapshot(snapshots::SLEEP, NOW - 3 * HOUR),
-            snapshot("cp-b", NOW - 2 * HOUR),
-        ];
-        assert_eq!(
-            recovery_decision(NOW, &sleep_older, &[]),
-            Recovery::From("cp-b".to_string()),
-            "a checkpoint newer than the sleep snapshot"
-        );
+            let sleep_older = [
+                snapshot(snapshots::SLEEP, NOW - 3 * HOUR),
+                snapshot("cp-b", NOW - 2 * HOUR),
+            ];
+            assert_eq!(
+                recovery_decision(NOW, &sleep_older, &[]),
+                Recovery::From("cp-b".to_string()),
+                "a checkpoint newer than the sleep snapshot"
+            );
+        }
+        // A snapshot older than a day is never booted from.
+        {
+            let stale = [snapshot("cp-stale", NOW - 25 * HOUR)];
+            assert_eq!(recovery_decision(NOW, &stale, &[]), Recovery::Cold);
+
+            let mixed = [
+                snapshot("cp-stale", NOW - 30 * HOUR),
+                snapshot("cp-day", NOW - 24 * HOUR),
+            ];
+            assert_eq!(
+                recovery_decision(NOW, &mixed, &[]),
+                Recovery::From("cp-day".to_string()),
+                "a snapshot a day old still counts; the older one does not"
+            );
+        }
+        // A VM recovered three times in ten minutes stays exited.
+        {
+            let views = [snapshot("cp-a", NOW - HOUR)];
+            let from_a = Recovery::From("cp-a".to_string());
+
+            assert_eq!(
+                recovery_decision(NOW, &views, &[NOW - MINUTE, NOW - 5 * MINUTE]),
+                from_a,
+                "two recent recoveries are under the limit"
+            );
+            assert_eq!(
+                recovery_decision(
+                    NOW,
+                    &views,
+                    &[NOW - MINUTE, NOW - 5 * MINUTE, NOW - 9 * MINUTE]
+                ),
+                Recovery::GiveUp,
+                "the third recovery in the window is refused"
+            );
+            assert_eq!(
+                recovery_decision(
+                    NOW,
+                    &[],
+                    &[NOW - MINUTE, NOW - 2 * MINUTE, NOW - 3 * MINUTE]
+                ),
+                Recovery::GiveUp,
+                "the limit holds with no snapshot to boot from too"
+            );
+            assert_eq!(
+                recovery_decision(
+                    NOW,
+                    &views,
+                    &[
+                        NOW - MINUTE,
+                        NOW - 2 * MINUTE,
+                        NOW - 11 * MINUTE,
+                        NOW - 12 * MINUTE
+                    ]
+                ),
+                from_a,
+                "recoveries older than ten minutes do not count"
+            );
+        }
     }
 
     #[test]
@@ -4064,66 +4127,6 @@ mod tests {
             recovery_decision(NOW, &views, &[]),
             Recovery::From("cp-mem".to_string()),
             "the newest checkpoint with memory, past a newer disk-only one"
-        );
-    }
-
-    #[test]
-    fn a_snapshot_older_than_a_day_is_never_booted_from() {
-        let stale = [snapshot("cp-stale", NOW - 25 * HOUR)];
-        assert_eq!(recovery_decision(NOW, &stale, &[]), Recovery::Cold);
-
-        let mixed = [
-            snapshot("cp-stale", NOW - 30 * HOUR),
-            snapshot("cp-day", NOW - 24 * HOUR),
-        ];
-        assert_eq!(
-            recovery_decision(NOW, &mixed, &[]),
-            Recovery::From("cp-day".to_string()),
-            "a snapshot a day old still counts; the older one does not"
-        );
-    }
-
-    #[test]
-    fn a_vm_recovered_three_times_in_ten_minutes_stays_exited() {
-        let views = [snapshot("cp-a", NOW - HOUR)];
-        let from_a = Recovery::From("cp-a".to_string());
-
-        assert_eq!(
-            recovery_decision(NOW, &views, &[NOW - MINUTE, NOW - 5 * MINUTE]),
-            from_a,
-            "two recent recoveries are under the limit"
-        );
-        assert_eq!(
-            recovery_decision(
-                NOW,
-                &views,
-                &[NOW - MINUTE, NOW - 5 * MINUTE, NOW - 9 * MINUTE]
-            ),
-            Recovery::GiveUp,
-            "the third recovery in the window is refused"
-        );
-        assert_eq!(
-            recovery_decision(
-                NOW,
-                &[],
-                &[NOW - MINUTE, NOW - 2 * MINUTE, NOW - 3 * MINUTE]
-            ),
-            Recovery::GiveUp,
-            "the limit holds with no snapshot to boot from too"
-        );
-        assert_eq!(
-            recovery_decision(
-                NOW,
-                &views,
-                &[
-                    NOW - MINUTE,
-                    NOW - 2 * MINUTE,
-                    NOW - 11 * MINUTE,
-                    NOW - 12 * MINUTE
-                ]
-            ),
-            from_a,
-            "recoveries older than ten minutes do not count"
         );
     }
 
@@ -4241,195 +4244,13 @@ mod tests {
 
     #[test]
     fn a_create_request_is_range_checked_before_a_run_exists() {
-        let request = |n: u32, vcpus: u32, memory_mib: u32| CreateRun {
-            n,
-            vcpus,
-            memory_mib,
-            beats: None,
-            vsock_cid: None,
-            role: None,
-            keepalive: None,
-            sandbox: false,
-            balloon_usable_mib: None,
-            volumes: Vec::new(),
-        };
-
-        let (vms, named) = request(2, 2, 512)
-            .checked()
-            .expect("a request inside the ranges");
-        assert_eq!(vms, 2);
-        assert_eq!(named, None, "no CID was named, so the node allocates one");
-
-        for bad in [
-            request(0, 1, 128),
-            request(65, 1, 128),
-            request(1, 0, 128),
-            request(1, 65, 128),
-            request(1, 1, 127),
-        ] {
-            assert!(bad.checked().is_err(), "should be refused: {bad:?}");
-        }
-
-        let edges = [
-            request(1, 1, 128),
-            request(64, 64, 128),
-            request(1, 1, u32::MAX),
-        ];
-        for edge in edges {
-            assert!(edge.checked().is_ok(), "should be allowed: {edge:?}");
-        }
-    }
-
-    #[test]
-    fn vsock_cid_is_range_checked_before_a_run_exists() {
-        let request = |vsock_cid: Option<u64>| CreateRun {
-            n: 2,
-            vcpus: 1,
-            memory_mib: 128,
-            beats: None,
-            vsock_cid,
-            role: None,
-            keepalive: None,
-            sandbox: false,
-            balloon_usable_mib: None,
-            volumes: Vec::new(),
-        };
-
-        // A CID inside the valid range is accepted, base + n - 1 included.
-        assert_eq!(request(Some(3)).checked().expect("a valid CID").1, Some(3));
-        assert_eq!(
-            request(Some(MAX_GUEST_CID - 1))
-                .checked()
-                .expect("a valid CID")
-                .1,
-            Some(MAX_GUEST_CID - 1)
-        );
-
-        // The kernel refuses VMADDR_CID_ANY (u32::MAX) and anything above it.
-        assert!(request(Some(u32::MAX as u64)).checked().is_err());
-        assert!(request(Some(u64::from(u32::MAX) + 1)).checked().is_err());
-
-        // The run's last VM (base + n - 1) must still fit the transport.
-        assert!(request(Some(MAX_GUEST_CID)).checked().is_err());
-
-        // A CID the caller names is kept, not replaced by an allocation.
-        assert_eq!(
-            request(Some(RUN_CID_BASE)).checked().expect("in range").1,
-            Some(RUN_CID_BASE)
-        );
-    }
-
-    /// The book hands out the first free span of the run range, one span per
-    /// run, and gives a released span back.
-    #[test]
-    fn an_allocation_takes_the_first_free_span_and_gives_it_back() {
-        let book = CidBook::default();
-        assert_eq!(
-            book.allocate("r1", 1).expect("the range is empty"),
-            RUN_CID_BASE
-        );
-        assert_eq!(
-            book.allocate("r2", 1).expect("the next span is free"),
-            RUN_CID_BASE + 1
-        );
-        let span = book.allocate("r3", 3).expect("three more are free");
-        assert_eq!(span, RUN_CID_BASE + 2);
-        assert_eq!(busy(&book.held()).len(), 5, "three runs, five CIDs");
-
-        // Releasing gives exactly that run's span back: the next allocation
-        // reuses the hole, not the tail.
-        assert!(book.release("r1"));
-        assert_eq!(
-            book.allocate("r4", 1).expect("the hole is free"),
-            RUN_CID_BASE
-        );
-        assert!(!book.release("r1"), "release is idempotent");
-
-        // Every live run's span is its own: no two allocations overlap.
-        let held = book.held();
-        let mut all: Vec<u64> = held
-            .iter()
-            .flat_map(|(_, cids)| cids.iter().copied())
-            .collect();
-        let count = all.len();
-        all.sort_unstable();
-        all.dedup();
-        assert_eq!(
-            all.len(),
-            count,
-            "two runs were given the same CID: {held:?}"
-        );
-    }
-
-    /// A span the caller pinned is never allocated to another run: the
-    /// caller's choice wins, and the allocator works around it.
-    #[test]
-    fn a_pinned_span_is_never_allocated() {
-        let book = CidBook::default();
-        book.hold("pinned", cid_span(RUN_CID_BASE, 2));
-        assert_eq!(
-            book.allocate("r1", 1).expect("room above the pinned span"),
-            RUN_CID_BASE + 2
-        );
-        // A pinned span *outside* the run range costs the allocator nothing.
-        book.hold("elsewhere", cid_span(crate::DEFAULT_AGENTS_CID_BASE, 3));
-        assert_eq!(
-            book.allocate("r2", 1).expect("the range is still free"),
-            RUN_CID_BASE + 3
-        );
-    }
-
-    /// Exhaustion is a refusal that names the range and every busy CID, not a
-    /// span quietly handed out twice.
-    #[test]
-    fn a_full_range_refuses_the_next_allocation_and_names_it() {
-        let book = CidBook::default();
-        let width = u32::try_from(RUN_CID_END - RUN_CID_BASE + 1).expect("the range fits");
-        for index in 0..width {
-            book.allocate(&format!("r{index}"), 1)
-                .expect("every CID of the range is free at the start");
-        }
-        let refused = book.allocate("late", 1).expect_err("the range is full");
-        assert!(
-            refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")),
-            "{refused}"
-        );
-        assert!(
-            refused.contains(&format!("in use: {RUN_CID_BASE}, ")),
-            "{refused}"
-        );
-        assert!(refused.contains(&format!(", {RUN_CID_END}")), "{refused}");
-
-        // A span wider than the whole range is refused the same way, and a
-        // released CID makes room for it again.
-        assert!(book.allocate("wide", width + 1).is_err());
-        assert!(book.release("r0"));
-        assert_eq!(
-            book.allocate("late", 1).expect("the hole is free"),
-            RUN_CID_BASE
-        );
-    }
-
-    /// A create that cannot prepare its workspace copies is refused with no
-    /// run - and, because it had already reserved a span, with those CIDs back
-    /// in the book: a request that never became a run holds nothing.
-    #[test]
-    fn a_boot_that_never_registers_a_run_holds_no_cids() {
-        let dir = scratch("cid-unbooted");
-        let images = VmImages {
-            kernel: PathBuf::from("no-such-kernel"),
-            initrd: PathBuf::from("no-such-initrd"),
-            // A base image that is not there: `materialize_workspaces` fails,
-            // so the run is never registered.
-            workspace: Some(dir.join("no-such-base.ext4")),
-        };
-        let registry = Registry::new(images, dir.join("uds"), EventBus::new());
-
-        let refused = registry
-            .create_run(&CreateRun {
-                n: 2,
-                vcpus: 1,
-                memory_mib: MIN_MEMORY_MIB,
+        // A create request is range-checked: the range edges are allowed, anything
+        // outside is refused, and an unnamed CID is allocated by the node.
+        {
+            let request = |n: u32, vcpus: u32, memory_mib: u32| CreateRun {
+                n,
+                vcpus,
+                memory_mib,
                 beats: None,
                 vsock_cid: None,
                 role: None,
@@ -4437,24 +4258,237 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
-            })
-            .err()
-            .expect("the workspace copies cannot be prepared");
-        assert!(
-            refused.contains("cannot prepare the run's workspace images"),
-            "{refused}"
-        );
-        assert!(
-            registry.list().is_empty(),
-            "a refused create left a run behind"
-        );
-        assert!(
-            busy(&registry.cids.held()).is_empty(),
-            "a create that never became a run kept its CIDs: {:?}",
-            registry.cids.held()
-        );
+            };
 
-        std::fs::remove_dir_all(&dir).expect("cleanup");
+            let (vms, named) = request(2, 2, 512)
+                .checked()
+                .expect("a request inside the ranges");
+            assert_eq!(vms, 2);
+            assert_eq!(named, None, "no CID was named, so the node allocates one");
+
+            for bad in [
+                request(0, 1, 128),
+                request(65, 1, 128),
+                request(1, 0, 128),
+                request(1, 65, 128),
+                request(1, 1, 127),
+            ] {
+                assert!(bad.checked().is_err(), "should be refused: {bad:?}");
+            }
+
+            let edges = [
+                request(1, 1, 128),
+                request(64, 64, 128),
+                request(1, 1, u32::MAX),
+            ];
+            for edge in edges {
+                assert!(edge.checked().is_ok(), "should be allowed: {edge:?}");
+            }
+        }
+        // A vsock CID is range-checked before a run exists.
+        {
+            let request = |vsock_cid: Option<u64>| CreateRun {
+                n: 2,
+                vcpus: 1,
+                memory_mib: 128,
+                beats: None,
+                vsock_cid,
+                role: None,
+                keepalive: None,
+                sandbox: false,
+                balloon_usable_mib: None,
+                volumes: Vec::new(),
+            };
+
+            // A CID inside the valid range is accepted, base + n - 1 included.
+            assert_eq!(request(Some(3)).checked().expect("a valid CID").1, Some(3));
+            assert_eq!(
+                request(Some(MAX_GUEST_CID - 1))
+                    .checked()
+                    .expect("a valid CID")
+                    .1,
+                Some(MAX_GUEST_CID - 1)
+            );
+
+            // The kernel refuses VMADDR_CID_ANY (u32::MAX) and anything above it.
+            assert!(request(Some(u32::MAX as u64)).checked().is_err());
+            assert!(request(Some(u64::from(u32::MAX) + 1)).checked().is_err());
+
+            // The run's last VM (base + n - 1) must still fit the transport.
+            assert!(request(Some(MAX_GUEST_CID)).checked().is_err());
+
+            // A CID the caller names is kept, not replaced by an allocation.
+            assert_eq!(
+                request(Some(RUN_CID_BASE)).checked().expect("in range").1,
+                Some(RUN_CID_BASE)
+            );
+        }
+    }
+
+    #[test]
+    fn the_cid_book_allocates_releases_and_refuses_when_full() {
+        // The book hands out the first free span of the run range, one span per
+        // run, and gives a released span back.
+        {
+            let book = CidBook::default();
+            assert_eq!(
+                book.allocate("r1", 1).expect("the range is empty"),
+                RUN_CID_BASE
+            );
+            assert_eq!(
+                book.allocate("r2", 1).expect("the next span is free"),
+                RUN_CID_BASE + 1
+            );
+            let span = book.allocate("r3", 3).expect("three more are free");
+            assert_eq!(span, RUN_CID_BASE + 2);
+            assert_eq!(busy(&book.held()).len(), 5, "three runs, five CIDs");
+
+            // Releasing gives exactly that run's span back: the next allocation
+            // reuses the hole, not the tail.
+            assert!(book.release("r1"));
+            assert_eq!(
+                book.allocate("r4", 1).expect("the hole is free"),
+                RUN_CID_BASE
+            );
+            assert!(!book.release("r1"), "release is idempotent");
+
+            // Every live run's span is its own: no two allocations overlap.
+            let held = book.held();
+            let mut all: Vec<u64> = held
+                .iter()
+                .flat_map(|(_, cids)| cids.iter().copied())
+                .collect();
+            let count = all.len();
+            all.sort_unstable();
+            all.dedup();
+            assert_eq!(
+                all.len(),
+                count,
+                "two runs were given the same CID: {held:?}"
+            );
+        }
+        // A span the caller pinned is never allocated to another run: the
+        // caller's choice wins, and the allocator works around it.
+        {
+            let book = CidBook::default();
+            book.hold("pinned", cid_span(RUN_CID_BASE, 2));
+            assert_eq!(
+                book.allocate("r1", 1).expect("room above the pinned span"),
+                RUN_CID_BASE + 2
+            );
+            // A pinned span *outside* the run range costs the allocator nothing.
+            book.hold("elsewhere", cid_span(crate::DEFAULT_AGENTS_CID_BASE, 3));
+            assert_eq!(
+                book.allocate("r2", 1).expect("the range is still free"),
+                RUN_CID_BASE + 3
+            );
+        }
+        // Exhaustion is a refusal that names the range and every busy CID, not a
+        // span quietly handed out twice.
+        {
+            let book = CidBook::default();
+            let width = u32::try_from(RUN_CID_END - RUN_CID_BASE + 1).expect("the range fits");
+            for index in 0..width {
+                book.allocate(&format!("r{index}"), 1)
+                    .expect("every CID of the range is free at the start");
+            }
+            let refused = book.allocate("late", 1).expect_err("the range is full");
+            assert!(
+                refused.contains(&format!("{RUN_CID_BASE}..={RUN_CID_END}")),
+                "{refused}"
+            );
+            assert!(
+                refused.contains(&format!("in use: {RUN_CID_BASE}, ")),
+                "{refused}"
+            );
+            assert!(refused.contains(&format!(", {RUN_CID_END}")), "{refused}");
+
+            // A span wider than the whole range is refused the same way, and a
+            // released CID makes room for it again.
+            assert!(book.allocate("wide", width + 1).is_err());
+            assert!(book.release("r0"));
+            assert_eq!(
+                book.allocate("late", 1).expect("the hole is free"),
+                RUN_CID_BASE
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_registers_or_ends_gives_its_cids_back() {
+        // A create that cannot prepare its workspace copies is refused with no
+        // run - and, because it had already reserved a span, with those CIDs back
+        // in the book: a request that never became a run holds nothing.
+        {
+            let dir = scratch("cid-unbooted");
+            let images = VmImages {
+                kernel: PathBuf::from("no-such-kernel"),
+                initrd: PathBuf::from("no-such-initrd"),
+                // A base image that is not there: `materialize_workspaces` fails,
+                // so the run is never registered.
+                workspace: Some(dir.join("no-such-base.ext4")),
+            };
+            let registry = Registry::new(images, dir.join("uds"), EventBus::new());
+
+            let refused = registry
+                .create_run(&CreateRun {
+                    n: 2,
+                    vcpus: 1,
+                    memory_mib: MIN_MEMORY_MIB,
+                    beats: None,
+                    vsock_cid: None,
+                    role: None,
+                    keepalive: None,
+                    sandbox: false,
+                    balloon_usable_mib: None,
+                    volumes: Vec::new(),
+                })
+                .err()
+                .expect("the workspace copies cannot be prepared");
+            assert!(
+                refused.contains("cannot prepare the run's workspace images"),
+                "{refused}"
+            );
+            assert!(
+                registry.list().is_empty(),
+                "a refused create left a run behind"
+            );
+            assert!(
+                busy(&registry.cids.held()).is_empty(),
+                "a create that never became a run kept its CIDs: {:?}",
+                registry.cids.held()
+            );
+
+            std::fs::remove_dir_all(&dir).expect("cleanup");
+        }
+        // A run that ends - here, a boot that fails, which the tests can produce
+        // without a hypervisor - gives its CIDs back, so the next run draws the
+        // same span instead of the range leaking a span per attempt.
+        {
+            let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
+            for _ in 0..3 {
+                let run = registry
+                    .create_run(&CreateRun {
+                        n: 2,
+                        vcpus: 1,
+                        memory_mib: MIN_MEMORY_MIB,
+                        beats: None,
+                        vsock_cid: None,
+                        role: None,
+                        keepalive: None,
+                        sandbox: false,
+                        balloon_usable_mib: None,
+                        volumes: Vec::new(),
+                    })
+                    .expect("the run exists even when its VMs cannot boot");
+                assert_eq!(run.view(Detail::Summary).state, "failed");
+                // The failed boot released the span: the book is empty again.
+                assert!(
+                    busy(&registry.cids.held()).is_empty(),
+                    "a failed run kept its CIDs"
+                );
+            }
+        }
     }
 
     /// A run whose create request cannot get CIDs is refused *before* anything
@@ -4531,36 +4565,6 @@ mod tests {
             .expect("a pinned run does not need the run range");
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
-    }
-
-    /// A run that ends - here, a boot that fails, which the tests can produce
-    /// without a hypervisor - gives its CIDs back, so the next run draws the
-    /// same span instead of the range leaking a span per attempt.
-    #[test]
-    fn a_finished_run_gives_its_cids_back() {
-        let registry = Registry::new(images(), PathBuf::from("uds"), EventBus::new());
-        for _ in 0..3 {
-            let run = registry
-                .create_run(&CreateRun {
-                    n: 2,
-                    vcpus: 1,
-                    memory_mib: MIN_MEMORY_MIB,
-                    beats: None,
-                    vsock_cid: None,
-                    role: None,
-                    keepalive: None,
-                    sandbox: false,
-                    balloon_usable_mib: None,
-                    volumes: Vec::new(),
-                })
-                .expect("the run exists even when its VMs cannot boot");
-            assert_eq!(run.view(Detail::Summary).state, "failed");
-            // The failed boot released the span: the book is empty again.
-            assert!(
-                busy(&registry.cids.held()).is_empty(),
-                "a failed run kept its CIDs"
-            );
-        }
     }
 
     /// A run that ends by itself, or is killed, gives its CIDs back exactly
@@ -4742,69 +4746,70 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_operations_are_refused_on_a_node_with_no_snapshot_dir() {
-        let (registry, _run) = registry_with_run(VmState::Running, None);
-        let none = Some(VmOpError::NoSnapshots);
-        assert_eq!(registry.checkpoints("r1", 0).err(), none);
-        assert_eq!(registry.checkpoint_vm("r1", 0, "x", true).err(), none);
-        assert_eq!(registry.sleep_vm("r1", 0, true).err(), none);
-        assert_eq!(registry.wake_vm("r1", 0, false).err(), none);
-        assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
-        assert_eq!(registry.delete_checkpoint("r1", 0, "cp-1").err(), none);
-        assert_eq!(registry.fork_vm("r1", 0, 2, None).err(), none);
-    }
-
-    #[test]
-    fn a_snapshot_operation_on_an_unknown_run_vm_or_checkpoint_is_a_404() {
-        let dir = scratch("unknown");
-        let (registry, _run) =
-            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
-        assert_eq!(
-            registry.pause_vm("r9", 0).err(),
-            Some(VmOpError::UnknownRun)
-        );
-        assert_eq!(
-            registry.sleep_vm("r1", 3, true).err(),
-            Some(VmOpError::UnknownVm(3))
-        );
-        let missing = VmOpError::UnknownCheckpoint("cp-1-nope".into());
-        assert_eq!(missing.status(), 404);
-        assert_eq!(
-            registry.restore_checkpoint("r1", 0, "cp-1-nope").err(),
-            Some(missing.clone())
-        );
-        assert_eq!(
-            registry.delete_checkpoint("r1", 0, "cp-1-nope").err(),
-            Some(missing)
-        );
-        assert_eq!(
-            registry.restore_checkpoint("r1", 0, "sleep").err(),
-            Some(VmOpError::UnknownCheckpoint("sleep".into()))
-        );
-        assert_eq!(registry.checkpoints("r1", 0).ok(), Some(Vec::new()));
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_fork_count_out_of_range_is_a_400_and_takes_no_checkpoint() {
-        let dir = scratch("fork-count");
-        let (registry, _run) =
-            registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
-        for n in [0, MAX_FORKS + 1] {
-            let refused = registry
-                .fork_vm("r1", 0, n, None)
-                .err()
-                .expect("out of range");
-            assert_eq!(refused.status(), 400);
+    fn snapshot_operations_are_refused_with_their_reason() {
+        // A node with no snapshot dir refuses every snapshot operation.
+        {
+            let (registry, _run) = registry_with_run(VmState::Running, None);
+            let none = Some(VmOpError::NoSnapshots);
+            assert_eq!(registry.checkpoints("r1", 0).err(), none);
+            assert_eq!(registry.checkpoint_vm("r1", 0, "x", true).err(), none);
+            assert_eq!(registry.sleep_vm("r1", 0, true).err(), none);
+            assert_eq!(registry.wake_vm("r1", 0, false).err(), none);
+            assert_eq!(registry.restore_checkpoint("r1", 0, "cp-1").err(), none);
+            assert_eq!(registry.delete_checkpoint("r1", 0, "cp-1").err(), none);
+            assert_eq!(registry.fork_vm("r1", 0, 2, None).err(), none);
         }
-        assert!(
-            registry
-                .checkpoints("r1", 0)
-                .ok()
-                .unwrap_or_default()
-                .is_empty()
-        );
-        let _ = fs::remove_dir_all(dir);
+        // An unknown run, VM or checkpoint is a 404.
+        {
+            let dir = scratch("unknown");
+            let (registry, _run) =
+                registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+            assert_eq!(
+                registry.pause_vm("r9", 0).err(),
+                Some(VmOpError::UnknownRun)
+            );
+            assert_eq!(
+                registry.sleep_vm("r1", 3, true).err(),
+                Some(VmOpError::UnknownVm(3))
+            );
+            let missing = VmOpError::UnknownCheckpoint("cp-1-nope".into());
+            assert_eq!(missing.status(), 404);
+            assert_eq!(
+                registry.restore_checkpoint("r1", 0, "cp-1-nope").err(),
+                Some(missing.clone())
+            );
+            assert_eq!(
+                registry.delete_checkpoint("r1", 0, "cp-1-nope").err(),
+                Some(missing)
+            );
+            assert_eq!(
+                registry.restore_checkpoint("r1", 0, "sleep").err(),
+                Some(VmOpError::UnknownCheckpoint("sleep".into()))
+            );
+            assert_eq!(registry.checkpoints("r1", 0).ok(), Some(Vec::new()));
+            let _ = fs::remove_dir_all(dir);
+        }
+        // A fork count out of range is a 400, and takes no checkpoint.
+        {
+            let dir = scratch("fork-count");
+            let (registry, _run) =
+                registry_with_run(VmState::Running, Some(SnapshotStore::new(dir.clone())));
+            for n in [0, MAX_FORKS + 1] {
+                let refused = registry
+                    .fork_vm("r1", 0, n, None)
+                    .err()
+                    .expect("out of range");
+                assert_eq!(refused.status(), 400);
+            }
+            assert!(
+                registry
+                    .checkpoints("r1", 0)
+                    .ok()
+                    .unwrap_or_default()
+                    .is_empty()
+            );
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
