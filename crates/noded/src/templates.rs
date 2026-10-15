@@ -675,7 +675,9 @@ mod tests {
     fn builds_a_template_from_the_guest() {
         let guest = Path::new("/mnt/fast/AgentPlaza/target/guest");
         let kernel = guest.join("x86_64/vmlinux");
-        let initrd = guest.join("x86_64/initrd.gz");
+        // The initrd must carry a harness with template mode (APZ_TEMPLATE_INITRD names a fresh one).
+        let initrd = std::env::var_os("APZ_TEMPLATE_INITRD")
+            .map_or_else(|| guest.join("x86_64/initrd.gz"), std::path::PathBuf::from);
         let workspace = guest.join("workspace.ext4");
         if ![&kernel, &initrd, &workspace]
             .iter()
@@ -693,7 +695,7 @@ mod tests {
             vcpus: 1,
             memory_mib: 512,
             balloon: None,
-            cmdline: "console=ttyS0 loglevel=4 plaza.role=workstation".to_string(),
+            cmdline: "console=ttyS0 plaza.role=builder plaza.keepalive=1 plaza.vm=0".to_string(),
         };
         let started = Instant::now();
         let template = templates.get_or_build(&shape).expect("build the template");
@@ -709,5 +711,35 @@ mod tests {
         assert_eq!(templates.get_or_build(&shape).expect("reuse"), template);
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(templates.list().len(), 1);
+
+        // A VM restored from the template answers its console at once.
+        let workspace = dir.join("agent.ext4");
+        vmm::clonefile::clone_file(&template.workspace, &workspace).expect("clone the disk");
+        let restored_at = Instant::now();
+        let mut vm = vmm::spawner::spawn(vmm::spawner::VmSpec {
+            kernel: shape.kernel.clone(),
+            cmdline: shape.cmdline.clone(),
+            vcpus: shape.vcpus,
+            memory_mib: shape.memory_mib,
+            workspace: Some(workspace),
+            vsock: Some(vmm::spawner::VsockConfig {
+                guest_cid: 44,
+                uds_path: dir.join("a"),
+            }),
+            restore: Some(template.snapshot.clone()),
+            ..vmm::spawner::VmSpec::default()
+        })
+        .expect("restore from the template");
+        vm.serial_input(b"echo from-template\n").expect("input");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !vm.serial().contains("from-template") {
+            assert!(Instant::now() < deadline, "no answer:\n{}", vm.serial());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        eprintln!(
+            "a VM restored from the template answered after {:?}",
+            restored_at.elapsed()
+        );
+        vm.kill().expect("kill");
     }
 }
