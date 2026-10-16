@@ -267,6 +267,9 @@ struct Side {
     tls: Mutex<Connection>,
     queue: Sender<Out>,
     waiting: AtomicUsize,
+    /// This endpoint closed its end (EOF or its close_notify). A write that then fails is the echo of
+    /// that close, not a failure of the connection.
+    peer_closed: AtomicBool,
 }
 
 impl Side {
@@ -276,6 +279,7 @@ impl Side {
             tls: Mutex::new(tls),
             queue,
             waiting: AtomicUsize::new(0),
+            peer_closed: AtomicBool::new(false),
         };
         (side, rx)
     }
@@ -345,6 +349,15 @@ impl Side {
     }
 }
 
+/// Whether a write error is the peer having hung up (its socket closed or reset).
+fn is_hang_up(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, NotConnected};
+    matches!(
+        err.kind(),
+        BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected
+    )
+}
+
 /// Ends one side's TLS stream: close_notify, then the writer hangs up once it has written what came
 /// before. Used when the other end closed cleanly.
 fn finish(side: &Side) {
@@ -363,7 +376,11 @@ fn write_loop(mut socket: impl Write, queue: Receiver<Out>, side: &Side, link: &
                 let written = socket.write_all(&bytes);
                 side.waiting.fetch_sub(bytes.len(), Ordering::SeqCst);
                 if let Err(err) = written {
-                    link.fail(format!("the {which} socket write failed: {err}"));
+                    // A peer that closed first (the guest dropping its connection after its last
+                    // response, then our close_notify reaching it) is a clean end.
+                    if !(side.peer_closed.load(Ordering::SeqCst) && is_hang_up(&err)) {
+                        link.fail(format!("the {which} socket write failed: {err}"));
+                    }
                     break;
                 }
             }
@@ -399,7 +416,10 @@ fn guest_read_loop(
             return;
         }
         match raw.read(&mut buf) {
-            Ok(0) => return,
+            Ok(0) => {
+                side.peer_closed.store(true, Ordering::SeqCst);
+                return;
+            }
             Ok(n) => {
                 last = Instant::now();
                 match side.receive(&buf[..n]) {
@@ -408,6 +428,7 @@ fn guest_read_loop(
                             return;
                         }
                         if closed {
+                            side.peer_closed.store(true, Ordering::SeqCst);
                             return;
                         }
                     }
@@ -444,6 +465,7 @@ fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link)
     loop {
         match raw.read(&mut buf) {
             Ok(0) => {
+                up.peer_closed.store(true, Ordering::SeqCst);
                 finish(guest);
                 return total;
             }
@@ -468,6 +490,7 @@ fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link)
                     }
                 }
                 if closed {
+                    up.peer_closed.store(true, Ordering::SeqCst);
                     finish(guest);
                     return total;
                 }
