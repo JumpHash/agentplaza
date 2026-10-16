@@ -1,6 +1,7 @@
 // A Metrics panel: its card (title, sub, right text, freshness stamp, pinned-from line, the ⋯ menu) and its body,
 // one renderer per body type.
 
+import { narrowTileColumns } from './state';
 import { h, keepState, replace } from '../ui/dom';
 import type { ChartCtx } from './charts';
 import { lineChart, type ChartHandle } from './charts';
@@ -213,7 +214,12 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
     );
   };
 
-  const tilesBody = (tiles: Tile[]): HTMLElement => h('div.mx-tiles', null, tiles.map((t) => tileEl(t)));
+  const tilesBody = (tiles: Tile[]): HTMLElement => {
+    const el = h('div.mx-tiles', null, tiles.map((t) => tileEl(t)));
+    // A narrow panel wraps the tiles into balanced rows (8 → 4 + 4); the desktop's tiles_row does the same.
+    el.style.setProperty('--mx-tile-cols', String(narrowTileColumns(tiles.length)));
+    return el;
+  };
 
   /** Draws the body into the (empty) body host. Figures and charts get their own wrapper. */
   const drawBody = (body: Body): void => {
@@ -333,3 +339,4 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
   fresh(Date.now(), ctx.liveNow);
   return { el: root, update, redraw, fresh, destroy };
 }
+

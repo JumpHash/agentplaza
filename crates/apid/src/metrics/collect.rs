@@ -84,6 +84,15 @@ pub fn tick(m: &Metrics, app: &App, now_ms: u64) {
             SELF_ENTITY,
         ))
         .set(registry_size * BYTES_PER_SERIES / 1e6);
+    // The wake queue by lane, as the hub's own Prometheus page counts it.
+    let (interactive, background) = crate::sleep::queued_by_lane();
+    for (lane, waiting) in [("interactive", interactive), ("background", background)] {
+        m.registry
+            .gauge(
+                SeriesKey::new("hub.wake_queue", EntityKind::Hub, HUB_ENTITY).label("lane", lane),
+            )
+            .set(waiting as f64);
+    }
 
     let samples = m.registry.scrape(now_ms, false);
     ingest::samples(m, &samples, now_ms);

@@ -51,7 +51,7 @@ import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
 import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
 import { appendPage } from '../src/metrics/bodies';
-import { DEFAULT_STATE, LeaseKeeper, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
+import { DEFAULT_STATE, LeaseKeeper, narrowTileColumns, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
 import type { LiveLease, Saved } from '../src/metrics/model';
 
 let failures = 0;
@@ -1716,4 +1716,10 @@ sectionEnd('metrics state tests: ok');
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
   process.exit(1);
+}
+
+// ---- metrics tile rows ------------------------------------------------------
+{
+  eq([1, 3, 4, 5, 6, 7, 8, 9].map(narrowTileColumns), [1, 3, 4, 5, 3, 4, 4, 3], 'tiles: narrow rows are even, as the desktop wraps them');
+  console.log('metrics tile rows tests: ok');
 }

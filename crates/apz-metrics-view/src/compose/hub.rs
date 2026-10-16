@@ -49,6 +49,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
     points.note = series
         .map(|n| format!("≈ {} series", format(Unit::Count, n)))
         .unwrap_or_default();
+    // Two rows of four: the hub's traffic and its wake queue, then its stores and the guests' idle cost.
     let items = vec![
         ctx.tile(
             src,
@@ -80,6 +81,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             Tone::C3,
             tab,
         ),
+        wakes_waiting(ctx, src),
         ctx.tile(
             src,
             "Postgres p95",
@@ -101,8 +103,78 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             Tone::C6,
             tab,
         ),
+        idle_wakeups(ctx, src),
     ];
     panel("tiles", "", "", 12, Body::Tiles { tiles: items })
+}
+
+/// Agent wakes waiting for a worker: the most at any point in the window, with how many wait now in each lane.
+fn wakes_waiting(ctx: &Ctx, src: &dyn Source) -> Tile {
+    let mut tile = ctx.tile(
+        src,
+        "Wakes waiting, peak",
+        "hub.wake_queue",
+        AggFn::Max,
+        Unit::Count,
+        true,
+        Tone::C7,
+        "lifecycle",
+    );
+    let now = src.scalar(
+        "hub.wake_queue",
+        &ctx.q.scope,
+        ctx.to_ms.saturating_sub(60_000),
+        ctx.to_ms,
+        AggFn::Last,
+    );
+    if tile.change_pct.is_none() {
+        tile.note = match now {
+            Some(n) => format!("{} waiting now", format(Unit::Count, n)),
+            None => "the queue is empty".into(),
+        };
+    }
+    tile
+}
+
+/// The guests' idle cost: how often a keepalive session wakes, per open session per minute (vsockd's count, read
+/// by each node). Near one per heartbeat is the floor.
+fn idle_wakeups(ctx: &Ctx, src: &dyn Source) -> Tile {
+    let per_session = |scope: &str, from: u64, to: u64| -> Option<f64> {
+        let wakeups = src.scalar("vsock.session_wakeups", scope, from, to, AggFn::Sum)?;
+        let sessions = src.scalar("vsock.sessions", scope, from, to, AggFn::Avg)?;
+        let minutes = (to - from) as f64 / 60_000.0;
+        (sessions > 0.0 && minutes > 0.0).then(|| wakeups / sessions / minutes)
+    };
+    let now = per_session(&ctx.q.scope, ctx.from_ms, ctx.to_ms);
+    let before = if ctx.comparing() {
+        per_session(&ctx.cmp_scope, ctx.cmp_from_ms, ctx.cmp_to_ms)
+    } else {
+        None
+    };
+    let sessions = src.scalar(
+        "vsock.sessions",
+        &ctx.q.scope,
+        ctx.from_ms,
+        ctx.to_ms,
+        AggFn::Last,
+    );
+    Tile {
+        label: "Idle wake-ups / session·min".into(),
+        value: now
+            .map(|v| format(Unit::Count, v))
+            .unwrap_or_else(|| "—".into()),
+        change_pct: match (now, before) {
+            (Some(a), Some(b)) => crate::compare::change_pct(a, b),
+            _ => None,
+        },
+        up_bad: true,
+        note: sessions
+            .map(|n| format!("{} sessions open", format(Unit::Count, n.round())))
+            .unwrap_or_default(),
+        spark: ctx.spark(src, "vsock.session_wakeups", AggFn::Sum),
+        tone: Tone::C8,
+        tab: Some("hub".into()),
+    }
 }
 
 /// The API routes: requests per minute, latency, error rate and a request sparkline, one row per route family.
@@ -447,7 +519,7 @@ mod tests {
     #[test]
     fn each_hub_panel_is_its_body_kind_or_empty_when_the_source_has_nothing() {
         let view = hub_view();
-        assert!(matches!(body(&view, "tiles"), Body::Tiles { tiles } if tiles.len() == 6));
+        assert!(matches!(body(&view, "tiles"), Body::Tiles { tiles } if tiles.len() == 8));
         assert!(matches!(
             body(&view, "routes"),
             Body::Table(_) | Body::Empty { .. }

@@ -1677,6 +1677,11 @@ impl Server {
         if !internal_token.enabled() {
             println!("noded: no --internal-token-file: the HTTP API takes no token");
         }
+        let vsockd_port = std::env::var("APZ_VSOCKD_HTTP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(19080);
+        collect::point_at_vsockd(vsockd_port, internal_token.header());
         let node = Arc::new(Node::new(config));
         stats::spawn(Arc::clone(&node.stats))?;
         spawn_metrics(Arc::clone(&node));

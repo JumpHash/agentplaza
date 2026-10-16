@@ -334,7 +334,7 @@ fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
 fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg> {
     responsive(move |size: Size| {
         let per_row = if size.width < 1000.0 {
-            3
+            narrow_tile_columns(tiles.len())
         } else {
             tiles.len().max(1)
         };
@@ -351,6 +351,13 @@ fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg
     .width(Length::Fill)
     .height(Length::Shrink)
     .into()
+}
+
+/// The tiles per row once a panel is narrow: rows of about three, as even as they can be (6 → 3 + 3, 7 → 4 + 3,
+/// 8 → 4 + 4, 9 → 3 × 3); five or fewer keep one row. As the web's `narrowTileColumns`.
+fn narrow_tile_columns(count: usize) -> usize {
+    let rows = (count / 3).max(1);
+    count.div_ceil(rows).max(1)
 }
 
 /// One tile: label, big value, change and a sparkline that takes the tile's width. A tile with a tab opens it on a
@@ -747,4 +754,18 @@ fn stats<'a>(list: &'a [StatLine]) -> Element<'a, Msg> {
     .spacing(10)
     .width(Length::Fill)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_tiles_wrap_into_even_rows() {
+        let cols: Vec<usize> = [1, 3, 4, 5, 6, 7, 8, 9]
+            .iter()
+            .map(|&n| narrow_tile_columns(n))
+            .collect();
+        assert_eq!(cols, vec![1, 3, 4, 5, 3, 4, 4, 3]);
+    }
 }

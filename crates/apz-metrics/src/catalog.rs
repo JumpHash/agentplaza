@@ -1035,6 +1035,54 @@ pub const CATALOG: &[MetricDef] = &[
         "Time of each database round trip."
     ),
     m!(
+        "hub.wake_queue",
+        "Wakes waiting",
+        Count,
+        Gauge,
+        Basic,
+        Hub,
+        ["lane"],
+        "the hub's wake queue, read each tick",
+        ATOMIC,
+        "Agent wakes waiting for a worker, by lane (interactive, background)."
+    ),
+    m!(
+        "life.wake_cold",
+        "Cold wakes",
+        Count,
+        Counter,
+        Basic,
+        Node,
+        [],
+        "noded's wake path",
+        ATOMIC,
+        "Wakes that could not restore their snapshot and booted the VM cold instead."
+    ),
+    m!(
+        "vsock.sessions",
+        "Guest sessions",
+        Count,
+        Gauge,
+        Basic,
+        Node,
+        [],
+        "vsockd's /v1/metrics on the node, read each tick",
+        "one loopback request per tick",
+        "Guest sessions open on the node's vsockd."
+    ),
+    m!(
+        "vsock.session_wakeups",
+        "Session wake-ups",
+        Count,
+        Counter,
+        Basic,
+        Node,
+        [],
+        "vsockd's /v1/metrics on the node, read each tick",
+        "one loopback request per tick",
+        "Times the node's keepalive sessions woke up: per open session, the idle cost of an agent."
+    ),
+    m!(
         "hub.pg_in_use",
         "Postgres connections in use",
         Count,

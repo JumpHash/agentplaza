@@ -219,3 +219,10 @@ export class LeaseKeeper {
 
 /** How often a live lease is renewed while the view keeps it. */
 const LEASE_RENEW_MS = 10_000;
+
+/** The tiles per row once a panel is narrow: rows of about three, as even as they can be (6 → 3 + 3, 7 → 4 + 3,
+ * 8 → 4 + 4, 9 → 3 × 3); five or fewer keep one row. The desktop computes the same (`tiles_row`). */
+export function narrowTileColumns(count: number): number {
+  const rows = Math.max(1, Math.floor(count / 3));
+  return Math.max(1, Math.ceil(count / rows));
+}

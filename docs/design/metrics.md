@@ -43,7 +43,7 @@ The tabs, in order, with their groups:
 | Plan | Capacity & forecast |
 | (none) | Events, My dashboard |
 
-The **catalog** (`CATALOG` in `crates/apz-metrics/src/catalog.rs`) defines every metric the plaza records: 100
+The **catalog** (`CATALOG` in `crates/apz-metrics/src/catalog.rs`) defines every metric the plaza records: 104
 definitions. Each has an id (dotted, such as `llm.calls`, `llm.errors` or `llm.ttft_ms`), a title, a unit, a kind
 (counter, gauge or histogram), the lowest collection level that records it, its entity kind, the labels it may carry,
 its source, a note on its cost and a description. Both consoles read the catalog through `GET /v1/metrics/catalog`, and
@@ -54,7 +54,9 @@ The families cover:
 
 - model calls, tokens, cost and time to first token, with the engine that made each call;
 - turn and tool durations and outcomes, and the context each request is made of;
-- lifecycle timings (boot, resume, wake, pause, snapshot, template fork, sandbox create, agent move);
+- lifecycle timings (boot, resume, wake, pause, snapshot, template fork, sandbox create, agent move), the wakes that
+  booted cold, the hub's wake queue by lane, and the guests' idle cost (vsockd's session wake-ups per open session,
+  which each node reads from vsockd's `GET /v1/metrics` on loopback);
 - host, VM, workstation and sandbox CPU, memory, disk, IO and network;
 - agent time by state, the work queue, approvals and law infractions;
 - the hub's API routes, Postgres, event bus, node links and outside services;

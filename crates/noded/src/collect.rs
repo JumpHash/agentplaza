@@ -48,6 +48,91 @@ pub fn sample(node: &Node, m: &NodeMetrics, now_ms: u64) {
     set_pressure(m);
     set_gpus(m);
     set_volumes(m);
+    set_cold_wakes(m);
+    set_vsockd(m);
+}
+
+/// The cold-boot fallbacks counted so far, at the last tick.
+static COLD_WAKES: Mutex<u64> = Mutex::new(0);
+
+/// `life.wake_cold`: the wakes since the last tick that booted cold after a failed restore (the node's Prometheus
+/// counter, `crate::metrics::WAKE_COLD`).
+fn set_cold_wakes(m: &NodeMetrics) {
+    let now = crate::metrics::WAKE_COLD.get();
+    let mut last = lock(&COLD_WAKES);
+    let delta = now.saturating_sub(*last);
+    *last = now;
+    if delta > 0 {
+        m.counter(node_series("life.wake_cold")).add(delta as f64);
+    }
+}
+
+/// Where this host's vsockd serves its HTTP surface, and the token it takes; set once at start.
+static VSOCKD: std::sync::OnceLock<(u16, Option<(&'static str, String)>)> =
+    std::sync::OnceLock::new();
+
+/// Points the collector at the host's vsockd (`APZ_VSOCKD_HTTP_PORT`, default 19080), with the machine's token.
+pub fn point_at_vsockd(port: u16, header: Option<(&'static str, String)>) {
+    let _ = VSOCKD.set((port, header));
+}
+
+/// vsockd's session wake-ups at the last tick.
+static SESSION_WAKEUPS: Mutex<Option<u64>> = Mutex::new(None);
+
+/// `vsock.sessions` and `vsock.session_wakeups` from vsockd's `GET /v1/metrics` on loopback. A host with no vsockd
+/// (or one that does not answer within 300 ms) records nothing.
+fn set_vsockd(m: &NodeMetrics) {
+    let Some((port, header)) = VSOCKD.get() else {
+        return;
+    };
+    let headers: Vec<(&str, &str)> = header.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let Ok(reply) = apz_http::client::send_with(
+        *port,
+        "GET",
+        "/v1/metrics",
+        &headers,
+        None,
+        std::time::Duration::from_millis(300),
+    ) else {
+        return;
+    };
+    if reply.status != 200 {
+        return;
+    }
+    let text = String::from_utf8_lossy(&reply.body);
+    let (sessions, wakeups) = vsockd_numbers(&text);
+    if let Some(sessions) = sessions {
+        m.gauge(node_series("vsock.sessions")).set(sessions);
+    }
+    if let Some(total) = wakeups {
+        let total = total as u64;
+        let mut last = lock(&SESSION_WAKEUPS);
+        if let Some(before) = *last {
+            // A restarted vsockd counts from zero again: that tick adds nothing.
+            if total >= before {
+                m.counter(node_series("vsock.session_wakeups"))
+                    .add((total - before) as f64);
+            }
+        }
+        *last = Some(total);
+    }
+}
+
+/// The open sessions and the session wake-ups in vsockd's Prometheus text.
+fn vsockd_numbers(text: &str) -> (Option<f64>, Option<f64>) {
+    let value = |name: &str| {
+        text.lines().find_map(|line| {
+            line.strip_prefix(name)?
+                .strip_prefix(' ')?
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+    };
+    (
+        value("apz_vsockd_sessions"),
+        value("apz_vsockd_session_wakeups_total"),
+    )
 }
 
 /// The node's VMs: the running count and their guest memory (counted as `GET /v1/machine/stats` counts them), the
@@ -525,6 +610,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsockd_sessions_and_wakeups_are_read_from_its_prometheus_text() {
+        let text = "# HELP apz_vsockd_sessions Guest sessions open\n# TYPE apz_vsockd_sessions gauge\n\
+                    apz_vsockd_sessions 12\napz_vsockd_sessions_refused_total 0\n\
+                    apz_vsockd_session_wakeups_total 4410\n";
+        assert_eq!(vsockd_numbers(text), (Some(12.0), Some(4410.0)));
+        assert_eq!(vsockd_numbers(""), (None, None));
+    }
 
     #[test]
     fn volumes_are_the_sized_mounts_once_each_largest_first() {

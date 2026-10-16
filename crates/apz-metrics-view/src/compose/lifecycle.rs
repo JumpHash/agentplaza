@@ -83,19 +83,27 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Body {
         .events(&ctx.q.scope, ctx.from_ms, ctx.to_ms, &["move"], 500)
         .len();
     moves.note = format!("{move_count} moves");
+    let wakes = src.scalar(
+        "life.wake_ms",
+        &ctx.q.scope,
+        ctx.from_ms,
+        ctx.to_ms,
+        AggFn::Count,
+    );
+    let wake_count = ctx.tile(
+        src,
+        "Wakes",
+        "life.wake_ms",
+        AggFn::Count,
+        Unit::Count,
+        false,
+        Tone::C3,
+        "lifecycle",
+    );
+    // Two rows of four: waking (its time, how many, how many booted cold, the snapshot resume), then the other
+    // operations.
     Body::Tiles {
         tiles: vec![
-            boot_tile(ctx, src),
-            ctx.tile(
-                src,
-                "Resume snapshot",
-                "life.resume_ms",
-                AggFn::P50,
-                Unit::Ms,
-                true,
-                Tone::C2,
-                "lifecycle",
-            ),
             ctx.tile(
                 src,
                 "Wake (sleep → ready)",
@@ -106,6 +114,19 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Body {
                 Tone::C5,
                 "lifecycle",
             ),
+            wake_count,
+            cold_wakes(ctx, src, wakes),
+            ctx.tile(
+                src,
+                "Resume snapshot",
+                "life.resume_ms",
+                AggFn::P50,
+                Unit::Ms,
+                true,
+                Tone::C2,
+                "lifecycle",
+            ),
+            boot_tile(ctx, src),
             ctx.tile(
                 src,
                 "Template fork",
@@ -129,6 +150,39 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Body {
             moves,
         ],
     }
+}
+
+/// The wakes that booted cold because their snapshot would not restore, with their share of all wakes.
+fn cold_wakes(ctx: &Ctx, src: &dyn Source, wakes: Option<f64>) -> Tile {
+    let mut tile = ctx.tile(
+        src,
+        "Cold wakes",
+        "life.wake_cold",
+        AggFn::Sum,
+        Unit::Count,
+        true,
+        Tone::C8,
+        "lifecycle",
+    );
+    let cold = src.scalar(
+        "life.wake_cold",
+        &ctx.q.scope,
+        ctx.from_ms,
+        ctx.to_ms,
+        AggFn::Sum,
+    );
+    if tile.change_pct.is_none() {
+        tile.note = match (cold, wakes) {
+            (Some(c), Some(w)) if c > 0.0 && w > 0.0 => {
+                format!(
+                    "{} of wakes booted cold",
+                    format(Unit::Percent, c / w * 100.0)
+                )
+            }
+            _ => "no wake booted cold".into(),
+        };
+    }
+    tile
 }
 
 /// The boot tile: the median and the p95 of the boot time, joined as "410 ms / 690 ms". The change is the median

@@ -439,6 +439,11 @@ pub fn scalar(
     if values.is_empty() {
         return None;
     }
+    // How many values a distribution holds: the fixture's events of it, a few per leaf an hour.
+    if matches!(agg, AggFn::Count) && matches!(metric.kind, MetricKind::Histogram) {
+        let hours = (to_ms - from_ms) as f64 / 3_600_000.0;
+        return Some((refs.len() as f64 * hours * EVENTS_PER_LEAF_HOUR).round());
+    }
     if is_counter(metric) {
         let total: f64 = values.iter().sum();
         let seconds = (to_ms - from_ms) as f64 / 1000.0;
@@ -455,6 +460,9 @@ pub fn scalar(
     };
     Some(reduce(agg, metric, step, picked))
 }
+
+/// How many values one leaf of a distribution records an hour, for a count of them.
+const EVENTS_PER_LEAF_HOUR: f64 = 4.0;
 
 /// A distribution over a window.
 pub fn hist(f: &Fixture, metric: &str, scope: &str, from_ms: u64, to_ms: u64) -> HistSnapshot {
@@ -572,6 +580,10 @@ fn base_level(id: &str) -> f64 {
         "life.fork_ms" => 3_000.0,
         "life.sandbox_create_ms" => 2_200.0,
         "life.move_ms" => 6_000.0,
+        "life.wake_cold" => 0.002,
+        "hub.wake_queue" => 1.0,
+        "vsock.sessions" => 3.4,
+        "vsock.session_wakeups" => 7.5,
         "hub.http_ms" => 16.5,
         "hub.http_requests" => 240.0,
         "hub.http_errors" => 0.6,
@@ -664,12 +676,19 @@ fn leaf_value(metric: &MetricDef, leaf: &Leaf, t_ms: u64, step_ms: u64) -> f64 {
     let rate = level(metric, leaf, t_ms);
     if is_counter(metric) {
         let amount = rate * step_ms as f64 / MINUTE_MS as f64;
-        // A compaction is a whole event: a step counts whole ones, never a fraction of one.
-        if metric.id == "ctx.compactions" {
+        // A compaction or a cold wake is a whole event: a step counts whole ones, never a fraction of one.
+        if metric.id == "life.wake_cold" {
+            // Rare: a step holds one with the chance of its expected amount.
+            let n = noise(&format!("cold|{}", leaf.key), t_ms / step_ms.max(1));
+            if n < amount { 1.0 } else { 0.0 }
+        } else if metric.id == "ctx.compactions" {
             amount.round()
         } else {
             amount
         }
+    } else if matches!(metric.id, "hub.wake_queue" | "vsock.sessions") {
+        // Things waiting and sessions open are whole.
+        rate.round()
     } else {
         rate
     }
