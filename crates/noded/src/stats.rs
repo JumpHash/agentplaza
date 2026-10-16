@@ -358,6 +358,7 @@ fn total_jiffies(line: &str) -> Option<u64> {
 
 /// The busy share, in percent, between two `cpu` lines of `/proc/stat`. `None`
 /// when a line does not parse, the counters went backwards, or no time passed.
+#[cfg(target_os = "linux")]
 pub fn cpu_percent(before: &str, after: &str) -> Option<f64> {
     let (before, after) = (parse_cpu_line(before)?, parse_cpu_line(after)?);
     let total = after.total.checked_sub(before.total)?;
@@ -577,6 +578,7 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cpu_percent_is_the_busy_share_of_the_delta() {
         // user nice system idle iowait irq softirq steal (guest fields ignored)
