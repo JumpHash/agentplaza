@@ -74,7 +74,7 @@ def _agent_lab(ctx, roles: list[str], tag: str, extra_cids: list[int] | None = N
         noded_args=["--snapshot-dir", str(snapshots)],
     )
     # noded boots the whole role fleet before it serves: allow for each agent's boot.
-    lab.start_deadline_s = apz.START_DEADLINE_S + 2.0 * len(roles)
+    lab.start_deadline_s = apz.START_DEADLINE_S + 4.0 * len(roles)
     return lab
 
 
