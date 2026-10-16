@@ -80,7 +80,16 @@ export interface Panel {
   metric?: string;
   live: boolean;
   pinned?: PinRef;
+  /** Buttons in the panel's head. Omitted when there are none. */
+  actions?: PanelAction[];
   body: Body;
+}
+
+/** A head button: the console posts to `post` with no body, toasts `done`, then loads the view again. */
+export interface PanelAction {
+  label: string;
+  post: string;
+  done: string;
 }
 
 export interface PinRef {
@@ -168,7 +177,8 @@ export interface Heatmap {
 export interface TreeItem { name: string; value: number; tone: Tone }
 export interface GaugeItem { frac: number; label: string; sub: string; status: Status }
 
-export interface Table { columns: Column[]; rows: Row[]; empty: string }
+/** `more` is the GET route that answers the next page as a Table; omitted or null when there are no older rows. */
+export interface Table { columns: Column[]; rows: Row[]; empty: string; more?: string | null }
 export interface Column { head: string; num: boolean }
 export interface Row { cells: Cell[]; scope?: string; tab?: string; trace?: string; selected: boolean }
 

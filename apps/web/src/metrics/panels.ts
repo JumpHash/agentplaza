@@ -7,8 +7,9 @@ import { lineChart, type ChartHandle } from './charts';
 import { gauges, heatmap, spark, swimlanes, treemap, type FigureHandle } from './figures';
 import { alerts, events, rules, traces } from './bodies-ops';
 import { bars, flags, split, stats, table } from './bodies';
+import { button } from '../ui/components';
 import { menu, type MenuItem } from './overlays';
-import { statusVar, type Body, type HealthItem, type Panel, type Tile } from './model';
+import { statusVar, type Body, type HealthItem, type Panel, type PanelAction, type Table, type Tile } from './model';
 
 /** What a panel can ask the view to do. */
 export interface PanelCtx extends ChartCtx {
@@ -21,8 +22,10 @@ export interface PanelCtx extends ChartCtx {
   ack(rule: string, subject: string): void;
   toggleRule(id: string, on: boolean): void;
   newRule(): void;
-  /** "Load older" in a call log. */
-  older(panelId: string): void;
+  /** A head button: the hub's POST, then a toast and a reload of the view. */
+  action(a: PanelAction): void;
+  /** The next page of a table, from its `more` route. The table appends its rows and keeps the page's own `more`. */
+  page(path: string): Promise<Table>;
   /** The panel menu's actions. */
   pin(p: Panel): void;
   isPinned(p: Panel): boolean;
@@ -43,6 +46,11 @@ export interface PanelHandle {
   /** Updates the freshness stamp. */
   fresh(lastMs: number, live: boolean): void;
   destroy(): void;
+}
+
+/** A small button in a panel's head. It runs the hub's action; the view toasts and reloads. */
+function headAction(a: PanelAction, ctx: PanelCtx): HTMLButtonElement {
+  return button(a.label, () => ctx.action(a), { size: 'sm' });
 }
 
 /** The panel's card, spanning `p.span` twelfths of the grid. */
@@ -139,6 +147,7 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
         null,
         h('span.mx-ttl', null, current.title),
         current.right ? h('small', null, current.right) : null,
+        current.actions?.length ? h('span.mx-head-actions', null, current.actions.map((a) => headAction(a, ctx))) : null,
         current.live ? freshEl : null,
         pmBtn,
       ),

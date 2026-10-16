@@ -11,9 +11,8 @@ import type { LawInfo, Settings } from '../src/api';
 import { approvalPath } from '../src/api';
 import { checkRetention, clampQuery, mergeNewest, mergeOlder, spanOf } from '../src/views/conversations';
 import { level, membersOf, parentOf, trailOf } from '../src/views/society';
-import type { Bond, Conversation, PriceRates, SocietyAgent, UsageCall } from '../src/api';
+import type { Bond, Conversation, SocietyAgent } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
-import { cacheSaving, fixtureCalls, ledgerSeries, ledgerSummary, mergeCalls, pageCalls, rankGroups, areaData, totalsOf, windowOf } from '../src/views/usage';
 import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,6 +50,7 @@ import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.j
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
 import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
+import { appendPage } from '../src/metrics/bodies';
 import { DEFAULT_STATE, LeaseKeeper, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
 import type { LiveLease, Saved } from '../src/metrics/model';
 
@@ -226,54 +226,6 @@ eq(resample([4], 2), [4, 4], 'resample: one value repeats');
 eq(tweenArray([0, 10], [10, 0], 0.5), [5, 5], 'tween: halfway between aligned arrays');
 eq(tweenArray([1], [1, 3], 1), [1, 3], 'tween: a missing entry counts as zero');
 eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
-
-// Usage: the ledger's sums, the series buckets, the paging rule and the cache saving.
-const call = (id: number, at: number, over: Partial<UsageCall> = {}): UsageCall => ({
-  id, at_ms: at, cid: 1, role: 'builder', model: 'm/a', provider: 'p', input: 100, output: 10, cache_read: 0, cache_write: 0,
-  cost_usd: null, est_usd: 0.5, task: null, via: 'task', ...over,
-});
-const HR = 3_600_000;
-const sample = [call(1, 0.5 * HR, { cost_usd: 0.2 }), call(2, 1.5 * HR, { model: 'm/b', cid: 2, cache_read: 300 }), call(3, 2.5 * HR, { cache_read: 100 })];
-const sum = totalsOf(sample);
-eq([sum.calls, sum.input, sum.usd, sum.cost_usd, sum.est_usd], [3, 300, 0.2 + 0.5 + 0.5, 0.2, 1.5], 'totals: usd is reported where known, else the estimate');
-eq(totalsOf([call(1, 0, { input: 0, cache_read: 0 })]).cache_hit_rate, 0, 'hit rate: no input is zero, not NaN');
-eq(windowOf('24h', 1e9), { from: 1e9 - 24 * HR, to: 1e9, bucket: 'hour' }, 'window: 24 h ends now, hourly buckets');
-eq(windowOf('90d', 1e9).bucket, 'day', 'window: 90 d uses daily buckets');
-
-const series = ledgerSeries(sample, 0, 3 * HR, 'hour', 'model');
-eq(series.points.map((p) => p.totals.calls), [1, 1, 1], 'series: one bucket per hour, each call in its own');
-eq(Object.keys(series.points[1]?.groups ?? {}), ['m/b'], 'series: the group key is the chosen grouping');
-eq(ledgerSeries([], 0, 2 * HR, 'hour', 'agent').points.length, 2, 'series: empty buckets are kept');
-eq(ledgerSummary(sample, 0, 3 * HR).by_model.map((m) => m.key), ['m/a', 'm/b'], 'summary: groups sort by spend');
-eq(ledgerSummary(sample, 0, 3 * HR).unpriced, [], 'summary: priced calls are not listed as unpriced');
-
-const ranked = rankGroups(series, 'usd');
-eq(ranked.length, 2, 'ranking: every group that spent');
-const many = ledgerSeries(Array.from({ length: 8 }, (_, i) => call(`g${i}`, 0.5 * HR, { model: `m/${i}`, est_usd: 8 - i })), 0, HR, 'hour', 'model');
-const manyRanked = rankGroups(many, 'usd');
-const area = areaData(many, manyRanked, new Set([manyRanked[0] ?? '']), 'usd', (k) => k);
-eq(area.layers.map((l) => l.key), [...manyRanked.slice(1, 7), '~other'], 'area: six groups, the rest in Other, hidden groups out');
-eq(area.layers.at(-1)?.values, [manyRanked.slice(7).reduce((s, k) => s + (many.points[0]?.groups[k]?.usd ?? 0), 0)], 'area: Other sums the rest');
-eq(area.labels.length, 1, 'area: one label per bucket');
-
-const prices = new Map<string, PriceRates | null>([['m/a', { input: 3, output: 15, cache_read: 0.3, cache_write: null, source: 'litellm' }]]);
-const saving = cacheSaving([{ key: 'm/a', totals: totalsOf([call(1, 0, { cache_read: 1_000_000 })]) }], prices);
-eq(saving, { usd: 2.7, complete: true }, 'cache saving: cache reads times the input-minus-read price gap');
-eq(cacheSaving([{ key: 'm/z', totals: totalsOf([call(1, 0, { cache_read: 5 })]) }], prices).complete, false, 'cache saving: an unpriced model makes it partial');
-
-const merged = mergeCalls([call(1, 5 * HR)], [call(1, 5 * HR), call(2, 9 * HR)]);
-eq(merged.map((c) => c.id), [2, 1], 'merge: newest first, no repeats');
-
-const many5 = [call(5, 5), call(4, 4), call(3, 3), call(2, 2), call(1, 1)];
-const page1 = pageCalls(many5, { limit: 2 });
-eq([page1.calls.map((c) => c.id), page1.total, page1.next_before], [[5, 4], 5, 4], 'paging: the first page and its cursor');
-const page2 = pageCalls(many5, { limit: 2, before: page1.next_before ?? undefined });
-eq([page2.calls.map((c) => c.id), page2.next_before], [[3, 2], 2], 'paging: the next page is strictly older');
-eq(pageCalls(many5, { limit: 9, model: 'nope' }).calls, [], 'paging: a filter with no match is empty');
-
-const fx = fixtureCalls(1e12, 2);
-eq(fx.length > 0 && fx.every((c, i) => i === 0 || (fx[i - 1]?.at_ms ?? 0) >= c.at_ms), true, 'fixture: calls are newest first');
-eq(JSON.stringify(fixtureCalls(1e12, 2).slice(0, 5)), JSON.stringify(fx.slice(0, 5)), 'fixture: deterministic');
 
 // Hardware models (assets/hardware): every file validates, the index lists every file, the loader builds them.
 eq(parse('#/hardware-lab?model=exterior/workstation&gpus=1'), { screen: 'hardware-lab', params: [] }, 'a query is not part of the route');
@@ -1686,6 +1638,20 @@ sectionEnd('metrics format, nice and time labels: ok');
 eq([thin([1, 5, 2, null, 3, 4], bucketStarts(6, 3)), thin([null, null, 1], bucketStarts(3, 2)), thin([3, 1, 2], [0], 'min')], [[5, 2, 4], [null, 1], [1]], 'metrics charts: a long series keeps the largest value of each pixel bucket, and a bucket with no value stays null');
 eq([xLabelIndexes(10, 400), xLabelIndexes(10, 600), xLabelIndexes(1, 600)], [[0, 5, 9], [0, 2, 5, 7, 9], [0]], 'metrics charts: three x labels under 460 px and five above, the first and last always labelled, one point labelled once');
 sectionEnd('metrics charts tests: ok');
+
+// ---- Metrics tables: "Load older" appends a page under the rows read (src/metrics/bodies.ts) ----
+{
+  const pageRow = (scope: string) => ({ cells: [], scope, selected: false });
+  const cols = [{ head: 'Call', num: false }];
+  const first = { columns: cols, rows: [pageRow('a'), pageRow('b')], empty: '', more: '/v1/metrics/calls?before=1' };
+  const older = appendPage(first, { columns: cols, rows: [pageRow('c')], empty: '', more: '/v1/metrics/calls?before=2' });
+  eq(older.rows.map((r) => r.scope), ['a', 'b', 'c'], 'a page of older rows goes under the rows already read');
+  eq(older.more, '/v1/metrics/calls?before=2', 'the page\'s own more replaces the table\'s');
+  eq(first.rows.length, 2, 'appending a page leaves the table it was given as it was');
+  eq(appendPage(older, { columns: cols, rows: [], empty: '' }).more, null, 'a last page with no more ends the paging');
+  sectionEnd('metrics table paging tests: ok');
+}
+
 // ---- Metrics view state: the URL hash, the request, the saved pins and scopes, the live lease (src/metrics/state.ts) ----
 {
   const full: MetricsState = {

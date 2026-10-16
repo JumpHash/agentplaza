@@ -1,6 +1,7 @@
 // The list-like panel bodies: tables, bars, splits, stats and flags. panels.ts calls these; the alerting and tracing
 // bodies are in bodies-ops.ts, charts and figures in charts.ts and figures.ts.
 
+import { button, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { PanelCtx } from './panels';
 import type { BarRow, Cell, Column, Flag, LegendItem, Row, SplitRow, StatLine, Table, Tone } from './model';
@@ -28,15 +29,49 @@ function clamp(frac: number): number {
   return Math.min(1, Math.max(0, frac));
 }
 
-/** A table of rows. Rows that name a scope, tab or trace open it on a click or on Enter. */
+/** A table of rows. Rows that name a scope, tab or trace open it on a click or on Enter. When `more` is set, a
+ * "Load older" button under the rows fetches the next page and appends its rows. */
 export function table(host: HTMLElement, t: Table, ctx: PanelCtx): void {
   if (t.rows.length === 0) {
     replace(host, h('div.mx-empty', null, t.empty || 'Nothing here yet.'));
     return;
   }
   const head = h('tr', null, t.columns.map((c) => h('th', { class: c.num ? 'mx-r' : null }, c.head)));
-  const body = t.rows.map((row) => tableRow(row, t.columns, ctx));
-  replace(host, h('div.mx-tablewrap', null, h('table.mx-t', null, h('thead', null, head), h('tbody', null, body))));
+  const tbody = h('tbody', null, t.rows.map((row) => tableRow(row, t.columns, ctx)));
+  const moreHost = h('div.mx-more');
+  let current = t;
+
+  const paintMore = (): void => {
+    if (!current.more) {
+      replace(moreHost, null);
+      return;
+    }
+    const older: HTMLButtonElement = button('Load older', () => void loadOlder(older), { size: 'sm' });
+    replace(moreHost, older);
+  };
+
+  const loadOlder = async (btn: HTMLButtonElement): Promise<void> => {
+    const route = current.more;
+    if (!route) return;
+    btn.disabled = true;
+    try {
+      const page = await ctx.page(route);
+      current = appendPage(current, page);
+      for (const row of page.rows) tbody.appendChild(tableRow(row, current.columns, ctx));
+      paintMore();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err instanceof Error ? err.message : 'Could not load older rows', 'error');
+    }
+  };
+
+  replace(host, h('div.mx-tablewrap', null, h('table.mx-t', null, h('thead', null, head), tbody)), moreHost);
+  paintMore();
+}
+
+/** The table with a page's rows under its own rows, and the page's `more` in place of the table's. `t` is not changed. */
+export function appendPage(t: Table, page: Table): Table {
+  return { ...t, rows: [...t.rows, ...page.rows], more: page.more ?? null };
 }
 
 function tableRow(row: Row, columns: Column[], ctx: PanelCtx): HTMLTableRowElement {
