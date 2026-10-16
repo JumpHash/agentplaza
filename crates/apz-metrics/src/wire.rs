@@ -229,7 +229,7 @@ mod tests {
             vec![(0, 1235.0), (1_000, 2000.0), (2_000, 2000.0)]
         );
 
-        let counter = encode_counter(key("requests"), 0, 1_000, &[3.14159, 0.0, 0.00001234]);
-        assert_eq!(decode(&counter), vec![(0, 3.142), (2_000, 0.00001234)]);
+        let counter = encode_counter(key("requests"), 0, 1_000, &[1.23456, 0.0, 0.00001234]);
+        assert_eq!(decode(&counter), vec![(0, 1.235), (2_000, 0.00001234)]);
     }
 }

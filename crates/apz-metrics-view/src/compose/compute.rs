@@ -396,17 +396,17 @@ fn lines_chart(
         let Some(group) = src.series(&read).into_iter().next() else {
             continue;
         };
-        if ctx.comparing() {
-            if let Some(before) = src.series(&ctx.cmp_read(&read)).into_iter().next() {
-                ghosts.push(Series {
-                    name: format!("{name} · {}", ctx.cmp_label),
-                    tone,
-                    dash: true,
-                    values: before.values,
-                    gap_reason: None,
-                    scope: None,
-                });
-            }
+        if ctx.comparing()
+            && let Some(before) = src.series(&ctx.cmp_read(&read)).into_iter().next()
+        {
+            ghosts.push(Series {
+                name: format!("{name} · {}", ctx.cmp_label),
+                tone,
+                dash: true,
+                values: before.values,
+                gap_reason: None,
+                scope: None,
+            });
         }
         series.push(Series {
             name: name.into(),

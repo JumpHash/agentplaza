@@ -121,7 +121,7 @@ struct BitWriter {
 
 impl BitWriter {
     fn write_bit(&mut self, bit: bool) {
-        if self.bit_length % 8 == 0 {
+        if self.bit_length.is_multiple_of(8) {
             self.bytes.push(0);
         }
         if bit {
@@ -227,15 +227,16 @@ fn write_value_xor(bits: &mut BitWriter, xor: u64, window: &mut Option<(u32, u32
     }
     let leading = xor.leading_zeros();
     let trailing = xor.trailing_zeros();
-    if let Some((window_leading, window_trailing)) = *window {
-        if leading >= window_leading && trailing >= window_trailing {
-            bits.write_bits(0b10, 2);
-            bits.write_bits(
-                xor >> window_trailing,
-                64 - window_leading - window_trailing,
-            );
-            return;
-        }
+    if let Some((window_leading, window_trailing)) = *window
+        && leading >= window_leading
+        && trailing >= window_trailing
+    {
+        bits.write_bits(0b10, 2);
+        bits.write_bits(
+            xor >> window_trailing,
+            64 - window_leading - window_trailing,
+        );
+        return;
     }
     let stored_leading = leading.min(31);
     let significant = 64 - stored_leading - trailing;

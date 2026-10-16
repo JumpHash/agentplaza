@@ -86,7 +86,7 @@ fn label_set(def: &MetricDef, key: &SeriesKey) -> String {
         format!("entity=\"{}\"", escape(&key.entity)),
     ];
     for (name, value) in &key.labels {
-        if def.labels.iter().any(|allowed| *allowed == name.as_str()) {
+        if def.labels.contains(&name.as_str()) {
             parts.push(format!("{name}=\"{}\"", escape(value)));
         }
     }

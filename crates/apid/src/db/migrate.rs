@@ -86,6 +86,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "station_recording_frames",
         sql: include_str!("../../sql/migrations/0013_station_recording_frames.sql"),
     },
+    Migration {
+        version: 14,
+        name: "metrics",
+        sql: include_str!("../../sql/migrations/0014_metrics.sql"),
+    },
 ];
 
 /// The advisory lock every runner takes: "APZMIG" in ASCII. Fixed for the life of the schema.

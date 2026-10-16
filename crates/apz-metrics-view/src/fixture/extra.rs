@@ -1166,50 +1166,6 @@ pub fn links() -> Vec<(String, String, u64, f64, f64, u32, f64, f64)> {
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const NOW: u64 = 1_800_000_000_000;
-
-    #[test]
-    fn events_filter_by_kind_and_scope_and_come_newest_first() {
-        let f = Fixture::new(NOW);
-        let wakes = events(&f, "global", NOW - DAY_MS, NOW, &["wake"], 100);
-        assert!(!wakes.is_empty());
-        assert!(wakes.iter().all(|e| e.kind == "wake"));
-        assert!(wakes.windows(2).all(|w| w[0].t_ms >= w[1].t_ms));
-
-        let limited = events(&f, "global", NOW - DAY_MS, NOW, &[], 5);
-        assert_eq!(limited.len(), 5);
-
-        let n1 = events(&f, "node:n1", NOW - DAY_MS, NOW, &[], 100);
-        assert!(!n1.is_empty());
-        assert!(
-            n1.iter()
-                .all(|e| !e.entity.starts_with("r19/") && e.entity != "n2")
-        );
-        assert!(n1.windows(2).all(|w| w[0].t_ms >= w[1].t_ms));
-    }
-
-    #[test]
-    fn the_alerts_state_has_two_firing_subjects_and_an_slo_over_its_budget() {
-        let state = alerts(&Fixture::new(NOW));
-        let firing = state
-            .subjects
-            .iter()
-            .filter(|s| matches!(s.2, State::Firing { .. }))
-            .count();
-        assert_eq!(firing, 2);
-        assert!(
-            state
-                .slos
-                .iter()
-                .any(|(_, status)| status.budget_left < 0.0)
-        );
-    }
-}
-
 /// The fixture's price list: every model it calls is priced except the local one, fetched an hour before now.
 pub fn price_list(f: &Fixture, models: &[String]) -> Prices {
     // (model, source, input, output, cache read, cache write, used by)
@@ -1271,5 +1227,49 @@ pub fn price_list(f: &Fixture, models: &[String]) -> Prices {
         fetched_at_ms: f.now_ms.saturating_sub(3_600_000),
         sources: vec!["OpenRouter".into(), "LiteLLM".into()],
         rows,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: u64 = 1_800_000_000_000;
+
+    #[test]
+    fn events_filter_by_kind_and_scope_and_come_newest_first() {
+        let f = Fixture::new(NOW);
+        let wakes = events(&f, "global", NOW - DAY_MS, NOW, &["wake"], 100);
+        assert!(!wakes.is_empty());
+        assert!(wakes.iter().all(|e| e.kind == "wake"));
+        assert!(wakes.windows(2).all(|w| w[0].t_ms >= w[1].t_ms));
+
+        let limited = events(&f, "global", NOW - DAY_MS, NOW, &[], 5);
+        assert_eq!(limited.len(), 5);
+
+        let n1 = events(&f, "node:n1", NOW - DAY_MS, NOW, &[], 100);
+        assert!(!n1.is_empty());
+        assert!(
+            n1.iter()
+                .all(|e| !e.entity.starts_with("r19/") && e.entity != "n2")
+        );
+        assert!(n1.windows(2).all(|w| w[0].t_ms >= w[1].t_ms));
+    }
+
+    #[test]
+    fn the_alerts_state_has_two_firing_subjects_and_an_slo_over_its_budget() {
+        let state = alerts(&Fixture::new(NOW));
+        let firing = state
+            .subjects
+            .iter()
+            .filter(|s| matches!(s.2, State::Firing { .. }))
+            .count();
+        assert_eq!(firing, 2);
+        assert!(
+            state
+                .slos
+                .iter()
+                .any(|(_, status)| status.budget_left < 0.0)
+        );
     }
 }

@@ -100,7 +100,7 @@ pub fn bucketize(
     }
     // The number of buckets is the span divided by the step, rounded up.
     let span = to_ms - from_ms;
-    let count = span / step_ms + u64::from(span % step_ms != 0);
+    let count = span / step_ms + u64::from(!span.is_multiple_of(step_ms));
     let mut buckets: Vec<Option<Agg>> = vec![None; count as usize];
     for (start_ms, agg) in rows {
         let start = *start_ms;

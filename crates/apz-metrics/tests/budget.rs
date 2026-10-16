@@ -194,7 +194,7 @@ fn a_simulated_node_of_fifty_vms_stays_inside_the_collection_budget() {
 
     for tick in 1..=RUN_MS / TICK_MS {
         let now = tick * TICK_MS;
-        if now % SAMPLE_MS == 0 {
+        if now.is_multiple_of(SAMPLE_MS) {
             for ((walk, value), &is_busy) in walks.iter_mut().zip(current.iter_mut()).zip(&busy) {
                 if is_busy {
                     *value = walk.step();
@@ -226,7 +226,7 @@ fn a_simulated_node_of_fifty_vms_stays_inside_the_collection_budget() {
             }
         }
 
-        if now % BEAT_MS == 0 {
+        if now.is_multiple_of(BEAT_MS) {
             let columns = (0..HOST_GAUGES + VMS_IN_BATCH * VM_GAUGES)
                 .map(|i| {
                     // The samples since the last beat; sample k (counting from 1) was taken at k · SAMPLE_MS.
