@@ -4945,7 +4945,7 @@
         }
       }
     },
-    "/internal/v1/agents/{cid}/gateway/vendor/{rest..}": {
+    "/internal/v1/agents/{cid}/gateway/vendor/{rest}": {
       "get": {
         "operationId": "get_internal_v1_agents_cid_gateway_vendor_rest",
         "tags": [
@@ -4962,12 +4962,13 @@
             }
           },
           {
-            "name": "rest..",
+            "name": "rest",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "security": [],
@@ -5033,12 +5034,13 @@
             }
           },
           {
-            "name": "rest..",
+            "name": "rest",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "security": [],
@@ -14376,7 +14378,7 @@
         }
       }
     },
-    "/v1/stations/{id}/files/{path..}": {
+    "/v1/stations/{id}/files/{path}": {
       "get": {
         "operationId": "get_v1_stations_id_files_path",
         "tags": [
@@ -14393,12 +14395,13 @@
             }
           },
           {
-            "name": "path..",
+            "name": "path",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {
@@ -14443,12 +14446,13 @@
             }
           },
           {
-            "name": "path..",
+            "name": "path",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {
@@ -14493,12 +14497,13 @@
             }
           },
           {
-            "name": "path..",
+            "name": "path",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {
@@ -14543,12 +14548,13 @@
             }
           },
           {
-            "name": "path..",
+            "name": "path",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {
@@ -18122,7 +18128,7 @@
         }
       }
     },
-    "/v1/skills/{id}/versions/{v}/files/{path..}": {
+    "/v1/skills/{id}/versions/{v}/files/{path}": {
       "get": {
         "operationId": "get_v1_skills_id_versions_v_files_path",
         "tags": [
@@ -18147,12 +18153,13 @@
             }
           },
           {
-            "name": "path..",
+            "name": "path",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {
@@ -18705,7 +18712,7 @@
         "x-outbound": true
       }
     },
-    "/v1/foundry/hf/models/{id..}": {
+    "/v1/foundry/hf/models/{id}": {
       "get": {
         "operationId": "get_v1_foundry_hf_models_id",
         "tags": [
@@ -18714,12 +18721,13 @@
         "summary": "Show a Hugging Face model",
         "parameters": [
           {
-            "name": "id..",
+            "name": "id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "The rest of the path: it may contain slashes."
           }
         ],
         "responses": {

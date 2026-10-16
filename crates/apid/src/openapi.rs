@@ -28,7 +28,7 @@ pub fn spec<S>(router: &Router<S>) -> Value {
             continue;
         }
         let entry = paths
-            .entry(route.pattern.to_string())
+            .entry(openapi_path(route.pattern))
             .or_insert_with(|| json!({}));
         entry[route.method.to_ascii_lowercase()] = operation(&route, &mut generator);
     }
@@ -90,7 +90,13 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
     }
     let params: Vec<Value> = route
         .params()
-        .map(|name| json!({ "name": name, "in": "path", "required": true, "schema": { "type": "string" } }))
+        .map(|name| match name.strip_suffix("..") {
+            Some(rest) => json!({
+                "name": rest, "in": "path", "required": true, "schema": { "type": "string" },
+                "description": "The rest of the path: it may contain slashes.",
+            }),
+            None => json!({ "name": name, "in": "path", "required": true, "schema": { "type": "string" } }),
+        })
         .collect();
     if !params.is_empty() {
         op.insert("parameters".into(), params.into());
@@ -140,6 +146,12 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
         op.insert("x-undocumented".into(), true.into());
     }
     op.into()
+}
+
+/// The pattern as an OpenAPI path: a rest-of-path parameter `{path..}` is `{path}` there (OpenAPI
+/// has no such parameter; its description says it may hold slashes).
+fn openapi_path(pattern: &str) -> String {
+    pattern.replace("..}", "}")
 }
 
 /// `get_v1_agents_cid_tell` for `GET /v1/agents/{cid}/tell`.
@@ -316,6 +328,10 @@ mod tests {
         assert_eq!(
             sample_path("/v1/nodes/{id}/heartbeat"),
             "/v1/nodes/n1/heartbeat"
+        );
+        assert_eq!(
+            openapi_path("/v1/stations/{id}/files/{path..}"),
+            "/v1/stations/{id}/files/{path}"
         );
     }
 }
