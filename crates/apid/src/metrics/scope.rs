@@ -269,8 +269,12 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
         },
         EntityKind::Model => model_name(entity).to_string(),
         EntityKind::Volume | EntityKind::Service => match entity.split_once(':') {
-            Some((node, rest)) => format!("{node} · {rest}"),
-            None => entity.to_string(),
+            Some((node, rest)) if node == fleet::LOCAL || app.nodes.get(node).is_some() => {
+                format!("{node} · {rest}")
+            }
+            // The hub's own stores ("store:postgres · plaza") are named by what follows.
+            Some(("store", rest)) => rest.to_string(),
+            _ => entity.to_string(),
         },
         EntityKind::Workstation => app
             .stations
@@ -280,6 +284,16 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
             .map_or_else(|| entity.to_string(), |station| station.name),
         EntityKind::Sandbox => format!("sandbox {entity}"),
         _ => entity.to_string(),
+    }
+}
+
+/// The node a volume or service lives on: the node its id starts with (`n1:/var/lib/plaza`), else the hub's own
+/// node, which runs the plaza's stores, the metrics module and the MCP clients (`store:postgres · plaza`,
+/// `metrics`, `MCP: linear`).
+fn owner_node<'a>(nodes: &[String], entity: &'a str) -> &'a str {
+    match entity.split_once(':') {
+        Some((owner, _)) if nodes.iter().any(|n| n == owner) => owner,
+        _ => fleet::LOCAL,
     }
 }
 
@@ -499,9 +513,9 @@ fn covers(
                 .sandboxes
                 .iter()
                 .any(|sb| sb.node == *node && sb.id == entity),
-            EntityKind::Volume | EntityKind::Service => entity
-                .split_once(':')
-                .is_some_and(|(owner, _)| owner == node.as_str()),
+            EntityKind::Volume | EntityKind::Service => {
+                owner_node(&facts.nodes, entity) == node.as_str()
+            }
             _ => false,
         },
         Scope::Run(run) => match kind {
@@ -764,6 +778,15 @@ fn status_word(status: AgentStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hubs_stores_and_clients_live_on_its_own_node() {
+        let nodes = vec!["n0".to_string(), "n1".to_string()];
+        assert_eq!(owner_node(&nodes, "n1:/var/lib/plaza"), "n1");
+        assert_eq!(owner_node(&nodes, "store:postgres · plaza"), fleet::LOCAL);
+        assert_eq!(owner_node(&nodes, "MCP: linear"), fleet::LOCAL);
+        assert_eq!(owner_node(&nodes, "metrics"), fleet::LOCAL);
+    }
 
     fn agent(cid: u64, node: &str, run: &str, provider: &str, model: &str) -> AgentFact {
         AgentFact {
