@@ -515,6 +515,7 @@ fn table(columns: Vec<Column>, rows: Vec<Row>) -> Body {
         columns,
         rows,
         empty: String::new(),
+        more: None,
     })
 }
 

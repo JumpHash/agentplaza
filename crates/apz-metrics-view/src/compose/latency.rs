@@ -222,6 +222,7 @@ fn tools(ctx: &Ctx, src: &dyn Source) -> Panel {
             ],
             rows: rows.into_iter().map(|(_, row)| row).collect(),
             empty: NO_TOOLS.into(),
+            more: None,
         })
     };
     metric_panel(

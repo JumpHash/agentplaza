@@ -76,6 +76,9 @@ impl Source for LiveSource<'_> {
     fn calls(&self, scope: &str, before_ms: u64, limit: usize) -> Vec<CallRow> {
         misc::calls(self, scope, before_ms, limit)
     }
+    fn prices(&self, models: &[String]) -> Prices {
+        misc::prices(self, models)
+    }
     fn traces(&self, scope: &str, from_ms: u64, to_ms: u64, limit: usize) -> Vec<Trace> {
         misc::traces(self, scope, from_ms, to_ms, limit)
     }

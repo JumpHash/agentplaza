@@ -8,7 +8,7 @@ use apz_metrics::{EntityKind, Event};
 use serde_json::json;
 
 use super::Fixture;
-use crate::source::{AlertsState, Budget, CallRow, SelfCost};
+use crate::source::{AlertsState, Budget, CallRow, PriceRow, Prices, SelfCost};
 
 const MINUTE_MS: u64 = 60_000;
 const HOUR_MS: u64 = 60 * MINUTE_MS;
@@ -1207,5 +1207,69 @@ mod tests {
                 .iter()
                 .any(|(_, status)| status.budget_left < 0.0)
         );
+    }
+}
+
+/// The fixture's price list: every model it calls is priced except the local one, fetched an hour before now.
+pub fn price_list(f: &Fixture, models: &[String]) -> Prices {
+    // (model, source, input, output, cache read, cache write, used by)
+    const RATES: &[(&str, &str, f64, f64, Option<f64>, Option<f64>, &str)] = &[
+        (
+            "anthropic/opus-5.5",
+            "OpenRouter",
+            15.0,
+            75.0,
+            Some(1.5),
+            Some(18.75),
+            "planner, reviewer",
+        ),
+        (
+            "anthropic/sonnet-5.5",
+            "OpenRouter",
+            3.0,
+            15.0,
+            Some(0.3),
+            Some(3.75),
+            "builder",
+        ),
+        (
+            "anthropic/haiku-5.5",
+            "LiteLLM",
+            0.8,
+            4.0,
+            Some(0.08),
+            Some(1.0),
+            "scout",
+        ),
+        ("openai/gpt-5", "LiteLLM", 1.25, 10.0, Some(0.125), None, ""),
+    ];
+    let mut names: Vec<String> = models.to_vec();
+    for (model, ..) in RATES {
+        if !names.iter().any(|n| n == model) {
+            names.push((*model).to_string());
+        }
+    }
+    let rows = names
+        .into_iter()
+        .map(|model| match RATES.iter().find(|r| r.0 == model) {
+            Some(&(_, source, input, output, cache_read, cache_write, used_by)) => PriceRow {
+                model,
+                source: source.into(),
+                input: Some(input),
+                output: Some(output),
+                cache_read,
+                cache_write,
+                used_by: used_by.into(),
+            },
+            None => PriceRow {
+                model,
+                ..PriceRow::default()
+            },
+        })
+        .collect();
+    Prices {
+        fetched_at_ms: f.now_ms.saturating_sub(3_600_000),
+        sources: vec!["OpenRouter".into(), "LiteLLM".into()],
+        rows,
     }
 }

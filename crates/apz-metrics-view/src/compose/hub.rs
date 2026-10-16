@@ -127,6 +127,7 @@ fn routes(ctx: &Ctx, src: &dyn Source) -> Panel {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     };
     panel(
@@ -236,6 +237,7 @@ fn links(src: &dyn Source) -> Panel {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     };
     panel(
@@ -341,6 +343,7 @@ fn outside(src: &dyn Source) -> Panel {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     };
     panel(

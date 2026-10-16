@@ -424,6 +424,7 @@ fn largest_panel(ctx: &Ctx, src: &dyn Source) -> Panel {
         ],
         rows: found.into_iter().map(|(_, row)| row).collect(),
         empty: String::new(),
+        more: None,
     };
     panel(
         "largest-results",
@@ -558,6 +559,7 @@ fn nearest_panel(ctx: &Ctx, src: &dyn Source, agents: &[AgentRow]) -> Panel {
         ],
         rows,
         empty: String::new(),
+        more: None,
     };
     panel(
         "nearest",
@@ -657,6 +659,7 @@ fn by_provider_panel(ctx: &Ctx, src: &dyn Source) -> Panel {
         ],
         rows: rows.into_iter().map(|(_, row)| row).collect(),
         empty: String::new(),
+        more: None,
     };
     panel(
         "by-provider",

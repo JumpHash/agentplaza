@@ -606,6 +606,7 @@ fn top_agents(ctx: &Ctx, src: &dyn Source) -> Panel {
             columns,
             rows,
             empty: text.into(),
+            more: None,
         })
     };
     panel(

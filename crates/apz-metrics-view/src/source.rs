@@ -120,6 +120,31 @@ pub struct CallRow {
     pub trace: Option<String>,
 }
 
+/// The model prices behind the spend estimates: when they were fetched, from which lists, and each model's rates.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Prices {
+    /// 0 before the first fetch.
+    pub fetched_at_ms: u64,
+    /// The lists that answered ("OpenRouter", "LiteLLM").
+    pub sources: Vec<String>,
+    pub rows: Vec<PriceRow>,
+}
+
+/// One model's rates in USD per million tokens; `None` throughout when nothing prices it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PriceRow {
+    /// `provider/model`.
+    pub model: String,
+    /// "OpenRouter", "LiteLLM", "manual"; empty when unpriced.
+    pub source: String,
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+    /// The roles or agents set to use it ("builder, reviewer").
+    pub used_by: String,
+}
+
 /// An alert as the Alerts tab lists it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlertsState {
@@ -207,6 +232,12 @@ pub trait Source {
 
     /// Model calls in a scope, newest first, before `before_ms`.
     fn calls(&self, scope: &str, before_ms: u64, limit: usize) -> Vec<CallRow>;
+
+    /// The prices of `models` (`provider/model`) and of the models the settings name, in that order.
+    fn prices(&self, models: &[String]) -> Prices {
+        let _ = models;
+        Prices::default()
+    }
 
     /// Kept traces in a scope and window, newest first.
     fn traces(&self, scope: &str, from_ms: u64, to_ms: u64, limit: usize) -> Vec<Trace>;

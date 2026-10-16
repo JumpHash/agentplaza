@@ -348,6 +348,7 @@ fn snapshots(ctx: &Ctx, src: &dyn Source) -> Body {
         ],
         rows,
         empty: "No snapshots in this window.".into(),
+        more: None,
     })
 }
 

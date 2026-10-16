@@ -23,6 +23,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
         model_mix(ctx, src),
         savings(ctx, src),
         recent_calls(ctx, src),
+        prices(ctx, src),
     ]
 }
 
@@ -318,6 +319,7 @@ fn unit_cost(ctx: &Ctx, src: &dyn Source) -> Panel {
             columns,
             rows,
             empty: "No roles in this scope yet.".into(),
+            more: None,
         })
     };
     panel(
@@ -521,8 +523,30 @@ fn total_named(groups: &[Group], name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Rows of the call log on the panel; "Load older" pages by [`CALLS_PAGE`].
+const CALLS_FIRST: usize = 12;
+
+/// Rows per older page of the call log.
+pub const CALLS_PAGE: usize = 50;
+
 /// The latest model calls of the scope, each linked to its kept trace when it has one.
 fn recent_calls(ctx: &Ctx, src: &dyn Source) -> Panel {
+    let table = calls_table(ctx, src, ctx.to_ms, CALLS_FIRST);
+    let body = if table.rows.is_empty() {
+        empty("No model calls in this window.")
+    } else {
+        Body::Table(table)
+    };
+    panel("calls", "Recent model calls", "", 12, body)
+}
+
+/// The page of the call log before `before_ms` (`GET /v1/metrics/calls/page`), for the query's scope and time zone.
+pub fn calls_page(q: &ViewQuery, src: &dyn Source, before_ms: u64) -> Table {
+    calls_table(&Ctx::new(q, src), src, before_ms, CALLS_PAGE)
+}
+
+/// Up to `limit` calls before `before_ms`, with the route of the next page when the page is full.
+fn calls_table(ctx: &Ctx, src: &dyn Source, before_ms: u64, limit: usize) -> Table {
     let columns = [
         "Time",
         "Agent",
@@ -542,8 +566,18 @@ fn recent_calls(ctx: &Ctx, src: &dyn Source) -> Panel {
         num: (3..=8).contains(&i),
     })
     .collect();
-    let rows: Vec<Row> = src
-        .calls(&ctx.q.scope, ctx.to_ms, 12)
+    let calls = src.calls(&ctx.q.scope, before_ms, limit);
+    let more = match calls.last() {
+        Some(oldest) if calls.len() == limit => Some(format!(
+            "/v1/metrics/calls/page?scope={}&before={}&tz={}{}",
+            query_text(&ctx.q.scope),
+            oldest.at_ms,
+            ctx.q.tz,
+            if ctx.q.fixture { "&fixture=1" } else { "" }
+        )),
+        _ => None,
+    };
+    let rows: Vec<Row> = calls
         .into_iter()
         .map(|call| {
             let CallRow {
@@ -590,16 +624,120 @@ fn recent_calls(ctx: &Ctx, src: &dyn Source) -> Panel {
             }
         })
         .collect();
+    Table {
+        columns,
+        rows,
+        empty: "No model calls in this window.".into(),
+        more,
+    }
+}
+
+/// A scope id as a query value: letters, digits and `-_.~:/` as they are, everything else percent-encoded.
+fn query_text(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'/' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The rates behind the spend estimates, for the scope's models and those the settings name.
+fn prices(ctx: &Ctx, src: &dyn Source) -> Panel {
+    let used: Vec<String> = src
+        .entities(&ctx.q.scope, "model")
+        .into_iter()
+        .filter_map(|e| e.id.strip_prefix("model:").map(str::to_string))
+        .collect();
+    let prices = src.prices(&used);
+    let columns = [
+        ("Model", false),
+        ("Used by", false),
+        ("Source", false),
+        ("Input", true),
+        ("Output", true),
+        ("Cache read", true),
+        ("Cache write", true),
+        ("Status", false),
+    ]
+    .iter()
+    .map(|(head, num)| Column {
+        head: (*head).into(),
+        num: *num,
+    })
+    .collect();
+    let rate = |v: Option<f64>| num_cell(v, Unit::Usd);
+    let rows: Vec<Row> = prices
+        .rows
+        .into_iter()
+        .map(|p| {
+            let priced = p.input.is_some();
+            Row {
+                cells: vec![
+                    Cell::Mono { text: p.model },
+                    if p.used_by.is_empty() {
+                        Cell::Muted { text: "—".into() }
+                    } else {
+                        Cell::Text { text: p.used_by }
+                    },
+                    if p.source.is_empty() {
+                        Cell::Muted { text: "—".into() }
+                    } else {
+                        Cell::Text { text: p.source }
+                    },
+                    rate(p.input),
+                    rate(p.output),
+                    rate(p.cache_read),
+                    rate(p.cache_write),
+                    if priced {
+                        Cell::Pill {
+                            text: "priced".into(),
+                            status: Status::Ok,
+                        }
+                    } else {
+                        Cell::Pill {
+                            text: "unpriced: set one under Models".into(),
+                            status: Status::Warn,
+                        }
+                    },
+                ],
+                scope: None,
+                tab: None,
+                trace: None,
+                selected: false,
+            }
+        })
+        .collect();
     let body = if rows.is_empty() {
-        empty("No model calls in this window.")
+        empty("No models in use. Models appear here once one is called or set as a default.")
     } else {
         Body::Table(Table {
             columns,
             rows,
-            empty: "No model calls in this window.".into(),
+            empty: String::new(),
+            more: None,
         })
     };
-    panel("calls", "Recent model calls", "", 12, body)
+    let mut p = panel(
+        "prices",
+        "Prices",
+        "USD per million tokens; the estimates use these rates, the reported cost is what the provider charged",
+        12,
+        body,
+    );
+    p.right = match (prices.fetched_at_ms, prices.sources.is_empty()) {
+        (0, _) => "not fetched yet".into(),
+        (at, true) => format!("no list answered · {}", ctx.time(at)),
+        (at, false) => format!("from {} · {}", prices.sources.join(" and "), ctx.time(at)),
+    };
+    p.actions = vec![PanelAction {
+        label: "Refresh prices".into(),
+        post: "/v1/prices/refresh".into(),
+        done: "Prices refreshed".into(),
+    }];
+    p
 }
 
 /// A stacked chart of reads. Each read adds its groups as series, or one series named by its label when it has one.
@@ -712,9 +850,9 @@ mod tests {
     }
 
     #[test]
-    fn the_tokens_tab_lists_its_eight_panels_in_order_with_the_expected_bodies() {
+    fn the_tokens_tab_lists_its_nine_panels_in_order_with_the_expected_bodies() {
         let view = compose_tokens("prev");
-        let expected: [(&str, &[&str]); 8] = [
+        let expected: [(&str, &[&str]); 9] = [
             ("tiles", &["tiles"]),
             ("tokens-by-group", &["chart", "empty"]),
             ("spend-share", &["treemap", "empty"]),
@@ -723,6 +861,7 @@ mod tests {
             ("model-mix", &["chart", "empty"]),
             ("savings", &["flags", "empty"]),
             ("calls", &["table", "empty"]),
+            ("prices", &["table", "empty"]),
         ];
         let ids: Vec<&str> = view.panels.iter().map(|p| p.id.as_str()).collect();
         let expected_ids: Vec<&str> = expected.iter().map(|(id, _)| *id).collect();
@@ -731,6 +870,20 @@ mod tests {
             let got = variant(&panel.body);
             assert!(variants.contains(&got), "panel {id} has body {got}");
         }
+    }
+
+    #[test]
+    fn the_call_log_pages_older_calls_and_the_prices_panel_can_refresh() {
+        let view = compose_tokens("none");
+        let calls = view.panels.iter().find(|p| p.id == "calls").unwrap();
+        let Body::Table(table) = &calls.body else {
+            panic!("the call log is a table");
+        };
+        let more = table.more.as_deref().expect("a full first page offers older calls");
+        assert!(more.starts_with("/v1/metrics/calls/page?scope=global&before="));
+        let prices = view.panels.iter().find(|p| p.id == "prices").unwrap();
+        assert_eq!(prices.actions[0].post, "/v1/prices/refresh");
+        assert_eq!(super::query_text("model:a/b c"), "model:a/b%20c");
     }
 
     #[test]

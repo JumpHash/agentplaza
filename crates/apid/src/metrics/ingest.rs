@@ -242,7 +242,10 @@ mod tests {
         use serde_json::json;
         let old = json!({"top_processes": [["cargo", "r1/0", 80.0, 900.0]], "volumes": []});
         let merged = merged_reports(old.clone(), json!({"volumes": [1]}));
-        assert_eq!(merged, json!({"volumes": [1], "top_processes": [["cargo", "r1/0", 80.0, 900.0]]}));
+        assert_eq!(
+            merged,
+            json!({"volumes": [1], "top_processes": [["cargo", "r1/0", 80.0, 900.0]]})
+        );
         let replaced = merged_reports(old, json!({"top_processes": []}));
         assert_eq!(replaced, json!({"top_processes": []}));
     }

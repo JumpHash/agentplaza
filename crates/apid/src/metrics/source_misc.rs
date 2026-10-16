@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use apz_metrics::query::AggFn;
 use apz_metrics::trace::Trace;
 use apz_metrics::{EntityKind, Event, Level, SeriesKey, Tier};
-use apz_metrics_view::source::{Budget, CallRow, SelfCost};
+use apz_metrics_view::source::{Budget, CallRow, PriceRow, Prices, SelfCost};
 
 use super::scope;
 use super::source::LiveSource;
@@ -383,6 +383,80 @@ fn budget_label(scope: &str, agent_name: Option<&str>) -> String {
 /// The first millisecond of the UTC day that `now_ms` falls in.
 fn utc_day_start(now_ms: u64) -> u64 {
     now_ms - now_ms % DAY_MS
+}
+
+/// The prices of `models` and of the models the settings name, with where each is used (the default, the
+/// orchestrator, then each role, as the consoles list them).
+pub fn prices(src: &LiveSource<'_>, models: &[String]) -> Prices {
+    use crate::prices::Source as From;
+    let settings = src.app.settings.get();
+    let mut uses: Vec<(String, Vec<String>)> = Vec::new();
+    let mut add = |model: &str, label: String| {
+        if model.is_empty() {
+            return;
+        }
+        match uses.iter_mut().find(|(m, _)| m == model) {
+            Some((_, labels)) => labels.push(label),
+            None => uses.push((model.to_string(), vec![label])),
+        }
+    };
+    add(&settings.default_model, "default".into());
+    add(&settings.orchestrator_model, "orchestrator".into());
+    for (role, model) in &settings.role_models {
+        add(model, format!("role {role}"));
+    }
+    let mut names: Vec<String> = models.to_vec();
+    for (model, _) in &uses {
+        if !names.contains(model) {
+            names.push(model.clone());
+        }
+    }
+    let rows = names
+        .into_iter()
+        .map(|model| {
+            let used_by = uses
+                .iter()
+                .find(|(m, _)| *m == model)
+                .map(|(_, labels)| labels.join(", "))
+                .unwrap_or_default();
+            match src.app.prices.lookup(&model, &settings.prices) {
+                Some(priced) => PriceRow {
+                    source: match priced.source {
+                        From::Manual => "manual",
+                        From::Vendor => "provider list",
+                        From::Openrouter => "OpenRouter",
+                        From::Litellm => "LiteLLM",
+                    }
+                    .into(),
+                    input: Some(priced.price.input),
+                    output: Some(priced.price.output),
+                    cache_read: priced.price.cache_read,
+                    cache_write: priced.price.cache_write,
+                    used_by,
+                    model,
+                },
+                None => PriceRow {
+                    model,
+                    used_by,
+                    ..PriceRow::default()
+                },
+            }
+        })
+        .collect();
+    let (fetched_at_ms, sources) = src.app.prices.fetched();
+    Prices {
+        fetched_at_ms,
+        sources: sources
+            .iter()
+            .filter(|s| s.ok)
+            .map(|s| match s.name.as_str() {
+                "openrouter" => "OpenRouter".to_string(),
+                "litellm" => "LiteLLM".to_string(),
+                other => other.to_string(),
+            })
+            .collect(),
+        rows,
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 //!   [`apz_metrics_view::View`] (the fixture when `fixture=1`).
 //! * `GET /v1/metrics/around?…same…&t=` — "what changed around then" ([`apz_metrics_view::Around`]).
 //! * `POST /v1/metrics/query` — one [`apz_metrics_view::source::Read`]-shaped read, as grouped series (CLI, tests).
+//! * `GET /v1/metrics/calls/page?scope&before&tz&fixture` — the call log's next page, composed (a `Table`).
 //! * `GET /v1/metrics/events?scope&from&to&kinds&limit`, `GET /v1/metrics/calls?scope&before&limit`,
 //!   `GET /v1/metrics/traces?scope&from&to`, `GET /v1/metrics/traces/{id}`.
 //! * `GET /v1/metrics/export?…view query…` — the view's chart series as CSV.
@@ -54,6 +55,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .get("/v1/metrics/events", |app, req, _| events_route(app, req))
         .get("/v1/metrics/calls", |app, req, _| calls_route(app, req))
+        .get("/v1/metrics/calls/page", |app, req, _| {
+            calls_page_route(app, req)
+        })
         .get("/v1/metrics/traces", |app, req, _| traces_route(app, req))
         .get("/v1/metrics/traces/{id}", |app, req, params| {
             trace_route(app, req, params)
@@ -224,6 +228,24 @@ fn events_route(app: &App, req: &Request) -> Response {
     with_source(app, fixture_requested(&req.query), |src| {
         Response::json(200, &src.events(scope, from_ms, to_ms, &kinds, limit))
     })
+}
+
+/// The call log's next page as a composed table (`scope`, `before`, `tz`, `fixture`), for "Load older".
+fn calls_page_route(app: &App, req: &Request) -> Response {
+    let pairs = query_pairs(&req.query);
+    let before_ms = match number(&pairs, "before", apz_plaza::now_ms()) {
+        Ok(before) => before,
+        Err(message) => return Response::error(400, &message),
+    };
+    match parse_view(&req.query) {
+        Ok(query) => with_source(app, query.fixture, |src| {
+            Response::json(
+                200,
+                &apz_metrics_view::compose::tokens::calls_page(&query, src, before_ms),
+            )
+        }),
+        Err(message) => Response::error(400, &message),
+    }
 }
 
 fn calls_route(app: &App, req: &Request) -> Response {

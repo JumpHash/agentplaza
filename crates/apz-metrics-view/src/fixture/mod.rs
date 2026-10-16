@@ -90,6 +90,9 @@ impl Source for Fixture {
     fn calls(&self, scope: &str, before_ms: u64, limit: usize) -> Vec<CallRow> {
         extra::calls(self, scope, before_ms, limit)
     }
+    fn prices(&self, models: &[String]) -> Prices {
+        extra::price_list(self, models)
+    }
     fn traces(&self, scope: &str, from_ms: u64, to_ms: u64, limit: usize) -> Vec<Trace> {
         extra::traces(self, scope, from_ms, to_ms, limit)
     }

@@ -425,6 +425,7 @@ fn infractions_panel(ctx: &Ctx, src: &dyn Source) -> Panel {
             ],
             rows: events.iter().map(|e| infraction_row(ctx, src, e)).collect(),
             empty: text.into(),
+            more: None,
         })
     };
     panel(
@@ -495,6 +496,7 @@ fn agents_panel(ctx: &Ctx, src: &dyn Source) -> Panel {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     };
     panel(

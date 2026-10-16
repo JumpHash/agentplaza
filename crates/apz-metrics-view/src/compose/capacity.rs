@@ -518,6 +518,7 @@ fn headroom_table(nodes: &[Node], now: u64) -> Body {
         ],
         rows: nodes.iter().map(|n| headroom_row(n, now)).collect(),
         empty: "No nodes have reported yet.".into(),
+        more: None,
     })
 }
 

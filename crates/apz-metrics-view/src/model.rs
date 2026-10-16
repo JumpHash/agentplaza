@@ -225,7 +225,21 @@ pub struct Panel {
     /// Set when the panel is a pin on My dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<PinRef>,
+    /// Buttons in the panel's head ("Refresh prices").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<PanelAction>,
     pub body: Body,
+}
+
+/// A button in a panel's head: the console posts to `post` (no body), then loads the view again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PanelAction {
+    pub label: String,
+    /// The hub route, e.g. `/v1/prices/refresh`.
+    pub post: String,
+    /// The toast after it succeeds ("Prices refreshed").
+    #[serde(default)]
+    pub done: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -435,6 +449,10 @@ pub struct Table {
     /// Shown when there are no rows.
     #[serde(default)]
     pub empty: String,
+    /// When older rows may exist: the hub route (GET) that answers the next page as a `Table`, whose rows go under
+    /// these and whose own `more` replaces this one. The consoles show it as "Load older".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

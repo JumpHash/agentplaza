@@ -211,6 +211,7 @@ fn history_table(ctx: &Ctx, state: &AlertsState) -> Table {
         ],
         rows,
         empty: "No alerts have fired or resolved yet.".into(),
+        more: None,
     }
 }
 

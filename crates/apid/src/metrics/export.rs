@@ -244,6 +244,7 @@ mod tests {
                 metric: None,
                 live: false,
                 pinned: None,
+                actions: Vec::new(),
                 body: Body::Chart(chart),
             }],
             ..View::default()

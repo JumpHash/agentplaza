@@ -515,7 +515,12 @@ impl PgStore {
                 eprintln!("metrics: dropping {name} failed ({e})");
                 continue;
             }
-            let text = format!("{:04}-{:02}-{:02}", day / 10_000, day / 100 % 100, day % 100);
+            let text = format!(
+                "{:04}-{:02}-{:02}",
+                day / 10_000,
+                day / 100 % 100,
+                day % 100
+            );
             guard(&self.partitions).retain(|(t, d)| t != "trace_spans" || *d != text);
         }
     }

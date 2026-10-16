@@ -330,6 +330,7 @@ pub fn panel(id: &str, title: &str, sub: &str, span: u8, body: Body) -> Panel {
         live: false,
         pinned: None,
         body,
+        actions: Vec::new(),
     }
 }
 

@@ -265,6 +265,7 @@ fn workspaces(ctx: &Ctx, src: &dyn Source) -> Body {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     }
 }
@@ -324,6 +325,7 @@ fn stores(ctx: &Ctx, src: &dyn Source) -> Body {
             ],
             rows,
             empty: String::new(),
+            more: None,
         })
     }
 }
