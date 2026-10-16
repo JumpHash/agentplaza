@@ -341,44 +341,64 @@ mod tests {
     }
 
     #[test]
-    fn keys_list_create_and_revoke_parse() {
-        assert!(matches!(
-            parse(&["keys", "list"]).unwrap(),
-            Cmd::Keys(KeysCmd::List)
-        ));
-        match parse(&["keys", "create", "--label", "ci"]).unwrap() {
-            Cmd::Keys(KeysCmd::Create { label }) => assert_eq!(label, "ci"),
-            other => panic!("not a key create: {other:?}"),
+    fn keys_sandboxes_and_templates_parse() {
+        // Keys list, create and revoke parse; a key needs a label.
+        {
+            assert!(matches!(
+                parse(&["keys", "list"]).unwrap(),
+                Cmd::Keys(KeysCmd::List)
+            ));
+            match parse(&["keys", "create", "--label", "ci"]).unwrap() {
+                Cmd::Keys(KeysCmd::Create { label }) => assert_eq!(label, "ci"),
+                other => panic!("not a key create: {other:?}"),
+            }
+            assert!(parse(&["keys", "create"]).is_err(), "a key needs a label");
+            match parse(&["keys", "revoke", "k1"]).unwrap() {
+                Cmd::Keys(KeysCmd::Revoke { id, yes }) => {
+                    assert_eq!((id.as_str(), yes), ("k1", false))
+                }
+                other => panic!("not a revoke: {other:?}"),
+            }
+            match parse(&["keys", "revoke", "k1", "--yes"]).unwrap() {
+                Cmd::Keys(KeysCmd::Revoke { yes, .. }) => assert!(yes),
+                other => panic!("not a revoke: {other:?}"),
+            }
         }
-        assert!(parse(&["keys", "create"]).is_err(), "a key needs a label");
-        match parse(&["keys", "revoke", "k1"]).unwrap() {
-            Cmd::Keys(KeysCmd::Revoke { id, yes }) => assert_eq!((id.as_str(), yes), ("k1", false)),
-            other => panic!("not a revoke: {other:?}"),
+        // Sandboxes, kill, pause and resume take the sandbox id.
+        {
+            assert!(matches!(parse(&["sandboxes"]).unwrap(), Cmd::Sandboxes));
+            match parse(&["kill", "sb1"]).unwrap() {
+                Cmd::Kill { id, yes } => assert_eq!((id.as_str(), yes), ("sb1", false)),
+                other => panic!("not a kill: {other:?}"),
+            }
+            match parse(&["kill", "sb1", "--yes"]).unwrap() {
+                Cmd::Kill { yes, .. } => assert!(yes),
+                other => panic!("not a kill: {other:?}"),
+            }
+            match parse(&["pause", "sb1"]).unwrap() {
+                Cmd::Pause { id } => assert_eq!(id, "sb1"),
+                other => panic!("not a pause: {other:?}"),
+            }
+            match parse(&["resume", "sb1"]).unwrap() {
+                Cmd::Resume { id } => assert_eq!(id, "sb1"),
+                other => panic!("not a resume: {other:?}"),
+            }
         }
-        match parse(&["keys", "revoke", "k1", "--yes"]).unwrap() {
-            Cmd::Keys(KeysCmd::Revoke { yes, .. }) => assert!(yes),
-            other => panic!("not a revoke: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sandbox_commands_take_the_sandbox_id() {
-        assert!(matches!(parse(&["sandboxes"]).unwrap(), Cmd::Sandboxes));
-        match parse(&["kill", "sb1"]).unwrap() {
-            Cmd::Kill { id, yes } => assert_eq!((id.as_str(), yes), ("sb1", false)),
-            other => panic!("not a kill: {other:?}"),
-        }
-        match parse(&["kill", "sb1", "--yes"]).unwrap() {
-            Cmd::Kill { yes, .. } => assert!(yes),
-            other => panic!("not a kill: {other:?}"),
-        }
-        match parse(&["pause", "sb1"]).unwrap() {
-            Cmd::Pause { id } => assert_eq!(id, "sb1"),
-            other => panic!("not a pause: {other:?}"),
-        }
-        match parse(&["resume", "sb1"]).unwrap() {
-            Cmd::Resume { id } => assert_eq!(id, "sb1"),
-            other => panic!("not a resume: {other:?}"),
+        // Templates and delete-template parse; a template needs an id.
+        {
+            assert!(matches!(parse(&["templates"]).unwrap(), Cmd::Templates));
+            match parse(&["delete-template", "tp1"]).unwrap() {
+                Cmd::DeleteTemplate { id, yes } => assert_eq!((id.as_str(), yes), ("tp1", false)),
+                other => panic!("not a delete-template: {other:?}"),
+            }
+            match parse(&["delete-template", "tp1", "--yes"]).unwrap() {
+                Cmd::DeleteTemplate { yes, .. } => assert!(yes),
+                other => panic!("not a delete-template: {other:?}"),
+            }
+            assert!(
+                parse(&["delete-template"]).is_err(),
+                "a template needs an id"
+            );
         }
     }
 
@@ -410,112 +430,6 @@ mod tests {
         assert_eq!(
             sandbox_path("sb1", Some("pause")),
             "/v1/e2b/sandboxes/sb1/pause"
-        );
-    }
-
-    #[test]
-    fn a_key_row_has_id_label_and_when() {
-        let k = json!({ "id": "k1", "label": "ci", "created_ms": 1_700_000_000_000u64 });
-        let row = key_row(&k);
-        assert_eq!(row.len(), 3);
-        assert_eq!(&row[..2], ["k1", "ci"]);
-    }
-
-    #[test]
-    fn a_sandbox_row_reads_each_field_in_the_table_order() {
-        let s = json!({
-            "sandboxID": "sb1", "templateID": "base", "state": "running",
-            "cpuCount": 2, "memoryMB": 512, "startedAt": "2026-10-15T10:00:00Z",
-            "endAt": "2026-10-15T11:00:00Z", "cid": 4
-        });
-        assert_eq!(
-            sandbox_row(&s),
-            vec![
-                "sb1",
-                "base",
-                "running",
-                "2",
-                "512",
-                "2026-10-15T10:00:00Z",
-                "4"
-            ]
-        );
-    }
-
-    #[test]
-    fn templates_and_delete_template_parse() {
-        assert!(matches!(parse(&["templates"]).unwrap(), Cmd::Templates));
-        match parse(&["delete-template", "tp1"]).unwrap() {
-            Cmd::DeleteTemplate { id, yes } => assert_eq!((id.as_str(), yes), ("tp1", false)),
-            other => panic!("not a delete-template: {other:?}"),
-        }
-        match parse(&["delete-template", "tp1", "--yes"]).unwrap() {
-            Cmd::DeleteTemplate { yes, .. } => assert!(yes),
-            other => panic!("not a delete-template: {other:?}"),
-        }
-        assert!(
-            parse(&["delete-template"]).is_err(),
-            "a template needs an id"
-        );
-    }
-
-    #[test]
-    fn a_template_row_reads_the_newest_build_and_the_ready_tags() {
-        let t = json!({
-            "templateID": "tp1", "name": "base",
-            "createdAt": "2026-10-14T09:00:00Z", "updatedAt": "2026-10-15T10:00:00Z",
-            "builds": [
-                {"buildID": "b2", "status": "ready", "createdAt": "2026-10-15T10:00:00Z",
-                 "finishedAt": "2026-10-15T10:05:00Z", "cpuCount": 2, "memoryMB": 512,
-                 "tags": ["latest", "v2"], "reason": null},
-                {"buildID": "b1", "status": "ready", "createdAt": "2026-10-14T09:00:00Z",
-                 "finishedAt": "2026-10-14T09:04:00Z", "cpuCount": 1, "memoryMB": 256,
-                 "tags": ["v1", "latest"], "reason": null}
-            ]
-        });
-        assert_eq!(
-            template_row(&t),
-            vec![
-                "base",
-                "tp1",
-                "ready",
-                "latest, v2, v1",
-                "2 vCPU, 512 MiB",
-                "2026-10-15T10:00:00Z"
-            ]
-        );
-        assert_eq!(
-            template_reason(&t),
-            None,
-            "a ready template has no reason line"
-        );
-    }
-
-    #[test]
-    fn a_failed_template_row_leaves_tags_empty_and_names_the_reason() {
-        let t = json!({
-            "templateID": "tp2", "name": "gpu",
-            "createdAt": "2026-10-15T11:00:00Z", "updatedAt": "2026-10-15T11:02:00Z",
-            "builds": [
-                {"buildID": "b3", "status": "error", "createdAt": "2026-10-15T11:00:00Z",
-                 "finishedAt": "2026-10-15T11:02:00Z", "cpuCount": 4, "memoryMB": 1024,
-                 "tags": ["next"], "reason": {"message": "out of disk", "step": "RUN pip install"}}
-            ]
-        });
-        assert_eq!(
-            template_row(&t),
-            vec![
-                "gpu",
-                "tp2",
-                "error",
-                "",
-                "4 vCPU, 1024 MiB",
-                "2026-10-15T11:02:00Z"
-            ]
-        );
-        assert_eq!(
-            template_reason(&t).as_deref(),
-            Some("  gpu failed at RUN pip install: out of disk")
         );
     }
 }

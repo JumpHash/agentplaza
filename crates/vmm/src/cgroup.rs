@@ -372,48 +372,51 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_are_derived_from_the_vm_shape() {
-        // 512 MiB of RAM plus 64 MiB of overhead is 576 MiB.
-        let files = limit_files(VmLimits {
-            vcpus: 2,
-            memory_mib: 512,
-        });
-        assert_eq!(value(&files, "memory.max"), "603979776");
-        // 95% of 603979776, rounded down to a whole 1/100 of the cap first.
-        assert_eq!(value(&files, "memory.high"), "573780715");
-        assert_eq!(value(&files, "memory.swap.max"), "0");
-        assert_eq!(value(&files, "cpu.max"), "200000 100000");
-        assert_eq!(value(&files, "pids.max"), "64");
+    fn cgroup_limits_follow_the_vm_shape() {
+        // The limits a 2 vCPU, 512 MiB VM gets, and those of a single vCPU VM.
+        {
+            // 512 MiB of RAM plus 64 MiB of overhead is 576 MiB.
+            let files = limit_files(VmLimits {
+                vcpus: 2,
+                memory_mib: 512,
+            });
+            assert_eq!(value(&files, "memory.max"), "603979776");
+            // 95% of 603979776, rounded down to a whole 1/100 of the cap first.
+            assert_eq!(value(&files, "memory.high"), "573780715");
+            assert_eq!(value(&files, "memory.swap.max"), "0");
+            assert_eq!(value(&files, "cpu.max"), "200000 100000");
+            assert_eq!(value(&files, "pids.max"), "64");
+        }
+        // A single vCPU is one full period.
+        {
+            let files = limit_files(VmLimits {
+                vcpus: 1,
+                memory_mib: 0,
+            });
+            assert_eq!(value(&files, "cpu.max"), "100000 100000");
+            assert_eq!(value(&files, "memory.max"), "67108864");
+        }
     }
 
     #[test]
-    fn a_single_vcpu_is_one_full_period() {
-        let files = limit_files(VmLimits {
-            vcpus: 1,
-            memory_mib: 0,
-        });
-        assert_eq!(value(&files, "cpu.max"), "100000 100000");
-        assert_eq!(value(&files, "memory.max"), "67108864");
-    }
-
-    #[test]
-    fn the_root_is_the_user_managers_slice() {
+    fn cgroup_root_comes_from_the_user_manager_slice() {
         let mount = Path::new("/sys/fs/cgroup");
-        let line = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x.scope\n";
-        assert_eq!(
-            root_from_proc_cgroup(mount, line),
-            Ok(PathBuf::from(
-                "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/agentplaza.slice"
-            ))
-        );
-    }
-
-    #[test]
-    fn a_process_outside_a_user_manager_has_no_root() {
-        let mount = Path::new("/sys/fs/cgroup");
-        assert!(root_from_proc_cgroup(mount, "0::/system.slice/sshd.service\n").is_err());
-        // A cgroup v1 entry is not a v2 path at all.
-        assert!(root_from_proc_cgroup(mount, "12:cpu,cpuacct:/user.slice\n").is_err());
+        // The root is the user manager's slice of the caller's own cgroup.
+        {
+            let line = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-x.scope\n";
+            assert_eq!(
+                root_from_proc_cgroup(mount, line),
+                Ok(PathBuf::from(
+                    "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/agentplaza.slice"
+                ))
+            );
+        }
+        // A process outside a user manager has no root.
+        {
+            assert!(root_from_proc_cgroup(mount, "0::/system.slice/sshd.service\n").is_err());
+            // A cgroup v1 entry is not a v2 path at all.
+            assert!(root_from_proc_cgroup(mount, "12:cpu,cpuacct:/user.slice\n").is_err());
+        }
     }
 
     #[test]

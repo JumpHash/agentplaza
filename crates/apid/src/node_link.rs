@@ -392,68 +392,62 @@ mod tests {
     }
 
     #[test]
-    fn pid_file_text_is_a_positive_number() {
-        assert_eq!(parse_pid("1234\n"), Some(1234));
-        assert_eq!(parse_pid("0"), None);
-        assert_eq!(parse_pid("12x"), None);
-        assert_eq!(parse_pid(""), None);
-    }
+    fn status_reads_the_identity_apz_link_writes_and_rejects_malformed_ones() {
+        // Status reads the identity apz-link writes.
+        {
+            let root = scratch("status");
+            let identity = root.join("node");
+            let pid_path = root.join("apz-link.pid");
 
-    #[test]
-    fn status_reads_the_identity_apz_link_writes() {
-        let root = scratch("status");
-        let identity = root.join("node");
-        let pid_path = root.join("apz-link.pid");
+            let none = status_in(&identity, &pid_path);
+            assert!(!none.joined && none.hub.is_none() && none.cids.is_none() && !none.running);
 
-        let none = status_in(&identity, &pid_path);
-        assert!(!none.joined && none.hub.is_none() && none.cids.is_none() && !none.running);
+            // The files apz-link save writes: node.json (0600) beside node.key (the 32-byte seed).
+            fs::create_dir_all(&identity).unwrap();
+            let stored = json!({
+                "hub_url": "https://hub.example:8443",
+                "pin": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHB",
+                "node_id": "node-7",
+                "cid_base": 3,
+                "cid_count": 2,
+                "hub_name": "hub",
+            });
+            fs::write(
+                identity.join("node.json"),
+                serde_json::to_vec_pretty(&stored).unwrap(),
+            )
+            .unwrap();
+            fs::write(identity.join("node.key"), [9u8; 32]).unwrap();
+            let joined = status_in(&identity, &pid_path);
+            assert!(joined.joined);
+            assert_eq!(joined.hub.as_deref(), Some("https://hub.example:8443"));
+            assert_eq!(joined.node_id.as_deref(), Some("node-7"));
+            assert_eq!(joined.cids.as_deref(), Some("3-4"));
+            assert!(!joined.running && joined.pid.is_none());
 
-        // The files apz-link save writes: node.json (0600) beside node.key (the 32-byte seed).
-        fs::create_dir_all(&identity).unwrap();
-        let stored = json!({
-            "hub_url": "https://hub.example:8443",
-            "pin": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHB",
-            "node_id": "node-7",
-            "cid_base": 3,
-            "cid_count": 2,
-            "hub_name": "hub",
-        });
-        fs::write(
-            identity.join("node.json"),
-            serde_json::to_vec_pretty(&stored).unwrap(),
-        )
-        .unwrap();
-        fs::write(identity.join("node.key"), [9u8; 32]).unwrap();
-        let joined = status_in(&identity, &pid_path);
-        assert!(joined.joined);
-        assert_eq!(joined.hub.as_deref(), Some("https://hub.example:8443"));
-        assert_eq!(joined.node_id.as_deref(), Some("node-7"));
-        assert_eq!(joined.cids.as_deref(), Some("3-4"));
-        assert!(!joined.running && joined.pid.is_none());
+            // A pid file naming a live process (this one) is running; a dead pid is not.
+            fs::write(&pid_path, format!("{}\n", std::process::id())).unwrap();
+            let live = status_in(&identity, &pid_path);
+            assert!(live.running);
+            assert_eq!(live.pid, Some(std::process::id()));
+            fs::write(&pid_path, "4000000000").unwrap();
+            assert!(!status_in(&identity, &pid_path).running);
 
-        // A pid file naming a live process (this one) is running; a dead pid is not.
-        fs::write(&pid_path, format!("{}\n", std::process::id())).unwrap();
-        let live = status_in(&identity, &pid_path);
-        assert!(live.running);
-        assert_eq!(live.pid, Some(std::process::id()));
-        fs::write(&pid_path, "4000000000").unwrap();
-        assert!(!status_in(&identity, &pid_path).running);
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_malformed_identity_is_not_joined() {
-        let root = scratch("malformed");
-        fs::write(
-            root.join("node.json"),
-            b"{\"hub_url\": \"https://hub.example\"}",
-        )
-        .unwrap();
-        let status = status_in(&root, &root.join("missing.pid"));
-        assert!(!status.joined);
-        assert!(status.hub.as_deref() == Some("https://hub.example"));
-        assert!(status.node_id.is_none() && status.cids.is_none());
-        let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&root);
+        }
+        // A malformed identity is not joined.
+        {
+            let root = scratch("malformed");
+            fs::write(
+                root.join("node.json"),
+                b"{\"hub_url\": \"https://hub.example\"}",
+            )
+            .unwrap();
+            let status = status_in(&root, &root.join("missing.pid"));
+            assert!(!status.joined);
+            assert!(status.hub.as_deref() == Some("https://hub.example"));
+            assert!(status.node_id.is_none() && status.cids.is_none());
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 }

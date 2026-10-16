@@ -436,141 +436,145 @@ mod tests {
     }
 
     #[test]
-    fn the_linux_unit_runs_as_the_agents_user_with_its_own_state() {
-        let plan = plan_service(&spec(Os::Linux, "agentplaza"));
-        let text = plan.render().join("\n");
-        assert!(
-            text.contains(
-                "install -d -m 700 -o agentplaza -g agentplaza /var/lib/agentplaza-workstation"
-            ),
-            "{text}"
-        );
-        assert!(
-            text.contains("write /etc/systemd/system/apz-workstation.service"),
-            "{text}"
-        );
-        assert!(
-            text.contains("$ systemctl enable --now apz-workstation.service"),
-            "{text}"
-        );
-        assert!(plan.privileged);
-        let unit = match &plan.steps[2] {
-            crate::plan::Step::Write { contents, mode, .. } => {
-                assert_eq!(*mode, 0o644);
-                contents.clone()
-            }
-            other => panic!("not the unit: {other:?}"),
-        };
-        assert!(unit.contains("User=agentplaza\n"), "{unit}");
-        assert!(unit.contains("ExecStart=/opt/ap/apz-workstation run --state-dir /var/lib/agentplaza-workstation\n"), "{unit}");
-        assert!(unit.contains("Restart=always"));
+    fn the_service_plans_match_each_os_and_account() {
+        // Linux, the agent's user: the unit runs as that user with its own state.
+        {
+            let plan = plan_service(&spec(Os::Linux, "agentplaza"));
+            let text = plan.render().join("\n");
+            assert!(
+                text.contains(
+                    "install -d -m 700 -o agentplaza -g agentplaza /var/lib/agentplaza-workstation"
+                ),
+                "{text}"
+            );
+            assert!(
+                text.contains("write /etc/systemd/system/apz-workstation.service"),
+                "{text}"
+            );
+            assert!(
+                text.contains("$ systemctl enable --now apz-workstation.service"),
+                "{text}"
+            );
+            assert!(plan.privileged);
+            let unit = match &plan.steps[2] {
+                crate::plan::Step::Write { contents, mode, .. } => {
+                    assert_eq!(*mode, 0o644);
+                    contents.clone()
+                }
+                other => panic!("not the unit: {other:?}"),
+            };
+            assert!(unit.contains("User=agentplaza\n"), "{unit}");
+            assert!(unit.contains("ExecStart=/opt/ap/apz-workstation run --state-dir /var/lib/agentplaza-workstation\n"), "{unit}");
+            assert!(unit.contains("Restart=always"));
+        }
+        // Linux, the owner's shared session: the unit stays in the owner's state.
+        {
+            let plan = plan_service(&spec(Os::Linux, "zarathos"));
+            let text = plan.render().join("\n");
+            assert!(!text.contains("/var/lib/agentplaza-workstation"), "{text}");
+            assert!(!text.contains("install -m 600"), "{text}");
+            let unit = match &plan.steps[0] {
+                crate::plan::Step::Write { contents, .. } => contents.clone(),
+                other => panic!("not the unit: {other:?}"),
+            };
+            assert!(unit.contains("User=zarathos\n"), "{unit}");
+            assert!(
+                unit.contains("--state-dir /home/zarathos/.local/state/agentplaza-workstation"),
+                "{unit}"
+            );
+        }
+        // macOS, the agent's account: the plist is a launch agent in that account's session.
+        {
+            let plan = plan_service(&spec(Os::Macos, "agentplaza"));
+            let text = plan.render().join("\n");
+            assert!(
+                text.contains(
+                    "/home/agentplaza/Library/LaunchAgents/com.agentplaza.workstation.plist"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("$ chown agentplaza:staff"), "{text}");
+            assert!(text.contains("$ launchctl bootstrap gui/1001"), "{text}");
+            let plist = plan
+                .steps
+                .iter()
+                .find_map(|s| match s {
+                    crate::plan::Step::Write { contents, .. } => Some(contents.clone()),
+                    _ => None,
+                })
+                .expect("a plist");
+            assert!(plist.contains("<string>com.agentplaza.workstation</string>"));
+            assert!(plist.contains("<string>run</string>"));
+            assert!(plist.contains("<true/>"));
+        }
+        // macOS, the owner: the plist needs no administrator rights.
+        {
+            let plan = plan_service(&spec(Os::Macos, "zarathos"));
+            assert!(!plan.privileged);
+            assert!(!plan.render().join("\n").contains("chown"));
+        }
+        // Windows, the agent's account: a logon task in that session, with no password
+        // and no immediate start.
+        {
+            let plan = plan_service(&spec(Os::Windows, "agentplaza"));
+            let text = plan.render().join("\n");
+            assert!(
+                text.contains("$ schtasks /Create /TN \"AgentPlaza Workstation\""),
+                "{text}"
+            );
+            assert!(text.contains("/SC ONLOGON /RU agentplaza /IT /F"), "{text}");
+            assert!(!text.contains("/RP"), "{text}");
+            assert!(text.contains("/grant agentplaza:(OI)(CI)M /T"), "{text}");
+            assert!(
+                !text.contains("schtasks /Run"),
+                "an agents' task starts at its logon: {text}"
+            );
+        }
+        // Windows, the owner: the task starts now, and the plan is not privileged.
+        {
+            let plan = plan_service(&spec(Os::Windows, "zarathos"));
+            assert!(
+                plan.render()
+                    .join("\n")
+                    .contains("$ schtasks /Run /TN \"AgentPlaza Workstation\"")
+            );
+            assert!(!plan.privileged);
+        }
     }
 
     #[test]
-    fn the_linux_unit_for_the_owners_shared_session_stays_in_the_owners_state() {
-        let plan = plan_service(&spec(Os::Linux, "zarathos"));
-        let text = plan.render().join("\n");
-        assert!(!text.contains("/var/lib/agentplaza-workstation"), "{text}");
-        assert!(!text.contains("install -m 600"), "{text}");
-        let unit = match &plan.steps[0] {
-            crate::plan::Step::Write { contents, .. } => contents.clone(),
-            other => panic!("not the unit: {other:?}"),
-        };
-        assert!(unit.contains("User=zarathos\n"), "{unit}");
-        assert!(
-            unit.contains("--state-dir /home/zarathos/.local/state/agentplaza-workstation"),
-            "{unit}"
-        );
-    }
-
-    #[test]
-    fn the_macos_plist_is_a_launch_agent_in_the_accounts_session() {
-        let plan = plan_service(&spec(Os::Macos, "agentplaza"));
-        let text = plan.render().join("\n");
-        assert!(
-            text.contains("/home/agentplaza/Library/LaunchAgents/com.agentplaza.workstation.plist"),
-            "{text}"
-        );
-        assert!(text.contains("$ chown agentplaza:staff"), "{text}");
-        assert!(text.contains("$ launchctl bootstrap gui/1001"), "{text}");
-        let plist = plan
-            .steps
-            .iter()
-            .find_map(|s| match s {
-                crate::plan::Step::Write { contents, .. } => Some(contents.clone()),
-                _ => None,
-            })
-            .expect("a plist");
-        assert!(plist.contains("<string>com.agentplaza.workstation</string>"));
-        assert!(plist.contains("<string>run</string>"));
-        assert!(plist.contains("<true/>"));
-    }
-
-    #[test]
-    fn the_macos_owner_plist_needs_no_administrator_rights() {
-        let plan = plan_service(&spec(Os::Macos, "zarathos"));
-        assert!(!plan.privileged);
-        assert!(!plan.render().join("\n").contains("chown"));
-    }
-
-    #[test]
-    fn windows_runs_a_logon_task_in_the_accounts_session_without_a_password() {
-        let plan = plan_service(&spec(Os::Windows, "agentplaza"));
-        let text = plan.render().join("\n");
-        assert!(
-            text.contains("$ schtasks /Create /TN \"AgentPlaza Workstation\""),
-            "{text}"
-        );
-        assert!(text.contains("/SC ONLOGON /RU agentplaza /IT /F"), "{text}");
-        assert!(!text.contains("/RP"), "{text}");
-        assert!(text.contains("/grant agentplaza:(OI)(CI)M /T"), "{text}");
-        assert!(
-            !text.contains("schtasks /Run"),
-            "an agents' task starts at its logon: {text}"
-        );
-    }
-
-    #[test]
-    fn windows_for_the_owner_starts_the_task_now() {
-        let plan = plan_service(&spec(Os::Windows, "zarathos"));
-        assert!(
-            plan.render()
-                .join("\n")
-                .contains("$ schtasks /Run /TN \"AgentPlaza Workstation\"")
-        );
-        assert!(!plan.privileged);
-    }
-
-    #[test]
-    fn removing_the_service_stops_it_and_deletes_its_file() {
-        let linux = plan_remove(&spec(Os::Linux, "agentplaza"))
-            .render()
-            .join("\n");
-        assert!(linux.contains("$ systemctl disable --now apz-workstation.service"));
-        assert!(linux.contains("$ rm -f /etc/systemd/system/apz-workstation.service"));
-        let mac = plan_remove(&spec(Os::Macos, "agentplaza"))
-            .render()
-            .join("\n");
-        assert!(mac.contains("$ launchctl bootout gui/1001"));
-        let win = plan_remove(&spec(Os::Windows, "agentplaza"))
-            .render()
-            .join("\n");
-        assert!(win.contains("$ schtasks /Delete /TN \"AgentPlaza Workstation\" /F"));
-    }
-
-    #[test]
-    fn removing_the_agents_service_also_removes_its_copy_of_the_record() {
-        let linux = plan_remove(&spec(Os::Linux, "agentplaza"))
-            .render()
-            .join("\n");
-        assert!(
-            linux.contains("$ rm -f /var/lib/agentplaza-workstation/station.json"),
-            "{linux}"
-        );
-        let owners = plan_remove(&spec(Os::Linux, "zarathos"))
-            .render()
-            .join("\n");
-        assert!(!owners.contains("station.json"), "{owners}");
+    fn removing_the_service_stops_it_and_deletes_its_files() {
+        // Removal stops the service and deletes its file on every OS.
+        {
+            let linux = plan_remove(&spec(Os::Linux, "agentplaza"))
+                .render()
+                .join("\n");
+            assert!(linux.contains("$ systemctl disable --now apz-workstation.service"));
+            assert!(linux.contains("$ rm -f /etc/systemd/system/apz-workstation.service"));
+            let mac = plan_remove(&spec(Os::Macos, "agentplaza"))
+                .render()
+                .join("\n");
+            assert!(mac.contains("$ launchctl bootout gui/1001"));
+            let win = plan_remove(&spec(Os::Windows, "agentplaza"))
+                .render()
+                .join("\n");
+            assert!(win.contains("$ schtasks /Delete /TN \"AgentPlaza Workstation\" /F"));
+        }
+        // Removing the agent's service also removes its copy of the record; the owner's
+        // removal does not touch a record.
+        {
+            let linux = plan_remove(&spec(Os::Linux, "agentplaza"))
+                .render()
+                .join("\n");
+            assert!(
+                linux.contains("$ rm -f /var/lib/agentplaza-workstation/station.json"),
+                "{linux}"
+            );
+            let owners = plan_remove(&spec(Os::Linux, "zarathos"))
+                .render()
+                .join("\n");
+            assert!(!owners.contains("station.json"), "{owners}");
+        }
     }
 
     #[test]

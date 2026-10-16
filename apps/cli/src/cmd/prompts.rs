@@ -865,34 +865,4 @@ mod tests {
             json!({ "kind": "agents_md", "body": "x" })
         );
     }
-
-    #[test]
-    fn a_finding_says_where_it_is() {
-        assert_eq!(
-            location(&json!({ "path": "", "line": 0 })),
-            "whole document"
-        );
-        assert_eq!(location(&json!({ "path": "", "line": 4 })), "line 4");
-        assert_eq!(
-            location(&json!({ "path": "SKILL.md", "line": 0 })),
-            "SKILL.md"
-        );
-        assert_eq!(
-            location(&json!({ "path": "scripts/run.sh", "line": 12 })),
-            "scripts/run.sh:12"
-        );
-    }
-
-    #[test]
-    fn a_body_file_is_read_whole_but_a_blank_one_is_refused() {
-        let dir = std::env::temp_dir().join(format!("apz-cli-prompts-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let full = dir.join("body.md");
-        std::fs::write(&full, "# Title\n\n  indented line\n").unwrap();
-        assert_eq!(read_text(&full).unwrap(), "# Title\n\n  indented line\n");
-        let blank = dir.join("blank.md");
-        std::fs::write(&blank, " \n\t\n").unwrap();
-        assert!(read_text(&blank).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

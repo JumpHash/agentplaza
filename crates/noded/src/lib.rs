@@ -1509,46 +1509,49 @@ mod tests {
         physical id\t: 0\ncore id\t\t: 1\n";
 
     #[test]
-    fn cpuinfo_counts_threads_and_distinct_cores() {
-        let cpu = parse_cpuinfo(X86_CPUINFO, None, 1);
-        assert_eq!(
-            cpu,
-            Cpu {
-                model: "AMD Ryzen 9 5900X 12-Core Processor".into(),
-                cores: 2,
-                threads: 4
-            }
-        );
-    }
+    fn cpuinfo_is_parsed_into_model_cores_and_threads() {
+        // cpuinfo_counts_threads_and_distinct_cores: an x86 listing counts threads and distinct cores.
+        {
+            let cpu = parse_cpuinfo(X86_CPUINFO, None, 1);
+            assert_eq!(
+                cpu,
+                Cpu {
+                    model: "AMD Ryzen 9 5900X 12-Core Processor".into(),
+                    cores: 2,
+                    threads: 4
+                }
+            );
+        }
 
-    #[test]
-    fn arm_cpuinfo_falls_back_to_the_device_tree_model_then_hardware() {
-        let arm = "processor\t: 0\nBogoMIPS\t: 108.00\nCPU implementer\t: 0x41\n\nprocessor\t: 1\nBogoMIPS\t: 108.00\n\
-            Hardware\t: BCM2835\nModel\t\t: Raspberry Pi 4 Model B\n";
-        let tree = parse_cpuinfo(arm, Some("Raspberry Pi 4 Model B Rev 1.4"), 4);
-        assert_eq!(
-            tree,
-            Cpu {
-                model: "Raspberry Pi 4 Model B Rev 1.4".into(),
-                cores: 2,
-                threads: 2
-            }
-        );
-        let hardware = parse_cpuinfo(arm, None, 4);
-        assert_eq!(hardware.model, "BCM2835");
-    }
+        // arm_cpuinfo_falls_back_to_the_device_tree_model_then_hardware: the device tree model, then the Hardware line.
+        {
+            let arm = "processor\t: 0\nBogoMIPS\t: 108.00\nCPU implementer\t: 0x41\n\nprocessor\t: 1\nBogoMIPS\t: 108.00\n\
+                Hardware\t: BCM2835\nModel\t\t: Raspberry Pi 4 Model B\n";
+            let tree = parse_cpuinfo(arm, Some("Raspberry Pi 4 Model B Rev 1.4"), 4);
+            assert_eq!(
+                tree,
+                Cpu {
+                    model: "Raspberry Pi 4 Model B Rev 1.4".into(),
+                    cores: 2,
+                    threads: 2
+                }
+            );
+            let hardware = parse_cpuinfo(arm, None, 4);
+            assert_eq!(hardware.model, "BCM2835");
+        }
 
-    #[test]
-    fn cpuinfo_without_processors_reports_the_logical_count() {
-        let cpu = parse_cpuinfo("", None, 6);
-        assert_eq!(
-            cpu,
-            Cpu {
-                model: "unknown".into(),
-                cores: 6,
-                threads: 6
-            }
-        );
+        // cpuinfo_without_processors_reports_the_logical_count: no processors reports the logical count.
+        {
+            let cpu = parse_cpuinfo("", None, 6);
+            assert_eq!(
+                cpu,
+                Cpu {
+                    model: "unknown".into(),
+                    cores: 6,
+                    threads: 6
+                }
+            );
+        }
     }
 
     #[test]
@@ -1567,55 +1570,58 @@ mod tests {
     }
 
     #[test]
-    fn kind_follows_the_chassis_table() {
-        for chassis in [8, 9, 10, 14, 31, 32] {
+    fn kind_follows_the_chassis_table_then_form_factor() {
+        // kind_follows_the_chassis_table: the chassis codes decide; a battery counts only when the chassis says nothing.
+        {
+            for chassis in [8, 9, 10, 14, 31, 32] {
+                assert_eq!(
+                    kind_of(false, false, Some(chassis), false),
+                    "laptop",
+                    "chassis {chassis}"
+                );
+            }
+            for chassis in [17, 23, 25, 28] {
+                assert_eq!(
+                    kind_of(false, false, Some(chassis), false),
+                    "server",
+                    "chassis {chassis}"
+                );
+            }
+            for chassis in [3, 4, 6, 7] {
+                assert_eq!(
+                    kind_of(false, false, Some(chassis), false),
+                    "workstation",
+                    "chassis {chassis}"
+                );
+            }
+            assert_eq!(kind_of(false, false, None, false), "workstation");
             assert_eq!(
-                kind_of(false, false, Some(chassis), false),
-                "laptop",
-                "chassis {chassis}"
-            );
-        }
-        for chassis in [17, 23, 25, 28] {
-            assert_eq!(
-                kind_of(false, false, Some(chassis), false),
+                kind_of(false, false, Some(17), true),
                 "server",
-                "chassis {chassis}"
+                "the chassis wins over a battery (a UPS)"
             );
-        }
-        for chassis in [3, 4, 6, 7] {
             assert_eq!(
-                kind_of(false, false, Some(chassis), false),
+                kind_of(false, false, Some(3), true),
                 "workstation",
-                "chassis {chassis}"
+                "a desktop on a UPS"
+            );
+            assert_eq!(
+                kind_of(false, false, None, true),
+                "laptop",
+                "a battery when the chassis says nothing"
+            );
+            assert_eq!(
+                kind_of(false, false, Some(2), true),
+                "laptop",
+                "chassis 2 is Unknown"
             );
         }
-        assert_eq!(kind_of(false, false, None, false), "workstation");
-        assert_eq!(
-            kind_of(false, false, Some(17), true),
-            "server",
-            "the chassis wins over a battery (a UPS)"
-        );
-        assert_eq!(
-            kind_of(false, false, Some(3), true),
-            "workstation",
-            "a desktop on a UPS"
-        );
-        assert_eq!(
-            kind_of(false, false, None, true),
-            "laptop",
-            "a battery when the chassis says nothing"
-        );
-        assert_eq!(
-            kind_of(false, false, Some(2), true),
-            "laptop",
-            "chassis 2 is Unknown"
-        );
-    }
 
-    #[test]
-    fn kind_puts_phones_and_single_board_computers_first() {
-        assert_eq!(kind_of(true, false, Some(10), true), "phone");
-        assert_eq!(kind_of(false, true, Some(3), false), "edge");
+        // kind_puts_phones_and_single_board_computers_first: a phone or an edge board wins over the chassis.
+        {
+            assert_eq!(kind_of(true, false, Some(10), true), "phone");
+            assert_eq!(kind_of(false, true, Some(3), false), "edge");
+        }
     }
 
     #[test]
@@ -2504,14 +2510,47 @@ mod snapshot_route_tests {
     }
 
     #[test]
-    fn a_node_with_no_snapshot_dir_refuses_every_snapshot_route_with_409() {
-        let node = node(None);
-        assert_eq!(sleep_vm(&node, "r1", "0", b"").status, 409);
-        assert_eq!(checkpoint_list(&node, "r1", "0").status, 409);
-        assert_eq!(checkpoint_create(&node, "r1", "0", b"").status, 409);
-        assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
-        assert_eq!(checkpoint_delete(&node, "r1", "0", "cp-1-x").status, 409);
-        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 2}"#).status, 409);
+    fn snapshot_routes_refuse_bad_ids_bodies_and_unknown_runs() {
+        // a_node_with_no_snapshot_dir_refuses_every_snapshot_route_with_409: no snapshot dir means 409 on every route.
+        {
+            let node = node(None);
+            assert_eq!(sleep_vm(&node, "r1", "0", b"").status, 409);
+            assert_eq!(checkpoint_list(&node, "r1", "0").status, 409);
+            assert_eq!(checkpoint_create(&node, "r1", "0", b"").status, 409);
+            assert_eq!(checkpoint_restore(&node, "r1", "0", "cp-1-x").status, 409);
+            assert_eq!(checkpoint_delete(&node, "r1", "0", "cp-1-x").status, 409);
+            assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 2}"#).status, 409);
+        }
+
+        // a_vm_index_that_is_not_a_number_is_a_404.
+        {
+            let node = node(None);
+            assert_eq!(sleep_vm(&node, "r1", "x", b"").status, 404);
+            assert_eq!(checkpoint_list(&node, "r1", "x").status, 404);
+            assert_eq!(checkpoint_create(&node, "r1", "x", b"").status, 404);
+            assert_eq!(fork_vm(&node, "r1", "x", br#"{"n": 1}"#).status, 404);
+        }
+
+        // a_malformed_snapshot_body_is_a_400.
+        {
+            let dir = std::env::temp_dir().join(format!("apz-noded-routes-{}", std::process::id()));
+            let node = node(Some(dir));
+            assert_eq!(checkpoint_create(&node, "r1", "0", b"{").status, 400);
+            assert_eq!(fork_vm(&node, "r1", "0", b"not json").status, 400);
+            assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 0}"#).status, 400);
+            assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 9}"#).status, 400);
+        }
+
+        // a_snapshot_route_on_an_unknown_run_is_a_404.
+        {
+            let dir =
+                std::env::temp_dir().join(format!("apz-noded-unknown-{}", std::process::id()));
+            let node = node(Some(dir));
+            assert_eq!(sleep_vm(&node, "r9", "0", b"").status, 404);
+            assert_eq!(checkpoint_list(&node, "r9", "0").status, 404);
+            assert_eq!(checkpoint_restore(&node, "r9", "0", "cp-1-x").status, 404);
+            assert_eq!(checkpoint_delete(&node, "r9", "0", "cp-1-x").status, 404);
+        }
     }
 
     /// A JSON response's body.
@@ -2563,25 +2602,6 @@ mod snapshot_route_tests {
     }
 
     #[test]
-    fn a_vm_index_that_is_not_a_number_is_a_404() {
-        let node = node(None);
-        assert_eq!(sleep_vm(&node, "r1", "x", b"").status, 404);
-        assert_eq!(checkpoint_list(&node, "r1", "x").status, 404);
-        assert_eq!(checkpoint_create(&node, "r1", "x", b"").status, 404);
-        assert_eq!(fork_vm(&node, "r1", "x", br#"{"n": 1}"#).status, 404);
-    }
-
-    #[test]
-    fn a_malformed_snapshot_body_is_a_400() {
-        let dir = std::env::temp_dir().join(format!("apz-noded-routes-{}", std::process::id()));
-        let node = node(Some(dir));
-        assert_eq!(checkpoint_create(&node, "r1", "0", b"{").status, 400);
-        assert_eq!(fork_vm(&node, "r1", "0", b"not json").status, 400);
-        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 0}"#).status, 400);
-        assert_eq!(fork_vm(&node, "r1", "0", br#"{"n": 9}"#).status, 400);
-    }
-
-    #[test]
     fn the_sleep_wake_and_fork_bodies_default_to_memory_and_no_checkpoint() {
         assert!(memory_flag(b"").unwrap());
         assert!(memory_flag(b" \n").unwrap());
@@ -2595,16 +2615,6 @@ mod snapshot_route_tests {
             serde_json::from_slice(br#"{"n": 1, "checkpoint": "cp-1-x"}"#).unwrap();
         assert_eq!(named.checkpoint.as_deref(), Some("cp-1-x"));
     }
-
-    #[test]
-    fn a_snapshot_route_on_an_unknown_run_is_a_404() {
-        let dir = std::env::temp_dir().join(format!("apz-noded-unknown-{}", std::process::id()));
-        let node = node(Some(dir));
-        assert_eq!(sleep_vm(&node, "r9", "0", b"").status, 404);
-        assert_eq!(checkpoint_list(&node, "r9", "0").status, 404);
-        assert_eq!(checkpoint_restore(&node, "r9", "0", "cp-1-x").status, 404);
-        assert_eq!(checkpoint_delete(&node, "r9", "0", "cp-1-x").status, 404);
-    }
 }
 
 #[cfg(test)]
@@ -2612,37 +2622,22 @@ mod identity_tests {
     use super::*;
 
     #[test]
-    fn vendors_are_lower_case_short_names() {
-        assert_eq!(normalize_vendor("Dell Inc.").as_deref(), Some("dell"));
-        assert_eq!(normalize_vendor("LENOVO").as_deref(), Some("lenovo"));
-        assert_eq!(
-            normalize_vendor("ASUSTeK COMPUTER INC.").as_deref(),
-            Some("asus")
-        );
-        assert_eq!(
-            normalize_vendor("Micro-Star International Co., Ltd.").as_deref(),
-            Some("msi")
-        );
-        assert_eq!(
-            normalize_vendor("Gigabyte Technology Co., Ltd.").as_deref(),
-            Some("gigabyte")
-        );
-        assert_eq!(normalize_vendor("HP").as_deref(), Some("hp"));
-        assert_eq!(normalize_vendor("Hewlett-Packard").as_deref(), Some("hp"));
-        assert_eq!(normalize_vendor("Apple Inc.").as_deref(), Some("apple"));
-        assert_eq!(
-            normalize_vendor("Raspberry Pi").as_deref(),
-            Some("raspberrypi")
-        );
-        assert_eq!(
-            normalize_vendor("Raspberry Pi 5 Model B Rev 1.0").as_deref(),
-            Some("raspberrypi")
-        );
-        assert_eq!(normalize_vendor("samsung").as_deref(), Some("samsung"));
-    }
-
-    #[test]
-    fn placeholder_vendors_are_unknown() {
+    fn normalize_vendor_gives_lower_case_short_names_and_hides_placeholders() {
+        for (raw, want) in [
+            ("Dell Inc.", Some("dell")),
+            ("LENOVO", Some("lenovo")),
+            ("ASUSTeK COMPUTER INC.", Some("asus")),
+            ("Micro-Star International Co., Ltd.", Some("msi")),
+            ("Gigabyte Technology Co., Ltd.", Some("gigabyte")),
+            ("HP", Some("hp")),
+            ("Hewlett-Packard", Some("hp")),
+            ("Apple Inc.", Some("apple")),
+            ("Raspberry Pi", Some("raspberrypi")),
+            ("Raspberry Pi 5 Model B Rev 1.0", Some("raspberrypi")),
+            ("samsung", Some("samsung")),
+        ] {
+            assert_eq!(normalize_vendor(raw).as_deref(), want, "{raw:?}");
+        }
         for raw in [
             "System manufacturer",
             "To Be Filled By O.E.M.",
@@ -2676,127 +2671,133 @@ mod identity_tests {
     }
 
     #[test]
-    fn windows_desktop_gives_memory_chassis_and_maker() {
-        // 16 GiB, a desktop chassis (3), no battery.
-        let desktop = parse_windows_system("17179869184|3|0|Dell Inc.|XPS 8950\r\n");
-        assert_eq!(
-            desktop,
-            WindowsSystem {
-                vendor: Some("dell".into()),
-                model: Some("XPS 8950".into()),
-                memory_mib: 16384,
-                chassis: Some(3),
-                battery: false
-            }
-        );
-        assert_eq!(
-            kind_of(false, false, desktop.chassis, desktop.battery),
-            "workstation"
-        );
+    fn windows_system_reads_memory_chassis_battery_and_maker() {
+        // windows_desktop_gives_memory_chassis_and_maker: a desktop chassis with no battery.
+        {
+            // 16 GiB, a desktop chassis (3), no battery.
+            let desktop = parse_windows_system("17179869184|3|0|Dell Inc.|XPS 8950\r\n");
+            assert_eq!(
+                desktop,
+                WindowsSystem {
+                    vendor: Some("dell".into()),
+                    model: Some("XPS 8950".into()),
+                    memory_mib: 16384,
+                    chassis: Some(3),
+                    battery: false
+                }
+            );
+            assert_eq!(
+                kind_of(false, false, desktop.chassis, desktop.battery),
+                "workstation"
+            );
+        }
+
+        // windows_laptop_with_a_battery_is_a_laptop: a notebook or convertible chassis with a battery.
+        {
+            // 32 GiB, a notebook chassis (10), one battery.
+            let laptop = parse_windows_system("34359738368|10|1|Dell Inc.|XPS 13 9310\r\n");
+            assert_eq!(
+                laptop,
+                WindowsSystem {
+                    vendor: Some("dell".into()),
+                    model: Some("XPS 13 9310".into()),
+                    memory_mib: 32768,
+                    chassis: Some(10),
+                    battery: true
+                }
+            );
+            assert_eq!(
+                kind_of(false, false, laptop.chassis, laptop.battery),
+                "laptop"
+            );
+            // A convertible (31) is a laptop too.
+            let convertible = parse_windows_system("34359738368|31|1|LENOVO|21HM001QUS");
+            assert_eq!(
+                kind_of(false, false, convertible.chassis, convertible.battery),
+                "laptop"
+            );
+        }
+
+        // windows_server_chassis_is_a_server: a rack mount chassis is a server.
+        {
+            // 128 GiB, a rack mount chassis (23), no battery.
+            let server = parse_windows_system("137438953472|23|0|Dell Inc.|PowerEdge R740\r\n");
+            assert_eq!(server.memory_mib, 131072);
+            assert_eq!(server.chassis, Some(23));
+            assert_eq!(
+                kind_of(false, false, server.chassis, server.battery),
+                "server"
+            );
+        }
+
+        // windows_placeholders_and_missing_fields_read_as_absent: placeholders and missing fields read as absent.
+        {
+            let placeholders =
+                parse_windows_system("17179869184|3|0|System manufacturer|System Product Name");
+            assert_eq!(
+                placeholders,
+                WindowsSystem {
+                    vendor: None,
+                    model: None,
+                    memory_mib: 16384,
+                    chassis: Some(3),
+                    battery: false
+                }
+            );
+            // An enclosure that reports no chassis, no memory figure and no probe output at all.
+            assert_eq!(
+                parse_windows_system("||0|Dell Inc.|XPS 13 9310").chassis,
+                None
+            );
+            assert_eq!(
+                parse_windows_system("|||Dell Inc.|XPS 13 9310").memory_mib,
+                0
+            );
+            assert_eq!(
+                parse_windows_system(""),
+                WindowsSystem {
+                    vendor: None,
+                    model: None,
+                    memory_mib: 0,
+                    chassis: None,
+                    battery: false
+                }
+            );
+        }
+
+        // a_windows_model_keeps_its_own_pipes: a model name with a pipe is kept whole.
+        {
+            let system = parse_windows_system("17179869184|3|0|Acme|Model A|B");
+            assert_eq!(system.model.as_deref(), Some("Model A|B"));
+        }
     }
 
     #[test]
-    fn windows_laptop_with_a_battery_is_a_laptop() {
-        // 32 GiB, a notebook chassis (10), one battery.
-        let laptop = parse_windows_system("34359738368|10|1|Dell Inc.|XPS 13 9310\r\n");
-        assert_eq!(
-            laptop,
-            WindowsSystem {
-                vendor: Some("dell".into()),
-                model: Some("XPS 13 9310".into()),
-                memory_mib: 32768,
-                chassis: Some(10),
-                battery: true
-            }
-        );
-        assert_eq!(
-            kind_of(false, false, laptop.chassis, laptop.battery),
-            "laptop"
-        );
-        // A convertible (31) is a laptop too.
-        let convertible = parse_windows_system("34359738368|31|1|LENOVO|21HM001QUS");
-        assert_eq!(
-            kind_of(false, false, convertible.chassis, convertible.battery),
-            "laptop"
-        );
-    }
+    fn maker_pair_reads_android_properties_and_device_tree_models() {
+        // android_properties_give_maker_and_model: getprop output gives the maker and the model.
+        {
+            // getprop prints the value and a newline; the manufacturer is lower-case on most devices.
+            assert_eq!(
+                maker_pair("samsung\n", "SM-S918B\n"),
+                (Some("samsung".into()), Some("SM-S918B".into()))
+            );
+            assert_eq!(
+                maker_pair("Google\n", "Pixel 8\n"),
+                (Some("google".into()), Some("Pixel 8".into()))
+            );
+        }
 
-    #[test]
-    fn windows_server_chassis_is_a_server() {
-        // 128 GiB, a rack mount chassis (23), no battery.
-        let server = parse_windows_system("137438953472|23|0|Dell Inc.|PowerEdge R740\r\n");
-        assert_eq!(server.memory_mib, 131072);
-        assert_eq!(server.chassis, Some(23));
-        assert_eq!(
-            kind_of(false, false, server.chassis, server.battery),
-            "server"
-        );
-    }
-
-    #[test]
-    fn windows_placeholders_and_missing_fields_read_as_absent() {
-        let placeholders =
-            parse_windows_system("17179869184|3|0|System manufacturer|System Product Name");
-        assert_eq!(
-            placeholders,
-            WindowsSystem {
-                vendor: None,
-                model: None,
-                memory_mib: 16384,
-                chassis: Some(3),
-                battery: false
-            }
-        );
-        // An enclosure that reports no chassis, no memory figure and no probe output at all.
-        assert_eq!(
-            parse_windows_system("||0|Dell Inc.|XPS 13 9310").chassis,
-            None
-        );
-        assert_eq!(
-            parse_windows_system("|||Dell Inc.|XPS 13 9310").memory_mib,
-            0
-        );
-        assert_eq!(
-            parse_windows_system(""),
-            WindowsSystem {
-                vendor: None,
-                model: None,
-                memory_mib: 0,
-                chassis: None,
-                battery: false
-            }
-        );
-    }
-
-    #[test]
-    fn a_windows_model_keeps_its_own_pipes() {
-        let system = parse_windows_system("17179869184|3|0|Acme|Model A|B");
-        assert_eq!(system.model.as_deref(), Some("Model A|B"));
-    }
-
-    #[test]
-    fn android_properties_give_maker_and_model() {
-        // getprop prints the value and a newline; the manufacturer is lower-case on most devices.
-        assert_eq!(
-            maker_pair("samsung\n", "SM-S918B\n"),
-            (Some("samsung".into()), Some("SM-S918B".into()))
-        );
-        assert_eq!(
-            maker_pair("Google\n", "Pixel 8\n"),
-            (Some("google".into()), Some("Pixel 8".into()))
-        );
-    }
-
-    #[test]
-    fn a_device_tree_model_is_the_board_and_its_maker() {
-        let tree = parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").unwrap();
-        assert_eq!(
-            maker_pair(&tree, &tree),
-            (
-                Some("raspberrypi".into()),
-                Some("Raspberry Pi 5 Model B Rev 1.0".into())
-            )
-        );
+        // a_device_tree_model_is_the_board_and_its_maker: the device tree model names the board and its maker.
+        {
+            let tree = parse_device_tree_model(b"Raspberry Pi 5 Model B Rev 1.0\0").unwrap();
+            assert_eq!(
+                maker_pair(&tree, &tree),
+                (
+                    Some("raspberrypi".into()),
+                    Some("Raspberry Pi 5 Model B Rev 1.0".into())
+                )
+            );
+        }
     }
 
     #[test]
@@ -2826,12 +2827,6 @@ mod identity_tests {
         let text = "Graphics/Displays:\n\n    Apple M3 Max:\n\n      Chipset Model: Apple M3 Max\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 40\n      Vendor: Apple (0x106b)\n";
         assert_eq!(parse_gpu_cores(text), Some(40));
         assert_eq!(parse_gpu_cores("      Chipset Model: Intel UHD\n"), None);
-    }
-
-    #[test]
-    fn neural_engine_has_32_cores_on_ultra_chips_and_16_elsewhere() {
-        assert_eq!(neural_cores("Apple M3 Max"), 16);
-        assert_eq!(neural_cores("Apple M2 Ultra"), 32);
     }
 
     #[test]
@@ -2865,43 +2860,46 @@ mod accelerator_tests {
     const PCIE_TOPO: &str = "\tGPU0\tCPU Affinity\nGPU0\t X \t0-23\n\nLegend:\n  NV#  = Connection traversing bonded NVLinks\n";
 
     #[test]
-    fn nvidia_rows_parse_with_utilization_and_capability() {
-        let devices = nvidia_accelerators(RTX_QUERY, PCIE_TOPO);
-        assert_eq!(devices.len(), 1);
-        let gpu = &devices[0];
-        assert_eq!(gpu.name, "NVIDIA GeForce RTX 3090");
-        assert_eq!(
-            (gpu.index, gpu.memory_mib, gpu.mem_used_mib, gpu.util_pct),
-            (0, Some(24576), Some(5803), Some(36))
-        );
-        assert_eq!(gpu.capability.as_deref(), Some("8.6"));
-        assert_eq!(
-            (gpu.vendor, gpu.backend, gpu.link, gpu.busy),
-            ("nvidia", "cuda", "pcie", false)
-        );
-    }
+    fn nvidia_accelerators_parse_rows_links_and_names() {
+        // nvidia_rows_parse_with_utilization_and_capability: a row gives name, memory, utilization and capability.
+        {
+            let devices = nvidia_accelerators(RTX_QUERY, PCIE_TOPO);
+            assert_eq!(devices.len(), 1);
+            let gpu = &devices[0];
+            assert_eq!(gpu.name, "NVIDIA GeForce RTX 3090");
+            assert_eq!(
+                (gpu.index, gpu.memory_mib, gpu.mem_used_mib, gpu.util_pct),
+                (0, Some(24576), Some(5803), Some(36))
+            );
+            assert_eq!(gpu.capability.as_deref(), Some("8.6"));
+            assert_eq!(
+                (gpu.vendor, gpu.backend, gpu.link, gpu.busy),
+                ("nvidia", "cuda", "pcie", false)
+            );
+        }
 
-    #[test]
-    fn nvlink_is_an_nv_number_in_the_matrix_not_the_legend() {
-        let links: Vec<&str> = nvidia_accelerators(TWO_QUERY, NV_TOPO)
-            .iter()
-            .map(|device| device.link)
-            .collect();
-        assert_eq!(links, ["nvlink", "nvlink"]);
-        assert_eq!(nvidia_accelerators(TWO_QUERY, PCIE_TOPO)[0].link, "pcie");
-        assert!(topo_has_nvlink("GPU0 X \u{1b}[32mNV4\u{1b}[0m"));
-        assert!(!topo_has_nvlink(
-            "NV#  = Connection traversing bonded NVLinks"
-        ));
-    }
+        // nvlink_is_an_nv_number_in_the_matrix_not_the_legend: NV# in the matrix means NVLink, the legend does not.
+        {
+            let links: Vec<&str> = nvidia_accelerators(TWO_QUERY, NV_TOPO)
+                .iter()
+                .map(|device| device.link)
+                .collect();
+            assert_eq!(links, ["nvlink", "nvlink"]);
+            assert_eq!(nvidia_accelerators(TWO_QUERY, PCIE_TOPO)[0].link, "pcie");
+            assert!(topo_has_nvlink("GPU0 X \u{1b}[32mNV4\u{1b}[0m"));
+            assert!(!topo_has_nvlink(
+                "NV#  = Connection traversing bonded NVLinks"
+            ));
+        }
 
-    #[test]
-    fn nvidia_names_keep_their_commas_and_unavailable_fields_are_null() {
-        let devices = nvidia_accelerators("0, Weird, Name, 24576, 0, 0, [N/A]\n", "");
-        assert_eq!(devices[0].name, "Weird, Name");
-        assert_eq!(devices[0].capability, None);
-        assert_eq!(devices[0].util_pct, Some(0));
-        assert!(nvidia_accelerators("garbage\n", "").is_empty());
+        // nvidia_names_keep_their_commas_and_unavailable_fields_are_null: names keep commas, [N/A] reads as null.
+        {
+            let devices = nvidia_accelerators("0, Weird, Name, 24576, 0, 0, [N/A]\n", "");
+            assert_eq!(devices[0].name, "Weird, Name");
+            assert_eq!(devices[0].capability, None);
+            assert_eq!(devices[0].util_pct, Some(0));
+            assert!(nvidia_accelerators("garbage\n", "").is_empty());
+        }
     }
 
     #[test]
@@ -2968,39 +2966,31 @@ mod accelerator_tests {
     }
 
     #[test]
-    fn busy_devices_are_marked_by_vendor_and_index() {
-        let cached = nvidia_accelerators(TWO_QUERY, NV_TOPO);
-        let busy = [("nvidia", 1)];
-        let marked: Vec<bool> = cached
-            .iter()
-            .map(|device| busy.contains(&(device.vendor, device.index)))
-            .collect();
-        assert_eq!(marked, [false, true]);
-    }
+    fn fabric_order_reads_ip_and_ifconfig_addresses() {
+        // ip_json_addresses_drop_loopback_and_link_local_and_put_private_first: ip -j output.
+        {
+            let text = r#"[{"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1"},{"family":"inet6","local":"::1"}]},{"ifname":"docker0","addr_info":[{"family":"inet","local":"172.17.0.1"}]},{"ifname":"br-3f1e","addr_info":[{"family":"inet","local":"172.18.0.1"}]},{"ifname":"enp6s0","addr_info":[{"family":"inet","local":"8.8.8.8"},{"family":"inet","local":"192.168.1.20"},{"family":"inet6","local":"fe80::1"},{"family":"inet6","local":"2001:db8::5"},{"family":"inet6","local":"fd00::7"}]},{"ifname":"wg0","addr_info":[{"family":"inet","local":"10.8.0.3"},{"family":"inet","local":"169.254.9.9"}]}]"#;
+            assert_eq!(
+                fabric_order(parse_ip_json(text)),
+                [
+                    "10.8.0.3",
+                    "192.168.1.20",
+                    "fd00::7",
+                    "8.8.8.8",
+                    "2001:db8::5"
+                ]
+            );
+        }
 
-    #[test]
-    fn ip_json_addresses_drop_loopback_and_link_local_and_put_private_first() {
-        let text = r#"[{"ifname":"lo","addr_info":[{"family":"inet","local":"127.0.0.1"},{"family":"inet6","local":"::1"}]},{"ifname":"docker0","addr_info":[{"family":"inet","local":"172.17.0.1"}]},{"ifname":"br-3f1e","addr_info":[{"family":"inet","local":"172.18.0.1"}]},{"ifname":"enp6s0","addr_info":[{"family":"inet","local":"8.8.8.8"},{"family":"inet","local":"192.168.1.20"},{"family":"inet6","local":"fe80::1"},{"family":"inet6","local":"2001:db8::5"},{"family":"inet6","local":"fd00::7"}]},{"ifname":"wg0","addr_info":[{"family":"inet","local":"10.8.0.3"},{"family":"inet","local":"169.254.9.9"}]}]"#;
-        assert_eq!(
-            fabric_order(parse_ip_json(text)),
-            [
-                "10.8.0.3",
-                "192.168.1.20",
-                "fd00::7",
-                "8.8.8.8",
-                "2001:db8::5"
-            ]
-        );
-    }
-
-    #[test]
-    fn ifconfig_addresses_lose_their_zone_and_loopback() {
-        let text = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet6 ::1 prefixlen 128\nen0: flags=8863<UP>\n\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n\tinet 192.168.0.12 netmask 0xffffff00 broadcast 192.168.0.255\n";
-        let shared = "bridge100: flags=8863<UP>\n\tinet 192.168.2.1 netmask 0xffffff00\n";
-        assert_eq!(
-            fabric_order(parse_ifconfig(&format!("{text}{shared}"))),
-            ["192.168.0.12"]
-        );
+        // ifconfig_addresses_lose_their_zone_and_loopback: ifconfig output.
+        {
+            let text = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet6 ::1 prefixlen 128\nen0: flags=8863<UP>\n\tinet6 fe80::1%en0 prefixlen 64 scopeid 0x4\n\tinet 192.168.0.12 netmask 0xffffff00 broadcast 192.168.0.255\n";
+            let shared = "bridge100: flags=8863<UP>\n\tinet 192.168.2.1 netmask 0xffffff00\n";
+            assert_eq!(
+                fabric_order(parse_ifconfig(&format!("{text}{shared}"))),
+                ["192.168.0.12"]
+            );
+        }
     }
 
     #[test]
@@ -3017,44 +3007,6 @@ mod accelerator_tests {
             ("hello", "err")
         );
         assert!(command_within("sh", &["-c", "sleep 5"], Duration::from_millis(100)).is_none());
-    }
-
-    #[test]
-    fn the_fabric_is_read_again_only_after_thirty_seconds() {
-        let cache = Mutex::new(None);
-        let start = Instant::now();
-        let mut reads = 0;
-        let mut read = |text: &str| {
-            reads += 1;
-            vec![text.to_string()]
-        };
-        assert_eq!(
-            cached_fabric(&cache, start, || read("10.0.0.1")),
-            ["10.0.0.1"]
-        );
-        assert_eq!(
-            cached_fabric(&cache, start + Duration::from_secs(29), || read("10.0.0.2")),
-            ["10.0.0.1"]
-        );
-        assert_eq!(
-            cached_fabric(&cache, start + Duration::from_secs(31), || read("10.0.0.3")),
-            ["10.0.0.3"]
-        );
-        assert_eq!(reads, 2);
-    }
-
-    /// The live check on the machine it runs on: `cargo test -p noded -- --ignored --nocapture print_this_machine`.
-    #[test]
-    #[ignore]
-    fn print_this_machine() {
-        let facts = probe_machine_facts(None);
-        let shown = serde_json::json!({
-            "accelerators": facts.accelerators,
-            "trainer": facts.trainer,
-            "fabric": probe_fabric(),
-            "docker_host": facts.docker_host,
-        });
-        println!("{}", serde_json::to_string_pretty(&shown).expect("json"));
     }
 }
 

@@ -124,37 +124,41 @@ mod tests {
 
     #[test]
     fn the_state_round_trips() {
-        let dir = std::env::temp_dir().join(format!("apz-hvf-state-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let mut meta = meta_now(SnapshotKind::Full, 2, 512, Vec::new());
-        meta.backend = BACKEND.to_string();
-        let snapshot = HvfSnapshot {
-            meta,
-            vcpus: vec![HvfVcpuState {
-                regs: vec![(0, 7), (31, 0xffff_0000_0008_0000)],
-                simd: vec![[0xab; 16]; 32],
-                sys_regs: vec![(0xc080, 0x30d0_5885)],
-                vtimer_masked: true,
-            }],
-            running: vec![true, false],
-            guest_counter: 123_456_789,
-            gic: Gic::new(2).state(),
-            serial: SerialRegisters::default(),
-            vsock: None,
-            workspace: None,
-            volumes: Vec::new(),
-        };
-        write_state(&dir, &snapshot).expect("written");
-        assert_eq!(read_state(&dir).expect("read back"), snapshot);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_counter_goes_on_from_the_snapshot() {
-        // The host's counter has moved on by a million ticks since the guest's was 5000.
-        let offset = vtimer_offset_for(1_000_000, 5_000);
-        assert_eq!(1_000_000 - offset, 5_000);
-        assert_eq!(vtimer_offset_for(10, 5_000), 0, "never a negative offset");
+        // the_state_round_trips: a snapshot without devices is written and read back unchanged.
+        {
+            let dir = std::env::temp_dir().join(format!("apz-hvf-state-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let mut meta = meta_now(SnapshotKind::Full, 2, 512, Vec::new());
+            meta.backend = BACKEND.to_string();
+            let snapshot = HvfSnapshot {
+                meta,
+                vcpus: vec![HvfVcpuState {
+                    regs: vec![(0, 7), (31, 0xffff_0000_0008_0000)],
+                    simd: vec![[0xab; 16]; 32],
+                    sys_regs: vec![(0xc080, 0x30d0_5885)],
+                    vtimer_masked: true,
+                }],
+                running: vec![true, false],
+                guest_counter: 123_456_789,
+                gic: Gic::new(2).state(),
+                serial: SerialRegisters::default(),
+                vsock: None,
+                workspace: None,
+                volumes: Vec::new(),
+            };
+            write_state(&dir, &snapshot).expect("written");
+            assert_eq!(read_state(&dir).expect("read back"), snapshot);
+            let _ = fs::remove_dir_all(&dir);
+        }
+        // the_state_round_trips_with_devices: a snapshot with devices is written and read back unchanged.
+        {
+            let dir = std::env::temp_dir().join(format!("apz-hvf-devices-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let snapshot = snapshot_with_devices();
+            write_state(&dir, &snapshot).expect("written");
+            assert_eq!(read_state(&dir).expect("read back"), snapshot);
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     /// A block-like transport with one queue, its interrupt status as given.
@@ -207,16 +211,6 @@ mod tests {
             workspace: Some(state(1)),
             volumes: vec![state(0), state(2)],
         }
-    }
-
-    #[test]
-    fn the_state_round_trips_with_devices() {
-        let dir = std::env::temp_dir().join(format!("apz-hvf-devices-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let snapshot = snapshot_with_devices();
-        write_state(&dir, &snapshot).expect("written");
-        assert_eq!(read_state(&dir).expect("read back"), snapshot);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

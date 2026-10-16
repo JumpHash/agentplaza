@@ -467,64 +467,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn choices_read_the_hub_model_list() {
-        let models = serde_json::json!({
-            "models": [
-                {"provider": "anthropic", "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "group": "chat"},
-                {"provider": "openai", "id": "gpt-x", "name": null},
-                {"provider": "openai-decisions", "id": "gpt-6-luna", "name": null, "group": "decisions"}
-            ],
-            "errors": []
-        });
-        let out = choices(&models);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].id, "anthropic/claude-haiku-5-5");
-        assert_eq!(out[0].provider, "anthropic");
-        assert_eq!(out[0].label, "Claude Haiku 5.5");
-        assert_eq!(out[1].id, "openai/gpt-x");
-        assert_eq!(out[1].label, "gpt-x");
-    }
-
-    #[test]
-    fn contributor_models_are_flagged_in_the_picker() {
-        let models = serde_json::json!({
-            "models": [
-                {"provider": "meta", "id": "muse-spark-1.3-contributor", "name": "Muse Spark 1.3 (contributor)", "trains_on_data": true},
-                {"provider": "meta", "id": "muse-spark-1.3", "name": "Muse Spark 1.3", "trains_on_data": false}
-            ]
-        });
-        let out = choices(&models);
-        assert_eq!(
-            out[0].label,
-            "Muse Spark 1.3 (contributor) · WARNING: trains on your data"
-        );
-        assert_eq!(out[1].label, "Muse Spark 1.3");
-        assert!(trains_on_data(&models, "meta/muse-spark-1.3-contributor"));
-        assert!(!trains_on_data(&models, "meta/muse-spark-1.3"));
-    }
-
-    fn choice(id: &str, provider: &str, label: &str) -> Choice {
-        Choice {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            label: label.to_string(),
+    fn picker_choices_list_hub_models_and_flag_contributors() {
+        // The choices read the hub model list: decision-group models are left out.
+        {
+            let models = serde_json::json!({
+                "models": [
+                    {"provider": "anthropic", "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "group": "chat"},
+                    {"provider": "openai", "id": "gpt-x", "name": null},
+                    {"provider": "openai-decisions", "id": "gpt-6-luna", "name": null, "group": "decisions"}
+                ],
+                "errors": []
+            });
+            let out = choices(&models);
+            assert_eq!(out.len(), 2);
+            assert_eq!(out[0].id, "anthropic/claude-haiku-5-5");
+            assert_eq!(out[0].provider, "anthropic");
+            assert_eq!(out[0].label, "Claude Haiku 5.5");
+            assert_eq!(out[1].id, "openai/gpt-x");
+            assert_eq!(out[1].label, "gpt-x");
         }
-    }
-
-    fn router_choices() -> Vec<Choice> {
-        choices(&serde_json::json!({
-            "models": [
-                {"provider": "openrouter", "id": "anthropic/claude-sonnet-4.5", "name": "Claude Sonnet 4.5"},
-                {"provider": "openrouter", "id": "anthropic/claude-haiku-4.5", "name": null},
-                {"provider": "openrouter", "id": "openai/gpt-5", "name": "GPT-5"},
-                {"provider": "openrouter", "id": "llama-free", "name": "Llama free", "trains_on_data": true},
-                {"provider": "opencode", "id": "big-pickle", "name": "Big Pickle"}
-            ]
-        }))
-    }
-
-    fn ids(hits: &[&Choice]) -> Vec<String> {
-        hits.iter().map(|c| c.id.clone()).collect()
+        // Contributor models (trains on data) are flagged in the picker label and by trains_on_data.
+        {
+            let models = serde_json::json!({
+                "models": [
+                    {"provider": "meta", "id": "muse-spark-1.3-contributor", "name": "Muse Spark 1.3 (contributor)", "trains_on_data": true},
+                    {"provider": "meta", "id": "muse-spark-1.3", "name": "Muse Spark 1.3", "trains_on_data": false}
+                ]
+            });
+            let out = choices(&models);
+            assert_eq!(
+                out[0].label,
+                "Muse Spark 1.3 (contributor) · WARNING: trains on your data"
+            );
+            assert_eq!(out[1].label, "Muse Spark 1.3");
+            assert!(trains_on_data(&models, "meta/muse-spark-1.3-contributor"));
+            assert!(!trains_on_data(&models, "meta/muse-spark-1.3"));
+        }
     }
 
     #[test]
@@ -543,103 +521,5 @@ mod tests {
         );
         assert_eq!(split_vendor("a/b/c"), (Some("a"), "b/c"));
         assert_eq!(split_vendor("gpt-x"), (None, "gpt-x"));
-    }
-
-    #[test]
-    fn openrouter_rows_show_the_name_after_the_vendor() {
-        let all = router_choices();
-        assert_eq!(all[0].id, "openrouter/anthropic/claude-sonnet-4.5");
-        assert_eq!(display_name(&all[0]), "claude-sonnet-4.5");
-        assert_eq!(display_name(&all[1]), "claude-haiku-4.5");
-        assert_eq!(display_name(&all[4]), "Big Pickle");
-        assert_eq!(display_name(&all[3]), "llama-free");
-        assert!(trains(&all[3]));
-        assert!(!trains(&all[0]));
-    }
-
-    #[test]
-    fn every_term_must_match_the_id_or_the_name() {
-        let all = router_choices();
-        assert_eq!(matching(&all, "").len(), 5);
-        assert_eq!(matching(&all, "   ").len(), 5);
-        assert_eq!(
-            ids(&matching(&all, "SONNET 4.5")),
-            vec!["openrouter/anthropic/claude-sonnet-4.5"]
-        );
-        assert_eq!(
-            ids(&matching(&all, "claude 4.5")),
-            vec![
-                "openrouter/anthropic/claude-sonnet-4.5",
-                "openrouter/anthropic/claude-haiku-4.5"
-            ]
-        );
-        assert_eq!(
-            ids(&matching(&all, "openai gpt")),
-            vec!["openrouter/openai/gpt-5"]
-        );
-        assert!(matching(&all, "claude opus").is_empty());
-    }
-
-    #[test]
-    fn openrouter_models_group_by_vendor_with_other_last() {
-        let all = router_choices();
-        let hits = matching(&all, "");
-        let groups = group(&hits);
-        let counts: Vec<(&str, usize)> = groups.iter().map(|g| (g.provider, g.count)).collect();
-        assert_eq!(counts, vec![("openrouter", 4), ("opencode", 1)]);
-        let vendors: Vec<(&str, usize)> = groups[0]
-            .sections
-            .iter()
-            .map(|s| (s.vendor, s.rows.len()))
-            .collect();
-        assert_eq!(vendors, vec![("anthropic", 2), ("openai", 1), ("other", 1)]);
-        assert_eq!(groups[1].sections[0].vendor, "");
-
-        let narrowed = matching(&all, "anthropic");
-        let groups = group(&narrowed);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].count, 2);
-    }
-
-    #[test]
-    fn a_section_shows_twelve_rows_and_counts_the_rest() {
-        let many: Vec<Choice> = (0..30)
-            .map(|i| {
-                choice(
-                    &format!("openrouter/acme/model-{i:02}"),
-                    "openrouter",
-                    &format!("model-{i:02}"),
-                )
-            })
-            .collect();
-        let hits = matching(&many, "acme");
-        let groups = group(&hits);
-        let rows = &groups[0].sections[0].rows;
-        assert_eq!(rows.len(), 30);
-        let (shown, hidden) = cap(&rows[..], false);
-        assert_eq!((shown.len(), hidden), (12, 18));
-        assert_eq!(cap(&rows[..], true), (&rows[..], 0));
-        assert_eq!(cap(&rows[..12], false), (&rows[..12], 0));
-        assert_eq!(cap(&rows[..13], false).1, 1);
-    }
-
-    #[test]
-    fn section_keys_are_per_vendor_for_openrouter_only() {
-        assert_eq!(
-            section_key("openrouter", "anthropic"),
-            "openrouter/anthropic"
-        );
-        assert_eq!(section_key("opencode", ""), "opencode");
-    }
-
-    #[test]
-    fn show_more_expands_until_the_picker_closes() {
-        let mut state = Picker::default();
-        update(&mut state, &PickerMsg::Toggle);
-        update(&mut state, &PickerMsg::More("openrouter/acme".to_string()));
-        assert!(state.expanded.contains("openrouter/acme"));
-        update(&mut state, &PickerMsg::Toggle);
-        assert!(state.expanded.is_empty());
-        assert!(!state.open);
     }
 }

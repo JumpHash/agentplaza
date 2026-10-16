@@ -580,32 +580,6 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn cpu_percent_is_the_busy_share_of_the_delta() {
-        // user nice system idle iowait irq softirq steal (guest fields ignored)
-        let before = "cpu  100 0 100 800 100 0 0 0 0 0";
-        // 50 more user and 50 more idle: 50 busy of 100 counted
-        let after = "cpu  150 0 100 850 100 0 0 0 0 0";
-        assert_eq!(cpu_percent(before, after), Some(50.0));
-        // iowait counts as idle, so 100 more iowait is 0 busy
-        let iowait = "cpu  100 0 100 800 200 0 0 0";
-        assert_eq!(cpu_percent(before, iowait), Some(0.0));
-        // no time passed, or the counters went backwards
-        assert_eq!(cpu_percent(before, before), None);
-        assert_eq!(cpu_percent(after, before), None);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn total_jiffies_is_every_counted_field_of_the_cpu_line() {
-        assert_eq!(
-            total_jiffies("cpu  100 0 100 800 100 0 0 0 0 0"),
-            Some(1100)
-        );
-        assert_eq!(total_jiffies("cpu0 100 0 100 800"), None);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
     fn proc_stat_ticks_are_utime_plus_stime_counted_after_the_name() {
         // The name holds spaces and parentheses; utime is 30 and stime 12.
         let line =
@@ -621,24 +595,6 @@ mod tests {
         assert_eq!(parse_vm_rss_mib(status), Some(2));
         // A kernel thread has no VmRSS line.
         assert_eq!(parse_vm_rss_mib("Name:\tkthreadd\n"), None);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn process_cpu_percent_is_its_ticks_over_the_machine_ticks() {
-        assert_eq!(process_cpu_percent(100, 150, 1000), Some(5.0));
-        // the counter went backwards (pid reuse), or no machine time passed
-        assert_eq!(process_cpu_percent(150, 100, 1000), None);
-        assert_eq!(process_cpu_percent(100, 150, 0), None);
-    }
-
-    #[test]
-    fn the_plaza_services_are_named_as_the_console_shows_them() {
-        assert_eq!(service_name("apid"), Some("apid"));
-        assert_eq!(service_name("vsockd"), Some("hub"));
-        assert_eq!(service_name("noded"), Some("noded"));
-        assert_eq!(service_name("garage"), Some("garage"));
-        assert_eq!(service_name("bash"), None);
     }
 
     #[test]

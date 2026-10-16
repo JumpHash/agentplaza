@@ -1863,89 +1863,89 @@ mod tests {
     }
 
     #[test]
-    fn dimension_errors_in_fn_bodies_are_static() {
-        let d = diags("fn f(x: Credits) -> Credits = x * 2 s");
-        assert_eq!(d.len(), 1, "{d:?}");
-        assert!(d[0].contains("expected Credits, found [cr·s]"), "{d:?}");
-        let d = diags("fn g(x: Credits) -> Bool = x <= 1000");
-        assert!(
-            d[0].contains("dimension mismatch: Credits <= Number"),
-            "{d:?}"
-        );
-        assert!(diags("fn h(x: Credits) -> Bool = x <= 1000 cr").is_empty());
-        let d = diags("fn k(x: Duration) -> Number = ln(x)");
-        assert!(d[0].contains("`ln` needs a dimensionless number"), "{d:?}");
-        assert!(diags("fn r(t: Number, s: Credits) -> Credits = floor(s * t)").is_empty());
-    }
-
-    #[test]
-    fn names_and_calls_are_checked() {
-        let d = diags("fn f(x: Number) -> Number = y + nope(x)");
-        assert!(d.iter().any(|m| m.contains("unknown name `y`")), "{d:?}");
-        assert!(
-            d.iter().any(|m| m.contains("unknown function `nope`")),
-            "{d:?}"
-        );
-        let d = diags("fn f(x: Credits) -> Credits = x\nfn g() -> Credits = f(3 s)");
-        assert!(
-            d[0].contains("argument `x` of `f`: expected Credits, found Duration"),
-            "{d:?}"
-        );
-        let d = diags("fn f(x: Number) -> Number = g(x)\nfn g(x: Number) -> Number = f(x)");
-        assert_eq!(
-            d.iter().filter(|m| m.contains("recursive")).count(),
-            2,
-            "{d:?}"
-        );
-        let d = diags("kind k(a: Nobody) -> Int max default 1");
-        assert!(d[0].contains("unknown type `Nobody`"), "{d:?}");
-        let d = diags("kind k(a: Int) -> Credits max default 5 s");
-        assert!(d[0].contains("expected Credits, found Duration"), "{d:?}");
-    }
-
-    #[test]
-    fn enum_literals_and_entity_fields() {
-        let src = "enum S { \"a\"\n \"b\" }\nentity A { field s: S\n field n: Credits }\n\
-                   check \"c\" { for a in as\n require a.s == \"zz\" and a.n >= 0 and a.m == 1 }";
-        let d = diags(src);
-        assert!(
-            d.iter()
-                .any(|m| m.contains("\"zz\" is not a value of enum S")),
-            "{d:?}"
-        );
-        assert!(
-            d.iter()
-                .any(|m| m.contains("dimension mismatch: Credits >= Number")),
-            "{d:?}"
-        );
-        assert!(d.iter().any(|m| m.contains("A has no field `m`")), "{d:?}");
-    }
-
-    #[test]
-    fn machine_names_primes_and_assignments() {
-        let src =
-            "enum S { \"p\"\n \"q\" }\nmachine M {\n var s: S = \"p\"\n var n: Credits = 0 cr\n\
-                   action A { when s == \"p\"\n s' = \"r\"\n n' = n + 1 }\n\
-                   invariant \"i\" n' >= 0 cr\n fairness weak B\n}\n";
-        let d = diags(src);
-        assert!(
-            d.iter()
-                .any(|m| m.contains("\"r\" is not a value of enum S")),
-            "{d:?}"
-        );
-        assert!(
-            d.iter()
-                .any(|m| m.contains("dimension mismatch: Credits + Number")),
-            "{d:?}"
-        );
-        assert!(
-            d.iter()
-                .any(|m| m.contains("only allowed in actions and transition")),
-            "{d:?}"
-        );
-        assert!(
-            d.iter().any(|m| m.contains("`B`, which is not an action")),
-            "{d:?}"
-        );
+    fn static_checks_report_each_error_class() {
+        // dimension_errors_in_fn_bodies_are_static: dimension errors in fn bodies are static.
+        {
+            let d = diags("fn f(x: Credits) -> Credits = x * 2 s");
+            assert_eq!(d.len(), 1, "{d:?}");
+            assert!(d[0].contains("expected Credits, found [cr·s]"), "{d:?}");
+            let d = diags("fn g(x: Credits) -> Bool = x <= 1000");
+            assert!(
+                d[0].contains("dimension mismatch: Credits <= Number"),
+                "{d:?}"
+            );
+            assert!(diags("fn h(x: Credits) -> Bool = x <= 1000 cr").is_empty());
+            let d = diags("fn k(x: Duration) -> Number = ln(x)");
+            assert!(d[0].contains("`ln` needs a dimensionless number"), "{d:?}");
+            assert!(diags("fn r(t: Number, s: Credits) -> Credits = floor(s * t)").is_empty());
+        }
+        // names_and_calls_are_checked: unknown names and calls, argument types, recursion, defaults.
+        {
+            let d = diags("fn f(x: Number) -> Number = y + nope(x)");
+            assert!(d.iter().any(|m| m.contains("unknown name `y`")), "{d:?}");
+            assert!(
+                d.iter().any(|m| m.contains("unknown function `nope`")),
+                "{d:?}"
+            );
+            let d = diags("fn f(x: Credits) -> Credits = x\nfn g() -> Credits = f(3 s)");
+            assert!(
+                d[0].contains("argument `x` of `f`: expected Credits, found Duration"),
+                "{d:?}"
+            );
+            let d = diags("fn f(x: Number) -> Number = g(x)\nfn g(x: Number) -> Number = f(x)");
+            assert_eq!(
+                d.iter().filter(|m| m.contains("recursive")).count(),
+                2,
+                "{d:?}"
+            );
+            let d = diags("kind k(a: Nobody) -> Int max default 1");
+            assert!(d[0].contains("unknown type `Nobody`"), "{d:?}");
+            let d = diags("kind k(a: Int) -> Credits max default 5 s");
+            assert!(d[0].contains("expected Credits, found Duration"), "{d:?}");
+        }
+        // enum_literals_and_entity_fields: enum literals and entity fields are checked.
+        {
+            let src = "enum S { \"a\"\n \"b\" }\nentity A { field s: S\n field n: Credits }\n\
+                       check \"c\" { for a in as\n require a.s == \"zz\" and a.n >= 0 and a.m == 1 }";
+            let d = diags(src);
+            assert!(
+                d.iter()
+                    .any(|m| m.contains("\"zz\" is not a value of enum S")),
+                "{d:?}"
+            );
+            assert!(
+                d.iter()
+                    .any(|m| m.contains("dimension mismatch: Credits >= Number")),
+                "{d:?}"
+            );
+            assert!(d.iter().any(|m| m.contains("A has no field `m`")), "{d:?}");
+        }
+        // machine_names_primes_and_assignments: machine names, primes, and assignments.
+        {
+            let src =
+                "enum S { \"p\"\n \"q\" }\nmachine M {\n var s: S = \"p\"\n var n: Credits = 0 cr\n\
+                       action A { when s == \"p\"\n s' = \"r\"\n n' = n + 1 }\n\
+                       invariant \"i\" n' >= 0 cr\n fairness weak B\n}\n";
+            let d = diags(src);
+            assert!(
+                d.iter()
+                    .any(|m| m.contains("\"r\" is not a value of enum S")),
+                "{d:?}"
+            );
+            assert!(
+                d.iter()
+                    .any(|m| m.contains("dimension mismatch: Credits + Number")),
+                "{d:?}"
+            );
+            assert!(
+                d.iter()
+                    .any(|m| m.contains("only allowed in actions and transition")),
+                "{d:?}"
+            );
+            assert!(
+                d.iter().any(|m| m.contains("`B`, which is not an action")),
+                "{d:?}"
+            );
+        }
     }
 }

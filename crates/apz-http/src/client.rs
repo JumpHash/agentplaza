@@ -409,7 +409,13 @@ impl<R: Read + Duplex> Read for Timed<R> {
         if left.is_zero() {
             return Err(timed_out());
         }
-        self.stream.set_read_timeout(Some(left))?;
+        // XNU refuses `SO_RCVTIMEO` with `EINVAL` once the peer has closed a Unix stream, though
+        // the reply may still be buffered. A closed peer cannot block the read, so read it.
+        match self.stream.set_read_timeout(Some(left)) {
+            Err(err)
+                if err.kind() == io::ErrorKind::InvalidInput && err.raw_os_error().is_some() => {}
+            other => other?,
+        }
         self.stream.read(buf).map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => timed_out(),
             _ => err,
@@ -598,47 +604,49 @@ mod tests {
     }
 
     #[test]
-    fn a_target_over_https_with_a_wrong_or_no_pin_fails() {
-        let (server, _pin) = tls_server();
-        let base = format!("https://localhost:{}", server.port());
-        let wrong = Target {
-            base: base.clone(),
-            pin: Some([0; 32]),
-            ..Target::default()
-        };
-        assert!(request(&wrong, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
-        let unpinned = Target {
-            base,
-            pin: None,
-            ..Target::default()
-        };
-        assert!(request(&unpinned, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
-    }
-
-    #[test]
-    fn an_unpinned_https_target_refuses_a_self_signed_certificate() {
-        // No pin means a public host: the Mozilla roots must sign it, and a self-signed hub cert is not signed by them.
-        let (server, pin) = tls_server();
-        let target = Target {
-            base: format!("https://localhost:{}", server.port()),
-            pin: None,
-            ..Target::default()
-        };
-        let err = request(&target, "GET", "/v1/echo/ada", None, Duration::from_secs(5))
-            .expect_err("no CA signs it");
-        assert_ne!(err.kind(), io::ErrorKind::TimedOut, "{err}");
-        // The same server still answers its own pin, so the refusal is the CA check, not a dead server.
-        let pinned = Target {
-            base: target.base.clone(),
-            pin: Some(pin),
-            ..Target::default()
-        };
-        assert_eq!(
-            request(&pinned, "GET", "/v1/nope", None, Duration::from_secs(5))
-                .expect("answers")
-                .status,
-            404
-        );
+    fn https_targets_refuse_a_certificate_they_cannot_verify() {
+        // A target over https with a wrong or no pin fails.
+        {
+            let (server, _pin) = tls_server();
+            let base = format!("https://localhost:{}", server.port());
+            let wrong = Target {
+                base: base.clone(),
+                pin: Some([0; 32]),
+                ..Target::default()
+            };
+            assert!(request(&wrong, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
+            let unpinned = Target {
+                base,
+                pin: None,
+                ..Target::default()
+            };
+            assert!(request(&unpinned, "GET", "/v1/events", None, Duration::from_secs(5)).is_err());
+        }
+        // An unpinned https target refuses a self-signed certificate.
+        {
+            // No pin means a public host: the Mozilla roots must sign it, and a self-signed hub cert is not signed by them.
+            let (server, pin) = tls_server();
+            let target = Target {
+                base: format!("https://localhost:{}", server.port()),
+                pin: None,
+                ..Target::default()
+            };
+            let err = request(&target, "GET", "/v1/echo/ada", None, Duration::from_secs(5))
+                .expect_err("no CA signs it");
+            assert_ne!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+            // The same server still answers its own pin, so the refusal is the CA check, not a dead server.
+            let pinned = Target {
+                base: target.base.clone(),
+                pin: Some(pin),
+                ..Target::default()
+            };
+            assert_eq!(
+                request(&pinned, "GET", "/v1/nope", None, Duration::from_secs(5))
+                    .expect("answers")
+                    .status,
+                404
+            );
+        }
     }
 }
 

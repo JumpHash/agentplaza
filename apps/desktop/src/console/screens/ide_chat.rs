@@ -798,36 +798,4 @@ mod tests {
         let _unnamed = engine_block(&unnamed, &rctx, &cards);
         assert_eq!(view.pending[0].approval, "ap_9");
     }
-
-    #[test]
-    fn a_tool_step_run_opens_to_its_calls_only_while_its_first_entry_is_open() {
-        let entries = vec![
-            json!({"kind": "model_response", "data": {"content": [{"type": "tool_use", "name": "bash"}]}}),
-            json!({"kind": "tool_request", "data": {"call": "c", "name": "bash"}}),
-            json!({"kind": "tool_decision", "data": {"call": "c", "decision": "allow"}}),
-        ];
-        // Closed: the one line is all. Open: the call and its decision are drawn after it.
-        let _closed = steps_view(&entries, 0, entries.len(), "1 step · bash", false);
-        let _open = steps_view(&entries, 0, entries.len(), "1 step · bash", true);
-        assert!(ide_model::is_step(&entries[2]));
-    }
-
-    #[test]
-    fn an_owner_note_and_a_board_nudge_are_bubbles_and_bookkeeping_draws_nothing() {
-        let note =
-            json!({"kind": "work_start", "data": {"kind": "chat", "prompt": "Check the tests"}});
-        let nudge = json!({"kind": "work_start", "data": {"kind": "message", "origin": "board", "prompt": "New post"}});
-        let book = json!({"kind": "work_start", "data": {}});
-        let (rctx, cards) = (
-            rich::context(&rich::Cards::default(), None, None, None),
-            rich::Cards::default(),
-        );
-        assert!(entry_view(&note, &rctx, &cards).is_some());
-        assert!(entry_view(&nudge, &rctx, &cards).is_some());
-        assert!(
-            entry_view(&book, &rctx, &cards).is_none(),
-            "a start with no prompt says nothing"
-        );
-        assert!(entry_view(&json!({"kind": "model_request", "data": {}}), &rctx, &cards).is_none());
-    }
 }

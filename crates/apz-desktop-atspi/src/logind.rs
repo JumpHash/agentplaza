@@ -76,19 +76,34 @@ mod tests {
     use super::idle_ms_from;
 
     #[test]
-    fn a_session_that_is_not_idle_has_no_idle_time() {
-        assert_eq!(idle_ms_from(false, 1_000_000, 9_000_000), 0);
-    }
-
-    #[test]
-    fn an_idle_session_counts_from_its_idle_timestamp() {
-        // Idle since 1 s after the epoch, now 4.5 s: 3.5 s idle.
-        assert_eq!(idle_ms_from(true, 1_000_000, 4_500_000), 3_500);
-    }
-
-    #[test]
-    fn a_missing_timestamp_or_a_clock_behind_it_is_zero() {
-        assert_eq!(idle_ms_from(true, 0, 4_500_000), 0);
-        assert_eq!(idle_ms_from(true, 9_000_000, 4_500_000), 0);
+    fn idle_time_counts_from_the_idle_timestamp_and_is_zero_otherwise() {
+        // (case, idle flag, idle timestamp, now, want)
+        for (case, idle, since, now, want) in [
+            (
+                "a session that is not idle has no idle time",
+                false,
+                1_000_000,
+                9_000_000,
+                0,
+            ),
+            // Idle since 1 s after the epoch, now 4.5 s: 3.5 s idle.
+            (
+                "an idle session counts from its idle timestamp",
+                true,
+                1_000_000,
+                4_500_000,
+                3_500,
+            ),
+            ("a missing timestamp is zero", true, 0, 4_500_000, 0),
+            (
+                "a clock behind the timestamp is zero",
+                true,
+                9_000_000,
+                4_500_000,
+                0,
+            ),
+        ] {
+            assert_eq!(idle_ms_from(idle, since, now), want, "{case}");
+        }
     }
 }

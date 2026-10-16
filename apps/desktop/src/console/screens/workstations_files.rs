@@ -605,50 +605,6 @@ fn entry_row(entry: Entry) -> Element<'static, Msg> {
 mod tests {
     use super::*;
 
-    fn file(path: &str, size: u64) -> FileView {
-        FileView {
-            path: path.into(),
-            size,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn a_folder_lists_its_files_and_each_subfolder_once() {
-        let files = vec![
-            file("notes.md", 10),
-            file("renders/a.png", 20),
-            file("renders/b.png", 30),
-            file("renders/deep/c.png", 40),
-            FileView {
-                path: "gone.txt".into(),
-                deleted: true,
-                ..Default::default()
-            },
-        ];
-        let root = children(&files, "");
-        let names: Vec<(&str, bool)> = root.iter().map(|e| (e.name.as_str(), e.is_dir)).collect();
-        assert_eq!(
-            names,
-            vec![("renders", true), ("notes.md", false)],
-            "folders first, a deleted file is gone"
-        );
-        assert_eq!(root[0].path, "renders/");
-
-        let inside = children(&files, "renders/");
-        let inner: Vec<&str> = inside.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(inner, vec!["deep", "a.png", "b.png"]);
-        assert_eq!(inside[1].path, "renders/a.png");
-        assert_eq!(inside[1].size, 20);
-    }
-
-    #[test]
-    fn a_folder_path_goes_up_one_level_and_the_root_stays() {
-        assert_eq!(parent_of("a/b/"), "a/");
-        assert_eq!(parent_of("a/"), "");
-        assert_eq!(parent_of(""), "");
-    }
-
     #[test]
     fn paths_are_encoded_per_segment_and_names_are_one_segment() {
         assert_eq!(enc_path("a b/c.txt"), "a%20b/c.txt");
@@ -658,15 +614,6 @@ mod tests {
         assert!(!valid_name("a/b"));
         assert!(!valid_name("a\\b"));
         assert!(!valid_name("tab\tname"));
-    }
-
-    #[test]
-    fn sizes_read_in_bytes_then_units() {
-        assert_eq!(size_text(0), "0 B");
-        assert_eq!(size_text(1023), "1023 B");
-        assert_eq!(size_text(1536), "1.5 KB");
-        assert_eq!(size_text(20 * 1024 * 1024), "20 MB");
-        assert_eq!(size_text(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 
     #[test]

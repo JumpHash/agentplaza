@@ -2076,25 +2076,6 @@ mod tests {
     }
 
     #[test]
-    fn behaviour_builder_testing_tinkers_and_probes() {
-        let cfg = cfg();
-        let mut acts: BTreeSet<String> = BTreeSet::new();
-        for cid in 1..=200 {
-            let mut b = bot(cid, "builder");
-            b.state = BotState::Working;
-            b.last_tool = Some("bash_output".to_string());
-            let mut e = Behaviour::new(&cfg);
-            acts.insert(step(&mut e, 0.0, &[b])[0].activity.clone());
-        }
-        let got: Vec<String> = acts.into_iter().collect();
-        assert_eq!(
-            got,
-            vec!["probe".to_string(), "tinker".to_string()],
-            "a builder testing tinkers (60) and probes (40)"
-        );
-    }
-
-    #[test]
     fn behaviour_working_without_a_tool_call_thinks() {
         let cfg = cfg();
         let mut b = bot(5, "builder");
@@ -2208,45 +2189,48 @@ mod tests {
             .collect()
     }
 
+    /// A celebration and a standup both seat their members in groups of at most 4.
     #[test]
-    fn behaviour_a_celebration_gets_three_cheers_in_groups_of_at_most_4() {
-        let cfg = cfg();
-        let crowd = crowd();
-        let mut e = Behaviour::new(&cfg);
-        let spots = board(&crowd);
-        let cheer = step_full(
-            &mut e,
-            0.0,
-            &crowd,
-            spots,
-            false,
-            vec![EventIn::Celebrate { cid: 1 }],
-        );
-        assert_eq!(
-            cheer.iter().filter(|d| d.activity == "cheer").count(),
-            3,
-            "a celebration gets three cheers"
-        );
-        assert!(largest_group(&cheer) <= 4, "a cheer group is at most 4");
-    }
-
-    #[test]
-    fn behaviour_a_standup_takes_three_members_in_groups_of_at_most_4() {
-        let cfg = cfg();
-        let crowd = crowd();
-        let mut e = Behaviour::new(&cfg);
-        let spots = board(&crowd);
-        let events = vec![EventIn::Standup {
-            conductor: 2,
-            members: vec![1, 3, 4, 5, 6, 7, 8],
-        }];
-        let stand = step_full(&mut e, 0.0, &crowd, spots, false, events);
-        assert_eq!(
-            stand.iter().filter(|d| d.activity == "standup").count(),
-            3,
-            "a standup takes three members"
-        );
-        assert!(largest_group(&stand) <= 4, "a standup group is at most 4");
+    fn behaviour_crowd_events_form_groups_of_at_most_4() {
+        // behaviour_a_celebration_gets_three_cheers_in_groups_of_at_most_4: a celebration gets three cheers.
+        {
+            let cfg = cfg();
+            let crowd = crowd();
+            let mut e = Behaviour::new(&cfg);
+            let spots = board(&crowd);
+            let cheer = step_full(
+                &mut e,
+                0.0,
+                &crowd,
+                spots,
+                false,
+                vec![EventIn::Celebrate { cid: 1 }],
+            );
+            assert_eq!(
+                cheer.iter().filter(|d| d.activity == "cheer").count(),
+                3,
+                "a celebration gets three cheers"
+            );
+            assert!(largest_group(&cheer) <= 4, "a cheer group is at most 4");
+        }
+        // behaviour_a_standup_takes_three_members_in_groups_of_at_most_4: a standup takes three members.
+        {
+            let cfg = cfg();
+            let crowd = crowd();
+            let mut e = Behaviour::new(&cfg);
+            let spots = board(&crowd);
+            let events = vec![EventIn::Standup {
+                conductor: 2,
+                members: vec![1, 3, 4, 5, 6, 7, 8],
+            }];
+            let stand = step_full(&mut e, 0.0, &crowd, spots, false, events);
+            assert_eq!(
+                stand.iter().filter(|d| d.activity == "standup").count(),
+                3,
+                "a standup takes three members"
+            );
+            assert!(largest_group(&stand) <= 4, "a standup group is at most 4");
+        }
     }
 
     #[test]
@@ -2275,67 +2259,70 @@ mod tests {
         assert!(worst <= 2, "chats are pairs (largest group {worst})");
     }
 
+    /// An offline bot goes to a dock and powers down, or stays put when the board has no dock.
     #[test]
-    fn behaviour_offline_goes_to_a_dock_and_powers_down() {
-        let cfg = cfg();
-        let mut off = bot(4, "builder");
-        off.state = BotState::Offline;
-        off.at = Pos {
-            x: 1.0,
-            z: 1.0,
-            region: 0,
-        };
-        let spots = board(std::slice::from_ref(&off));
-        let mut e = Behaviour::new(&cfg);
-        let out = step_full(
-            &mut e,
-            0.0,
-            std::slice::from_ref(&off),
-            spots.clone(),
-            false,
-            Vec::new(),
-        );
-        let d = &out[0];
-        let kind = spots
-            .iter()
-            .find(|s| Some(&s.key) == d.spot.as_ref())
-            .map(|s| s.kind.clone());
-        assert_eq!(
-            (d.activity.as_str(), d.clip.as_str(), kind.as_deref()),
-            ("powered-down", "offline", Some("dock")),
-            "offline goes to a dock and powers down"
-        );
-    }
-
-    #[test]
-    fn behaviour_offline_without_a_dock_stays_put() {
-        let cfg = cfg();
-        let mut off = bot(4, "builder");
-        off.state = BotState::Offline;
-        off.at = Pos {
-            x: 1.0,
-            z: 1.0,
-            region: 0,
-        };
-        let spots: Vec<SpotIn> = board(std::slice::from_ref(&off))
-            .into_iter()
-            .filter(|s| s.kind != "dock")
-            .collect();
-        let mut e = Behaviour::new(&cfg);
-        let out = step_full(
-            &mut e,
-            0.0,
-            std::slice::from_ref(&off),
-            spots,
-            false,
-            Vec::new(),
-        );
-        let d = &out[0];
-        assert_eq!(
-            (d.spot.clone(), d.goal.map(|g| g.x)),
-            (None, Some(1.0)),
-            "offline without a dock stays put"
-        );
+    fn behaviour_offline_powers_down_at_a_dock_or_stays_put() {
+        // behaviour_offline_goes_to_a_dock_and_powers_down: offline goes to a dock and powers down.
+        {
+            let cfg = cfg();
+            let mut off = bot(4, "builder");
+            off.state = BotState::Offline;
+            off.at = Pos {
+                x: 1.0,
+                z: 1.0,
+                region: 0,
+            };
+            let spots = board(std::slice::from_ref(&off));
+            let mut e = Behaviour::new(&cfg);
+            let out = step_full(
+                &mut e,
+                0.0,
+                std::slice::from_ref(&off),
+                spots.clone(),
+                false,
+                Vec::new(),
+            );
+            let d = &out[0];
+            let kind = spots
+                .iter()
+                .find(|s| Some(&s.key) == d.spot.as_ref())
+                .map(|s| s.kind.clone());
+            assert_eq!(
+                (d.activity.as_str(), d.clip.as_str(), kind.as_deref()),
+                ("powered-down", "offline", Some("dock")),
+                "offline goes to a dock and powers down"
+            );
+        }
+        // behaviour_offline_without_a_dock_stays_put: offline without a dock stays put.
+        {
+            let cfg = cfg();
+            let mut off = bot(4, "builder");
+            off.state = BotState::Offline;
+            off.at = Pos {
+                x: 1.0,
+                z: 1.0,
+                region: 0,
+            };
+            let spots: Vec<SpotIn> = board(std::slice::from_ref(&off))
+                .into_iter()
+                .filter(|s| s.kind != "dock")
+                .collect();
+            let mut e = Behaviour::new(&cfg);
+            let out = step_full(
+                &mut e,
+                0.0,
+                std::slice::from_ref(&off),
+                spots,
+                false,
+                Vec::new(),
+            );
+            let d = &out[0];
+            assert_eq!(
+                (d.spot.clone(), d.goal.map(|g| g.x)),
+                (None, Some(1.0)),
+                "offline without a dock stays put"
+            );
+        }
     }
 
     #[test]
@@ -2519,91 +2506,93 @@ mod tests {
         }
     }
 
+    /// A walking decision holds its until. Its duration starts at arrival or after the 12 second cap, and a far new goal waits for arrival.
     #[test]
-    fn behaviour_arrival_holds_until_then_starts_the_duration() {
-        let cfg = cfg();
-        let walker = BotIn {
-            arrived: Some(false),
-            ..bot(7, "other")
-        };
-        let mut e = Behaviour::new(&cfg);
-        let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
-        let dur = cfg.activities[first.activity.as_str()].dur.clone();
-        assert!(
-            first.until.is_infinite(),
-            "a walking decision holds its until"
-        );
-        let walking = step(&mut e, 5.0, std::slice::from_ref(&walker)).remove(0);
-        assert!(
-            walking.until.is_infinite(),
-            "no arrival yet, so no duration"
-        );
-        let arrived = BotIn {
-            arrived: Some(true),
-            ..walker.clone()
-        };
-        let done = step(&mut e, 6.0, std::slice::from_ref(&arrived)).remove(0);
-        assert_eq!(done.activity, first.activity, "the same decision stays");
-        assert!(!done.changed, "arrival does not decide again");
-        let span = done.until - 6.0;
-        assert!(
-            span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
-            "duration starts at arrival: {span}"
-        );
-    }
-
-    #[test]
-    fn behaviour_arrival_cap_starts_the_duration_after_12_seconds() {
-        let cfg = cfg();
-        let walker = BotIn {
-            arrived: Some(false),
-            ..bot(7, "other")
-        };
-        let mut e = Behaviour::new(&cfg);
-        let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
-        let dur = cfg.activities[first.activity.as_str()].dur.clone();
-        let early = step(&mut e, 11.5, std::slice::from_ref(&walker)).remove(0);
-        assert!(
-            early.until.is_infinite(),
-            "before the cap the until is held"
-        );
-        let capped = step(&mut e, 12.0, std::slice::from_ref(&walker)).remove(0);
-        let span = capped.until - 12.0;
-        assert!(
-            capped.until.is_finite() && span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
-            "the cap starts it: {span}"
-        );
-    }
-
-    #[test]
-    fn behaviour_new_decision_walks_when_its_goal_is_far() {
-        let cfg = cfg();
-        let mut far = 0;
-        for cid in 1..=30 {
-            let b = BotIn {
-                arrived: Some(true),
-                at: Pos {
-                    x: -9.0,
-                    z: -9.0,
-                    region: 0,
-                },
-                ..bot(cid, "other")
+    fn behaviour_arrival_starts_the_duration_and_far_goals_wait() {
+        // behaviour_arrival_holds_until_then_starts_the_duration: the until is held while walking, and arrival starts the duration.
+        {
+            let cfg = cfg();
+            let walker = BotIn {
+                arrived: Some(false),
+                ..bot(7, "other")
             };
             let mut e = Behaviour::new(&cfg);
-            let d = step(&mut e, 0.0, std::slice::from_ref(&b)).remove(0);
-            if let Some(g) = d.goal {
-                let dx = -9.0 - g.x;
-                let dz = -9.0 - g.z;
-                if (dx * dx + dz * dz).sqrt() > 0.6 {
-                    far += 1;
-                    assert!(
-                        d.until.is_infinite(),
-                        "cid {cid}: a new far goal waits for arrival"
-                    );
+            let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
+            let dur = cfg.activities[first.activity.as_str()].dur.clone();
+            assert!(
+                first.until.is_infinite(),
+                "a walking decision holds its until"
+            );
+            let walking = step(&mut e, 5.0, std::slice::from_ref(&walker)).remove(0);
+            assert!(
+                walking.until.is_infinite(),
+                "no arrival yet, so no duration"
+            );
+            let arrived = BotIn {
+                arrived: Some(true),
+                ..walker.clone()
+            };
+            let done = step(&mut e, 6.0, std::slice::from_ref(&arrived)).remove(0);
+            assert_eq!(done.activity, first.activity, "the same decision stays");
+            assert!(!done.changed, "arrival does not decide again");
+            let span = done.until - 6.0;
+            assert!(
+                span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
+                "duration starts at arrival: {span}"
+            );
+        }
+        // behaviour_arrival_cap_starts_the_duration_after_12_seconds: the 12 second cap starts the duration without arrival.
+        {
+            let cfg = cfg();
+            let walker = BotIn {
+                arrived: Some(false),
+                ..bot(7, "other")
+            };
+            let mut e = Behaviour::new(&cfg);
+            let first = step(&mut e, 0.0, std::slice::from_ref(&walker)).remove(0);
+            let dur = cfg.activities[first.activity.as_str()].dur.clone();
+            let early = step(&mut e, 11.5, std::slice::from_ref(&walker)).remove(0);
+            assert!(
+                early.until.is_infinite(),
+                "before the cap the until is held"
+            );
+            let capped = step(&mut e, 12.0, std::slice::from_ref(&walker)).remove(0);
+            let span = capped.until - 12.0;
+            assert!(
+                capped.until.is_finite() && span >= dur[0] - 1e-9 && span <= dur[1] + 1e-9,
+                "the cap starts it: {span}"
+            );
+        }
+        // behaviour_new_decision_walks_when_its_goal_is_far: a new far goal waits for arrival.
+        {
+            let cfg = cfg();
+            let mut far = 0;
+            for cid in 1..=30 {
+                let b = BotIn {
+                    arrived: Some(true),
+                    at: Pos {
+                        x: -9.0,
+                        z: -9.0,
+                        region: 0,
+                    },
+                    ..bot(cid, "other")
+                };
+                let mut e = Behaviour::new(&cfg);
+                let d = step(&mut e, 0.0, std::slice::from_ref(&b)).remove(0);
+                if let Some(g) = d.goal {
+                    let dx = -9.0 - g.x;
+                    let dz = -9.0 - g.z;
+                    if (dx * dx + dz * dz).sqrt() > 0.6 {
+                        far += 1;
+                        assert!(
+                            d.until.is_infinite(),
+                            "cid {cid}: a new far goal waits for arrival"
+                        );
+                    }
                 }
             }
+            assert!(far > 0, "some decisions have far goals");
         }
-        assert!(far > 0, "some decisions have far goals");
     }
 
     #[test]

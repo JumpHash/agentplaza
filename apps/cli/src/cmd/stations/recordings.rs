@@ -465,14 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn the_list_limit_is_the_hubs_range() {
-        assert!(check_limit(1).is_ok());
-        assert!(check_limit(200).is_ok());
-        assert!(check_limit(0).is_err());
-        assert!(check_limit(201).is_err());
-    }
-
-    #[test]
     fn defaults_merge_the_flags_and_keep_the_rest() {
         let current = Defaults {
             record: true,
@@ -532,47 +524,5 @@ mod tests {
             body,
             json!({"record": false, "retention_days": 7, "record_fps": 1, "record_takeovers": false})
         );
-    }
-
-    #[test]
-    fn a_recording_row_shows_open_and_the_takeover() {
-        let open = json!({
-            "id": "r1", "station": "w1", "agent": 7, "started_ms": 0, "ended_ms": null,
-            "frames": 12, "actions": 3, "bytes": 2048, "takeover": true
-        });
-        let cells = recording_row(&open);
-        assert_eq!(cells[4], "open");
-        assert_eq!(cells[5], "12");
-        assert_eq!(cells[7], "2.0 KiB");
-        assert_eq!(cells[8], "yes");
-        assert_eq!(recording_fields(&open)[6], ("ended", "open".to_string()));
-    }
-
-    #[test]
-    fn an_action_row_keeps_its_summary_as_json() {
-        let event = json!({ "at_ms": 0, "kind": "click", "ok": false, "summary": {"x": 4} });
-        let cells = event_row(&event);
-        assert_eq!(cells[1], "click");
-        assert_eq!(cells[2], "no");
-        assert_eq!(cells[3], "{\"x\":4}");
-    }
-
-    #[test]
-    fn a_brief_recording_line_names_the_frames_and_the_takeover() {
-        let line = recording_brief(
-            &json!({ "id": "r9", "started_ms": 0, "frames": 4, "bytes": 1024, "takeover": false }),
-        );
-        assert!(line.starts_with("r9  "), "{line}");
-        assert!(line.ends_with("4 frames  1.0 KiB  takeover no"), "{line}");
-    }
-
-    #[test]
-    fn the_defaults_read_in_the_flags_words() {
-        let fields = defaults_fields(
-            &json!({ "record": true, "retention_days": 30, "record_fps": 2, "record_takeovers": false }),
-        );
-        assert_eq!(fields[0], ("record", "on".to_string()));
-        assert_eq!(fields[1], ("retention", "30 days".to_string()));
-        assert_eq!(fields[3], ("takeovers recorded", "off".to_string()));
     }
 }

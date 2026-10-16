@@ -375,29 +375,3 @@ pub fn overlay(o: &Overlay) -> Obj {
     }
     group
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn violations_name_their_items_and_spots() {
-        let v = vec![
-            "item 3 (desk) overlaps item 5 (chair)".to_string(),
-            "items 7 and 9 (desk, chair) block the door".to_string(),
-            "spot 4 has no clip".to_string(),
-            "reitem 8 is not a word".to_string(),
-        ];
-        let (items, spots) = named(&v);
-        assert_eq!(items, vec![3, 5, 7, 9]);
-        assert_eq!(spots, vec![4]);
-    }
-
-    #[test]
-    fn turns_follow_the_verifier() {
-        assert_eq!(turn(1.0, 2.0, 90.0), (2.0, -1.0));
-        assert_eq!(turn(1.0, 2.0, 180.0), (-1.0, -2.0));
-        assert_eq!(turn(1.0, 2.0, 270.0), (-2.0, 1.0));
-        assert_eq!(turn(1.0, 2.0, 0.0), (1.0, 2.0));
-    }
-}

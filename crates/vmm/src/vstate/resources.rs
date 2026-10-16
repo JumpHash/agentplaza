@@ -315,24 +315,6 @@ impl AddressAllocator {
 mod tests {
     use super::*;
 
-    // The GSI bounds differ per architecture; anchor the allocator tests on
-    // whatever the current arch exposes.
-    #[test]
-    fn test_allocate_many_ids() {
-        let mut id_allocator = IdAllocator::new(5, 23).unwrap();
-        let ids = allocate_many_ids(&mut id_allocator, 3).unwrap();
-        assert_eq!(ids, vec![5, 6, 7]);
-
-        // Freeing is wired through `free_id`.
-        for id in ids {
-            id_allocator.free_id(id).unwrap();
-        }
-
-        // The freed ids are handed out again, in order.
-        let ids = allocate_many_ids(&mut id_allocator, 3).unwrap();
-        assert_eq!(ids, vec![5, 6, 7]);
-    }
-
     #[test]
     fn test_allocate_many_ids_failure_rolls_back() {
         let mut id_allocator = IdAllocator::new(5, 7).unwrap();

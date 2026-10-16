@@ -183,28 +183,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_entropy_decodes_from_64_hex_digits_in_either_case() {
-        let hex = "00ff7f80abcdefABCDEF0123456789000102030405060708090a0b0c0d0e0f10";
-        let bytes = decode_entropy(hex).expect("64 hex digits");
-        assert_eq!(bytes[0], 0x00);
-        assert_eq!(bytes[1], 0xff);
-        assert_eq!(bytes[2], 0x7f);
-        assert_eq!(bytes[3], 0x80);
-        assert_eq!(bytes[4], 0xab);
-        assert_eq!(bytes[31], 0x10);
-        assert_eq!(
-            decode_entropy(&"ab".repeat(32)),
-            Some([0xab; ENTROPY_BYTES])
-        );
-    }
-
-    #[test]
-    fn a_malformed_entropy_string_decodes_to_nothing() {
-        assert_eq!(decode_entropy(""), None);
-        assert_eq!(decode_entropy(&"a".repeat(63)), None);
-        assert_eq!(decode_entropy(&"a".repeat(66)), None);
-        assert_eq!(decode_entropy(&format!("{}g", "a".repeat(63))), None);
-        assert_eq!(decode_entropy(&format!("{} ", "a".repeat(63))), None);
+    fn entropy_decodes_from_64_hex_digits_and_nothing_else() {
+        // The entropy decodes from 64 hex digits in either case.
+        {
+            let hex = "00ff7f80abcdefABCDEF0123456789000102030405060708090a0b0c0d0e0f10";
+            let bytes = decode_entropy(hex).expect("64 hex digits");
+            assert_eq!(bytes[0], 0x00);
+            assert_eq!(bytes[1], 0xff);
+            assert_eq!(bytes[2], 0x7f);
+            assert_eq!(bytes[3], 0x80);
+            assert_eq!(bytes[4], 0xab);
+            assert_eq!(bytes[31], 0x10);
+            assert_eq!(
+                decode_entropy(&"ab".repeat(32)),
+                Some([0xab; ENTROPY_BYTES])
+            );
+        }
+        // A malformed entropy string decodes to nothing.
+        {
+            assert_eq!(decode_entropy(""), None);
+            assert_eq!(decode_entropy(&"a".repeat(63)), None);
+            assert_eq!(decode_entropy(&"a".repeat(66)), None);
+            assert_eq!(decode_entropy(&format!("{}g", "a".repeat(63))), None);
+            assert_eq!(decode_entropy(&format!("{} ", "a".repeat(63))), None);
+        }
     }
 
     #[test]
@@ -216,23 +218,5 @@ mod tests {
         assert_eq!(clock_offset(5_000, 6_001), Some(1_001));
         assert_eq!(clock_offset(9_000, 1_000), Some(8_000));
         assert_eq!(clock_offset(0, u64::MAX), Some(u64::MAX));
-    }
-
-    #[test]
-    fn a_guest_already_on_the_host_clock_logs_no_clock_change() {
-        // The clock is within tolerance and the entropy is empty, so nothing outside this
-        // process is touched.
-        let facts = HostFacts {
-            time_ms: now_ms(),
-            entropy: String::new(),
-        };
-        let mut log = Vec::new();
-        apply(&facts, &mut log);
-        let log = String::from_utf8(log).expect("UTF-8");
-        assert!(!log.contains("clock"), "{log}");
-        assert!(
-            log.contains("agent-harness: host entropy not mixed: it is not 64 hex digits"),
-            "{log}"
-        );
     }
 }

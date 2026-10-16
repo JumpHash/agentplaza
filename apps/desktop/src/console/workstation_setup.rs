@@ -509,45 +509,53 @@ mod tests {
     }
 
     #[test]
-    fn a_complete_form_becomes_the_join_parameters() {
-        let p = params(&filled()).unwrap();
-        assert_eq!(p.hub, "https://hub.example:7443");
-        assert_eq!(p.code, "JOIN-9");
-        assert_eq!(
-            p.choice,
-            AccountChoice::Agent {
-                user: "agentplaza".into()
-            }
-        );
-        assert!(p.name.is_none());
-        assert!(p.node_code.is_none());
-    }
-
-    #[test]
-    fn a_hub_without_a_scheme_or_a_code_with_spaces_is_refused() {
-        let mut state = filled();
-        state.hub = "hub.example".into();
-        assert!(params(&state).is_err());
-        let mut state = filled();
-        state.code = "two words".into();
-        assert!(params(&state).is_err());
-    }
-
-    #[test]
-    fn the_owner_choice_is_the_owners_own_account() {
-        let mut state = filled();
-        state.pick = Pick::Owner;
-        assert_eq!(params(&state).unwrap().choice, AccountChoice::Owner);
-    }
-
-    #[test]
-    fn a_bad_agent_user_or_pin_is_refused_before_anything_runs() {
-        let mut state = filled();
-        state.agent_user = "root".into();
-        assert!(params(&state).is_err());
-        let mut state = filled();
-        state.pin = "abcd".into();
-        assert!(params(&state).is_err());
+    fn the_join_form_builds_and_checks_its_parameters() {
+        // A complete form becomes the join parameters.
+        {
+            let p = params(&filled()).unwrap();
+            assert_eq!(p.hub, "https://hub.example:7443");
+            assert_eq!(p.code, "JOIN-9");
+            assert_eq!(
+                p.choice,
+                AccountChoice::Agent {
+                    user: "agentplaza".into()
+                }
+            );
+            assert!(p.name.is_none());
+            assert!(p.node_code.is_none());
+        }
+        // A hub without a scheme or a code with spaces is refused.
+        {
+            let mut state = filled();
+            state.hub = "hub.example".into();
+            assert!(params(&state).is_err());
+            let mut state = filled();
+            state.code = "two words".into();
+            assert!(params(&state).is_err());
+        }
+        // The owner choice is the owner's own account.
+        {
+            let mut state = filled();
+            state.pick = Pick::Owner;
+            assert_eq!(params(&state).unwrap().choice, AccountChoice::Owner);
+        }
+        // A bad agent user or pin is refused before anything runs.
+        {
+            let mut state = filled();
+            state.agent_user = "root".into();
+            assert!(params(&state).is_err());
+            let mut state = filled();
+            state.pin = "abcd".into();
+            assert!(params(&state).is_err());
+        }
+        // A node code is checked only when the node option is on.
+        {
+            let mut state = filled();
+            state.node_code = "not-a-code".into();
+            assert!(params(&state).is_ok());
+            state.also_node = true;
+            assert!(params(&state).is_err());
+        }
     }
 
     #[test]
@@ -569,14 +577,5 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.starts_with("Show the plan"))
         );
-    }
-
-    #[test]
-    fn a_node_code_is_checked_only_when_the_node_option_is_on() {
-        let mut state = filled();
-        state.node_code = "not-a-code".into();
-        assert!(params(&state).is_ok());
-        state.also_node = true;
-        assert!(params(&state).is_err());
     }
 }

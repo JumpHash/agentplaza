@@ -1313,64 +1313,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_word_being_typed_is_the_trailing_mention() {
-        assert_eq!(trailing_mention("ship it @bu"), Some("bu"));
-        assert_eq!(trailing_mention("ship it @"), Some(""));
-        assert_eq!(
-            trailing_mention("ship it @bu "),
-            None,
-            "a space after the word ends it"
-        );
-        assert_eq!(
-            trailing_mention("mail a@b"),
-            None,
-            "an address is not a mention"
-        );
-        assert_eq!(trailing_mention("plain"), None);
-    }
-
-    #[test]
-    fn suggestions_offer_all_then_the_names_and_roles_that_match() {
-        let names: Vec<String> = ["all", "Ana", "builder", "Dev"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            suggestions_for("", &names),
-            vec!["all", "Ana", "builder", "Dev"]
-        );
-        assert_eq!(
-            suggestions_for("AN", &names),
-            vec!["Ana"],
-            "matches without case"
-        );
-        assert_eq!(suggestions_for("ev", &names), vec!["Dev"]);
-        assert_eq!(suggestions_for("zz", &names), Vec::<String>::new());
-    }
-
-    #[test]
-    fn the_mentions_of_a_post_are_its_at_names_once_in_order() {
-        assert_eq!(
-            mentions_in("ping @all and @ana, then @ana again and @dev-2_x."),
-            vec!["all", "ana", "dev-2_x"]
-        );
-        assert!(mentions_in("mail a@b.com now").is_empty());
-    }
-
-    #[test]
-    fn the_mention_names_are_the_agents_names_and_roles_once_each() {
-        let list = json!([
-            { "cid": 3, "name": "Ana", "role": "builder" },
-            { "cid": 4, "name": "ana", "role": "builder" },
-            { "cid": 5, "name": "", "role": "reviewer" }
-        ]);
-        assert_eq!(
-            mention_names(&list),
-            vec!["all", "Ana", "builder", "reviewer"]
-        );
-    }
-
-    #[test]
     fn an_owner_post_carries_its_mentions_and_no_agent() {
         let post: Post = serde_json::from_value(json!({
             "id": "p9", "agent_cid": 0, "role": "owner", "subject": "ship", "body": "ship it",

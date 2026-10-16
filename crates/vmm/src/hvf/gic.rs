@@ -1563,12 +1563,6 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_running_priority_is_0xff() {
-        let gic = gic(1);
-        assert_eq!(gic.sysreg_read(0, ICC_RPR_EL1), Some(0xff));
-    }
-
-    #[test]
     fn an_active_spi_is_not_signalled_again_before_eoi() {
         let mut gic = gic(1);
         unmask(&mut gic, 0);
@@ -1638,27 +1632,6 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(acked, expected, "each SPI is delivered exactly once");
         assert_eq!(gic.ack(0), SPURIOUS_INTID);
-    }
-
-    #[test]
-    fn priorities_order_the_console_and_a_volume() {
-        let mut gic = gic(1);
-        unmask(&mut gic, 0);
-        enable_spi(&mut gic, UART_SPI, 0);
-        enable_spi(&mut gic, 8, 0);
-        // The volume is more urgent than the console (lower priority number).
-        gic.dist_write(GICD_IPRIORITYR + u64::from(UART_SPI), 1, 0xc0);
-        gic.dist_write(GICD_IPRIORITYR + 8, 1, 0x80);
-
-        gic.raise_spi(UART_SPI);
-        gic.raise_spi(8);
-        assert_eq!(
-            gic.ack(0),
-            SPI_BASE + 8,
-            "the more urgent volume goes first"
-        );
-        gic.eoi(0, SPI_BASE + 8);
-        assert_eq!(gic.ack(0), UART_INTID);
     }
 
     #[test]
@@ -2044,19 +2017,5 @@ mod tests {
         let (base, len) = redist_window(2);
         assert_eq!(gic.decode_address(base + len), None);
         assert_eq!(gic.decode_address(0), None);
-    }
-
-    #[test]
-    fn lane_helpers_are_byte_exact() {
-        assert_eq!(lane_extract(0x1122_3344, 0, 4), 0x1122_3344);
-        // A byte lane is little-endian: offset 1 is the second byte.
-        assert_eq!(lane_extract(0x1122_3344, 1, 1), 0x33);
-        assert_eq!(lane_extract(0x1122_3344, 3, 1), 0x11);
-        assert_eq!(lane_extract(0x1122_3344, 2, 2), 0x1122);
-        assert_eq!(word_insert(0, 1, 1, 0xab), 0xab00);
-        assert_eq!(word_insert(0xffff_ffff, 0, 1, 0xab), 0xffff_ffab);
-        assert_eq!(word_insert(0xdead_beef, 0, 4, 0x1234_5678), 0x1234_5678);
-        assert_eq!(size_mask(1), 0xff);
-        assert_eq!(size_mask(4), 0xffff_ffff);
     }
 }

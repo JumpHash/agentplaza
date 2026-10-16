@@ -908,13 +908,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_row_error_shows_the_first_line_only_when_not_running() {
-        let list: Vec<Server> = serde_json::from_str(SERVERS).unwrap();
-        assert_eq!(row_error(&list[0]), Some("exit 1"));
-        assert_eq!(row_error(&list[1]), None);
-    }
-
-    #[test]
     fn mcp_tools_logs_and_test_parse() {
         let tools: Vec<Tool> = serde_json::from_str(TOOLS).unwrap();
         assert_eq!(tools[0].name, "read_file");

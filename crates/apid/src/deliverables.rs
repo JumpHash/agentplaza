@@ -839,75 +839,74 @@ mod tests {
     }
 
     #[test]
-    fn html_reports_may_style_and_show_images_but_stay_sandboxed() {
-        let policy = HTML_CSP;
-        // The sandbox stays first and without allow-same-origin: the page is an opaque origin.
-        assert!(policy.starts_with("sandbox allow-scripts;"));
-        assert!(!policy.contains("allow-same-origin"));
-        assert!(!policy.contains("allow-top-navigation"));
-        // The directives the reports need: inline styles, and images from data:, blob: and https:.
-        let directive = |name: &str| {
-            policy
-                .split(';')
-                .map(str::trim)
-                .find(|d| d.starts_with(name))
-                .map(str::to_string)
-        };
-        assert_eq!(
-            directive("style-src").as_deref(),
-            Some("style-src 'self' 'unsafe-inline' https:")
-        );
-        assert_eq!(
-            directive("img-src").as_deref(),
-            Some("img-src 'self' data: blob: https:")
-        );
-        // Scripts keep their own rule, unchanged.
-        assert_eq!(
-            directive("script-src").as_deref(),
-            Some("script-src 'unsafe-inline' 'self' https:")
-        );
-        // The policy is served with HTML, inline, with nosniff and no download header; nothing else gets it.
-        let (kind, headers) = served("text/html; charset=utf-8", "report.html", false);
-        assert_eq!(kind, "text/html; charset=utf-8");
-        let get = |name: &str| {
-            headers
-                .iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| v.clone())
-        };
-        assert_eq!(get("content-security-policy").as_deref(), Some(policy));
-        assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
-        assert_eq!(get("content-disposition"), None);
-    }
-
-    #[test]
-    fn an_html_name_is_html_whatever_the_stored_type() {
-        let (kind, headers) = served("application/octet-stream", "Report.HTM", false);
-        assert_eq!(kind, "text/html; charset=utf-8");
-        assert!(headers.iter().any(|(k, _)| *k == "content-security-policy"));
-        let (kind, _) = served("text/html", "x.bin", false);
-        assert_eq!(kind, "text/html; charset=utf-8");
-    }
-
-    #[test]
-    fn svg_downloads_and_other_files_carry_no_policy() {
-        let (kind, headers) = served("image/svg+xml", "logo.svg", false);
-        assert_eq!(kind, "image/svg+xml");
-        assert!(
-            headers
-                .iter()
-                .any(|(k, v)| *k == "content-disposition"
+    fn served_policy_and_headers_follow_the_file_type() {
+        // HTML reports may style and show images but stay sandboxed.
+        {
+            let policy = HTML_CSP;
+            // The sandbox stays first and without allow-same-origin: the page is an opaque origin.
+            assert!(policy.starts_with("sandbox allow-scripts;"));
+            assert!(!policy.contains("allow-same-origin"));
+            assert!(!policy.contains("allow-top-navigation"));
+            // The directives the reports need: inline styles, and images from data:, blob: and https:.
+            let directive = |name: &str| {
+                policy
+                    .split(';')
+                    .map(str::trim)
+                    .find(|d| d.starts_with(name))
+                    .map(str::to_string)
+            };
+            assert_eq!(
+                directive("style-src").as_deref(),
+                Some("style-src 'self' 'unsafe-inline' https:")
+            );
+            assert_eq!(
+                directive("img-src").as_deref(),
+                Some("img-src 'self' data: blob: https:")
+            );
+            // Scripts keep their own rule, unchanged.
+            assert_eq!(
+                directive("script-src").as_deref(),
+                Some("script-src 'unsafe-inline' 'self' https:")
+            );
+            // The policy is served with HTML, inline, with nosniff and no download header; nothing else gets it.
+            let (kind, headers) = served("text/html; charset=utf-8", "report.html", false);
+            assert_eq!(kind, "text/html; charset=utf-8");
+            let get = |name: &str| {
+                headers
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.clone())
+            };
+            assert_eq!(get("content-security-policy").as_deref(), Some(policy));
+            assert_eq!(get("x-content-type-options").as_deref(), Some("nosniff"));
+            assert_eq!(get("content-disposition"), None);
+        }
+        // An HTML name is HTML whatever the stored type.
+        {
+            let (kind, headers) = served("application/octet-stream", "Report.HTM", false);
+            assert_eq!(kind, "text/html; charset=utf-8");
+            assert!(headers.iter().any(|(k, _)| *k == "content-security-policy"));
+            let (kind, _) = served("text/html", "x.bin", false);
+            assert_eq!(kind, "text/html; charset=utf-8");
+        }
+        // SVG downloads and other files carry no policy.
+        {
+            let (kind, headers) = served("image/svg+xml", "logo.svg", false);
+            assert_eq!(kind, "image/svg+xml");
+            assert!(
+                headers.iter().any(|(k, v)| *k == "content-disposition"
                     && v == "attachment; filename=\"logo.svg\"")
-        );
-        assert!(!headers.iter().any(|(k, _)| *k == "content-security-policy"));
-        let (kind, headers) = served("image/png", "shot.png", false);
-        assert_eq!(kind, "image/png");
-        assert_eq!(
-            headers,
-            vec![("x-content-type-options", "nosniff".to_string())]
-        );
-        let (_, headers) = served("text/html", "page.html", true);
-        assert!(headers.iter().any(|(k, _)| *k == "content-disposition"));
+            );
+            assert!(!headers.iter().any(|(k, _)| *k == "content-security-policy"));
+            let (kind, headers) = served("image/png", "shot.png", false);
+            assert_eq!(kind, "image/png");
+            assert_eq!(
+                headers,
+                vec![("x-content-type-options", "nosniff".to_string())]
+            );
+            let (_, headers) = served("text/html", "page.html", true);
+            assert!(headers.iter().any(|(k, _)| *k == "content-disposition"));
+        }
     }
 
     #[test]

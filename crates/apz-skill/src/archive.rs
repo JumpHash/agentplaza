@@ -440,59 +440,63 @@ mod tests {
     }
 
     #[test]
-    fn root_skill_and_under_filter() {
-        let zip = raw_zip(&[
-            ("SKILL.md", "# root"),
-            ("tool.py", "print(1)"),
-            ("skills/x/SKILL.md", "# x"),
-        ]);
-        let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
-        let all = find_skills(&entries, "");
-        assert_eq!(
-            all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
-            ["", "skills/x"]
-        );
-        assert_eq!(
-            all[0]
-                .files
-                .iter()
-                .map(|f| f.path.as_str())
-                .collect::<Vec<_>>(),
-            ["tool.py"]
-        );
-        let under = find_skills(&entries, "skills");
-        assert_eq!(
-            under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
-            ["skills/x"]
-        );
-    }
-
-    #[test]
-    fn github_zipball_top_folder_is_stripped_for_under() {
-        let zip = raw_zip(&[
-            ("repo-abc/SKILL.md", "# top"),
-            ("repo-abc/skills/x/SKILL.md", "# x"),
-            ("repo-abc/skills/x/a.txt", "a"),
-        ]);
-        let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
-        let all = find_skills(&entries, "");
-        assert_eq!(
-            all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
-            ["repo-abc", "repo-abc/skills/x"]
-        );
-        let under = find_skills(&entries, "skills/x");
-        assert_eq!(
-            under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
-            ["repo-abc/skills/x"]
-        );
-        assert_eq!(
-            under[0]
-                .files
-                .iter()
-                .map(|f| f.path.as_str())
-                .collect::<Vec<_>>(),
-            ["a.txt"]
-        );
+    fn find_skills_root_and_under_filter() {
+        // root_skill_and_under_filter: a root SKILL.md is found with its own files, and the
+        // `under` filter keeps only the matching subfolder.
+        {
+            let zip = raw_zip(&[
+                ("SKILL.md", "# root"),
+                ("tool.py", "print(1)"),
+                ("skills/x/SKILL.md", "# x"),
+            ]);
+            let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
+            let all = find_skills(&entries, "");
+            assert_eq!(
+                all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+                ["", "skills/x"]
+            );
+            assert_eq!(
+                all[0]
+                    .files
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["tool.py"]
+            );
+            let under = find_skills(&entries, "skills");
+            assert_eq!(
+                under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+                ["skills/x"]
+            );
+        }
+        // github_zipball_top_folder_is_stripped_for_under: a GitHub zipball's top folder is
+        // kept in the skill dirs but stripped when matching the `under` filter.
+        {
+            let zip = raw_zip(&[
+                ("repo-abc/SKILL.md", "# top"),
+                ("repo-abc/skills/x/SKILL.md", "# x"),
+                ("repo-abc/skills/x/a.txt", "a"),
+            ]);
+            let entries = read_zip(&zip, Limits::ARCHIVE).unwrap();
+            let all = find_skills(&entries, "");
+            assert_eq!(
+                all.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+                ["repo-abc", "repo-abc/skills/x"]
+            );
+            let under = find_skills(&entries, "skills/x");
+            assert_eq!(
+                under.iter().map(|s| s.dir.as_str()).collect::<Vec<_>>(),
+                ["repo-abc/skills/x"]
+            );
+            assert_eq!(
+                under[0]
+                    .files
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["a.txt"]
+            );
+        }
     }
 
     #[test]

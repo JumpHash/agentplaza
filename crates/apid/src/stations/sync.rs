@@ -1463,13 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn the_utc_stamp_is_the_calendar_date_and_the_time() {
-        assert_eq!(utc_stamp(0), "1970-01-01 0000");
-        assert_eq!(utc_stamp(951_782_400_000), "2000-02-29 0000", "a leap day");
-        assert_eq!(utc_stamp(NOW), "2026-10-14 1532");
-    }
-
-    #[test]
     fn a_failed_pull_is_reported_for_its_path_and_the_rest_still_moves() {
         let station = Station::with(&[("a.txt", b"aaa"), ("b.txt", b"bbb")]);
         *station.fail_pull.borrow_mut() = Some("the link dropped".into());

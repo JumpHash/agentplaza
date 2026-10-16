@@ -950,50 +950,41 @@ mod tests {
         );
     }
 
-    /// A moved robot spot is caught: the verifier reports its position against the catalogue.
+    /// A moved robot spot is caught, and a layout whose door side is wrong is reported in the shell line.
     #[test]
-    fn a_moved_spot_is_a_violation() {
+    fn moved_spots_and_wrong_door_sides_are_reported() {
         let d = data();
-        let case = fixture_cases()
-            .into_iter()
-            .find(|c| c.dropped == 0)
-            .expect("a fixture with no drop");
-        let layout = generate(&case.input, d);
-        assert!(!layout.spots.is_empty(), "the case has robot spots");
-        let mut moved = layout.clone();
-        moved.spots[0].x = case.input.w / 2.0 + 0.5;
-        let v = verify(&moved, &case.input, d);
-        assert!(v.iter().any(|m| m.starts_with("spot 0:")), "{v:?}");
-    }
-
-    /// A layout whose door side is wrong is reported in the shell line.
-    #[test]
-    fn a_wrong_door_side_is_reported() {
-        let d = data();
-        let input = Input {
-            role: "librarian".to_string(),
-            w: 4.0,
-            d: 3.5,
-            door: D::S,
-            seed: 7,
-            agents: None,
-        };
-        let mut layout = generate(&input, d);
-        layout.shell.door.side = D::N;
-        let v = verify(&layout, &input, d);
-        assert!(
-            v.iter().any(|m| m == "shell: door side n, expected s"),
-            "{v:?}"
-        );
-    }
-
-    #[test]
-    fn js_numbers_print_like_javascript() {
-        assert_eq!(js(-0.0), "0");
-        assert_eq!(js(0.08), "0.08");
-        assert_eq!(js(10.0), "10");
-        assert_eq!(js(1e-7), "1e-7");
-        assert_eq!(js(1.5e21), "1.5e+21");
+        // A moved robot spot is caught: the verifier reports its position against the catalogue.
+        {
+            let case = fixture_cases()
+                .into_iter()
+                .find(|c| c.dropped == 0)
+                .expect("a fixture with no drop");
+            let layout = generate(&case.input, d);
+            assert!(!layout.spots.is_empty(), "the case has robot spots");
+            let mut moved = layout.clone();
+            moved.spots[0].x = case.input.w / 2.0 + 0.5;
+            let v = verify(&moved, &case.input, d);
+            assert!(v.iter().any(|m| m.starts_with("spot 0:")), "{v:?}");
+        }
+        // A layout whose door side is wrong is reported in the shell line.
+        {
+            let input = Input {
+                role: "librarian".to_string(),
+                w: 4.0,
+                d: 3.5,
+                door: D::S,
+                seed: 7,
+                agents: None,
+            };
+            let mut layout = generate(&input, d);
+            layout.shell.door.side = D::N;
+            let v = verify(&layout, &input, d);
+            assert!(
+                v.iter().any(|m| m == "shell: door side n, expected s"),
+                "{v:?}"
+            );
+        }
     }
 
     /// Parity with the web's verifier: `APZ_ROOM_DUMP=<file>` (the same JSON-lines dump the generator test reads)

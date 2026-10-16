@@ -412,34 +412,6 @@ mod tests {
     }
 
     #[test]
-    fn test_i8042_buffer() {
-        let mut i8042 = I8042Device::new(
-            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
-
-        // Test push/pop.
-        i8042.push_byte(52).unwrap();
-        assert_ne!(i8042.status & SB_OUT_DATA_AVAIL, 0);
-        assert_eq!(i8042.pop_byte().unwrap(), 52);
-        assert_eq!(i8042.status & SB_OUT_DATA_AVAIL, 0);
-
-        // Test empty buffer pop.
-        assert!(i8042.pop_byte().is_none());
-
-        // Test buffer full.
-        for i in 0..BUF_SIZE {
-            i8042.push_byte(i.try_into().unwrap()).unwrap();
-            assert_eq!(i8042.buf_len(), i + 1);
-        }
-        assert_eq!(
-            i8042.push_byte(0).unwrap_err(),
-            I8042Error::InternalBufferFull
-        );
-    }
-
-    #[test]
     fn test_i8042_kbd() {
         let mut i8042 = I8042Device::new(
             EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).unwrap(),

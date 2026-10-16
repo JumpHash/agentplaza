@@ -305,35 +305,40 @@ fn serve(mut guest: Guest, kind: Kind, route: &Route) {
 /// Copies bytes both ways until both directions end or the relay stops. A clean end in one direction (EOF) is passed on as
 /// a half-close of the other side, so a reply still in flight is not cut off; a broken read or write ends both directions.
 /// Each read has a short timeout, so a direction sees the other's end and the stop flag within [`POLL`].
+///
+/// Both directions use the one TCP handle (`&TcpStream` reads and writes), not a `try_clone`: on Windows a clone is a
+/// `WSADuplicateSocketW` handle, and a `shutdown(Write)` through it failed now and then with WSAENOTCONN, so the hub
+/// never got the guest's half-close and waited for it.
 fn forward(guest: Guest, tcp: TcpStream, stop: &Arc<AtomicBool>) {
-    let (Ok(mut guest_in), Ok(mut tcp_out)) = (guest.dup(), tcp.try_clone()) else {
+    let Ok(mut guest_in) = guest.dup() else {
         return;
     };
-    let mut tcp_in = tcp;
+    let tcp = Arc::new(tcp);
     let mut guest_out = guest;
     let _ = guest_in.set_read_timeout(Some(POLL));
-    let _ = tcp_in.set_read_timeout(Some(POLL));
+    let _ = tcp.set_read_timeout(Some(POLL));
     let _ = guest_out.set_write_timeout(Some(WRITE_TIMEOUT));
-    let _ = tcp_out.set_write_timeout(Some(WRITE_TIMEOUT));
+    let _ = tcp.set_write_timeout(Some(WRITE_TIMEOUT));
 
     let done = Arc::new(AtomicBool::new(false));
     let up = {
         let done = Arc::clone(&done);
         let stop = Arc::clone(stop);
+        let tcp = Arc::clone(&tcp);
         thread::spawn(move || {
-            if pump(&mut guest_in, &mut tcp_out, &done, &stop) == Ended::Eof {
-                let _ = tcp_out.shutdown(Shutdown::Write);
+            if pump(&mut guest_in, &mut &*tcp, &done, &stop) == Ended::Eof {
+                let _ = tcp.shutdown(Shutdown::Write);
             } else {
                 done.store(true, Ordering::SeqCst);
             }
         })
     };
-    if pump(&mut tcp_in, &mut guest_out, &done, stop) == Ended::Eof {
+    if pump(&mut &*tcp, &mut guest_out, &done, stop) == Ended::Eof {
         let _ = guest_out.shutdown(Shutdown::Write);
     }
     done.store(true, Ordering::SeqCst);
     let _ = up.join();
-    let _ = tcp_in.shutdown(Shutdown::Both);
+    let _ = tcp.shutdown(Shutdown::Both);
     let _ = guest_out.shutdown(Shutdown::Both);
 }
 
@@ -691,34 +696,49 @@ mod tests {
         let destination = hub_destination(&hub);
         let relay = Relay::start(&dir, 4097, destination, None).expect("the relay");
 
+        // Several connections in turn: the guest's half-close reaching the hub failed about once in ten on Windows
+        // (the relay half-closed through a duplicated socket handle, which reported WSAENOTCONN).
+        const ROUNDS: usize = 20;
         let hub_thread = thread::spawn(move || {
-            let (mut conn, _) = hub.accept().expect("the relay dials the hub");
-            conn.set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("timeout");
-            // A hub on this machine is told first that the connection is a VM's.
-            let mut preface = vec![0u8; apz_http::RELAY_PREFACE.len()];
-            conn.read_exact(&mut preface).expect("the relay's preface");
-            assert_eq!(preface, apz_http::RELAY_PREFACE);
-            let mut got = [0u8; 5];
-            conn.read_exact(&mut got).expect("the guest's bytes");
-            conn.write_all(b"pong").expect("the reply");
-            let mut rest = Vec::new();
-            conn.read_to_end(&mut rest).expect("the guest's end");
-            (got, rest)
+            (0..ROUNDS)
+                .map(|_| {
+                    let (mut conn, _) = hub.accept().expect("the relay dials the hub");
+                    conn.set_read_timeout(Some(Duration::from_secs(5)))
+                        .expect("timeout");
+                    // A hub on this machine is told first that the connection is a VM's.
+                    let mut preface = vec![0u8; apz_http::RELAY_PREFACE.len()];
+                    conn.read_exact(&mut preface).expect("the relay's preface");
+                    assert_eq!(preface, apz_http::RELAY_PREFACE);
+                    let mut got = [0u8; 5];
+                    conn.read_exact(&mut got).expect("the guest's bytes");
+                    conn.write_all(b"pong").expect("the reply");
+                    let mut rest = Vec::new();
+                    conn.read_to_end(&mut rest).expect("the guest's end");
+                    (got, rest)
+                })
+                .collect::<Vec<_>>()
         });
 
-        let mut guest = guest_link(&dir, 4097);
-        guest
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("timeout");
-        guest.write_all(b"hello").expect("send");
-        let mut reply = [0u8; 4];
-        guest.read_exact(&mut reply).expect("the hub's reply");
-        assert_eq!(&reply, b"pong");
-        guest.shutdown(Shutdown::Write).expect("half close");
-        let (got, rest) = hub_thread.join().expect("the hub thread");
-        assert_eq!(&got, b"hello");
-        assert!(rest.is_empty());
+        for _ in 0..ROUNDS {
+            let mut guest = guest_link(&dir, 4097);
+            guest
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("timeout");
+            guest.write_all(b"hello").expect("send");
+            let mut reply = [0u8; 4];
+            guest.read_exact(&mut reply).expect("the hub's reply");
+            assert_eq!(&reply, b"pong");
+            guest.shutdown(Shutdown::Write).expect("half close");
+            // The relay finishes this connection (the hub's end closes it) before the next one, so the four-connection
+            // cap is never reached.
+            let mut end = Vec::new();
+            guest.read_to_end(&mut end).expect("the hub's end");
+            assert!(end.is_empty());
+        }
+        for (got, rest) in hub_thread.join().expect("the hub thread") {
+            assert_eq!(&got, b"hello");
+            assert!(rest.is_empty());
+        }
 
         assert!(
             decoy.accept().is_err(),

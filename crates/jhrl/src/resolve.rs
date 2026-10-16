@@ -553,141 +553,138 @@ mod tests {
     }
 
     #[test]
-    fn default_only_without_rules_and_open_without_default() {
-        let ex = resolve("k", Direction::Max, Dim::NONE, Some(int(3)), vec![]).unwrap();
-        assert_eq!(
-            (ex.value, ex.source.clone()),
-            (Some(int(3)), Source::Default)
-        );
-        let ex = resolve("k", Direction::Max, Dim::NONE, None, vec![]).unwrap();
-        assert_eq!((ex.value, ex.source), (None, Source::Open));
-    }
-
-    #[test]
-    fn priority_within_a_tier_and_floors_meet() {
-        let mut f = cand("floor", "p", Tier::System, -5, int(40));
-        f.floor = true;
-        let ex = resolve(
-            "k",
-            Direction::Max,
-            Dim::NONE,
-            None,
-            vec![
-                cand("low", "p", Tier::System, 0, int(10)),
-                cand("high", "p", Tier::System, 9, int(80)),
-                f,
-            ],
-        )
-        .unwrap();
-        // high (80) wins on priority, the floor (40) meets it: min(80, 40) = 40.
-        assert_eq!(ex.value, Some(int(40)));
-        assert!(ex.no_effect.contains(&"low".to_string()));
-    }
-
-    #[test]
-    fn ties_in_one_pack_are_errors_across_packs_warnings() {
-        let e = resolve(
-            "k",
-            Direction::Max,
-            Dim::NONE,
-            None,
-            vec![
-                cand("a", "p", Tier::System, 0, int(1)),
-                cand("b", "p", Tier::System, 0, int(2)),
-            ],
-        );
-        assert!(matches!(e, Err(ResolveError::SamePackTie { .. })));
-        let ex = resolve(
-            "k",
-            Direction::Max,
-            Dim::NONE,
-            None,
-            vec![
-                cand("a", "p", Tier::System, 0, int(1)),
-                cand("b", "q", Tier::System, 0, int(2)),
-            ],
-        )
-        .unwrap();
-        assert_eq!(ex.value, Some(int(1)));
-        assert_eq!(ex.warnings.len(), 1);
-    }
-
-    #[test]
-    fn exact_windows_intersect_and_empty_meet_names_both_rules() {
-        let ex = resolve(
-            "half_life",
-            Direction::Exact,
-            Dim::NONE,
-            None,
-            vec![
-                cand("wide", "s", Tier::System, 0, win(10, 20)),
-                cand("narrow", "t", Tier::Town, 0, win(12, 30)),
-            ],
-        )
-        .unwrap();
-        assert_eq!(ex.value, Some(win(12, 20)));
-        let e = resolve(
-            "half_life",
-            Direction::Exact,
-            Dim::NONE,
-            None,
-            vec![
-                cand("low", "s", Tier::System, 0, win(1, 2)),
-                cand("high", "t", Tier::Town, 0, win(5, 6)),
-            ],
-        )
-        .unwrap_err();
-        match e {
-            ResolveError::EmptyMeet { a, b, .. } => {
-                assert_eq!((a.as_str(), b.as_str()), ("high", "low"));
-            }
-            other => panic!("{other:?}"),
+    fn resolve_applies_defaults_priority_ties_and_meets() {
+        // default_only_without_rules_and_open_without_default
+        {
+            let ex = resolve("k", Direction::Max, Dim::NONE, Some(int(3)), vec![]).unwrap();
+            assert_eq!(
+                (ex.value, ex.source.clone()),
+                (Some(int(3)), Source::Default)
+            );
+            let ex = resolve("k", Direction::Max, Dim::NONE, None, vec![]).unwrap();
+            assert_eq!((ex.value, ex.source), (None, Source::Open));
         }
-    }
-
-    #[test]
-    fn min_direction_takes_the_largest() {
-        let ex = resolve(
-            "snapshot_coalesce",
-            Direction::Min,
-            Dim::NONE,
-            Some(int(5)),
-            vec![
-                cand("sys", "s", Tier::System, 0, int(5)),
-                cand("town", "t", Tier::Town, 0, int(9)),
-            ],
-        )
-        .unwrap();
-        assert_eq!(ex.value, Some(int(9)));
-    }
-
-    #[test]
-    fn prefer_takes_the_highest_tier() {
-        let ex = resolve(
-            "style",
-            Direction::Prefer,
-            Dim::NONE,
-            None,
-            vec![
-                cand("agent", "a", Tier::Agent, 99, int(1)),
-                cand("sys", "s", Tier::System, 0, int(2)),
-            ],
-        )
-        .unwrap();
-        assert_eq!(ex.value, Some(int(2)));
-        assert_eq!(ex.decided_by, vec!["sys".to_string()]);
-    }
-
-    #[test]
-    fn wrong_dimension_is_an_error() {
-        let e = resolve(
-            "k",
-            Direction::Max,
-            Dim::CREDITS,
-            None,
-            vec![cand("a", "p", Tier::System, 0, int(1))],
-        );
-        assert!(matches!(e, Err(ResolveError::Dimension { .. })));
+        // priority_within_a_tier_and_floors_meet
+        {
+            let mut f = cand("floor", "p", Tier::System, -5, int(40));
+            f.floor = true;
+            let ex = resolve(
+                "k",
+                Direction::Max,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("low", "p", Tier::System, 0, int(10)),
+                    cand("high", "p", Tier::System, 9, int(80)),
+                    f,
+                ],
+            )
+            .unwrap();
+            // high (80) wins on priority, the floor (40) meets it: min(80, 40) = 40.
+            assert_eq!(ex.value, Some(int(40)));
+            assert!(ex.no_effect.contains(&"low".to_string()));
+        }
+        // ties_in_one_pack_are_errors_across_packs_warnings
+        {
+            let e = resolve(
+                "k",
+                Direction::Max,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("a", "p", Tier::System, 0, int(1)),
+                    cand("b", "p", Tier::System, 0, int(2)),
+                ],
+            );
+            assert!(matches!(e, Err(ResolveError::SamePackTie { .. })));
+            let ex = resolve(
+                "k",
+                Direction::Max,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("a", "p", Tier::System, 0, int(1)),
+                    cand("b", "q", Tier::System, 0, int(2)),
+                ],
+            )
+            .unwrap();
+            assert_eq!(ex.value, Some(int(1)));
+            assert_eq!(ex.warnings.len(), 1);
+        }
+        // exact_windows_intersect_and_empty_meet_names_both_rules
+        {
+            let ex = resolve(
+                "half_life",
+                Direction::Exact,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("wide", "s", Tier::System, 0, win(10, 20)),
+                    cand("narrow", "t", Tier::Town, 0, win(12, 30)),
+                ],
+            )
+            .unwrap();
+            assert_eq!(ex.value, Some(win(12, 20)));
+            let e = resolve(
+                "half_life",
+                Direction::Exact,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("low", "s", Tier::System, 0, win(1, 2)),
+                    cand("high", "t", Tier::Town, 0, win(5, 6)),
+                ],
+            )
+            .unwrap_err();
+            match e {
+                ResolveError::EmptyMeet { a, b, .. } => {
+                    assert_eq!((a.as_str(), b.as_str()), ("high", "low"));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // min_direction_takes_the_largest
+        {
+            let ex = resolve(
+                "snapshot_coalesce",
+                Direction::Min,
+                Dim::NONE,
+                Some(int(5)),
+                vec![
+                    cand("sys", "s", Tier::System, 0, int(5)),
+                    cand("town", "t", Tier::Town, 0, int(9)),
+                ],
+            )
+            .unwrap();
+            assert_eq!(ex.value, Some(int(9)));
+        }
+        // prefer_takes_the_highest_tier
+        {
+            let ex = resolve(
+                "style",
+                Direction::Prefer,
+                Dim::NONE,
+                None,
+                vec![
+                    cand("agent", "a", Tier::Agent, 99, int(1)),
+                    cand("sys", "s", Tier::System, 0, int(2)),
+                ],
+            )
+            .unwrap();
+            assert_eq!(ex.value, Some(int(2)));
+            assert_eq!(ex.decided_by, vec!["sys".to_string()]);
+        }
+        // wrong_dimension_is_an_error
+        {
+            let e = resolve(
+                "k",
+                Direction::Max,
+                Dim::CREDITS,
+                None,
+                vec![cand("a", "p", Tier::System, 0, int(1))],
+            );
+            assert!(matches!(e, Err(ResolveError::Dimension { .. })));
+        }
     }
 
     /// Small deterministic generator (std only).

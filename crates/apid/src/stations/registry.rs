@@ -681,26 +681,56 @@ mod tests {
     }
 
     #[test]
-    fn an_expired_code_is_refused_and_a_revoked_one_too() {
-        let store = Store::default();
-        let (_, text) = code(&store, "old", 1, NOW);
-        let later = NOW + 61_000;
-        assert_eq!(store.codes(later)[0].state, "expired");
-        assert_eq!(
-            store
-                .redeem("a", &text, facts("box"), None, HUB, later)
-                .unwrap_err(),
-            Refusal::Invalid(INVALID_CODE.into())
-        );
-        let (id, text2) = code(&store, "mine", 10, NOW);
-        store.revoke_code(&id).unwrap();
-        assert_eq!(store.codes(NOW)[1].state, "revoked");
-        assert!(
-            store
-                .redeem("a", &text2, facts("box"), None, HUB, NOW)
-                .is_err()
-        );
-        assert!(store.revoke_code("j9").is_err());
+    fn the_join_codes_refuse_when_expired_revoked_or_guessed_too_often() {
+        // An expired code is refused, and a revoked one too.
+        {
+            let store = Store::default();
+            let (_, text) = code(&store, "old", 1, NOW);
+            let later = NOW + 61_000;
+            assert_eq!(store.codes(later)[0].state, "expired");
+            assert_eq!(
+                store
+                    .redeem("a", &text, facts("box"), None, HUB, later)
+                    .unwrap_err(),
+                Refusal::Invalid(INVALID_CODE.into())
+            );
+            let (id, text2) = code(&store, "mine", 10, NOW);
+            store.revoke_code(&id).unwrap();
+            assert_eq!(store.codes(NOW)[1].state, "revoked");
+            assert!(
+                store
+                    .redeem("a", &text2, facts("box"), None, HUB, NOW)
+                    .is_err()
+            );
+            assert!(store.revoke_code("j9").is_err());
+        }
+        // A wrong code burns after its tries, and a bad name counts as one.
+        {
+            let store = Store::default();
+            let (_, text) = code(&store, "desk", 10, NOW);
+            assert!(
+                store
+                    .redeem("a", &text, facts("desk"), Some(""), HUB, NOW)
+                    .is_ok(),
+                "an empty name falls back to the hostname"
+            );
+            let (_, second) = code(&store, "two", 10, NOW);
+            for _ in 0..JOIN_TRIES_PER_CODE {
+                let bad = store
+                    .redeem("b", &second, facts("box"), Some("\u{7}bell"), HUB, NOW)
+                    .unwrap_err();
+                assert!(
+                    matches!(bad, Refusal::Invalid(ref m) if m.contains("name")),
+                    "the matched code reports the name"
+                );
+            }
+            assert_eq!(
+                store
+                    .redeem("b", &second, facts("box"), None, HUB, NOW)
+                    .unwrap_err(),
+                Refusal::Invalid(INVALID_CODE.into())
+            );
+        }
     }
 
     #[test]
@@ -735,34 +765,6 @@ mod tests {
         assert_eq!(
             station.id, "w1",
             "the refused attempts did not use the code"
-        );
-    }
-
-    #[test]
-    fn a_wrong_code_burns_after_its_tries_and_a_bad_name_counts_as_one() {
-        let store = Store::default();
-        let (_, text) = code(&store, "desk", 10, NOW);
-        assert!(
-            store
-                .redeem("a", &text, facts("desk"), Some(""), HUB, NOW)
-                .is_ok(),
-            "an empty name falls back to the hostname"
-        );
-        let (_, second) = code(&store, "two", 10, NOW);
-        for _ in 0..JOIN_TRIES_PER_CODE {
-            let bad = store
-                .redeem("b", &second, facts("box"), Some("\u{7}bell"), HUB, NOW)
-                .unwrap_err();
-            assert!(
-                matches!(bad, Refusal::Invalid(ref m) if m.contains("name")),
-                "the matched code reports the name"
-            );
-        }
-        assert_eq!(
-            store
-                .redeem("b", &second, facts("box"), None, HUB, NOW)
-                .unwrap_err(),
-            Refusal::Invalid(INVALID_CODE.into())
         );
     }
 

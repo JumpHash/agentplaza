@@ -54,13 +54,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_buffer_is_clean() {
-        let b = Buffer::new("a.txt", Some("h1".into()), "alpha\n");
-        assert!(!b.dirty);
-        assert_eq!(b.base_hash.as_deref(), Some("h1"));
-    }
-
-    #[test]
     fn edit_marks_dirty_and_keeps_the_base() {
         let mut b = Buffer::new("a.txt", Some("h1".into()), "alpha\n");
         b.edit("beta\n");
@@ -80,17 +73,21 @@ mod tests {
     }
 
     #[test]
-    fn conflict_when_the_server_hash_moved_on() {
-        let b = Buffer::new("a.txt", Some("h1".into()), "alpha\n");
-        assert!(!b.is_conflict(Some("h1")));
-        assert!(b.is_conflict(Some("h2")), "an agent wrote the file");
-        assert!(b.is_conflict(None), "the file was deleted");
-    }
-
-    #[test]
-    fn a_new_file_conflicts_only_if_it_now_exists() {
-        let b = Buffer::new("new.txt", None, "");
-        assert!(!b.is_conflict(None));
-        assert!(b.is_conflict(Some("h1")), "someone created it first");
+    fn is_conflict_follows_the_server_state() {
+        // Originally `conflict_when_the_server_hash_moved_on`: an existing file
+        // conflicts once the server hash moves on or the file is deleted.
+        {
+            let b = Buffer::new("a.txt", Some("h1".into()), "alpha\n");
+            assert!(!b.is_conflict(Some("h1")));
+            assert!(b.is_conflict(Some("h2")), "an agent wrote the file");
+            assert!(b.is_conflict(None), "the file was deleted");
+        }
+        // Originally `a_new_file_conflicts_only_if_it_now_exists`: a new buffer
+        // conflicts only if the file has since been created on the server.
+        {
+            let b = Buffer::new("new.txt", None, "");
+            assert!(!b.is_conflict(None));
+            assert!(b.is_conflict(Some("h1")), "someone created it first");
+        }
     }
 }

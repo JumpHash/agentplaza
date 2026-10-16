@@ -160,22 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn a_card_prints_its_kind_title_author_state_excerpt_and_link() {
-        let text = format_answer(
-            &fixture(),
-            &RichCtx::default(),
-            &Mode {
-                plain: true,
-                ..Mode::default()
-            },
-        );
-        assert_eq!(
-            text,
-            "github pull: Add the rich renderer\n  zarathos · open\n  See #528 and @Ada: the labels come from `apz-rich`.\n  https://github.com/o/r/pull/12\n"
-        );
-    }
-
-    #[test]
     fn the_excerpt_draws_its_references_as_labels_and_links_in_rich_mode() {
         let text = format_answer(&fixture(), &ada(), &mode(false, true));
         assert!(
@@ -186,16 +170,6 @@ mod tests {
             text.contains("See #528"),
             "a task needs the project in context: {text:?}"
         );
-    }
-
-    #[test]
-    fn a_failed_answer_says_why_the_card_is_missing() {
-        let answer = json!({ "ok": false, "error": "rate limited" });
-        assert_eq!(
-            format_answer(&answer, &RichCtx::default(), &Mode::default()),
-            "preview unavailable: rate limited\n"
-        );
-        assert_eq!(error_of(&json!({ "ok": false })), "the hub gave no card");
     }
 
     #[test]

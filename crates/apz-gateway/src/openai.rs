@@ -649,58 +649,51 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_usage_bills_its_misses_as_input_and_meters_its_hits_as_cache_reads() {
-        let with_miss = usage_of(
-            r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30}"#,
-        );
-        assert_eq!(
-            with_miss,
-            Usage {
-                input_tokens: 30,
-                output_tokens: 5,
-                cache_read_tokens: 70,
-                cache_write_tokens: 0
-            }
-        );
-        let hit_only =
-            usage_of(r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70}"#);
-        assert_eq!(
-            hit_only,
-            Usage {
-                input_tokens: 30,
-                output_tokens: 5,
-                cache_read_tokens: 70,
-                cache_write_tokens: 0
-            }
-        );
-    }
-
-    #[test]
-    fn openai_cached_prompt_tokens_leave_the_input_and_never_underflow_it() {
-        let cached = usage_of(
-            r#"{"prompt_tokens":2000,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":1920}}"#,
-        );
-        assert_eq!(
-            cached,
-            Usage {
-                input_tokens: 80,
-                output_tokens: 9,
-                cache_read_tokens: 1920,
-                cache_write_tokens: 0
-            }
-        );
-        let over = usage_of(
-            r#"{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":9}}"#,
-        );
-        assert_eq!(
-            over,
-            Usage {
-                input_tokens: 0,
-                output_tokens: 1,
-                cache_read_tokens: 9,
-                cache_write_tokens: 0
-            }
-        );
+    fn usage_splits_cached_prompt_tokens_out_of_input_and_never_underflows_it() {
+        for (case, usage, want) in [
+            (
+                "deepseek misses bill as input and hits meter as cache reads",
+                r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30}"#,
+                Usage {
+                    input_tokens: 30,
+                    output_tokens: 5,
+                    cache_read_tokens: 70,
+                    cache_write_tokens: 0,
+                },
+            ),
+            (
+                "deepseek hits alone still leave the rest as input",
+                r#"{"prompt_tokens":100,"completion_tokens":5,"prompt_cache_hit_tokens":70}"#,
+                Usage {
+                    input_tokens: 30,
+                    output_tokens: 5,
+                    cache_read_tokens: 70,
+                    cache_write_tokens: 0,
+                },
+            ),
+            (
+                "openai cached prompt tokens leave the input",
+                r#"{"prompt_tokens":2000,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":1920}}"#,
+                Usage {
+                    input_tokens: 80,
+                    output_tokens: 9,
+                    cache_read_tokens: 1920,
+                    cache_write_tokens: 0,
+                },
+            ),
+            (
+                "cached tokens above the prompt never underflow the input",
+                r#"{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":9}}"#,
+                Usage {
+                    input_tokens: 0,
+                    output_tokens: 1,
+                    cache_read_tokens: 9,
+                    cache_write_tokens: 0,
+                },
+            ),
+        ] {
+            assert_eq!(usage_of(usage), want, "{case}");
+        }
     }
 
     #[test]
@@ -763,90 +756,92 @@ mod tests {
     }
 
     #[test]
-    fn meta_preset_shapes_the_request_and_flags_its_contributor_models() {
-        let stream = sse_data(&[
-            r#"{"model":"muse-spark-1.3","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
-            "[DONE]",
-        ]);
-        let server = FakeServer::start(vec![Reply::sse(stream)]);
-        let preset = crate::presets()
-            .into_iter()
-            .find(|p| p.id == "meta")
-            .unwrap();
-        let p = ProviderConfig {
-            base_url: Some(server.url()),
-            ..preset.config()
-        };
-        let gw = gateway(vec![p]);
-        let req = ChatRequest {
-            model: "meta/muse-spark-1.3@high".into(),
-            max_tokens: 2000,
-            effort: Some("low".into()),
-            ..request("hi")
-        };
-        assert_eq!(
-            gw.complete(&req, &mut |_| {}).unwrap().model,
-            "meta/muse-spark-1.3"
-        );
-        let sent = &server.requests()[0];
-        assert_eq!(
-            sent.header("authorization"),
-            Some("Bearer env-MODEL_API_KEY")
-        );
-        let b = sent.json();
-        assert_eq!(
-            (
-                b["model"].clone(),
-                b["reasoning_effort"].clone(),
-                b["max_tokens"].clone()
-            ),
-            (json!("muse-spark-1.3"), json!("high"), json!(2000))
-        );
-        assert!(crate::trains_on_data("meta/muse-spark-1.3-contributor@low"));
-        assert!(!crate::trains_on_data("meta/muse-spark-1.3"));
-        assert!(!crate::trains_on_data(
-            "deepseek/muse-spark-1.3-contributor"
-        ));
-    }
-
-    #[test]
-    fn xai_preset_sends_the_pinned_reasoning_effort() {
-        let stream = sse_data(&[
-            r#"{"model":"grok-4.7","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
-            "[DONE]",
-        ]);
-        let server = FakeServer::start(vec![Reply::sse(stream)]);
-        let preset = crate::presets()
-            .into_iter()
-            .find(|p| p.id == "xai")
-            .unwrap();
-        assert_eq!(preset.base_url, Some("https://api.x.ai/v1"));
-        let p = ProviderConfig {
-            base_url: Some(server.url()),
-            ..preset.config()
-        };
-        let gw = gateway(vec![p]);
-        let req = ChatRequest {
-            model: "xai/grok-4.7@low".into(),
-            max_tokens: 2000,
-            effort: Some("high".into()),
-            ..request("hi")
-        };
-        assert_eq!(
-            gw.complete(&req, &mut |_| {}).unwrap().model,
-            "xai/grok-4.7"
-        );
-        let sent = &server.requests()[0];
-        assert_eq!(sent.header("authorization"), Some("Bearer env-XAI_API_KEY"));
-        let b = sent.json();
-        assert_eq!(
-            (
-                b["model"].clone(),
-                b["reasoning_effort"].clone(),
-                b["max_tokens"].clone()
-            ),
-            (json!("grok-4.7"), json!("low"), json!(2000))
-        );
+    fn preset_requests_are_shaped_and_pin_their_reasoning_effort() {
+        // The meta preset shapes the request and flags its contributor models.
+        {
+            let stream = sse_data(&[
+                r#"{"model":"muse-spark-1.3","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ]);
+            let server = FakeServer::start(vec![Reply::sse(stream)]);
+            let preset = crate::presets()
+                .into_iter()
+                .find(|p| p.id == "meta")
+                .unwrap();
+            let p = ProviderConfig {
+                base_url: Some(server.url()),
+                ..preset.config()
+            };
+            let gw = gateway(vec![p]);
+            let req = ChatRequest {
+                model: "meta/muse-spark-1.3@high".into(),
+                max_tokens: 2000,
+                effort: Some("low".into()),
+                ..request("hi")
+            };
+            assert_eq!(
+                gw.complete(&req, &mut |_| {}).unwrap().model,
+                "meta/muse-spark-1.3"
+            );
+            let sent = &server.requests()[0];
+            assert_eq!(
+                sent.header("authorization"),
+                Some("Bearer env-MODEL_API_KEY")
+            );
+            let b = sent.json();
+            assert_eq!(
+                (
+                    b["model"].clone(),
+                    b["reasoning_effort"].clone(),
+                    b["max_tokens"].clone()
+                ),
+                (json!("muse-spark-1.3"), json!("high"), json!(2000))
+            );
+            assert!(crate::trains_on_data("meta/muse-spark-1.3-contributor@low"));
+            assert!(!crate::trains_on_data("meta/muse-spark-1.3"));
+            assert!(!crate::trains_on_data(
+                "deepseek/muse-spark-1.3-contributor"
+            ));
+        }
+        // The xai preset sends the pinned reasoning effort.
+        {
+            let stream = sse_data(&[
+                r#"{"model":"grok-4.7","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ]);
+            let server = FakeServer::start(vec![Reply::sse(stream)]);
+            let preset = crate::presets()
+                .into_iter()
+                .find(|p| p.id == "xai")
+                .unwrap();
+            assert_eq!(preset.base_url, Some("https://api.x.ai/v1"));
+            let p = ProviderConfig {
+                base_url: Some(server.url()),
+                ..preset.config()
+            };
+            let gw = gateway(vec![p]);
+            let req = ChatRequest {
+                model: "xai/grok-4.7@low".into(),
+                max_tokens: 2000,
+                effort: Some("high".into()),
+                ..request("hi")
+            };
+            assert_eq!(
+                gw.complete(&req, &mut |_| {}).unwrap().model,
+                "xai/grok-4.7"
+            );
+            let sent = &server.requests()[0];
+            assert_eq!(sent.header("authorization"), Some("Bearer env-XAI_API_KEY"));
+            let b = sent.json();
+            assert_eq!(
+                (
+                    b["model"].clone(),
+                    b["reasoning_effort"].clone(),
+                    b["max_tokens"].clone()
+                ),
+                (json!("grok-4.7"), json!("low"), json!(2000))
+            );
+        }
     }
 
     #[test]

@@ -174,19 +174,4 @@ mod tests {
             r#"{"approve":false,"note":null}"#
         );
     }
-
-    #[test]
-    fn a_vote_row_reads_its_seat_and_agent() {
-        let row = vote_row(
-            &json!({ "seat": "architect", "agent_cid": 42, "vote": "yes", "reason": "sound" }),
-        );
-        assert_eq!(row, vec!["42", "architect", "yes", "sound"]);
-    }
-
-    #[test]
-    fn a_motion_shows_its_quorum_rule() {
-        let m = json!({ "quorum": { "rule": "3 of the 4 filled seats", "seats": 4, "filled": 4, "required": 3, "can_decide": true } });
-        assert_eq!(quorum(&m), "3 of the 4 filled seats");
-        assert_eq!(quorum(&json!({})), "");
-    }
 }

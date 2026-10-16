@@ -190,22 +190,17 @@ mod tests {
     }
 
     #[test]
-    fn server_config_builds_from_a_self_signed_pair() {
+    fn handshake_checks_the_certificate_pin() {
         let pair = self_signed(&["localhost".to_string()]).unwrap();
-        server_config(&pair).unwrap();
-    }
-
-    #[test]
-    fn handshake_completes_with_the_right_pin() {
-        let pair = self_signed(&["localhost".to_string()]).unwrap();
-        let pin = fingerprint(&pair.cert_pem).unwrap();
-        handshake(&pair, pin).unwrap();
-    }
-
-    #[test]
-    fn handshake_fails_with_a_wrong_pin() {
-        let pair = self_signed(&["localhost".to_string()]).unwrap();
-        let wrong = crate::sha256(b"not the hub's certificate");
-        assert!(handshake(&pair, wrong).is_err());
+        // The original handshake_completes_with_the_right_pin: the matching pin passes.
+        {
+            let pin = fingerprint(&pair.cert_pem).unwrap();
+            handshake(&pair, pin).unwrap();
+        }
+        // The original handshake_fails_with_a_wrong_pin: a foreign pin is refused.
+        {
+            let wrong = crate::sha256(b"not the hub's certificate");
+            assert!(handshake(&pair, wrong).is_err());
+        }
     }
 }

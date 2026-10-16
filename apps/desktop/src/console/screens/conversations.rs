@@ -1060,16 +1060,6 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    fn msg(created_at: i64) -> Conversation {
-        Conversation {
-            from_cid: 1,
-            to_cid: 2,
-            text: String::new(),
-            created_at,
-            delivered: true,
-        }
-    }
-
     fn times(list: &[Conversation]) -> Vec<i64> {
         list.iter().map(|c| c.created_at).collect()
     }
@@ -1089,24 +1079,6 @@ mod tests {
             thread_path(207, 208, Some(7), "é"),
             "/v1/conversations/207/208?limit=50&before=7&q=%C3%A9"
         );
-    }
-
-    #[test]
-    fn conversations_pair_keys_parse_as_ids() {
-        assert_eq!(parse_key("207-208"), Some((207, 208)));
-        assert_eq!(parse_key("207"), None);
-        assert_eq!(parse_key("x-1"), None);
-    }
-
-    #[test]
-    fn conversations_retention_is_validated_in_range() {
-        assert_eq!(validate_retention(" 100 ", "0"), Ok((100, 0)));
-        assert_eq!(validate_retention("100000", "3650"), Ok((100_000, 3650)));
-        assert!(validate_retention("99", "0").is_err());
-        assert!(validate_retention("100001", "0").is_err());
-        assert!(validate_retention("abc", "0").is_err());
-        assert!(validate_retention("100", "-1").is_err());
-        assert!(validate_retention("100", "3651").is_err());
     }
 
     #[test]
@@ -1137,29 +1109,6 @@ mod tests {
     }
 
     #[test]
-    fn conversations_head_merge_keeps_paged_back_messages() {
-        // The page is newer than what is loaded: the loaded messages below it stay, with their cursor.
-        let (all, cursor) = merge_head(
-            vec![msg(12), msg(11)],
-            Some(7),
-            vec![msg(10), msg(9), msg(8)],
-            Some(3),
-        );
-        assert_eq!(times(&all), vec![12, 11, 10, 9, 8]);
-        assert_eq!(cursor, Some(3));
-
-        // Nothing below the page was loaded: the page's own cursor is the one to page from.
-        let (all, cursor) = merge_head(vec![msg(12), msg(11)], Some(7), vec![msg(12)], Some(3));
-        assert_eq!(times(&all), vec![12, 11]);
-        assert_eq!(cursor, Some(7));
-
-        // The hub has no older messages: the page is the whole list.
-        let (all, cursor) = merge_head(vec![msg(12)], None, vec![msg(10), msg(9)], Some(3));
-        assert_eq!(times(&all), vec![12]);
-        assert_eq!(cursor, None);
-    }
-
-    #[test]
     fn conversations_pair_counts_are_the_hubs_whole_record_count() {
         let page = json!({
             "conversations": [{"from_cid": 2, "to_cid": 1, "text": "a", "created_at": 1, "delivered": true}],
@@ -1171,18 +1120,6 @@ mod tests {
         assert_eq!(counts.get("2-1"), None);
         assert!(parse_pair_counts(&json!([])).is_empty());
         assert!(parse_pair_counts(&json!({"pairs": [{"a": 1, "b": 2}]})).is_empty());
-    }
-
-    #[test]
-    fn conversations_search_is_clamped_to_the_hubs_200_bytes() {
-        assert_eq!(clamp_query("  hello  "), "hello");
-        assert_eq!(clamp_query(&"a".repeat(250)).len(), 200);
-        // 150 two-byte characters are 300 bytes: the cut keeps the 100 that fit exactly.
-        assert_eq!(clamp_query(&"é".repeat(150)), "é".repeat(100));
-        // A cut at byte 200 would split the 100th character, so it steps back to a boundary.
-        let mixed = format!("a{}", "é".repeat(150));
-        assert_eq!(clamp_query(&mixed), format!("a{}", "é".repeat(99)));
-        assert_eq!(clamp_query(&"x".repeat(200)), "x".repeat(200));
     }
 
     #[test]

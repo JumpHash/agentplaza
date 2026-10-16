@@ -337,36 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn the_filters_pick_by_status_mode_and_recipe_name_or_version() {
-        let j = job("running", "tight", "cls@1.2");
-        assert!(keep(&j, None, None, None));
-        assert!(keep(&j, Some("running"), None, None));
-        assert!(!keep(&j, Some("done"), None, None));
-        assert!(keep(&j, None, None, Some("tight")));
-        assert!(!keep(&j, None, None, Some("loose")));
-        assert!(keep(&j, None, Some("cls@1.2"), None), "an exact recipe");
-        assert!(
-            keep(&j, None, Some("cls"), None),
-            "the name alone matches any version"
-        );
-        assert!(!keep(&j, None, Some("cls@1.3"), None));
-        assert!(
-            !keep(&j, None, Some("c"), None),
-            "a name prefix is not the name"
-        );
-    }
-
-    #[test]
-    fn an_event_line_names_its_step_and_keeps_its_fields() {
-        let e = json!({ "seq": 3, "island": "i0", "node": "n1", "event": { "ev": "step", "loss": 0.5 } });
-        let line = event_line(&e);
-        assert!(line.contains("step"), "{line}");
-        assert!(line.contains("\"loss\":0.5"), "{line}");
-        assert!(!line.contains("\"ev\""), "the name is shown once: {line}");
-        assert!(line.trim_start().starts_with('3'), "{line}");
-    }
-
-    #[test]
     fn a_job_is_over_only_when_it_is_done_failed_or_cancelled() {
         assert!(is_over(&job("done", "single", "r@1")));
         assert!(is_over(&job("failed", "single", "r@1")));

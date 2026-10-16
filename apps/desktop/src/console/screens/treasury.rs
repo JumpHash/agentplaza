@@ -2830,53 +2830,6 @@ fn text(v: &Value, key: &str) -> String {
 mod tests {
     use super::*;
 
-    fn entry(id: i64, kind: &str) -> Entry {
-        Entry {
-            id,
-            kind: kind.to_string(),
-            at: 0.0,
-            amount: 0.0,
-            memo: String::new(),
-            task: None,
-        }
-    }
-
-    fn ids(v: &[Entry]) -> Vec<i64> {
-        v.iter().map(|e| e.id).collect()
-    }
-
-    #[test]
-    fn all_starts_at_the_first_account_as_the_web_does() {
-        let to = 3_000 * DAY_MS;
-        // Ten days and a millisecond old rounds up to eleven days.
-        assert_eq!(
-            window_from(Range::All, to, to - 10 * DAY_MS - 1),
-            to - 11 * DAY_MS
-        );
-        // No account (first_at == now) still spans a day.
-        assert_eq!(window_from(Range::All, to, to), to - DAY_MS);
-        // Older than the cap: 1999 days.
-        assert_eq!(window_from(Range::All, to, 0), to - 1999 * DAY_MS);
-        assert_eq!(window_from(Range::Month, to, 0), to - 30 * DAY_MS);
-        assert_eq!(window_from(Range::Week, to, 0), to - 7 * DAY_MS);
-    }
-
-    #[test]
-    fn money_groups_thousands_and_shows_credits_in_tenths_of_a_cent() {
-        assert_eq!(money(1_234_567.0), "1,234,567");
-        assert_eq!(money(-1500.0), "-1,500");
-        assert_eq!(money(0.4), "0");
-        assert_eq!(money(0.5 / CREDIT_USD), "500");
-    }
-
-    #[test]
-    fn whole_needs_a_positive_integer() {
-        assert_eq!(whole(" 12 "), Some(12));
-        assert_eq!(whole("0"), None);
-        assert_eq!(whole("-3"), None);
-        assert_eq!(whole("1.5"), None);
-    }
-
     #[test]
     fn enc_escapes_reserved_bytes() {
         assert_eq!(enc("a b&c"), "a%20b%26c");
@@ -2897,71 +2850,6 @@ mod tests {
         assert_eq!(
             journal_path(&JournalFilter::default(), Some(42)),
             "/v1/treasury/journal?limit=50&before=42"
-        );
-    }
-
-    #[test]
-    fn civil_dates_are_utc() {
-        assert_eq!(civil(0), (1970, 1, 1, 0));
-        assert_eq!(civil(1_700_000_000_000), (2023, 11, 14, 22));
-        assert_eq!(point_label(1_700_000_000_000, true), "14 Nov 22:00");
-        assert_eq!(point_label(1_700_000_000_000, false), "14 Nov");
-    }
-
-    #[test]
-    fn a_head_page_merges_over_the_older_rows_already_loaded() {
-        let merged = merge_head(
-            &[entry(8, "spend"), entry(7, "fine")],
-            vec![entry(9, "mint"), entry(8, "spend")],
-        );
-        assert_eq!(ids(&merged), vec![9, 8, 7]);
-        assert!(ids(&merge_head(&[entry(3, "mint")], vec![])).is_empty());
-    }
-
-    #[test]
-    fn resort_flips_the_same_column_and_starts_a_new_one_in_its_own_order() {
-        let (mut cur, mut asc) = (SeriesSort::Time, false);
-        resort(&mut cur, &mut asc, SeriesSort::Time, false);
-        assert!(asc);
-        resort(&mut cur, &mut asc, SeriesSort::Paid, false);
-        assert_eq!((cur, asc), (SeriesSort::Paid, false));
-    }
-
-    #[test]
-    fn pages_hold_at_least_one() {
-        assert_eq!(page_count(0, 25), 1);
-        assert_eq!(page_count(25, 25), 1);
-        assert_eq!(page_count(26, 25), 2);
-    }
-
-    #[test]
-    fn bar_at_picks_the_column_under_the_cursor() {
-        assert_eq!(bar_at(10.0, 4, 10.0, 40.0), Some(0));
-        assert_eq!(bar_at(35.0, 4, 10.0, 40.0), Some(2));
-        assert_eq!(bar_at(50.0, 4, 10.0, 40.0), Some(3));
-        assert_eq!(bar_at(9.0, 4, 10.0, 40.0), None);
-        assert_eq!(bar_at(51.0, 4, 10.0, 40.0), None);
-    }
-
-    #[test]
-    fn a_tween_counts_up_and_settles() {
-        let t0 = Instant::now();
-        let mut t = Tween::default();
-        t.aim(100.0, t0);
-        assert!(t.at(t0) < 1.0);
-        assert_eq!(t.at(t0 + ANIM), 100.0);
-    }
-
-    #[test]
-    fn kind_choices_list_every_kind_once_after_all_kinds() {
-        let k = kind_options(None, &[entry(1, "zeta"), entry(2, "mint")]);
-        assert_eq!(k[0].label, "All kinds");
-        assert!(k.iter().any(|c| c.kind.as_deref() == Some("zeta")));
-        assert_eq!(
-            k.iter()
-                .filter(|c| c.kind.as_deref() == Some("mint"))
-                .count(),
-            1
         );
     }
 

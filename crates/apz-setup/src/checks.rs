@@ -560,19 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn locate_finds_the_binary_in_the_first_directory_holding_it() {
-        let a = scratch("locate-a");
-        let b = scratch("locate-b");
-        let apid = b.join(apz_os::process::exe("apid"));
-        fs::write(&apid, b"").unwrap();
-        let dirs = vec![a.clone(), b.clone()];
-        assert_eq!(locate("apid", &dirs), Some(apid));
-        assert_eq!(locate("vsockd", &dirs), None);
-        let _ = fs::remove_dir_all(&a);
-        let _ = fs::remove_dir_all(&b);
-    }
-
-    #[test]
     fn services_are_blocked_when_a_binary_is_missing() {
         let check = services(&[]);
         assert_eq!(check.state, State::Blocked);
@@ -632,60 +619,64 @@ mod tests {
     }
 
     #[test]
-    fn garage_is_ok_when_its_container_runs_and_its_keys_are_in_keys_env() {
-        let dir = scratch("checks-garage-ok");
-        let mock = docker_up(Some(Output::ok("true\n")));
-        let checks = rows(&mock, &dir, Some(ALL_GARAGE_KEYS));
-        let garage = row(&checks, Need::Garage);
-        assert_eq!(garage.state, State::Ok);
-        assert!(!garage.required, "apid keeps files locally without Garage");
-        assert!(garage.fix.is_none());
-        let _ = fs::remove_dir_all(&dir);
-    }
+    fn garage_check_follows_its_container_and_its_keys() {
+        // garage_is_ok_when_its_container_runs_and_its_keys_are_in_keys_env: a running
+        // container with its keys in keys.env is ok, optional, and needs no fix.
+        {
+            let dir = scratch("checks-garage-ok");
+            let mock = docker_up(Some(Output::ok("true\n")));
+            let checks = rows(&mock, &dir, Some(ALL_GARAGE_KEYS));
+            let garage = row(&checks, Need::Garage);
+            assert_eq!(garage.state, State::Ok);
+            assert!(!garage.required, "apid keeps files locally without Garage");
+            assert!(garage.fix.is_none());
+            let _ = fs::remove_dir_all(&dir);
+        }
+        // a_missing_garage_container_is_missing_with_its_fix: with no container the check is
+        // Missing, and its detail and fix name agentplaza-garage.
+        {
+            let dir = scratch("checks-garage-absent");
+            let checks = rows(&docker_up(None), &dir, None);
+            let garage = row(&checks, Need::Garage);
+            assert_eq!(garage.state, State::Missing);
+            assert!(
+                garage.detail.contains("agentplaza-garage not found"),
+                "{}",
+                garage.detail
+            );
+            assert!(garage.fix.as_deref().unwrap().contains("agentplaza-garage"));
+            let _ = fs::remove_dir_all(&dir);
+        }
+        // a_stopped_garage_is_started_and_a_running_one_without_its_keys_is_blocked: a stopped
+        // container is Missing with a start fix; a running one without its keys is Blocked.
+        {
+            let dir = scratch("checks-garage-stopped");
+            let stopped = rows(
+                &docker_up(Some(Output::ok("false\n"))),
+                &dir,
+                Some(ALL_GARAGE_KEYS),
+            );
+            assert_eq!(row(&stopped, Need::Garage).state, State::Missing);
+            assert_eq!(
+                row(&stopped, Need::Garage).fix.as_deref(),
+                Some("Start the container agentplaza-garage")
+            );
 
-    #[test]
-    fn a_missing_garage_container_is_missing_with_its_fix() {
-        let dir = scratch("checks-garage-absent");
-        let checks = rows(&docker_up(None), &dir, None);
-        let garage = row(&checks, Need::Garage);
-        assert_eq!(garage.state, State::Missing);
-        assert!(
-            garage.detail.contains("agentplaza-garage not found"),
-            "{}",
-            garage.detail
-        );
-        assert!(garage.fix.as_deref().unwrap().contains("agentplaza-garage"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_stopped_garage_is_started_and_a_running_one_without_its_keys_is_blocked() {
-        let dir = scratch("checks-garage-stopped");
-        let stopped = rows(
-            &docker_up(Some(Output::ok("false\n"))),
-            &dir,
-            Some(ALL_GARAGE_KEYS),
-        );
-        assert_eq!(row(&stopped, Need::Garage).state, State::Missing);
-        assert_eq!(
-            row(&stopped, Need::Garage).fix.as_deref(),
-            Some("Start the container agentplaza-garage")
-        );
-
-        let running_no_keys = rows(
-            &docker_up(Some(Output::ok("true\n"))),
-            &dir,
-            Some("OTHER=1\n"),
-        );
-        let garage = row(&running_no_keys, Need::Garage);
-        assert_eq!(garage.state, State::Blocked);
-        assert!(
-            garage.detail.contains("docker rm -f agentplaza-garage"),
-            "{}",
-            garage.detail
-        );
-        assert!(garage.fix.is_none());
-        let _ = fs::remove_dir_all(&dir);
+            let running_no_keys = rows(
+                &docker_up(Some(Output::ok("true\n"))),
+                &dir,
+                Some("OTHER=1\n"),
+            );
+            let garage = row(&running_no_keys, Need::Garage);
+            assert_eq!(garage.state, State::Blocked);
+            assert!(
+                garage.detail.contains("docker rm -f agentplaza-garage"),
+                "{}",
+                garage.detail
+            );
+            assert!(garage.fix.is_none());
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

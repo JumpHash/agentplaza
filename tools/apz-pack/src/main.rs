@@ -293,32 +293,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn glue_rewrite_replaces_the_one_reference() {
-        let glue = "new URL('apz_engine_web_bg.wasm', import.meta.url)";
-        let out = rewrite_glue(
-            glue,
-            "'apz_engine_web_bg.wasm'",
-            "'apz_engine_web-1234abcd_bg.wasm'",
-        )
-        .unwrap();
-        assert_eq!(
-            out,
-            "new URL('apz_engine_web-1234abcd_bg.wasm', import.meta.url)"
-        );
-    }
-
-    #[test]
-    fn glue_rewrite_refuses_zero_or_two_references() {
-        let from = "'apz_engine_web_bg.wasm'";
-        assert!(rewrite_glue("no reference here", from, "'x'").is_err());
-        assert!(
-            rewrite_glue(
-                "'apz_engine_web_bg.wasm' and 'apz_engine_web_bg.wasm'",
-                from,
-                "'x'"
+    fn glue_rewrite_rewrites_exactly_one_reference() {
+        // glue_rewrite_replaces_the_one_reference: a single reference is replaced in place.
+        {
+            let glue = "new URL('apz_engine_web_bg.wasm', import.meta.url)";
+            let out = rewrite_glue(
+                glue,
+                "'apz_engine_web_bg.wasm'",
+                "'apz_engine_web-1234abcd_bg.wasm'",
             )
-            .is_err()
-        );
+            .unwrap();
+            assert_eq!(
+                out,
+                "new URL('apz_engine_web-1234abcd_bg.wasm', import.meta.url)"
+            );
+        }
+        // glue_rewrite_refuses_zero_or_two_references: zero or two references are an error.
+        {
+            let from = "'apz_engine_web_bg.wasm'";
+            assert!(rewrite_glue("no reference here", from, "'x'").is_err());
+            assert!(
+                rewrite_glue(
+                    "'apz_engine_web_bg.wasm' and 'apz_engine_web_bg.wasm'",
+                    from,
+                    "'x'"
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

@@ -595,48 +595,60 @@ mod tests {
     const REBOOT_ACPI: &str = "";
 
     #[test]
-    fn guest_cmdline_appends_console_defaults() {
-        assert_eq!(
-            guest_cmdline("console=ttyS0 panic=-1", false, false, false, 0),
-            format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("", false, false, false, 0),
-            format!("pci=off loglevel=7{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("  panic=-1  ", false, false, false, 0),
-            format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}")
-        );
-    }
-
-    #[test]
-    fn guest_cmdline_respects_the_callers_settings() {
-        assert_eq!(
-            guest_cmdline("quiet", false, false, false, 0),
-            format!("quiet pci=off{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("debug", false, false, false, 0),
-            format!("debug pci=off{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("loglevel=3 ignore_loglevel", false, false, false, 0),
-            format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("pci=off loglevel=9", false, false, false, 0),
-            format!("pci=off loglevel=9{REBOOT_ACPI}")
-        );
-        assert_eq!(
-            guest_cmdline("pci=nocrs", false, false, false, 0),
-            format!("pci=nocrs loglevel=7{REBOOT_ACPI}")
-        );
-        // A caller-chosen reboot mode is left alone.
-        assert_eq!(
-            guest_cmdline("reboot=k", false, false, false, 0),
-            "reboot=k pci=off loglevel=7"
-        );
+    fn guest_cmdline_adds_defaults_unless_the_caller_sets_them() {
+        // Each row: the original test's point, the caller's command line, and
+        // the guest command line it must produce.
+        let cases: [(&str, &str, String); 9] = [
+            (
+                "appends console defaults",
+                "console=ttyS0 panic=-1",
+                format!("console=ttyS0 panic=-1 pci=off loglevel=7{REBOOT_ACPI}"),
+            ),
+            (
+                "appends console defaults to an empty line",
+                "",
+                format!("pci=off loglevel=7{REBOOT_ACPI}"),
+            ),
+            (
+                "trims the caller's surrounding whitespace",
+                "  panic=-1  ",
+                format!("panic=-1 pci=off loglevel=7{REBOOT_ACPI}"),
+            ),
+            (
+                "quiet suppresses the loglevel default",
+                "quiet",
+                format!("quiet pci=off{REBOOT_ACPI}"),
+            ),
+            (
+                "debug suppresses the loglevel default",
+                "debug",
+                format!("debug pci=off{REBOOT_ACPI}"),
+            ),
+            (
+                "a caller's loglevel and ignore_loglevel are kept",
+                "loglevel=3 ignore_loglevel",
+                format!("loglevel=3 ignore_loglevel pci=off{REBOOT_ACPI}"),
+            ),
+            (
+                "a caller's pci=off and loglevel are kept",
+                "pci=off loglevel=9",
+                format!("pci=off loglevel=9{REBOOT_ACPI}"),
+            ),
+            (
+                "a caller's pci setting is kept",
+                "pci=nocrs",
+                format!("pci=nocrs loglevel=7{REBOOT_ACPI}"),
+            ),
+            (
+                // A caller-chosen reboot mode is left alone.
+                "a caller-chosen reboot mode is left alone",
+                "reboot=k",
+                "reboot=k pci=off loglevel=7".to_string(),
+            ),
+        ];
+        for (case, input, want) in cases {
+            assert_eq!(guest_cmdline(input, false, false, false, 0), want, "{case}");
+        }
     }
 
     /// With a virtio-mmio device, the command line tells an `x86_64` guest

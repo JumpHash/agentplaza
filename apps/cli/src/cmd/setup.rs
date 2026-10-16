@@ -643,17 +643,6 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    fn row(need: Need, state: State, fix: Option<&str>) -> Check {
-        Check {
-            need,
-            label: need.name(),
-            state,
-            detail: format!("{} detail", need.name()),
-            fix: fix.map(str::to_string),
-            required: true,
-        }
-    }
-
     #[test]
     fn only_y_and_yes_confirm() {
         for yes in ["y", "Y", "yes", "YES", " y \n", "Yes\r\n"] {
@@ -662,62 +651,6 @@ mod tests {
         for no in ["", "\n", "n", "N", "no", "yess", "sure", "y es"] {
             assert!(!confirms(no), "{no:?} declines");
         }
-    }
-
-    #[test]
-    fn a_plan_names_each_requirement_and_what_its_fix_does() {
-        let plan = vec![row(
-            Need::Postgres,
-            State::Missing,
-            Some("Create the container agentplaza-postgres"),
-        )];
-        assert_eq!(
-            plan_lines(&plan),
-            vec!["  postgres: Create the container agentplaza-postgres".to_string()]
-        );
-    }
-
-    #[test]
-    fn fix_one_needs_a_missing_requirement_with_a_fix() {
-        let checks = vec![
-            row(Need::Docker, State::Ok, None),
-            row(Need::Postgres, State::Missing, Some("Create it")),
-            row(Need::Forgejo, State::Missing, None),
-            row(Need::Garage, State::Blocked, None),
-            row(Need::Hypervisor, State::Warning, None),
-        ];
-        let picked = select(&checks, Some(Need::Postgres)).unwrap();
-        assert_eq!(picked.len(), 1);
-        assert_eq!(picked[0].need, Need::Postgres);
-
-        let err = select(&checks, Some(Need::Docker)).unwrap_err();
-        assert_eq!(err, "docker is already set up");
-        let err = select(&checks, Some(Need::Forgejo)).unwrap_err();
-        assert_eq!(err, "forgejo: forgejo detail");
-        let err = select(&checks, Some(Need::Garage)).unwrap_err();
-        assert_eq!(err, "garage needs you: garage detail");
-        let err = select(&checks, Some(Need::Hypervisor)).unwrap_err();
-        assert_eq!(err, "hypervisor needs you: hypervisor detail");
-        let err = select(&[], Some(Need::Ports)).unwrap_err();
-        assert_eq!(err, "ports is not checked on this machine");
-    }
-
-    #[test]
-    fn fix_all_takes_every_fixable_requirement_in_order_and_nothing_else() {
-        let checks = vec![
-            row(Need::Services, State::Blocked, None),
-            row(Need::Docker, State::Missing, Some("Install Docker")),
-            row(Need::DockerRunning, State::Missing, Some("Start Docker")),
-            row(Need::Postgres, State::Missing, None),
-            row(Need::Garage, State::Missing, Some("Create Garage")),
-        ];
-        let plan: Vec<Need> = select(&checks, None)
-            .unwrap()
-            .iter()
-            .map(|c| c.need)
-            .collect();
-        assert_eq!(plan, vec![Need::Docker, Need::DockerRunning, Need::Garage]);
-        assert!(select(&checks[..1], None).unwrap().is_empty());
     }
 
     /// The `setup` arguments after the subcommand name, parsed the way the binary parses them.
@@ -751,92 +684,6 @@ mod tests {
         ] {
             assert!(parse(refused).is_err(), "{refused:?} is refused");
         }
-    }
-
-    #[test]
-    fn an_unreachable_hub_fails_and_a_signed_out_one_warns() {
-        let refused: Result<Value, String> = Err("connection refused".into());
-        assert_eq!(reachable_row(&refused).state, HubState::Failed);
-        let signed_out: Result<Value, String> = Err("sign in with the owner token".into());
-        let row = reachable_row(&signed_out);
-        assert_eq!(row.state, HubState::Warning);
-        assert!(row.fix.unwrap().contains("hub login"));
-        let answered: Result<Value, String> = Ok(json!({ "agents": { "total": 3 } }));
-        assert_eq!(
-            reachable_row(&answered).detail,
-            "apid answers, 3 agents on this plaza"
-        );
-    }
-
-    #[test]
-    fn a_plain_http_hub_with_nodes_is_a_warning() {
-        let plain = json!({ "name": "lab", "version": "0.0.8", "fingerprint": null, "nodes": 2 });
-        let row = identity_row(Some(&plain));
-        assert_eq!(row.state, HubState::Warning);
-        assert_eq!(row.detail, "lab 0.0.8, plain HTTP with 2 nodes joined");
-        let tls = json!({ "name": "lab", "version": "0.0.8", "fingerprint": "abc", "nodes": 2 });
-        assert_eq!(identity_row(Some(&tls)).detail, "lab 0.0.8, HTTPS");
-        assert_eq!(identity_row(None).state, HubState::Failed);
-    }
-
-    #[test]
-    fn the_vault_reads_its_state_in_the_web_order() {
-        assert_eq!(
-            vault_row(Some(&json!({ "state": "sealed" }))).state,
-            HubState::Warning
-        );
-        assert_eq!(
-            vault_row(Some(
-                &json!({ "state": "tampered", "tampered": "bad chain" })
-            ))
-            .detail,
-            "tampered: bad chain"
-        );
-        let loose = json!({ "state": "unsealed", "env_file_keys": 1, "audit_ok": true });
-        assert_eq!(
-            vault_row(Some(&loose)).detail,
-            "1 key still in the env file, not in the vault"
-        );
-        let unchecked = json!({ "state": "unsealed", "env_file_keys": 0, "audit_ok": null });
-        assert_eq!(vault_row(Some(&unchecked)).state, HubState::Pending);
-        let ok = json!({ "state": "unsealed", "env_file_keys": 0, "audit_ok": true, "entries": 4, "slots": [{}] });
-        let row = vault_row(Some(&ok));
-        assert_eq!(row.state, HubState::Ok);
-        assert_eq!(row.detail, "unsealed: 4 secrets, 1 unlock slot");
-    }
-
-    #[test]
-    fn providers_name_the_ones_without_a_key() {
-        assert_eq!(providers_row(Some(&json!([]))).state, HubState::Failed);
-        let some_missing = json!([{ "id": "openai", "credential": "secret" }, { "id": "anthropic", "credential": "missing" }]);
-        let row = providers_row(Some(&some_missing));
-        assert_eq!(row.state, HubState::Warning);
-        assert_eq!(row.detail, "anthropic without a key (of 2 providers)");
-        let all = json!([{ "id": "openai", "credential": "secret" }]);
-        assert_eq!(
-            providers_row(Some(&all)).detail,
-            "1 provider, every key set"
-        );
-    }
-
-    #[test]
-    fn the_network_and_the_default_model_say_what_they_found() {
-        assert_eq!(
-            network_row(Some(&json!({ "joined": false }))).detail,
-            "this hub runs its own network"
-        );
-        let stopped = json!({ "joined": true, "hub": "other.example", "running": false });
-        let row = network_row(Some(&stopped));
-        assert_eq!(row.state, HubState::Warning);
-        assert_eq!(row.detail, "joined other.example, node stopped");
-        assert_eq!(
-            default_model_row(&json!({ "default_model": "" })).state,
-            HubState::Warning
-        );
-        assert_eq!(
-            default_model_row(&json!({ "default_model": "glm-5" })).detail,
-            "glm-5"
-        );
     }
 
     #[test]

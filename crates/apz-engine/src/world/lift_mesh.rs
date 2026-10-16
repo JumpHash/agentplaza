@@ -449,30 +449,34 @@ mod tests {
     }
 
     #[test]
-    fn the_cab_follows_the_state() {
-        let mut m = lift();
-        let mut count = 0;
-        m.root.traverse(&mut |_: &Obj| count += 1);
-        assert!(count > 10, "the lift has its frame, cab, gates and lamps");
+    fn the_cab_and_gates_follow_the_state() {
+        // The cab follows the state: the lift has its frame, cab, gates and lamps,
+        // and the cab rides to the floor it is called to.
+        {
+            let mut m = lift();
+            let mut count = 0;
+            m.root.traverse(&mut |_: &Obj| count += 1);
+            assert!(count > 10, "the lift has its frame, cab, gates and lamps");
 
-        m.set_state(1.3, 0.0, 0, false, [0, 0]);
-        assert!((m.cab.position().y - (1.3 + DECK_LIFT)).abs() < 1e-5);
-        m.set_state(2.4, 0.0, 1, false, [0, 0]);
-        assert!((m.cab.position().y - (2.4 + DECK_LIFT)).abs() < 1e-5);
-    }
+            m.set_state(1.3, 0.0, 0, false, [0, 0]);
+            assert!((m.cab.position().y - (1.3 + DECK_LIFT)).abs() < 1e-5);
+            m.set_state(2.4, 0.0, 1, false, [0, 0]);
+            assert!((m.cab.position().y - (2.4 + DECK_LIFT)).abs() < 1e-5);
+        }
 
-    #[test]
-    fn a_gate_leaf_moves_out_as_the_door_opens() {
-        let mut m = lift();
-        m.set_state(0.4, 0.0, 0, false, [0, 0]);
-        let shut = m.gates[0].left.position().x;
-        m.set_state(0.4, 1.0, 0, false, [0, 0]);
-        let open = m.gates[0].left.position().x;
-        assert!(
-            open < shut - 0.5,
-            "the left leaf slides out past its shut place"
-        );
-        // The other stop stays shut.
-        assert!((m.gates[1].left.position().x + GATE_W / 2.0 + 0.01).abs() < 1e-5);
+        // A gate leaf moves out as the door opens, and the other stop stays shut.
+        {
+            let mut m = lift();
+            m.set_state(0.4, 0.0, 0, false, [0, 0]);
+            let shut = m.gates[0].left.position().x;
+            m.set_state(0.4, 1.0, 0, false, [0, 0]);
+            let open = m.gates[0].left.position().x;
+            assert!(
+                open < shut - 0.5,
+                "the left leaf slides out past its shut place"
+            );
+            // The other stop stays shut.
+            assert!((m.gates[1].left.position().x + GATE_W / 2.0 + 0.01).abs() < 1e-5);
+        }
     }
 }

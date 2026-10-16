@@ -321,32 +321,44 @@ mod tests {
     }
 
     #[test]
-    fn a_single_certificate_block_is_accepted_and_normalised() {
-        assert_eq!(normalize(CA), Some(format!("{CA}\n")));
-        assert_eq!(normalize(&format!("\n  {CA}\n\n")), Some(format!("{CA}\n")));
-        assert_eq!(normalize(OTHER_CA), Some(OTHER_CA.to_string()));
-    }
-
-    #[test]
-    fn anything_else_is_refused() {
+    fn normalize_accepts_one_certificate_block_and_refuses_anything_else() {
         let oversized = format!("{BEGIN}\n{}{END}", "QUJD\n".repeat(4000));
         let shell = format!("{BEGIN}\n$(reboot)\n{END}");
         let two_blocks = format!("{CA}\n{CA}");
         let bad_length = format!("{BEGIN}\nQUJDR\n{END}");
         let no_end = format!("{BEGIN}\nQUJD\n");
         let empty_body = format!("{BEGIN}\n{END}");
-        let refused: Vec<&str> = vec![
-            "",
-            "not a certificate",
-            oversized.as_str(),
-            shell.as_str(),
-            two_blocks.as_str(),
-            bad_length.as_str(),
-            no_end.as_str(),
-            empty_body.as_str(),
+        let cases: Vec<(&str, String, Option<String>)> = vec![
+            (
+                "a single certificate block is accepted and normalised",
+                CA.to_string(),
+                Some(format!("{CA}\n")),
+            ),
+            (
+                "surrounding whitespace is dropped",
+                format!("\n  {CA}\n\n"),
+                Some(format!("{CA}\n")),
+            ),
+            (
+                "another certificate is accepted unchanged",
+                OTHER_CA.to_string(),
+                Some(OTHER_CA.to_string()),
+            ),
+            ("empty input is refused", String::new(), None),
+            (
+                "non-certificate text is refused",
+                "not a certificate".to_string(),
+                None,
+            ),
+            ("an oversized block is refused", oversized, None),
+            ("a shell substitution in the body is refused", shell, None),
+            ("two blocks are refused", two_blocks, None),
+            ("a bad base64 length is refused", bad_length, None),
+            ("a block without an end line is refused", no_end, None),
+            ("an empty body is refused", empty_body, None),
         ];
-        for input in refused {
-            assert_eq!(normalize(input), None, "{input:.40}");
+        for (case, input, want) in cases {
+            assert_eq!(normalize(&input), want, "{case}");
         }
     }
 

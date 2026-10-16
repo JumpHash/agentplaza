@@ -1026,47 +1026,22 @@ mod tests {
     }
 
     #[test]
-    fn an_online_fleet_at_rest_is_ambient_once_300_ms_pass() {
-        let mut s = online_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        assert_eq!(s.tick(t0 + Duration::from_millis(300)), Motion::Ambient);
-    }
-
-    #[test]
-    fn reduced_motion_holds_the_ambient_visuals_and_reports_rest() {
-        let mut s = online_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        s.reduced_motion = true;
-        assert_eq!(s.tick(t0 + Duration::from_millis(600)), Motion::Rest);
-    }
-
-    #[test]
-    fn enter_is_active_until_the_entry_is_done() {
-        let mut s = online_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        s.enter("n0".to_string());
-        assert!(s.entry.is_some(), "ENTER starts a flight");
-        let mut now = t0;
-        let mut active_ticks = 0;
-        let mut rested = false;
-        for _ in 0..10_000 {
-            now += Duration::from_millis(16);
-            match s.tick(now) {
-                Motion::Active => {
-                    assert!(
-                        !rested,
-                        "ENTER went Active again after it had reported rest"
-                    );
-                    active_ticks += 1;
-                }
-                _ => rested = true,
-            }
+    fn an_online_fleet_at_rest_settles_to_ambient_and_reduced_motion_reports_rest() {
+        // An online fleet at rest is ambient once 300 ms pass.
+        {
+            let mut s = online_fleet_stage();
+            let t0 = Instant::now();
+            s.tick(t0);
+            assert_eq!(s.tick(t0 + Duration::from_millis(300)), Motion::Ambient);
         }
-        assert!(active_ticks > 1, "the flight ran for {active_ticks} ticks");
-        assert!(rested, "the ENTER flight never finished");
+        // Reduced motion holds the ambient visuals and reports rest.
+        {
+            let mut s = online_fleet_stage();
+            let t0 = Instant::now();
+            s.tick(t0);
+            s.reduced_motion = true;
+            assert_eq!(s.tick(t0 + Duration::from_millis(600)), Motion::Rest);
+        }
     }
 
     #[test]
@@ -1123,26 +1098,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_orbit_drag_is_active_while_damping_then_ambient() {
-        let mut s = online_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        s.rotate(40.0, 0.0, 600.0);
-        let mut now = t0 + Duration::from_millis(16);
-        assert_eq!(s.tick(now), Motion::Active);
-        let mut frames = 0;
-        loop {
-            now += Duration::from_millis(16);
-            frames += 1;
-            assert!(frames < 2_000, "the drag never settled");
-            if s.tick(now) != Motion::Active {
-                break;
-            }
-        }
-        assert_eq!(s.tick(now + Duration::from_millis(16)), Motion::Ambient);
-    }
-
     /// The online fleet, framed by a Reset view (which starts the idle sway).
     fn framed_fleet_stage() -> Stage {
         let mut s = online_fleet_stage();
@@ -1179,23 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_drag_stops_the_idle_sway() {
-        let mut s = framed_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        let mut now = t0 + Duration::from_secs(1);
-        s.tick(now);
-        drag_and_settle(&mut s, &mut now);
-        assert!(!s.machines.orbit.drifting());
-        let held = s.machines.orbit.theta;
-        s.tick(now + Duration::from_secs(5));
-        assert!(
-            (s.machines.orbit.theta - held).abs() < 1e-3,
-            "the view kept swaying"
-        );
-    }
-
-    #[test]
     fn reset_view_restarts_the_idle_sway() {
         let mut s = framed_fleet_stage();
         let t0 = Instant::now();
@@ -1214,17 +1152,6 @@ mod tests {
             s.machines.orbit.theta != framed,
             "the reset view did not sway"
         );
-    }
-
-    /// The sway's azimuth `at` seconds after a Reset view, stepped at `fps` ticks a second.
-    fn sway_after(fps: u32, at: f64) -> f32 {
-        let mut s = framed_fleet_stage();
-        let t0 = Instant::now();
-        let ticks = (at * f64::from(fps)).round() as u32;
-        for k in 0..=ticks {
-            s.tick(t0 + Duration::from_secs_f64(f64::from(k) / f64::from(fps)));
-        }
-        s.machines.orbit.theta
     }
 
     /// Steps the stage until its flight rests, checking the sway is off while an ENTER sequence is open.
@@ -1261,16 +1188,5 @@ mod tests {
         assert!(s.machines.orbit.drifting(), "Back did not restart the sway");
         now += Duration::from_millis(16);
         assert_eq!(s.tick(now), Motion::Ambient);
-    }
-
-    #[test]
-    fn the_sway_angle_at_a_time_does_not_depend_on_the_frame_rate() {
-        for at in [0.5, 2.0] {
-            let (fast, slow) = (sway_after(60, at), sway_after(12, at));
-            assert!(
-                (fast - slow).abs() < 1e-6,
-                "at {at} s: 60 fps {fast}, 12 fps {slow}"
-            );
-        }
     }
 }

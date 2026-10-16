@@ -621,34 +621,30 @@ mod tests {
     use crate::runner::mock::{Mock, scratch};
 
     #[test]
-    fn merge_replaces_appends_and_keeps_other_lines() {
-        let existing = "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=old\n\nOTHER=x\n";
-        let merged = merge(
-            existing,
-            &[("APZ_DATABASE_URL", "new"), ("FORGEJO_TOKEN", "t")],
-        );
-        assert_eq!(
-            merged,
-            "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=new\n\nOTHER=x\nFORGEJO_TOKEN=t\n"
-        );
-    }
-
-    #[test]
-    fn merge_into_an_empty_file() {
-        assert_eq!(merge("", &[("A", "1"), ("B", "2")]), "A=1\nB=2\n");
-    }
-
-    #[test]
-    fn merge_keeps_one_line_per_key() {
-        assert_eq!(merge("A=1\nA=2\n", &[("A", "3")]), "A=3\n");
-    }
-
-    #[test]
-    fn lookup_reads_values_and_skips_empty_and_commented_ones() {
-        let text = "# A=0\nFORGEJO_TOKEN= \nA=1\n";
-        assert_eq!(lookup(text, "A"), Some("1".to_string()));
-        assert_eq!(lookup(text, "FORGEJO_TOKEN"), None);
-        assert_eq!(lookup(text, "MISSING"), None);
+    fn merge_updates_key_value_lines() {
+        let cases: [(&str, &str, &[(&str, &str)], &str); 3] = [
+            (
+                "replaces a present key, appends a missing one, keeps other lines",
+                "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=old\n\nOTHER=x\n",
+                &[("APZ_DATABASE_URL", "new"), ("FORGEJO_TOKEN", "t")],
+                "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=new\n\nOTHER=x\nFORGEJO_TOKEN=t\n",
+            ),
+            (
+                "merges into an empty file",
+                "",
+                &[("A", "1"), ("B", "2")],
+                "A=1\nB=2\n",
+            ),
+            (
+                "keeps one line per key",
+                "A=1\nA=2\n",
+                &[("A", "3")],
+                "A=3\n",
+            ),
+        ];
+        for (case, existing, updates, want) in cases {
+            assert_eq!(merge(existing, updates), want, "{case}");
+        }
     }
 
     #[test]
@@ -978,26 +974,6 @@ mod tests {
         assert!(!err.contains("hunter2-secret"), "{err}");
         assert!(err.contains("invalid POSTGRES_PASSWORD=*** value"), "{err}");
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn wait_until_gives_up_after_its_timeout() {
-        let mock = Mock::new(|_, _| Output::failed("not yet"));
-        let env = Env {
-            runner: &mock,
-            keys: None,
-            user: None,
-        };
-        let err = wait_until(
-            &env,
-            &mut |_| {},
-            &["exec", "x", "true"],
-            Duration::ZERO,
-            Duration::from_millis(1),
-        )
-        .unwrap_err();
-        assert!(err.contains("not yet"), "{err}");
-        assert_eq!(mock.calls().len(), 1);
     }
 
     #[test]

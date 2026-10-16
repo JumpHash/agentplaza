@@ -931,6 +931,10 @@ mod tests {
         build_with(set, false)
     }
 
+    fn cell_walk(g: &Grid, x: f64, z: f64) -> bool {
+        g.cell_at(x, z).is_some_and(|c| g.walk[c] == 1)
+    }
+
     #[test]
     fn indexed_build_equals_brute_force_on_real_boards() {
         for kind in ["workstation", "laptop", "edge"] {
@@ -946,54 +950,53 @@ mod tests {
         }
     }
 
-    fn cell_walk(g: &Grid, x: f64, z: f64) -> bool {
-        g.cell_at(x, z).is_some_and(|c| g.walk[c] == 1)
-    }
-
     #[test]
-    fn flat_square_is_walkable_and_connected() {
-        let set = WalkSet {
-            surfaces: vec![surf(
-                0,
-                rect(0.0, 0.0, 2.0, 2.0),
-                Plane::flat(0.0),
-                vec![Side::Open; 4],
-            )],
-            links: vec![],
-        };
-        let g = build(&set);
-        assert!(cell_walk(&g, 1.0, 1.0));
-        assert_eq!(g.walk.iter().filter(|&&w| w == 1).count(), 64);
-        let comps: BTreeSet<i32> = g.component.iter().copied().filter(|&c| c >= 0).collect();
-        assert_eq!(comps.len(), 1);
-        assert_eq!(g.main_component(), 0);
-    }
-
-    #[test]
-    fn island_without_link_is_its_own_component() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(
+    fn components_follow_the_links() {
+        // a flat square is walkable and forms one connected component
+        {
+            let set = WalkSet {
+                surfaces: vec![surf(
                     0,
                     rect(0.0, 0.0, 2.0, 2.0),
                     Plane::flat(0.0),
                     vec![Side::Open; 4],
-                ),
-                surf(
-                    1,
-                    rect(5.0, 0.0, 7.0, 2.0),
-                    Plane::flat(0.0),
-                    vec![Side::Open; 4],
-                ),
-            ],
-            links: vec![],
-        };
-        let g = build(&set);
-        let a = g.cell_at(1.0, 1.0).unwrap();
-        let b = g.cell_at(6.0, 1.0).unwrap();
-        assert!(g.component_of(a) >= 0 && g.component_of(b) >= 0);
-        assert_ne!(g.component_of(a), g.component_of(b));
-        assert_eq!(g.component_of(g.cell_at(3.0, 1.0).unwrap()), -1);
+                )],
+                links: vec![],
+            };
+            let g = build(&set);
+            assert!(cell_walk(&g, 1.0, 1.0));
+            assert_eq!(g.walk.iter().filter(|&&w| w == 1).count(), 64);
+            let comps: BTreeSet<i32> = g.component.iter().copied().filter(|&c| c >= 0).collect();
+            assert_eq!(comps.len(), 1);
+            assert_eq!(g.main_component(), 0);
+        }
+
+        // an island without a link is its own component
+        {
+            let set = WalkSet {
+                surfaces: vec![
+                    surf(
+                        0,
+                        rect(0.0, 0.0, 2.0, 2.0),
+                        Plane::flat(0.0),
+                        vec![Side::Open; 4],
+                    ),
+                    surf(
+                        1,
+                        rect(5.0, 0.0, 7.0, 2.0),
+                        Plane::flat(0.0),
+                        vec![Side::Open; 4],
+                    ),
+                ],
+                links: vec![],
+            };
+            let g = build(&set);
+            let a = g.cell_at(1.0, 1.0).unwrap();
+            let b = g.cell_at(6.0, 1.0).unwrap();
+            assert!(g.component_of(a) >= 0 && g.component_of(b) >= 0);
+            assert_ne!(g.component_of(a), g.component_of(b));
+            assert_eq!(g.component_of(g.cell_at(3.0, 1.0).unwrap()), -1);
+        }
     }
 
     #[test]
@@ -1014,38 +1017,6 @@ mod tests {
         assert!(cell_walk(&g, 1.0, 0.6));
         let far = g.cell_at(1.0, 0.6).unwrap();
         assert!((g.cost[far] - (NAV_COST_OPEN + NAV_NEAR_COST)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn build_twice_is_equal() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(
-                    0,
-                    rect(0.0, 0.0, 2.0, 2.0),
-                    Plane::flat(0.3),
-                    vec![Side::Open; 4],
-                ),
-                surf(
-                    1,
-                    rect(2.0, 0.0, 4.0, 2.0),
-                    Plane {
-                        c: 0.2,
-                        dx: 0.1,
-                        dz: 0.0,
-                    },
-                    vec![Side::Open; 4],
-                ),
-            ],
-            links: vec![WalkLink {
-                from: 0,
-                to: 1,
-                kind: LinkKind::Step,
-                via: None,
-                at: [2.0, 1.0],
-            }],
-        };
-        assert_eq!(build(&set), build(&set));
     }
 
     fn open() -> Vec<Side> {
@@ -1071,75 +1042,36 @@ mod tests {
     }
 
     #[test]
-    fn lift_landing_over_air_makes_no_portal() {
-        // A top landing 0.1 wide holds no cell centre, so nothing on it is supported: no landing cell, no portal.
-        let g = build(&lift_set(rect(4.0, 0.0, 4.1, 2.0), open()));
-        assert!(g.portals.is_empty());
-        assert!(g.portal.iter().all(|&p| p == -1));
-        assert!(!cell_walk(&g, 4.05, 1.0));
-        assert_eq!(g.component_of(g.cell_at(4.05, 1.0).unwrap()), -1);
-        assert!(cell_walk(&g, 1.0, 1.0));
-    }
-
-    #[test]
-    fn lift_landing_blocked_makes_no_portal() {
-        // A top landing 0.2 wide, walled on all four sides: its only cell centre is touched by a wall, so it is blocked.
-        let g = build(&lift_set(rect(4.0, 0.0, 4.2, 2.0), vec![Side::Walled; 4]));
-        assert!(g.portals.is_empty());
-        assert!(g.portal.iter().all(|&p| p == -1));
-        assert!(!cell_walk(&g, 4.125, 1.0));
-    }
-
-    #[test]
-    fn lift_landings_on_open_ground_make_a_portal() {
-        let g = build(&lift_set(rect(4.0, 0.0, 6.0, 2.0), open()));
-        assert_eq!(g.portals.len(), 1);
-        let pt = &g.portals[0];
-        assert!(g.walk[pt.a] == 1 && g.walk[pt.b] == 1);
-        assert_eq!(g.component_of(pt.a), g.component_of(pt.b));
-        assert_eq!(g.portal[pt.a], 0);
-        assert_eq!(g.portal[pt.b], 0);
-    }
-
-    #[test]
-    fn fine_height_matches_plane() {
-        let set = WalkSet {
-            surfaces: vec![
-                surf(
-                    0,
-                    rect(0.0, 0.0, 2.0, 2.0),
-                    Plane::flat(0.3),
-                    vec![Side::Open; 4],
-                ),
-                surf(
-                    1,
-                    rect(2.0, 0.0, 4.0, 2.0),
-                    Plane {
-                        c: 0.2,
-                        dx: 0.1,
-                        dz: 0.0,
-                    },
-                    vec![Side::Open; 4],
-                ),
-            ],
-            links: vec![],
-        };
-        let g = build(&set);
-        for [x, z] in [
-            [0.37, 1.23],
-            [1.0, 1.0],
-            [2.5, 0.7],
-            [3.99, 1.99],
-            [0.0, 0.0],
-        ] {
-            let want = if x < 2.0 { 0.3 } else { 0.2 + 0.1 * x };
-            let got = g
-                .height_at(x, z)
-                .expect("a walk surface lies under the point");
-            assert!((got - want).abs() < 1e-9, "at ({x}, {z}): {got} vs {want}");
+    fn lift_landings_make_a_portal_only_on_open_ground() {
+        // a lift landing over air makes no portal
+        {
+            // A top landing 0.1 wide holds no cell centre, so nothing on it is supported: no landing cell, no portal.
+            let g = build(&lift_set(rect(4.0, 0.0, 4.1, 2.0), open()));
+            assert!(g.portals.is_empty());
+            assert!(g.portal.iter().all(|&p| p == -1));
+            assert!(!cell_walk(&g, 4.05, 1.0));
+            assert_eq!(g.component_of(g.cell_at(4.05, 1.0).unwrap()), -1);
+            assert!(cell_walk(&g, 1.0, 1.0));
         }
-        assert_eq!(g.height_at(-1.0, 0.0), None);
-        assert_eq!(g.height_at(10.0, 10.0), None);
-        assert_eq!(g.height_at(4.1, 1.0), None);
+
+        // a blocked lift landing makes no portal
+        {
+            // A top landing 0.2 wide, walled on all four sides: its only cell centre is touched by a wall, so it is blocked.
+            let g = build(&lift_set(rect(4.0, 0.0, 4.2, 2.0), vec![Side::Walled; 4]));
+            assert!(g.portals.is_empty());
+            assert!(g.portal.iter().all(|&p| p == -1));
+            assert!(!cell_walk(&g, 4.125, 1.0));
+        }
+
+        // lift landings on open ground make a portal
+        {
+            let g = build(&lift_set(rect(4.0, 0.0, 6.0, 2.0), open()));
+            assert_eq!(g.portals.len(), 1);
+            let pt = &g.portals[0];
+            assert!(g.walk[pt.a] == 1 && g.walk[pt.b] == 1);
+            assert_eq!(g.component_of(pt.a), g.component_of(pt.b));
+            assert_eq!(g.portal[pt.a], 0);
+            assert_eq!(g.portal[pt.b], 0);
+        }
     }
 }

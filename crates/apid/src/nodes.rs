@@ -1096,37 +1096,39 @@ mod tests {
     }
 
     #[test]
-    fn join_rate_limit_is_per_source_and_window() {
-        let store = Store::default();
-        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
-        for _ in 0..JOIN_RATE_PER_MINUTE {
+    fn join_rate_limit_holds_per_source_and_reopens_after_the_window() {
+        // The join rate limit is per source and per window.
+        {
+            let store = Store::default();
+            add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+            for _ in 0..JOIN_RATE_PER_MINUTE {
+                assert_eq!(
+                    redeem(&store, "a", &[1; 16], "box", NOW).unwrap_err(),
+                    INVALID_CODE
+                );
+            }
             assert_eq!(
-                redeem(&store, "a", &[1; 16], "box", NOW).unwrap_err(),
-                INVALID_CODE
+                redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
+                RATE_LIMITED
+            );
+            assert!(
+                redeem(&store, "b", &SECRET, "box", NOW).is_ok(),
+                "another source is not held back"
             );
         }
-        assert_eq!(
-            redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
-            RATE_LIMITED
-        );
-        assert!(
-            redeem(&store, "b", &SECRET, "box", NOW).is_ok(),
-            "another source is not held back"
-        );
-    }
-
-    #[test]
-    fn join_rate_limit_window_reopens_after_a_minute() {
-        let store = Store::default();
-        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
-        for _ in 0..JOIN_RATE_PER_MINUTE {
-            let _ = redeem(&store, "a", &[1; 16], "box", NOW);
+        // The join rate limit window reopens after a minute.
+        {
+            let store = Store::default();
+            add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+            for _ in 0..JOIN_RATE_PER_MINUTE {
+                let _ = redeem(&store, "a", &[1; 16], "box", NOW);
+            }
+            assert_eq!(
+                redeem(&store, "a", &SECRET, "box", NOW + 59_000).unwrap_err(),
+                RATE_LIMITED
+            );
+            assert!(redeem(&store, "a", &SECRET, "box", NOW + JOIN_WINDOW_MS + 1).is_ok());
         }
-        assert_eq!(
-            redeem(&store, "a", &SECRET, "box", NOW + 59_000).unwrap_err(),
-            RATE_LIMITED
-        );
-        assert!(redeem(&store, "a", &SECRET, "box", NOW + JOIN_WINDOW_MS + 1).is_ok());
     }
 
     #[test]
@@ -1154,32 +1156,34 @@ mod tests {
     }
 
     #[test]
-    fn expired_code_is_refused() {
-        let store = Store::default();
-        add_code(&store, "c1", &SECRET, NOW + 1_000);
-        assert_eq!(store.codes(NOW + 1_000)[0].state, "expired");
-        assert_eq!(
-            redeem(&store, "a", &SECRET, "box", NOW + 1_000).unwrap_err(),
-            INVALID_CODE
-        );
-        assert!(store.list().is_empty());
-    }
+    fn expired_and_revoked_codes_are_refused() {
+        // An expired code is refused.
+        {
+            let store = Store::default();
+            add_code(&store, "c1", &SECRET, NOW + 1_000);
+            assert_eq!(store.codes(NOW + 1_000)[0].state, "expired");
+            assert_eq!(
+                redeem(&store, "a", &SECRET, "box", NOW + 1_000).unwrap_err(),
+                INVALID_CODE
+            );
+            assert!(store.list().is_empty());
+        }
+        // A revoked code is refused, and a used code cannot be revoked.
+        {
+            let store = Store::default();
+            add_code(&store, "c1", &SECRET, NOW + TTL_MS);
+            store.revoke_code("c1").unwrap();
+            assert_eq!(store.codes(NOW)[0].state, "revoked");
+            assert_eq!(
+                redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
+                INVALID_CODE
+            );
+            assert!(store.revoke_code("c9").is_err());
 
-    #[test]
-    fn revoked_code_is_refused_and_used_code_cannot_be_revoked() {
-        let store = Store::default();
-        add_code(&store, "c1", &SECRET, NOW + TTL_MS);
-        store.revoke_code("c1").unwrap();
-        assert_eq!(store.codes(NOW)[0].state, "revoked");
-        assert_eq!(
-            redeem(&store, "a", &SECRET, "box", NOW).unwrap_err(),
-            INVALID_CODE
-        );
-        assert!(store.revoke_code("c9").is_err());
-
-        add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
-        redeem(&store, "a", &OTHER_SECRET, "box", NOW).unwrap();
-        assert!(store.revoke_code("c2").is_err());
+            add_code(&store, "c2", &OTHER_SECRET, NOW + TTL_MS);
+            redeem(&store, "a", &OTHER_SECRET, "box", NOW).unwrap();
+            assert!(store.revoke_code("c2").is_err());
+        }
     }
 
     #[test]

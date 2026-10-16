@@ -379,19 +379,21 @@ mod tests {
     }
 
     #[test]
-    fn a_vsock_hub_without_a_pin_is_refused_before_anything_is_dialled() {
-        let dir = scratch("vsock-no-pin");
-        let err = join(&dir, &request("vsock://2:5100".into()), &facts()).unwrap_err();
-        assert!(err.contains("pin"), "{err}");
-        assert_eq!(state::load_record(&dir).unwrap(), None);
-    }
-
-    #[test]
-    fn a_pin_that_is_not_thirty_two_bytes_is_refused_before_dialling() {
-        let dir = scratch("pin");
-        let mut bad = request("http://127.0.0.1:1".into());
-        bad.pin = Some(apz_trust::b64(&[1u8; 8]));
-        assert!(join(&dir, &bad, &facts()).is_err());
-        assert_eq!(state::load_record(&dir).unwrap(), None);
+    fn join_refuses_a_bad_pin_before_dialling() {
+        // a_vsock_hub_without_a_pin_is_refused_before_anything_is_dialled
+        {
+            let dir = scratch("vsock-no-pin");
+            let err = join(&dir, &request("vsock://2:5100".into()), &facts()).unwrap_err();
+            assert!(err.contains("pin"), "{err}");
+            assert_eq!(state::load_record(&dir).unwrap(), None);
+        }
+        // a_pin_that_is_not_thirty_two_bytes_is_refused_before_dialling
+        {
+            let dir = scratch("pin");
+            let mut bad = request("http://127.0.0.1:1".into());
+            bad.pin = Some(apz_trust::b64(&[1u8; 8]));
+            assert!(join(&dir, &bad, &facts()).is_err());
+            assert_eq!(state::load_record(&dir).unwrap(), None);
+        }
     }
 }

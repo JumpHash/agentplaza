@@ -378,58 +378,58 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_sits_at_its_fixed_address_listens_there_and_joins_the_uplink() {
-        let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
-        let at = args.iter().position(|a| a == "--ip").unwrap();
-        assert_eq!(args[at + 1], "172.29.250.2");
-        assert!(
-            args.join(" ")
-                .contains("APZ_RELAY_LISTEN=172.29.250.2:3128")
-        );
-        assert_eq!(
-            connect_args().join(" "),
-            "network connect apz-mcp-uplink apz-mcp-relay"
-        );
-    }
-
-    #[test]
-    fn the_relay_can_reach_the_host_by_name_on_every_engine() {
-        let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
-        assert!(
-            args.iter()
-                .any(|a| a == "--add-host=host.docker.internal:host-gateway")
-        );
-        assert!(
-            args.iter()
-                .any(|a| a == "APZ_RELAY_UPSTREAM=host.docker.internal:19128")
-        );
-    }
-
-    #[test]
-    fn the_relay_runs_hardened_with_a_read_only_binary_and_never_pulls() {
-        let joined = create_args(Path::new("/state/mcp/mcp_relay"), 19128).join(" ");
-        for flag in [
-            "--read-only",
-            "--cap-drop ALL",
-            "--security-opt no-new-privileges",
-            "--user 65534:65534",
-            "--pull never",
-        ] {
-            assert!(joined.contains(flag), "{flag} missing from {joined}");
+    fn the_relay_container_is_placed_wired_hardened_and_names_its_token_only() {
+        // The relay sits at its fixed address, listens there and joins the uplink.
+        {
+            let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
+            let at = args.iter().position(|a| a == "--ip").unwrap();
+            assert_eq!(args[at + 1], "172.29.250.2");
+            assert!(
+                args.join(" ")
+                    .contains("APZ_RELAY_LISTEN=172.29.250.2:3128")
+            );
+            assert_eq!(
+                connect_args().join(" "),
+                "network connect apz-mcp-uplink apz-mcp-relay"
+            );
         }
-        assert!(joined.contains("-v /state/mcp/mcp_relay:/usr/local/bin/mcp_relay:ro"));
-        assert!(joined.contains(" alpine:latest /usr/local/bin/mcp_relay"));
-    }
-
-    #[test]
-    fn the_token_is_named_in_argv_and_never_valued() {
-        let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == TOKEN_ENV));
-        assert!(
-            !args
-                .iter()
-                .any(|a| a.contains("secret") || a.contains("token="))
-        );
+        // The relay can reach the host by name on every engine.
+        {
+            let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
+            assert!(
+                args.iter()
+                    .any(|a| a == "--add-host=host.docker.internal:host-gateway")
+            );
+            assert!(
+                args.iter()
+                    .any(|a| a == "APZ_RELAY_UPSTREAM=host.docker.internal:19128")
+            );
+        }
+        // The relay runs hardened with a read-only binary and never pulls.
+        {
+            let joined = create_args(Path::new("/state/mcp/mcp_relay"), 19128).join(" ");
+            for flag in [
+                "--read-only",
+                "--cap-drop ALL",
+                "--security-opt no-new-privileges",
+                "--user 65534:65534",
+                "--pull never",
+            ] {
+                assert!(joined.contains(flag), "{flag} missing from {joined}");
+            }
+            assert!(joined.contains("-v /state/mcp/mcp_relay:/usr/local/bin/mcp_relay:ro"));
+            assert!(joined.contains(" alpine:latest /usr/local/bin/mcp_relay"));
+        }
+        // The token is named in argv and never valued.
+        {
+            let args = create_args(Path::new("/state/mcp/mcp_relay"), 19128);
+            assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == TOKEN_ENV));
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.contains("secret") || a.contains("token="))
+            );
+        }
     }
 
     #[test]

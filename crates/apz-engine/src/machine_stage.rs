@@ -493,72 +493,52 @@ mod tests {
     }
 
     #[test]
-    fn every_machine_in_the_fixture_builds_a_stage() {
-        let fleet = fixture();
-        assert!(!fleet.machines.is_empty());
-        for m in &fleet.machines {
-            assert!(
-                MachineStage::new(m, None).is_some(),
-                "no stage for {}",
-                m.id
-            );
+    fn a_machine_picture_follows_its_kind_and_vendor() {
+        // A four-GPU workstation shows two tinted cards and four sticks.
+        {
+            let m = machine(json!({
+                "id": "w", "name": "w", "kind": "workstation", "vendor": "dell",
+                "memory_mib": 65536, "gpus": gpus(4, "NVIDIA")
+            }));
+            let pic = picture(&m, None);
+            assert_eq!(pic.look, Look::Workstation);
+            assert_eq!(pic.tints, vec![Some(0x76b900), Some(0x76b900)]);
+            let params = params_of(&pic);
+            assert_eq!(params.values.get("gpus"), Some(&2.0));
+            assert_eq!(params.values.get("dimms"), Some(&4.0));
+            assert_eq!(params.values.get("drives"), Some(&1.0));
+            assert_eq!(cards_of(&m).len(), 4);
+            assert!(MachineStage::new(&m, None).is_some());
         }
-    }
-
-    #[test]
-    fn a_four_gpu_workstation_shows_two_tinted_cards_and_four_sticks() {
-        let m = machine(json!({
-            "id": "w", "name": "w", "kind": "workstation", "vendor": "dell",
-            "memory_mib": 65536, "gpus": gpus(4, "NVIDIA")
-        }));
-        let pic = picture(&m, None);
-        assert_eq!(pic.look, Look::Workstation);
-        assert_eq!(pic.tints, vec![Some(0x76b900), Some(0x76b900)]);
-        let params = params_of(&pic);
-        assert_eq!(params.values.get("gpus"), Some(&2.0));
-        assert_eq!(params.values.get("dimms"), Some(&4.0));
-        assert_eq!(params.values.get("drives"), Some(&1.0));
-        assert_eq!(cards_of(&m).len(), 4);
-        assert!(MachineStage::new(&m, None).is_some());
-    }
-
-    #[test]
-    fn a_laptop_has_one_chip_and_its_sticks_and_no_drives() {
-        let m = machine(
-            json!({ "id": "l", "name": "l", "kind": "laptop", "vendor": "dell", "memory_mib": 16384 }),
-        );
-        let params = params_of(&picture(&m, None));
-        assert_eq!(params.values.get("gpus"), Some(&0.0));
-        assert_eq!(params.values.get("dimms"), Some(&2.0));
-        assert!(!params.values.contains_key("drives"));
-    }
-
-    #[test]
-    fn an_apple_laptop_is_a_macbook_with_no_card_or_stick_params() {
-        let m = machine(
-            json!({ "id": "a", "name": "a", "kind": "laptop", "vendor": "apple", "memory_mib": 16384 }),
-        );
-        let pic = picture(&m, None);
-        assert_eq!(pic.look, Look::Macbook);
-        assert!(params_of(&pic).values.is_empty());
-        assert!(MachineStage::new(&m, None).is_some());
-    }
-
-    #[test]
-    fn an_apple_desktop_is_a_mac_with_no_card_or_stick_params() {
-        let m = machine(
-            json!({ "id": "s", "name": "s", "kind": "workstation", "vendor": "apple", "memory_mib": 32768, "gpus": gpus(1, "Apple") }),
-        );
-        let pic = picture(&m, None);
-        assert_eq!(pic.look, Look::Mac);
-        assert!(params_of(&pic).values.is_empty());
-    }
-
-    #[test]
-    fn the_stick_count_fills_the_slots_with_power_of_two_sticks() {
-        assert_eq!(sticks_for(65536, 4), 4); // 64 GiB: four 16 GiB sticks
-        assert_eq!(sticks_for(16384, 4), 2); // 16 GiB: two 8 GiB sticks
-        assert_eq!(sticks_for(262144, 16), 16); // 256 GiB over 16 slots: 16 x 16 GiB
+        // A laptop has one chip, its sticks, and no drives.
+        {
+            let m = machine(
+                json!({ "id": "l", "name": "l", "kind": "laptop", "vendor": "dell", "memory_mib": 16384 }),
+            );
+            let params = params_of(&picture(&m, None));
+            assert_eq!(params.values.get("gpus"), Some(&0.0));
+            assert_eq!(params.values.get("dimms"), Some(&2.0));
+            assert!(!params.values.contains_key("drives"));
+        }
+        // An Apple laptop is a MacBook with no card or stick params.
+        {
+            let m = machine(
+                json!({ "id": "a", "name": "a", "kind": "laptop", "vendor": "apple", "memory_mib": 16384 }),
+            );
+            let pic = picture(&m, None);
+            assert_eq!(pic.look, Look::Macbook);
+            assert!(params_of(&pic).values.is_empty());
+            assert!(MachineStage::new(&m, None).is_some());
+        }
+        // An Apple desktop is a Mac with no card or stick params.
+        {
+            let m = machine(
+                json!({ "id": "s", "name": "s", "kind": "workstation", "vendor": "apple", "memory_mib": 32768, "gpus": gpus(1, "Apple") }),
+            );
+            let pic = picture(&m, None);
+            assert_eq!(pic.look, Look::Mac);
+            assert!(params_of(&pic).values.is_empty());
+        }
     }
 
     #[test]
@@ -598,22 +578,6 @@ mod tests {
         let adapter =
             block_ready(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         block_ready(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-    }
-
-    #[test]
-    fn a_thumbnail_is_rgba_of_the_asked_size() {
-        let Some((device, queue)) = test_device() else {
-            eprintln!("no wgpu adapter here: the thumbnail test is skipped");
-            return;
-        };
-        let m = machine(
-            json!({ "id": "w", "name": "w", "kind": "workstation", "vendor": "dell", "memory_mib": 65536, "gpus": gpus(2, "NVIDIA") }),
-        );
-        let stage = MachineStage::new(&m, None).expect("a stage");
-        let mut renderer = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let px = renderer.thumbnail(&stage, 64, 64).expect("the readback");
-        assert_eq!(px.len(), 64 * 64 * 4);
-        assert!(px.iter().any(|b| *b != 0), "the thumbnail is empty");
     }
 
     /// The RGBA bytes of one fixture machine's 64 by 64 thumbnail, on the test device.

@@ -1726,30 +1726,31 @@ mod tests {
 
     /// F3: the CID range is enforced on the boot path, at both ends.
     #[test]
-    fn guest_cids_outside_the_supported_range_are_refused() {
-        for cid in [0, 1, 2, MAX_GUEST_CID + 1, u64::MAX] {
-            assert!(
-                matches!(
-                    validate_spec(&spec_with_cid(cid)),
-                    Err(SpawnError::GuestCidOutOfRange { guest_cid, min, max })
-                        if guest_cid == cid && min == MIN_GUEST_CID && max == MAX_GUEST_CID
-                ),
-                "guest CID {cid} must be refused"
-            );
+    fn validate_spec_checks_the_guest_cid_range() {
+        // guest_cids_outside_the_supported_range_are_refused: CIDs outside the
+        // supported range are refused.
+        {
+            for cid in [0, 1, 2, MAX_GUEST_CID + 1, u64::MAX] {
+                assert!(
+                    matches!(
+                        validate_spec(&spec_with_cid(cid)),
+                        Err(SpawnError::GuestCidOutOfRange { guest_cid, min, max })
+                            if guest_cid == cid && min == MIN_GUEST_CID && max == MAX_GUEST_CID
+                    ),
+                    "guest CID {cid} must be refused"
+                );
+            }
         }
-    }
-
-    /// F3: the boundaries themselves are accepted.
-    #[test]
-    fn the_range_boundaries_are_accepted() {
-        assert!(validate_spec(&spec_with_cid(MIN_GUEST_CID)).is_ok());
-        assert!(validate_spec(&spec_with_cid(MAX_GUEST_CID)).is_ok());
-    }
-
-    /// A VM with no vsock device has no CID to validate.
-    #[test]
-    fn a_spec_without_vsock_is_accepted() {
-        assert!(validate_spec(&VmSpec::default()).is_ok());
+        // the_range_boundaries_are_accepted: the boundaries themselves are accepted.
+        {
+            assert!(validate_spec(&spec_with_cid(MIN_GUEST_CID)).is_ok());
+            assert!(validate_spec(&spec_with_cid(MAX_GUEST_CID)).is_ok());
+        }
+        // a_spec_without_vsock_is_accepted: a VM with no vsock device has no CID
+        // to validate.
+        {
+            assert!(validate_spec(&VmSpec::default()).is_ok());
+        }
     }
 
     /// The boot mode an `APZ_VMM_SPAWN` value names: exactly the two modes,

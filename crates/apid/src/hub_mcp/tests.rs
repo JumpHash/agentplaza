@@ -542,25 +542,6 @@ fn bad_missing_revoked_and_expired_tokens_get_401_with_a_challenge() {
 }
 
 #[test]
-fn a_foreign_origin_gets_403_and_the_hub_origin_is_allowed() {
-    let h = harness(true);
-    let (token, _) = h.mint(Scope::Observe, &[], None);
-    let init = request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
-    let foreign = h.raw(
-        "POST",
-        vec![bearer(&token), header("origin", "https://evil.example")],
-        serde_json::to_vec(&init).expect("json"),
-    );
-    assert_eq!(foreign.status, 403);
-    let own = h.raw(
-        "POST",
-        vec![bearer(&token), header("origin", ORIGIN)],
-        serde_json::to_vec(&init).expect("json"),
-    );
-    assert_eq!(own.status, 200);
-}
-
-#[test]
 fn get_is_405_and_a_disabled_hub_answers_404() {
     let on = harness(true);
     let (token, _) = on.mint(Scope::Observe, &[], None);
@@ -1153,62 +1134,63 @@ mod open_modes {
     }
 
     #[test]
-    fn open_mode_lets_an_anonymous_caller_list_and_observe_without_a_token() {
-        let h = built(
-            false,
-            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
-        );
-        let session = anonymous_session(&h, "127.0.0.1");
-        let list = send(
-            &h,
-            "127.0.0.1",
-            vec![header("mcp-session-id", &session)],
-            request_body(2, "tools/list", json!({})),
-        );
-        let listed = body_of(&list)["result"]["tools"].to_string();
-        assert!(listed.contains("plaza_status") && !listed.contains("create_task"));
-        let call = send(
-            &h,
-            "127.0.0.1",
-            vec![header("mcp-session-id", &session)],
-            tool_call("plaza_status", json!({})),
-        );
-        assert_eq!(body_of(&call)["result"]["isError"], json!(false));
-    }
-
-    #[test]
-    fn open_mode_refuses_a_tool_above_the_open_scope() {
-        let h = built(
-            false,
-            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
-        );
-        let session = anonymous_session(&h, "127.0.0.1");
-        let resp = send(
-            &h,
-            "127.0.0.1",
-            vec![header("mcp-session-id", &session)],
-            tool_call("create_task", json!({ "title": "x" })),
-        );
-        assert_eq!(body_of(&resp)["error"]["code"], json!(-32602));
-        let rows = h.host.hub.audit.list();
-        assert_eq!(rows[0].error.as_deref(), Some("unknown_tool"));
-        assert_eq!(rows[0].token_id, None);
-    }
-
-    #[test]
-    fn open_mode_gives_a_token_its_own_scope() {
-        let h = built(
-            false,
-            settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
-        );
-        let (token, _) = h.mint(Scope::Operate, &[], None);
-        let session = h.session(&token);
-        let resp = h.call(
-            &token,
-            Some(&session),
-            tool_call("create_task", json!({ "title": "from a token" })),
-        );
-        assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
+    fn open_mode_serves_anonymous_callers_within_the_open_scope() {
+        // An anonymous caller lists and observes without a token.
+        {
+            let h = built(
+                false,
+                settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+            );
+            let session = anonymous_session(&h, "127.0.0.1");
+            let list = send(
+                &h,
+                "127.0.0.1",
+                vec![header("mcp-session-id", &session)],
+                request_body(2, "tools/list", json!({})),
+            );
+            let listed = body_of(&list)["result"]["tools"].to_string();
+            assert!(listed.contains("plaza_status") && !listed.contains("create_task"));
+            let call = send(
+                &h,
+                "127.0.0.1",
+                vec![header("mcp-session-id", &session)],
+                tool_call("plaza_status", json!({})),
+            );
+            assert_eq!(body_of(&call)["result"]["isError"], json!(false));
+        }
+        // An anonymous caller is refused a tool above the open scope, and the refusal is audited.
+        {
+            let h = built(
+                false,
+                settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+            );
+            let session = anonymous_session(&h, "127.0.0.1");
+            let resp = send(
+                &h,
+                "127.0.0.1",
+                vec![header("mcp-session-id", &session)],
+                tool_call("create_task", json!({ "title": "x" })),
+            );
+            assert_eq!(body_of(&resp)["error"]["code"], json!(-32602));
+            let rows = h.host.hub.audit.list();
+            assert_eq!(rows[0].error.as_deref(), Some("unknown_tool"));
+            assert_eq!(rows[0].token_id, None);
+        }
+        // A token gets its own scope in open mode.
+        {
+            let h = built(
+                false,
+                settings(true, Bind::Local, AuthMode::Open, Scope::Observe),
+            );
+            let (token, _) = h.mint(Scope::Operate, &[], None);
+            let session = h.session(&token);
+            let resp = h.call(
+                &token,
+                Some(&session),
+                tool_call("create_task", json!({ "title": "from a token" })),
+            );
+            assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
+        }
     }
 
     #[test]
@@ -1300,53 +1282,73 @@ mod open_modes {
     }
 
     #[test]
-    fn the_hubs_own_origins_are_allowed_whatever_the_owners_list_says() {
-        let h = built(
-            false,
-            settings(true, Bind::Local, AuthMode::Secure, Scope::Observe),
-        );
-        let (token, _) = h.mint(Scope::Observe, &[], None);
-        let init = serde_json::to_vec(&request_body(
-            1,
-            "initialize",
-            json!({ "protocolVersion": "2025-06-18" }),
-        ))
-        .expect("json");
-        assert_eq!(
-            h.raw(
-                "POST",
-                vec![bearer(&token), header("origin", "http://127.0.0.1:19080")],
-                init.clone()
-            )
-            .status,
-            200
-        );
-        assert_eq!(
-            h.raw(
-                "POST",
-                vec![bearer(&token), header("origin", "https://hub.test")],
-                init.clone()
-            )
-            .status,
-            200
-        );
-        assert_eq!(
-            h.raw(
+    fn origin_check_refuses_foreign_and_admits_the_hubs_own() {
+        // A foreign origin is refused with 403; the hub's own origin is allowed.
+        {
+            let h = harness(true);
+            let (token, _) = h.mint(Scope::Observe, &[], None);
+            let init = request_body(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
+            let foreign = h.raw(
                 "POST",
                 vec![bearer(&token), header("origin", "https://evil.example")],
-                init
-            )
-            .status,
-            403
-        );
-        assert!(
-            h.host
-                .hub
-                .effective_origins()
-                .contains(&"http://[::1]:19080".to_string())
-        );
+                serde_json::to_vec(&init).expect("json"),
+            );
+            assert_eq!(foreign.status, 403);
+            let own = h.raw(
+                "POST",
+                vec![bearer(&token), header("origin", ORIGIN)],
+                serde_json::to_vec(&init).expect("json"),
+            );
+            assert_eq!(own.status, 200);
+        }
+        // The hub's own origins are allowed whatever the owner's list says.
+        {
+            let h = built(
+                false,
+                settings(true, Bind::Local, AuthMode::Secure, Scope::Observe),
+            );
+            let (token, _) = h.mint(Scope::Observe, &[], None);
+            let init = serde_json::to_vec(&request_body(
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18" }),
+            ))
+            .expect("json");
+            assert_eq!(
+                h.raw(
+                    "POST",
+                    vec![bearer(&token), header("origin", "http://127.0.0.1:19080")],
+                    init.clone()
+                )
+                .status,
+                200
+            );
+            assert_eq!(
+                h.raw(
+                    "POST",
+                    vec![bearer(&token), header("origin", "https://hub.test")],
+                    init.clone()
+                )
+                .status,
+                200
+            );
+            assert_eq!(
+                h.raw(
+                    "POST",
+                    vec![bearer(&token), header("origin", "https://evil.example")],
+                    init
+                )
+                .status,
+                403
+            );
+            assert!(
+                h.host
+                    .hub
+                    .effective_origins()
+                    .contains(&"http://[::1]:19080".to_string())
+            );
+        }
     }
-
     #[test]
     fn an_anonymous_call_is_audited_with_its_ip_and_no_token() {
         let h = built(

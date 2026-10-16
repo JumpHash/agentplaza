@@ -572,45 +572,47 @@ fn the_plaza_routes_carry_the_api_prefix_and_github_does_not() {
 }
 
 #[test]
-fn an_open_item_is_served_from_the_cache_for_ten_minutes_then_refetched() {
-    let src = Fixtures::default().answer_github(
-        "/repos/o/r/pulls/12",
-        200,
-        fixture(include_str!("fixtures/github_pull.json")),
-    );
-    let store = Cache::default();
-    resolve_remote(&src, &store, &github_pull_ref(), 0);
-    resolve_remote(&src, &store, &github_pull_ref(), cards::OPEN_TTL - 1);
-    assert_eq!(src.calls().len(), 1, "still fresh: the cache answered");
-    resolve_remote(&src, &store, &github_pull_ref(), cards::OPEN_TTL);
-    assert_eq!(src.calls().len(), 2, "ten minutes on: fetched again");
-}
-
-#[test]
-fn a_merged_item_is_kept_an_hour_and_a_failure_a_minute() {
-    let merged = Fixtures {
-        origin: PLAZA.into(),
-        ..Default::default()
+fn resolve_caches_each_answer_for_its_ttl() {
+    // an open item is served from the cache for ten minutes, then refetched
+    {
+        let src = Fixtures::default().answer_github(
+            "/repos/o/r/pulls/12",
+            200,
+            fixture(include_str!("fixtures/github_pull.json")),
+        );
+        let store = Cache::default();
+        resolve_remote(&src, &store, &github_pull_ref(), 0);
+        resolve_remote(&src, &store, &github_pull_ref(), cards::OPEN_TTL - 1);
+        assert_eq!(src.calls().len(), 1, "still fresh: the cache answered");
+        resolve_remote(&src, &store, &github_pull_ref(), cards::OPEN_TTL);
+        assert_eq!(src.calls().len(), 2, "ten minutes on: fetched again");
     }
-    .answer_forge(
-        "/api/v1/repos/agentplaza/pr-1/pulls/2",
-        200,
-        fixture(include_str!("fixtures/forgejo_pull.json")),
-    );
-    let store = Cache::default();
-    resolve_remote(&merged, &store, &plaza_pull_ref(), 0);
-    resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL - 1);
-    assert_eq!(merged.calls().len(), 1);
-    resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL);
-    assert_eq!(merged.calls().len(), 2);
+    // a merged item is kept an hour, and a failure a minute
+    {
+        let merged = Fixtures {
+            origin: PLAZA.into(),
+            ..Default::default()
+        }
+        .answer_forge(
+            "/api/v1/repos/agentplaza/pr-1/pulls/2",
+            200,
+            fixture(include_str!("fixtures/forgejo_pull.json")),
+        );
+        let store = Cache::default();
+        resolve_remote(&merged, &store, &plaza_pull_ref(), 0);
+        resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL - 1);
+        assert_eq!(merged.calls().len(), 1);
+        resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL);
+        assert_eq!(merged.calls().len(), 2);
 
-    let missing = Fixtures::default();
-    let store = Cache::default();
-    resolve_remote(&missing, &store, &github_pull_ref(), 0);
-    resolve_remote(&missing, &store, &github_pull_ref(), cards::FAILURE_TTL - 1);
-    assert_eq!(missing.calls().len(), 1, "a failure is served for a minute");
-    resolve_remote(&missing, &store, &github_pull_ref(), cards::FAILURE_TTL);
-    assert_eq!(missing.calls().len(), 2);
+        let missing = Fixtures::default();
+        let store = Cache::default();
+        resolve_remote(&missing, &store, &github_pull_ref(), 0);
+        resolve_remote(&missing, &store, &github_pull_ref(), cards::FAILURE_TTL - 1);
+        assert_eq!(missing.calls().len(), 1, "a failure is served for a minute");
+        resolve_remote(&missing, &store, &github_pull_ref(), cards::FAILURE_TTL);
+        assert_eq!(missing.calls().len(), 2);
+    }
 }
 
 #[test]

@@ -208,44 +208,62 @@ mod tests {
     }
 
     #[test]
-    fn read_returns_the_whole_file() {
-        let (workspace, _) = scratch("read-whole");
-        let file = workspace.dir().join("notes.txt");
-        fs::write(&file, "one\ntwo\nthree\n").unwrap();
-        assert_eq!(
-            read_text_file(&workspace, &json!({ "path": abs(&file) })),
-            Ok(json!({ "content": "one\ntwo\nthree\n" }))
-        );
-    }
-
-    #[test]
-    fn read_serves_a_line_window_keeping_the_line_endings() {
-        let (workspace, _) = scratch("read-window");
-        let file = workspace.dir().join("notes.txt");
-        fs::write(&file, "one\ntwo\nthree").unwrap();
-        let path = abs(&file);
-        let window = |extra: Value| {
-            let mut params = json!({ "path": path });
-            params
-                .as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            read_text_file(&workspace, &params)
-        };
-        assert_eq!(
-            window(json!({ "line": 2, "limit": 1 })),
-            Ok(json!({ "content": "two\n" }))
-        );
-        assert_eq!(
-            window(json!({ "line": 2 })),
-            Ok(json!({ "content": "two\nthree" }))
-        );
-        assert_eq!(
-            window(json!({ "limit": 2 })),
-            Ok(json!({ "content": "one\ntwo\n" }))
-        );
-        assert_eq!(window(json!({ "line": 9 })), Ok(json!({ "content": "" })));
-        assert!(window(json!({ "line": 0 })).is_err());
+    fn reads_serve_windows_and_refuse_oversize_or_binary_files() {
+        {
+            // read_returns_the_whole_file: a read without a window returns the whole file.
+            let (workspace, _) = scratch("read-whole");
+            let file = workspace.dir().join("notes.txt");
+            fs::write(&file, "one\ntwo\nthree\n").unwrap();
+            assert_eq!(
+                read_text_file(&workspace, &json!({ "path": abs(&file) })),
+                Ok(json!({ "content": "one\ntwo\nthree\n" }))
+            );
+        }
+        {
+            // read_serves_a_line_window_keeping_the_line_endings: line and limit windows keep the line endings.
+            let (workspace, _) = scratch("read-window");
+            let file = workspace.dir().join("notes.txt");
+            fs::write(&file, "one\ntwo\nthree").unwrap();
+            let path = abs(&file);
+            let window = |extra: Value| {
+                let mut params = json!({ "path": path });
+                params
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().unwrap().clone());
+                read_text_file(&workspace, &params)
+            };
+            assert_eq!(
+                window(json!({ "line": 2, "limit": 1 })),
+                Ok(json!({ "content": "two\n" }))
+            );
+            assert_eq!(
+                window(json!({ "line": 2 })),
+                Ok(json!({ "content": "two\nthree" }))
+            );
+            assert_eq!(
+                window(json!({ "limit": 2 })),
+                Ok(json!({ "content": "one\ntwo\n" }))
+            );
+            assert_eq!(window(json!({ "line": 9 })), Ok(json!({ "content": "" })));
+            assert!(window(json!({ "line": 0 })).is_err());
+        }
+        {
+            // a_read_over_the_cap_is_refused: a file over the read cap is refused.
+            let (workspace, _) = scratch("oversize-read");
+            let file = workspace.dir().join("big.txt");
+            fs::write(&file, vec![b'a'; MAX_READ_BYTES + 1]).unwrap();
+            let err = read_text_file(&workspace, &json!({ "path": abs(&file) })).unwrap_err();
+            assert!(err.contains("read cap"), "{err}");
+        }
+        {
+            // a_non_utf8_file_is_refused: a file that is not UTF-8 is refused.
+            let (workspace, _) = scratch("binary");
+            let file = workspace.dir().join("blob.bin");
+            fs::write(&file, [0xff, 0xfe, b'a']).unwrap();
+            let err = read_text_file(&workspace, &json!({ "path": abs(&file) })).unwrap_err();
+            assert!(err.contains("not UTF-8"), "{err}");
+        }
     }
 
     #[test]
@@ -320,51 +338,35 @@ mod tests {
     }
 
     #[test]
-    fn write_creates_the_folders_and_round_trips() {
-        let (workspace, _) = scratch("write");
-        let file = workspace.dir().join("deep/er/new.txt");
-        assert_eq!(
-            write_text_file(
+    fn writes_round_trip_and_oversize_writes_are_refused() {
+        {
+            // write_creates_the_folders_and_round_trips: a write creates the missing folders and reads back.
+            let (workspace, _) = scratch("write");
+            let file = workspace.dir().join("deep/er/new.txt");
+            assert_eq!(
+                write_text_file(
+                    &workspace,
+                    &json!({ "path": abs(&file), "content": "hello\n" })
+                ),
+                Ok(Value::Null)
+            );
+            assert_eq!(
+                read_text_file(&workspace, &json!({ "path": abs(&file) })),
+                Ok(json!({ "content": "hello\n" }))
+            );
+        }
+        {
+            // an_oversize_write_is_refused_and_leaves_no_file: a write over the cap is refused and creates no file.
+            let (workspace, _) = scratch("oversize-write");
+            let file = workspace.dir().join("big.txt");
+            let content = "a".repeat(MAX_WRITE_BYTES + 1);
+            let err = write_text_file(
                 &workspace,
-                &json!({ "path": abs(&file), "content": "hello\n" })
-            ),
-            Ok(Value::Null)
-        );
-        assert_eq!(
-            read_text_file(&workspace, &json!({ "path": abs(&file) })),
-            Ok(json!({ "content": "hello\n" }))
-        );
-    }
-
-    #[test]
-    fn an_oversize_write_is_refused_and_leaves_no_file() {
-        let (workspace, _) = scratch("oversize-write");
-        let file = workspace.dir().join("big.txt");
-        let content = "a".repeat(MAX_WRITE_BYTES + 1);
-        let err = write_text_file(
-            &workspace,
-            &json!({ "path": abs(&file), "content": content }),
-        )
-        .unwrap_err();
-        assert!(err.contains("write cap"), "{err}");
-        assert!(!file.exists());
-    }
-
-    #[test]
-    fn a_read_over_the_cap_is_refused() {
-        let (workspace, _) = scratch("oversize-read");
-        let file = workspace.dir().join("big.txt");
-        fs::write(&file, vec![b'a'; MAX_READ_BYTES + 1]).unwrap();
-        let err = read_text_file(&workspace, &json!({ "path": abs(&file) })).unwrap_err();
-        assert!(err.contains("read cap"), "{err}");
-    }
-
-    #[test]
-    fn a_non_utf8_file_is_refused() {
-        let (workspace, _) = scratch("binary");
-        let file = workspace.dir().join("blob.bin");
-        fs::write(&file, [0xff, 0xfe, b'a']).unwrap();
-        let err = read_text_file(&workspace, &json!({ "path": abs(&file) })).unwrap_err();
-        assert!(err.contains("not UTF-8"), "{err}");
+                &json!({ "path": abs(&file), "content": content }),
+            )
+            .unwrap_err();
+            assert!(err.contains("write cap"), "{err}");
+            assert!(!file.exists());
+        }
     }
 }

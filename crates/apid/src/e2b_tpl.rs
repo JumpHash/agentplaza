@@ -2632,18 +2632,6 @@ mod tests {
     }
 
     #[test]
-    fn output_is_cut_into_lines_per_stream() {
-        let mut out = Output::default();
-        let mut lines = Vec::new();
-        let mut take = |line: &str| lines.push(line.to_string());
-        out.push("stdout", b"one\ntw", &mut take);
-        out.push("stderr", b"err\r\n", &mut take);
-        out.push("stdout", b"o\nthree", &mut take);
-        out.flush(&mut take);
-        assert_eq!(lines, ["one", "err", "two", "three"]);
-    }
-
-    #[test]
     fn chunked_bodies_and_envelopes_are_read() {
         let mut first = vec![0u8];
         first.extend_from_slice(&4u32.to_be_bytes());

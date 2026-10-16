@@ -139,83 +139,82 @@ mod tests {
     }
 
     #[test]
-    fn a_chord_has_its_modifiers_and_one_key() {
-        assert_eq!(
-            combo("ctrl+shift+s"),
-            KeyCombo {
-                mods: Mods {
-                    ctrl: true,
-                    shift: true,
-                    ..Mods::default()
-                },
-                key: Key::Char('s'),
+    fn chords_parse_and_bad_chords_are_refused() {
+        // a_chord_has_its_modifiers_and_one_key
+        {
+            assert_eq!(
+                combo("ctrl+shift+s"),
+                KeyCombo {
+                    mods: Mods {
+                        ctrl: true,
+                        shift: true,
+                        ..Mods::default()
+                    },
+                    key: Key::Char('s'),
+                }
+            );
+            assert_eq!(combo("s").mods, Mods::default());
+        }
+        // the_names_of_each_platform_map_to_the_same_modifier
+        {
+            for name in ["cmd", "command", "super", "win", "windows", "meta"] {
+                assert!(combo(&format!("{name}+a")).mods.meta, "{name}");
             }
-        );
-        assert_eq!(combo("s").mods, Mods::default());
-    }
-
-    #[test]
-    fn the_names_of_each_platform_map_to_the_same_modifier() {
-        for name in ["cmd", "command", "super", "win", "windows", "meta"] {
-            assert!(combo(&format!("{name}+a")).mods.meta, "{name}");
+            for name in ["ctrl", "control"] {
+                assert!(combo(&format!("{name}+a")).mods.ctrl, "{name}");
+            }
+            for name in ["alt", "option"] {
+                assert!(combo(&format!("{name}+a")).mods.alt, "{name}");
+            }
         }
-        for name in ["ctrl", "control"] {
-            assert!(combo(&format!("{name}+a")).mods.ctrl, "{name}");
+        // case_and_spaces_do_not_matter
+        {
+            assert_eq!(combo("Ctrl + Shift + S"), combo("ctrl+shift+s"));
         }
-        for name in ["alt", "option"] {
-            assert!(combo(&format!("{name}+a")).mods.alt, "{name}");
+        // named_keys_parse
+        for (text, key) in [
+            ("enter", Key::Enter),
+            ("return", Key::Enter),
+            ("esc", Key::Escape),
+            ("pgdn", Key::PageDown),
+            ("arrowleft", Key::Left),
+            ("up", Key::Up),
+            ("del", Key::Delete),
+            ("space", Key::Space),
+            ("tab", Key::Tab),
+            ("backspace", Key::Backspace),
+        ] {
+            assert_eq!(combo(text).key, key, "{text}");
         }
-    }
-
-    #[test]
-    fn case_and_spaces_do_not_matter() {
-        assert_eq!(combo("Ctrl + Shift + S"), combo("ctrl+shift+s"));
-    }
-
-    #[test]
-    fn named_keys_parse() {
-        assert_eq!(combo("enter").key, Key::Enter);
-        assert_eq!(combo("return").key, Key::Enter);
-        assert_eq!(combo("esc").key, Key::Escape);
-        assert_eq!(combo("pgdn").key, Key::PageDown);
-        assert_eq!(combo("arrowleft").key, Key::Left);
-        assert_eq!(combo("up").key, Key::Up);
-        assert_eq!(combo("del").key, Key::Delete);
-        assert_eq!(combo("space").key, Key::Space);
-        assert_eq!(combo("tab").key, Key::Tab);
-        assert_eq!(combo("backspace").key, Key::Backspace);
-    }
-
-    #[test]
-    fn function_keys_run_from_one_to_twenty_four() {
-        assert_eq!(combo("f1").key, Key::F(1));
-        assert_eq!(combo("cmd+F12").key, Key::F(12));
-        assert_eq!(combo("f24").key, Key::F(24));
+        // function_keys_run_from_one_to_twenty_four
+        for (text, n) in [("f1", 1), ("cmd+F12", 12), ("f24", 24)] {
+            assert_eq!(combo(text).key, Key::F(n), "{text}");
+        }
         assert!(parse_combo("f0").is_err());
         assert!(parse_combo("f25").is_err());
-    }
-
-    #[test]
-    fn digits_letters_and_punctuation_parse() {
-        assert_eq!(combo("7").key, Key::Char('7'));
-        assert_eq!(combo("ctrl+-").key, Key::Char('-'));
-        assert_eq!(combo("cmd+,").key, Key::Char(','));
-        assert_eq!(combo("cmd+minus").key, Key::Char('-'));
-        assert_eq!(combo("alt+`").key, Key::Char('`'));
-        assert_eq!(combo("ctrl+plus").key, Key::Char('+'));
-        assert_eq!(combo("ctrl+bracketleft").key, Key::Char('['));
-    }
-
-    #[test]
-    fn bad_chords_are_refused() {
-        assert!(parse_combo("").is_err());
-        assert!(parse_combo("ctrl+").is_err());
-        assert!(parse_combo("ctrl+nosuchkey").is_err());
-        assert!(parse_combo("hyper+a").is_err());
-        assert!(
-            parse_combo("ctrl").is_err(),
-            "a modifier alone is not a chord"
-        );
-        assert!(parse_combo("ctrl+++").is_err());
+        // digits_letters_and_punctuation_parse
+        for (text, c) in [
+            ("7", '7'),
+            ("ctrl+-", '-'),
+            ("cmd+,", ','),
+            ("cmd+minus", '-'),
+            ("alt+`", '`'),
+            ("ctrl+plus", '+'),
+            ("ctrl+bracketleft", '['),
+        ] {
+            assert_eq!(combo(text).key, Key::Char(c), "{text}");
+        }
+        // bad_chords_are_refused
+        {
+            assert!(parse_combo("").is_err());
+            assert!(parse_combo("ctrl+").is_err());
+            assert!(parse_combo("ctrl+nosuchkey").is_err());
+            assert!(parse_combo("hyper+a").is_err());
+            assert!(
+                parse_combo("ctrl").is_err(),
+                "a modifier alone is not a chord"
+            );
+            assert!(parse_combo("ctrl+++").is_err());
+        }
     }
 }

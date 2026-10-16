@@ -200,35 +200,41 @@ mod tests {
     }
 
     #[test]
-    fn repeated_names_are_all_listed_so_the_caller_can_count_them() {
-        let names = dotenv_names("A=1\nA=2\nB=3\n").expect("valid");
-        assert_eq!(names, ["A", "A", "B"]);
-    }
-
-    #[test]
-    fn escaped_quotes_do_not_end_a_double_quoted_value_early() {
-        let names = dotenv_names("A=\"x\\\"y\"\nB=1\n").expect("valid");
-        assert_eq!(names, ["A", "B"]);
-    }
-
-    #[test]
-    fn a_line_without_equals_is_an_error_with_its_line_number() {
-        let err = dotenv_names("OK=1\nnot a pair\n").unwrap_err();
-        assert!(err.contains("line 2"), "{err}");
-    }
-
-    #[test]
-    fn an_unclosed_quote_and_text_after_a_quote_are_errors() {
-        assert!(
-            dotenv_names("A=\"open\nstill open")
-                .unwrap_err()
-                .contains("never closed")
-        );
-        assert!(
-            dotenv_names("A=\"x\" trailing\n")
-                .unwrap_err()
-                .contains("after the closing quote")
-        );
+    fn dotenv_names_follow_the_quoting_and_line_rules() {
+        for (case, input, want) in [
+            (
+                "repeated names are all listed so the caller can count them",
+                "A=1\nA=2\nB=3\n",
+                vec!["A", "A", "B"],
+            ),
+            (
+                "escaped quotes do not end a double-quoted value early",
+                "A=\"x\\\"y\"\nB=1\n",
+                vec!["A", "B"],
+            ),
+        ] {
+            assert_eq!(dotenv_names(input).expect("valid"), want, "{case}");
+        }
+        for (case, input, needle) in [
+            (
+                "a line without equals is an error with its line number",
+                "OK=1\nnot a pair\n",
+                "line 2",
+            ),
+            (
+                "an unclosed quote is an error",
+                "A=\"open\nstill open",
+                "never closed",
+            ),
+            (
+                "text after a closing quote is an error",
+                "A=\"x\" trailing\n",
+                "after the closing quote",
+            ),
+        ] {
+            let err = dotenv_names(input).unwrap_err();
+            assert!(err.contains(needle), "{case}: {err}");
+        }
     }
 
     #[cfg(unix)]
@@ -260,16 +266,18 @@ mod tests {
     }
 
     #[test]
-    fn shred_of_a_missing_file_is_an_error() {
-        let scratch = Scratch::new("missing");
-        assert!(shred(&scratch.0.join("nope.env")).is_err());
-    }
-
-    #[test]
-    fn shred_refuses_a_directory() {
-        let scratch = Scratch::new("dir");
-        assert!(shred(&scratch.0).is_err());
-        assert!(scratch.0.is_dir());
+    fn shred_fails_on_a_missing_file_and_refuses_a_directory() {
+        // Shredding a missing file is an error.
+        {
+            let scratch = Scratch::new("missing");
+            assert!(shred(&scratch.0.join("nope.env")).is_err());
+        }
+        // Shred refuses a directory and leaves it in place.
+        {
+            let scratch = Scratch::new("dir");
+            assert!(shred(&scratch.0).is_err());
+            assert!(scratch.0.is_dir());
+        }
     }
 
     #[cfg(unix)]

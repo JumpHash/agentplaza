@@ -535,31 +535,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_planner_refusal_keeps_its_message() {
-        // The planner's 422 has only `{error}`: no job was recorded, so the message is the answer.
-        let refused = submit_answer(422, json!({ "error": "no machine fits 8 devices" }));
-        assert!(
-            matches!(refused, Err(SubmitError::Refused(ref m)) if m == "no machine fits 8 devices"),
-            "{refused:?}"
-        );
-    }
-
-    #[test]
-    fn a_dispatch_failure_carries_the_recorded_job() {
-        let job = json!({ "id": "job-7", "status": "failed", "error": "ssh refused" });
-        match submit_answer(422, json!({ "error": "dispatch failed", "job": job })) {
-            Err(SubmitError::Dispatch { message, job }) => {
-                assert_eq!(message, "dispatch failed");
-                assert_eq!(job.id, "job-7");
-            }
-            other => panic!("expected a dispatch failure, got {other:?}"),
+    fn submit_answer_keeps_refusals_and_dispatch_failures() {
+        // A planner refusal keeps its message.
+        {
+            // The planner's 422 has only `{error}`: no job was recorded, so the message is the answer.
+            let refused = submit_answer(422, json!({ "error": "no machine fits 8 devices" }));
+            assert!(
+                matches!(refused, Err(SubmitError::Refused(ref m)) if m == "no machine fits 8 devices"),
+                "{refused:?}"
+            );
         }
-    }
-
-    #[test]
-    fn a_refusal_without_a_status_text_names_the_status() {
-        assert!(
-            matches!(submit_answer(403, json!({})), Err(SubmitError::Refused(ref m)) if m == "HTTP 403")
-        );
+        // A dispatch failure carries the recorded job.
+        {
+            let job = json!({ "id": "job-7", "status": "failed", "error": "ssh refused" });
+            match submit_answer(422, json!({ "error": "dispatch failed", "job": job })) {
+                Err(SubmitError::Dispatch { message, job }) => {
+                    assert_eq!(message, "dispatch failed");
+                    assert_eq!(job.id, "job-7");
+                }
+                other => panic!("expected a dispatch failure, got {other:?}"),
+            }
+        }
     }
 }

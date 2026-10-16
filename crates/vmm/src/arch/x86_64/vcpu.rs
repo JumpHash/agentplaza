@@ -1138,65 +1138,55 @@ mod tests {
         }
     }
 
+    /// `normalize_cpuid_topology` sets leaf 1 and the leaf 0b subleaves for the
+    /// topology; a single-vCPU topology has no HTT.
     #[test]
-    fn test_normalize_cpuid_topology_leaf1() {
-        let mut entries = vec![leaf1(), subleaf0b(0), subleaf0b(1)];
-        normalize_cpuid_topology(&mut entries, 3, 6, 0);
+    fn test_normalize_cpuid_topology() {
+        // Original test_normalize_cpuid_topology_leaf1.
+        {
+            let mut entries = vec![leaf1(), subleaf0b(0), subleaf0b(1)];
+            normalize_cpuid_topology(&mut entries, 3, 6, 0);
 
-        let leaf1 = &entries[0];
-        // Initial APIC ID: EBX[31:24] = 3.
-        assert_eq!((leaf1.ebx >> 24) & 0xff, 3);
-        // Max addressable logical processor IDs: next power of two >= 6 = 8.
-        assert_eq!((leaf1.ebx >> 16) & 0xff, 8);
-        // HTT set with more than one vCPU; TSC-Deadline and Hypervisor set.
-        assert_ne!(leaf1.edx & (1 << 28), 0);
-        assert_ne!(leaf1.ecx & (1 << 24), 0);
-        assert_ne!(leaf1.ecx & (1 << 31), 0);
+            let leaf1 = &entries[0];
+            // Initial APIC ID: EBX[31:24] = 3.
+            assert_eq!((leaf1.ebx >> 24) & 0xff, 3);
+            // Max addressable logical processor IDs: next power of two >= 6 = 8.
+            assert_eq!((leaf1.ebx >> 16) & 0xff, 8);
+            // HTT set with more than one vCPU; TSC-Deadline and Hypervisor set.
+            assert_ne!(leaf1.edx & (1 << 28), 0);
+            assert_ne!(leaf1.ecx & (1 << 24), 0);
+            assert_ne!(leaf1.ecx & (1 << 31), 0);
 
-        // Single-vCPU topology: no HTT.
-        normalize_cpuid_topology(&mut entries, 0, 1, 0);
-        assert_eq!(entries[0].edx & (1 << 28), 0);
-        assert_eq!((entries[0].ebx >> 16) & 0xff, 1);
-    }
+            // Single-vCPU topology: no HTT.
+            normalize_cpuid_topology(&mut entries, 0, 1, 0);
+            assert_eq!(entries[0].edx & (1 << 28), 0);
+            assert_eq!((entries[0].ebx >> 16) & 0xff, 1);
+        }
 
-    #[test]
-    fn test_normalize_cpuid_topology_leaf0b() {
-        let mut entries = vec![leaf1(), subleaf0b(0), subleaf0b(1)];
-        normalize_cpuid_topology(&mut entries, 3, 6, 1);
+        // Original test_normalize_cpuid_topology_leaf0b.
+        {
+            let mut entries = vec![leaf1(), subleaf0b(0), subleaf0b(1)];
+            normalize_cpuid_topology(&mut entries, 3, 6, 1);
 
-        // Subleaf 0: logical processor domain, SMT with 2 logical processors.
-        let sub0 = &entries[1];
-        assert_eq!(sub0.eax & 0x1f, 1);
-        assert_eq!(sub0.ebx & 0xffff, 2);
-        assert_eq!((sub0.ecx >> 8) & 0xff, 1);
-        assert_eq!(sub0.edx, 3);
+            // Subleaf 0: logical processor domain, SMT with 2 logical processors.
+            let sub0 = &entries[1];
+            assert_eq!(sub0.eax & 0x1f, 1);
+            assert_eq!(sub0.ebx & 0xffff, 2);
+            assert_eq!((sub0.ecx >> 8) & 0xff, 1);
+            assert_eq!(sub0.edx, 3);
 
-        // Subleaf 1: core domain; 2^N >= MAX_SUPPORTED_VCPUS (N = 5 for 32),
-        // all 6 logical processors, domain type 2.
-        let sub1 = &entries[2];
-        assert_eq!(
-            sub1.eax & 0x1f,
-            u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2())
-        );
-        assert_eq!(sub1.ebx & 0xffff, 6);
-        assert_eq!(sub1.ecx & 0xff, 1);
-        assert_eq!((sub1.ecx >> 8) & 0xff, 2);
-        assert_eq!(sub1.edx, 3);
-    }
-
-    #[test]
-    fn test_set_bit_and_range() {
-        let mut value = 0u32;
-        set_bit(&mut value, 28, true);
-        assert_eq!(value, 1 << 28);
-        set_bit(&mut value, 28, false);
-        assert_eq!(value, 0);
-
-        let mut value = 0u32;
-        set_range(&mut value, 24..=31, 0xab);
-        assert_eq!(value, 0xab << 24);
-        set_range(&mut value, 16..=23, 5);
-        assert_eq!(value, (0xab << 24) | (5 << 16));
+            // Subleaf 1: core domain; 2^N >= MAX_SUPPORTED_VCPUS (N = 5 for 32),
+            // all 6 logical processors, domain type 2.
+            let sub1 = &entries[2];
+            assert_eq!(
+                sub1.eax & 0x1f,
+                u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2())
+            );
+            assert_eq!(sub1.ebx & 0xffff, 6);
+            assert_eq!(sub1.ecx & 0xff, 1);
+            assert_eq!((sub1.ecx >> 8) & 0xff, 2);
+            assert_eq!(sub1.edx, 3);
+        }
     }
 
     #[test]

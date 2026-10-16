@@ -613,36 +613,37 @@ mod tests {
     }
 
     #[test]
-    fn the_session_kinds_and_formats_are_lowercase_words() {
-        assert_wire(&SessionKind::Pixel, r#""pixel""#);
-        assert_wire(&SessionKind::Shared, r#""shared""#);
-        assert_wire(&ImageFormat::Png, r#""png""#);
-        assert_wire(&ImageFormat::Jpeg, r#""jpeg""#);
-    }
-
-    #[test]
-    fn every_bridge_has_its_wire_name() {
-        for (bridge, json) in [
-            (Bridge::Cli, "cli"),
-            (Bridge::AppleScript, "applescript"),
-            (Bridge::Jxa, "jxa"),
-            (Bridge::PowerShell, "powershell"),
-            (Bridge::Com, "com"),
-            (Bridge::DBus, "dbus"),
-            (Bridge::AppScripting, "app_scripting"),
-        ] {
-            assert_wire(&bridge, &format!(r#""{json}""#));
+    fn enum_wire_names_are_their_lowercase_words() {
+        // The session kinds and image formats are lowercase words (was the_session_kinds_and_formats_are_lowercase_words).
+        {
+            assert_wire(&SessionKind::Pixel, r#""pixel""#);
+            assert_wire(&SessionKind::Shared, r#""shared""#);
+            assert_wire(&ImageFormat::Png, r#""png""#);
+            assert_wire(&ImageFormat::Jpeg, r#""jpeg""#);
         }
-    }
-
-    #[test]
-    fn keep_names_the_side_kept() {
-        for (keep, json) in [
-            (Keep::Hub, "hub"),
-            (Keep::Station, "station"),
-            (Keep::Both, "both"),
-        ] {
-            assert_wire(&keep, &format!(r#""{json}""#));
+        // Every bridge has its wire name (was every_bridge_has_its_wire_name).
+        {
+            for (bridge, json) in [
+                (Bridge::Cli, "cli"),
+                (Bridge::AppleScript, "applescript"),
+                (Bridge::Jxa, "jxa"),
+                (Bridge::PowerShell, "powershell"),
+                (Bridge::Com, "com"),
+                (Bridge::DBus, "dbus"),
+                (Bridge::AppScripting, "app_scripting"),
+            ] {
+                assert_wire(&bridge, &format!(r#""{json}""#));
+            }
+        }
+        // Keep names the side kept (was keep_names_the_side_kept).
+        {
+            for (keep, json) in [
+                (Keep::Hub, "hub"),
+                (Keep::Station, "station"),
+                (Keep::Both, "both"),
+            ] {
+                assert_wire(&keep, &format!(r#""{json}""#));
+            }
         }
     }
 }

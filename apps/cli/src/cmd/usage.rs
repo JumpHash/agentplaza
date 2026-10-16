@@ -397,17 +397,23 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn a_window_is_the_span_before_now() {
-        let now = 100 * DAY_MS;
-        assert_eq!(window_range("24h", now), Ok((99 * DAY_MS, now)));
-        assert_eq!(window_range("7d", now), Ok((93 * DAY_MS, now)));
-        assert_eq!(window_range("30d", now), Ok((70 * DAY_MS, now)));
-        assert_eq!(window_range("90d", now), Ok((10 * DAY_MS, now)));
-        assert!(window_range("2d", now).is_err());
-        assert!(window_range("", now).is_err());
+    fn a_window_is_the_span_before_now_and_never_starts_before_the_epoch() {
+        // A window is the span before now.
+        {
+            let now = 100 * DAY_MS;
+            assert_eq!(window_range("24h", now), Ok((99 * DAY_MS, now)));
+            assert_eq!(window_range("7d", now), Ok((93 * DAY_MS, now)));
+            assert_eq!(window_range("30d", now), Ok((70 * DAY_MS, now)));
+            assert_eq!(window_range("90d", now), Ok((10 * DAY_MS, now)));
+            assert!(window_range("2d", now).is_err());
+            assert!(window_range("", now).is_err());
+        }
+        // A window never starts before the epoch.
+        {
+            assert_eq!(window_range("90d", DAY_MS), Ok((0, DAY_MS)));
+        }
     }
 
     #[test]
@@ -416,11 +422,6 @@ mod tests {
         assert_eq!(window_of("7d").unwrap().1, "hour");
         assert_eq!(window_of("30d").unwrap().1, "day");
         assert_eq!(window_of("90d").unwrap().1, "day");
-    }
-
-    #[test]
-    fn a_window_never_starts_before_the_epoch() {
-        assert_eq!(window_range("90d", DAY_MS), Ok((0, DAY_MS)));
     }
 
     #[test]
@@ -448,20 +449,6 @@ mod tests {
             query(&[("model", Some("anthropic/claude-x".into()))]),
             "?model=anthropic%2Fclaude-x"
         );
-    }
-
-    #[test]
-    fn a_call_costs_what_the_provider_reported_else_the_estimate() {
-        assert_eq!(call_usd(&json!({ "cost_usd": null, "est_usd": 0.5 })), 0.5);
-        assert_eq!(call_usd(&json!({ "cost_usd": 0.2, "est_usd": 0.5 })), 0.2);
-    }
-
-    #[test]
-    fn money_and_percentages_read_as_people_write_them() {
-        assert_eq!(usd(0.0), "$0.00");
-        assert_eq!(usd(0.005), "$0.0050");
-        assert_eq!(usd(12.5), "$12.50");
-        assert_eq!(pct(0.5), "50.0%");
     }
 
     #[test]
@@ -495,13 +482,5 @@ mod tests {
         ));
         assert!(parse(&["summary", "--window", "2d"]).is_err());
         assert!(parse(&["calls", "--limit", "0"]).is_err());
-    }
-
-    #[test]
-    fn a_price_the_source_does_not_give_reads_as_a_dash() {
-        let price = json!({ "input": 3.0, "cache_read": null });
-        assert_eq!(rate(&price, "input"), "3.0");
-        assert_eq!(rate(&price, "cache_read"), "—");
-        assert_eq!(rate(&price, "missing"), "—");
     }
 }

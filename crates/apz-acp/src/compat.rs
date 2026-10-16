@@ -536,80 +536,84 @@ mod tests {
     }
 
     #[test]
-    fn agent_chunks_get_a_message_id() {
-        let updates = [
-            json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Fix it"}}),
-            json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done."}}),
-            json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Hmm"}}),
-        ];
-        for update in &updates {
-            let out = update_to_v2(update);
-            assert_eq!(out.len(), 1);
-            assert!(out[0]["messageId"].is_string());
-            let _: v2::SessionUpdate = parse(&out[0]);
+    fn update_to_v2_translates_every_update_kind() {
+        // agent_chunks_get_a_message_id: each chunk becomes one v2 update with a message id.
+        {
+            let updates = [
+                json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Fix it"}}),
+                json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done."}}),
+                json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Hmm"}}),
+            ];
+            for update in &updates {
+                let out = update_to_v2(update);
+                assert_eq!(out.len(), 1);
+                assert!(out[0]["messageId"].is_string());
+                let _: v2::SessionUpdate = parse(&out[0]);
+            }
         }
-    }
+        // tool_call_becomes_a_tool_call_update_and_plans_get_a_plan_id: a tool call becomes a
+        // tool_call_update, and a plan gets a plan id and the items type.
+        {
+            let tool_call = json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "t1",
+                "title": "Read file",
+                "kind": "read",
+                "status": "pending",
+                "locations": [{"path": "/workspace/src/lib.rs"}],
+            });
+            let out = update_to_v2(&tool_call);
+            let _: v2::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["sessionUpdate"], "tool_call_update");
+            assert_eq!(out[0]["toolCallId"], "t1");
 
-    #[test]
-    fn tool_call_becomes_a_tool_call_update_and_plans_get_a_plan_id() {
-        let tool_call = json!({
-            "sessionUpdate": "tool_call",
-            "toolCallId": "t1",
-            "title": "Read file",
-            "kind": "read",
-            "status": "pending",
-            "locations": [{"path": "/workspace/src/lib.rs"}],
-        });
-        let out = update_to_v2(&tool_call);
-        let _: v2::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["sessionUpdate"], "tool_call_update");
-        assert_eq!(out[0]["toolCallId"], "t1");
-
-        let plan = json!({
-            "sessionUpdate": "plan",
-            "entries": [{"content": "Read the schema", "priority": "high", "status": "in_progress"}],
-        });
-        let out = update_to_v2(&plan);
-        let _: v2::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["plan"]["planId"], "plan");
-        assert_eq!(out[0]["plan"]["type"], "items");
-    }
-
-    #[test]
-    fn modes_are_dropped_and_the_other_updates_keep_their_fields() {
-        assert!(
-            update_to_v2(&json!({"sessionUpdate": "current_mode_update", "currentModeId": "code"}))
+            let plan = json!({
+                "sessionUpdate": "plan",
+                "entries": [{"content": "Read the schema", "priority": "high", "status": "in_progress"}],
+            });
+            let out = update_to_v2(&plan);
+            let _: v2::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["plan"]["planId"], "plan");
+            assert_eq!(out[0]["plan"]["type"], "items");
+        }
+        // modes_are_dropped_and_the_other_updates_keep_their_fields: mode updates are dropped and
+        // the other updates keep their fields.
+        {
+            assert!(
+                update_to_v2(
+                    &json!({"sessionUpdate": "current_mode_update", "currentModeId": "code"})
+                )
                 .is_empty()
-        );
+            );
 
-        let updates = [
-            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
-                   "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}),
-            json!({"sessionUpdate": "available_commands_update", "availableCommands":
-                   [{"name": "compact", "description": "Compact", "input": {"hint": "focus"}}]}),
-            json!({"sessionUpdate": "config_option_update", "configOptions":
-                   [{"id": "model", "name": "Model", "type": "select", "currentValue": "fast",
-                     "options": [{"value": "fast", "name": "Fast"}]}]}),
-            json!({"sessionUpdate": "session_info_update", "title": "Fix the bug"}),
-            json!({"sessionUpdate": "usage_update", "used": 1200, "size": 200000}),
-        ];
-        let out: Vec<Value> = updates.iter().flat_map(update_to_v2).collect();
-        assert_eq!(out.len(), updates.len());
-        let _: Vec<v2::SessionUpdate> = out.iter().map(parse).collect();
-        assert_eq!(out[1]["availableCommands"][0]["input"]["type"], "text");
-        assert_eq!(out[2]["configOptions"][0]["configId"], "model");
-    }
+            let updates = [
+                json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+                       "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}),
+                json!({"sessionUpdate": "available_commands_update", "availableCommands":
+                       [{"name": "compact", "description": "Compact", "input": {"hint": "focus"}}]}),
+                json!({"sessionUpdate": "config_option_update", "configOptions":
+                       [{"id": "model", "name": "Model", "type": "select", "currentValue": "fast",
+                         "options": [{"value": "fast", "name": "Fast"}]}]}),
+                json!({"sessionUpdate": "session_info_update", "title": "Fix the bug"}),
+                json!({"sessionUpdate": "usage_update", "used": 1200, "size": 200000}),
+            ];
+            let out: Vec<Value> = updates.iter().flat_map(update_to_v2).collect();
+            assert_eq!(out.len(), updates.len());
+            let _: Vec<v2::SessionUpdate> = out.iter().map(parse).collect();
+            assert_eq!(out[1]["availableCommands"][0]["input"]["type"], "text");
+            assert_eq!(out[2]["configOptions"][0]["configId"], "model");
+        }
+        // state_updates_are_v2_states: idle and running updates are v2 states.
+        {
+            let usage = json!({"totalTokens": 30, "inputTokens": 10, "outputTokens": 20});
+            let idle = idle_update("end_turn", Some(&usage));
+            let _: v2::SessionUpdate = parse(&idle);
+            assert_eq!(idle["state"], "idle");
+            assert_eq!(idle["usage"]["totalTokens"], 30);
 
-    #[test]
-    fn state_updates_are_v2_states() {
-        let usage = json!({"totalTokens": 30, "inputTokens": 10, "outputTokens": 20});
-        let idle = idle_update("end_turn", Some(&usage));
-        let _: v2::SessionUpdate = parse(&idle);
-        assert_eq!(idle["state"], "idle");
-        assert_eq!(idle["usage"]["totalTokens"], 30);
-
-        let _: v2::SessionUpdate = parse(&idle_update("cancelled", None));
-        let _: v2::SessionUpdate = parse(&running_update());
+            let _: v2::SessionUpdate = parse(&idle_update("cancelled", None));
+            let _: v2::SessionUpdate = parse(&running_update());
+        }
     }
 
     #[test]
@@ -651,107 +655,108 @@ mod tests {
     }
 
     #[test]
-    fn v2_chunks_lose_their_message_id_and_full_messages_are_dropped() {
-        let chunk = json!({"sessionUpdate": "agent_message_chunk", "messageId": "m1",
-                           "content": {"type": "text", "text": "Hi"}});
-        let out = update_to_v1(&chunk);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert!(out[0].get("messageId").is_none());
+    fn update_to_v1_translates_every_v2_update() {
+        // v2_chunks_lose_their_message_id_and_full_messages_are_dropped: chunks lose their message
+        // id, and full messages are dropped.
+        {
+            let chunk = json!({"sessionUpdate": "agent_message_chunk", "messageId": "m1",
+                               "content": {"type": "text", "text": "Hi"}});
+            let out = update_to_v1(&chunk);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert!(out[0].get("messageId").is_none());
 
-        let full = json!({"sessionUpdate": "agent_message", "messageId": "m1",
-                          "content": [{"type": "text", "text": "Hi"}]});
-        assert!(update_to_v1(&full).is_empty());
-    }
-
-    #[test]
-    fn v2_user_message_becomes_one_chunk_per_block() {
-        let message = json!({"sessionUpdate": "user_message", "messageId": "u1", "content": [
-            {"type": "text", "text": "one"},
-            {"type": "text", "text": "two"},
-        ]});
-        let out = update_to_v1(&message);
-        assert_eq!(out.len(), 2);
-        for update in &out {
-            let _: types::SessionUpdate = parse(update);
+            let full = json!({"sessionUpdate": "agent_message", "messageId": "m1",
+                              "content": [{"type": "text", "text": "Hi"}]});
+            assert!(update_to_v1(&full).is_empty());
         }
-    }
+        // v2_user_message_becomes_one_chunk_per_block: a user message becomes one chunk per block.
+        {
+            let message = json!({"sessionUpdate": "user_message", "messageId": "u1", "content": [
+                {"type": "text", "text": "one"},
+                {"type": "text", "text": "two"},
+            ]});
+            let out = update_to_v1(&message);
+            assert_eq!(out.len(), 2);
+            for update in &out {
+                let _: types::SessionUpdate = parse(update);
+            }
+        }
+        // v2_tool_call_update_and_plan_translate_to_v1: a tool call update drops its name, and a
+        // plan update becomes a plan.
+        {
+            let update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+                                "name": "read_file", "content": [{"type": "content",
+                                "content": {"type": "text", "text": "ok"}}]});
+            let out = update_to_v1(&update);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert!(out[0].get("name").is_none());
 
-    #[test]
-    fn v2_tool_call_update_and_plan_translate_to_v1() {
-        let update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
-                            "name": "read_file", "content": [{"type": "content",
-                            "content": {"type": "text", "text": "ok"}}]});
-        let out = update_to_v1(&update);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert!(out[0].get("name").is_none());
+            let plan = json!({"sessionUpdate": "plan_update", "plan": {"type": "items", "planId": "plan",
+                              "entries": [{"content": "Read the schema", "priority": "high", "status": "pending"}]}});
+            let out = update_to_v1(&plan);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["sessionUpdate"], "plan");
+        }
+        // v2_idle_state_becomes_the_turn_end_marker: an idle state becomes the turn end marker, and
+        // a running state is dropped.
+        {
+            let out = update_to_v1(&idle_update("end_turn", None));
+            assert_eq!(
+                out,
+                vec![json!({"sessionUpdate": "_apz_turn_end", "stopReason": "end_turn"})]
+            );
+            assert!(update_to_v1(&running_update()).is_empty());
+        }
+        // terminal_output_becomes_tool_call_text: terminal output becomes tool call text.
+        {
+            let chunk = json!({"sessionUpdate": "terminal_output_chunk", "terminalId": "term1", "data": "running\n"});
+            let out = update_to_v1(&chunk);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["toolCallId"], "term1");
+            assert_eq!(out[0]["content"][0]["content"]["text"], "running\n");
 
-        let plan = json!({"sessionUpdate": "plan_update", "plan": {"type": "items", "planId": "plan",
-                          "entries": [{"content": "Read the schema", "priority": "high", "status": "pending"}]}});
-        let out = update_to_v1(&plan);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["sessionUpdate"], "plan");
-    }
+            let update = json!({"sessionUpdate": "terminal_update", "terminalId": "term1",
+                                "output": {"data": "all done\n"}});
+            let out = update_to_v1(&update);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["content"][0]["content"]["text"], "all done\n");
+        }
+        // tool_call_content_chunk_becomes_tool_call_content: a content chunk becomes tool call
+        // content.
+        {
+            let chunk = json!({"sessionUpdate": "tool_call_content_chunk", "toolCallId": "t1",
+                               "content": {"type": "content", "content": {"type": "text", "text": "line"}}});
+            let out = update_to_v1(&chunk);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["content"].as_array().map(Vec::len), Some(1));
+        }
+        // v2_commands_and_config_options_translate_to_v1: commands drop the input type, and config
+        // options take the id field.
+        {
+            let commands = json!({"sessionUpdate": "available_commands_update", "availableCommands":
+                                  [{"name": "compact", "description": "Compact", "input": {"type": "text", "hint": "focus"}}]});
+            let out = update_to_v1(&commands);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["availableCommands"][0]["input"]["hint"], "focus");
+            assert!(
+                out[0]["availableCommands"][0]["input"]
+                    .get("type")
+                    .is_none()
+            );
 
-    #[test]
-    fn v2_idle_state_becomes_the_turn_end_marker() {
-        let out = update_to_v1(&idle_update("end_turn", None));
-        assert_eq!(
-            out,
-            vec![json!({"sessionUpdate": "_apz_turn_end", "stopReason": "end_turn"})]
-        );
-        assert!(update_to_v1(&running_update()).is_empty());
-    }
-
-    #[test]
-    fn terminal_output_becomes_tool_call_text() {
-        let chunk = json!({"sessionUpdate": "terminal_output_chunk", "terminalId": "term1", "data": "running\n"});
-        let out = update_to_v1(&chunk);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["toolCallId"], "term1");
-        assert_eq!(out[0]["content"][0]["content"]["text"], "running\n");
-
-        let update = json!({"sessionUpdate": "terminal_update", "terminalId": "term1",
-                            "output": {"data": "all done\n"}});
-        let out = update_to_v1(&update);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["content"][0]["content"]["text"], "all done\n");
-    }
-
-    #[test]
-    fn tool_call_content_chunk_becomes_tool_call_content() {
-        let chunk = json!({"sessionUpdate": "tool_call_content_chunk", "toolCallId": "t1",
-                           "content": {"type": "content", "content": {"type": "text", "text": "line"}}});
-        let out = update_to_v1(&chunk);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["content"].as_array().map(Vec::len), Some(1));
-    }
-
-    #[test]
-    fn v2_commands_and_config_options_translate_to_v1() {
-        let commands = json!({"sessionUpdate": "available_commands_update", "availableCommands":
-                              [{"name": "compact", "description": "Compact", "input": {"type": "text", "hint": "focus"}}]});
-        let out = update_to_v1(&commands);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["availableCommands"][0]["input"]["hint"], "focus");
-        assert!(
-            out[0]["availableCommands"][0]["input"]
-                .get("type")
-                .is_none()
-        );
-
-        let options = json!({"sessionUpdate": "config_option_update", "configOptions":
-                             [{"configId": "model", "name": "Model", "type": "select", "currentValue": "fast",
-                               "options": [{"value": "fast", "name": "Fast"}]}]});
-        let out = update_to_v1(&options);
-        let _: types::SessionUpdate = parse(&out[0]);
-        assert_eq!(out[0]["configOptions"][0]["id"], "model");
-    }
-
-    #[test]
-    fn info_and_usage_pass_through_to_v1() {
-        let info = json!({"sessionUpdate": "session_info_update", "title": "Fix the bug"});
-        let _: types::SessionUpdate = parse(&update_to_v1(&info)[0]);
-        let usage = json!({"sessionUpdate": "usage_update", "used": 1200, "size": 200000});
-        let _: types::SessionUpdate = parse(&update_to_v1(&usage)[0]);
+            let options = json!({"sessionUpdate": "config_option_update", "configOptions":
+                                 [{"configId": "model", "name": "Model", "type": "select", "currentValue": "fast",
+                                   "options": [{"value": "fast", "name": "Fast"}]}]});
+            let out = update_to_v1(&options);
+            let _: types::SessionUpdate = parse(&out[0]);
+            assert_eq!(out[0]["configOptions"][0]["id"], "model");
+        }
+        // info_and_usage_pass_through_to_v1: session info and usage pass through unchanged.
+        {
+            let info = json!({"sessionUpdate": "session_info_update", "title": "Fix the bug"});
+            let _: types::SessionUpdate = parse(&update_to_v1(&info)[0]);
+            let usage = json!({"sessionUpdate": "usage_update", "used": 1200, "size": 200000});
+            let _: types::SessionUpdate = parse(&update_to_v1(&usage)[0]);
+        }
     }
 }

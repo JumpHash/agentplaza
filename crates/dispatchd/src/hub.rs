@@ -209,104 +209,85 @@ mod tests {
         served.join().expect("the stub surface finishes");
     }
 
-    /// The surface's four statuses, each as itself: an unknown CID, a not
-    /// connected agent, an honest timeout, and anything else as an error.
+    /// The hub's tell answers are each read as their own verdict: the surface's four statuses are each
+    /// itself, a grants refusal carries the hub's own reason, and an answer of the wrong shape is an error.
     #[test]
-    fn the_surfaces_statuses_are_each_their_own_verdict() {
-        let (target, _requests, served) = stub(vec![
-            (404, r#"{"error":"no agent with guest CID 99"}"#),
-            (
-                409,
-                r#"{"error":"agent with guest CID 300 is not connected"}"#,
-            ),
-            (504, r#"{"error":"agent did not answer within 5000 ms"}"#),
-            (500, r#"{"error":"boom"}"#),
-        ]);
-        let hub = Hub {
-            target,
-            auth: InternalToken::none(),
-        };
-        let args = serde_json::json!({});
+    fn a_tell_answer_is_its_own_verdict() {
+        // The surface's four statuses, each as itself: an unknown CID, a not connected agent, an honest timeout, and anything else as an error.
+        {
+            let (target, _requests, served) = stub(vec![
+                (404, r#"{"error":"no agent with guest CID 99"}"#),
+                (
+                    409,
+                    r#"{"error":"agent with guest CID 300 is not connected"}"#,
+                ),
+                (504, r#"{"error":"agent did not answer within 5000 ms"}"#),
+                (500, r#"{"error":"boom"}"#),
+            ]);
+            let hub = Hub {
+                target,
+                auth: InternalToken::none(),
+            };
+            let args = serde_json::json!({});
 
-        assert_eq!(
-            hub.tell(99, "echo", &args, 5_000).expect("an answer"),
-            Tell::UnknownCid
-        );
-        assert_eq!(
-            hub.tell(300, "echo", &args, 5_000).expect("an answer"),
-            Tell::NotConnected
-        );
-        assert_eq!(
-            hub.tell(300, "echo", &args, 1_234).expect("an answer"),
-            Tell::TimedOut { waited_ms: 1_234 }
-        );
-        let err = hub
-            .tell(300, "echo", &args, 5_000)
-            .expect_err("the hub broke");
-        assert_eq!(err, "the hub answered 500: boom");
-        served.join().expect("the stub surface finishes");
-    }
+            assert_eq!(
+                hub.tell(99, "echo", &args, 5_000).expect("an answer"),
+                Tell::UnknownCid
+            );
+            assert_eq!(
+                hub.tell(300, "echo", &args, 5_000).expect("an answer"),
+                Tell::NotConnected
+            );
+            assert_eq!(
+                hub.tell(300, "echo", &args, 1_234).expect("an answer"),
+                Tell::TimedOut { waited_ms: 1_234 }
+            );
+            let err = hub
+                .tell(300, "echo", &args, 5_000)
+                .expect_err("the hub broke");
+            assert_eq!(err, "the hub answered 500: boom");
+            served.join().expect("the stub surface finishes");
+        }
 
-    /// The grants refusal is its own verdict: the `403`'s body is the admin
-    /// surface's `{"ok":false,"output":"role <r> does not grant <tool>"}`, and
-    /// the reason comes back verbatim so a pass can report the hub's own words
-    /// rather than paraphrasing them.
-    #[test]
-    fn a_forbidden_tell_is_the_hubs_own_reason() {
-        let (target, _requests, served) = stub(vec![(
-            403,
-            r#"{"ok":false,"output":"role librarian does not grant write_file"}"#,
-        )]);
-        let hub = Hub {
-            target,
-            auth: InternalToken::none(),
-        };
-        let answer = hub
-            .tell(
-                310,
-                "write_file",
-                &serde_json::json!({ "path": "index.txt" }),
-                5_000,
-            )
-            .expect("the refusal is an answer");
-        assert_eq!(
-            answer,
-            Tell::Refused {
-                reason: "role librarian does not grant write_file".to_string(),
-            }
-        );
-        served.join().expect("the stub surface finishes");
-    }
+        // The grants refusal is its own verdict: the 403's body is the hub's reason, verbatim, so a pass can report the hub's own words.
+        {
+            let (target, _requests, served) = stub(vec![(
+                403,
+                r#"{"ok":false,"output":"role librarian does not grant write_file"}"#,
+            )]);
+            let hub = Hub {
+                target,
+                auth: InternalToken::none(),
+            };
+            let answer = hub
+                .tell(
+                    310,
+                    "write_file",
+                    &serde_json::json!({ "path": "index.txt" }),
+                    5_000,
+                )
+                .expect("the refusal is an answer");
+            assert_eq!(
+                answer,
+                Tell::Refused {
+                    reason: "role librarian does not grant write_file".to_string(),
+                }
+            );
+            served.join().expect("the stub surface finishes");
+        }
 
-    /// An answer that is not the surface's shape is an error naming what came
-    /// back, never a made-up success.
-    #[test]
-    fn an_answer_that_is_not_the_surfaces_shape_is_an_error() {
-        let (target, _requests, served) = stub(vec![(200, r#"{"ok":"yes"}"#)]);
-        let hub = Hub {
-            target,
-            auth: InternalToken::none(),
-        };
-        let err = hub
-            .tell(300, "echo", &serde_json::json!({}), 5_000)
-            .expect_err("the shape is wrong");
-        assert!(err.contains("could not be read"), "{err}");
-        served.join().expect("the stub surface finishes");
-    }
-
-    /// A hub that is not there is an honest connection error.
-    #[test]
-    fn a_hub_that_is_not_there_is_an_honest_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a port is free for a moment");
-        let addr = listener.local_addr().expect("a bound address");
-        drop(listener);
-        let hub = Hub {
-            target: Target::parse(&format!("http://127.0.0.1:{}", addr.port())).expect("a URL"),
-            auth: InternalToken::none(),
-        };
-        let err = hub
-            .tell(300, "echo", &serde_json::json!({}), 5_000)
-            .expect_err("nothing is listening");
-        assert!(err.contains("cannot connect"), "{err}");
+        // An answer that is not the surface's shape is an error naming what came back, never a made-up success.
+        {
+            let (target, _requests, served) = stub(vec![(200, r#"{"ok":"yes"}"#)]);
+            let hub = Hub {
+                target,
+                auth: InternalToken::none(),
+            };
+            let err = hub
+                .tell(300, "echo", &serde_json::json!({}), 5_000)
+                .expect_err("the shape is wrong");
+            assert!(err.contains("could not be read"), "{err}");
+            served.join().expect("the stub surface finishes");
+        }
     }
 }

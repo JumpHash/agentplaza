@@ -846,7 +846,6 @@ mod tests {
     const MULTI_HUNK: &str = include_str!("../tests/fixtures/multi_hunk.diff");
     const UNIFIED0: &str = include_str!("../tests/fixtures/unified0.diff");
     const QUOTED: &str = include_str!("../tests/fixtures/quoted.diff");
-    const SPACES: &str = include_str!("../tests/fixtures/spaces.diff");
     const DASHES: &str = include_str!("../tests/fixtures/dashes.diff");
     const MULTI_FILE: &str = include_str!("../tests/fixtures/multi_file.diff");
     const PLAIN_U: &str = include_str!("../tests/fixtures/plain_u.diff");
@@ -899,36 +898,38 @@ mod tests {
     }
 
     #[test]
-    fn add_has_no_old_side() {
-        let f = one(ADD);
-        assert_eq!(f.path, "added.txt");
-        assert_eq!(f.status, Status::Added);
-        assert_eq!(f.old_path, None);
-        assert_eq!(f.hunks.len(), 1);
-        assert_eq!((f.hunks[0].old_start, f.hunks[0].old_lines), (0, 0));
-        assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (1, 2));
-        assert_eq!(
-            shape(&f),
-            [(LineKind::Add, "new one"), (LineKind::Add, "new two")]
-        );
-        assert!(f.hunks[0].lines.iter().all(|l| l.old_no.is_none()));
-    }
-
-    #[test]
-    fn delete_has_no_new_side() {
-        let f = one(DELETE);
-        assert_eq!(f.path, "deleted.txt");
-        assert_eq!(f.status, Status::Deleted);
-        assert_eq!(f.old_path, None);
-        assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (0, 0));
-        assert_eq!(
-            shape(&f),
-            [
-                (LineKind::Remove, "gone one"),
-                (LineKind::Remove, "gone two")
-            ]
-        );
-        assert!(f.hunks[0].lines.iter().all(|l| l.new_no.is_none()));
+    fn add_and_delete_have_no_opposite_side() {
+        // An added file has no old side: every line is an add with no old number.
+        {
+            let f = one(ADD);
+            assert_eq!(f.path, "added.txt");
+            assert_eq!(f.status, Status::Added);
+            assert_eq!(f.old_path, None);
+            assert_eq!(f.hunks.len(), 1);
+            assert_eq!((f.hunks[0].old_start, f.hunks[0].old_lines), (0, 0));
+            assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (1, 2));
+            assert_eq!(
+                shape(&f),
+                [(LineKind::Add, "new one"), (LineKind::Add, "new two")]
+            );
+            assert!(f.hunks[0].lines.iter().all(|l| l.old_no.is_none()));
+        }
+        // A deleted file has no new side: every line is a remove with no new number.
+        {
+            let f = one(DELETE);
+            assert_eq!(f.path, "deleted.txt");
+            assert_eq!(f.status, Status::Deleted);
+            assert_eq!(f.old_path, None);
+            assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (0, 0));
+            assert_eq!(
+                shape(&f),
+                [
+                    (LineKind::Remove, "gone one"),
+                    (LineKind::Remove, "gone two")
+                ]
+            );
+            assert!(f.hunks[0].lines.iter().all(|l| l.new_no.is_none()));
+        }
     }
 
     #[test]
@@ -955,20 +956,22 @@ mod tests {
     }
 
     #[test]
-    fn binary_file_has_no_hunks() {
-        let f = one(BINARY);
-        assert_eq!(f.path, "bin.dat");
-        assert_eq!(f.status, Status::Modified);
-        assert!(f.binary);
-        assert!(f.hunks.is_empty());
-    }
-
-    #[test]
-    fn binary_patch_payload_is_skipped() {
-        let f = one(BINARY_PATCH);
-        assert_eq!(f.path, "bin.dat");
-        assert!(f.binary);
-        assert!(f.hunks.is_empty());
+    fn binary_diffs_have_no_hunks() {
+        // A binary file change is flagged binary and has no hunks.
+        {
+            let f = one(BINARY);
+            assert_eq!(f.path, "bin.dat");
+            assert_eq!(f.status, Status::Modified);
+            assert!(f.binary);
+            assert!(f.hunks.is_empty());
+        }
+        // A binary patch payload is skipped: still binary, still no hunks.
+        {
+            let f = one(BINARY_PATCH);
+            assert_eq!(f.path, "bin.dat");
+            assert!(f.binary);
+            assert!(f.hunks.is_empty());
+        }
     }
 
     #[test]
@@ -1021,30 +1024,32 @@ mod tests {
     }
 
     #[test]
-    fn zero_context_diff_has_omitted_counts() {
-        let set = parse_unified(UNIFIED0).unwrap();
-        assert_eq!(set.files.len(), 2);
-        let long = &set.files[0];
-        assert_eq!(long.hunks.len(), 2);
-        assert_eq!((long.hunks[0].old_start, long.hunks[0].old_lines), (3, 1));
-        assert_eq!((long.hunks[0].new_start, long.hunks[0].new_lines), (3, 1));
-        assert_eq!(long.hunks[0].header, "row 2");
-        assert_eq!(long.hunks[0].lines.len(), 2);
-        let one_line = &set.files[1];
-        assert_eq!(one_line.path, "one.txt");
-        assert_eq!(one_line.hunks[0].lines.len(), 2);
-        assert_eq!(
-            (one_line.hunks[0].old_lines, one_line.hunks[0].new_lines),
-            (1, 1)
-        );
-    }
-
-    #[test]
-    fn a_pure_insert_with_zero_old_lines_has_no_context() {
-        let f = one("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3,0 +4 @@\n+added\n");
-        assert_eq!((f.hunks[0].old_start, f.hunks[0].old_lines), (3, 0));
-        assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (4, 1));
-        assert_eq!(f.hunks[0].lines[0].new_no, Some(4));
+    fn zero_context_hunks_keep_their_counts() {
+        // A zero-context diff omits the context counts; its hunks keep their own numbers.
+        {
+            let set = parse_unified(UNIFIED0).unwrap();
+            assert_eq!(set.files.len(), 2);
+            let long = &set.files[0];
+            assert_eq!(long.hunks.len(), 2);
+            assert_eq!((long.hunks[0].old_start, long.hunks[0].old_lines), (3, 1));
+            assert_eq!((long.hunks[0].new_start, long.hunks[0].new_lines), (3, 1));
+            assert_eq!(long.hunks[0].header, "row 2");
+            assert_eq!(long.hunks[0].lines.len(), 2);
+            let one_line = &set.files[1];
+            assert_eq!(one_line.path, "one.txt");
+            assert_eq!(one_line.hunks[0].lines.len(), 2);
+            assert_eq!(
+                (one_line.hunks[0].old_lines, one_line.hunks[0].new_lines),
+                (1, 1)
+            );
+        }
+        // A pure insert with zero old lines has no context and starts at its own new line.
+        {
+            let f = one("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3,0 +4 @@\n+added\n");
+            assert_eq!((f.hunks[0].old_start, f.hunks[0].old_lines), (3, 0));
+            assert_eq!((f.hunks[0].new_start, f.hunks[0].new_lines), (4, 1));
+            assert_eq!(f.hunks[0].lines[0].new_no, Some(4));
+        }
     }
 
     #[test]
@@ -1056,13 +1061,6 @@ mod tests {
             shape(&f),
             [(LineKind::Remove, "café"), (LineKind::Add, "café changed")]
         );
-    }
-
-    #[test]
-    fn name_with_a_space_has_no_trailing_tab() {
-        let f = one(SPACES);
-        assert_eq!(f.path, "with space.txt");
-        assert_eq!(f.status, Status::Modified);
     }
 
     #[test]
@@ -1109,16 +1107,38 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_stats_count_lines_on_each_side() {
-        let set = parse_unified(MULTI_FILE).unwrap();
-        assert_eq!(
-            set.stats(),
-            Stats {
-                files: 11,
-                additions: 11,
-                deletions: 12
-            }
-        );
+    fn stats_count_lines_on_each_side() {
+        for (case, input, want) in [
+            (
+                "a multi-file diff",
+                MULTI_FILE,
+                Stats {
+                    files: 11,
+                    additions: 11,
+                    deletions: 12,
+                },
+            ),
+            (
+                "a single modified file",
+                MODIFY,
+                Stats {
+                    files: 1,
+                    additions: 2,
+                    deletions: 1,
+                },
+            ),
+            (
+                "an empty diff",
+                "",
+                Stats {
+                    files: 0,
+                    additions: 0,
+                    deletions: 0,
+                },
+            ),
+        ] {
+            assert_eq!(parse_unified(input).unwrap().stats(), want, "{case}");
+        }
     }
 
     #[test]
@@ -1142,27 +1162,6 @@ mod tests {
     }
 
     #[test]
-    fn stats_on_a_single_file() {
-        let set = parse_unified(MODIFY).unwrap();
-        assert_eq!(
-            set.stats(),
-            Stats {
-                files: 1,
-                additions: 2,
-                deletions: 1
-            }
-        );
-        assert_eq!(
-            parse_unified("").unwrap().stats(),
-            Stats {
-                files: 0,
-                additions: 0,
-                deletions: 0
-            }
-        );
-    }
-
-    #[test]
     fn text_before_the_first_file_is_skipped() {
         let text = format!(
             "From 1a2b Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n---\n a.txt | 2 +-\n 1 file changed\n\n{MODIFY}\n-- \n2.43.0\n"
@@ -1174,27 +1173,26 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_has_no_files() {
-        assert!(parse_unified("").unwrap().files.is_empty());
-        assert!(parse_unified("\n\n").unwrap().files.is_empty());
-    }
-
-    #[test]
-    fn a_file_mode_change_has_no_hunks() {
-        let f = one("diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n");
-        assert_eq!(f.path, "run.sh");
-        assert_eq!(f.status, Status::Modified);
-        assert!(f.hunks.is_empty());
-    }
-
-    #[test]
-    fn an_empty_new_file_is_added_without_hunks() {
-        let f = one(
-            "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29\n",
-        );
-        assert_eq!(f.path, "empty.txt");
-        assert_eq!(f.status, Status::Added);
-        assert!(f.hunks.is_empty());
+    fn header_only_diffs_have_no_hunks() {
+        for (case, input, path, status) in [
+            (
+                "a file mode change",
+                "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n",
+                "run.sh",
+                Status::Modified,
+            ),
+            (
+                "an empty new file",
+                "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29\n",
+                "empty.txt",
+                Status::Added,
+            ),
+        ] {
+            let f = one(input);
+            assert_eq!(f.path, path, "{case}");
+            assert_eq!(f.status, status, "{case}");
+            assert!(f.hunks.is_empty(), "{case}");
+        }
     }
 
     #[test]
@@ -1240,13 +1238,6 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_hunk_with_one_line_each_side_parses() {
-        let f = one("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
-        assert_eq!(f.path, "x");
-        assert_eq!(shape(&f), [(LineKind::Remove, "a"), (LineKind::Add, "b")]);
-    }
-
-    #[test]
     fn a_blank_line_in_a_hunk_is_an_empty_context_line() {
         let f = one("--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n\n-c\n+d\n");
         assert_eq!(
@@ -1261,66 +1252,60 @@ mod tests {
     }
 
     #[test]
-    fn a_hunk_header_with_a_section_title_keeps_it() {
-        let f = one("--- a/x\n+++ b/x\n@@ -10,2 +10,2 @@ fn main() {\n-a\n+b\n c\n");
-        assert_eq!(f.hunks[0].header, "fn main() {");
-        assert_eq!((f.hunks[0].old_start, f.hunks[0].old_lines), (10, 2));
-    }
-
-    #[test]
-    fn a_truncated_hunk_is_an_error() {
-        let e = parse_unified("--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\n").unwrap_err();
-        assert!(e.message.contains("before its header"), "{e}");
-    }
-
-    #[test]
-    fn a_hunk_with_extra_lines_is_an_error() {
-        // The header said one line each side; the '+c' after the hunk closed is outside it.
-        let e = parse_unified("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n+c\n").unwrap_err();
-        assert_eq!(e.line, 6);
-        assert!(e.message.contains("outside a hunk"), "{e}");
-    }
-
-    #[test]
-    fn a_hunk_line_without_a_prefix_is_an_error() {
-        let e = parse_unified("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\nfoo\n").unwrap_err();
-        assert_eq!(e.line, 5);
-        assert!(e.message.contains("must start"), "{e}");
-    }
-
-    #[test]
-    fn a_context_line_needs_both_sides_counted() {
-        let e = parse_unified("--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n a\n").unwrap_err();
-        assert!(e.message.contains("more lines"), "{e}");
-    }
-
-    #[test]
-    fn a_malformed_hunk_header_is_an_error() {
+    fn malformed_unified_diffs_are_errors() {
+        // (case, input, expected error line if pinned, expected message fragment if pinned)
+        for (case, input, line, msg) in [
+            (
+                "a truncated hunk",
+                "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\n",
+                None,
+                Some("before its header"),
+            ),
+            (
+                // The header said one line each side; the '+c' after the hunk closed is outside it.
+                "a hunk with extra lines",
+                "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n+c\n",
+                Some(6),
+                Some("outside a hunk"),
+            ),
+            (
+                "a hunk line without a prefix",
+                "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\nfoo\n",
+                Some(5),
+                Some("must start"),
+            ),
+            (
+                "a context line that needs both sides counted",
+                "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n a\n",
+                None,
+                Some("more lines"),
+            ),
+            (
+                "a hunk before any file",
+                "@@ -1 +1 @@\n-a\n+b\n",
+                Some(1),
+                None,
+            ),
+            (
+                "a plus line without a minus line",
+                "+++ b/x\n",
+                None,
+                Some("---"),
+            ),
+        ] {
+            let e = parse_unified(input).unwrap_err();
+            if let Some(line) = line {
+                assert_eq!(e.line, line, "{case}");
+            }
+            if let Some(msg) = msg {
+                assert!(e.message.contains(msg), "{case}: {e}");
+            }
+        }
+        // Each malformed hunk header is reported as an error that mentions "@@".
         for h in ["@@ x @@", "@@ -1 @@", "@@ -1,z +1 @@", "@@ -a +1 @@"] {
             let e = parse_unified(&format!("--- a/x\n+++ b/x\n{h}\n")).unwrap_err();
             assert!(e.message.contains("@@"), "{h}: {e}");
         }
-    }
-
-    #[test]
-    fn a_hunk_before_any_file_is_an_error() {
-        let e = parse_unified("@@ -1 +1 @@\n-a\n+b\n").unwrap_err();
-        assert_eq!(e.line, 1);
-    }
-
-    #[test]
-    fn a_plus_line_without_minus_is_an_error() {
-        let e = parse_unified("+++ b/x\n").unwrap_err();
-        assert!(e.message.contains("---"), "{e}");
-    }
-
-    #[test]
-    fn a_diff_error_shows_its_line() {
-        let e = DiffError {
-            line: 7,
-            message: "bad".into(),
-        };
-        assert_eq!(e.to_string(), "diff line 7: bad");
     }
 
     #[test]
@@ -1471,16 +1456,6 @@ mod tests {
     }
 
     #[test]
-    fn nothing_written_for_an_unchanged_file_or_no_paths() {
-        assert_eq!(
-            write_unified(Some("f"), Some("f"), "same\n", "same\n", 3),
-            ""
-        );
-        assert_eq!(write_unified(None, None, "a", "b", 3), "");
-        assert_eq!(write_binary(None, None), "");
-    }
-
-    #[test]
     fn an_empty_new_file_is_a_header_with_no_hunks() {
         let text = write_unified(None, Some("e.txt"), "", "", 3);
         assert_eq!(text, "diff --git a/e.txt b/e.txt\nnew file mode 100644\n");
@@ -1597,28 +1572,30 @@ mod tests {
     }
 
     #[test]
-    fn a_file_past_the_line_bound_is_one_replaced_block_that_still_applies() {
-        let old: String = (0..=MAX_WRITE_LINES)
-            .map(|i| format!("line {i}\n"))
-            .collect();
-        let new = old.replacen("line 5\n", "changed\n", 1);
-        let f = one(&write_unified(
-            Some("big.txt"),
-            Some("big.txt"),
-            &old,
-            &new,
-            3,
-        ));
-        assert_eq!(f.hunks.len(), 1);
-        assert_eq!(apply(&old, &f), new);
-    }
-
-    #[test]
-    fn too_many_edits_for_the_search_is_one_replaced_block_that_still_applies() {
-        let old: String = (0..1_500).map(|i| format!("a{i}\n")).collect();
-        let new: String = (0..1_500).map(|i| format!("b{i}\n")).collect();
-        let f = one(&write_unified(Some("x.txt"), Some("x.txt"), &old, &new, 3));
-        assert_eq!(f.hunks.len(), 1);
-        assert_eq!(apply(&old, &f), new);
+    fn oversized_writes_are_one_replaced_block_that_still_applies() {
+        // A file past the line bound is written as one replaced block.
+        {
+            let old: String = (0..=MAX_WRITE_LINES)
+                .map(|i| format!("line {i}\n"))
+                .collect();
+            let new = old.replacen("line 5\n", "changed\n", 1);
+            let f = one(&write_unified(
+                Some("big.txt"),
+                Some("big.txt"),
+                &old,
+                &new,
+                3,
+            ));
+            assert_eq!(f.hunks.len(), 1);
+            assert_eq!(apply(&old, &f), new);
+        }
+        // Too many edits for the search is also one replaced block that still applies.
+        {
+            let old: String = (0..1_500).map(|i| format!("a{i}\n")).collect();
+            let new: String = (0..1_500).map(|i| format!("b{i}\n")).collect();
+            let f = one(&write_unified(Some("x.txt"), Some("x.txt"), &old, &new, 3));
+            assert_eq!(f.hunks.len(), 1);
+            assert_eq!(apply(&old, &f), new);
+        }
     }
 }

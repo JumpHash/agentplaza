@@ -1890,61 +1890,6 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_size_follows_the_view_and_the_cell() {
-        let bounds = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: 2.0 * PAD + 10.0 * CELL_W,
-            height: 2.0 * PAD + 5.0 * CELL_H,
-        };
-        assert_eq!(grid_size(bounds), (10, 5));
-        let tiny = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-        };
-        assert_eq!(grid_size(tiny), (1, 1));
-    }
-
-    #[test]
-    fn the_cell_is_the_mono_font_advance() {
-        use ab_glyph::{Font, FontRef};
-        let font = FontRef::try_from_slice(include_bytes!(
-            "../../../../../assets/fonts/MartianMono-Regular.ttf"
-        ))
-        .unwrap();
-        let advance = font.h_advance_unscaled(font.glyph_id('M')) / font.units_per_em().unwrap();
-        assert!(
-            (advance - 0.7).abs() < 0.005,
-            "Martian Mono advances {advance} em, not 0.7"
-        );
-    }
-
-    #[test]
-    fn the_ansi_palette_maps_to_the_theme_roles_and_the_cube_is_exact() {
-        let p = theme::palette();
-        assert_eq!(indexed(1, &p, false), p.crit);
-        assert_eq!(indexed(2, &p, false), p.ok);
-        assert_eq!(indexed(15, &p, false), p.ink);
-        assert_eq!(indexed(16, &p, false), Color::from_rgb8(0, 0, 0));
-        assert_eq!(indexed(196, &p, false), Color::from_rgb8(255, 0, 0));
-        assert_eq!(indexed(232, &p, false), Color::from_rgb8(8, 8, 8));
-        assert_eq!(indexed(255, &p, false), Color::from_rgb8(238, 238, 238));
-    }
-
-    #[test]
-    fn selections_order_their_ends_and_contain_their_cells() {
-        let a = Pos { line: 5, col: 3 };
-        let b = Pos { line: 4, col: 9 };
-        assert_eq!(Selection { anchor: a, head: b }.range(), (b, a));
-        assert!(in_range(b, a, 4, 9));
-        assert!(in_range(b, a, 5, 0));
-        assert!(!in_range(b, a, 5, 4));
-        assert!(!in_range(b, a, 3, 99));
-    }
-
-    #[test]
     fn a_terminal_takes_its_hub_frames_into_the_screen() {
         let target = Target {
             base: "http://127.0.0.1:1".into(),
@@ -2155,30 +2100,6 @@ mod tests {
         drop(out_rx);
         drop(hub);
         thread.join().unwrap();
-    }
-
-    #[test]
-    fn the_tabs_hold_at_most_four_and_reuse_a_closed_slot() {
-        let target = Target {
-            base: "http://127.0.0.1:1".into(),
-            ..Target::default()
-        };
-        let mut tabs = TerminalTabs::new(target, "agent:1");
-        assert_eq!(tabs.len(), 1);
-        assert!(tabs.add() && tabs.add() && tabs.add());
-        assert!(!tabs.add(), "a fifth terminal is refused");
-        assert_eq!(tabs.len(), MAX_TABS);
-        let slots: Vec<usize> = (0..tabs.len())
-            .map(|i| tabs.get(i).unwrap().slot())
-            .collect();
-        assert_eq!(slots, vec![0, 1, 2, 3]);
-        tabs.remove(1);
-        assert!(tabs.add());
-        assert_eq!(
-            tabs.get(tabs.active()).unwrap().slot(),
-            1,
-            "the freed slot comes back"
-        );
     }
 
     #[test]

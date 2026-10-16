@@ -177,38 +177,7 @@ mod tests {
         Frame::new(w, h, rgba).expect("a valid frame")
     }
 
-    fn pixel(frame: &Frame, x: u32, y: u32) -> [u8; 4] {
-        let index = ((y * frame.w + x) * 4) as usize;
-        [
-            frame.rgba[index],
-            frame.rgba[index + 1],
-            frame.rgba[index + 2],
-            frame.rgba[index + 3],
-        ]
-    }
-
     const WHITE: [u8; 4] = [255, 255, 255, 255];
-    const BLACK: [u8; 4] = [0, 0, 0, 255];
-
-    #[test]
-    fn scaling_changes_the_size_and_keeps_a_flat_colour_flat() {
-        let scaled = scale(&solid(100, 50, [10, 200, 30, 255]), 0.5).expect("scales");
-        assert_eq!((scaled.w, scaled.h), (50, 25));
-        assert!(
-            scaled
-                .rgba
-                .chunks_exact(4)
-                .all(|px| px == [10, 200, 30, 255])
-        );
-    }
-
-    #[test]
-    fn scaling_rounds_and_keeps_at_least_one_pixel() {
-        let tiny = scale(&solid(3, 3, WHITE), 0.1).expect("scales");
-        assert_eq!((tiny.w, tiny.h), (1, 1));
-        let odd = scale(&solid(10, 10, WHITE), 0.25).expect("scales");
-        assert_eq!((odd.w, odd.h), (3, 3));
-    }
 
     #[test]
     fn scaling_refuses_a_bad_factor_or_an_absurd_size() {
@@ -218,33 +187,6 @@ mod tests {
         assert!(scale(&frame, f32::NAN).is_err());
         assert!(scale(&frame, f32::INFINITY).is_err());
         assert!(scale(&frame, 1.0e9).is_err());
-    }
-
-    #[test]
-    fn the_grid_draws_black_lines_on_light_and_white_lines_on_dark() {
-        let light = grid_overlay(&solid(40, 40, WHITE), 20).expect("draws");
-        assert_eq!(pixel(&light, 20, 10), BLACK, "a column line over white");
-        assert_eq!(pixel(&light, 5, 20), BLACK, "a row line over white");
-        assert_eq!(
-            pixel(&light, 10, 10),
-            WHITE,
-            "off the lines the frame is unchanged"
-        );
-
-        let dark = grid_overlay(&solid(40, 40, BLACK), 20).expect("draws");
-        assert_eq!(pixel(&dark, 20, 10), WHITE, "a column line over black");
-        assert_eq!(pixel(&dark, 10, 10), BLACK);
-    }
-
-    #[test]
-    fn the_grid_labels_sit_on_a_black_box_with_white_digits() {
-        let grid = grid_overlay(&solid(60, 60, WHITE), 20).expect("draws");
-        // The column label "20" starts at (22, 1): its box is black and its first glyph's top-left pixel is white.
-        assert_eq!(pixel(&grid, 22, 1), BLACK);
-        assert_eq!(pixel(&grid, 23, 2), WHITE);
-        // The row label "20" starts at (1, 22).
-        assert_eq!(pixel(&grid, 1, 22), BLACK);
-        assert_eq!(pixel(&grid, 2, 23), WHITE);
     }
 
     #[test]

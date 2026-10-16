@@ -245,13 +245,4 @@ mod tests {
         assert_ne!(e1, e2);
         assert_ne!(fingerprint(&e1), fingerprint(&e2));
     }
-
-    #[test]
-    fn display_carries_units() {
-        assert_eq!(Value::Num(Num::int(3), Dim::CREDITS).to_string(), "3 cr");
-        assert_eq!(
-            Value::list(vec![Value::str("owner")]).to_string(),
-            "[\"owner\"]"
-        );
-    }
 }

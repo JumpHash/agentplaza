@@ -293,47 +293,49 @@ fn a_secret_echoed_by_the_server_never_comes_back() {
 }
 
 #[test]
-fn a_server_cannot_resolve_a_secret_bound_to_another_server() {
-    let mut vault = Vault::default();
-    vault.entries.push((
-        "GITHUB_TOKEN".into(),
-        "gh-value".into(),
-        "github".into(),
-        None,
-    ));
-    assert!(
-        vault
-            .resolve("GITHUB_TOKEN", "github", &owner("n0"))
-            .is_ok()
-    );
-    assert!(
-        vault
-            .resolve("GITHUB_TOKEN", "linear", &owner("n0"))
-            .is_err()
-    );
-}
-
-#[test]
-fn node_scope_applies_through_the_calling_agent() {
-    let mut vault = Vault::default();
-    vault.entries.push((
-        "KEY".into(),
-        "node-one".into(),
-        "fixture".into(),
-        Some("n1".into()),
-    ));
-    vault.nodes.insert(7, "n1".into());
-    vault.nodes.insert(8, "n2".into());
-    assert!(
-        vault
-            .resolve("KEY", "fixture", &OnBehalf::Agent { cid: 7 })
-            .is_ok()
-    );
-    assert!(
-        vault
-            .resolve("KEY", "fixture", &OnBehalf::Agent { cid: 8 })
-            .is_err()
-    );
+fn vault_scopes_secrets_to_their_server_and_node() {
+    // A server cannot resolve a secret bound to another server.
+    {
+        let mut vault = Vault::default();
+        vault.entries.push((
+            "GITHUB_TOKEN".into(),
+            "gh-value".into(),
+            "github".into(),
+            None,
+        ));
+        assert!(
+            vault
+                .resolve("GITHUB_TOKEN", "github", &owner("n0"))
+                .is_ok()
+        );
+        assert!(
+            vault
+                .resolve("GITHUB_TOKEN", "linear", &owner("n0"))
+                .is_err()
+        );
+    }
+    // Node scope applies through the calling agent.
+    {
+        let mut vault = Vault::default();
+        vault.entries.push((
+            "KEY".into(),
+            "node-one".into(),
+            "fixture".into(),
+            Some("n1".into()),
+        ));
+        vault.nodes.insert(7, "n1".into());
+        vault.nodes.insert(8, "n2".into());
+        assert!(
+            vault
+                .resolve("KEY", "fixture", &OnBehalf::Agent { cid: 7 })
+                .is_ok()
+        );
+        assert!(
+            vault
+                .resolve("KEY", "fixture", &OnBehalf::Agent { cid: 8 })
+                .is_err()
+        );
+    }
 }
 
 #[test]

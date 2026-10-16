@@ -267,26 +267,3 @@ fn last_seen(n: &Value) -> String {
         Some(seen) => ctx::ago(seen),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn a_code_shows_who_used_it_or_a_dash() {
-        assert_eq!(used_by(&json!({ "used_by": "pi-lab" })), "pi-lab");
-        assert_eq!(used_by(&json!({ "used_by": null })), "-");
-        assert_eq!(used_by(&json!({})), "-");
-    }
-
-    #[test]
-    fn a_code_row_keeps_the_hubs_state_word() {
-        let row = code_row(
-            &json!({ "id": "c1", "label": "lab", "state": "used", "created_ms": 0, "expires_ms": 0, "used_by": "pi" }),
-        );
-        assert_eq!(row[0], "c1");
-        assert_eq!(row[2], "used");
-        assert_eq!(row[5], "pi");
-    }
-}

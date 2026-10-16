@@ -436,56 +436,59 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_agent_past_its_idle_minutes_sleeps() {
-        let never = vec!["orchestrator".to_string()];
-        assert!(should_sleep(&check(&never)));
-    }
+    fn idle_agents_sleep_unless_a_condition_keeps_them_awake() {
+        // an_idle_agent_past_its_idle_minutes_sleeps: an idle agent past its idle minutes sleeps.
+        {
+            let never = vec!["orchestrator".to_string()];
+            assert!(should_sleep(&check(&never)));
+        }
 
-    #[test]
-    fn each_condition_keeps_an_agent_awake() {
-        let never = vec!["orchestrator".to_string()];
-        let mut c = check(&never);
-        c.status = Status::Working;
-        assert!(!should_sleep(&c), "a working agent stays awake");
-        let mut c = check(&never);
-        c.status = Status::Asleep;
-        assert!(!should_sleep(&c), "an asleep agent is already asleep");
-        let mut c = check(&never);
-        c.busy = true;
-        assert!(!should_sleep(&c), "work in flight or queued keeps it awake");
-        let mut c = check(&never);
-        c.approval_pending = true;
-        assert!(!should_sleep(&c), "a pending approval keeps it awake");
-        let mut c = check(&never);
-        c.stop_all = true;
-        assert!(!should_sleep(&c), "STOP ALL holds the sleep");
-        let mut c = check(&never);
-        c.placed = false;
-        assert!(
-            !should_sleep(&c),
-            "an agent with no VM here has nothing to snapshot"
-        );
-        let mut c = check(&never);
-        c.idle_ms = 10 * 60_000 - 1;
-        assert!(!should_sleep(&c), "not idle long enough yet");
-        let mut c = check(&never);
-        c.idle_sleep_min = 0;
-        c.idle_ms = u64::MAX / 2;
-        assert!(!should_sleep(&c), "0 means agents never sleep on their own");
-    }
+        // each_condition_keeps_an_agent_awake: each condition that keeps an agent awake holds the sleep.
+        {
+            let never = vec!["orchestrator".to_string()];
+            let mut c = check(&never);
+            c.status = Status::Working;
+            assert!(!should_sleep(&c), "a working agent stays awake");
+            let mut c = check(&never);
+            c.status = Status::Asleep;
+            assert!(!should_sleep(&c), "an asleep agent is already asleep");
+            let mut c = check(&never);
+            c.busy = true;
+            assert!(!should_sleep(&c), "work in flight or queued keeps it awake");
+            let mut c = check(&never);
+            c.approval_pending = true;
+            assert!(!should_sleep(&c), "a pending approval keeps it awake");
+            let mut c = check(&never);
+            c.stop_all = true;
+            assert!(!should_sleep(&c), "STOP ALL holds the sleep");
+            let mut c = check(&never);
+            c.placed = false;
+            assert!(
+                !should_sleep(&c),
+                "an agent with no VM here has nothing to snapshot"
+            );
+            let mut c = check(&never);
+            c.idle_ms = 10 * 60_000 - 1;
+            assert!(!should_sleep(&c), "not idle long enough yet");
+            let mut c = check(&never);
+            c.idle_sleep_min = 0;
+            c.idle_ms = u64::MAX / 2;
+            assert!(!should_sleep(&c), "0 means agents never sleep on their own");
+        }
 
-    #[test]
-    fn a_role_that_never_sleeps_stays_awake() {
-        let never = vec!["orchestrator".to_string()];
-        let mut c = check(&never);
-        c.role = "orchestrator";
-        assert!(!should_sleep(&c));
-        let none: Vec<String> = Vec::new();
-        let mut c = check(&none);
-        c.role = "orchestrator";
-        assert!(
-            should_sleep(&c),
-            "with no never-role the orchestrator may sleep"
-        );
+        // a_role_that_never_sleeps_stays_awake: a role on the never-sleep list stays awake.
+        {
+            let never = vec!["orchestrator".to_string()];
+            let mut c = check(&never);
+            c.role = "orchestrator";
+            assert!(!should_sleep(&c));
+            let none: Vec<String> = Vec::new();
+            let mut c = check(&none);
+            c.role = "orchestrator";
+            assert!(
+                should_sleep(&c),
+                "with no never-role the orchestrator may sleep"
+            );
+        }
     }
 }

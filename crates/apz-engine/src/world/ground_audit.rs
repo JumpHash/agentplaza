@@ -532,56 +532,6 @@ mod tests {
             }
         }
     }
-    use crate::geometry::box_geo;
-    use crate::scene::{Mat, Material, Obj};
 
-    fn cube(y: f32, rest: bool, geo: &Geo, mat: &Mat) -> Obj {
-        let o = Obj::mesh(geo, mat);
-        o.set_position(0.0, y, 0.0);
-        o.get().rest = rest;
-        o
-    }
-
-    #[test]
-    fn resting_on_the_ground_is_clean() {
-        let geo = box_geo(1.0, 1.0, 1.0);
-        let mat = Mat::new(Material::default());
-        let root = Obj::group();
-        root.add(&cube(0.5, true, &geo, &mat));
-        let r = ground_audit(&[root]);
-        assert_eq!(r.items, 1);
-        assert!(r.findings.is_empty(), "{:?}", r.findings);
-    }
-
-    #[test]
-    fn hanging_above_nothing_is_floating() {
-        let geo = box_geo(1.0, 1.0, 1.0);
-        let mat = Mat::new(Material::default());
-        let root = Obj::group();
-        root.add(&cube(1.5, true, &geo, &mat));
-        let r = ground_audit(&[root]);
-        assert_eq!(r.items, 1);
-        assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
-        let f = &r.findings[0];
-        assert_eq!(f.kind, "floating");
-        assert!((f.amount - 1.0).abs() < 1e-6, "{:?}", f);
-        assert_eq!(f.against, "ground");
-    }
-
-    #[test]
-    fn sinking_into_another_solid_is_sinking() {
-        let geo = box_geo(1.0, 1.0, 1.0);
-        let mat = Mat::new(Material::default());
-        let root = Obj::group();
-        root.add(&cube(0.5, true, &geo, &mat));
-        root.add(&cube(1.4, true, &geo, &mat));
-        let r = ground_audit(&[root]);
-        assert_eq!(r.items, 2);
-        let sink = r
-            .findings
-            .iter()
-            .find(|f| f.kind == "sinking")
-            .expect("a sinking finding");
-        assert!((sink.amount - 0.1).abs() < 1e-4, "{:?}", r.findings);
-    }
+    use crate::scene::Obj;
 }

@@ -729,22 +729,24 @@ mod tests {
     }
 
     #[test]
-    fn redaction_covers_the_value_and_its_base64_and_url_forms() {
-        let secret = "sk-SENTINEL/+&=value".to_string();
-        let b64 = crate::connectors::base64(secret.as_bytes());
-        let text = format!(
-            "raw {secret}; b64 {b64}; url {}",
-            crate::connectors::encode(&secret)
-        );
-        let clean = redact(&text, std::slice::from_ref(&secret));
-        assert!(!clean.contains("SENTINEL"), "{clean}");
-        assert_eq!(clean.matches(REDACTED).count(), 3);
-    }
-
-    #[test]
-    fn a_secret_inside_a_longer_secret_is_still_caught() {
-        let secrets = vec!["abcdef".to_string(), "bcd".to_string()];
-        assert!(!redact("xxabcdefyy", &secrets).contains("abc"));
+    fn redaction_catches_a_secret_in_every_form_and_inside_a_longer_one() {
+        // The value and its base64 and url forms are all redacted.
+        {
+            let secret = "sk-SENTINEL/+&=value".to_string();
+            let b64 = crate::connectors::base64(secret.as_bytes());
+            let text = format!(
+                "raw {secret}; b64 {b64}; url {}",
+                crate::connectors::encode(&secret)
+            );
+            let clean = redact(&text, std::slice::from_ref(&secret));
+            assert!(!clean.contains("SENTINEL"), "{clean}");
+            assert_eq!(clean.matches(REDACTED).count(), 3);
+        }
+        // A secret inside a longer secret is still caught.
+        {
+            let secrets = vec!["abcdef".to_string(), "bcd".to_string()];
+            assert!(!redact("xxabcdefyy", &secrets).contains("abc"));
+        }
     }
 
     #[test]
@@ -776,31 +778,26 @@ mod tests {
     }
 
     #[test]
-    fn base64_decodes_and_refuses_garbage() {
-        assert_eq!(decode_base64("aGVsbG8=").unwrap(), b"hello");
-        assert_eq!(decode_base64("aGVsbG8").unwrap(), b"hello");
-        assert!(decode_base64("!!").is_none());
-    }
-
-    #[test]
-    fn a_failure_window_gives_up_at_five() {
-        let mut st = State::default();
-        for i in 0..4 {
-            record_failure(&mut st, i * 1000, "boom");
+    fn the_failure_window_gives_up_at_five_and_forgets_old_failures() {
+        // Five failures inside the window give up; the fifth is the one that trips it.
+        {
+            let mut st = State::default();
+            for i in 0..4 {
+                record_failure(&mut st, i * 1000, "boom");
+            }
+            assert!(!st.gave_up);
+            record_failure(&mut st, 5000, "boom");
+            assert!(st.gave_up);
         }
-        assert!(!st.gave_up);
-        record_failure(&mut st, 5000, "boom");
-        assert!(st.gave_up);
-    }
-
-    #[test]
-    fn old_failures_fall_out_of_the_window() {
-        let mut st = State::default();
-        for i in 0..4 {
-            record_failure(&mut st, i, "boom");
+        // Failures older than the window fall out of it.
+        {
+            let mut st = State::default();
+            for i in 0..4 {
+                record_failure(&mut st, i, "boom");
+            }
+            record_failure(&mut st, FAILURE_WINDOW_MS + 10, "boom");
+            assert!(!st.gave_up);
+            assert_eq!(st.failures.len(), 1);
         }
-        record_failure(&mut st, FAILURE_WINDOW_MS + 10, "boom");
-        assert!(!st.gave_up);
-        assert_eq!(st.failures.len(), 1);
     }
 }

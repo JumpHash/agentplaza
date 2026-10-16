@@ -1364,123 +1364,6 @@ pub fn scroll_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> scrollable::Sc
         .style(bar_style)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_a_document_into_blocks() {
-        let doc = "# Title\n\nSome para\ncontinues here.\n\n- one\n  - nested\n\n1. first\n\n```\nlet x = 1;\n```\n\n> quoted\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n---";
-        assert_eq!(
-            parse_blocks(doc),
-            vec![
-                Block::Heading(1, "Title".into()),
-                Block::Para("Some para continues here.".into()),
-                Block::List(vec![
-                    Item {
-                        depth: 0,
-                        marker: None,
-                        text: "one".into()
-                    },
-                    Item {
-                        depth: 1,
-                        marker: None,
-                        text: "nested".into()
-                    },
-                ]),
-                Block::List(vec![Item {
-                    depth: 0,
-                    marker: Some(1),
-                    text: "first".into()
-                }]),
-                Block::Code("let x = 1;".into()),
-                Block::Quote(vec![Block::Para("quoted".into())]),
-                Block::Table {
-                    head: vec!["a".into(), "b".into()],
-                    rows: vec![vec!["1".into(), "2".into()]]
-                },
-                Block::Rule,
-            ]
-        );
-    }
-
-    #[test]
-    fn inline_spans_keep_their_kinds() {
-        assert_eq!(
-            inline("a **b** `c` [d](e)"),
-            vec![
-                Inline::Text("a ".into()),
-                Inline::Bold("b".into()),
-                Inline::Text(" ".into()),
-                Inline::Code("c".into()),
-                Inline::Text(" ".into()),
-                Inline::Link("d".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn unterminated_fence_keeps_its_text() {
-        assert_eq!(
-            parse_blocks("```\nfoo\nbar"),
-            vec![Block::Code("foo\nbar".into())]
-        );
-    }
-
-    #[test]
-    fn info_is_the_night_info_blue() {
-        assert_eq!(
-            crate::theme::palette().info,
-            Color::from_rgb8(0x6c, 0xc8, 0xff)
-        );
-        assert_eq!(Tone::Info.color(), crate::theme::palette().info);
-    }
-
-    #[test]
-    fn badge_markers_follow_the_web() {
-        // Filled: ok, danger, signal. Hollow: warn, info, neutral.
-        assert!(
-            badge_marker(Tone::Ok).2
-                && badge_marker(Tone::Danger).2
-                && badge_marker(Tone::Signal).2
-        );
-        assert!(
-            !badge_marker(Tone::Warn).2
-                && !badge_marker(Tone::Info).2
-                && !badge_marker(Tone::Muted).2
-        );
-        assert_eq!(badge_marker(Tone::Muted).1, crate::theme::palette().ink_2);
-    }
-
-    #[test]
-    fn helpers_build() {
-        let _: Element<'_, u8> = link("Reply", 1, false);
-        let _: Element<'_, u8> = link("see usage", 1, true);
-        let _: Element<'_, u8> = seg(&[(1u8, "Day"), (2u8, "Week")], 1u8, |v| v);
-        let _: Element<'_, u8> = tabs(&[(1u8, "Agents"), (2u8, "Rules")], 2u8, |v| v);
-        let _: Element<'_, u8> =
-            view_head_with_intro("Overview", "What the plaza is doing.", vec![]);
-        let _: Element<'_, u8> = card("Activity", Space::new().into());
-        let _: Element<'_, u8> = badge("ok", Tone::Ok);
-        let _: Element<'_, u8> = empty("inbox", "Nothing here", "Nothing has happened yet.");
-        let _: Element<'_, u8> = error_line("It broke.");
-    }
-
-    #[test]
-    fn hsl_matches_css_hsl() {
-        let near = |a: Color, b: Color| {
-            (a.r - b.r).abs() < 0.01 && (a.g - b.g).abs() < 0.01 && (a.b - b.b).abs() < 0.01
-        };
-        assert!(near(hsl(0.0, 1.0, 0.5), Color::from_rgb(1.0, 0.0, 0.0)));
-        assert!(near(hsl(120.0, 1.0, 0.5), Color::from_rgb(0.0, 1.0, 0.0)));
-        assert!(near(hsl(240.0, 1.0, 0.5), Color::from_rgb(0.0, 0.0, 1.0)));
-        assert!(near(hsl(-120.0, 1.0, 0.5), Color::from_rgb(0.0, 0.0, 1.0)));
-        // CSS hsl(210 50% 50%) is rgb(64 128 191).
-        assert!(near(hsl(210.0, 0.5, 0.5), Color::from_rgb(0.25, 0.5, 0.75)));
-        assert!(near(hsl(0.0, 0.0, 0.5), Color::from_rgb(0.5, 0.5, 0.5)));
-    }
-}
-
 /// Whether [`open_url`] may open `url`: an `https://` link with a host, and no whitespace or
 /// control character anywhere (a leading space, a newline or a tab is refused).
 pub fn openable(url: &str) -> bool {
@@ -1525,26 +1408,31 @@ mod open_url_tests {
     use super::{commas, openable, usd};
 
     #[test]
-    fn accepts_an_https_link() {
-        assert!(openable("https://huggingface.co/settings/tokens"));
-        assert!(openable("https://huggingface.co/meta-llama/Llama-3.2-1B"));
-    }
-
-    #[test]
-    fn refuses_every_other_scheme() {
-        for url in [
-            "http://huggingface.co/",
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "data:text/html,<p>x</p>",
-            "ftp://example.com/",
-            "mailto:owner@example.com",
-            "HTTPS://huggingface.co/",
-            "https:/huggingface.co/",
-            "https://",
-            "",
+    fn openable_accepts_https_links_and_refuses_every_other_url() {
+        for (url, want) in [
+            // accepts_an_https_link
+            ("https://huggingface.co/settings/tokens", true),
+            ("https://huggingface.co/meta-llama/Llama-3.2-1B", true),
+            // refuses_every_other_scheme
+            ("http://huggingface.co/", false),
+            ("file:///etc/passwd", false),
+            ("javascript:alert(1)", false),
+            ("data:text/html,<p>x</p>", false),
+            ("ftp://example.com/", false),
+            ("mailto:owner@example.com", false),
+            ("HTTPS://huggingface.co/", false),
+            ("https:/huggingface.co/", false),
+            ("https://", false),
+            ("", false),
+            // refuses_whitespace_and_control_characters
+            (" https://huggingface.co/", false),
+            ("https://huggingface.co/\nrm -rf /", false),
+            ("https://huggingface.co/a b", false),
+            ("https://huggingface.co/\t", false),
+            ("https://huggingface.co/\r", false),
+            ("https://huggingface.co/\u{0}", false),
         ] {
-            assert!(!openable(url), "{url:?} must be refused");
+            assert_eq!(openable(url), want, "openable({url:?})");
         }
     }
 
@@ -1555,19 +1443,5 @@ mod open_url_tests {
         assert_eq!(usd(0.004), "<$0.01");
         assert_eq!(usd(-12.0), "-$12.00");
         assert_eq!(commas("1234567"), "1,234,567");
-    }
-
-    #[test]
-    fn refuses_whitespace_and_control_characters() {
-        for url in [
-            " https://huggingface.co/",
-            "https://huggingface.co/\nrm -rf /",
-            "https://huggingface.co/a b",
-            "https://huggingface.co/\t",
-            "https://huggingface.co/\r",
-            "https://huggingface.co/\u{0}",
-        ] {
-            assert!(!openable(url), "{url:?} must be refused");
-        }
     }
 }

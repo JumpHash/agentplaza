@@ -10,5 +10,9 @@ publish = false
 serde.workspace = true
 serde_json.workspace = true
 
+# `HostFacts::now` reads the OS CSPRNG; the wasm consumers (the web engine and IDE) never call it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+apz-os = { path = "../apz-os" }
+
 [target.'cfg(windows)'.dependencies]
 apz-uds.workspace = true

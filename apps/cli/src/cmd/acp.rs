@@ -801,31 +801,42 @@ mod tests {
     }
 
     #[test]
-    fn lines_go_in_order_without_their_breaks_and_blank_lines_are_skipped() {
-        let (sent, dropped) = split(b"{\"a\":1}\r\n\n  \n{\"b\":2}\nlast", MAX_LINE);
-        assert_eq!(sent, ["{\"a\":1}", "{\"b\":2}", "last"]);
-        assert!(dropped.is_empty());
-    }
-
-    #[test]
-    fn a_line_over_the_cap_is_dropped_whole_and_the_next_line_still_goes() {
-        let (sent, dropped) = split(b"0123456789ABCDEF\nok\n", 8);
-        assert_eq!(sent, ["ok"]);
-        assert_eq!(dropped, [16]);
-    }
-
-    #[test]
-    fn a_line_of_exactly_the_cap_goes_through() {
-        let (sent, dropped) = split(b"abcd\nef\n", 4);
-        assert_eq!(sent, ["abcd", "ef"]);
-        assert!(dropped.is_empty());
-    }
-
-    #[test]
-    fn a_line_that_is_not_utf8_is_dropped() {
-        let (sent, dropped) = split(&[0xff, b'\n', b'o', b'k', b'\n'], MAX_LINE);
-        assert_eq!(sent, ["ok"]);
-        assert_eq!(dropped, [1]);
+    fn forwarded_lines_keep_their_order_and_only_the_bad_ones_are_dropped() {
+        let cases: [(&str, &[u8], usize, &[&str], &[usize]); 4] = [
+            (
+                "lines go in order without their breaks, and blank lines are skipped",
+                b"{\"a\":1}\r\n\n  \n{\"b\":2}\nlast",
+                MAX_LINE,
+                &["{\"a\":1}", "{\"b\":2}", "last"],
+                &[],
+            ),
+            (
+                "a line over the cap is dropped whole and the next line still goes",
+                b"0123456789ABCDEF\nok\n",
+                8,
+                &["ok"],
+                &[16],
+            ),
+            (
+                "a line of exactly the cap goes through",
+                b"abcd\nef\n",
+                4,
+                &["abcd", "ef"],
+                &[],
+            ),
+            (
+                "a line that is not UTF-8 is dropped",
+                &[0xff, b'\n', b'o', b'k', b'\n'],
+                MAX_LINE,
+                &["ok"],
+                &[1],
+            ),
+        ];
+        for (case, input, max, want_sent, want_dropped) in cases {
+            let (sent, dropped) = split(input, max);
+            assert_eq!(sent, want_sent, "{case}");
+            assert_eq!(dropped, want_dropped, "{case}");
+        }
     }
 
     #[test]
@@ -845,18 +856,21 @@ mod tests {
     }
 
     #[test]
-    fn write_line_is_one_line_with_a_break() {
-        let mut out = Vec::new();
-        write_line(&mut out, "{\"id\":1}").unwrap();
-        assert_eq!(out, b"{\"id\":1}\n");
-    }
-
-    #[test]
-    fn a_hub_message_with_a_raw_break_is_dropped_not_split() {
-        for text in ["{\"a\":1}\n{\"b\":2}", "{\"a\":1}\r{\"b\":2}"] {
+    fn write_line_writes_one_line_and_drops_a_message_with_a_raw_break() {
+        // write_line_is_one_line_with_a_break: a message is written with one break after it.
+        {
             let mut out = Vec::new();
-            write_line(&mut out, text).unwrap();
-            assert!(out.is_empty(), "{text:?} wrote {out:?}");
+            write_line(&mut out, "{\"id\":1}").unwrap();
+            assert_eq!(out, b"{\"id\":1}\n");
+        }
+        // a_hub_message_with_a_raw_break_is_dropped_not_split: a message holding a raw break or
+        // carriage return is dropped, not written as two lines.
+        {
+            for text in ["{\"a\":1}\n{\"b\":2}", "{\"a\":1}\r{\"b\":2}"] {
+                let mut out = Vec::new();
+                write_line(&mut out, text).unwrap();
+                assert!(out.is_empty(), "{text:?} wrote {out:?}");
+            }
         }
     }
 
@@ -890,46 +904,85 @@ mod tests {
     }
 
     #[test]
-    fn a_session_keeps_the_project_it_was_first_mapped_to() {
-        let mut projects = Projects::default();
-        projects
-            .sessions
-            .insert("s9".into(), PathBuf::from("/work/app"));
-        projects.pending.insert(
-            "1".into(),
-            Pending {
-                dir: PathBuf::from("/work/other"),
-                session: None,
-            },
-        );
-        remember(
-            &mut projects,
-            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
-        );
-        assert_eq!(
-            projects.sessions.get("s9"),
-            Some(&PathBuf::from("/work/app"))
-        );
+    fn session_answers_map_sessions_to_their_projects() {
+        // a_session_keeps_the_project_it_was_first_mapped_to: an answer for a session that is
+        // already known keeps the project it was first mapped to.
+        {
+            let mut projects = Projects::default();
+            projects
+                .sessions
+                .insert("s9".into(), PathBuf::from("/work/app"));
+            projects.pending.insert(
+                "1".into(),
+                Pending {
+                    dir: PathBuf::from("/work/other"),
+                    session: None,
+                },
+            );
+            remember(
+                &mut projects,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
+            );
+            assert_eq!(
+                projects.sessions.get("s9"),
+                Some(&PathBuf::from("/work/app"))
+            );
+        }
+        // the_hubs_answer_to_a_session_request_names_its_project: the hub's answer to a session
+        // request names the project the request was for.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            let line =
+                r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
+            to_hub(mirror_line(line, "app", &fake, &projects));
+            remember(
+                &mut lock(&projects),
+                r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
+            );
+            assert_eq!(
+                lock(&projects).sessions.get("s9"),
+                Some(&PathBuf::from("/work/app"))
+            );
+        }
+        // a_failed_session_answer_names_no_session: a failed answer names no session and leaves
+        // nothing pending.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            let line =
+                r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
+            to_hub(mirror_line(line, "app", &fake, &projects));
+            remember(
+                &mut lock(&projects),
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
+            );
+            assert!(lock(&projects).sessions.is_empty());
+            assert!(lock(&projects).pending.is_empty());
+        }
     }
 
     #[test]
-    fn an_initialize_request_gets_the_error_with_its_id() {
-        let line = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}"#;
-        let answer = unreachable_answer(line, "no saved hub").expect("a request is answered");
-        let value: Value = serde_json::from_str(&answer).unwrap();
-        assert_eq!(value["id"], 7);
-        assert_eq!(value["error"]["code"], -32000);
-        assert_eq!(
-            value["error"]["message"],
-            "no saved hub (turn on Editors (ACP) in the console: Setup › MCP › This hub as a server; or run `agentplaza hub login`)"
-        );
-    }
-
-    #[test]
-    fn notifications_and_broken_lines_owe_no_answer() {
-        let note = r#"{"jsonrpc":"2.0","method":"session/cancel","params":{}}"#;
-        assert_eq!(unreachable_answer(note, "x"), None);
-        assert_eq!(unreachable_answer("{not json", "x"), None);
+    fn unreachable_answers_only_the_requests_and_names_the_reason() {
+        // an_initialize_request_gets_the_error_with_its_id: a request gets the error back with its id.
+        {
+            let line = r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}"#;
+            let answer = unreachable_answer(line, "no saved hub").expect("a request is answered");
+            let value: Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(value["id"], 7);
+            assert_eq!(value["error"]["code"], -32000);
+            assert_eq!(
+                value["error"]["message"],
+                "no saved hub (turn on Editors (ACP) in the console: Setup › MCP › This hub as a server; or run `agentplaza hub login`)"
+            );
+        }
+        // notifications_and_broken_lines_owe_no_answer: a notification or a broken line gets no
+        // answer at all.
+        {
+            let note = r#"{"jsonrpc":"2.0","method":"session/cancel","params":{}}"#;
+            assert_eq!(unreachable_answer(note, "x"), None);
+            assert_eq!(unreachable_answer("{not json", "x"), None);
+        }
     }
 
     #[test]
@@ -957,48 +1010,38 @@ mod tests {
     }
 
     #[test]
-    fn acp_takes_an_agent_name() {
-        let cli = crate::Cli::try_parse_from(["agentplaza", "acp", "--agent", "builder-1"])
-            .expect("parses");
-        match cli.command {
-            crate::Command::Acp(args) => {
-                assert_eq!(args.agent.as_deref(), Some("builder-1"));
-                assert!(args.command.is_none());
+    fn acp_parses_its_agent_repo_and_sessions_arguments() {
+        // acp_takes_an_agent_name: --agent is the agent name, and no subcommand is given.
+        {
+            let cli = crate::Cli::try_parse_from(["agentplaza", "acp", "--agent", "builder-1"])
+                .expect("parses");
+            match cli.command {
+                crate::Command::Acp(args) => {
+                    assert_eq!(args.agent.as_deref(), Some("builder-1"));
+                    assert!(args.command.is_none());
+                }
+                _ => panic!("not the acp command"),
             }
-            _ => panic!("not the acp command"),
         }
-    }
-
-    #[test]
-    fn acp_sessions_is_a_subcommand() {
-        let cli = crate::Cli::try_parse_from(["agentplaza", "acp", "sessions"]).expect("parses");
-        match cli.command {
-            crate::Command::Acp(args) => assert!(matches!(args.command, Some(Cmd::Sessions))),
-            _ => panic!("not the acp command"),
+        // acp_sessions_is_a_subcommand: "sessions" is the subcommand.
+        {
+            let cli =
+                crate::Cli::try_parse_from(["agentplaza", "acp", "sessions"]).expect("parses");
+            match cli.command {
+                crate::Command::Acp(args) => assert!(matches!(args.command, Some(Cmd::Sessions))),
+                _ => panic!("not the acp command"),
+            }
         }
-    }
-
-    #[test]
-    fn acp_takes_a_repo_name() {
-        let cli =
-            crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "my-app"]).expect("parses");
-        match cli.command {
-            crate::Command::Acp(args) => assert_eq!(args.repo.as_deref(), Some("my-app")),
-            _ => panic!("not the acp command"),
+        // acp_takes_a_repo_name: --repo takes a repo name, and a name with a space is refused.
+        {
+            let cli = crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "my-app"])
+                .expect("parses");
+            match cli.command {
+                crate::Command::Acp(args) => assert_eq!(args.repo.as_deref(), Some("my-app")),
+                _ => panic!("not the acp command"),
+            }
+            assert!(crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "My App"]).is_err());
         }
-        assert!(crate::Cli::try_parse_from(["agentplaza", "acp", "--repo", "My App"]).is_err());
-    }
-
-    #[test]
-    fn repo_names_are_lowercase_dotted_words_up_to_100_bytes() {
-        assert_eq!(parse_repo("my-app.1_x").as_deref(), Ok("my-app.1_x"));
-        assert!(parse_repo("").is_err());
-        assert!(parse_repo("My App").is_err());
-        assert!(parse_repo("a/b").is_err());
-        assert!(parse_repo(".").is_err());
-        assert!(parse_repo("..").is_err());
-        assert!(parse_repo(&"a".repeat(100)).is_ok());
-        assert!(parse_repo(&"a".repeat(101)).is_err());
     }
 
     use std::cell::RefCell;
@@ -1070,172 +1113,148 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_repository_is_created_and_the_branch_pushed() {
-        let fake = project();
-        let mirrored = mirror_project(&fake, "app", Path::new("/work/app/src")).expect("mirrors");
-        assert_eq!(
-            mirrored,
-            Mirrored {
-                branch: "editor/main".to_string(),
-                commit: "0123456789abcdef".to_string(),
-                dirty: false,
-            }
-        );
-        assert_eq!(*fake.created.borrow(), ["app"]);
-        assert_eq!(
-            *fake.pushed.borrow(),
-            [(
-                PathBuf::from("/work/app"),
-                "app".to_string(),
-                "HEAD:refs/heads/editor/main".to_string(),
-            )]
-        );
-    }
-
-    #[test]
-    fn an_existing_repository_is_not_created_again() {
-        let fake = Fake {
-            repo_exists: true,
-            ..project()
-        };
-        mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
-        assert!(fake.created.borrow().is_empty());
-        assert_eq!(fake.pushed.borrow().len(), 1);
-    }
-
-    #[test]
-    fn a_project_outside_git_is_refused_before_anything_is_pushed() {
-        let fake = Fake {
-            top: None,
-            ..project()
-        };
-        let err = mirror_project(&fake, "app", Path::new("/tmp/notes")).unwrap_err();
-        assert_eq!(err, NOT_A_REPO);
-        assert!(fake.created.borrow().is_empty());
-        assert!(fake.pushed.borrow().is_empty());
-    }
-
-    #[test]
-    fn a_detached_head_is_pushed_under_its_short_sha() {
-        let fake = Fake {
-            branch: None,
-            ..project()
-        };
-        let mirrored = mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
-        assert_eq!(mirrored.branch, "editor/detached-0123456");
-    }
-
-    #[test]
-    fn a_git_failure_is_reported_with_its_reason() {
-        let fake = Fake {
-            push_error: Some("remote rejected".to_string()),
-            ..project()
-        };
-        let err = mirror_project(&fake, "app", Path::new("/work/app")).unwrap_err();
-        assert_eq!(err, "--repo could not mirror the project: remote rejected");
-    }
-
-    #[test]
-    fn a_session_request_is_mirrored_and_forwarded_with_its_meta() {
-        let fake = Fake {
-            dirty: true,
-            ..project()
-        };
-        let projects = Mutex::new(Projects::default());
-        let line = r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app","mcpServers":[]}}"#;
-        let sent = to_hub(mirror_line(line, "app", &fake, &projects));
-        let value: Value = serde_json::from_str(&sent).unwrap();
-        let repo = &value["params"]["_meta"]["agentplaza"]["repo"];
-        assert_eq!(repo["name"], "app");
-        assert_eq!(repo["branch"], "editor/main");
-        assert_eq!(repo["commit"], "0123456789abcdef");
-        assert_eq!(repo["dirty"], true);
-        assert!(repo["note"].as_str().unwrap().contains("uncommitted"));
-        assert_eq!(value["params"]["cwd"], "/work/app", "the params are kept");
-        assert!(lock(&projects).pending.contains_key("1"));
-    }
-
-    #[test]
-    fn a_prompt_runs_in_the_project_its_session_was_opened_in() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        lock(&projects)
-            .sessions
-            .insert("s1".to_string(), PathBuf::from("/work/other"));
-        let line = r#"{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}"#;
-        let sent = to_hub(mirror_line(line, "app", &fake, &projects));
-        assert!(sent.contains("_meta"));
-        assert_eq!(*fake.asked.borrow(), [PathBuf::from("/work/other")]);
-    }
-
-    #[test]
-    fn a_prompt_of_an_unknown_session_is_answered_with_an_error() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        let line = r#"{"jsonrpc":"2.0","id":9,"method":"session/prompt","params":{"sessionId":"nope","prompt":[]}}"#;
-        match mirror_line(line, "app", &fake, &projects) {
-            Some(Outgoing::Editor(answer)) => {
-                let value: Value = serde_json::from_str(&answer).unwrap();
-                assert_eq!(value["id"], 9);
-                assert_eq!(value["error"]["code"], -32000);
-            }
-            _ => panic!("the editor is not answered"),
+    fn mirror_project_creates_pushes_and_refuses_as_each_case_needs() {
+        // a_missing_repository_is_created_and_the_branch_pushed: a missing repository is created
+        // and the branch is pushed.
+        {
+            let fake = project();
+            let mirrored =
+                mirror_project(&fake, "app", Path::new("/work/app/src")).expect("mirrors");
+            assert_eq!(
+                mirrored,
+                Mirrored {
+                    branch: "editor/main".to_string(),
+                    commit: "0123456789abcdef".to_string(),
+                    dirty: false,
+                }
+            );
+            assert_eq!(*fake.created.borrow(), ["app"]);
+            assert_eq!(
+                *fake.pushed.borrow(),
+                [(
+                    PathBuf::from("/work/app"),
+                    "app".to_string(),
+                    "HEAD:refs/heads/editor/main".to_string(),
+                )]
+            );
         }
-        assert!(fake.pushed.borrow().is_empty());
-    }
-
-    #[test]
-    fn a_notification_that_cannot_be_mirrored_is_dropped() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        let line = r#"{"jsonrpc":"2.0","method":"session/prompt","params":{"sessionId":"nope"}}"#;
-        assert!(mirror_line(line, "app", &fake, &projects).is_none());
-    }
-
-    #[test]
-    fn other_lines_go_on_byte_for_byte() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        for line in [
-            r#"{"jsonrpc":"2.0","id":2,"method":"fs/read_text_file","params":{"path":"a"}}"#,
-            r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}"#,
-            "not json",
-        ] {
-            assert_eq!(to_hub(mirror_line(line, "app", &fake, &projects)), line);
+        // an_existing_repository_is_not_created_again: an existing repository is pushed to, not
+        // created again.
+        {
+            let fake = Fake {
+                repo_exists: true,
+                ..project()
+            };
+            mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
+            assert!(fake.created.borrow().is_empty());
+            assert_eq!(fake.pushed.borrow().len(), 1);
         }
-        assert!(fake.asked.borrow().is_empty());
+        // a_project_outside_git_is_refused_before_anything_is_pushed: a folder outside git is
+        // refused, and nothing is created or pushed.
+        {
+            let fake = Fake {
+                top: None,
+                ..project()
+            };
+            let err = mirror_project(&fake, "app", Path::new("/tmp/notes")).unwrap_err();
+            assert_eq!(err, NOT_A_REPO);
+            assert!(fake.created.borrow().is_empty());
+            assert!(fake.pushed.borrow().is_empty());
+        }
+        // a_detached_head_is_pushed_under_its_short_sha: a detached HEAD is pushed under its
+        // short sha.
+        {
+            let fake = Fake {
+                branch: None,
+                ..project()
+            };
+            let mirrored = mirror_project(&fake, "app", Path::new("/work/app")).expect("mirrors");
+            assert_eq!(mirrored.branch, "editor/detached-0123456");
+        }
+        // a_git_failure_is_reported_with_its_reason: a failed push is reported with git's reason.
+        {
+            let fake = Fake {
+                push_error: Some("remote rejected".to_string()),
+                ..project()
+            };
+            let err = mirror_project(&fake, "app", Path::new("/work/app")).unwrap_err();
+            assert_eq!(err, "--repo could not mirror the project: remote rejected");
+        }
     }
 
     #[test]
-    fn the_hubs_answer_to_a_session_request_names_its_project() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        let line =
-            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
-        to_hub(mirror_line(line, "app", &fake, &projects));
-        remember(
-            &mut lock(&projects),
-            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s9"}}"#,
-        );
-        assert_eq!(
-            lock(&projects).sessions.get("s9"),
-            Some(&PathBuf::from("/work/app"))
-        );
-    }
-
-    #[test]
-    fn a_failed_session_answer_names_no_session() {
-        let fake = project();
-        let projects = Mutex::new(Projects::default());
-        let line =
-            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app"}}"#;
-        to_hub(mirror_line(line, "app", &fake, &projects));
-        remember(
-            &mut lock(&projects),
-            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"no"}}"#,
-        );
-        assert!(lock(&projects).sessions.is_empty());
-        assert!(lock(&projects).pending.is_empty());
+    fn mirror_line_mirrors_forwards_and_answers_each_line_as_it_needs() {
+        // a_session_request_is_mirrored_and_forwarded_with_its_meta: a session request is
+        // mirrored and forwarded with the repo in its meta, and its params are kept.
+        {
+            let fake = Fake {
+                dirty: true,
+                ..project()
+            };
+            let projects = Mutex::new(Projects::default());
+            let line = r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work/app","mcpServers":[]}}"#;
+            let sent = to_hub(mirror_line(line, "app", &fake, &projects));
+            let value: Value = serde_json::from_str(&sent).unwrap();
+            let repo = &value["params"]["_meta"]["agentplaza"]["repo"];
+            assert_eq!(repo["name"], "app");
+            assert_eq!(repo["branch"], "editor/main");
+            assert_eq!(repo["commit"], "0123456789abcdef");
+            assert_eq!(repo["dirty"], true);
+            assert!(repo["note"].as_str().unwrap().contains("uncommitted"));
+            assert_eq!(value["params"]["cwd"], "/work/app", "the params are kept");
+            assert!(lock(&projects).pending.contains_key("1"));
+        }
+        // a_prompt_runs_in_the_project_its_session_was_opened_in: a prompt runs in the project
+        // its session was opened in.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            lock(&projects)
+                .sessions
+                .insert("s1".to_string(), PathBuf::from("/work/other"));
+            let line = r#"{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"s1","prompt":[]}}"#;
+            let sent = to_hub(mirror_line(line, "app", &fake, &projects));
+            assert!(sent.contains("_meta"));
+            assert_eq!(*fake.asked.borrow(), [PathBuf::from("/work/other")]);
+        }
+        // a_prompt_of_an_unknown_session_is_answered_with_an_error: a prompt for an unknown
+        // session gets an error answer to the editor, and nothing is pushed.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            let line = r#"{"jsonrpc":"2.0","id":9,"method":"session/prompt","params":{"sessionId":"nope","prompt":[]}}"#;
+            match mirror_line(line, "app", &fake, &projects) {
+                Some(Outgoing::Editor(answer)) => {
+                    let value: Value = serde_json::from_str(&answer).unwrap();
+                    assert_eq!(value["id"], 9);
+                    assert_eq!(value["error"]["code"], -32000);
+                }
+                _ => panic!("the editor is not answered"),
+            }
+            assert!(fake.pushed.borrow().is_empty());
+        }
+        // a_notification_that_cannot_be_mirrored_is_dropped: a notification that cannot be
+        // mirrored is dropped without an answer.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            let line =
+                r#"{"jsonrpc":"2.0","method":"session/prompt","params":{"sessionId":"nope"}}"#;
+            assert!(mirror_line(line, "app", &fake, &projects).is_none());
+        }
+        // other_lines_go_on_byte_for_byte: any other line goes on to the hub byte for byte.
+        {
+            let fake = project();
+            let projects = Mutex::new(Projects::default());
+            for line in [
+                r#"{"jsonrpc":"2.0","id":2,"method":"fs/read_text_file","params":{"path":"a"}}"#,
+                r#"{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"s1"}}"#,
+                "not json",
+            ] {
+                assert_eq!(to_hub(mirror_line(line, "app", &fake, &projects)), line);
+            }
+            assert!(fake.asked.borrow().is_empty());
+        }
     }
 
     #[test]

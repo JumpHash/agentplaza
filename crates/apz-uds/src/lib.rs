@@ -59,48 +59,51 @@ mod tests {
     use std::io::{Read, Write};
 
     #[test]
-    fn encodes_path_and_nul_terminates() {
-        let buf = encode_sun_path(Path::new("/tmp/vm3_1024")).unwrap();
-        assert_eq!(&buf[..13], b"/tmp/vm3_1024");
-        assert!(buf[13..].iter().all(|&b| b == 0));
-    }
+    fn encode_sun_path_enforces_path_rules() {
+        // Was encodes_path_and_nul_terminates: the path is copied in and the rest is NUL.
+        {
+            let buf = encode_sun_path(Path::new("/tmp/vm3_1024")).unwrap();
+            assert_eq!(&buf[..13], b"/tmp/vm3_1024");
+            assert!(buf[13..].iter().all(|&b| b == 0));
+        }
 
-    #[test]
-    fn accepts_exactly_107_bytes() {
-        let p = "a".repeat(107);
-        let buf = encode_sun_path(Path::new(&p)).unwrap();
-        assert_eq!(buf[106], b'a');
-        assert_eq!(buf[107], 0);
-    }
+        // Was accepts_exactly_107_bytes: 107 bytes fit with the terminating NUL at index 107.
+        {
+            let p = "a".repeat(107);
+            let buf = encode_sun_path(Path::new(&p)).unwrap();
+            assert_eq!(buf[106], b'a');
+            assert_eq!(buf[107], 0);
+        }
 
-    #[test]
-    fn rejects_108_bytes_as_too_long() {
-        let p = "a".repeat(108);
-        let err = encode_sun_path(Path::new(&p)).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("too long"));
-    }
+        // Was rejects_108_bytes_as_too_long: 108 bytes leave no room for the NUL.
+        {
+            let p = "a".repeat(108);
+            let err = encode_sun_path(Path::new(&p)).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains("too long"));
+        }
 
-    #[test]
-    fn rejects_empty_path() {
-        let err = encode_sun_path(Path::new("")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
+        // Was rejects_empty_path: an empty path is invalid.
+        {
+            let err = encode_sun_path(Path::new("")).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
 
-    #[test]
-    fn rejects_interior_nul() {
-        let err = encode_sun_path(Path::new("a\0b")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-    }
+        // Was rejects_interior_nul: a NUL byte inside the path is invalid.
+        {
+            let err = encode_sun_path(Path::new("a\0b")).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_utf8() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-        let p = Path::new(OsStr::from_bytes(b"/tmp/\xff"));
-        let err = encode_sun_path(p).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        // Was rejects_non_utf8 (unix only): a path that is not valid UTF-8 is invalid.
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let p = Path::new(OsStr::from_bytes(b"/tmp/\xff"));
+            let err = encode_sun_path(p).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]
@@ -152,6 +155,46 @@ mod tests {
             ),
             "{result:?}"
         );
+    }
+
+    /// A reader polling with short timeouts (as noded's relay and vsockd's pumps do) gets the peer's bytes and then its
+    /// half-close as EOF, wherever the half-close falls against a timeout. On Windows, `SO_RCVTIMEO` could lose that
+    /// EOF when it arrived as a timed-out receive was cancelled, and the relay then never passed the end on.
+    #[test]
+    fn a_polling_reader_sees_the_peers_half_close_as_eof() {
+        use std::time::{Duration, Instant};
+        for round in 0..40u64 {
+            let (mut reader, mut writer) = UnixStream::pair().unwrap();
+            reader
+                .set_read_timeout(Some(Duration::from_millis(5)))
+                .unwrap();
+            let polling = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut got = Vec::new();
+                let mut buf = [0u8; 16];
+                loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "round {round}: no EOF after {got:?}"
+                    );
+                    match reader.read(&mut buf) {
+                        Ok(0) => return got,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                        Err(err)
+                            if matches!(
+                                err.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(err) => panic!("round {round}: {err}"),
+                    }
+                }
+            });
+            std::thread::sleep(Duration::from_millis(round % 7));
+            writer.write_all(b"hello").unwrap();
+            std::thread::sleep(Duration::from_millis(round % 5));
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
+            assert_eq!(polling.join().expect("the polling reader"), b"hello");
+        }
     }
 
     /// A `shutdown` through one handle ends a read blocked on another, as EOF

@@ -105,51 +105,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn letters_digits_and_latin_one_are_their_own_code_points() {
-        assert_eq!(char_keysym('a'), 0x61);
-        assert_eq!(char_keysym('A'), 0x41);
-        assert_eq!(char_keysym('7'), 0x37);
-        assert_eq!(char_keysym(' '), 0x20);
-        assert_eq!(char_keysym('é'), 0xe9);
+    fn char_keysyms_are_code_points_with_a_unicode_offset() {
+        for (case, c, want) in [
+            ("a lowercase letter is its own code point", 'a', 0x61),
+            ("an uppercase letter is its own code point", 'A', 0x41),
+            ("a digit is its own code point", '7', 0x37),
+            ("a space is its own code point", ' ', 0x20),
+            ("a latin-1 letter is its own code point", 'é', 0xe9),
+            (
+                "other unicode uses the keysym offset",
+                '€',
+                0x0100_0000 + 0x20ac,
+            ),
+            (
+                "an astral char uses the keysym offset",
+                '😀',
+                0x0100_0000 + 0x1f600,
+            ),
+        ] {
+            assert_eq!(char_keysym(c), want, "{case}");
+        }
     }
 
     #[test]
-    fn other_unicode_uses_the_keysym_offset() {
-        assert_eq!(char_keysym('€'), 0x0100_0000 + 0x20ac);
-        assert_eq!(char_keysym('😀'), 0x0100_0000 + 0x1f600);
-    }
-
-    #[test]
-    fn named_keys_have_the_x_keysyms() {
-        assert_eq!(key_keysym(Key::Enter), 0xff0d);
-        assert_eq!(key_keysym(Key::Escape), 0xff1b);
-        assert_eq!(key_keysym(Key::Delete), 0xffff);
-        assert_eq!(key_keysym(Key::Left), 0xff51);
-        assert_eq!(key_keysym(Key::Up), 0xff52);
-        assert_eq!(key_keysym(Key::Right), 0xff53);
-        assert_eq!(key_keysym(Key::Down), 0xff54);
-        assert_eq!(key_keysym(Key::PageUp), 0xff55);
-        assert_eq!(key_keysym(Key::PageDown), 0xff56);
-        assert_eq!(key_keysym(Key::Home), 0xff50);
-        assert_eq!(key_keysym(Key::End), 0xff57);
-        assert_eq!(key_keysym(Key::Insert), 0xff63);
-        assert_eq!(key_keysym(Key::Backspace), 0xff08);
-        assert_eq!(key_keysym(Key::Tab), 0xff09);
-        assert_eq!(key_keysym(Key::Space), 0x20);
-    }
-
-    #[test]
-    fn function_keys_run_from_f1_to_f24_in_order() {
-        assert_eq!(key_keysym(Key::F(1)), 0xffbe);
-        assert_eq!(key_keysym(Key::F(12)), 0xffc9);
-        assert_eq!(key_keysym(Key::F(13)), 0xffca);
-        assert_eq!(key_keysym(Key::F(24)), 0xffd5);
-    }
-
-    #[test]
-    fn chars_in_a_combo_are_their_keysyms() {
-        assert_eq!(key_keysym(Key::Char('s')), 0x73);
-        assert_eq!(key_keysym(Key::Char('-')), 0x2d);
+    fn key_keysyms_cover_named_keys_function_keys_and_combo_chars() {
+        for (case, key, want) in [
+            ("Enter has the x keysym", Key::Enter, 0xff0d),
+            ("Escape has the x keysym", Key::Escape, 0xff1b),
+            ("Delete has the x keysym", Key::Delete, 0xffff),
+            ("Left has the x keysym", Key::Left, 0xff51),
+            ("Up has the x keysym", Key::Up, 0xff52),
+            ("Right has the x keysym", Key::Right, 0xff53),
+            ("Down has the x keysym", Key::Down, 0xff54),
+            ("PageUp has the x keysym", Key::PageUp, 0xff55),
+            ("PageDown has the x keysym", Key::PageDown, 0xff56),
+            ("Home has the x keysym", Key::Home, 0xff50),
+            ("End has the x keysym", Key::End, 0xff57),
+            ("Insert has the x keysym", Key::Insert, 0xff63),
+            ("Backspace has the x keysym", Key::Backspace, 0xff08),
+            ("Tab has the x keysym", Key::Tab, 0xff09),
+            ("Space has the x keysym", Key::Space, 0x20),
+            ("F1 starts the function keys", Key::F(1), 0xffbe),
+            ("F12 is the twelfth function key", Key::F(12), 0xffc9),
+            ("F13 follows F12", Key::F(13), 0xffca),
+            ("F24 is the last function key", Key::F(24), 0xffd5),
+            ("a char in a combo is its keysym", Key::Char('s'), 0x73),
+            ("a dash in a combo is its keysym", Key::Char('-'), 0x2d),
+        ] {
+            assert_eq!(key_keysym(key), want, "{case}");
+        }
     }
 
     #[test]

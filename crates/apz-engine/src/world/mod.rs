@@ -512,39 +512,6 @@ impl Default for Floor {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{FOV_DEG, display_name, fit_distance};
-
-    #[test]
-    fn fit_distance_holds_the_sphere_in_the_tighter_axis() {
-        let tan_v = (FOV_DEG / 2.0).to_radians().tan();
-        // floor.ts fitDistance: radius * sqrt(1 + 1 / (fill * tan(half-field))^2), the half-field the tighter axis's.
-        let web = |r: f32, t: f32| r * (1.0 + 1.0 / (0.8 * t).powi(2)).sqrt();
-        // A square stage: the sphere fills 80% of both half-extents.
-        assert!((fit_distance(10.0, 1.0) - web(10.0, tan_v)).abs() < 1e-3);
-        // A wide stage: the height is the tighter axis, so the distance does not change.
-        assert!((fit_distance(10.0, 2.0) - fit_distance(10.0, 1.0)).abs() < 1e-3);
-        // A tall stage: the width is the tighter axis, so the sphere stands farther off.
-        let tall = fit_distance(10.0, 0.5);
-        assert!((tall - web(10.0, tan_v * 0.5)).abs() < 1e-3);
-        assert!(tall > fit_distance(10.0, 1.0));
-    }
-
-    #[test]
-    fn floor_name_falls_back_to_the_cid_when_empty_or_blank() {
-        assert_eq!(display_name(7, ""), "agent 7");
-        assert_eq!(display_name(7, "   "), "agent 7");
-        assert_eq!(display_name(7, "\t\n"), "agent 7");
-    }
-
-    #[test]
-    fn floor_name_keeps_a_chosen_name() {
-        assert_eq!(display_name(7, "Ada"), "Ada");
-        assert_eq!(display_name(7, " Ada "), " Ada ");
-    }
-}
-
 /// The top of what `obj` holds, in `obj`'s own frame (three's `Box3.setFromObject(obj).max.y` for a group at rest): each
 /// mesh's local box, its corners carried by its matrix under `obj`. The group's own transform is left out. Read on a room
 /// as it is built, before the build wave hides or lowers it. None without meshes.

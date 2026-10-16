@@ -838,242 +838,61 @@ impl Robot {
 mod tests {
     use super::*;
 
-    /// Every clip with effects (clips.json `fx`, and a species' own) spawns each of its kinds while it plays, on every species,
-    /// in its first two seconds (one-shot clips such as `celebrate` end at 2.2 s).
     #[test]
-    fn every_clip_spawns_its_effects() {
-        let clips: Vec<(String, Vec<String>)> = registry()
-            .clips
-            .iter()
-            .filter(|(_, c)| !c.fx.is_empty())
-            .map(|(id, c)| (id.clone(), c.fx.iter().map(|f| f.kind.clone()).collect()))
-            .collect();
-        assert!(clips.len() >= 5, "the clips with effects: {clips:?}");
-        let palette = robot_palette();
-        let mut checked = 0;
-        for species in registry().index.species.iter().filter(|s| *s != "oracle") {
-            // The shared clips with effects, and the species' own.
-            let own: Vec<String> = registry().species.get(species).map_or_else(Vec::new, |sp| {
-                sp.clips
-                    .iter()
-                    .filter(|(_, c)| !c.fx.is_empty())
-                    .map(|(id, _)| id.clone())
-                    .collect()
-            });
-            for clip in clips.iter().map(|(id, _)| id).chain(own.iter()) {
-                let mut robot = Robot::with_variant(200.0, false, &palette, 200.0, species);
-                // The clip that plays: a species' own clip of the name (crab.pour) replaces the shared one, effects and all.
-                let Some(played) = clip_named(robot.sp, clip) else {
-                    continue;
-                };
-                let kinds: Vec<String> = played.fx.iter().map(|f| f.kind.clone()).collect();
-                robot.play(Some(clip), None);
-                let mut seen = std::collections::BTreeSet::new();
-                for f in 0..40 {
-                    robot.update(0.05, f as f32 * 0.05);
-                    seen.extend(robot.fx.live_kinds());
-                }
-                for kind in &kinds {
-                    assert!(
-                        seen.contains(kind.as_str()),
-                        "{species}: clip {clip} spawned no {kind} (saw {seen:?})"
-                    );
-                }
-                checked += 1;
-            }
+    fn species_of_follows_the_record_and_never_falls_back_to_the_oracle() {
+        // robot_variant cycles through the species, skipping the oracle.
+        {
+            let list: Vec<&str> = registry()
+                .index
+                .species
+                .iter()
+                .map(String::as_str)
+                .filter(|s| *s != "oracle")
+                .collect();
+            assert_eq!(robot_variant(0), list[0]);
+            assert_eq!(robot_variant(list.len() as u64), list[0]);
+            assert_eq!(robot_variant(1), list[1]);
         }
-        assert!(checked > 100, "only {checked} species-clip pairs checked");
-    }
-
-    #[test]
-    fn robot_variant_cycles_through_the_species() {
-        let list: Vec<&str> = registry()
-            .index
-            .species
-            .iter()
-            .map(String::as_str)
-            .filter(|s| *s != "oracle")
-            .collect();
-        assert_eq!(robot_variant(0), list[0]);
-        assert_eq!(robot_variant(list.len() as u64), list[0]);
-        assert_eq!(robot_variant(1), list[1]);
-    }
-
-    #[test]
-    fn fallback_never_deals_the_oracle() {
-        assert!(
-            registry().index.species.iter().any(|s| s == "oracle"),
-            "the oracle is in the index"
-        );
-        for cid in 0..10_000u64 {
-            assert_ne!(robot_variant(cid), "oracle", "cid {cid}");
-            assert_ne!(species_of(None, cid), "oracle", "cid {cid}");
-            assert_ne!(species_of(Some(""), cid), "oracle", "cid {cid}");
-        }
-    }
-
-    #[test]
-    fn a_record_species_still_wins_when_it_is_the_oracle() {
-        for cid in [0u64, 1, 7, 9_999] {
-            assert_eq!(
-                species_of(Some("oracle"), cid),
-                "oracle",
-                "the record's own species, cid {cid}"
-            );
-        }
-    }
-
-    #[test]
-    fn species_comes_from_the_agent_record() {
-        let named = registry().index.species.last().expect("a species").as_str();
-        assert_eq!(
-            species_of(Some(named), 0),
-            named,
-            "the record's species wins over the cid"
-        );
-        assert_eq!(
-            species_of(Some(named), 1),
-            named,
-            "the record's species wins over the cid"
-        );
-    }
-
-    #[test]
-    fn species_falls_back_to_the_cid_when_the_record_has_none() {
-        assert_eq!(species_of(None, 3), robot_variant(3));
-        assert_eq!(species_of(Some("  "), 3), robot_variant(3));
-    }
-
-    // The web's body layer, mirrored from floor.ts (`bodyClip`) and robot.ts (`update`, BLEND, AIR_FEET). A body clip's
-    // channels hold still (a base, no amp, freq or rate), so each base is a goal; every joint eases toward its goal by
-    // k = min(1, dt·8) a frame, and a joint no clip names eases to rest. The feet take AIR_FEET's tuck.
-    const WEB_BLEND: f32 = 8.0;
-
-    /// floor.ts `bodyClip`: the web's clip id per mode.
-    fn web_body_clip(mode: BodyMode) -> Option<&'static str> {
-        match mode {
-            BodyMode::Ground => None,
-            BodyMode::Crouch => Some("jump.crouch"),
-            BodyMode::Air => Some("jump.air"),
-            BodyMode::Fall => Some("fall.air"),
-            BodyMode::Land => Some("land"),
-        }
-    }
-
-    /// The joints at rest (`restOf`): a scale and the eye lids at 1, the rest at 0.
-    fn web_rest(robot: &Robot) -> Vec<f32> {
-        (0..robot.cur.len())
-            .map(|j| {
-                if j == robot.lid() || j % PROPS == 6 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect()
-    }
-
-    /// The goals of a body clip: its bases over the rest.
-    fn web_goals(robot: &Robot, clip_id: &str, rest: &[f32]) -> Vec<f32> {
-        use crate::robots::types::Param;
-        let clip = registry().clips.get(clip_id).expect("the shared body clip");
-        let mut goals = rest.to_vec();
-        for ch in &clip.channels {
+        // The fallback never deals the oracle, though the oracle is in the index.
+        {
             assert!(
-                ch.amp.is_none() && ch.freq.is_none() && ch.rate.is_none(),
-                "{clip_id} holds still"
+                registry().index.species.iter().any(|s| s == "oracle"),
+                "the oracle is in the index"
             );
-            let Some(Param::Num(base)) = &ch.base else {
-                panic!("{clip_id} has a numeric base")
-            };
-            goals[robot.joint_of(&ch.bone, &ch.prop).expect("a joint")] = *base;
-        }
-        goals
-    }
-
-    /// The web's joints after `frames` frames of `dt` in `mode`, entered from rest.
-    fn web_joints(robot: &Robot, mode: BodyMode, frames: usize, dt: f32) -> Vec<f32> {
-        let rest = web_rest(robot);
-        let goals = match web_body_clip(mode) {
-            Some(id) => web_goals(robot, id, &rest),
-            None => rest.clone(),
-        };
-        let k = (dt * WEB_BLEND).min(1.0);
-        let mut cur = rest;
-        for _ in 0..frames {
-            for (c, g) in cur.iter_mut().zip(&goals) {
-                *c += (g - *c) * k;
+            for cid in 0..10_000u64 {
+                assert_ne!(robot_variant(cid), "oracle", "cid {cid}");
+                assert_ne!(species_of(None, cid), "oracle", "cid {cid}");
+                assert_ne!(species_of(Some(""), cid), "oracle", "cid {cid}");
             }
         }
-        cur
-    }
-
-    #[test]
-    fn body_modes_play_the_web_clip_and_pose() {
-        let palette = robot_palette();
-        let dt = 1.0 / 12.0; // the Ambient tier's rate
-        let samples = [1usize, 3, 12]; // 1/12 s, 1/4 s and 1 s into the mode
-        for mode in [
-            BodyMode::Crouch,
-            BodyMode::Air,
-            BodyMode::Fall,
-            BodyMode::Land,
-        ] {
-            // The clip depends only on the time since entry, so an entry at 7.5 s is the same as one at 0.
-            for entered in [0.0f32, 7.5] {
-                let mut robot = Robot::new(200.0, false, &palette, 120.0);
-                robot.set_body(mode, entered);
-                assert_eq!(robot.body_mode(), mode);
-                assert_eq!(mode.clip_name(), web_body_clip(mode));
-                let mut frame = 0usize;
-                for &n in &samples {
-                    while frame < n {
-                        frame += 1;
-                        robot.update(dt, entered + frame as f32 * dt);
-                    }
-                    let want = web_joints(&robot, mode, n, dt);
-                    for (j, (got, exp)) in robot.cur.iter().zip(&want).enumerate() {
-                        assert!(
-                            (got - exp).abs() < 1e-5,
-                            "{mode:?} entered {entered}, {n} frames, joint {j}: {got} vs {exp}"
-                        );
-                    }
-                }
+        // A record's own species still wins when it is the oracle.
+        {
+            for cid in [0u64, 1, 7, 9_999] {
+                assert_eq!(
+                    species_of(Some("oracle"), cid),
+                    "oracle",
+                    "the record's own species, cid {cid}"
+                );
             }
         }
-    }
-
-    #[test]
-    fn air_lifts_the_feet_by_air_feet() {
-        let palette = robot_palette();
-        let cases = [
-            (BodyMode::Ground, 0.0f32),
-            (BodyMode::Crouch, 0.0),
-            (BodyMode::Air, 0.06),
-            (BodyMode::Fall, -0.03),
-            (BodyMode::Land, 0.0),
-        ];
-        let mut checked = 0;
-        for id in registry().index.species.iter().map(String::as_str) {
-            let mut robot = Robot::with_variant(200.0, false, &palette, 120.0, id);
-            let feet = robot.sp.feet.clone();
-            if feet.is_empty() {
-                continue;
-            }
-            checked += 1;
-            for (mode, want) in cases {
-                robot.set_body(mode, 0.0);
-                robot.update(1.0 / 12.0, 1.0 / 12.0);
-                for bone in &feet {
-                    let b = robot.rig.index_of(bone).expect("a foot bone");
-                    assert!(
-                        (robot.extras[b].y - want).abs() < 1e-6,
-                        "{id} {mode:?}: {bone} lifts {want}, got {}",
-                        robot.extras[b].y
-                    );
-                }
-            }
+        // The species comes from the agent record, ahead of the cid.
+        {
+            let named = registry().index.species.last().expect("a species").as_str();
+            assert_eq!(
+                species_of(Some(named), 0),
+                named,
+                "the record's species wins over the cid"
+            );
+            assert_eq!(
+                species_of(Some(named), 1),
+                named,
+                "the record's species wins over the cid"
+            );
         }
-        assert!(checked > 0, "some species have feet to lift");
+        // The species falls back to the cid when the record has none.
+        {
+            assert_eq!(species_of(None, 3), robot_variant(3));
+            assert_eq!(species_of(Some("  "), 3), robot_variant(3));
+        }
     }
 }

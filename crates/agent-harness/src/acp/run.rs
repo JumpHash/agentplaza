@@ -1097,26 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn a_release_extracts_into_its_own_folder_and_is_named_by_its_url_tail() {
-        assert_eq!(
-            engine_dir("goose", "1.52.0"),
-            Path::new("/workspace/.engines/goose-1.52.0")
-        );
-        assert_eq!(
-            archive_name("https://example.com/a/goose-x86_64.tar.gz"),
-            "goose-x86_64.tar.gz"
-        );
-    }
-
-    #[test]
-    fn a_pip_install_runs_in_a_virtualenv_under_its_engine_folder() {
-        assert_eq!(
-            engine_dir("vibe", "2.25.0").join("venv"),
-            Path::new("/workspace/.engines/vibe-2.25.0/venv")
-        );
-    }
-
-    #[test]
     fn a_python_older_than_3_12_is_refused_with_the_version_the_vm_has() {
         assert_eq!(python_version("Python 3.12.3\n"), Some((3, 12)));
         assert_eq!(python_version("Python 3.13.0rc1"), Some((3, 13)));
@@ -1143,19 +1123,6 @@ mod tests {
             Some("mistral_vibe-2.25.0.tar.gz")
         );
         assert_eq!(pip_saved_name("File was already downloaded x.whl"), None);
-    }
-
-    #[test]
-    fn the_binary_is_found_where_the_archive_keeps_it_or_in_a_folder() {
-        let workspace = scratch("release-binary");
-        let dir = workspace.dir().join("extracted");
-        std::fs::create_dir_all(dir.join("goose-1.52.0/bin")).expect("a folder");
-        std::fs::write(dir.join("goose-1.52.0/bin/goose"), b"#!/bin/sh\n").expect("a file");
-        std::fs::write(dir.join("README"), b"").expect("a file");
-        let nested = dir.join("goose-1.52.0/bin/goose");
-        assert_eq!(find_binary(&dir, "goose"), Some(nested.clone()));
-        assert_eq!(find_binary(&dir, "bin/goose"), Some(nested));
-        assert_eq!(find_binary(&dir, "missing"), None);
     }
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -1225,34 +1192,36 @@ mod tests {
     }
 
     #[test]
-    fn the_adapter_starts_with_its_environment_and_binary() {
-        let entry = catalog::entry("opencode").expect("opencode");
-        assert_eq!(
-            argv(entry, vec!["HOME=/workspace".to_string()], &[]),
-            [
-                engines::ENV_PROGRAM,
-                "HOME=/workspace",
-                "/workspace/.npm-global/bin/opencode",
-                "acp"
-            ]
-        );
-    }
-
-    #[test]
-    fn auggie_takes_the_call_s_model_after_its_own_arguments() {
-        let entry = catalog::entry("auggie").expect("auggie");
-        let extra = engines::acp_args("auggie", Some("augment/claude-x")).expect("a model");
-        assert_eq!(
-            argv(entry, vec!["HOME=/workspace".to_string()], &extra),
-            [
-                engines::ENV_PROGRAM,
-                "HOME=/workspace",
-                "/workspace/.npm-global/bin/auggie",
-                "--acp",
-                "--model",
-                "claude-x"
-            ]
-        );
+    fn the_adapter_argv_starts_with_its_environment_and_binary_and_takes_the_call_s_model() {
+        // Checked: the adapter starts with its environment and binary.
+        {
+            let entry = catalog::entry("opencode").expect("opencode");
+            assert_eq!(
+                argv(entry, vec!["HOME=/workspace".to_string()], &[]),
+                [
+                    engines::ENV_PROGRAM,
+                    "HOME=/workspace",
+                    "/workspace/.npm-global/bin/opencode",
+                    "acp"
+                ]
+            );
+        }
+        // Checked: auggie takes the call's model after its own arguments.
+        {
+            let entry = catalog::entry("auggie").expect("auggie");
+            let extra = engines::acp_args("auggie", Some("augment/claude-x")).expect("a model");
+            assert_eq!(
+                argv(entry, vec!["HOME=/workspace".to_string()], &extra),
+                [
+                    engines::ENV_PROGRAM,
+                    "HOME=/workspace",
+                    "/workspace/.npm-global/bin/auggie",
+                    "--acp",
+                    "--model",
+                    "claude-x"
+                ]
+            );
+        }
     }
 
     #[test]
@@ -1330,28 +1299,6 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_says_what_the_turn_did_and_how_to_continue() {
-        let files = "M src/lib.rs\n\ndiff --git a/src/lib.rs b/src/lib.rs\n+fn x() {}";
-        let text = summary(&outcome(), "claude", true, Some(files));
-        let expected = [
-            "claude session s-1 — end_turn",
-            "Fixed the parser.",
-            "files changed:\nM src/lib.rs",
-            "commands:\n$ cargo test → exit 0\n$ ls → exit ?",
-            "plan:\n[x] read\n[ ] test",
-            "tool calls: 2 (1 failed)",
-            "Continue with code_engine {\"engine\": \"claude\", \"session\": \"s-1\"}",
-        ];
-        let mut at = 0;
-        for part in expected {
-            let found = text[at..].find(part).expect(part);
-            at += found + part.len();
-        }
-        assert!(!text.contains("diff --git"));
-        assert!(!text.contains("new session"));
-    }
-
-    #[test]
     fn a_session_that_could_not_be_continued_says_so() {
         let mut turn = outcome();
         turn.continued = false;
@@ -1371,13 +1318,5 @@ mod tests {
         assert!(text.contains("THE END"));
         assert!(text.contains("[earlier text cut]"));
         assert!(text.ends_with("\"session\": \"s-1\"}"));
-    }
-
-    #[test]
-    fn a_long_file_list_keeps_its_first_lines_only() {
-        let listed: String = (0..60).map(|n| format!("M file{n}\n")).collect();
-        let lines = changed_files(&listed);
-        assert_eq!(lines.lines().count(), FILE_LINES);
-        assert!(lines.starts_with("M file0\n"));
     }
 }

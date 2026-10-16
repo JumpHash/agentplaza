@@ -229,19 +229,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_model_directory_is_taken_as_an_absolute_path() {
-        let dir = std::env::temp_dir();
-        let path = absolute(dir.to_str().expect("utf-8 temp dir")).expect("an existing directory");
-        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
-    }
-
-    #[test]
-    fn a_missing_or_plain_file_is_refused_as_a_model_directory() {
-        assert!(absolute("/definitely/not/a/model/dir").is_err());
-        let file = std::env::temp_dir().join(format!("apz-lab-models-{}", std::process::id()));
-        std::fs::write(&file, b"x").expect("a temp file");
-        let refused = absolute(file.to_str().expect("utf-8 temp file"));
-        let _ = std::fs::remove_file(&file);
-        assert!(refused.is_err(), "a file is not a model directory");
+    fn the_model_directory_is_resolved_or_refused() {
+        // A model directory is taken as an absolute path.
+        {
+            let dir = std::env::temp_dir();
+            let path =
+                absolute(dir.to_str().expect("utf-8 temp dir")).expect("an existing directory");
+            assert!(std::path::Path::new(&path).is_absolute(), "{path}");
+        }
+        // A missing or plain file is refused as a model directory.
+        {
+            assert!(absolute("/definitely/not/a/model/dir").is_err());
+            let file = std::env::temp_dir().join(format!("apz-lab-models-{}", std::process::id()));
+            std::fs::write(&file, b"x").expect("a temp file");
+            let refused = absolute(file.to_str().expect("utf-8 temp file"));
+            let _ = std::fs::remove_file(&file);
+            assert!(refused.is_err(), "a file is not a model directory");
+        }
     }
 }

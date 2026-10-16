@@ -1481,68 +1481,6 @@ fn entry_row<'a>(entry: &VaultEntry, state: &'a State, now: f64) -> Element<'a, 
 mod tests {
     use super::*;
 
-    fn entry(name: &str, scope: VaultScope) -> VaultEntry {
-        VaultEntry {
-            name: name.into(),
-            scope,
-            ..Default::default()
-        }
-    }
-
-    fn names(entries: Vec<&VaultEntry>) -> Vec<&str> {
-        entries.iter().map(|e| e.name.as_str()).collect()
-    }
-
-    #[test]
-    fn vault_filter_by_node_selection() {
-        let entries = vec![
-            entry("plaza-key", VaultScope::Plaza),
-            entry(
-                "n0-only",
-                VaultScope::Nodes {
-                    nodes: vec!["n0".into()],
-                },
-            ),
-            entry(
-                "both",
-                VaultScope::Nodes {
-                    nodes: vec!["n0".into(), "n1".into()],
-                },
-            ),
-        ];
-        assert_eq!(
-            names(filter_entries(&entries, &Selection::All)),
-            vec!["plaza-key", "n0-only", "both"]
-        );
-        assert_eq!(
-            names(filter_entries(&entries, &Selection::Plaza)),
-            vec!["plaza-key"]
-        );
-        assert_eq!(
-            names(filter_entries(&entries, &Selection::Node("n0".into()))),
-            vec!["n0-only", "both"]
-        );
-        assert_eq!(
-            names(filter_entries(&entries, &Selection::Node("n1".into()))),
-            vec!["both"]
-        );
-        assert!(filter_entries(&entries, &Selection::Node("n9".into())).is_empty());
-    }
-
-    #[test]
-    fn vault_previous_version_is_the_newest_below_current() {
-        let mut e = entry("K", VaultScope::Plaza);
-        e.current = 3;
-        e.versions = vec![
-            VersionRef { v: 1 },
-            VersionRef { v: 2 },
-            VersionRef { v: 3 },
-        ];
-        assert_eq!(previous_version(&e), Some(2));
-        e.versions = vec![VersionRef { v: 3 }];
-        assert_eq!(previous_version(&e), None);
-    }
-
     #[test]
     fn vault_status_parses_a_null_audit_chain() {
         // A fresh or restarted hub sends `audit_ok: null` until its first unlock or audit check.

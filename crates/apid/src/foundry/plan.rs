@@ -710,27 +710,29 @@ mod tests {
     }
 
     #[test]
-    fn single_gpu_is_single() {
-        let machines = vec![machine("a", cuda(1), &["10.0.0.1"])];
-        let plan = expect_plan(place(&machines, &Reach::default(), &req(1, 8)));
-        assert_eq!(plan.mode, Mode::Single);
-        assert_eq!(plan.islands.len(), 1);
-        assert_eq!(shape(&plan.islands[0]), vec![("a", vec![0])]);
-        assert_eq!(plan.islands[0].rdzv, None);
-        assert_eq!(plan.devices_total, 1);
-        assert_eq!(plan.staleness, 0);
-    }
-
-    #[test]
-    fn four_gpus_in_one_box_are_one_tight_island() {
-        let machines = vec![machine("a", cuda(4), &["10.0.0.1"])];
-        let plan = expect_plan(place(&machines, &Reach::default(), &req(1, 8)));
-        assert_eq!(plan.mode, Mode::Tight);
-        assert_eq!(plan.islands.len(), 1);
-        assert_eq!(shape(&plan.islands[0]), vec![("a", vec![0, 1, 2, 3])]);
-        assert_eq!(plan.islands[0].leader, "a");
-        assert_eq!(plan.islands[0].rdzv, None);
-        assert_eq!(plan.inner_steps, INNER_STEPS);
+    fn one_box_placement_is_single_or_one_tight_island() {
+        // A single GPU is single.
+        {
+            let machines = vec![machine("a", cuda(1), &["10.0.0.1"])];
+            let plan = expect_plan(place(&machines, &Reach::default(), &req(1, 8)));
+            assert_eq!(plan.mode, Mode::Single);
+            assert_eq!(plan.islands.len(), 1);
+            assert_eq!(shape(&plan.islands[0]), vec![("a", vec![0])]);
+            assert_eq!(plan.islands[0].rdzv, None);
+            assert_eq!(plan.devices_total, 1);
+            assert_eq!(plan.staleness, 0);
+        }
+        // Four GPUs in one box are one tight island.
+        {
+            let machines = vec![machine("a", cuda(4), &["10.0.0.1"])];
+            let plan = expect_plan(place(&machines, &Reach::default(), &req(1, 8)));
+            assert_eq!(plan.mode, Mode::Tight);
+            assert_eq!(plan.islands.len(), 1);
+            assert_eq!(shape(&plan.islands[0]), vec![("a", vec![0, 1, 2, 3])]);
+            assert_eq!(plan.islands[0].leader, "a");
+            assert_eq!(plan.islands[0].rdzv, None);
+            assert_eq!(plan.inner_steps, INNER_STEPS);
+        }
     }
 
     #[test]

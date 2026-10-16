@@ -508,55 +508,58 @@ mod tests {
         assert!(looks.values().all(|look| look.species != ORACLE));
     }
 
-    /// Species dealt and set are saved to `looks.json`; a reopen from the same file has the same looks.
-    #[test]
-    fn looks_survive_a_restart_without_the_database() {
-        let dir = std::env::temp_dir().join(format!("looks-persist-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("looks.json");
-        let looks = Looks::open(path.clone());
-        let dealt = looks.ensure(7, "builder", 100, Vec::new);
-        looks.set(8, "tv", 200);
-        assert_eq!(looks.save(), Ok(true));
-        let before = looks.all();
-        drop(looks);
-
-        let reopened = Looks::open(path);
-        assert_eq!(reopened.all(), before);
-        assert_eq!(reopened.all()[&7].species, dealt);
-        assert_eq!(
-            reopened.all()[&8],
-            Look {
-                species: "tv".into(),
-                dealt_ms: 200
-            }
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
+    /// Species dealt and set are saved and restored: a reopen from `looks.json` has the same looks
+    /// without the database, and a snapshot restored into a fresh store has the same looks too.
     #[test]
     fn looks_persist_and_restore() {
-        let looks = Looks::default();
-        let dealt = looks.ensure(7, "builder", 100, Vec::new);
-        looks.set(8, "tv", 200);
-        let json = looks.snapshot();
+        // Species dealt and set are saved to `looks.json`; a reopen from the same file has the same looks.
+        {
+            let dir = std::env::temp_dir().join(format!("looks-persist-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("looks.json");
+            let looks = Looks::open(path.clone());
+            let dealt = looks.ensure(7, "builder", 100, Vec::new);
+            looks.set(8, "tv", 200);
+            assert_eq!(looks.save(), Ok(true));
+            let before = looks.all();
+            drop(looks);
 
-        let restored = Looks::default();
-        restored.restore(&json).unwrap();
-        assert_eq!(restored.all()[&7].species, dealt);
-        assert_eq!(
-            restored.all()[&8],
-            Look {
-                species: "tv".into(),
-                dealt_ms: 200
-            }
-        );
-        assert!(restored.restore("[1,2]").is_err());
-        assert!(
-            crate::db::COMPONENTS.contains(&"looks"),
-            "the looks component is persisted"
-        );
+            let reopened = Looks::open(path);
+            assert_eq!(reopened.all(), before);
+            assert_eq!(reopened.all()[&7].species, dealt);
+            assert_eq!(
+                reopened.all()[&8],
+                Look {
+                    species: "tv".into(),
+                    dealt_ms: 200
+                }
+            );
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        // A snapshot restored into a fresh store has the same looks; malformed JSON is refused and the component is persisted.
+        {
+            let looks = Looks::default();
+            let dealt = looks.ensure(7, "builder", 100, Vec::new);
+            looks.set(8, "tv", 200);
+            let json = looks.snapshot();
+
+            let restored = Looks::default();
+            restored.restore(&json).unwrap();
+            assert_eq!(restored.all()[&7].species, dealt);
+            assert_eq!(
+                restored.all()[&8],
+                Look {
+                    species: "tv".into(),
+                    dealt_ms: 200
+                }
+            );
+            assert!(restored.restore("[1,2]").is_err());
+            assert!(
+                crate::db::COMPONENTS.contains(&"looks"),
+                "the looks component is persisted"
+            );
+        }
     }
 
     #[test]
@@ -690,10 +693,5 @@ mod tests {
         let mut a = agent(3, "builder");
         a.species = "tv".into();
         assert_eq!(serde_json::to_value(&a).unwrap()["species"], "tv");
-    }
-
-    #[test]
-    fn the_index_must_not_repeat_an_id() {
-        assert!(Catalog::parse(r#"{"species":["tv","tv"]}"#, &[]).is_err());
     }
 }

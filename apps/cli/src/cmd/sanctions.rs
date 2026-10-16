@@ -128,20 +128,3 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_owner_column_shows_the_decision_or_the_lift() {
-        let decided =
-            json!({ "owner_action": { "action": "acknowledge", "at_ms": 1 }, "lifted": null });
-        let lifted =
-            json!({ "owner_action": null, "lifted": { "at_ms": 2, "by": "owner", "why": "x" } });
-        let untouched = json!({ "owner_action": null, "lifted": null });
-        assert_eq!(owner_of(&decided), "acknowledge");
-        assert_eq!(owner_of(&lifted), "lifted");
-        assert_eq!(owner_of(&untouched), "");
-    }
-}

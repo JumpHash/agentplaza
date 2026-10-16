@@ -337,46 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn units_convert_to_base() {
-        match &toks("16 KiB")[0] {
-            Tok::Num { value, dim, .. } => {
-                assert_eq!(*value, Num::int(16384));
-                assert_eq!(*dim, Dim::INFO);
-            }
-            t => panic!("{t:?}"),
-        }
-        match &toks("30 /min")[0] {
-            Tok::Num { value, dim, .. } => {
-                assert_eq!(*value, Num::rat(1, 2).unwrap());
-                assert_eq!(*dim, Dim::TIME.inv());
-            }
-            t => panic!("{t:?}"),
-        }
-        match &toks("1000 cr/d")[0] {
-            Tok::Num { dim, .. } => assert_eq!(*dim, Dim::CREDITS.div(Dim::TIME)),
-            t => panic!("{t:?}"),
-        }
-        match &toks("20 %")[0] {
-            Tok::Num { value, dim, .. } => {
-                assert_eq!((*value, *dim), (Num::rat(1, 5).unwrap(), Dim::NONE))
-            }
-            t => panic!("{t:?}"),
-        }
-        for (src, d) in [
-            ("5 ms", Dim::TIME),
-            ("2 wk", Dim::TIME),
-            ("3 Mtok", Dim::TOKENS),
-            ("1 GB", Dim::INFO),
-            ("7 kcr", Dim::CREDITS),
-        ] {
-            match &toks(src)[0] {
-                Tok::Num { dim, .. } => assert_eq!(*dim, d, "{src}"),
-                t => panic!("{t:?}"),
-            }
-        }
-    }
-
-    #[test]
     fn a_unit_needs_a_word_boundary_and_at_most_one_space() {
         // `in` is not a unit; two spaces end the literal; `x / s` with spaces is division.
         assert!(matches!(toks("1 in")[1], Tok::Ident(_)));

@@ -789,31 +789,69 @@ mod tests {
     const COUNTER: &str = "machine C {\n const N: Int\n var x: Int in {0, 1}\n action Inc { when x < N\n x' = x + 1 }\n invariant \"bounded\" x <= N\n transition \"up\" x' >= x\n}\nmodel \"m\" of C { const N = 3 }\n";
 
     #[test]
-    fn counter_states_depth_and_deadlock() {
-        let p = load(COUNTER);
-        let (pk, m) = model(&p, "m");
-        let r = explore(&p, pk, m, &Options::default()).unwrap();
-        assert_eq!(r.states.len(), 4); // 0, 1, 2, 3
-        assert_eq!(r.depth, 3); // x starts in {0, 1}: 1 → 2 → 3
-        assert_eq!(r.violations.len(), 1);
-        assert_eq!(r.violations[0].what, Found::Deadlock);
-        assert_eq!(r.states[r.violations[0].state].vals[0], Value::int(3));
-    }
-
-    #[test]
-    fn shortest_counterexample() {
-        let src = COUNTER
-            .replace("x <= N", "x < 3")
-            .replace("const N = 3", "const N = 5\n deadlock allowed");
-        let p = load(&src);
-        let (pk, m) = model(&p, "m");
-        let r = explore(&p, pk, m, &Options::default()).unwrap();
-        let v = &r.violations[0];
-        assert_eq!(v.what, Found::Invariant("bounded".into()));
-        // From x = 1 two steps reach 3: init, Inc, Inc (not the 4-state path from 0).
-        assert_eq!(r.path_to(v.state).len(), 3);
-        let t = r.render_trace(v, "");
-        assert!(t.contains("1. init") && t.contains("3. Inc"), "{t}");
+    fn explore_reports_states_violations_and_errors() {
+        // counter_states_depth_and_deadlock: state count, depth, and the deadlock.
+        {
+            let p = load(COUNTER);
+            let (pk, m) = model(&p, "m");
+            let r = explore(&p, pk, m, &Options::default()).unwrap();
+            assert_eq!(r.states.len(), 4); // 0, 1, 2, 3
+            assert_eq!(r.depth, 3); // x starts in {0, 1}: 1 → 2 → 3
+            assert_eq!(r.violations.len(), 1);
+            assert_eq!(r.violations[0].what, Found::Deadlock);
+            assert_eq!(r.states[r.violations[0].state].vals[0], Value::int(3));
+        }
+        // shortest_counterexample: the trace to a violation is the shortest one.
+        {
+            let src = COUNTER
+                .replace("x <= N", "x < 3")
+                .replace("const N = 3", "const N = 5\n deadlock allowed");
+            let p = load(&src);
+            let (pk, m) = model(&p, "m");
+            let r = explore(&p, pk, m, &Options::default()).unwrap();
+            let v = &r.violations[0];
+            assert_eq!(v.what, Found::Invariant("bounded".into()));
+            // From x = 1 two steps reach 3: init, Inc, Inc (not the 4-state path from 0).
+            assert_eq!(r.path_to(v.state).len(), 3);
+            let t = r.render_trace(v, "");
+            assert!(t.contains("1. init") && t.contains("3. Inc"), "{t}");
+        }
+        // either_pick_and_init_blocks: either, pick, init blocks, and action parameters.
+        {
+            let p = load(
+                "machine M {\n var x: Int = 0\n var y: Int = 0\n init { pick v in {1, 2}\n y' = v }\n\
+                 action A { either { when x == 0\n x' = 1 } or { when x == 1\n x' = 2 } }\n\
+                 action B(k in {10, 20}) { when x == 2\n pick j in {0, 1}\n y' = k + j\n x' = 3 }\n}\n\
+                 model \"m\" of M { deadlock allowed }\n",
+            );
+            let (pk, m) = model(&p, "m");
+            let r = explore(&p, pk, m, &Options::default()).unwrap();
+            assert!(r.violations.is_empty(), "{:?}", r.violations);
+            // y ∈ {1, 2} × x ∈ {0, 1, 2} = 6, then x = 3 with y ∈ {10, 11, 20, 21} = 4
+            assert_eq!(r.states.len(), 10);
+        }
+        // assigning_a_variable_twice_is_an_error: a second assignment in one action is an error.
+        {
+            let p = load("machine M {\n var x: Int = 0\n action A { x' = 1; x' = 2 }\n}\nmodel \"m\" of M { deadlock allowed }\n");
+            let (pk, m) = model(&p, "m");
+            let r = explore(&p, pk, m, &Options::default()).unwrap();
+            assert!(
+                matches!(&r.violations[0].what, Found::Error(e) if e.contains("assigned twice"))
+            );
+        }
+        // type_errors_are_reported: a value outside the enum type is a type error.
+        {
+            let p = load(
+                "enum S { \"a\"\n \"b\" }\nmachine M {\n var s: S = \"a\"\n action A { when s == \"a\"\n s' = \"c\" }\n}\nmodel \"m\" of M { deadlock allowed }\n",
+            );
+            let (pk, m) = model(&p, "m");
+            let r = explore(&p, pk, m, &Options::default()).unwrap();
+            assert!(
+                matches!(&r.violations[0].what, Found::Type(e) if e.contains("\"c\" is not of type S")),
+                "{:?}",
+                r.violations
+            );
+        }
     }
 
     #[test]
@@ -850,42 +888,5 @@ mod tests {
         assert!(out[3].1, "{:?}", out[3]);
         assert!(out[4].1, "{:?}", out[4]);
         assert!(!out[5].1 && out[5].2.contains("NOT caught"), "{:?}", out[5]);
-    }
-
-    #[test]
-    fn either_pick_and_init_blocks() {
-        let p = load(
-            "machine M {\n var x: Int = 0\n var y: Int = 0\n init { pick v in {1, 2}\n y' = v }\n\
-             action A { either { when x == 0\n x' = 1 } or { when x == 1\n x' = 2 } }\n\
-             action B(k in {10, 20}) { when x == 2\n pick j in {0, 1}\n y' = k + j\n x' = 3 }\n}\n\
-             model \"m\" of M { deadlock allowed }\n",
-        );
-        let (pk, m) = model(&p, "m");
-        let r = explore(&p, pk, m, &Options::default()).unwrap();
-        assert!(r.violations.is_empty(), "{:?}", r.violations);
-        // y ∈ {1, 2} × x ∈ {0, 1, 2} = 6, then x = 3 with y ∈ {10, 11, 20, 21} = 4
-        assert_eq!(r.states.len(), 10);
-    }
-
-    #[test]
-    fn assigning_a_variable_twice_is_an_error() {
-        let p = load("machine M {\n var x: Int = 0\n action A { x' = 1; x' = 2 }\n}\nmodel \"m\" of M { deadlock allowed }\n");
-        let (pk, m) = model(&p, "m");
-        let r = explore(&p, pk, m, &Options::default()).unwrap();
-        assert!(matches!(&r.violations[0].what, Found::Error(e) if e.contains("assigned twice")));
-    }
-
-    #[test]
-    fn type_errors_are_reported() {
-        let p = load(
-            "enum S { \"a\"\n \"b\" }\nmachine M {\n var s: S = \"a\"\n action A { when s == \"a\"\n s' = \"c\" }\n}\nmodel \"m\" of M { deadlock allowed }\n",
-        );
-        let (pk, m) = model(&p, "m");
-        let r = explore(&p, pk, m, &Options::default()).unwrap();
-        assert!(
-            matches!(&r.violations[0].what, Found::Type(e) if e.contains("\"c\" is not of type S")),
-            "{:?}",
-            r.violations
-        );
     }
 }

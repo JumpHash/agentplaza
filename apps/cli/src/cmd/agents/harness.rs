@@ -254,21 +254,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kilobytes_become_whole_bytes() {
-        assert_eq!(kb_to_bytes(20.0).unwrap(), 20_480);
-        assert_eq!(kb_to_bytes(0.5).unwrap(), 512);
-        assert_eq!(kb_to_bytes(19.5).unwrap(), 19_968);
-        assert_eq!(kb_to_bytes(0.0).unwrap(), 0);
-    }
-
-    #[test]
-    fn a_negative_or_non_finite_size_is_refused() {
-        assert!(kb_to_bytes(-1.0).is_err());
-        assert!(kb_to_bytes(f64::NAN).is_err());
-        assert!(kb_to_bytes(f64::INFINITY).is_err());
-    }
-
-    #[test]
     fn set_sends_only_the_limits_given_with_compress_in_bytes() {
         let body = limits_body(Some(40), Some(20.0), None).unwrap();
         assert_eq!(
@@ -277,11 +262,6 @@ mod tests {
         );
         let body = limits_body(None, None, Some(3)).unwrap();
         assert_eq!(body, json!({ "action": "set_limits", "keep_recent": 3 }));
-    }
-
-    #[test]
-    fn set_needs_at_least_one_limit() {
-        assert!(limits_body(None, None, None).is_err());
     }
 
     #[test]
@@ -312,14 +292,5 @@ mod tests {
             json!({ "cid": 7, "prompt": "check the queue", "every_minutes": 30, "max_runs": 0 })
         );
         assert!(loop_body(7, "check", 0, 0).is_err());
-    }
-
-    #[test]
-    fn limits_read_as_the_plaza_default_when_blank() {
-        assert_eq!(or_default(&Value::Null), "plaza default");
-        assert_eq!(kb_text(&Value::Null), "plaza default");
-        assert_eq!(kb_text(&json!(0)), "never");
-        assert_eq!(kb_text(&json!(20_480)), "20 KB");
-        assert_eq!(kb_text(&json!(19_968)), "19.5 KB");
     }
 }

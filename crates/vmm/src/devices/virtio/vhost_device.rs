@@ -280,54 +280,59 @@ mod tests {
         assert!(VSOCK_QUEUE_MAX_SIZE.is_power_of_two());
     }
 
-    /// Acknowledging features keeps both pages independent: the second page
-    /// write must not clear what the first one acknowledged.
+    /// Feature acknowledgement is per page and total: the two pages stay
+    /// independent, a feature the device did not offer is refused page by page
+    /// (named by its position in the whole feature set), and an arbitrary
+    /// out-of-range feature page is handled without panicking, since the
+    /// register it comes from is guest-controlled.
     #[test]
-    fn feature_pages_are_acknowledged_independently() {
-        let offered = VIRTIO_F_VERSION_1 | VIRTIO_VSOCK_F_SEQPACKET;
-        let acked =
-            ack_feature_page(offered, 0, 0, VIRTIO_VSOCK_F_SEQPACKET as u32).expect("page 0");
-        assert_eq!(acked, VIRTIO_VSOCK_F_SEQPACKET);
-        let acked = ack_feature_page(offered, acked, 1, 1).expect("page 1");
-        assert_eq!(acked, VIRTIO_F_VERSION_1 | VIRTIO_VSOCK_F_SEQPACKET);
-        // Re-writing a page replaces only that page's bits.
-        let acked = ack_feature_page(offered, acked, 0, 0).expect("page 0 cleared");
-        assert_eq!(acked, VIRTIO_F_VERSION_1);
-    }
+    fn feature_page_acknowledgement_is_per_page_and_total() {
+        // Acknowledging features keeps both pages independent: the second page
+        // write must not clear what the first one acknowledged.
+        {
+            let offered = VIRTIO_F_VERSION_1 | VIRTIO_VSOCK_F_SEQPACKET;
+            let acked =
+                ack_feature_page(offered, 0, 0, VIRTIO_VSOCK_F_SEQPACKET as u32).expect("page 0");
+            assert_eq!(acked, VIRTIO_VSOCK_F_SEQPACKET);
+            let acked = ack_feature_page(offered, acked, 1, 1).expect("page 1");
+            assert_eq!(acked, VIRTIO_F_VERSION_1 | VIRTIO_VSOCK_F_SEQPACKET);
+            // Re-writing a page replaces only that page's bits.
+            let acked = ack_feature_page(offered, acked, 0, 0).expect("page 0 cleared");
+            assert_eq!(acked, VIRTIO_F_VERSION_1);
+        }
 
-    /// A driver asking for a feature the device did not offer must be refused,
-    /// page by page.
-    #[test]
-    fn unoffered_features_are_refused() {
-        let offered = VIRTIO_F_VERSION_1;
-        assert!(matches!(
-            ack_feature_page(offered, 0, 0, 1),
-            Err(VirtioError::UnsupportedFeatures { flags: 1 })
-        ));
-        // The offered page-1 bit is accepted and lands in the high half...
-        assert_eq!(
-            ack_feature_page(offered, 0, 1, 1).expect("page 1"),
-            VIRTIO_F_VERSION_1
-        );
-        // ...while a bit the device did not offer on that page is refused,
-        // named by its position in the whole feature set.
-        assert!(matches!(
-            ack_feature_page(offered, 0, 1, 2),
-            Err(VirtioError::UnsupportedFeatures { flags }) if flags == 1 << 33
-        ));
-    }
+        // A driver asking for a feature the device did not offer must be refused,
+        // page by page.
+        {
+            let offered = VIRTIO_F_VERSION_1;
+            assert!(matches!(
+                ack_feature_page(offered, 0, 0, 1),
+                Err(VirtioError::UnsupportedFeatures { flags: 1 })
+            ));
+            // The offered page-1 bit is accepted and lands in the high half...
+            assert_eq!(
+                ack_feature_page(offered, 0, 1, 1).expect("page 1"),
+                VIRTIO_F_VERSION_1
+            );
+            // ...while a bit the device did not offer on that page is refused,
+            // named by its position in the whole feature set.
+            assert!(matches!(
+                ack_feature_page(offered, 0, 1, 2),
+                Err(VirtioError::UnsupportedFeatures { flags }) if flags == 1 << 33
+            ));
+        }
 
-    /// A feature page the driver selects arbitrarily must not panic the VMM:
-    /// the register it comes from is guest-controlled.
-    #[test]
-    fn an_out_of_range_feature_page_is_handled_total() {
-        let offered = VIRTIO_F_VERSION_1;
-        assert_eq!(ack_feature_page(offered, 0, 2, 0).expect("zero"), 0);
-        assert_eq!(
-            ack_feature_page(offered, 7, u32::MAX - 1, 0).expect("zero"),
-            7
-        );
-        assert!(ack_feature_page(offered, 0, 2, 1).is_err());
-        assert!(ack_feature_page(offered, 0, u32::MAX, 1).is_err());
+        // A feature page the driver selects arbitrarily must not panic the VMM:
+        // the register it comes from is guest-controlled.
+        {
+            let offered = VIRTIO_F_VERSION_1;
+            assert_eq!(ack_feature_page(offered, 0, 2, 0).expect("zero"), 0);
+            assert_eq!(
+                ack_feature_page(offered, 7, u32::MAX - 1, 0).expect("zero"),
+                7
+            );
+            assert!(ack_feature_page(offered, 0, 2, 1).is_err());
+            assert!(ack_feature_page(offered, 0, u32::MAX, 1).is_err());
+        }
     }
 }

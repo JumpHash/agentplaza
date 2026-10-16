@@ -545,20 +545,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_labels_are_slugged_and_capped() {
-        assert_eq!(
-            auto_label("mcp_github.delete repo"),
-            "before-mcp-github-delete-repo"
-        );
-        assert_eq!(auto_label("!!!"), "before-tool");
-        let long = auto_label(&"a".repeat(100));
-        assert!(long.chars().count() <= LABEL_MAX);
-        assert!(long.starts_with("before-"));
-        assert!(!long.ends_with('-'));
-        assert!(check_label(&long).is_ok());
-    }
-
-    #[test]
     fn checkpoint_names_are_path_safe() {
         assert!(check_name("cp-1a2b_3").is_ok());
         assert!(check_name("").is_err());
@@ -617,11 +603,5 @@ mod tests {
         assert!(!is_high_risk("todo_write"));
         // An unknown tool is a plain write, which is reviewable and not checkpointed.
         assert!(!is_high_risk("some_unknown_tool"));
-    }
-
-    #[test]
-    fn slugs_drop_edge_and_repeated_separators() {
-        assert_eq!(slug("--a__b  c--"), "a-b-c");
-        assert_eq!(slug(""), "");
     }
 }

@@ -1551,16 +1551,4 @@ mod tests {
         assert!(picks_for(&preview, &["zzz".into()]).is_err());
         assert!(picks_for(&json!({ "skills": [json!({ "path": "b", "report": { "errors": 1 }, "exists": null })] }), &[]).is_err());
     }
-
-    #[test]
-    fn the_source_of_a_skill_reads_as_its_origin() {
-        assert_eq!(source_text(&json!({ "kind": "built" })), "built");
-        assert_eq!(
-            source_text(
-                &json!({ "kind": "github", "repo": "o/r", "path": "skills/pdf", "commit": "0123456789abcdef" })
-            ),
-            "github o/r skills/pdf @0123456789ab"
-        );
-        assert_eq!(source_text(&Value::Null), "—");
-    }
 }

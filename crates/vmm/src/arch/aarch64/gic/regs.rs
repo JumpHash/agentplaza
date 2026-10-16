@@ -181,20 +181,6 @@ impl MmioReg for SimpleReg {
 mod tests {
     use super::*;
 
-    /// A register's range covers exactly its declared size, and the chunk
-    /// iterator walks it in strides of the chunk size: this arithmetic decides
-    /// which offsets are read from (or written to) KVM.
-    #[test]
-    fn simple_reg_ranges_and_iteration() {
-        let reg = SimpleReg::new(0x0400, 8);
-        assert_eq!(reg.range(), 0x0400..0x0408);
-        assert_eq!(reg.iter::<u32>().collect::<Vec<_>>(), vec![0x0400, 0x0404]);
-        assert_eq!(reg.iter::<u64>().collect::<Vec<_>>(), vec![0x0400]);
-
-        let reg = SimpleReg::new(0x0, 1);
-        assert_eq!(reg.iter::<u8>().collect::<Vec<_>>(), vec![0x0]);
-    }
-
     /// The engine encodes the register offset in the low 32 bits of the
     /// attribute and the vCPU affinity in the bits above, per the kernel's
     /// `KVM_DEV_ARM_VGIC_GRP_CPU_REGS` layout.

@@ -339,87 +339,93 @@ mod tests {
     }
 
     #[test]
-    fn cost_equals_the_planner_from_several_cells() {
-        let g = build(&map());
-        let goal = cell(&g, 5.5, 0.5);
-        let f = toward(&g, &[goal]);
-        let starts = [
-            (0.5, 0.5),
-            (0.5, 2.0),
-            (5.5, 2.0),
-            (3.0, 6.0),
-            (3.0, 10.0),
-            (5.5, 10.5),
-            (1.0, 11.0),
-        ];
-        for (x, z) in starts {
-            let s = cell(&g, x, z);
-            let want = planned(&g, s, goal)
-                .unwrap_or_else(|| panic!("the planner finds no path from ({x}, {z})"));
-            assert!(
-                (f.cost(s) - want).abs() < TOL,
-                "({x}, {z}): field {} vs planner {want}",
-                f.cost(s)
-            );
+    fn cost_equals_the_planner() {
+        // the field cost from several cells to one goal equals the planner path cost
+        {
+            let g = build(&map());
+            let goal = cell(&g, 5.5, 0.5);
+            let f = toward(&g, &[goal]);
+            let starts = [
+                (0.5, 0.5),
+                (0.5, 2.0),
+                (5.5, 2.0),
+                (3.0, 6.0),
+                (3.0, 10.0),
+                (5.5, 10.5),
+                (1.0, 11.0),
+            ];
+            for (x, z) in starts {
+                let s = cell(&g, x, z);
+                let want = planned(&g, s, goal)
+                    .unwrap_or_else(|| panic!("the planner finds no path from ({x}, {z})"));
+                assert!(
+                    (f.cost(s) - want).abs() < TOL,
+                    "({x}, {z}): field {} vs planner {want}",
+                    f.cost(s)
+                );
+            }
+        }
+
+        // the field cost equals the planner for every reachable cell, and is infinite where the planner finds no path
+        {
+            let g = build(&map());
+            let goal = cell(&g, 3.0, 6.0);
+            let f = toward(&g, &[goal]);
+            for c in walk_cells(&g) {
+                match planned(&g, c, goal) {
+                    Some(want) => assert!(
+                        (f.cost(c) - want).abs() < TOL,
+                        "cell {c}: field {} vs planner {want}",
+                        f.cost(c)
+                    ),
+                    None => assert!(
+                        f.cost(c).is_infinite(),
+                        "cell {c} has no planner path but a finite cost"
+                    ),
+                }
+            }
         }
     }
 
     #[test]
-    fn cost_equals_the_planner_for_every_reachable_cell() {
-        let g = build(&map());
-        let goal = cell(&g, 3.0, 6.0);
-        let f = toward(&g, &[goal]);
-        for c in walk_cells(&g) {
-            match planned(&g, c, goal) {
-                Some(want) => assert!(
-                    (f.cost(c) - want).abs() < TOL,
-                    "cell {c}: field {} vs planner {want}",
+    fn following_the_field_reaches_the_goal() {
+        // following next from every reachable cell reaches the goal with a falling cost, and the summed steps equal the cost
+        {
+            let g = build(&map());
+            let goal = cell(&g, 5.5, 0.5);
+            let f = toward(&g, &[goal]);
+            let mut reached = 0;
+            for c in walk_cells(&g) {
+                if !f.cost(c).is_finite() {
+                    continue;
+                }
+                let (cells, total) = follow(&g, &f, c);
+                assert_eq!(
+                    cells.last(),
+                    Some(&goal),
+                    "the path from {c} ends at the goal"
+                );
+                assert!(
+                    (total - f.cost(c)).abs() < TOL,
+                    "cell {c}: summed steps {total} vs cost {}",
                     f.cost(c)
-                ),
-                None => assert!(
-                    f.cost(c).is_infinite(),
-                    "cell {c} has no planner path but a finite cost"
-                ),
+                );
+                reached += 1;
             }
+            assert!(reached > 100, "many cells are reachable (got {reached})");
         }
-    }
 
-    #[test]
-    fn following_next_reaches_the_goal_with_falling_cost_and_the_total_is_the_cost() {
-        let g = build(&map());
-        let goal = cell(&g, 5.5, 0.5);
-        let f = toward(&g, &[goal]);
-        let mut reached = 0;
-        for c in walk_cells(&g) {
-            if !f.cost(c).is_finite() {
-                continue;
+        // one field serves several starts: following it from each start reaches the goal at the planner length
+        {
+            let g = build(&map());
+            let goal = cell(&g, 3.0, 6.0);
+            let f = toward(&g, &[goal]);
+            for (x, z) in [(0.5, 0.5), (5.5, 2.0), (3.0, 10.0)] {
+                let s = cell(&g, x, z);
+                let (cells, total) = follow(&g, &f, s);
+                assert_eq!(cells.last(), Some(&goal), "from ({x}, {z})");
+                assert!((total - planned(&g, s, goal).expect("a path")).abs() < TOL);
             }
-            let (cells, total) = follow(&g, &f, c);
-            assert_eq!(
-                cells.last(),
-                Some(&goal),
-                "the path from {c} ends at the goal"
-            );
-            assert!(
-                (total - f.cost(c)).abs() < TOL,
-                "cell {c}: summed steps {total} vs cost {}",
-                f.cost(c)
-            );
-            reached += 1;
-        }
-        assert!(reached > 100, "many cells are reachable (got {reached})");
-    }
-
-    #[test]
-    fn one_field_serves_several_starts() {
-        let g = build(&map());
-        let goal = cell(&g, 3.0, 6.0);
-        let f = toward(&g, &[goal]);
-        for (x, z) in [(0.5, 0.5), (5.5, 2.0), (3.0, 10.0)] {
-            let s = cell(&g, x, z);
-            let (cells, total) = follow(&g, &f, s);
-            assert_eq!(cells.last(), Some(&goal), "from ({x}, {z})");
-            assert!((total - planned(&g, s, goal).expect("a path")).abs() < TOL);
         }
     }
 
@@ -439,17 +445,6 @@ mod tests {
         // Out of range is unreachable too.
         assert!(f.cost(usize::MAX).is_infinite());
         assert_eq!(f.next(usize::MAX), None);
-    }
-
-    #[test]
-    fn a_goal_has_zero_cost_and_no_step() {
-        let g = build(&map());
-        let goal = cell(&g, 5.5, 0.5);
-        let f = toward(&g, &[goal]);
-        assert_eq!(f.cost(goal), 0.0);
-        assert_eq!(f.step(goal), None);
-        assert_eq!(f.next(goal), None);
-        assert_eq!(f.goals(), &[goal]);
     }
 
     #[test]

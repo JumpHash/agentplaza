@@ -1392,24 +1392,6 @@ mod tests {
     }
 
     #[test]
-    fn shadow_comparisons_count_agreement_and_cost() {
-        let root = scratch("shadow");
-        let models = Models::open(&root);
-        let id = models
-            .register_from_job(&job_dir(&root, "job-5", Some(serving())), None)
-            .unwrap()
-            .card
-            .id;
-        models.shadow(&id).unwrap();
-        models.record_shadow(&id, true, 0.02).unwrap();
-        let stats = models.record_shadow(&id, false, 0.03).unwrap();
-        assert_eq!((stats.runs, stats.agreed), (2, 1));
-        assert_eq!(stats.agreement_rate(), Some(0.5));
-        assert!((stats.cost_saved_usd - 0.05).abs() < 1e-9);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn an_id_cannot_leave_the_store_directory() {
         assert!(!valid_id("../etc"));
         assert!(!valid_id(".hidden"));

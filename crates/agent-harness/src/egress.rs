@@ -516,45 +516,23 @@ mod tests {
     }
 
     #[test]
-    fn links_keep_their_address() {
-        let text =
-            html_to_text(r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#);
-        assert_eq!(text, "See the docs (https://x.test/a?b=1&c=2).");
-    }
-
-    #[test]
-    fn scripts_styles_svg_and_comments_are_dropped() {
-        let page = "<p>keep</p><script>var s = \"<p>gone</p>\";</script>\
-            <style>p { color: red }</style><noscript>no js</noscript>\
-            <svg><text>drawn</text></svg><!-- hidden note --><p>also</p>";
-        let text = html_to_text(page);
-        assert_eq!(text, "keep\n\nalso");
-        for dropped in ["gone", "color", "no js", "drawn", "hidden"] {
-            assert!(
-                !text.contains(dropped),
-                "{dropped} should be dropped: {text}"
-            );
-        }
-    }
-
-    #[test]
-    fn common_entities_are_decoded() {
-        let text =
-            html_to_text("<p>&amp; &lt;b&gt; &quot;q&quot; &#39;s&#39; a&nbsp;b &#x41;&#66;</p>");
-        assert_eq!(text, "& <b> \"q\" 's' a b AB");
-    }
-
-    #[test]
-    fn the_title_leads_and_a_bare_less_than_is_text() {
-        let text = html_to_text(
-            "<html><head><title>Hi &amp; bye</title></head><body><p>if a < b then</p></body></html>",
-        );
-        assert_eq!(text, "Title: Hi & bye\n\nif a < b then");
-    }
-
-    #[test]
-    fn structure_becomes_plain_text_lines() {
+    fn html_to_text_renders_plain_text() {
         let cases = [
+            (
+                "links keep their address",
+                r#"<p>See <a href="https://x.test/a?b=1&amp;c=2">the docs</a>.</p>"#,
+                "See the docs (https://x.test/a?b=1&c=2).",
+            ),
+            (
+                "common entities are decoded",
+                "<p>&amp; &lt;b&gt; &quot;q&quot; &#39;s&#39; a&nbsp;b &#x41;&#66;</p>",
+                "& <b> \"q\" 's' a b AB",
+            ),
+            (
+                "the title leads and a bare less-than is text",
+                "<html><head><title>Hi &amp; bye</title></head><body><p>if a < b then</p></body></html>",
+                "Title: Hi & bye\n\nif a < b then",
+            ),
             ("headings", "<h1>Top</h1><p>Body</p>", "# Top\n\nBody"),
             ("a deep heading", "<h3>Deep</h3>", "### Deep"),
             (
@@ -566,6 +544,22 @@ mod tests {
         ];
         for (case, html, want) in cases {
             assert_eq!(html_to_text(html), want, "{case}");
+        }
+
+        // Scripts, styles, noscript, SVG text and comments are dropped; only the
+        // kept text survives.
+        {
+            let page = "<p>keep</p><script>var s = \"<p>gone</p>\";</script>\
+                <style>p { color: red }</style><noscript>no js</noscript>\
+                <svg><text>drawn</text></svg><!-- hidden note --><p>also</p>";
+            let text = html_to_text(page);
+            assert_eq!(text, "keep\n\nalso");
+            for dropped in ["gone", "color", "no js", "drawn", "hidden"] {
+                assert!(
+                    !text.contains(dropped),
+                    "{dropped} should be dropped: {text}"
+                );
+            }
         }
     }
 }

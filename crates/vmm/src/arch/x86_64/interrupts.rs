@@ -93,23 +93,18 @@ mod tests {
     #[test]
     fn test_set_and_get_klapic_reg() {
         let reg_offset = 0x340;
-        let mut klapic = kvm_lapic_state::default();
-        set_klapic_reg(&mut klapic, reg_offset, 3);
-        let value = get_klapic_reg(&klapic, reg_offset);
-        assert_eq!(value, 3);
-    }
-
-    #[test]
-    fn test_set_and_get_klapic_reg_overflow() {
-        let reg_offset = 0x340;
-        let mut klapic = kvm_lapic_state::default();
-        set_klapic_reg(
-            &mut klapic,
-            reg_offset,
-            u32::try_from(i32::MAX).unwrap() + 1u32,
-        );
-        let value = get_klapic_reg(&klapic, reg_offset);
-        assert_eq!(value, u32::try_from(i32::MAX).unwrap() + 1u32);
+        for (case, value) in [
+            ("a small value", 3u32),
+            (
+                "a value past i32::MAX",
+                u32::try_from(i32::MAX).unwrap() + 1u32,
+            ),
+        ] {
+            let mut klapic = kvm_lapic_state::default();
+            set_klapic_reg(&mut klapic, reg_offset, value);
+            let got = get_klapic_reg(&klapic, reg_offset);
+            assert_eq!(got, value, "{case}");
+        }
     }
 
     #[test]

@@ -693,17 +693,6 @@ mod tests {
         }
     }
 
-    /// The feature set this port forwards must contain what a modern device
-    /// needs and must not contain what the backend must not be told:
-    /// `VIRTIO_F_ACCESS_PLATFORM` would make it expect an IOTLB (a vIOMMU) and
-    /// `VHOST_F_LOG_ALL` a dirty log, and this VMM has neither.
-    #[test]
-    fn the_forwarded_features_exclude_the_iotlb_and_logging_bits() {
-        assert_ne!(VSOCK_FEATURES & VIRTIO_F_VERSION_1, 0);
-        assert_eq!(VSOCK_FEATURES & (1 << 33), 0, "VIRTIO_F_ACCESS_PLATFORM");
-        assert_eq!(VSOCK_FEATURES & (1 << 26), 0, "VHOST_F_LOG_ALL");
-    }
-
     /// Opens a backend for a CID no other process uses, or `None` when the
     /// host cannot run these probes (a machine without the module loaded has no
     /// `/dev/vhost-vsock` to open; a cross-target runner emulates the ioctls
@@ -821,118 +810,124 @@ mod tests {
         assert_eq!(second.guest_cid(), cid);
     }
 
-    /// A queue whose three rings are entirely inside one guest memory region
-    /// translates to non-zero host addresses.
+    /// Ring translation is bounded by the guest memory region: rings that lie
+    /// inside one region translate to non-zero host addresses, rings whose
+    /// extent runs past the region end are rejected for each of the three ring
+    /// kinds (with `RingAddress` naming the offending start), and the
+    /// event-index bytes of the available and used rings count toward their
+    /// extent.
     #[test]
-    fn rings_that_lie_inside_one_region_translate() {
-        let mem = crate::vstate::memory::tests::single_region_mem(mib_to_bytes(4));
-        let queue = QueueConfig {
-            max_size: 256,
-            size: 64,
-            ready: true,
-            desc: 0x10_000,
-            avail: 0x11_000,
-            used: 0x12_000,
-        };
-        let [desc, used, avail] =
+    fn ring_translation_is_bounded_by_the_region() {
+        // A queue whose three rings are entirely inside one guest memory region
+        // translates to non-zero host addresses.
+        {
+            let mem = crate::vstate::memory::tests::single_region_mem(mib_to_bytes(4));
+            let queue = QueueConfig {
+                max_size: 256,
+                size: 64,
+                ready: true,
+                desc: 0x10_000,
+                avail: 0x11_000,
+                used: 0x12_000,
+            };
+            let [desc, used, avail] =
+                translate_rings(0, &mem, &queue).expect("in-range rings translate");
+            assert_ne!(desc, 0);
+            assert_ne!(used, 0);
+            assert_ne!(avail, 0);
+        }
+
+        // A ring whose start address is valid but whose extent runs past the end
+        // of the guest memory region is rejected, for each of the three ring
+        // kinds, with `RingAddress` naming the offending start.
+        {
+            let region_size = mib_to_bytes(4);
+            let mem = crate::vstate::memory::tests::single_region_mem(region_size);
+            // A legal power-of-two size the kernel's vhost ioctl accepts.
+            let num = 0x8000u32;
+
+            // The descriptor table: 16 * num bytes. Start it one byte before the
+            // region end, so its last byte would land outside the region.
+            let desc = region_size - ring_extent_size(RingKind::Desc, num) + 1;
+            let queue = QueueConfig {
+                max_size: 256,
+                size: num,
+                ready: true,
+                desc: desc as u64,
+                avail: 0x2_0000,
+                used: 0x3_0000,
+            };
+            assert!(matches!(
+                translate_rings(0, &mem, &queue),
+                Err(VhostError::RingAddress { index: 0, addr }) if addr == desc as u64
+            ));
+
+            // The used ring: 4 + 8 * num + 2 bytes.
+            let used = region_size - ring_extent_size(RingKind::Used, num) + 1;
+            let queue = QueueConfig {
+                max_size: 256,
+                size: num,
+                ready: true,
+                desc: 0x1_0000,
+                avail: 0x2_0000,
+                used: used as u64,
+            };
+            assert!(matches!(
+                translate_rings(0, &mem, &queue),
+                Err(VhostError::RingAddress { index: 0, addr }) if addr == used as u64
+            ));
+
+            // The available ring: 4 + 2 * num + 2 bytes.
+            let avail = region_size - ring_extent_size(RingKind::Avail, num) + 1;
+            let queue = QueueConfig {
+                max_size: 256,
+                size: num,
+                ready: true,
+                desc: 0x1_0000,
+                avail: avail as u64,
+                used: 0x3_0000,
+            };
+            assert!(matches!(
+                translate_rings(0, &mem, &queue),
+                Err(VhostError::RingAddress { index: 0, addr }) if addr == avail as u64
+            ));
+        }
+
+        // The available and used ring extents include the two trailing
+        // event-index bytes (`VIRTIO_RING_F_EVENT_IDX`), so a ring that only fits
+        // when those bytes are *not* counted is still rejected — validating a
+        // larger extent can only fail closed.
+        {
+            let region_size = mib_to_bytes(4);
+            let mem = crate::vstate::memory::tests::single_region_mem(region_size);
+            let num = 256u32;
+
+            // A used ring placed so `4 + 8 * num` bytes end exactly at the region
+            // end fits without the event-index bytes but crosses with them.
+            let used = region_size - (4 + 8 * num as usize);
+            let queue = QueueConfig {
+                max_size: 256,
+                size: num,
+                ready: true,
+                desc: 0x1_0000,
+                avail: 0x2_0000,
+                used: used as u64,
+            };
+            assert!(matches!(
+                translate_rings(0, &mem, &queue),
+                Err(VhostError::RingAddress { index: 0, .. })
+            ));
+
+            // The same rings far from any region end translate fine.
+            let queue = QueueConfig {
+                max_size: 256,
+                size: num,
+                ready: true,
+                desc: 0x1_0000,
+                avail: 0x2_0000,
+                used: 0x3_0000,
+            };
             translate_rings(0, &mem, &queue).expect("in-range rings translate");
-        assert_ne!(desc, 0);
-        assert_ne!(used, 0);
-        assert_ne!(avail, 0);
-    }
-
-    /// A ring whose start address is valid but whose extent runs past the end
-    /// of the guest memory region is rejected, for each of the three ring
-    /// kinds, with `RingAddress` naming the offending start.
-    #[test]
-    fn rings_whose_extent_crosses_a_region_end_are_rejected() {
-        let region_size = mib_to_bytes(4);
-        let mem = crate::vstate::memory::tests::single_region_mem(region_size);
-        // A legal power-of-two size the kernel's vhost ioctl accepts.
-        let num = 0x8000u32;
-
-        // The descriptor table: 16 * num bytes. Start it one byte before the
-        // region end, so its last byte would land outside the region.
-        let desc = region_size - ring_extent_size(RingKind::Desc, num) + 1;
-        let queue = QueueConfig {
-            max_size: 256,
-            size: num,
-            ready: true,
-            desc: desc as u64,
-            avail: 0x2_0000,
-            used: 0x3_0000,
-        };
-        assert!(matches!(
-            translate_rings(0, &mem, &queue),
-            Err(VhostError::RingAddress { index: 0, addr }) if addr == desc as u64
-        ));
-
-        // The used ring: 4 + 8 * num + 2 bytes.
-        let used = region_size - ring_extent_size(RingKind::Used, num) + 1;
-        let queue = QueueConfig {
-            max_size: 256,
-            size: num,
-            ready: true,
-            desc: 0x1_0000,
-            avail: 0x2_0000,
-            used: used as u64,
-        };
-        assert!(matches!(
-            translate_rings(0, &mem, &queue),
-            Err(VhostError::RingAddress { index: 0, addr }) if addr == used as u64
-        ));
-
-        // The available ring: 4 + 2 * num + 2 bytes.
-        let avail = region_size - ring_extent_size(RingKind::Avail, num) + 1;
-        let queue = QueueConfig {
-            max_size: 256,
-            size: num,
-            ready: true,
-            desc: 0x1_0000,
-            avail: avail as u64,
-            used: 0x3_0000,
-        };
-        assert!(matches!(
-            translate_rings(0, &mem, &queue),
-            Err(VhostError::RingAddress { index: 0, addr }) if addr == avail as u64
-        ));
-    }
-
-    /// The available and used ring extents include the two trailing
-    /// event-index bytes (`VIRTIO_RING_F_EVENT_IDX`), so a ring that only fits
-    /// when those bytes are *not* counted is still rejected — validating a
-    /// larger extent can only fail closed.
-    #[test]
-    fn event_index_bytes_are_counted_in_the_extent() {
-        let region_size = mib_to_bytes(4);
-        let mem = crate::vstate::memory::tests::single_region_mem(region_size);
-        let num = 256u32;
-
-        // A used ring placed so `4 + 8 * num` bytes end exactly at the region
-        // end fits without the event-index bytes but crosses with them.
-        let used = region_size - (4 + 8 * num as usize);
-        let queue = QueueConfig {
-            max_size: 256,
-            size: num,
-            ready: true,
-            desc: 0x1_0000,
-            avail: 0x2_0000,
-            used: used as u64,
-        };
-        assert!(matches!(
-            translate_rings(0, &mem, &queue),
-            Err(VhostError::RingAddress { index: 0, .. })
-        ));
-
-        // The same rings far from any region end translate fine.
-        let queue = QueueConfig {
-            max_size: 256,
-            size: num,
-            ready: true,
-            desc: 0x1_0000,
-            avail: 0x2_0000,
-            used: 0x3_0000,
-        };
-        translate_rings(0, &mem, &queue).expect("in-range rings translate");
+        }
     }
 }

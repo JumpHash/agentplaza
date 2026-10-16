@@ -164,127 +164,113 @@ mod tests {
     }
 
     #[test]
-    fn letters_and_digits_are_their_upper_case_codes() {
-        assert_eq!(key_vk(Key::Char('a')), Some(0x41));
-        assert_eq!(key_vk(Key::Char('z')), Some(0x5A));
-        assert_eq!(key_vk(Key::Char('0')), Some(0x30));
-        assert_eq!(key_vk(Key::Char('9')), Some(0x39));
-    }
-
-    #[test]
-    fn function_keys_run_from_f1_to_f24() {
-        assert_eq!(key_vk(Key::F(1)), Some(0x70));
-        assert_eq!(key_vk(Key::F(12)), Some(0x7B));
-        assert_eq!(key_vk(Key::F(24)), Some(0x87));
-        assert_eq!(key_vk(Key::F(0)), None);
-        assert_eq!(key_vk(Key::F(25)), None);
-    }
-
-    #[test]
-    fn named_keys_have_their_codes() {
-        let table = [
-            (Key::Enter, 0x0D),
-            (Key::Tab, 0x09),
-            (Key::Space, 0x20),
-            (Key::Escape, 0x1B),
-            (Key::Backspace, 0x08),
-            (Key::Delete, 0x2E),
-            (Key::Insert, 0x2D),
-            (Key::Home, 0x24),
-            (Key::End, 0x23),
-            (Key::PageUp, 0x21),
-            (Key::PageDown, 0x22),
-            (Key::Left, 0x25),
-            (Key::Up, 0x26),
-            (Key::Right, 0x27),
-            (Key::Down, 0x28),
-        ];
-        for (key, vk) in table {
-            assert_eq!(key_vk(key), Some(vk), "{key:?}");
+    fn keys_have_their_virtual_key_codes() {
+        for (case, key, want) in [
+            (
+                "letter a is its upper case code",
+                Key::Char('a'),
+                Some(0x41),
+            ),
+            (
+                "letter z is its upper case code",
+                Key::Char('z'),
+                Some(0x5A),
+            ),
+            ("digit 0 is its code", Key::Char('0'), Some(0x30)),
+            ("digit 9 is its code", Key::Char('9'), Some(0x39)),
+            ("F1 is 0x70", Key::F(1), Some(0x70)),
+            ("F12 is 0x7B", Key::F(12), Some(0x7B)),
+            ("F24 is 0x87", Key::F(24), Some(0x87)),
+            ("F0 has no code", Key::F(0), None),
+            ("F25 has no code", Key::F(25), None),
+            ("enter", Key::Enter, Some(0x0D)),
+            ("tab", Key::Tab, Some(0x09)),
+            ("space", Key::Space, Some(0x20)),
+            ("escape", Key::Escape, Some(0x1B)),
+            ("backspace", Key::Backspace, Some(0x08)),
+            ("delete", Key::Delete, Some(0x2E)),
+            ("insert", Key::Insert, Some(0x2D)),
+            ("home", Key::Home, Some(0x24)),
+            ("end", Key::End, Some(0x23)),
+            ("page up", Key::PageUp, Some(0x21)),
+            ("page down", Key::PageDown, Some(0x22)),
+            ("left", Key::Left, Some(0x25)),
+            ("up", Key::Up, Some(0x26)),
+            ("right", Key::Right, Some(0x27)),
+            ("down", Key::Down, Some(0x28)),
+            ("minus has its OEM code", Key::Char('-'), Some(0xBD)),
+            ("equal has its OEM code", Key::Char('='), Some(0xBB)),
+            ("plus is the equal key", Key::Char('+'), Some(0xBB)),
+            ("comma has its OEM code", Key::Char(','), Some(0xBC)),
+            ("period has its OEM code", Key::Char('.'), Some(0xBE)),
+            ("slash has its OEM code", Key::Char('/'), Some(0xBF)),
+            ("semicolon has its OEM code", Key::Char(';'), Some(0xBA)),
+            ("backtick has its OEM code", Key::Char('`'), Some(0xC0)),
+            ("open bracket has its OEM code", Key::Char('['), Some(0xDB)),
+            ("backslash has its OEM code", Key::Char('\\'), Some(0xDC)),
+            ("close bracket has its OEM code", Key::Char(']'), Some(0xDD)),
+            ("quote has its OEM code", Key::Char('\''), Some(0xDE)),
+            ("hash has no code", Key::Char('#'), None),
+        ] {
+            assert_eq!(key_vk(key), want, "{case}");
         }
     }
 
     #[test]
-    fn punctuation_has_its_oem_code() {
-        let table = [
-            ('-', 0xBD),
-            ('=', 0xBB),
-            ('+', 0xBB),
-            (',', 0xBC),
-            ('.', 0xBE),
-            ('/', 0xBF),
-            (';', 0xBA),
-            ('`', 0xC0),
-            ('[', 0xDB),
-            ('\\', 0xDC),
-            (']', 0xDD),
-            ('\'', 0xDE),
-        ];
-        for (c, vk) in table {
-            assert_eq!(key_vk(Key::Char(c)), Some(vk), "{c:?}");
+    fn chords_become_down_and_up_steps() {
+        for (case, text, want) in [
+            (
+                "modifiers go down, then the key, then release in reverse",
+                "ctrl+shift+s",
+                vec![
+                    KeyStep::Down(0x11),
+                    KeyStep::Down(0x10),
+                    KeyStep::Down(0x53),
+                    KeyStep::Up(0x53),
+                    KeyStep::Up(0x10),
+                    KeyStep::Up(0x11),
+                ],
+            ),
+            (
+                "meta is the windows key",
+                "win+d",
+                vec![
+                    KeyStep::Down(0x5B),
+                    KeyStep::Down(0x44),
+                    KeyStep::Up(0x44),
+                    KeyStep::Up(0x5B),
+                ],
+            ),
+            (
+                "plus presses shift with the equal key",
+                "ctrl+plus",
+                vec![
+                    KeyStep::Down(0x11),
+                    KeyStep::Down(0x10),
+                    KeyStep::Down(0xBB),
+                    KeyStep::Up(0xBB),
+                    KeyStep::Up(0x10),
+                    KeyStep::Up(0x11),
+                ],
+            ),
+            (
+                "plus with shift already held adds no second shift",
+                "shift+plus",
+                vec![
+                    KeyStep::Down(0x10),
+                    KeyStep::Down(0xBB),
+                    KeyStep::Up(0xBB),
+                    KeyStep::Up(0x10),
+                ],
+            ),
+            (
+                "a bare key is one press",
+                "enter",
+                vec![KeyStep::Down(0x0D), KeyStep::Up(0x0D)],
+            ),
+        ] {
+            assert_eq!(chord(text), want, "{case}");
         }
-        assert_eq!(key_vk(Key::Char('#')), None);
-    }
-
-    #[test]
-    fn a_chord_presses_modifiers_down_then_the_key_then_releases_in_reverse() {
-        assert_eq!(
-            chord("ctrl+shift+s"),
-            vec![
-                KeyStep::Down(0x11),
-                KeyStep::Down(0x10),
-                KeyStep::Down(0x53),
-                KeyStep::Up(0x53),
-                KeyStep::Up(0x10),
-                KeyStep::Up(0x11),
-            ]
-        );
-    }
-
-    #[test]
-    fn meta_is_the_windows_key() {
-        assert_eq!(
-            chord("win+d"),
-            vec![
-                KeyStep::Down(0x5B),
-                KeyStep::Down(0x44),
-                KeyStep::Up(0x44),
-                KeyStep::Up(0x5B),
-            ]
-        );
-    }
-
-    #[test]
-    fn plus_presses_shift_with_the_equal_key() {
-        assert_eq!(
-            chord("ctrl+plus"),
-            vec![
-                KeyStep::Down(0x11),
-                KeyStep::Down(0x10),
-                KeyStep::Down(0xBB),
-                KeyStep::Up(0xBB),
-                KeyStep::Up(0x10),
-                KeyStep::Up(0x11),
-            ]
-        );
-    }
-
-    #[test]
-    fn plus_with_shift_already_held_adds_no_second_shift() {
-        assert_eq!(
-            chord("shift+plus"),
-            vec![
-                KeyStep::Down(0x10),
-                KeyStep::Down(0xBB),
-                KeyStep::Up(0xBB),
-                KeyStep::Up(0x10),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_bare_key_is_one_press() {
-        assert_eq!(chord("enter"), vec![KeyStep::Down(0x0D), KeyStep::Up(0x0D)]);
     }
 
     #[test]
@@ -298,40 +284,39 @@ mod tests {
     }
 
     #[test]
-    fn text_maps_newlines_and_tabs_to_keys_and_the_rest_to_units() {
-        assert_eq!(
-            text_steps("a\tb\n"),
-            vec![
-                TextStep::Unit(0x61),
-                TextStep::Vk(VK_TAB),
-                TextStep::Unit(0x62),
-                TextStep::Vk(VK_RETURN),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_crlf_is_one_enter() {
-        assert_eq!(
-            text_steps("x\r\ny"),
-            vec![
-                TextStep::Unit(0x78),
-                TextStep::Vk(VK_RETURN),
-                TextStep::Unit(0x79),
-            ]
-        );
-    }
-
-    #[test]
-    fn accented_text_is_one_unit_per_character() {
-        assert_eq!(text_steps("é"), vec![TextStep::Unit(0xE9)]);
-    }
-
-    #[test]
-    fn characters_outside_the_bmp_are_surrogate_pairs() {
-        assert_eq!(
-            text_steps("\u{1F600}"),
-            vec![TextStep::Unit(0xD83D), TextStep::Unit(0xDE00)]
-        );
+    fn text_becomes_unit_and_key_steps() {
+        for (case, text, want) in [
+            (
+                "newlines and tabs are keys, the rest are units",
+                "a\tb\n",
+                vec![
+                    TextStep::Unit(0x61),
+                    TextStep::Vk(VK_TAB),
+                    TextStep::Unit(0x62),
+                    TextStep::Vk(VK_RETURN),
+                ],
+            ),
+            (
+                "a crlf is one enter",
+                "x\r\ny",
+                vec![
+                    TextStep::Unit(0x78),
+                    TextStep::Vk(VK_RETURN),
+                    TextStep::Unit(0x79),
+                ],
+            ),
+            (
+                "accented text is one unit per character",
+                "é",
+                vec![TextStep::Unit(0xE9)],
+            ),
+            (
+                "characters outside the bmp are surrogate pairs",
+                "\u{1F600}",
+                vec![TextStep::Unit(0xD83D), TextStep::Unit(0xDE00)],
+            ),
+        ] {
+            assert_eq!(text_steps(text), want, "{case}");
+        }
     }
 }

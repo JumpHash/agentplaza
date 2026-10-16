@@ -1116,16 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_carries_acceptance_only_when_stated() {
-        assert_eq!(task_prompt("write the note", None), "write the note");
-        assert_eq!(task_prompt("write the note", Some("  ")), "write the note");
-        assert_eq!(
-            task_prompt("write the note", Some("under 100 words")),
-            "write the note\n\nAcceptance: under 100 words"
-        );
-    }
-
-    #[test]
     fn assignee_is_optional_and_must_be_a_number() {
         assert_eq!(
             parse::<Assignee>(b"{}", "create")

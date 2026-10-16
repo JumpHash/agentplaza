@@ -437,48 +437,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_arguments_gives_the_contract_defaults_and_no_fleet() {
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(config.port, 8899);
-        assert_eq!(config.kernel, PathBuf::from("/boot/vmlinuz-linux"));
-        assert_eq!(
-            config.initrd,
-            PathBuf::from("target/guest/initrd.x86_64.gz")
-        );
-        assert_eq!(config.run_cids, 20..=99);
-        // The fleet is off unless the manifest is named.
-        assert_eq!(config.agents, None);
-        assert_eq!(config.agents_cid_base, 100);
-        assert_eq!(config.agents_memory_mib, 1024);
-        assert_eq!(config.agents_vcpus, 1);
-        assert_eq!(config.agents_balloon_mib, 32);
-        // The node's state and its workspace image default to the data directory.
-        let node = apz_os::dirs::data().join("node");
-        assert_eq!(config.persist_dir, Some(node.clone()));
-        assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
-    }
-
-    #[test]
-    fn flags_override_the_defaults() {
-        let config = parse_args(
-            [
-                "--port",
-                "9000",
-                "--kernel",
-                "/k",
-                "--initrd",
-                "/i",
-                "--run-cids",
-                "1000-1099",
-            ]
-            .map(String::from)
-            .to_vec(),
-        )
-        .expect("well-formed flags");
-        assert_eq!(config.port, 9000);
-        assert_eq!(config.kernel, PathBuf::from("/k"));
-        assert_eq!(config.initrd, PathBuf::from("/i"));
-        assert_eq!(config.run_cids, 1000..=1099);
+    fn cli_arguments_parse_into_the_config() {
+        // No arguments give the contract defaults and no fleet.
+        {
+            let config = parse_args(Vec::new()).expect("no arguments is the default");
+            assert_eq!(config.port, 8899);
+            assert_eq!(config.kernel, PathBuf::from("/boot/vmlinuz-linux"));
+            assert_eq!(
+                config.initrd,
+                PathBuf::from("target/guest/initrd.x86_64.gz")
+            );
+            assert_eq!(config.run_cids, 20..=99);
+            // The fleet is off unless the manifest is named.
+            assert_eq!(config.agents, None);
+            assert_eq!(config.agents_cid_base, 100);
+            assert_eq!(config.agents_memory_mib, 1024);
+            assert_eq!(config.agents_vcpus, 1);
+            assert_eq!(config.agents_balloon_mib, 32);
+            // The node's state and its workspace image default to the data directory.
+            let node = apz_os::dirs::data().join("node");
+            assert_eq!(config.persist_dir, Some(node.clone()));
+            assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
+        }
+        // Flags override the defaults.
+        {
+            let config = parse_args(
+                [
+                    "--port",
+                    "9000",
+                    "--kernel",
+                    "/k",
+                    "--initrd",
+                    "/i",
+                    "--run-cids",
+                    "1000-1099",
+                ]
+                .map(String::from)
+                .to_vec(),
+            )
+            .expect("well-formed flags");
+            assert_eq!(config.port, 9000);
+            assert_eq!(config.kernel, PathBuf::from("/k"));
+            assert_eq!(config.initrd, PathBuf::from("/i"));
+            assert_eq!(config.run_cids, 1000..=1099);
+        }
+        // The fleet flags override their defaults.
+        {
+            let config = parse_args(
+                [
+                    "--agents",
+                    "docs/agents/initial-roles.json",
+                    "--agents-cid-base",
+                    "200",
+                    "--agents-memory-mib",
+                    "256",
+                    "--agents-vcpus",
+                    "2",
+                    "--agents-balloon-mib",
+                    "48",
+                ]
+                .map(String::from)
+                .to_vec(),
+            )
+            .expect("well-formed flags");
+            assert_eq!(
+                config.agents,
+                Some(PathBuf::from("docs/agents/initial-roles.json"))
+            );
+            assert_eq!(config.agents_cid_base, 200);
+            assert_eq!(config.agents_memory_mib, 256);
+            assert_eq!(config.agents_vcpus, 2);
+            assert_eq!(config.agents_balloon_mib, 48);
+        }
+        // A bad command line is refused.
+        for args in [
+            vec!["--port".to_string()],
+            vec!["--port".to_string(), "nope".to_string()],
+            vec!["--kernel".to_string()],
+            vec!["--what".to_string()],
+            vec!["--agents".to_string()],
+            vec!["--agents-cid-base".to_string(), "x".to_string()],
+            vec!["--agents-memory-mib".to_string(), "x".to_string()],
+            vec!["--agents-vcpus".to_string(), "x".to_string()],
+            vec!["--agents-balloon-mib".to_string(), "x".to_string()],
+            vec!["--run-cids".to_string(), "1099-1000".to_string()],
+            vec!["--run-cids".to_string(), "2-50".to_string()],
+            vec!["--run-cids".to_string(), "a-b".to_string()],
+            vec!["--run-cids".to_string(), "1000".to_string()],
+        ] {
+            assert!(parse_args(args.clone()).is_err(), "{args:?}");
+        }
     }
 
     #[test]
@@ -499,145 +547,88 @@ mod tests {
         assert!(parse_args(vec!["--internal-token-file".to_string()]).is_err());
     }
 
-    #[test]
-    fn the_fleet_flags_override_their_defaults() {
-        let config = parse_args(
-            [
-                "--agents",
-                "docs/agents/initial-roles.json",
-                "--agents-cid-base",
-                "200",
-                "--agents-memory-mib",
-                "256",
-                "--agents-vcpus",
-                "2",
-                "--agents-balloon-mib",
-                "48",
-            ]
-            .map(String::from)
-            .to_vec(),
-        )
-        .expect("well-formed flags");
-        assert_eq!(
-            config.agents,
-            Some(PathBuf::from("docs/agents/initial-roles.json"))
-        );
-        assert_eq!(config.agents_cid_base, 200);
-        assert_eq!(config.agents_memory_mib, 256);
-        assert_eq!(config.agents_vcpus, 2);
-        assert_eq!(config.agents_balloon_mib, 48);
-    }
-
-    #[test]
-    fn a_bad_command_line_is_refused() {
-        for args in [
-            vec!["--port".to_string()],
-            vec!["--port".to_string(), "nope".to_string()],
-            vec!["--kernel".to_string()],
-            vec!["--what".to_string()],
-            vec!["--agents".to_string()],
-            vec!["--agents-cid-base".to_string(), "x".to_string()],
-            vec!["--agents-memory-mib".to_string(), "x".to_string()],
-            vec!["--agents-vcpus".to_string(), "x".to_string()],
-            vec!["--agents-balloon-mib".to_string(), "x".to_string()],
-            vec!["--run-cids".to_string(), "1099-1000".to_string()],
-            vec!["--run-cids".to_string(), "2-50".to_string()],
-            vec!["--run-cids".to_string(), "a-b".to_string()],
-            vec!["--run-cids".to_string(), "1000".to_string()],
-        ] {
-            assert!(parse_args(args.clone()).is_err(), "{args:?}");
-        }
-    }
-
     fn args_of(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()
     }
 
     #[test]
-    fn snapshots_default_to_the_state_directory_or_the_persist_dir() {
-        let state = std::path::Path::new("/var/lib/apz");
-        let persist = std::path::Path::new("/persist");
-        assert_eq!(
-            snapshot_dir(false, None, None, state),
-            Ok(Some(PathBuf::from("/var/lib/apz/snapshots")))
-        );
-        assert_eq!(
-            snapshot_dir(false, None, Some(persist), state),
-            Ok(Some(PathBuf::from("/persist/snapshots")))
-        );
-        // The flag names the directory whatever the persist dir is.
-        assert_eq!(
-            snapshot_dir(false, Some(PathBuf::from("/snaps")), Some(persist), state),
-            Ok(Some(PathBuf::from("/snaps")))
-        );
-    }
-
-    #[test]
-    fn no_snapshots_keeps_none_and_cannot_name_a_snapshot_dir() {
-        let state = std::path::Path::new("/var/lib/apz");
-        assert_eq!(snapshot_dir(true, None, None, state), Ok(None));
-        assert_eq!(
-            snapshot_dir(true, None, Some(std::path::Path::new("/persist")), state),
-            Ok(None)
-        );
-        assert!(snapshot_dir(true, Some(PathBuf::from("/snaps")), None, state).is_err());
-    }
-
-    #[test]
-    fn the_snapshot_flags_parse_into_the_config() {
-        // With no flags the snapshots stay in the state directory, where an installed node keeps them,
-        // even though the persist directory (for workspaces) defaults to the data directory.
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(
-            config.snapshot_dir,
-            Some(apz_os::dirs::state().join("snapshots"))
-        );
-        assert_eq!(
-            config.volume_dir,
-            Some(apz_os::dirs::state().join("volumes"))
-        );
-        let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
-        assert_eq!(
-            config.snapshot_dir,
-            Some(apz_os::dirs::state().join("snapshots"))
-        );
-        let config = parse_args(args_of(&["--no-snapshots"])).expect("--no-snapshots parses");
-        assert_eq!(config.snapshot_dir, None);
-        let config = parse_args(args_of(&["--persist-dir", "/p", "--no-snapshots"]))
-            .expect("--no-snapshots with a persist dir parses");
-        assert_eq!(config.snapshot_dir, None);
-        let config = parse_args(args_of(&["--snapshot-dir", "/s"])).expect("--snapshot-dir parses");
-        assert_eq!(config.snapshot_dir, Some(PathBuf::from("/s")));
-        let config = parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
-        assert_eq!(config.snapshot_dir, Some(PathBuf::from("/p/snapshots")));
-        assert!(parse_args(args_of(&["--no-snapshots", "--snapshot-dir", "/s"])).is_err());
-    }
-
-    #[test]
-    fn the_workspace_defaults_to_an_image_in_the_persist_dir() {
-        let node = apz_os::dirs::data().join("node");
-        let config = parse_args(Vec::new()).expect("no arguments is the default");
-        assert_eq!(config.persist_dir, Some(node.clone()));
-        assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
-        // An explicit persist directory moves the default image with it.
-        let config = parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
-        assert_eq!(config.workspace, Some(PathBuf::from("/p/workspace.ext4")));
-        // An explicit image wins over the default, and the persist directory stays the default.
-        let config = parse_args(args_of(&["--workspace", "/w.ext4"])).expect("--workspace parses");
-        assert_eq!(config.workspace, Some(PathBuf::from("/w.ext4")));
-        assert_eq!(config.persist_dir, Some(node));
-    }
-
-    #[test]
-    fn no_workspace_keeps_the_old_behaviour() {
-        let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
-        assert_eq!(config.workspace, None);
-        assert_eq!(config.persist_dir, None);
-        // An explicit persist directory is still honoured, with no workspace image in it.
-        let config = parse_args(args_of(&["--no-workspace", "--persist-dir", "/p"]))
-            .expect("--no-workspace with a persist dir parses");
-        assert_eq!(config.workspace, None);
-        assert_eq!(config.persist_dir, Some(PathBuf::from("/p")));
-        assert!(parse_args(args_of(&["--no-workspace", "--workspace", "/w.ext4"])).is_err());
+    fn storage_flags_pick_the_snapshot_and_workspace_paths() {
+        // The snapshots default to the state directory, or to the persist directory when one is given.
+        {
+            let state = std::path::Path::new("/var/lib/apz");
+            let persist = std::path::Path::new("/persist");
+            assert_eq!(
+                snapshot_dir(false, None, None, state),
+                Ok(Some(PathBuf::from("/var/lib/apz/snapshots")))
+            );
+            assert_eq!(
+                snapshot_dir(false, None, Some(persist), state),
+                Ok(Some(PathBuf::from("/persist/snapshots")))
+            );
+            // The flag names the directory whatever the persist dir is.
+            assert_eq!(
+                snapshot_dir(false, Some(PathBuf::from("/snaps")), Some(persist), state),
+                Ok(Some(PathBuf::from("/snaps")))
+            );
+        }
+        // The snapshot flags parse into the config.
+        {
+            // With no flags the snapshots stay in the state directory, where an installed node keeps them,
+            // even though the persist directory (for workspaces) defaults to the data directory.
+            let config = parse_args(Vec::new()).expect("no arguments is the default");
+            assert_eq!(
+                config.snapshot_dir,
+                Some(apz_os::dirs::state().join("snapshots"))
+            );
+            assert_eq!(
+                config.volume_dir,
+                Some(apz_os::dirs::state().join("volumes"))
+            );
+            let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
+            assert_eq!(
+                config.snapshot_dir,
+                Some(apz_os::dirs::state().join("snapshots"))
+            );
+            let config = parse_args(args_of(&["--no-snapshots"])).expect("--no-snapshots parses");
+            assert_eq!(config.snapshot_dir, None);
+            let config = parse_args(args_of(&["--persist-dir", "/p", "--no-snapshots"]))
+                .expect("--no-snapshots with a persist dir parses");
+            assert_eq!(config.snapshot_dir, None);
+            let config =
+                parse_args(args_of(&["--snapshot-dir", "/s"])).expect("--snapshot-dir parses");
+            assert_eq!(config.snapshot_dir, Some(PathBuf::from("/s")));
+            let config =
+                parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
+            assert_eq!(config.snapshot_dir, Some(PathBuf::from("/p/snapshots")));
+            assert!(parse_args(args_of(&["--no-snapshots", "--snapshot-dir", "/s"])).is_err());
+        }
+        // The workspace defaults to an image in the persist dir.
+        {
+            let node = apz_os::dirs::data().join("node");
+            let config = parse_args(Vec::new()).expect("no arguments is the default");
+            assert_eq!(config.persist_dir, Some(node.clone()));
+            assert_eq!(config.workspace, Some(node.join("workspace.ext4")));
+            // An explicit persist directory moves the default image with it.
+            let config =
+                parse_args(args_of(&["--persist-dir", "/p"])).expect("--persist-dir parses");
+            assert_eq!(config.workspace, Some(PathBuf::from("/p/workspace.ext4")));
+            // An explicit image wins over the default, and the persist directory stays the default.
+            let config =
+                parse_args(args_of(&["--workspace", "/w.ext4"])).expect("--workspace parses");
+            assert_eq!(config.workspace, Some(PathBuf::from("/w.ext4")));
+            assert_eq!(config.persist_dir, Some(node));
+        }
+        // No workspace keeps the old behaviour.
+        {
+            let config = parse_args(args_of(&["--no-workspace"])).expect("--no-workspace parses");
+            assert_eq!(config.workspace, None);
+            assert_eq!(config.persist_dir, None);
+            // An explicit persist directory is still honoured, with no workspace image in it.
+            let config = parse_args(args_of(&["--no-workspace", "--persist-dir", "/p"]))
+                .expect("--no-workspace with a persist dir parses");
+            assert_eq!(config.workspace, None);
+            assert_eq!(config.persist_dir, Some(PathBuf::from("/p")));
+            assert!(parse_args(args_of(&["--no-workspace", "--workspace", "/w.ext4"])).is_err());
+        }
     }
 }

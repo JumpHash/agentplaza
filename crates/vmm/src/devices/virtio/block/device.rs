@@ -1066,19 +1066,21 @@ mod tests {
     }
 
     /// `GET_ID` on a read-only device returns the id it was given, zero-padded
-    /// to `VIRTIO_BLK_ID_BYTES`.
+    /// to `VIRTIO_BLK_ID_BYTES`; an id longer than that is cut to it.
     #[test]
-    fn a_read_only_device_answers_get_id_with_its_id() {
-        let (_file, mut block) = read_only_volume(&[0u8; 4096], "ws-42");
-        let mut expected = b"ws-42".to_vec();
-        expected.resize(VIRTIO_BLK_ID_BYTES as usize, 0);
-        assert_eq!(get_id_of(&mut block), expected);
-    }
-
-    /// An id longer than `VIRTIO_BLK_ID_BYTES` is cut to that many bytes.
-    #[test]
-    fn a_device_id_longer_than_the_id_field_is_cut() {
-        let (_file, mut block) = read_only_volume(&[0u8; 4096], "0123456789abcdefghijKLMNOP");
-        assert_eq!(get_id_of(&mut block), b"0123456789abcdefghij".to_vec());
+    fn a_read_only_device_answers_get_id_with_its_id_fitted_to_the_id_field() {
+        let mut padded = b"ws-42".to_vec();
+        padded.resize(VIRTIO_BLK_ID_BYTES as usize, 0);
+        for (case, id, want) in [
+            ("a short id is zero-padded to the id field", "ws-42", padded),
+            (
+                "an id longer than the id field is cut",
+                "0123456789abcdefghijKLMNOP",
+                b"0123456789abcdefghij".to_vec(),
+            ),
+        ] {
+            let (_file, mut block) = read_only_volume(&[0u8; 4096], id);
+            assert_eq!(get_id_of(&mut block), want, "{case}");
+        }
     }
 }

@@ -142,11 +142,10 @@ fn intercept_with(
     let link = Arc::new(Link {
         done: AtomicBool::new(false),
         guest: clone_unix(guest)?,
-        upstream: clone_tcp(&upstream)?,
+        upstream,
         reason: Mutex::new(None),
     });
     let (guest_read, guest_write) = (clone_unix(guest)?, clone_unix(guest)?);
-    let (upstream_read, upstream_write) = (clone_tcp(&upstream)?, clone_tcp(&upstream)?);
 
     let (guest_side, guest_queue) = Side::new(guest_tls);
     let (up_side, up_queue) = Side::new(upstream_tls);
@@ -176,8 +175,9 @@ fn intercept_with(
     }
     {
         let (side, link) = (Arc::clone(&up_side), Arc::clone(&link));
-        let _ =
-            thread::spawn(move || write_loop(upstream_write, up_queue, &side, &link, "upstream"));
+        let _ = thread::spawn(move || {
+            write_loop(&link.upstream, up_queue, &side, &link, "upstream");
+        });
     }
     let up_reader = {
         let (up, guest_side, link) = (
@@ -185,7 +185,7 @@ fn intercept_with(
             Arc::clone(&guest_side),
             Arc::clone(&link),
         );
-        thread::spawn(move || upstream_read_loop(upstream_read, &up, &guest_side, &link))
+        thread::spawn(move || upstream_read_loop(&link.upstream, &up, &guest_side, &link))
     };
 
     let mut inbound = Inbound {
@@ -208,6 +208,12 @@ fn intercept_with(
 
 /// The two sockets of one intercepted connection, the flag that ends it, and the first reason it
 /// was ended for. Shared by every thread of the connection.
+///
+/// The guest socket is a clone; the upstream is the connection's own TCP handle, which its reader
+/// and writer use too (`&TcpStream`), so its read timeout is theirs. Not a `try_clone`: on Windows
+/// a clone is a `WSADuplicateSocketW` handle whose shutdown now and then fails with WSAENOTCONN,
+/// so the upstream would not see the hang-up, and [`crate::sys::wake_readers`] cancels only the
+/// reads issued on the handle it is given.
 struct Link {
     done: AtomicBool,
     guest: UnixStream,
@@ -431,7 +437,7 @@ fn guest_read_loop(
 /// Reads the upstream's socket, decrypts it, and queues the plaintext for the guest, raw. It never
 /// waits on the guest: a guest that stops reading ends the connection past [`QUEUE_LIMIT`]. Returns
 /// the bytes relayed.
-fn upstream_read_loop(mut raw: TcpStream, up: &Side, guest: &Side, link: &Link) -> u64 {
+fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link) -> u64 {
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0u64;
     let mut last = Instant::now();
@@ -950,10 +956,6 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn clone_unix(stream: &UnixStream) -> Result<UnixStream, String> {
-    stream.try_clone().map_err(io_text)
-}
-
-fn clone_tcp(stream: &TcpStream) -> Result<TcpStream, String> {
     stream.try_clone().map_err(io_text)
 }
 

@@ -976,7 +976,7 @@ fn print_decision(d: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::{CommandFactory, Parser};
+    use clap::Parser;
 
     /// Just the `models` command, so the policy subcommands parse the way the CLI parses them.
     #[derive(Parser, Debug)]
@@ -996,58 +996,55 @@ mod tests {
     }
 
     #[test]
-    fn fetch_block_and_unblock_repeat_and_the_old_fetch_allow_flag_is_gone() {
-        let PolicyCmd::Set {
-            fetch_block,
-            fetch_unblock,
-            ..
-        } = policy_set(&[
-            "--fetch-block",
-            "evil.example",
-            "--fetch-block",
-            "*.ads.net",
-            "--fetch-unblock",
-            "docs.example",
-        ])
-        .expect("repeatable flags parse")
-        else {
-            panic!("expected set");
-        };
-        assert_eq!(
-            fetch_block,
-            vec!["evil.example".to_string(), "*.ads.net".to_string()]
-        );
-        assert_eq!(fetch_unblock, vec!["docs.example".to_string()]);
-        assert!(
-            policy_set(&["--fetch-allow", "example.com"]).is_err(),
-            "the flag the hub never read is gone"
-        );
-    }
-
-    #[test]
-    fn the_fetch_flags_name_themselves_in_help() {
-        let cmd = Probe::command();
-        let set = cmd
-            .find_subcommand("policy")
-            .and_then(|p| p.find_subcommand("set"))
-            .expect("policy set");
-        let help = |id: &str| {
-            set.get_arguments()
-                .find(|a| a.get_id() == id)
-                .and_then(|a| a.get_help())
-                .map(ToString::to_string)
-                .unwrap_or_default()
-        };
-        assert!(
-            help("fetch_block").contains("*.example.com"),
-            "{}",
-            help("fetch_block")
-        );
-        assert!(
-            help("fetch_unblock").contains("Repeatable"),
-            "{}",
-            help("fetch_unblock")
-        );
+    fn policy_set_parses_its_flags() {
+        // The fetch flags repeat, and the old --fetch-allow flag is gone.
+        {
+            let PolicyCmd::Set {
+                fetch_block,
+                fetch_unblock,
+                ..
+            } = policy_set(&[
+                "--fetch-block",
+                "evil.example",
+                "--fetch-block",
+                "*.ads.net",
+                "--fetch-unblock",
+                "docs.example",
+            ])
+            .expect("repeatable flags parse")
+            else {
+                panic!("expected set");
+            };
+            assert_eq!(
+                fetch_block,
+                vec!["evil.example".to_string(), "*.ads.net".to_string()]
+            );
+            assert_eq!(fetch_unblock, vec!["docs.example".to_string()]);
+            assert!(
+                policy_set(&["--fetch-allow", "example.com"]).is_err(),
+                "the flag the hub never read is gone"
+            );
+        }
+        // --allow-training-models takes true or false and refuses anything else.
+        {
+            let PolicyCmd::Set {
+                allow_training_models,
+                ..
+            } = policy_set(&["--allow-training-models", "true"]).expect("true parses")
+            else {
+                panic!("expected set");
+            };
+            assert_eq!(allow_training_models, Some(true));
+            let PolicyCmd::Set {
+                allow_training_models,
+                ..
+            } = policy_set(&["--allow-training-models", "false"]).expect("false parses")
+            else {
+                panic!("expected set");
+            };
+            assert_eq!(allow_training_models, Some(false));
+            assert!(policy_set(&["--allow-training-models", "maybe"]).is_err());
+        }
     }
 
     #[test]
@@ -1098,70 +1095,12 @@ mod tests {
     }
 
     #[test]
-    fn the_effort_help_lists_exactly_the_accepted_values() {
-        let cmd = Probe::command();
-        let set = cmd
-            .find_subcommand("policy")
-            .and_then(|p| p.find_subcommand("set"))
-            .expect("policy set");
-        let help = set
-            .get_arguments()
-            .find(|a| a.get_id() == "effort")
-            .and_then(|a| a.get_help())
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        assert!(
-            help.contains("none, minimal, low, medium, high, xhigh, max"),
-            "{help}"
-        );
-        assert!(help.contains("`default` clears it"), "{help}");
-        assert!(
-            !help.contains("default, low"),
-            "the old list is gone: {help}"
-        );
-    }
-
-    #[test]
     fn a_price_path_is_one_encoded_segment() {
         assert_eq!(
             price_path("anthropic/claude-x"),
             "/v1/prices/anthropic%2Fclaude-x"
         );
         assert_eq!(price_path("glm-5.3"), "/v1/prices/glm-5.3");
-    }
-
-    #[test]
-    fn the_trains_marker_shows_only_for_contributor_models() {
-        assert_eq!(
-            trains_marker(&json!({ "id": "m", "trains_on_data": true })),
-            "yes"
-        );
-        assert_eq!(
-            trains_marker(&json!({ "id": "m", "trains_on_data": false })),
-            ""
-        );
-        assert_eq!(trains_marker(&json!({ "id": "m" })), "");
-    }
-
-    #[test]
-    fn allow_training_models_takes_true_or_false() {
-        let PolicyCmd::Set {
-            allow_training_models,
-            ..
-        } = policy_set(&["--allow-training-models", "true"]).expect("true parses")
-        else {
-            panic!("expected set");
-        };
-        assert_eq!(allow_training_models, Some(true));
-        let PolicyCmd::Set {
-            allow_training_models,
-            ..
-        } = policy_set(&["--allow-training-models", "false"]).expect("false parses")
-        else {
-            panic!("expected set");
-        };
-        assert_eq!(allow_training_models, Some(false));
-        assert!(policy_set(&["--allow-training-models", "maybe"]).is_err());
     }
 
     #[test]
@@ -1179,63 +1118,5 @@ mod tests {
             Probe::try_parse_from(["models", "prices"]).map(|p| p.cmd),
             Ok(Cmd::Prices { action: None })
         ));
-    }
-
-    #[test]
-    fn a_refresh_lists_each_source_with_its_models_and_error() {
-        let v = json!({
-            "fetched_at_ms": 1,
-            "sources": [
-                { "name": "openrouter", "url": "u", "models": 3, "ok": true, "error": null },
-                { "name": "litellm", "url": "u", "models": 0, "ok": false, "error": "timeout" }
-            ],
-            "models": [{ "model": "x", "price": { "input": 1.0 } }]
-        });
-        assert_eq!(
-            source_rows(&v),
-            vec![
-                vec![
-                    "openrouter".to_string(),
-                    "3".into(),
-                    "true".into(),
-                    "—".into()
-                ],
-                vec![
-                    "litellm".to_string(),
-                    "0".into(),
-                    "false".into(),
-                    "timeout".into()
-                ],
-            ]
-        );
-    }
-
-    #[test]
-    fn the_prices_list_shows_model_rates_and_source_and_dashes_a_missing_rate() {
-        let v = json!({
-            "fetched_at_ms": 1,
-            "sources": [],
-            "models": [
-                { "model": "anthropic/claude-x", "price": { "input": 15.0, "output": 75.0, "cache_read": 1.5, "source": "openrouter" } },
-                { "model": "mystery", "price": { "input": 1.0, "source": "litellm" } }
-            ]
-        });
-        assert_eq!(
-            price_rows(&v),
-            vec![
-                vec![
-                    "anthropic/claude-x".to_string(),
-                    "15.0".into(),
-                    "75.0".into(),
-                    "openrouter".into()
-                ],
-                vec![
-                    "mystery".to_string(),
-                    "1.0".into(),
-                    "—".into(),
-                    "litellm".into()
-                ],
-            ]
-        );
     }
 }

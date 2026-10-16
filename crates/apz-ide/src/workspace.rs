@@ -183,89 +183,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_id_round_trips() {
-        let id: WorkspaceId = "agent:42".parse().unwrap();
-        assert_eq!(id, WorkspaceId::Agent(42));
-        assert_eq!(id.to_string(), "agent:42");
-        assert_eq!(
-            "agent:0".parse::<WorkspaceId>().unwrap(),
-            WorkspaceId::Agent(0)
-        );
-    }
-
-    #[test]
-    fn repo_id_splits_at_the_first_at_sign_and_keeps_the_rest_in_the_ref() {
-        // (text, name, ref): a ref may hold '/' and a further '@'.
-        for (text, name, git_ref) in [
-            (
-                "repo:plaza-web@feature/ide-spike",
-                "plaza-web",
-                "feature/ide-spike",
-            ),
-            ("repo:x@a@b", "x", "a@b"),
-        ] {
-            let id: WorkspaceId = text.parse().unwrap();
+    fn workspace_id_parsing_and_formatting() {
+        // Agent ids round-trip through their text form.
+        {
+            let id: WorkspaceId = "agent:42".parse().unwrap();
+            assert_eq!(id, WorkspaceId::Agent(42));
+            assert_eq!(id.to_string(), "agent:42");
             assert_eq!(
-                id,
-                WorkspaceId::Repo {
-                    name: name.into(),
-                    git_ref: git_ref.into()
-                },
-                "{text}"
+                "agent:0".parse::<WorkspaceId>().unwrap(),
+                WorkspaceId::Agent(0)
             );
-            assert_eq!(id.to_string(), text, "{text}");
         }
-    }
-
-    #[test]
-    fn accepted_ids_format_back_to_the_same_text() {
-        for s in [
-            "agent:7",
-            "agent:18446744073709551615",
-            "repo:a.b_c-d@main",
-            "repo:x@v1.2.3",
-        ] {
-            assert_eq!(s.parse::<WorkspaceId>().unwrap().to_string(), s);
+        // A repo id splits at the first '@' and keeps the rest in the ref.
+        {
+            // (text, name, ref): a ref may hold '/' and a further '@'.
+            for (text, name, git_ref) in [
+                (
+                    "repo:plaza-web@feature/ide-spike",
+                    "plaza-web",
+                    "feature/ide-spike",
+                ),
+                ("repo:x@a@b", "x", "a@b"),
+            ] {
+                let id: WorkspaceId = text.parse().unwrap();
+                assert_eq!(
+                    id,
+                    WorkspaceId::Repo {
+                        name: name.into(),
+                        git_ref: git_ref.into()
+                    },
+                    "{text}"
+                );
+                assert_eq!(id.to_string(), text, "{text}");
+            }
         }
-    }
-
-    #[test]
-    fn agent_cid_must_be_canonical_decimal() {
-        for s in [
-            "agent:",
-            "agent:x",
-            "agent:+4",
-            "agent:-1",
-            "agent:007",
-            "agent: 4",
-            "agent:1 ",
-            "agent:99999999999999999999999",
-        ] {
-            assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Cid), "{s}");
+        // Accepted ids format back to the same text.
+        {
+            for s in [
+                "agent:7",
+                "agent:18446744073709551615",
+                "repo:a.b_c-d@main",
+                "repo:x@v1.2.3",
+            ] {
+                assert_eq!(s.parse::<WorkspaceId>().unwrap().to_string(), s);
+            }
         }
-    }
-
-    #[test]
-    fn repo_name_and_ref_are_checked() {
-        let cases = [
-            ("repo:@main", IdError::Name),
-            ("repo:bad name@main", IdError::Name),
-            ("repo:..@main", IdError::Name),
-            ("repo:.@main", IdError::Name),
-            ("repo:x/y@main", IdError::Name),
-            ("repo:x", IdError::Ref),
-            ("repo:x@", IdError::Ref),
-            ("repo:x@a..b", IdError::Ref),
-            ("repo:x@/a", IdError::Ref),
-            ("repo:x@a/", IdError::Ref),
-            ("repo:x@a b", IdError::Ref),
-            ("repo:x@a//b", IdError::Ref),
-            ("repo:x@a~1", IdError::Ref),
-            ("repo:x@a\nb", IdError::Ref),
-            ("repo:x@a.", IdError::Ref),
-        ];
-        for (s, want) in cases {
-            assert_eq!(s.parse::<WorkspaceId>(), Err(want), "{s}");
+        // An agent cid must be canonical decimal.
+        {
+            for s in [
+                "agent:",
+                "agent:x",
+                "agent:+4",
+                "agent:-1",
+                "agent:007",
+                "agent: 4",
+                "agent:1 ",
+                "agent:99999999999999999999999",
+            ] {
+                assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Cid), "{s}");
+            }
+        }
+        // Repo names and refs are checked.
+        {
+            let cases = [
+                ("repo:@main", IdError::Name),
+                ("repo:bad name@main", IdError::Name),
+                ("repo:..@main", IdError::Name),
+                ("repo:.@main", IdError::Name),
+                ("repo:x/y@main", IdError::Name),
+                ("repo:x", IdError::Ref),
+                ("repo:x@", IdError::Ref),
+                ("repo:x@a..b", IdError::Ref),
+                ("repo:x@/a", IdError::Ref),
+                ("repo:x@a/", IdError::Ref),
+                ("repo:x@a b", IdError::Ref),
+                ("repo:x@a//b", IdError::Ref),
+                ("repo:x@a~1", IdError::Ref),
+                ("repo:x@a\nb", IdError::Ref),
+                ("repo:x@a.", IdError::Ref),
+            ];
+            for (s, want) in cases {
+                assert_eq!(s.parse::<WorkspaceId>(), Err(want), "{s}");
+            }
+        }
+        // An unknown prefix is refused.
+        {
+            for s in ["", "project:1", "Agent:1", "agent 1"] {
+                assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Prefix), "{s}");
+            }
         }
     }
 
@@ -294,13 +299,6 @@ mod tests {
         assert_eq!(ws.owner, "w12");
         assert_eq!(ws.r#ref, None);
         assert_eq!(serde_json::to_value(&ws).unwrap()["kind"], "station");
-    }
-
-    #[test]
-    fn unknown_prefix_is_refused() {
-        for s in ["", "project:1", "Agent:1", "agent 1"] {
-            assert_eq!(s.parse::<WorkspaceId>(), Err(IdError::Prefix), "{s}");
-        }
     }
 
     #[test]

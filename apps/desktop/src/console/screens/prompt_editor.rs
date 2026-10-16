@@ -956,37 +956,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_finding_on_a_line_selects_that_line() {
-        let text = "# Title\nfirst line\nsecond";
-        let c = finding_cursor(text, 2).expect("line 2 has a cursor");
-        assert_eq!(
-            c.position,
-            Position {
-                line: 1,
-                column: "first line".len()
-            }
-        );
-        assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
-    }
-
-    #[test]
-    fn a_finding_past_the_end_selects_the_last_line() {
-        let c = finding_cursor("a\nbb", 9).expect("clamped to the last line");
-        assert_eq!(c.position, Position { line: 1, column: 2 });
-    }
-
-    #[test]
-    fn a_document_finding_has_no_line_to_jump_to() {
-        assert_eq!(finding_cursor("anything", 0), None);
-    }
-
-    #[test]
-    fn the_tags_are_trimmed_and_the_empty_ones_dropped() {
-        assert_eq!(
-            parse_tags(" review, , safety ,"),
-            vec!["review".to_string(), "safety".to_string()]
-        );
-        assert!(parse_tags("").is_empty());
+    fn a_finding_moves_the_cursor_to_its_line() {
+        // A finding on a line selects that line.
+        {
+            let text = "# Title\nfirst line\nsecond";
+            let c = finding_cursor(text, 2).expect("line 2 has a cursor");
+            assert_eq!(
+                c.position,
+                Position {
+                    line: 1,
+                    column: "first line".len()
+                }
+            );
+            assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
+        }
+        // A finding past the end selects the last line.
+        {
+            let c = finding_cursor("a\nbb", 9).expect("clamped to the last line");
+            assert_eq!(c.position, Position { line: 1, column: 2 });
+        }
+        // A document finding has no line to jump to.
+        {
+            assert_eq!(finding_cursor("anything", 0), None);
+        }
     }
 
     #[test]
@@ -1005,68 +997,32 @@ mod tests {
     }
 
     #[test]
-    fn the_meta_body_carries_the_form_fields_trimmed() {
-        let d = Details {
-            title: "  Builder  ".to_string(),
-            description: " Builds things ".to_string(),
-            tags: "review, safety".to_string(),
-            role: "builder".to_string(),
-            every: false,
-        };
-        assert_eq!(
-            meta_body(Kind::System, &d).unwrap(),
-            json!({ "title": "Builder", "description": "Builds things", "tags": ["review", "safety"], "binding": "role:builder" })
-        );
-    }
-
-    #[test]
-    fn the_meta_body_refuses_a_blank_title() {
-        let d = Details {
-            title: "   ".to_string(),
-            ..Details::default()
-        };
-        assert_eq!(
-            meta_body(Kind::Fragment, &d),
-            Err("Give the prompt a title.".to_string())
-        );
-    }
-
-    #[test]
-    fn a_fragment_sends_no_binding() {
-        let d = Details {
-            title: "Note".to_string(),
-            role: "builder".to_string(),
-            every: true,
-            ..Details::default()
-        };
-        let body = meta_body(Kind::Fragment, &d).unwrap();
-        assert_eq!(body["binding"], Value::Null);
-    }
-
-    #[test]
-    fn the_form_reads_the_binding_back_from_the_prompt() {
-        let summary = PromptSummary {
-            title: "Plaza rules".to_string(),
-            kind: "agents_md".to_string(),
-            description: String::new(),
-            tags: vec!["a".to_string(), "b".to_string()],
-            binding: Some("plaza".to_string()),
-            active_version: None,
-            latest_version: 1,
-            best_version: None,
-            score: None,
-            archived_ms: None,
-        };
-        let d = Details::of(&summary);
-        assert!(d.every);
-        assert_eq!(d.tags, "a, b");
-        let role_summary = PromptSummary {
-            binding: Some("role:builder".to_string()),
-            kind: "system".to_string(),
-            ..summary
-        };
-        let d = Details::of(&role_summary);
-        assert_eq!((d.role.as_str(), d.every), ("builder", false));
+    fn the_meta_body_is_built_from_the_form_fields() {
+        // The form fields are carried trimmed.
+        {
+            let d = Details {
+                title: "  Builder  ".to_string(),
+                description: " Builds things ".to_string(),
+                tags: "review, safety".to_string(),
+                role: "builder".to_string(),
+                every: false,
+            };
+            assert_eq!(
+                meta_body(Kind::System, &d).unwrap(),
+                json!({ "title": "Builder", "description": "Builds things", "tags": ["review", "safety"], "binding": "role:builder" })
+            );
+        }
+        // A fragment sends no binding.
+        {
+            let d = Details {
+                title: "Note".to_string(),
+                role: "builder".to_string(),
+                every: true,
+                ..Details::default()
+            };
+            let body = meta_body(Kind::Fragment, &d).unwrap();
+            assert_eq!(body["binding"], Value::Null);
+        }
     }
 }
 

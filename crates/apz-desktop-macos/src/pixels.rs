@@ -111,32 +111,26 @@ mod tests {
     const DISPLAY_INFO: u32 = BYTE_ORDER_32_LITTLE | 2;
 
     #[test]
-    fn the_display_layout_is_bgra() {
-        assert_eq!(
-            layout(DISPLAY_INFO),
-            Layout {
-                red: 2,
-                green: 1,
-                blue: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn each_byte_order_and_alpha_position_has_its_layout() {
+    fn pixel_layout_follows_byte_order_and_alpha_position() {
         let at = |red, green, blue| Layout { red, green, blue };
-        assert_eq!(layout(2), at(1, 2, 3), "big-endian, alpha first: ARGB");
-        assert_eq!(layout(1), at(0, 1, 2), "big-endian, alpha last: RGBA");
-        assert_eq!(
-            layout(BYTE_ORDER_32_LITTLE | 1),
-            at(3, 2, 1),
-            "little, alpha last: ABGR"
-        );
-        assert_eq!(
-            layout(BYTE_ORDER_32_LITTLE | 6),
-            at(2, 1, 0),
-            "none-skip first is still BGRA"
-        );
+        for (case, info, want) in [
+            // The display layout is BGRA.
+            ("the usual display is bgra", DISPLAY_INFO, at(2, 1, 0)),
+            ("big-endian, alpha first: ARGB", 2, at(1, 2, 3)),
+            ("big-endian, alpha last: RGBA", 1, at(0, 1, 2)),
+            (
+                "little, alpha last: ABGR",
+                BYTE_ORDER_32_LITTLE | 1,
+                at(3, 2, 1),
+            ),
+            (
+                "none-skip first is still BGRA",
+                BYTE_ORDER_32_LITTLE | 6,
+                at(2, 1, 0),
+            ),
+        ] {
+            assert_eq!(layout(info), want, "{case}");
+        }
     }
 
     #[test]

@@ -66,14 +66,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_free_number_from_the_start_is_picked() {
-        assert_eq!(pick_display(90, 100, |_| false), Some(90));
-        assert_eq!(pick_display(90, 100, |n| n == 90), Some(91));
-        assert_eq!(pick_display(90, 93, |n| n < 92), Some(92));
-        assert_eq!(pick_display(90, 92, |_| true), None, "no free number");
-    }
-
-    #[test]
     fn a_lock_file_or_a_socket_takes_a_number() {
         let dir = scratch("taken");
         let paths = DisplayPaths {

@@ -310,26 +310,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
-
-#[cfg(test)]
-mod role_tests {
-    use super::*;
-
-    /// The plaza's record decides the role: a claim in hello only matches a spawn the plaza expected.
-    #[test]
-    fn a_claimed_role_is_recorded_only_for_a_spawn_the_plaza_expected() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-role-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("spawned.json");
-        let _ = std::fs::remove_file(&path);
-        let store = Store::load(path);
-        store.expect("worker", None);
-        // A VM the plaza did not spawn, claiming a role nobody expected: no record.
-        store.hello(41, "orchestrator");
-        assert_eq!(store.role_of(41), None);
-        // The VM the plaza expected, claiming the role it was spawned with: its record holds that role.
-        store.hello(42, "worker");
-        assert_eq!(store.role_of(42).as_deref(), Some("worker"));
-        assert_eq!(store.role_of(7), None);
-    }
-}

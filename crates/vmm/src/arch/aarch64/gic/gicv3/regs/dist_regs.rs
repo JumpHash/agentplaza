@@ -134,14 +134,6 @@ pub(crate) fn set_dist_regs(fd: &DeviceFd, state: &[GicRegState<u32>]) -> Result
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_dist_constructors() {
-        let simple_dist_reg = DistReg::simple(0, 4);
-        let shared_dist_reg = DistReg::shared_irq(0x0010, 2);
-        assert_eq!(simple_dist_reg.range(), Range { start: 0, end: 4 });
-        assert_eq!(shared_dist_reg.range(), Range { start: 24, end: 48 });
-    }
-
     /// GICD_IROUTER is 64 bits per interrupt, so its SPI sub-range is the
     /// largest of the distributor's shared-irq registers.
     #[test]

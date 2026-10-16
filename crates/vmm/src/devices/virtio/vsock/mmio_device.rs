@@ -311,36 +311,41 @@ mod tests {
         assert!(device.restore_device_state(&state).is_err());
     }
 
+    /// `on_restored` publishes a transport reset on the event queue once the
+    /// device is activated, and does nothing before activation.
     #[test]
-    fn on_restored_publishes_a_transport_reset_on_the_event_queue() {
-        let mem = default_mem();
-        let vqs = guest_queues(&mem);
-        let mut device = unactivated();
-        activate_over(&mut device, &mem, &vqs);
+    fn on_restored_publishes_reset_only_when_activated() {
+        // The reset is published on the event queue after activation.
+        {
+            let mem = default_mem();
+            let vqs = guest_queues(&mem);
+            let mut device = unactivated();
+            activate_over(&mut device, &mem, &vqs);
 
-        // The driver has posted one event buffer.
-        vqs[2].set_desc(0, EVENT_BUFFER, 4, VIRTQ_DESC_F_WRITE, 0);
-        vqs[2].publish(0);
-        assert_eq!(vqs[2].used_idx(), 0);
+            // The driver has posted one event buffer.
+            vqs[2].set_desc(0, EVENT_BUFFER, 4, VIRTQ_DESC_F_WRITE, 0);
+            vqs[2].publish(0);
+            assert_eq!(vqs[2].used_idx(), 0);
 
-        device
-            .on_restored()
-            .expect("the reset is published on the event queue");
-        assert_eq!(vqs[2].used_idx(), 1);
-        assert_eq!(
-            mem.read_obj::<u32>(GuestAddress(EVENT_BUFFER))
-                .expect("the event buffer is in guest memory"),
-            VIRTIO_VSOCK_EVENT_TRANSPORT_RESET
-        );
-        assert!(device.lock().pending_event_ack);
-    }
+            device
+                .on_restored()
+                .expect("the reset is published on the event queue");
+            assert_eq!(vqs[2].used_idx(), 1);
+            assert_eq!(
+                mem.read_obj::<u32>(GuestAddress(EVENT_BUFFER))
+                    .expect("the event buffer is in guest memory"),
+                VIRTIO_VSOCK_EVENT_TRANSPORT_RESET
+            );
+            assert!(device.lock().pending_event_ack);
+        }
 
-    #[test]
-    fn on_restored_is_a_no_op_before_activation() {
-        let mut device = unactivated();
-        device
-            .on_restored()
-            .expect("an unactivated device has no event queue to reset");
-        assert!(!device.lock().pending_event_ack);
+        // An unactivated device has no event queue, so on_restored is a no-op.
+        {
+            let mut device = unactivated();
+            device
+                .on_restored()
+                .expect("an unactivated device has no event queue to reset");
+            assert!(!device.lock().pending_event_ack);
+        }
     }
 }

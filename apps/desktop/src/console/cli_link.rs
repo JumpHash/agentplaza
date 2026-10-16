@@ -140,23 +140,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn applescript_quotes_a_path_with_a_space_and_a_quote() {
-        let command = applescript_command(
-            Path::new("/Applications/Agent Plaza/it's/agentplaza"),
-            Path::new("/usr/local/bin/agentplaza"),
-        );
-        assert_eq!(
-            command,
-            r#"do shell script "mkdir -p /usr/local/bin && ln -sf '/Applications/Agent Plaza/it'\\''s/agentplaza' '/usr/local/bin/agentplaza'" with administrator privileges"#
-        );
-    }
-
-    #[test]
-    fn applescript_escapes_double_quotes_and_backslashes() {
-        let command = applescript_command(
-            Path::new(r#"/x/"a"\b"#),
-            Path::new("/usr/local/bin/agentplaza"),
-        );
-        assert!(command.contains(r#"'/x/\"a\"\\b'"#), "{command}");
+    fn applescript_command_quotes_and_escapes_the_paths() {
+        // A path with a space and a single quote is shell-quoted, then the command is escaped for AppleScript.
+        {
+            let command = applescript_command(
+                Path::new("/Applications/Agent Plaza/it's/agentplaza"),
+                Path::new("/usr/local/bin/agentplaza"),
+            );
+            assert_eq!(
+                command,
+                r#"do shell script "mkdir -p /usr/local/bin && ln -sf '/Applications/Agent Plaza/it'\\''s/agentplaza' '/usr/local/bin/agentplaza'" with administrator privileges"#
+            );
+        }
+        // A path with double quotes and backslashes keeps them escaped inside the AppleScript string.
+        {
+            let command = applescript_command(
+                Path::new(r#"/x/"a"\b"#),
+                Path::new("/usr/local/bin/agentplaza"),
+            );
+            assert!(command.contains(r#"'/x/\"a\"\\b'"#), "{command}");
+        }
     }
 }

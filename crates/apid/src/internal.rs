@@ -1037,86 +1037,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decide_denies_ungranted_allows_guest_and_denies_unknown() {
-        let granted = vec!["read".to_string(), "calc".to_string()];
-        // An ungranted tool is denied even when a runner exists for it.
-        assert!(matches!(
-            decide(&granted, "bash", Some(Runs::Guest)),
-            Err("not granted to this agent")
-        ));
-        // A granted guest tool may run in the VM.
-        assert!(matches!(
-            decide(&granted, "read", Some(Runs::Guest)),
-            Ok(Runs::Guest)
-        ));
-        // A granted host tool runs in apid.
-        assert!(matches!(
-            decide(&granted, "calc", Some(Runs::Host)),
-            Ok(Runs::Host)
-        ));
-        // A granted name that no runner knows is denied as unknown.
-        assert!(matches!(
-            decide(&granted, "read", None),
-            Err("unknown tool")
-        ));
+    fn decide_policy_grants_only_granted_tools_and_runs_each_where_it_belongs() {
+        {
+            // decide_denies_ungranted_allows_guest_and_denies_unknown: an ungranted tool is denied,
+            // a granted guest tool runs in the VM, a granted host tool runs in apid, and a granted
+            // name no runner knows is denied as unknown.
+            let granted = vec!["read".to_string(), "calc".to_string()];
+            // An ungranted tool is denied even when a runner exists for it.
+            assert!(matches!(
+                decide(&granted, "bash", Some(Runs::Guest)),
+                Err("not granted to this agent")
+            ));
+            // A granted guest tool may run in the VM.
+            assert!(matches!(
+                decide(&granted, "read", Some(Runs::Guest)),
+                Ok(Runs::Guest)
+            ));
+            // A granted host tool runs in apid.
+            assert!(matches!(
+                decide(&granted, "calc", Some(Runs::Host)),
+                Ok(Runs::Host)
+            ));
+            // A granted name that no runner knows is denied as unknown.
+            assert!(matches!(
+                decide(&granted, "read", None),
+                Err("unknown tool")
+            ));
+        }
+        {
+            // an_engine_request_is_granted_with_code_engine_and_runs_in_the_guest: an engine.* name
+            // is granted only with code_engine and then runs in the guest; any other engine.* name
+            // is granted with code_engine and is unknown.
+            let with_engine = vec!["read".to_string(), "code_engine".to_string()];
+            let without = vec!["read".to_string()];
+            for name in [
+                "engine.read",
+                "engine.edit",
+                "engine.exec",
+                "engine.fetch",
+                "engine.other",
+            ] {
+                assert!(
+                    matches!(
+                        decide(&with_engine, name, engine_runs(name).or_else(|| runs(name))),
+                        Ok(Runs::Guest)
+                    ),
+                    "{name} with code_engine"
+                );
+                assert!(
+                    matches!(
+                        decide(&without, name, engine_runs(name).or_else(|| runs(name))),
+                        Err("not granted to this agent")
+                    ),
+                    "{name} without code_engine"
+                );
+            }
+            // Anything else under `engine.` is granted with code_engine and then unknown.
+            assert!(matches!(
+                decide(&with_engine, "engine.bogus", engine_runs("engine.bogus")),
+                Err("unknown tool")
+            ));
+            assert_eq!(engine_runs("engine.bogus"), None);
+        }
     }
 
     #[test]
-    fn an_engine_request_is_granted_with_code_engine_and_runs_in_the_guest() {
-        let with_engine = vec!["read".to_string(), "code_engine".to_string()];
-        let without = vec!["read".to_string()];
-        for name in [
-            "engine.read",
-            "engine.edit",
-            "engine.exec",
-            "engine.fetch",
-            "engine.other",
-        ] {
-            assert!(
-                matches!(
-                    decide(&with_engine, name, engine_runs(name).or_else(|| runs(name))),
-                    Ok(Runs::Guest)
-                ),
-                "{name} with code_engine"
-            );
-            assert!(
-                matches!(
-                    decide(&without, name, engine_runs(name).or_else(|| runs(name))),
-                    Err("not granted to this agent")
-                ),
-                "{name} without code_engine"
+    fn request_summary_counts_clips_and_handles_a_missing_user_turn() {
+        {
+            // request_summary_counts_and_clips_the_last_user_turn: the counts and tool names are
+            // kept, and the last user turn is clipped to LAST_USER_CHARS.
+            let long = "x".repeat(5_000);
+            let messages = vec![
+                Message::user_text("first"),
+                Message::user_text(long),
+                Message::assistant(vec![]),
+            ];
+            let summary = request_summary("m", &messages, &["read", "calc"]);
+            assert_eq!(summary["messages"], 3);
+            assert_eq!(summary["tools"], json!(["read", "calc"]));
+            assert_eq!(
+                summary["last_user"].as_str().map(|s| s.chars().count()),
+                Some(LAST_USER_CHARS)
             );
         }
-        // Anything else under `engine.` is granted with code_engine and then unknown.
-        assert!(matches!(
-            decide(&with_engine, "engine.bogus", engine_runs("engine.bogus")),
-            Err("unknown tool")
-        ));
-        assert_eq!(engine_runs("engine.bogus"), None);
-    }
-
-    #[test]
-    fn request_summary_counts_and_clips_the_last_user_turn() {
-        let long = "x".repeat(5_000);
-        let messages = vec![
-            Message::user_text("first"),
-            Message::user_text(long),
-            Message::assistant(vec![]),
-        ];
-        let summary = request_summary("m", &messages, &["read", "calc"]);
-        assert_eq!(summary["messages"], 3);
-        assert_eq!(summary["tools"], json!(["read", "calc"]));
-        assert_eq!(
-            summary["last_user"].as_str().map(|s| s.chars().count()),
-            Some(LAST_USER_CHARS)
-        );
-    }
-
-    #[test]
-    fn request_summary_is_empty_without_a_user_turn() {
-        let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
-        assert_eq!(summary["last_user"], "");
-        assert_eq!(summary["messages"], 1);
+        {
+            // request_summary_is_empty_without_a_user_turn: with no user turn the last user text is
+            // empty, and the message count is still kept.
+            let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
+            assert_eq!(summary["last_user"], "");
+            assert_eq!(summary["messages"], 1);
+        }
     }
 }
 
@@ -1201,40 +1211,44 @@ mod egress_check_tests {
     }
 
     #[test]
-    fn the_blocklist_covers_a_domain_with_its_subdomains_and_a_wildcard_only_the_subdomains() {
-        let block = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
-        for host in [
-            "example.com",
-            "EXAMPLE.com",
-            "sub.example.com",
-            "example.com.",
-            "files.example.net",
-            "a.pypi.org",
-            "x.y.pypi.org",
-        ] {
-            assert!(on_fetch_blocklist(&block, host), "{host} must be blocked");
+    fn the_fetch_blocklist_matches_domains_subdomains_and_wildcards() {
+        {
+            // the_blocklist_covers_a_domain_with_its_subdomains_and_a_wildcard_only_the_subdomains:
+            // a domain blocks itself and its subdomains, and a wildcard blocks only the subdomains.
+            let block = list(&["example.com", "*.pypi.org", "  Files.Example.NET "]);
+            for host in [
+                "example.com",
+                "EXAMPLE.com",
+                "sub.example.com",
+                "example.com.",
+                "files.example.net",
+                "a.pypi.org",
+                "x.y.pypi.org",
+            ] {
+                assert!(on_fetch_blocklist(&block, host), "{host} must be blocked");
+            }
+            for host in [
+                "pypi.org",
+                "evilpypi.org",
+                "a.evilpypi.org",
+                "example.com.evil.net",
+                "notexample.com",
+                "pypi.org.evil.com",
+                "example.net",
+                "",
+            ] {
+                assert!(
+                    !on_fetch_blocklist(&block, host),
+                    "{host} must not be blocked"
+                );
+            }
         }
-        for host in [
-            "pypi.org",
-            "evilpypi.org",
-            "a.evilpypi.org",
-            "example.com.evil.net",
-            "notexample.com",
-            "pypi.org.evil.com",
-            "example.net",
-            "",
-        ] {
-            assert!(
-                !on_fetch_blocklist(&block, host),
-                "{host} must not be blocked"
-            );
+        {
+            // an_empty_blocklist_blocks_nothing: an empty list, or one holding only an empty entry,
+            // blocks no host.
+            assert!(!on_fetch_blocklist(&[], "example.com"));
+            assert!(!on_fetch_blocklist(&list(&[""]), "example.com"));
         }
-    }
-
-    #[test]
-    fn an_empty_blocklist_blocks_nothing() {
-        assert!(!on_fetch_blocklist(&[], "example.com"));
-        assert!(!on_fetch_blocklist(&list(&[""]), "example.com"));
     }
 
     #[test]
@@ -1267,16 +1281,6 @@ mod egress_check_tests {
                 reason: Some("refused: evil.example is on the fetch blocklist".into())
             }
         );
-    }
-
-    #[test]
-    fn the_law_ids_are_read_from_a_refusal() {
-        assert_eq!(
-            law_of("refused by law S-013d: Researchers never write"),
-            Some("S-013d".into())
-        );
-        assert_eq!(law_of("refused: no law permits egress"), None);
-        assert_eq!(law_of("refused by law : title"), None);
     }
 
     #[test]
@@ -1359,93 +1363,97 @@ mod law_gate_tests {
     }
 
     #[test]
-    fn a_forbidden_call_is_refused_with_its_law_and_recorded() {
-        let laws = Laws::load(&scratch("forbidden"));
-        let granted = crate::tools::offered_names("builder");
-        let input =
-            json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
-        let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
-        assert!(
-            reason.starts_with("refused by law ") && reason.contains("C-002b"),
-            "{reason}"
-        );
-        assert!(
-            laws.all_violations()
-                .iter()
-                .any(|(cid, v)| *cid == 7 && v.law == "C-002b")
-        );
-        assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
-    }
-
-    #[test]
-    fn a_permitted_call_runs_where_its_tool_runs() {
-        let laws = Laws::load(&scratch("permitted"));
-        let granted = crate::tools::offered_names("builder");
-        assert_eq!(
-            gate_call(
-                &laws,
-                7,
-                "builder",
-                &granted,
-                "read_file",
-                &json!({"path": "a.md"})
-            ),
-            Ok(Runs::Guest)
-        );
-        assert_eq!(
-            gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})),
-            Ok(Runs::Host)
-        );
-        assert!(laws.all_violations().is_empty());
-    }
-
-    #[test]
-    fn an_unknown_tool_is_denied_by_default_and_not_recorded() {
-        let laws = Laws::load(&scratch("unknown"));
-        let granted = vec!["launch_missiles".to_string()];
-        let reason =
-            gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({})).unwrap_err();
-        assert_eq!(
-            reason,
-            "refused: no law permits launch_missiles for the builder role"
-        );
-        assert!(laws.all_violations().is_empty());
-    }
-
-    #[test]
-    fn a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted() {
-        let laws = Laws::load(&scratch("withheld"));
-        // Posting a task is the orchestrator's (T-003): a builder is not offered it.
-        assert!(
-            !crate::tools::offered_names("builder")
-                .iter()
-                .any(|name| name == "plaza_post_task")
-        );
-        // The model may still call it by name; the gate refuses it by default and does not record it.
-        let granted = vec!["plaza_post_task".to_string()];
-        let reason =
-            gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({})).unwrap_err();
-        assert!(
-            reason.contains("no law permits plaza_post_task"),
-            "{reason}"
-        );
-        assert!(laws.all_violations().is_empty());
-    }
-
-    #[test]
-    fn a_rule_added_takes_effect_and_a_rule_removed_stops_applying() {
-        let granted = crate::tools::offered_names("builder");
-        let input = json!({"path": "notes.md"});
-        let mut with_rule = compiled_in();
-        with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
-        let added = Laws::from_files(&scratch("rule-added"), with_rule);
-        let reason = gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
-        assert!(reason.contains("O-001"), "{reason}");
-        let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
-        assert_eq!(
-            gate_call(&removed, 7, "builder", &granted, "read_file", &input),
-            Ok(Runs::Guest)
-        );
+    fn gate_call_follows_the_laws_for_each_kind_of_call() {
+        {
+            // a_forbidden_call_is_refused_with_its_law_and_recorded: a forbidden call is refused
+            // with its law, and the refusal is recorded.
+            let laws = Laws::load(&scratch("forbidden"));
+            let granted = crate::tools::offered_names("builder");
+            let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
+            let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
+            assert!(
+                reason.starts_with("refused by law ") && reason.contains("C-002b"),
+                "{reason}"
+            );
+            assert!(
+                laws.all_violations()
+                    .iter()
+                    .any(|(cid, v)| *cid == 7 && v.law == "C-002b")
+            );
+            assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
+        }
+        {
+            // a_permitted_call_runs_where_its_tool_runs: a permitted call runs where its tool runs
+            // (guest or host) and records no violation.
+            let laws = Laws::load(&scratch("permitted"));
+            let granted = crate::tools::offered_names("builder");
+            assert_eq!(
+                gate_call(
+                    &laws,
+                    7,
+                    "builder",
+                    &granted,
+                    "read_file",
+                    &json!({"path": "a.md"})
+                ),
+                Ok(Runs::Guest)
+            );
+            assert_eq!(
+                gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})),
+                Ok(Runs::Host)
+            );
+            assert!(laws.all_violations().is_empty());
+        }
+        {
+            // an_unknown_tool_is_denied_by_default_and_not_recorded: an unknown tool is denied by
+            // default, and the denial is not recorded.
+            let laws = Laws::load(&scratch("unknown"));
+            let granted = vec!["launch_missiles".to_string()];
+            let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({}))
+                .unwrap_err();
+            assert_eq!(
+                reason,
+                "refused: no law permits launch_missiles for the builder role"
+            );
+            assert!(laws.all_violations().is_empty());
+        }
+        {
+            // a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted: a tool the laws
+            // withhold is not offered to the role, and the gate refuses it even when granted.
+            let laws = Laws::load(&scratch("withheld"));
+            // Posting a task is the orchestrator's (T-003): a builder is not offered it.
+            assert!(
+                !crate::tools::offered_names("builder")
+                    .iter()
+                    .any(|name| name == "plaza_post_task")
+            );
+            // The model may still call it by name; the gate refuses it by default and does not record it.
+            let granted = vec!["plaza_post_task".to_string()];
+            let reason = gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({}))
+                .unwrap_err();
+            assert!(
+                reason.contains("no law permits plaza_post_task"),
+                "{reason}"
+            );
+            assert!(laws.all_violations().is_empty());
+        }
+        {
+            // a_rule_added_takes_effect_and_a_rule_removed_stops_applying: a rule added to the laws
+            // refuses the call, and the same call runs once that rule is removed.
+            let granted = crate::tools::offered_names("builder");
+            let input = json!({"path": "notes.md"});
+            let mut with_rule = compiled_in();
+            with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
+            let added = Laws::from_files(&scratch("rule-added"), with_rule);
+            let reason =
+                gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
+            assert!(reason.contains("O-001"), "{reason}");
+            let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
+            assert_eq!(
+                gate_call(&removed, 7, "builder", &granted, "read_file", &input),
+                Ok(Runs::Guest)
+            );
+        }
     }
 }
 

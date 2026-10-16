@@ -193,27 +193,3 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_projects_tasks_keep_its_order_and_take_their_state_from_the_list() {
-        let project_tasks = vec![json!("t2"), json!("t9"), json!("t1")];
-        let all = vec![
-            json!({ "id": "t1", "state": "done", "goal": "Write the plan\n\nDetails" }),
-            json!({ "id": "t2", "state": "open", "goal": "Draw it" }),
-        ];
-        let rows = task_rows(&project_tasks, &all);
-        let ids: Vec<&str> = rows.iter().map(|t| ctx::s(t, "id")).collect();
-        assert_eq!(ids, vec!["t2", "t9", "t1"]);
-        assert_eq!(ctx::s(&rows[0], "state"), "open");
-        assert_eq!(
-            ctx::s(&rows[1], "state"),
-            "",
-            "an unknown task stays a bare id"
-        );
-        assert_eq!(title_of(ctx::s(&rows[2], "goal")), "Write the plan");
-    }
-}

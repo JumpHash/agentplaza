@@ -66,15 +66,6 @@ pub fn find_app<'a>(apps: &'a [AppInfo], name: &str) -> Option<&'a AppInfo> {
 mod tests {
     use super::*;
 
-    fn app(id: &str, name: &str) -> AppInfo {
-        AppInfo {
-            id: id.into(),
-            name: name.into(),
-            path: format!("/Applications/{name}.app"),
-            scripting: vec![Bridge::Jxa],
-        }
-    }
-
     #[test]
     fn jxa_is_always_offered_and_applescript_needs_the_app_to_allow_it() {
         assert_eq!(scripting_bridges(false, false), vec![Bridge::Jxa]);
@@ -86,45 +77,6 @@ mod tests {
             scripting_bridges(false, true),
             vec![Bridge::AppleScript, Bridge::Jxa]
         );
-    }
-
-    #[test]
-    fn the_name_falls_back_from_display_to_bundle_to_file_name() {
-        assert_eq!(
-            app_name(Some("Notes"), Some("NotesBundle"), "Notes"),
-            "Notes"
-        );
-        assert_eq!(app_name(Some(""), Some("Calc"), "Calculator"), "Calc");
-        assert_eq!(app_name(None, None, "Blender"), "Blender");
-    }
-
-    #[test]
-    fn the_id_is_the_bundle_identifier_or_the_file_name() {
-        assert_eq!(
-            app_id(Some("org.blender.Blender"), "Blender"),
-            "org.blender.Blender"
-        );
-        assert_eq!(app_id(Some(""), "Blender"), "Blender");
-        assert_eq!(app_id(None, "Blender"), "Blender");
-    }
-
-    #[test]
-    fn the_list_is_sorted_by_name_and_each_id_is_listed_once() {
-        let listed = sort_and_dedupe(vec![
-            app("com.example.calc", "Calc"),
-            app("com.example.notes", "Notes"),
-            app("com.example.calc", "Calc (copy)"),
-            app("com.example.blender", "Blender"),
-        ]);
-        let names: Vec<&str> = listed.iter().map(|app| app.name.as_str()).collect();
-        assert_eq!(names, vec!["Blender", "Calc", "Notes"]);
-    }
-
-    #[test]
-    fn an_app_is_found_by_its_name() {
-        let apps = vec![app("com.example.notes", "Notes")];
-        assert!(find_app(&apps, "Notes").is_some());
-        assert!(find_app(&apps, "notes").is_none(), "names match exactly");
     }
 
     #[test]

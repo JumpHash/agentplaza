@@ -232,30 +232,32 @@ mod tests {
     }
 
     #[test]
-    fn flat_slab_top_is_the_walk_height_in_f32() {
-        let s = surface(unit_square(), Plane::flat(1.5));
-        let m = slab(&s, 0.25);
-        assert_eq!(m.positions.len(), 8);
-        for (p, q) in m.positions[..4].iter().zip(unit_square()) {
-            assert_eq!(p[1], 1.5_f32);
-            assert_eq!([p[0] as f64, p[2] as f64], q);
+    fn slab_top_sits_on_the_surface() {
+        // The flat slab: the top is the walk height in f32 and the bottom is 0.25 below it.
+        {
+            let s = surface(unit_square(), Plane::flat(1.5));
+            let m = slab(&s, 0.25);
+            assert_eq!(m.positions.len(), 8);
+            for (p, q) in m.positions[..4].iter().zip(unit_square()) {
+                assert_eq!(p[1], 1.5_f32);
+                assert_eq!([p[0] as f64, p[2] as f64], q);
+            }
+            for p in &m.positions[4..] {
+                assert_eq!(p[1], 1.25_f32);
+            }
         }
-        for p in &m.positions[4..] {
-            assert_eq!(p[1], 1.25_f32);
-        }
-    }
-
-    #[test]
-    fn ramp_slab_top_vertices_sit_on_the_plane() {
-        let plane = Plane {
-            c: 0.5,
-            dx: 0.25,
-            dz: -0.5,
-        };
-        let s = surface(unit_square(), plane);
-        let m = slab(&s, 0.1);
-        for (p, q) in m.positions[..4].iter().zip(unit_square()) {
-            assert_eq!(p[1], plane.at(q[0], q[1]) as f32);
+        // The ramp slab: every top vertex sits on the plane.
+        {
+            let plane = Plane {
+                c: 0.5,
+                dx: 0.25,
+                dz: -0.5,
+            };
+            let s = surface(unit_square(), plane);
+            let m = slab(&s, 0.1);
+            for (p, q) in m.positions[..4].iter().zip(unit_square()) {
+                assert_eq!(p[1], plane.at(q[0], q[1]) as f32);
+            }
         }
     }
 
@@ -297,96 +299,49 @@ mod tests {
     }
 
     #[test]
-    fn ray_down_matches_the_plane_on_a_ramp() {
-        let plane = Plane {
-            c: 0.5,
-            dx: 0.25,
-            dz: -0.5,
-        };
-        let m = slab(&surface(unit_square(), plane), 0.1);
-        for &x in &[0.1, 0.3, 0.5, 0.7, 0.9] {
-            for &z in &[0.1, 0.4, 0.6, 0.9] {
-                let h = ray_down(&m, x, z, 10.0).expect("inside the square");
-                assert!(
-                    (h - plane.at(x, z)).abs() < 1e-6,
-                    "at ({x}, {z}): {h} vs {}",
-                    plane.at(x, z)
-                );
+    fn ray_down_hits_the_top_under_the_ray() {
+        // The ray matches the plane on a ramp at every sampled point.
+        {
+            let plane = Plane {
+                c: 0.5,
+                dx: 0.25,
+                dz: -0.5,
+            };
+            let m = slab(&surface(unit_square(), plane), 0.1);
+            for &x in &[0.1, 0.3, 0.5, 0.7, 0.9] {
+                for &z in &[0.1, 0.4, 0.6, 0.9] {
+                    let h = ray_down(&m, x, z, 10.0).expect("inside the square");
+                    assert!(
+                        (h - plane.at(x, z)).abs() < 1e-6,
+                        "at ({x}, {z}): {h} vs {}",
+                        plane.at(x, z)
+                    );
+                }
             }
         }
-    }
-
-    #[test]
-    fn ray_down_ignores_tops_above_the_ray() {
-        let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
-        assert_eq!(ray_down(&m, 0.5, 0.5, 1.0), None);
-        assert_height(ray_down(&m, 0.5, 0.5, 1.6), 1.5);
-    }
-
-    #[test]
-    fn ray_down_outside_the_polygon_is_none() {
-        let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
-        assert_eq!(ray_down(&m, 2.0, 0.5, 10.0), None);
-        assert_eq!(ray_down(&m, 0.5, -0.5, 10.0), None);
-        assert_eq!(ray_down(&m, -1e-6, 0.5, 10.0), None);
-    }
-
-    #[test]
-    fn ray_down_hits_a_point_on_a_shared_edge() {
-        let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
-        // On the diagonal shared by the two top triangles.
-        assert_height(ray_down(&m, 0.5, 0.5, 10.0), 1.5);
-        // Just outside the bottom edge, inside the EDGE_TOL slack.
-        assert_height(ray_down(&m, 0.5, -1e-10, 10.0), 1.5);
-        // Clearly outside it.
-        assert_eq!(ray_down(&m, 0.5, -1e-6, 10.0), None);
-    }
-
-    #[test]
-    fn ray_down_skips_a_degenerate_sliver() {
-        // Three almost collinear points, upward facing, with area far below DEGENERATE.
-        let m = Mesh {
-            positions: vec![[0.0, 1.0, 0.0], [1.0, 1.0, 1e-13], [2.0, 1.0, 0.0]],
-            indices: vec![0, 1, 2],
-        };
-        assert_eq!(ray_down(&m, 1.0, 0.0, 10.0), None);
-    }
-
-    #[test]
-    fn clockwise_polygon_is_not_convex_ccw() {
-        assert!(is_convex_ccw(&unit_square()));
-        let clockwise = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
-        assert!(!is_convex_ccw(&clockwise));
-    }
-
-    #[test]
-    fn star_repeats_and_short_polygons_are_rejected() {
-        // A pentagram: every turn is left, but it winds twice and is not convex.
-        let star: Vec<[f64; 2]> = (0..5)
-            .map(|k| {
-                let a = 4.0 * std::f64::consts::PI * k as f64 / 5.0;
-                [a.cos(), a.sin()]
-            })
-            .collect();
-        assert!(!is_convex_ccw(&star));
-        assert!(!is_convex_ccw(&[
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0]
-        ]));
-        assert!(!is_convex_ccw(&[[0.0, 0.0], [1.0, 0.0]]));
-        assert!(!is_convex_ccw(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]));
-    }
-
-    #[test]
-    fn triangle_missing_a_side_count_is_rejected() {
-        let tri = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
-        let mut s = surface(tri, Plane::flat(0.0));
-        assert_eq!(surface_mesh_check(&s), Ok(()));
-        s.sides.pop();
-        let err = surface_mesh_check(&s).unwrap_err();
-        assert!(err.contains("2 sides for 3 polygon points"), "{err}");
+        // Tops above the ray are ignored.
+        {
+            let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
+            assert_eq!(ray_down(&m, 0.5, 0.5, 1.0), None);
+            assert_height(ray_down(&m, 0.5, 0.5, 1.6), 1.5);
+        }
+        // Outside the polygon there is no hit.
+        {
+            let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
+            assert_eq!(ray_down(&m, 2.0, 0.5, 10.0), None);
+            assert_eq!(ray_down(&m, 0.5, -0.5, 10.0), None);
+            assert_eq!(ray_down(&m, -1e-6, 0.5, 10.0), None);
+        }
+        // A point on a shared edge hits.
+        {
+            let m = slab(&surface(unit_square(), Plane::flat(1.5)), 0.25);
+            // On the diagonal shared by the two top triangles.
+            assert_height(ray_down(&m, 0.5, 0.5, 10.0), 1.5);
+            // Just outside the bottom edge, inside the EDGE_TOL slack.
+            assert_height(ray_down(&m, 0.5, -1e-10, 10.0), 1.5);
+            // Clearly outside it.
+            assert_eq!(ray_down(&m, 0.5, -1e-6, 10.0), None);
+        }
     }
 
     #[test]

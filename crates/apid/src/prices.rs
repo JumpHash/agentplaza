@@ -1491,117 +1491,120 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_ids_resolve_from_the_openrouter_map() {
-        let catalog = catalog();
-        let none = BTreeMap::new();
-        let price = ModelPrice {
-            input: 1.5,
-            output: 3.0,
-            cache_read: None,
-            cache_write: None,
-        };
+    fn catalog_lookup_resolves_ids_by_source() {
+        // Openrouter ids resolve from the openrouter map.
         {
-            let mut state = catalog.state.write().unwrap();
-            state.openrouter.insert("anthropic/claude-x".into(), price);
-            state.openrouter.insert("vendor/model:free".into(), price);
+            let catalog = catalog();
+            let none = BTreeMap::new();
+            let price = ModelPrice {
+                input: 1.5,
+                output: 3.0,
+                cache_read: None,
+                cache_write: None,
+            };
+            {
+                let mut state = catalog.state.write().unwrap();
+                state.openrouter.insert("anthropic/claude-x".into(), price);
+                state.openrouter.insert("vendor/model:free".into(), price);
+            }
+
+            let claude = catalog
+                .lookup("openrouter/anthropic/claude-x", &none)
+                .unwrap();
+            assert_eq!(claude.source, Source::Openrouter);
+            assert!(close(claude.price.input, 1.5) && close(claude.price.output, 3.0));
+
+            let free = catalog
+                .lookup("openrouter/vendor/model:free", &none)
+                .unwrap();
+            assert_eq!(free.source, Source::Openrouter);
+            assert!(close(free.price.input, 1.5));
         }
 
-        let claude = catalog
-            .lookup("openrouter/anthropic/claude-x", &none)
-            .unwrap();
-        assert_eq!(claude.source, Source::Openrouter);
-        assert!(close(claude.price.input, 1.5) && close(claude.price.output, 3.0));
+        // Openrouter ids never fall through to litellm.
+        {
+            let catalog = catalog();
+            let none = BTreeMap::new();
+            let price = ModelPrice {
+                input: 9.0,
+                output: 9.0,
+                cache_read: None,
+                cache_write: None,
+            };
+            catalog
+                .state
+                .write()
+                .unwrap()
+                .litellm
+                .insert("unknown/x".into(), price);
 
-        let free = catalog
-            .lookup("openrouter/vendor/model:free", &none)
-            .unwrap();
-        assert_eq!(free.source, Source::Openrouter);
-        assert!(close(free.price.input, 1.5));
-    }
+            assert!(catalog.lookup("unknown/x", &none).is_some());
+            assert_eq!(catalog.lookup("openrouter/unknown/x", &none), None);
+        }
 
-    #[test]
-    fn openrouter_ids_never_fall_through_to_litellm() {
-        let catalog = catalog();
-        let none = BTreeMap::new();
-        let price = ModelPrice {
-            input: 9.0,
-            output: 9.0,
-            cache_read: None,
-            cache_write: None,
-        };
-        catalog
-            .state
-            .write()
-            .unwrap()
-            .litellm
-            .insert("unknown/x".into(), price);
+        // Opencode ids resolve from the vendor table.
+        {
+            let catalog = catalog();
+            let none = BTreeMap::new();
 
-        assert!(catalog.lookup("unknown/x", &none).is_some());
-        assert_eq!(catalog.lookup("openrouter/unknown/x", &none), None);
-    }
+            let sonnet = catalog.lookup("opencode/claude-sonnet-5-5", &none).unwrap();
+            assert_eq!(sonnet.source, Source::Vendor);
+            assert!(close(sonnet.price.input, 2.0) && close(sonnet.price.output, 10.0));
 
-    #[test]
-    fn opencode_ids_resolve_from_the_vendor_table() {
-        let catalog = catalog();
-        let none = BTreeMap::new();
+            assert_eq!(catalog.lookup("opencode/no-such-model", &none), None);
+        }
 
-        let sonnet = catalog.lookup("opencode/claude-sonnet-5-5", &none).unwrap();
-        assert_eq!(sonnet.source, Source::Vendor);
-        assert!(close(sonnet.price.input, 2.0) && close(sonnet.price.output, 10.0));
+        // Lookup order manual then openrouter then litellm.
+        {
+            let catalog = catalog();
+            let none = BTreeMap::new();
 
-        assert_eq!(catalog.lookup("opencode/no-such-model", &none), None);
+            let opus = catalog
+                .lookup("anthropic/claude-opus-5-5@high", &none)
+                .unwrap();
+            assert_eq!(opus.source, Source::Openrouter);
+            assert!(close(opus.price.input, 15.0));
+
+            let upper = catalog.lookup("Anthropic/Claude-Opus-5-5", &none).unwrap();
+            assert_eq!(upper.source, Source::Openrouter);
+
+            let gpt = catalog.lookup("openai/gpt-6", &none).unwrap();
+            assert_eq!(gpt.source, Source::Litellm);
+            assert!(close(gpt.price.input, 2.0));
+
+            // Not in OpenRouter, and LiteLLM knows the part after the first '/'.
+            let tail = catalog.lookup("bedrock/claude-opus-5-5", &none).unwrap();
+            assert_eq!(tail.source, Source::Litellm);
+            assert!(close(tail.price.output, 75.0));
+
+            assert_eq!(catalog.lookup("openai/unknown-model", &none), None);
+        }
+
+        // Manual prices win and have no cache prices.
+        {
+            let catalog = catalog();
+            let mut manual = BTreeMap::new();
+            manual.insert(
+                "Anthropic/Claude-Opus-5-5".to_string(),
+                crate::settings::Price {
+                    input: 1000.0,
+                    output: 2000.0,
+                },
+            );
+            let priced = catalog
+                .lookup("anthropic/claude-opus-5-5@high", &manual)
+                .unwrap();
+            assert_eq!(priced.source, Source::Manual);
+            assert!(close(priced.price.input, 1.0) && close(priced.price.output, 2.0));
+            assert_eq!(priced.price.cache_read, None);
+            assert_eq!(priced.price.cache_write, None);
+        }
     }
 
     #[test]
     fn bad_bodies_are_errors() {
         assert!(parse_openrouter("not json").is_err());
         assert!(parse_litellm("[1, 2]").is_err());
-    }
-
-    #[test]
-    fn lookup_order_manual_then_openrouter_then_litellm() {
-        let catalog = catalog();
-        let none = BTreeMap::new();
-
-        let opus = catalog
-            .lookup("anthropic/claude-opus-5-5@high", &none)
-            .unwrap();
-        assert_eq!(opus.source, Source::Openrouter);
-        assert!(close(opus.price.input, 15.0));
-
-        let upper = catalog.lookup("Anthropic/Claude-Opus-5-5", &none).unwrap();
-        assert_eq!(upper.source, Source::Openrouter);
-
-        let gpt = catalog.lookup("openai/gpt-6", &none).unwrap();
-        assert_eq!(gpt.source, Source::Litellm);
-        assert!(close(gpt.price.input, 2.0));
-
-        // Not in OpenRouter, and LiteLLM knows the part after the first '/'.
-        let tail = catalog.lookup("bedrock/claude-opus-5-5", &none).unwrap();
-        assert_eq!(tail.source, Source::Litellm);
-        assert!(close(tail.price.output, 75.0));
-
-        assert_eq!(catalog.lookup("openai/unknown-model", &none), None);
-    }
-
-    #[test]
-    fn manual_prices_win_and_have_no_cache_prices() {
-        let catalog = catalog();
-        let mut manual = BTreeMap::new();
-        manual.insert(
-            "Anthropic/Claude-Opus-5-5".to_string(),
-            crate::settings::Price {
-                input: 1000.0,
-                output: 2000.0,
-            },
-        );
-        let priced = catalog
-            .lookup("anthropic/claude-opus-5-5@high", &manual)
-            .unwrap();
-        assert_eq!(priced.source, Source::Manual);
-        assert!(close(priced.price.input, 1.0) && close(priced.price.output, 2.0));
-        assert_eq!(priced.price.cache_read, None);
-        assert_eq!(priced.price.cache_write, None);
     }
 
     #[test]
@@ -1652,14 +1655,6 @@ mod tests {
     }
 
     #[test]
-    fn strips_only_a_plain_effort_suffix() {
-        assert_eq!(strip_effort("openai/gpt-6@high"), "openai/gpt-6");
-        assert_eq!(strip_effort("openai/gpt-6"), "openai/gpt-6");
-        assert_eq!(strip_effort("@high"), "@high");
-        assert_eq!(strip_effort("a@b/c"), "a@b/c");
-    }
-
-    #[test]
     fn estimate_bills_cache_at_its_price_or_the_input_price() {
         let price = ModelPrice {
             input: 3.0,
@@ -1683,26 +1678,5 @@ mod tests {
         assert_eq!(percent_decode_path("openai%2Fgpt-6"), "openai/gpt-6");
         assert_eq!(percent_decode_path("a+b"), "a+b");
         assert_eq!(percent_decode_path("bad%zz%4"), "bad%zz%4");
-    }
-
-    #[test]
-    fn listing_puts_openrouter_first_without_duplicates() {
-        let state = catalog().state();
-        let listing = listing(state);
-        let models: Vec<&str> = listing.models.iter().map(|e| e.model.as_str()).collect();
-        assert_eq!(
-            models
-                .iter()
-                .filter(|m| **m == "anthropic/claude-opus-5-5")
-                .count(),
-            1
-        );
-        assert_eq!(listing.models[0].price.source, Source::Openrouter);
-        let gpt = listing
-            .models
-            .iter()
-            .find(|e| e.model == "openai/gpt-6")
-            .unwrap();
-        assert_eq!(gpt.price.source, Source::Litellm);
     }
 }

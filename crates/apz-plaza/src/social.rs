@@ -2607,81 +2607,83 @@ mod tests {
     }
 
     #[test]
-    fn prune_drops_the_oldest_exchanges_past_the_count_and_keeps_ids_monotonic() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        for index in 1..=5 {
-            said(&social, &builder, &librarian, &format!("message {index}"));
-        }
-        assert_eq!(
-            social.prune(keep(3, 1024)),
-            Pruned {
-                conversations: 2,
-                posts: 0
-            }
-        );
-        let view = social.conversations(&page(10));
-        assert_eq!(view.total, 3);
-        assert_eq!(
-            view.conversations
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c5", "c4", "c3"]
-        );
-        // Pruning again with nothing to drop changes nothing.
-        assert_eq!(social.prune(keep(3, 1024)), Pruned::default());
-        // A fresh exchange takes the next number, never one a pruned row held.
-        assert_eq!(said(&social, &builder, &librarian, "after").id, "c6");
-    }
-
-    #[test]
-    fn prune_drops_exchanges_and_posts_older_than_the_age_limit() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        said(&social, &builder, &librarian, "old");
-        said(&social, &builder, &librarian, "fresh");
-        let posted_old = posted(&social, &builder, "old post");
-        posted(&social, &builder, "fresh post");
+    fn prune_drops_by_count_and_by_age_and_keeps_ids_monotonic() {
+        // Was prune_drops_the_oldest_exchanges_past_the_count_and_keeps_ids_monotonic.
         {
-            // The first exchange and the first post are a day old.
-            let mut inner = social.lock();
-            inner.conversations[0].created_at = now_ms() - 86_400_000;
-            inner.posts[0].created_at = now_ms() - 86_400_000;
-            assert_eq!(inner.posts[0].id, posted_old.id);
-        }
-        let hour = Prune {
-            conversations_max: 100,
-            conversations_older_than_ms: Some(3_600_000),
-            posts_max: 100,
-            posts_older_than_ms: Some(3_600_000),
-        };
-        assert_eq!(
-            social.prune(hour),
-            Pruned {
-                conversations: 1,
-                posts: 1
+            let (social, _notes) = lab();
+            let builder = agent(100, "builder");
+            let librarian = agent(101, "librarian");
+            for index in 1..=5 {
+                said(&social, &builder, &librarian, &format!("message {index}"));
             }
-        );
-        let view = social.conversations(&page(10));
-        assert_eq!(
-            view.conversations
-                .iter()
-                .map(|row| row.text.as_str())
-                .collect::<Vec<_>>(),
-            ["fresh"]
-        );
-        assert_eq!(
-            social
-                .board(&[], 10)
-                .posts
-                .iter()
-                .map(|p| p.subject.as_str())
-                .collect::<Vec<_>>(),
-            ["fresh post"]
-        );
+            assert_eq!(
+                social.prune(keep(3, 1024)),
+                Pruned {
+                    conversations: 2,
+                    posts: 0
+                }
+            );
+            let view = social.conversations(&page(10));
+            assert_eq!(view.total, 3);
+            assert_eq!(
+                view.conversations
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["c5", "c4", "c3"]
+            );
+            // Pruning again with nothing to drop changes nothing.
+            assert_eq!(social.prune(keep(3, 1024)), Pruned::default());
+            // A fresh exchange takes the next number, never one a pruned row held.
+            assert_eq!(said(&social, &builder, &librarian, "after").id, "c6");
+        }
+        // Was prune_drops_exchanges_and_posts_older_than_the_age_limit.
+        {
+            let (social, _notes) = lab();
+            let builder = agent(100, "builder");
+            let librarian = agent(101, "librarian");
+            said(&social, &builder, &librarian, "old");
+            said(&social, &builder, &librarian, "fresh");
+            let posted_old = posted(&social, &builder, "old post");
+            posted(&social, &builder, "fresh post");
+            {
+                // The first exchange and the first post are a day old.
+                let mut inner = social.lock();
+                inner.conversations[0].created_at = now_ms() - 86_400_000;
+                inner.posts[0].created_at = now_ms() - 86_400_000;
+                assert_eq!(inner.posts[0].id, posted_old.id);
+            }
+            let hour = Prune {
+                conversations_max: 100,
+                conversations_older_than_ms: Some(3_600_000),
+                posts_max: 100,
+                posts_older_than_ms: Some(3_600_000),
+            };
+            assert_eq!(
+                social.prune(hour),
+                Pruned {
+                    conversations: 1,
+                    posts: 1
+                }
+            );
+            let view = social.conversations(&page(10));
+            assert_eq!(
+                view.conversations
+                    .iter()
+                    .map(|row| row.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["fresh"]
+            );
+            assert_eq!(
+                social
+                    .board(&[], 10)
+                    .posts
+                    .iter()
+                    .map(|p| p.subject.as_str())
+                    .collect::<Vec<_>>(),
+                ["fresh post"]
+            );
+        }
     }
 
     #[test]

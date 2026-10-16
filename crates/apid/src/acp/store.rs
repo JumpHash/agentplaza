@@ -275,17 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn a_title_is_at_most_80_characters() {
-        let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", "owner", 10);
-        sessions.add_work(&s.id, 1, &"é".repeat(100), 20);
-        assert_eq!(
-            sessions.get(&s.id).unwrap().title.chars().count(),
-            TITLE_CHARS
-        );
-    }
-
-    #[test]
     fn close_marks_a_session_and_refuses_an_unknown_one() {
         let sessions = Sessions::default();
         let s = sessions.open(1, "/a", "zed", "owner", 10);

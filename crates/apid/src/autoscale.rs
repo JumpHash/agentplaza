@@ -189,43 +189,86 @@ mod tests {
     }
 
     #[test]
-    fn working_agent_gets_at_least_192() {
-        assert_eq!(target(&sample(true, NOW, 512, 128, 100), NOW), Some(192));
-        assert_eq!(target(&sample(true, NOW, 512, 256, 100), NOW), None);
-        assert_eq!(target(&sample(true, NOW, 512, 190, 100), NOW), None);
-    }
-
-    #[test]
-    fn low_available_grows_by_a_step_whatever_the_work() {
-        assert_eq!(target(&sample(true, NOW, 512, 256, 10), NOW), Some(320));
-        assert_eq!(target(&sample(false, NOW, 512, 256, 10), NOW), Some(320));
-    }
-
-    #[test]
-    fn idle_shrinks_gradually_after_a_minute() {
-        assert_eq!(target(&sample(false, 0, 512, 256, 400), NOW), Some(224));
-        assert_eq!(target(&sample(false, 0, 512, 224, 400), NOW), Some(192));
-        assert_eq!(
-            target(&sample(false, NOW - 59_000, 512, 256, 400), NOW),
-            None
-        );
-    }
-
-    #[test]
-    fn idle_never_goes_below_used_plus_headroom() {
-        // used = 512 - 312 = 200, so the floor is 216.
-        assert_eq!(target(&sample(false, 0, 512, 300, 312), NOW), Some(268));
-        assert_eq!(target(&sample(false, 0, 512, 230, 312), NOW), Some(216));
-        assert_eq!(target(&sample(false, 0, 512, 220, 312), NOW), None);
-    }
-
-    #[test]
-    fn target_is_clamped_to_floor_and_max() {
-        // Growth stops at max.
-        assert_eq!(target(&sample(true, NOW, 256, 250, 0), NOW), None);
-        assert_eq!(target(&sample(true, NOW, 256, 200, 0), NOW), Some(256));
-        // Shrinking stops at 32 MiB.
-        assert_eq!(target(&sample(false, 0, 256, 40, 256), NOW), Some(32));
-        assert_eq!(target(&sample(false, 0, 256, 32, 256), NOW), None);
+    fn target_steps_grow_and_shrink_within_bounds() {
+        // Working agent gets at least 192 MiB.
+        // Low available grows by a step whatever the work.
+        // Idle shrinks gradually after a minute.
+        // Idle never goes below used plus headroom (used = 512 - 312 = 200, so the floor is 216).
+        // Target is clamped to the floor and max.
+        for (case, state, want) in [
+            (
+                "working agent with 128 usable gets 192",
+                sample(true, NOW, 512, 128, 100),
+                Some(192),
+            ),
+            (
+                "working agent with 256 usable stays",
+                sample(true, NOW, 512, 256, 100),
+                None,
+            ),
+            (
+                "working agent with 190 usable stays",
+                sample(true, NOW, 512, 190, 100),
+                None,
+            ),
+            (
+                "low available grows a step while working",
+                sample(true, NOW, 512, 256, 10),
+                Some(320),
+            ),
+            (
+                "low available grows a step while idle",
+                sample(false, NOW, 512, 256, 10),
+                Some(320),
+            ),
+            (
+                "idle shrinks to 224 first",
+                sample(false, 0, 512, 256, 400),
+                Some(224),
+            ),
+            (
+                "idle shrinks to 192 next",
+                sample(false, 0, 512, 224, 400),
+                Some(192),
+            ),
+            (
+                "idle under a minute stays",
+                sample(false, NOW - 59_000, 512, 256, 400),
+                None,
+            ),
+            (
+                "idle target is used plus headroom",
+                sample(false, 0, 512, 300, 312),
+                Some(268),
+            ),
+            (
+                "idle target at the floor",
+                sample(false, 0, 512, 230, 312),
+                Some(216),
+            ),
+            (
+                "idle below the floor stays",
+                sample(false, 0, 512, 220, 312),
+                None,
+            ),
+            ("growth stops at max", sample(true, NOW, 256, 250, 0), None),
+            (
+                "growth reaches max",
+                sample(true, NOW, 256, 200, 0),
+                Some(256),
+            ),
+            (
+                "shrinking stops at 32 MiB",
+                sample(false, 0, 256, 40, 256),
+                Some(32),
+            ),
+            (
+                "shrinking at 32 MiB stays",
+                sample(false, 0, 256, 32, 256),
+                None,
+            ),
+        ] {
+            assert_eq!(target(&state, NOW), want, "{case}");
+        }
     }
 }

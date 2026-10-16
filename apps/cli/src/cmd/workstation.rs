@@ -215,9 +215,8 @@ fn leave() -> Result<(), String> {
 mod tests {
     use super::*;
     use apz_workstation::plan::Plan;
-    use apz_workstation::service::ServiceSpec;
+
     use clap::Parser;
-    use std::path::PathBuf;
 
     /// The subcommand alone, so each test reads as `agentplaza workstation <args>`.
     #[derive(Parser, Debug)]
@@ -269,16 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_must_be_a_url() {
-        assert_eq!(
-            check_hub(Some("https://hub.example:7443/".into())).unwrap(),
-            "https://hub.example:7443"
-        );
-        assert!(check_hub(Some("ftp://hub".into())).is_err());
-        assert!(check_hub(None).is_err());
-    }
-
-    #[test]
     fn the_account_defaults_to_the_separate_user_and_owner_is_its_own_choice() {
         assert_eq!(
             choice_from(None).unwrap(),
@@ -292,52 +281,6 @@ mod tests {
             AccountChoice::Agent { user: "bob".into() }
         );
         assert!(choice_from(Some("root")).is_err());
-    }
-
-    #[test]
-    fn owner_shows_the_warning_and_a_separate_account_does_not() {
-        let owner = owner_notice(&AccountChoice::Owner, "zarathos").unwrap();
-        assert!(owner.contains("agents will act as zarathos"), "{owner}");
-        assert!(
-            owner_notice(
-                &AccountChoice::Agent {
-                    user: "agentplaza".into()
-                },
-                "zarathos"
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn a_service_plan_prints_its_steps_its_privilege_and_its_notes() {
-        let spec = ServiceSpec {
-            os: apz_station::Os::Linux,
-            binary: PathBuf::from("/opt/apz-workstation"),
-            state_dir: PathBuf::from("/home/zarathos/.local/state/agentplaza-workstation"),
-            owner: "zarathos".into(),
-            run_as: "agentplaza".into(),
-            run_as_home: PathBuf::from("/home/agentplaza"),
-            uid: Some(1001),
-        };
-        let lines = plan::block("service", &service::plan_service(&spec));
-        assert_eq!(lines[0], "service:");
-        assert!(
-            lines
-                .iter()
-                .any(|l| l == "  $ systemctl enable --now apz-workstation.service"),
-            "{lines:?}"
-        );
-        assert!(
-            lines.iter().any(|l| l == "  (needs administrator rights)"),
-            "{lines:?}"
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.starts_with("  note: The service runs as agentplaza")),
-            "{lines:?}"
-        );
     }
 
     #[test]

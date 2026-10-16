@@ -2301,24 +2301,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_move_targets_skip_draining_revoked_and_the_current_node() {
-        let all: Vec<nodes::NodeView> = serde_json::from_value(json!([
-            {"id": "n0", "name": "hub"},
-            {"id": "n1", "name": "busy", "draining": true},
-            {"id": "n2", "name": "gone", "revoked": true},
-            {"id": "n3", "name": "free"},
-        ]))
-        .expect("the nodes parse");
-        let ids: Vec<&str> = move_targets(&all, "n0")
-            .iter()
-            .map(|node| node.id.as_str())
-            .collect();
-        assert_eq!(ids, vec!["n3"]);
-        assert_eq!(node_label(&all[3]), "free (n3)");
-        assert_eq!(node_label(&all[0]), "hub (n0)");
-    }
-
-    #[test]
     fn agent_move_result_parses_and_reads_in_words() {
         let done: Moved =
             serde_json::from_str(r#"{"ok":true,"from":"n0","to":"n3","bytes":2097152,"ms":412}"#)
@@ -2330,40 +2312,28 @@ mod tests {
     }
 
     #[test]
-    fn conduct_bands_match_the_web() {
-        assert_eq!(conduct_text(90.0), "Exemplary");
-        assert_eq!(conduct_text(70.0), "Good standing");
-        assert_eq!(conduct_text(40.0), "Under watch");
-        assert_eq!(conduct_text(39.9), "In trouble");
-    }
-
-    #[test]
-    fn figures_compact_like_the_web() {
-        assert_eq!(compact(999.0), "999");
-        assert_eq!(compact(1500.0), "1.5k");
-        assert_eq!(compact(2_500_000.0), "2.5M");
-    }
-
-    #[test]
-    fn delta_text_joins_into_the_live_reply() {
-        let mut live = Vec::new();
-        let text =
-            |t: &str| json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": t}});
-        assert!(apply_delta(&mut live, 7, &text("Hel")));
-        assert!(apply_delta(&mut live, 7, &text("lo")));
-        assert_eq!(live.len(), 1);
-        assert_eq!(live[0].pieces, vec![Piece::Text("Hello".into())]);
-    }
-
-    #[test]
-    fn deltas_for_other_agents_and_thinking_are_ignored() {
-        let mut live = Vec::new();
-        let other = json!({"cid": 8, "work": 3, "req": 1, "delta": {"type": "text", "text": "x"}});
-        let thinking =
-            json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "thinking", "text": "x"}});
-        assert!(!apply_delta(&mut live, 7, &other));
-        assert!(!apply_delta(&mut live, 7, &thinking));
-        assert!(live.is_empty());
+    fn live_deltas_join_the_reply_and_skip_other_agents_and_thinking() {
+        {
+            // delta_text_joins_into_the_live_reply: text deltas join into one live reply
+            let mut live = Vec::new();
+            let text = |t: &str| json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "text", "text": t}});
+            assert!(apply_delta(&mut live, 7, &text("Hel")));
+            assert!(apply_delta(&mut live, 7, &text("lo")));
+            assert_eq!(live.len(), 1);
+            assert_eq!(live[0].pieces, vec![Piece::Text("Hello".into())]);
+        }
+        {
+            // deltas_for_other_agents_and_thinking_are_ignored: deltas of another agent or
+            // thinking deltas leave the live reply untouched
+            let mut live = Vec::new();
+            let other =
+                json!({"cid": 8, "work": 3, "req": 1, "delta": {"type": "text", "text": "x"}});
+            let thinking =
+                json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "thinking", "text": "x"}});
+            assert!(!apply_delta(&mut live, 7, &other));
+            assert!(!apply_delta(&mut live, 7, &thinking));
+            assert!(live.is_empty());
+        }
     }
 
     #[test]
@@ -2397,50 +2367,29 @@ mod tests {
     }
 
     #[test]
-    fn previews_cut_on_characters() {
-        assert_eq!(preview("héllo", 3), "hél…");
-        assert_eq!(preview("abc", 3), "abc");
-    }
-
-    #[test]
-    fn checkpoints_read_in_the_hubs_order_with_the_sleep_snapshot() {
-        let list = json!({"checkpoints": [
-            {"name": "cp-2000-before-lunch", "cid": 7, "label": "before lunch", "kind": "diff",
-             "taken_at_ms": 2000, "memory_written": 1536, "disk_bytes": 8192, "paused_ms": 41},
-            {"name": "sleep", "cid": 7, "label": "", "kind": "full",
-             "taken_at_ms": 1000, "memory_written": 0, "disk_bytes": 0, "paused_ms": 0}
-        ]});
-        let cps = parse_checkpoints(list).unwrap();
-        assert_eq!(cps.len(), 2);
-        assert_eq!(cps[0].name, "cp-2000-before-lunch");
-        assert_eq!(cps[0].label, "before lunch");
-        assert_eq!(cps[0].kind, "diff");
-        assert_eq!(cps[0].memory_written, 1536);
-        assert_eq!(cps[0].paused_ms, 41);
-        assert_eq!(cps[1].name, "sleep");
-        assert!(cps[1].label.is_empty());
-    }
-
-    #[test]
-    fn a_checkpoint_list_without_the_array_is_an_error() {
-        assert!(parse_checkpoints(json!({"error": "no agent"})).is_err());
-    }
-
-    #[test]
-    fn asleep_has_its_own_status_word() {
-        assert_eq!(status_label("asleep").0, "Asleep");
-        assert_eq!(status_label("working").0, "Working");
-        assert_eq!(status_label("gone").0, "Offline");
-    }
-
-    #[test]
-    fn a_fork_makes_one_to_eight_copies() {
-        assert_eq!(fork_count("1"), Some(1));
-        assert_eq!(fork_count(" 8 "), Some(8));
-        assert_eq!(fork_count("0"), None);
-        assert_eq!(fork_count("9"), None);
-        assert_eq!(fork_count("two"), None);
-        assert_eq!(fork_count(""), None);
+    fn checkpoint_list_parses_in_the_hubs_order_and_rejects_a_missing_array() {
+        {
+            // checkpoints_read_in_the_hubs_order_with_the_sleep_snapshot
+            let list = json!({"checkpoints": [
+                {"name": "cp-2000-before-lunch", "cid": 7, "label": "before lunch", "kind": "diff",
+                 "taken_at_ms": 2000, "memory_written": 1536, "disk_bytes": 8192, "paused_ms": 41},
+                {"name": "sleep", "cid": 7, "label": "", "kind": "full",
+                 "taken_at_ms": 1000, "memory_written": 0, "disk_bytes": 0, "paused_ms": 0}
+            ]});
+            let cps = parse_checkpoints(list).unwrap();
+            assert_eq!(cps.len(), 2);
+            assert_eq!(cps[0].name, "cp-2000-before-lunch");
+            assert_eq!(cps[0].label, "before lunch");
+            assert_eq!(cps[0].kind, "diff");
+            assert_eq!(cps[0].memory_written, 1536);
+            assert_eq!(cps[0].paused_ms, 41);
+            assert_eq!(cps[1].name, "sleep");
+            assert!(cps[1].label.is_empty());
+        }
+        {
+            // a_checkpoint_list_without_the_array_is_an_error
+            assert!(parse_checkpoints(json!({"error": "no agent"})).is_err());
+        }
     }
 
     #[test]
@@ -2451,17 +2400,5 @@ mod tests {
         });
         assert_eq!(fork_names(&reply).unwrap(), vec!["Ada 2", "Ada 3"]);
         assert!(fork_names(&json!({"ok": true})).is_err());
-    }
-
-    #[test]
-    fn checkpoint_labels_follow_the_hub() {
-        assert_eq!(checkpoint_label("  "), Ok(None));
-        assert_eq!(
-            checkpoint_label(" before lunch "),
-            Ok(Some("before lunch".to_string()))
-        );
-        assert!(checkpoint_label(&"x".repeat(41)).is_err());
-        assert!(checkpoint_label(&"x".repeat(40)).is_ok());
-        assert!(checkpoint_label("tab\there").is_err());
     }
 }

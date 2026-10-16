@@ -251,51 +251,52 @@ mod tests {
     }
 
     #[test]
-    fn captured_values_are_percent_decoded_and_an_escaped_slash_stays_in_its_segment() {
-        let router: Router<u32> = Router::new()
-            .get("/v1/recipes/{id}", |_, _, params| {
-                Response::text(200, params.get("id"))
-            })
-            .get("/v1/hf/models/{id..}", |_, _, params| {
-                Response::text(200, params.get("id"))
-            });
-        let get = |path: &str| router.handle(&0, &request("GET", path));
-        // A plain segment is unchanged.
-        assert_eq!(get("/v1/recipes/plain").bytes(), b"plain");
-        // `%40` is `@`: the recipe name the Lab sends as `rung-predictor%401`.
-        assert_eq!(
-            get("/v1/recipes/rung-predictor%401").bytes(),
-            b"rung-predictor@1"
-        );
-        // `%2F` inside a single segment is part of that one value, not a path separator.
-        let single = get("/v1/recipes/a%2Fb");
-        assert_eq!((single.status, single.bytes()), (200, &b"a/b"[..]));
-        // In a `{name..}` capture an escaped slash decodes to a slash, and each segment decodes on its own.
-        assert_eq!(get("/v1/hf/models/org%2Fname").bytes(), b"org/name");
-        assert_eq!(get("/v1/hf/models/org/a%20b").bytes(), b"org/a b");
-        assert_eq!(get("/v1/hf/models/org/plain").bytes(), b"org/plain");
-        // A malformed escape stays as it is; invalid UTF-8 is a 400.
-        assert_eq!(get("/v1/recipes/100%").bytes(), b"100%");
-        assert_eq!(get("/v1/recipes/%FF").status, 400);
-        assert_eq!(get("/v1/hf/models/org/%FF").status, 400);
-    }
-
-    #[test]
-    fn an_encoded_slash_stays_in_one_segment() {
-        let router: Router<u32> = Router::new().get("/v1/prices/{model}", |_, _, params| {
-            Response::text(200, params.get("model"))
-        });
+    fn path_captures_decode_and_keep_an_escaped_slash_in_its_segment() {
+        // Captured values are percent-decoded, and an escaped slash stays inside its own segment.
+        {
+            let router: Router<u32> = Router::new()
+                .get("/v1/recipes/{id}", |_, _, params| {
+                    Response::text(200, params.get("id"))
+                })
+                .get("/v1/hf/models/{id..}", |_, _, params| {
+                    Response::text(200, params.get("id"))
+                });
+            let get = |path: &str| router.handle(&0, &request("GET", path));
+            // A plain segment is unchanged.
+            assert_eq!(get("/v1/recipes/plain").bytes(), b"plain");
+            // `%40` is `@`: the recipe name the Lab sends as `rung-predictor%401`.
+            assert_eq!(
+                get("/v1/recipes/rung-predictor%401").bytes(),
+                b"rung-predictor@1"
+            );
+            // `%2F` inside a single segment is part of that one value, not a path separator.
+            let single = get("/v1/recipes/a%2Fb");
+            assert_eq!((single.status, single.bytes()), (200, &b"a/b"[..]));
+            // In a `{name..}` capture an escaped slash decodes to a slash, and each segment decodes on its own.
+            assert_eq!(get("/v1/hf/models/org%2Fname").bytes(), b"org/name");
+            assert_eq!(get("/v1/hf/models/org/a%20b").bytes(), b"org/a b");
+            assert_eq!(get("/v1/hf/models/org/plain").bytes(), b"org/plain");
+            // A malformed escape stays as it is; invalid UTF-8 is a 400.
+            assert_eq!(get("/v1/recipes/100%").bytes(), b"100%");
+            assert_eq!(get("/v1/recipes/%FF").status, 400);
+            assert_eq!(get("/v1/hf/models/org/%FF").status, 400);
+        }
         // The web sends the provider/model key encoded, so it is one segment whose value holds the slash.
-        let encoded = router.handle(
-            &0,
-            &request("GET", "/v1/prices/anthropic%2Fclaude-opus-5-5"),
-        );
-        assert_eq!(
-            (encoded.status, encoded.bytes()),
-            (200, &b"anthropic/claude-opus-5-5"[..])
-        );
-        // Unescaped, the slash is a path separator and the one-segment pattern no longer matches.
-        let split = router.handle(&0, &request("GET", "/v1/prices/anthropic/claude-opus-5-5"));
-        assert_eq!(split.status, 404);
+        {
+            let router: Router<u32> = Router::new().get("/v1/prices/{model}", |_, _, params| {
+                Response::text(200, params.get("model"))
+            });
+            let encoded = router.handle(
+                &0,
+                &request("GET", "/v1/prices/anthropic%2Fclaude-opus-5-5"),
+            );
+            assert_eq!(
+                (encoded.status, encoded.bytes()),
+                (200, &b"anthropic/claude-opus-5-5"[..])
+            );
+            // Unescaped, the slash is a path separator and the one-segment pattern no longer matches.
+            let split = router.handle(&0, &request("GET", "/v1/prices/anthropic/claude-opus-5-5"));
+            assert_eq!(split.status, 404);
+        }
     }
 }

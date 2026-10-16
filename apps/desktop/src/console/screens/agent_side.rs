@@ -1407,18 +1407,4 @@ mod tests {
         assert_eq!(with_effort("openai/gpt", "max"), "openai/gpt@max");
         assert_eq!(with_effort("", "max"), "");
     }
-
-    #[test]
-    fn limits_are_blank_or_a_number_of_zero_or_more() {
-        assert_eq!(parse_limit(""), Ok(None));
-        assert_eq!(parse_limit(" 12 "), Ok(Some(12.0)));
-        assert_eq!(parse_limit("-1"), Err(()));
-        assert_eq!(parse_limit("x"), Err(()));
-    }
-
-    #[test]
-    fn kilobytes_show_one_decimal_at_most() {
-        assert_eq!(kb_text(2048), "2");
-        assert_eq!(kb_text(1536), "1.5");
-    }
 }

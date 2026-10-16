@@ -541,67 +541,71 @@ mod tests {
     const T0: u64 = 1_000_000;
 
     #[test]
-    fn agent_waits_refuses_the_pixels_until_the_owner_gives_the_session_back() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        assert_eq!(
-            sessions.take(&fx, T0, "w1", 9, 1, Takeover::AgentWaits),
-            Ok(Takeover::AgentWaits)
-        );
-        assert!(sessions.pixel_paused(T0, "w1", 9));
-        assert!(sessions.pointer_paused(T0, "w1", 9));
-        assert!(
-            fx.lines().contains(&"paused w1/9 true".to_string()),
-            "the lease is marked paused"
-        );
-        assert!(
-            fx.lines()
-                .iter()
-                .any(|l| l.starts_with("publish station_takeover")
-                    && l.contains("\"policy\":\"agent_waits\""))
-        );
+    fn takeover_policy_decides_what_is_paused_or_released() {
+        // The agent-waits policy pauses the pixels and the pointer, marks the lease paused,
+        // publishes the takeover, and resumes when the owner gives the session back.
+        {
+            let fx = Fake::default();
+            let sessions = Sessions::default();
+            assert_eq!(
+                sessions.take(&fx, T0, "w1", 9, 1, Takeover::AgentWaits),
+                Ok(Takeover::AgentWaits)
+            );
+            assert!(sessions.pixel_paused(T0, "w1", 9));
+            assert!(sessions.pointer_paused(T0, "w1", 9));
+            assert!(
+                fx.lines().contains(&"paused w1/9 true".to_string()),
+                "the lease is marked paused"
+            );
+            assert!(
+                fx.lines()
+                    .iter()
+                    .any(|l| l.starts_with("publish station_takeover")
+                        && l.contains("\"policy\":\"agent_waits\""))
+            );
 
-        sessions.give_back(&fx, T0 + 1, "w1", 9, 1).unwrap();
-        assert!(!sessions.pixel_paused(T0 + 1, "w1", 9));
-        assert!(!sessions.pointer_paused(T0 + 1, "w1", 9));
-        assert!(
-            fx.lines().contains(&"paused w1/9 false".to_string()),
-            "and resumes"
-        );
-        assert!(
-            fx.lines()
-                .iter()
-                .any(|l| l.starts_with("publish station_give_back")
-                    && l.contains("\"reason\":\"owner\""))
-        );
-    }
-
-    #[test]
-    fn keep_working_refuses_only_the_pointer_and_leaves_the_lease_alone() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        sessions
-            .take(&fx, T0, "w1", 9, 1, Takeover::KeepWorkingPointerPaused)
-            .unwrap();
-        assert!(!sessions.pixel_paused(T0, "w1", 9), "screenshots continue");
-        assert!(
-            sessions.pointer_paused(T0, "w1", 9),
-            "the pointer and keyboard pause"
-        );
-        assert_eq!(fx.count("paused"), 0);
-        assert_eq!(fx.count("release"), 0);
-    }
-
-    #[test]
-    fn release_lease_releases_the_session_once_and_the_owner_holds_it() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        sessions
-            .take(&fx, T0, "w1", 9, 1, Takeover::ReleaseLease)
-            .unwrap();
-        assert_eq!(fx.count("release w1/9"), 1);
-        assert_eq!(fx.count("paused"), 0, "the lease is released, not paused");
-        assert!(sessions.pixel_paused(T0, "w1", 9));
+            sessions.give_back(&fx, T0 + 1, "w1", 9, 1).unwrap();
+            assert!(!sessions.pixel_paused(T0 + 1, "w1", 9));
+            assert!(!sessions.pointer_paused(T0 + 1, "w1", 9));
+            assert!(
+                fx.lines().contains(&"paused w1/9 false".to_string()),
+                "and resumes"
+            );
+            assert!(
+                fx.lines()
+                    .iter()
+                    .any(|l| l.starts_with("publish station_give_back")
+                        && l.contains("\"reason\":\"owner\""))
+            );
+        }
+        // The keep-working policy refuses only the pointer: screenshots continue and the
+        // lease is left alone, neither paused nor released.
+        {
+            let fx = Fake::default();
+            let sessions = Sessions::default();
+            sessions
+                .take(&fx, T0, "w1", 9, 1, Takeover::KeepWorkingPointerPaused)
+                .unwrap();
+            assert!(!sessions.pixel_paused(T0, "w1", 9), "screenshots continue");
+            assert!(
+                sessions.pointer_paused(T0, "w1", 9),
+                "the pointer and keyboard pause"
+            );
+            assert_eq!(fx.count("paused"), 0);
+            assert_eq!(fx.count("release"), 0);
+        }
+        // The release-lease policy releases the session once; it is not paused, and the
+        // owner holds it.
+        {
+            let fx = Fake::default();
+            let sessions = Sessions::default();
+            sessions
+                .take(&fx, T0, "w1", 9, 1, Takeover::ReleaseLease)
+                .unwrap();
+            assert_eq!(fx.count("release w1/9"), 1);
+            assert_eq!(fx.count("paused"), 0, "the lease is released, not paused");
+            assert!(sessions.pixel_paused(T0, "w1", 9));
+        }
     }
 
     #[test]
@@ -663,49 +667,51 @@ mod tests {
     }
 
     #[test]
-    fn an_owner_input_pauses_the_agent_and_gives_the_session_back_after_five_seconds_quiet() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        sessions.owner_input(&fx, T0, "w1", 9, Takeover::AgentWaits);
-        assert!(sessions.pixel_paused(T0, "w1", 9));
-        assert!(
-            sessions.pixel_paused(T0 + QUIET - 1, "w1", 9),
-            "still held just before the quiet time"
-        );
+    fn owner_input_holds_the_session_until_five_seconds_of_quiet() {
+        // An owner input pauses the agent, and the session comes back after five seconds of quiet.
+        {
+            let fx = Fake::default();
+            let sessions = Sessions::default();
+            sessions.owner_input(&fx, T0, "w1", 9, Takeover::AgentWaits);
+            assert!(sessions.pixel_paused(T0, "w1", 9));
+            assert!(
+                sessions.pixel_paused(T0 + QUIET - 1, "w1", 9),
+                "still held just before the quiet time"
+            );
 
-        sessions.sweep(&fx, T0 + QUIET);
-        assert!(!sessions.pixel_paused(T0 + QUIET, "w1", 9));
-        assert!(!sessions.pointer_paused(T0 + QUIET, "w1", 9));
-        assert!(fx.lines().contains(&"paused w1/9 false".to_string()));
-        assert!(
-            fx.lines()
-                .iter()
-                .any(|l| l.starts_with("publish station_give_back")
-                    && l.contains("\"reason\":\"quiet\""))
-        );
-    }
-
-    #[test]
-    fn each_owner_input_restarts_the_quiet_time_and_only_the_first_is_a_takeover() {
-        let fx = Fake::default();
-        let sessions = Sessions::default();
-        sessions.owner_input(&fx, T0, "w1", 9, Takeover::KeepWorkingPointerPaused);
-        sessions.owner_input(&fx, T0 + 4_000, "w1", 9, Takeover::KeepWorkingPointerPaused);
-        assert!(
-            sessions.pointer_paused(T0 + 8_000, "w1", 9),
-            "the timer restarted at 4 s, so 8 s is still inside it"
-        );
-        sessions.sweep(&fx, T0 + 8_999);
-        assert!(sessions.pointer_paused(T0 + 8_999, "w1", 9));
-        assert!(
-            !sessions.pointer_paused(T0 + 9_000, "w1", 9),
-            "five seconds after the last input"
-        );
-        assert_eq!(
-            fx.count("publish station_takeover"),
-            1,
-            "one takeover event for a run of input"
-        );
+            sessions.sweep(&fx, T0 + QUIET);
+            assert!(!sessions.pixel_paused(T0 + QUIET, "w1", 9));
+            assert!(!sessions.pointer_paused(T0 + QUIET, "w1", 9));
+            assert!(fx.lines().contains(&"paused w1/9 false".to_string()));
+            assert!(
+                fx.lines()
+                    .iter()
+                    .any(|l| l.starts_with("publish station_give_back")
+                        && l.contains("\"reason\":\"quiet\""))
+            );
+        }
+        // Each owner input restarts the quiet time, and only the first one is a takeover event.
+        {
+            let fx = Fake::default();
+            let sessions = Sessions::default();
+            sessions.owner_input(&fx, T0, "w1", 9, Takeover::KeepWorkingPointerPaused);
+            sessions.owner_input(&fx, T0 + 4_000, "w1", 9, Takeover::KeepWorkingPointerPaused);
+            assert!(
+                sessions.pointer_paused(T0 + 8_000, "w1", 9),
+                "the timer restarted at 4 s, so 8 s is still inside it"
+            );
+            sessions.sweep(&fx, T0 + 8_999);
+            assert!(sessions.pointer_paused(T0 + 8_999, "w1", 9));
+            assert!(
+                !sessions.pointer_paused(T0 + 9_000, "w1", 9),
+                "five seconds after the last input"
+            );
+            assert_eq!(
+                fx.count("publish station_takeover"),
+                1,
+                "one takeover event for a run of input"
+            );
+        }
     }
 
     #[test]

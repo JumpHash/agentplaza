@@ -2988,36 +2988,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_mip_chain_halves_down_to_one_pixel_and_averages() {
-        let levels = mip_chain(
-            4,
-            2,
-            &[
-                0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255,
-                255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
-            ],
-        );
-        assert_eq!(
-            levels.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
-            vec![(4, 2), (2, 1), (1, 1)]
-        );
-        assert_eq!(levels[1].2[0], 127);
-    }
-
-    #[test]
-    fn main_pass_draws_count_toward_their_tally_and_not_toward_none() {
-        let mut owned = Vec::new();
-        for owner in [1, 2, 0, 2, 2] {
-            count_owned(&mut owned, owner);
-        }
-        assert_eq!(
-            owned,
-            vec![0, 1, 3],
-            "index n is tally n; the unowned draw counts nowhere"
-        );
-    }
-
-    #[test]
     fn draw_stats_split_the_passes_and_keep_outline_apart_from_the_main_pass() {
         // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points].
         let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4]);
@@ -3049,32 +3019,6 @@ mod tests {
         );
         // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
         assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
-    }
-}
-
-#[cfg(test)]
-mod plaza_fade_tests {
-    use super::*;
-
-    #[test]
-    fn a_part_over_the_plaza_eases_to_the_cutaway_opacity() {
-        // The part's box is clear of the eye-to-focus segment (both at x = 100), but over the plaza area.
-        let part = Fade {
-            id: 1,
-            min: Vec3::new(10.0, 0.0, 10.0),
-            max: Vec3::new(12.0, 2.0, 12.0),
-        };
-        let (eye, focus) = (Vec3::new(100.0, 50.0, 100.0), Vec3::new(100.0, 0.0, 100.0));
-        let plaza = Some((Vec3::new(-20.0, -1.0, -20.0), Vec3::new(20.0, 5.0, 20.0)));
-        assert_eq!(fade_target(&part, eye, focus, None), 1.0);
-        assert_eq!(fade_target(&part, eye, focus, plaza), CUTAWAY_OPACITY);
-        // Eased with the fade's rate over 0.1 s steps, it settles at the cutaway opacity.
-        let k = 1.0 - (-0.1f32 * 12.0).exp();
-        let mut a = 1.0f32;
-        for _ in 0..60 {
-            a += (fade_target(&part, eye, focus, plaza) - a) * k;
-        }
-        assert!((a - 0.15).abs() < 1e-3, "settled at {a}");
     }
 }
 

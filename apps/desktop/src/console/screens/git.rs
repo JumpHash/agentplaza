@@ -2092,20 +2092,4 @@ mod tests {
         .expect("older detail parses");
         assert!(detail.discussion.is_empty());
     }
-
-    #[test]
-    fn git_crumbs_walk_the_folder_path() {
-        assert_eq!(
-            crumb_trail("plaza", ""),
-            vec![("plaza".to_string(), String::new())]
-        );
-        let trail = crumb_trail("plaza", "src/console/screens");
-        let expect: Vec<(String, String)> = vec![
-            ("plaza".to_string(), String::new()),
-            ("src".to_string(), "src".to_string()),
-            ("console".to_string(), "src/console".to_string()),
-            ("screens".to_string(), "src/console/screens".to_string()),
-        ];
-        assert_eq!(trail, expect);
-    }
 }

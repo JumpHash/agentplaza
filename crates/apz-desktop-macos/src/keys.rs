@@ -148,59 +148,64 @@ mod tests {
     }
 
     #[test]
-    fn letters_have_their_ansi_positions() {
-        assert_eq!(code_of('a'), 0x00);
-        assert_eq!(code_of('s'), 0x01);
-        assert_eq!(code_of('q'), 0x0C);
-        assert_eq!(code_of('z'), 0x06);
-        assert_eq!(code_of('m'), 0x2E);
-    }
-
-    #[test]
-    fn all_letters_and_digits_have_distinct_codes() {
-        let mut seen = std::collections::BTreeSet::new();
-        for c in ('a'..='z').chain('0'..='9') {
-            assert!(seen.insert(code_of(c)), "{c} repeats a key code");
+    fn character_keys_have_their_codes() {
+        // Letters sit at their ANSI positions, and punctuation has its own key.
+        for (case, c, want) in [
+            ("letter a", 'a', 0x00),
+            ("letter s", 's', 0x01),
+            ("letter q", 'q', 0x0C),
+            ("letter z", 'z', 0x06),
+            ("letter m", 'm', 0x2E),
+            ("punctuation -", '-', 0x1B),
+            ("punctuation ,", ',', 0x2B),
+            ("punctuation `", '`', 0x32),
+            ("punctuation \\", '\\', 0x2A),
+        ] {
+            assert_eq!(code_of(c), want, "{case}");
         }
-        assert_eq!(seen.len(), 36);
+        // Every letter and digit has a key of its own.
+        {
+            let mut seen = std::collections::BTreeSet::new();
+            for c in ('a'..='z').chain('0'..='9') {
+                assert!(seen.insert(code_of(c)), "{c} repeats a key code");
+            }
+            assert_eq!(seen.len(), 36);
+        }
+        // Upper case and plus need shift; the unshifted equals sign does not.
+        {
+            assert_eq!(char_code('A'), Ok((0x00, FLAG_SHIFT)));
+            assert_eq!(char_code('+'), Ok((0x18, FLAG_SHIFT)));
+            assert_eq!(char_code('='), Ok((0x18, 0)));
+        }
+        // A key with no code is refused, not guessed.
+        {
+            assert!(matches!(char_code('é'), Err(DesktopError::Unsupported(_))));
+        }
     }
 
     #[test]
-    fn upper_case_and_plus_need_shift() {
-        assert_eq!(char_code('A'), Ok((0x00, FLAG_SHIFT)));
-        assert_eq!(char_code('+'), Ok((0x18, FLAG_SHIFT)));
-        assert_eq!(char_code('='), Ok((0x18, 0)));
-    }
-
-    #[test]
-    fn punctuation_has_its_key() {
-        assert_eq!(code_of('-'), 0x1B);
-        assert_eq!(code_of(','), 0x2B);
-        assert_eq!(code_of('`'), 0x32);
-        assert_eq!(code_of('\\'), 0x2A);
-    }
-
-    #[test]
-    fn named_keys_map_to_their_codes() {
-        assert_eq!(key_code(Key::Enter), Ok((0x24, 0)));
-        assert_eq!(key_code(Key::Escape), Ok((0x35, 0)));
-        assert_eq!(key_code(Key::Backspace), Ok((0x33, 0)));
-        assert_eq!(key_code(Key::Delete), Ok((0x75, 0)));
-        assert_eq!(key_code(Key::Left), Ok((0x7B, 0)));
-        assert_eq!(key_code(Key::Right), Ok((0x7C, 0)));
-        assert_eq!(key_code(Key::Up), Ok((0x7E, 0)));
-        assert_eq!(key_code(Key::Down), Ok((0x7D, 0)));
-        assert_eq!(key_code(Key::PageUp), Ok((0x74, 0)));
-        assert_eq!(key_code(Key::PageDown), Ok((0x79, 0)));
-        assert_eq!(key_code(Key::Home), Ok((0x73, 0)));
-        assert_eq!(key_code(Key::End), Ok((0x77, 0)));
-    }
-
-    #[test]
-    fn function_keys_stop_at_f20() {
-        assert_eq!(key_code(Key::F(1)), Ok((0x7A, 0)));
-        assert_eq!(key_code(Key::F(12)), Ok((0x6F, 0)));
-        assert_eq!(key_code(Key::F(20)), Ok((0x5A, 0)));
+    fn named_and_function_keys_map_to_their_codes() {
+        // Named keys and the function keys F1 to F20 map to their codes.
+        for (case, key, want) in [
+            ("enter", Key::Enter, (0x24, 0)),
+            ("escape", Key::Escape, (0x35, 0)),
+            ("backspace", Key::Backspace, (0x33, 0)),
+            ("delete", Key::Delete, (0x75, 0)),
+            ("left", Key::Left, (0x7B, 0)),
+            ("right", Key::Right, (0x7C, 0)),
+            ("up", Key::Up, (0x7E, 0)),
+            ("down", Key::Down, (0x7D, 0)),
+            ("page up", Key::PageUp, (0x74, 0)),
+            ("page down", Key::PageDown, (0x79, 0)),
+            ("home", Key::Home, (0x73, 0)),
+            ("end", Key::End, (0x77, 0)),
+            ("F1", Key::F(1), (0x7A, 0)),
+            ("F12", Key::F(12), (0x6F, 0)),
+            ("F20", Key::F(20), (0x5A, 0)),
+        ] {
+            assert_eq!(key_code(key), Ok(want), "{case}");
+        }
+        // Apple's keyboards stop at F20, so F21 is refused.
         assert!(matches!(
             key_code(Key::F(21)),
             Err(DesktopError::Unsupported(_))
@@ -237,10 +242,5 @@ mod tests {
         assert_eq!(chord(&upper), Ok((0x00, FLAG_CONTROL | FLAG_SHIFT)));
         let plus = parse_combo("cmd+plus").expect("parses");
         assert_eq!(chord(&plus), Ok((0x18, FLAG_COMMAND | FLAG_SHIFT)));
-    }
-
-    #[test]
-    fn a_key_with_no_code_is_refused_not_guessed() {
-        assert!(matches!(char_code('é'), Err(DesktopError::Unsupported(_))));
     }
 }

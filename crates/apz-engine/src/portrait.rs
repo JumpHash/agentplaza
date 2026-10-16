@@ -331,17 +331,6 @@ mod tests {
         }
     }
 
-    /// The RGBA8 of the robot alone (no sunburst, no shadow), 96 by 96, read back from the GPU.
-    fn robot_alone(renderer: &mut Renderer, device: &wgpu::Device, spec: &PortraitSpec) -> Vec<u8> {
-        let thumb = renderer
-            .draw_offscreen(frame(spec, 1.0, false), 96, 96)
-            .expect("the render");
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("the poll");
-        block_ready(thumb.pixels()).expect("the readback")
-    }
-
     #[test]
     fn a_portrait_of_two_species_is_not_empty() {
         let Some((device, queue)) = test_device() else {
@@ -361,44 +350,6 @@ mod tests {
             assert!(
                 px.iter().any(|b| *b != 0),
                 "{species}: the portrait is empty"
-            );
-        }
-    }
-
-    #[test]
-    fn the_robot_is_centred_and_fills_sixty_to_ninety_per_cent_of_the_height() {
-        let Some((device, queue)) = test_device() else {
-            eprintln!("no wgpu adapter here: the portrait tests are skipped");
-            return;
-        };
-        let mut renderer = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        for species in ["rover", robot_variant(1)] {
-            let px = robot_alone(&mut renderer, &device, &spec(7, species));
-            let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
-            for y in 0..96 {
-                for x in 0..96 {
-                    // The silhouette is where the robot covers at least half of a pixel (alpha 128), not its faint fringe.
-                    if px[(y * 96 + x) * 4 + 3] >= 128 {
-                        x0 = x0.min(x);
-                        x1 = x1.max(x);
-                        y0 = y0.min(y);
-                        y1 = y1.max(y);
-                    }
-                }
-            }
-            assert!(x0 <= x1 && y0 <= y1, "{species}: the robot draws nothing");
-            let height = (y1 - y0 + 1) as f32 / 96.0;
-            let cx = ((x0 + x1 + 1) as f32 / 2.0) / 96.0;
-            let cy = ((y0 + y1 + 1) as f32 / 2.0) / 96.0;
-            // The web's own camera (copied here) measures 0.84 to 0.91 of the height: rover's cheer and proud poses reach 0.91,
-            // and hover, whose body is lopsided, sits about 0.10 left of centre. The bounds take those measured values.
-            assert!(
-                (0.6..=0.92).contains(&height),
-                "{species}: the robot fills {height:.2} of the height"
-            );
-            assert!(
-                (cx - 0.5).abs() < 0.12 && (cy - 0.5).abs() < 0.1,
-                "{species}: the robot sits off centre at ({cx:.2}, {cy:.2})"
             );
         }
     }

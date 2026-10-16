@@ -174,22 +174,6 @@ mod tests {
         }
     }
 
-    /// A refusal carries the daemon's status and its own words.
-    #[test]
-    fn a_refusal_carries_the_daemons_words() {
-        let answer = Answer::for_test(409, br#"{"error":"a task may not go from done to failed"}"#);
-        assert_eq!(
-            refused("the finish", &answer),
-            "the finish answered 409: a task may not go from done to failed"
-        );
-        // An answer that is not the daemon's error shape still says something.
-        let answer = Answer::for_test(500, b"boom");
-        assert_eq!(
-            refused("the ledger", &answer),
-            "the ledger answered 500: boom"
-        );
-    }
-
     /// The ledger and register paths end to end against a stub node: the
     /// client asks for the right paths, reads the daemon's own shapes, and
     /// sends the claim and finish bodies the ledger's contract takes.

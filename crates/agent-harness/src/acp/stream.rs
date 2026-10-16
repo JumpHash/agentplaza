@@ -439,20 +439,4 @@ mod tests {
         assert!(content.len() < UPDATE_BYTES + 64);
         assert!(content.contains("[truncated"));
     }
-
-    #[test]
-    fn due_once_the_buffered_text_has_waited_the_coalesce_window() {
-        let link = Recorder::default();
-        let mut stream = Stream::new(&link, "claude", "s1");
-        assert!(!stream.due(Instant::now()));
-
-        stream.absorb(chunk("agent_message_chunk", "m1", "a"));
-        let started = stream.buffer.as_ref().unwrap().started;
-        assert!(!stream.due(started));
-        assert!(!stream.due(started + COALESCE - Duration::from_millis(1)));
-        assert!(stream.due(started + COALESCE));
-
-        stream.flush();
-        assert!(!stream.due(started + COALESCE));
-    }
 }

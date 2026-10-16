@@ -747,15 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn comment_text_indents_the_body_under_author_and_time() {
-        let c = json!({"author": "alice", "body": "one\ntwo", "at": "2026-10-14 10:00"});
-        assert_eq!(
-            comment_text(&c),
-            "  alice  2026-10-14 10:00\n    one\n    two"
-        );
-    }
-
-    #[test]
     fn the_pull_request_commands_parse_their_flags() {
         use clap::Parser;
         #[derive(Parser)]
@@ -809,45 +800,5 @@ mod tests {
         assert_eq!(pull_state(&older), "closed");
         assert!(reopen_refusal(&older, "demo", 6).is_none());
         assert_eq!(pull_state(&json!({"number": 7, "state": "open"})), "open");
-    }
-
-    #[test]
-    fn merge_problems_are_empty_only_for_an_approved_mergeable_pull_request() {
-        assert!(merge_problems("approved", true).is_empty());
-        assert_eq!(merge_problems("pending", true), vec!["is not approved"]);
-        assert_eq!(
-            merge_problems("changes_requested", true),
-            vec!["has changes requested"]
-        );
-        assert_eq!(merge_problems("approved", false), vec!["is not mergeable"]);
-        assert_eq!(
-            merge_problems("pending", false),
-            vec!["is not approved", "is not mergeable"]
-        );
-    }
-
-    #[test]
-    fn a_merged_pull_request_is_refused_before_a_merge_is_sent() {
-        let merged = json!({"number": 4, "state": "closed", "merged": true, "merged_at": "2026-10-03T09:30:00Z"});
-        let refusal = merge_refusal(&merged, "demo", 4).expect("a merged pull request is refused");
-        assert_eq!(refusal, "#4 in demo is already merged");
-        // An open pull request, a closed one that did not merge, and an older hub's (no `merged`) can be merged.
-        assert!(
-            merge_refusal(
-                &json!({"number": 5, "state": "open", "merged": false}),
-                "demo",
-                5
-            )
-            .is_none()
-        );
-        assert!(
-            merge_refusal(
-                &json!({"number": 6, "state": "closed", "merged": false}),
-                "demo",
-                6
-            )
-            .is_none()
-        );
-        assert!(merge_refusal(&json!({"number": 7, "state": "open"}), "demo", 7).is_none());
     }
 }

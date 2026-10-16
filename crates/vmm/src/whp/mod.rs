@@ -165,39 +165,58 @@ mod tests {
     };
 
     #[test]
-    fn defaults_are_appended() {
-        assert_eq!(
-            guest_cmdline("console=ttyS0", &[VSOCK], Some(2_995_200)),
-            "console=ttyS0 pci=off loglevel=7 reboot=acpi \
-             virtio_mmio.device=0x1000@0xc0001000:5 tsc_early_khz=2995200 tsc=reliable"
-        );
-        assert_eq!(
-            guest_cmdline("", &[], None),
-            "pci=off loglevel=7 reboot=acpi"
-        );
-    }
-
-    #[test]
-    fn callers_settings_are_kept() {
-        assert_eq!(
-            guest_cmdline("quiet pci=nocrs reboot=k tsc=unstable", &[], Some(1000)),
-            "quiet pci=nocrs reboot=k tsc=unstable"
-        );
-        assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", &[VSOCK], None),
-            "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
-        );
-    }
-
-    #[test]
-    fn an_unknown_or_zero_clock_adds_nothing() {
-        assert_eq!(
-            guest_cmdline("a", &[], Some(0)),
-            "a pci=off loglevel=7 reboot=acpi"
-        );
-        assert_eq!(
-            guest_cmdline("a", &[], None),
-            "a pci=off loglevel=7 reboot=acpi"
-        );
+    fn guest_cmdline_builds_the_command_line() {
+        let cases: [(&str, &str, &[MmioTransport], Option<u64>, &str); 6] = [
+            (
+                "defaults are appended to the requested settings",
+                "console=ttyS0",
+                &[VSOCK],
+                Some(2_995_200),
+                "console=ttyS0 pci=off loglevel=7 reboot=acpi \
+                 virtio_mmio.device=0x1000@0xc0001000:5 tsc_early_khz=2995200 tsc=reliable",
+            ),
+            (
+                "no requested settings and no devices give only the defaults",
+                "",
+                &[],
+                None,
+                "pci=off loglevel=7 reboot=acpi",
+            ),
+            (
+                "the caller's settings are kept as given",
+                "quiet pci=nocrs reboot=k tsc=unstable",
+                &[],
+                Some(1000),
+                "quiet pci=nocrs reboot=k tsc=unstable",
+            ),
+            (
+                "the caller's device setting is kept alongside the defaults",
+                "virtio_mmio.device=0x200@0x1000:6",
+                &[VSOCK],
+                None,
+                "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi",
+            ),
+            (
+                "a zero clock adds nothing",
+                "a",
+                &[],
+                Some(0),
+                "a pci=off loglevel=7 reboot=acpi",
+            ),
+            (
+                "an unknown clock adds nothing",
+                "a",
+                &[],
+                None,
+                "a pci=off loglevel=7 reboot=acpi",
+            ),
+        ];
+        for (case, requested, transports, tsc_khz, want) in cases {
+            assert_eq!(
+                guest_cmdline(requested, transports, tsc_khz),
+                want,
+                "{case}"
+            );
+        }
     }
 }

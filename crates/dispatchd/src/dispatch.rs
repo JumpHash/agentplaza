@@ -815,47 +815,82 @@ mod tests {
         );
     }
 
-    /// A hub that refuses a call on the role's grants is final, not a retry: the
-    /// task ends `failed` at once with the hub's own words. This is the
-    /// backstop's echo — a dispatcher whose manifest disagrees with the hub's
-    /// policy, or a hub started with a different manifest, still ends honestly.
+    /// A refusal is final, not a retry: the task ends `failed` at once with the refuser's own words.
+    /// The hub's refusal of a call on the role's grants is the backstop's echo (a dispatcher whose
+    /// manifest disagrees with the hub's policy still ends honestly), and an agent's refusal of its
+    /// tool call is an answer, not a dead agent.
     #[test]
-    fn a_hub_refusal_finishes_the_task_at_once() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::answering(Tell::Refused {
-            reason: "role builder does not grant write_file".to_string(),
-        });
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
+    fn a_refusal_finishes_the_task_failed_at_once() {
+        // A hub that refuses a call on the role's grants: final at once, with the hub's own words.
+        {
+            let ledger = FakeLedger::with_task(task("t1", "open", Some("builder")))
+                .with_agent(300, "builder");
+            let operator = FakeOperator::answering(Tell::Refused {
+                reason: "role builder does not grant write_file".to_string(),
+            });
+            let (mut dispatcher, log) = dispatcher(ledger, operator);
 
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!(
-            report,
-            Reporter {
-                considered: 1,
-                claimed: 1,
-                done: 0,
-                failed: 1,
-                skipped: 0,
-                deferred: 0,
-            },
-            "a refusal is final, not deferred"
-        );
-        let finishes = dispatcher.ledger.finishes.borrow();
-        assert_eq!(finishes.len(), 1);
-        assert_eq!(finishes[0].1, Outcome::Failed);
-        assert_eq!(
-            finishes[0].2,
-            "tool write_file refused: role builder does not grant write_file"
-        );
-        drop(finishes);
-        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
-        assert!(
-            log.text()
-                .contains("finished failed: tool write_file refused:"),
-            "{}",
-            log.text()
-        );
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!(
+                report,
+                Reporter {
+                    considered: 1,
+                    claimed: 1,
+                    done: 0,
+                    failed: 1,
+                    skipped: 0,
+                    deferred: 0,
+                },
+                "a refusal is final, not deferred"
+            );
+            let finishes = dispatcher.ledger.finishes.borrow();
+            assert_eq!(finishes.len(), 1);
+            assert_eq!(finishes[0].1, Outcome::Failed);
+            assert_eq!(
+                finishes[0].2,
+                "tool write_file refused: role builder does not grant write_file"
+            );
+            drop(finishes);
+            assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+            assert!(
+                log.text()
+                    .contains("finished failed: tool write_file refused:"),
+                "{}",
+                log.text()
+            );
+        }
+
+        // An agent that answers with a refusal of its tool call: final at once, with the agent's own words.
+        {
+            let ledger = FakeLedger::with_task(task("t1", "open", Some("builder")))
+                .with_agent(300, "builder");
+            let operator = FakeOperator::default().with_agent(
+                300,
+                FakeAgent::failing(DriveError::Refused {
+                    name: "write_file".to_string(),
+                    output: "denied: path \"../escape.txt\" contains \"..\"".to_string(),
+                }),
+            );
+            let (mut dispatcher, log) = dispatcher(ledger, operator);
+
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!((report.done, report.failed, report.deferred), (0, 1, 0));
+            let finishes = dispatcher.ledger.finishes.borrow();
+            assert_eq!(finishes.len(), 1);
+            assert_eq!(finishes[0].1, Outcome::Failed);
+            assert_eq!(
+                finishes[0].2,
+                "tool write_file refused: denied: path \"../escape.txt\" contains \"..\""
+            );
+            drop(finishes);
+            assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+            assert!(
+                log.text()
+                    .contains("finished failed: tool write_file refused:"),
+                "log: {}",
+                log.text()
+            );
+        }
     }
 
     /// The whole loop, once: an open roled task whose agent is connected is
@@ -1028,93 +1063,61 @@ mod tests {
         assert_eq!(dispatcher.ledger.task("t1").state, "done");
     }
 
-    /// A task that names no role is never claimed: "for each open task with a
-    /// role" is taken literally.
+    /// Tasks the dispatcher must not drive are left alone: a task that names no role is never claimed,
+    /// a terminal task is never touched again, and a state with no rule is logged and skipped.
     #[test]
-    fn a_task_with_no_role_is_never_claimed() {
-        let ledger =
-            FakeLedger::with_tasks(vec![task("t1", "open", None), task("t2", "open", Some(""))])
-                .with_agent(300, "builder");
-        let (mut dispatcher, log) = dispatcher(ledger, FakeOperator::default());
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!(report.considered, 0);
-        assert_eq!(report.skipped, 2);
-        assert!(dispatcher.ledger.claims.borrow().is_empty());
-        assert!(dispatcher.ledger.finishes.borrow().is_empty());
-        assert_eq!(log.text().matches("names no role; skipped").count(), 2);
-    }
-
-    /// A terminal task is never touched again, whatever it names.
-    #[test]
-    fn a_terminal_task_is_never_touched() {
-        let ledger = FakeLedger::with_tasks(vec![
-            task("t1", "done", Some("builder")),
-            task("t2", "failed", Some("builder")),
-            task("t3", "withdrawn", Some("builder")),
-        ])
-        .with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let (mut dispatcher, _log) = dispatcher(ledger, operator);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!(report, Reporter::default());
-        assert!(dispatcher.operator.calls.borrow().is_empty());
-        assert!(dispatcher.ledger.claims.borrow().is_empty());
-        assert!(dispatcher.ledger.finishes.borrow().is_empty());
-    }
-
-    /// A state the dispatcher has no rule for is left alone: not claimed, not
-    /// failed, just logged.
-    #[test]
-    fn a_state_the_dispatcher_has_no_rule_for_is_left_alone() {
-        let ledger = FakeLedger::with_task(task("t1", "verifying", Some("builder")))
+    fn tasks_it_must_not_drive_are_skipped_or_left_alone() {
+        // A task that names no role is never claimed: "for each open task with a role" is taken literally.
+        {
+            let ledger = FakeLedger::with_tasks(vec![
+                task("t1", "open", None),
+                task("t2", "open", Some("")),
+            ])
             .with_agent(300, "builder");
-        let (mut dispatcher, log) = dispatcher(ledger, FakeOperator::default());
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!(report.skipped, 1);
-        assert_eq!(report.considered, 0);
-        assert!(dispatcher.ledger.claims.borrow().is_empty());
-        assert!(
-            log.text()
-                .contains("dispatchd: task t1 (role builder) is verifying; skipped"),
-            "log: {}",
-            log.text()
-        );
-    }
+            let (mut dispatcher, log) = dispatcher(ledger, FakeOperator::default());
 
-    /// An agent that answers and refuses is final: the task is finished
-    /// `failed` at once, with the agent's own words — no retry for an answer.
-    #[test]
-    fn a_tool_refusal_finishes_the_task_failed_at_once() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(
-            300,
-            FakeAgent::failing(DriveError::Refused {
-                name: "write_file".to_string(),
-                output: "denied: path \"../escape.txt\" contains \"..\"".to_string(),
-            }),
-        );
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!(report.considered, 0);
+            assert_eq!(report.skipped, 2);
+            assert!(dispatcher.ledger.claims.borrow().is_empty());
+            assert!(dispatcher.ledger.finishes.borrow().is_empty());
+            assert_eq!(log.text().matches("names no role; skipped").count(), 2);
+        }
 
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.done, report.failed, report.deferred), (0, 1, 0));
-        let finishes = dispatcher.ledger.finishes.borrow();
-        assert_eq!(finishes.len(), 1);
-        assert_eq!(finishes[0].1, Outcome::Failed);
-        assert_eq!(
-            finishes[0].2,
-            "tool write_file refused: denied: path \"../escape.txt\" contains \"..\""
-        );
-        drop(finishes);
-        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
-        assert!(
-            log.text()
-                .contains("finished failed: tool write_file refused:"),
-            "log: {}",
-            log.text()
-        );
+        // A terminal task is never touched again, whatever it names.
+        {
+            let ledger = FakeLedger::with_tasks(vec![
+                task("t1", "done", Some("builder")),
+                task("t2", "failed", Some("builder")),
+                task("t3", "withdrawn", Some("builder")),
+            ])
+            .with_agent(300, "builder");
+            let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
+            let (mut dispatcher, _log) = dispatcher(ledger, operator);
+
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!(report, Reporter::default());
+            assert!(dispatcher.operator.calls.borrow().is_empty());
+            assert!(dispatcher.ledger.claims.borrow().is_empty());
+            assert!(dispatcher.ledger.finishes.borrow().is_empty());
+        }
+
+        // A state the dispatcher has no rule for is left alone: not claimed, not failed, just logged.
+        {
+            let ledger = FakeLedger::with_task(task("t1", "verifying", Some("builder")))
+                .with_agent(300, "builder");
+            let (mut dispatcher, log) = dispatcher(ledger, FakeOperator::default());
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!(report.skipped, 1);
+            assert_eq!(report.considered, 0);
+            assert!(dispatcher.ledger.claims.borrow().is_empty());
+            assert!(
+                log.text()
+                    .contains("dispatchd: task t1 (role builder) is verifying; skipped"),
+                "log: {}",
+                log.text()
+            );
+        }
     }
 
     /// An agent that cannot be reached is retried for a bounded number of
@@ -1188,31 +1191,6 @@ mod tests {
                 log.text()
             );
         }
-    }
-
-    /// A claimed task whose claimant is not a connected agent of the task's role
-    /// is left alone — untouched, still claimed. A builder *is* connected here,
-    /// but the claim names a CID nothing serves, so it is not this fleet's to
-    /// finish (only a claim the register still backs is adopted; see
-    /// `a_claimed_task_is_adopted_after_a_restart`).
-    #[test]
-    fn a_claim_the_dispatcher_does_not_own_is_left_alone() {
-        let mut claimed = task("t1", "claimed", Some("builder"));
-        claimed.agent_cid = Some(999);
-        let ledger = FakeLedger::with_task(claimed).with_agent(300, "builder");
-        let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
-
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!(report.skipped, 1);
-        assert!(dispatcher.operator.calls.borrow().is_empty());
-        assert!(dispatcher.ledger.finishes.borrow().is_empty());
-        assert_eq!(dispatcher.ledger.task("t1").state, "claimed");
-        assert!(
-            log.text().contains("is claimed by another; skipped"),
-            "log: {}",
-            log.text()
-        );
     }
 
     /// A dispatcher that is stopped and started again adopts the claim it left
@@ -1324,93 +1302,90 @@ mod tests {
         }
     }
 
-    /// A retry never drives a stale CID: when a task's agent VM dies and a new run
-    /// takes the same guest CID, the register now lists that CID as a different
-    /// role — and the next pass must not drive whatever took the CID (with no
-    /// manifest the hub would admit it, and the task would be marked done on the
-    /// impostor). The divergence is retryable and bounded: the task ends failed
-    /// naming it, and the impostor's hub is never asked to do anything.
+    /// A retry never drives a stale CID. A task whose agent VM died is retried only while the register
+    /// still lists its CID as the same role: a CID taken by another role, or one the register no longer
+    /// holds, ends the task failed naming the divergence, and the hub at that CID is never driven.
     #[test]
-    fn a_retry_never_drives_a_stale_cid() {
-        // The task is claimed, with retry state for cid 300 (the hub was down).
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator =
-            FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused")
-                .with_agent(300, FakeAgent::default());
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
-        let first = dispatcher.pass().expect("the pass runs");
-        assert_eq!((first.claimed, first.deferred), (1, 1));
-        let calls_before = dispatcher.operator.calls.borrow().len();
+    fn a_retry_never_drives_a_stale_or_vanished_cid() {
+        // The CID was taken by another role (an impostor): the task ends failed naming it, and the impostor's hub is never driven.
+        {
+            // The task is claimed, with retry state for cid 300 (the hub was down).
+            let ledger = FakeLedger::with_task(task("t1", "open", Some("builder")))
+                .with_agent(300, "builder");
+            let operator =
+                FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused")
+                    .with_agent(300, FakeAgent::default());
+            let (mut dispatcher, log) = dispatcher(ledger, operator);
+            let first = dispatcher.pass().expect("the pass runs");
+            assert_eq!((first.claimed, first.deferred), (1, 1));
+            let calls_before = dispatcher.operator.calls.borrow().len();
 
-        // The VM is replaced: cid 300 is now the impostor's, connected as another
-        // role. The hub itself is up and would happily run the call.
-        dispatcher.ledger.agents = vec![agent(300, "intruder")];
-        dispatcher.operator.recover();
+            // The VM is replaced: cid 300 is now the impostor's, connected as another
+            // role. The hub itself is up and would happily run the call.
+            dispatcher.ledger.agents = vec![agent(300, "intruder")];
+            dispatcher.operator.recover();
 
-        // One more deferred pass, then the bound is spent and the task ends
-        // failed — with the divergence named.
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.failed, report.deferred), (0, 1));
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.failed, report.deferred), (1, 0));
+            // One more deferred pass, then the bound is spent and the task ends
+            // failed — with the divergence named.
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!((report.failed, report.deferred), (0, 1));
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!((report.failed, report.deferred), (1, 0));
 
-        let finishes = dispatcher.ledger.finishes.borrow();
-        assert_eq!(finishes.len(), 1);
-        assert_eq!(finishes[0].1, Outcome::Failed);
-        assert_eq!(
-            finishes[0].2,
-            "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
-        );
-        drop(finishes);
-        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
-        // The impostor's hub was never driven: the only call it ever saw was the
-        // first pass's, before the VM was replaced.
-        assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
-        assert!(
-            log.text()
-                .contains("tool write_file unavailable: the agent of cid 300 is no longer builder"),
-            "{}",
-            log.text()
-        );
-    }
+            let finishes = dispatcher.ledger.finishes.borrow();
+            assert_eq!(finishes.len(), 1);
+            assert_eq!(finishes[0].1, Outcome::Failed);
+            assert_eq!(
+                finishes[0].2,
+                "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+            );
+            drop(finishes);
+            assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+            // The impostor's hub was never driven: the only call it ever saw was the
+            // first pass's, before the VM was replaced.
+            assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
+            assert!(
+                log.text().contains(
+                    "tool write_file unavailable: the agent of cid 300 is no longer builder"
+                ),
+                "{}",
+                log.text()
+            );
+        }
 
-    /// The other shape of a stale CID: the agent's session vanished entirely (its
-    /// VM died and nothing took the CID). The retry re-verifies the register,
-    /// finds no agent at that CID, and ends the task failed naming the divergence
-    /// — it never drives a CID the register no longer holds.
-    #[test]
-    fn a_retry_never_drives_a_cid_whose_agent_vanished() {
-        let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("builder"))).with_agent(300, "builder");
-        let operator =
-            FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused");
-        let (mut dispatcher, log) = dispatcher(ledger, operator);
-        let first = dispatcher.pass().expect("the pass runs");
-        assert_eq!((first.claimed, first.deferred), (1, 1));
-        let calls_before = dispatcher.operator.calls.borrow().len();
+        // The agent's session vanished: the register holds nothing at that CID, so the task ends failed naming the divergence.
+        {
+            let ledger = FakeLedger::with_task(task("t1", "open", Some("builder")))
+                .with_agent(300, "builder");
+            let operator =
+                FakeOperator::unreachable("cannot connect to http://127.0.0.1:19080: refused");
+            let (mut dispatcher, log) = dispatcher(ledger, operator);
+            let first = dispatcher.pass().expect("the pass runs");
+            assert_eq!((first.claimed, first.deferred), (1, 1));
+            let calls_before = dispatcher.operator.calls.borrow().len();
 
-        // The agent is gone from the register: nothing is connected at cid 300.
-        dispatcher.ledger.agents.clear();
+            // The agent is gone from the register: nothing is connected at cid 300.
+            dispatcher.ledger.agents.clear();
 
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.failed, report.deferred), (0, 1));
-        let report = dispatcher.pass().expect("the pass runs");
-        assert_eq!((report.failed, report.deferred), (1, 0));
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!((report.failed, report.deferred), (0, 1));
+            let report = dispatcher.pass().expect("the pass runs");
+            assert_eq!((report.failed, report.deferred), (1, 0));
 
-        let finishes = dispatcher.ledger.finishes.borrow();
-        assert_eq!(
-            finishes[0].2,
-            "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
-        );
-        drop(finishes);
-        assert_eq!(dispatcher.ledger.task("t1").state, "failed");
-        assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
-        assert!(
-            log.text().contains("is no longer builder"),
-            "{}",
-            log.text()
-        );
+            let finishes = dispatcher.ledger.finishes.borrow();
+            assert_eq!(
+                finishes[0].2,
+                "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+            );
+            drop(finishes);
+            assert_eq!(dispatcher.ledger.task("t1").state, "failed");
+            assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
+            assert!(
+                log.text().contains("is no longer builder"),
+                "{}",
+                log.text()
+            );
+        }
     }
 
     /// Adoption re-arms the retry bound but does not remove it: a task adopted
@@ -1529,44 +1504,6 @@ mod tests {
             ),
             "log: {}",
             log.text()
-        );
-    }
-
-    /// The agent pick: the connected agent of the role with the lowest CID,
-    /// exactly the role, and nothing when the role has no agent.
-    #[test]
-    fn the_agent_pick_is_the_lowest_cid_of_that_role() {
-        let agents = vec![
-            agent(320, "librarian"),
-            agent(310, "builder"),
-            agent(305, "builder"),
-            agent(300, "builder "),
-        ];
-        assert_eq!(pick_agent(&agents, "builder").map(|a| a.cid), Some(305));
-        assert_eq!(pick_agent(&agents, "librarian").map(|a| a.cid), Some(320));
-        assert_eq!(pick_agent(&agents, "Builder"), None);
-        assert_eq!(pick_agent(&agents, "build"), None);
-        assert_eq!(pick_agent(&[], "builder"), None);
-    }
-
-    /// The reporter's summary is the log line a pass ends with.
-    #[test]
-    fn the_summary_is_the_passes_tally() {
-        let report = Reporter {
-            considered: 3,
-            claimed: 2,
-            done: 1,
-            failed: 1,
-            skipped: 4,
-            deferred: 1,
-        };
-        assert_eq!(
-            report.summary(),
-            "3 considered, 2 claimed, 1 done, 1 failed, 1 deferred, 4 skipped"
-        );
-        assert_eq!(
-            Reporter::default().summary(),
-            "0 considered, 0 claimed, 0 done, 0 failed, 0 deferred, 0 skipped"
         );
     }
 }

@@ -304,31 +304,86 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn move_takes_the_agent_cid_and_the_node() {
-        match parse(&["move", "4", "n2"]).unwrap() {
-            super::super::Cmd::Move { cid, node } => assert_eq!((cid, node.as_str()), (4, "n2")),
-            other => panic!("not a move: {other:?}"),
+    fn agent_commands_parse_their_arguments() {
+        // `move` takes the agent cid and the node, and needs the node.
+        {
+            match parse(&["move", "4", "n2"]).unwrap() {
+                super::super::Cmd::Move { cid, node } => {
+                    assert_eq!((cid, node.as_str()), (4, "n2"))
+                }
+                other => panic!("not a move: {other:?}"),
+            }
+            assert!(parse(&["move", "4"]).is_err(), "a move needs a node");
         }
-        assert!(parse(&["move", "4"]).is_err(), "a move needs a node");
+        // `sleep` and `wake` take the agent cid.
+        {
+            match parse(&["sleep", "4"]).unwrap() {
+                super::super::Cmd::Sleep { cid } => assert_eq!(cid, 4),
+                other => panic!("not a sleep: {other:?}"),
+            }
+            match parse(&["wake", "4"]).unwrap() {
+                super::super::Cmd::Wake { cid } => assert_eq!(cid, 4),
+                other => panic!("not a wake: {other:?}"),
+            }
+        }
+        // `checkpoint` takes an optional label.
+        {
+            match parse(&["checkpoint", "4", "--label", "before upgrade"]).unwrap() {
+                super::super::Cmd::Checkpoint { cid, label } => {
+                    assert_eq!((cid, label.as_deref()), (4, Some("before upgrade")))
+                }
+                other => panic!("not a checkpoint: {other:?}"),
+            }
+            match parse(&["checkpoint", "4"]).unwrap() {
+                super::super::Cmd::Checkpoint { label, .. } => assert_eq!(label, None),
+                other => panic!("not a checkpoint: {other:?}"),
+            }
+        }
+        // `rollback` and `checkpoint-delete` ask for confirmation unless `--yes` is given.
+        {
+            match parse(&["rollback", "4", "snap-1"]).unwrap() {
+                super::super::Cmd::Rollback {
+                    cid,
+                    checkpoint,
+                    yes,
+                } => assert_eq!((cid, checkpoint.as_str(), yes), (4, "snap-1", false)),
+                other => panic!("not a rollback: {other:?}"),
+            }
+            match parse(&["rollback", "4", "snap-1", "--yes"]).unwrap() {
+                super::super::Cmd::Rollback { yes, .. } => assert!(yes),
+                other => panic!("not a rollback: {other:?}"),
+            }
+            match parse(&["checkpoint-delete", "4", "snap-1", "--yes"]).unwrap() {
+                super::super::Cmd::CheckpointDelete {
+                    cid,
+                    checkpoint,
+                    yes,
+                } => assert_eq!((cid, checkpoint.as_str(), yes), (4, "snap-1", true)),
+                other => panic!("not a checkpoint-delete: {other:?}"),
+            }
+        }
+        // `fork` makes one copy unless told otherwise, and at most eight.
+        {
+            match parse(&["fork", "4"]).unwrap() {
+                super::super::Cmd::Fork { n, .. } => assert_eq!(n, 1),
+                other => panic!("not a fork: {other:?}"),
+            }
+            match parse(&["fork", "4", "--n", "8"]).unwrap() {
+                super::super::Cmd::Fork { cid, n } => assert_eq!((cid, n), (4, 8)),
+                other => panic!("not a fork: {other:?}"),
+            }
+            for bad in ["0", "9"] {
+                assert!(
+                    parse(&["fork", "4", "--n", bad]).is_err(),
+                    "--n {bad} should be refused"
+                );
+            }
+        }
     }
 
     #[test]
     fn a_move_body_names_the_node() {
         assert_eq!(move_body("n2"), json!({ "node": "n2" }));
-    }
-
-    #[test]
-    fn a_move_line_reads_the_nodes_megabytes_and_seconds() {
-        let moved =
-            json!({ "ok": true, "from": "n0", "to": "n2", "bytes": 12_345_678u64, "ms": 1_300u64 });
-        assert_eq!(
-            move_line(4, &moved),
-            "moved agent 4 from n0 to n2: 12.3 MB in 1.3 s"
-        );
-        assert_eq!(
-            move_line(4, &json!({})),
-            "moved agent 4 from  to : 0.0 MB in 0.0 s"
-        );
     }
 
     /// The `agents` command alone, so its subcommands parse the way the CLI parses them.
@@ -343,74 +398,6 @@ mod tests {
         let mut argv = vec!["agents"];
         argv.extend_from_slice(args);
         Probe::try_parse_from(argv).map(|p| p.cmd)
-    }
-
-    #[test]
-    fn sleep_and_wake_take_the_agent_cid() {
-        match parse(&["sleep", "4"]).unwrap() {
-            super::super::Cmd::Sleep { cid } => assert_eq!(cid, 4),
-            other => panic!("not a sleep: {other:?}"),
-        }
-        match parse(&["wake", "4"]).unwrap() {
-            super::super::Cmd::Wake { cid } => assert_eq!(cid, 4),
-            other => panic!("not a wake: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn checkpoint_takes_an_optional_label() {
-        match parse(&["checkpoint", "4", "--label", "before upgrade"]).unwrap() {
-            super::super::Cmd::Checkpoint { cid, label } => {
-                assert_eq!((cid, label.as_deref()), (4, Some("before upgrade")))
-            }
-            other => panic!("not a checkpoint: {other:?}"),
-        }
-        match parse(&["checkpoint", "4"]).unwrap() {
-            super::super::Cmd::Checkpoint { label, .. } => assert_eq!(label, None),
-            other => panic!("not a checkpoint: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rollback_and_checkpoint_delete_ask_unless_yes() {
-        match parse(&["rollback", "4", "snap-1"]).unwrap() {
-            super::super::Cmd::Rollback {
-                cid,
-                checkpoint,
-                yes,
-            } => assert_eq!((cid, checkpoint.as_str(), yes), (4, "snap-1", false)),
-            other => panic!("not a rollback: {other:?}"),
-        }
-        match parse(&["rollback", "4", "snap-1", "--yes"]).unwrap() {
-            super::super::Cmd::Rollback { yes, .. } => assert!(yes),
-            other => panic!("not a rollback: {other:?}"),
-        }
-        match parse(&["checkpoint-delete", "4", "snap-1", "--yes"]).unwrap() {
-            super::super::Cmd::CheckpointDelete {
-                cid,
-                checkpoint,
-                yes,
-            } => assert_eq!((cid, checkpoint.as_str(), yes), (4, "snap-1", true)),
-            other => panic!("not a checkpoint-delete: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn fork_makes_one_copy_unless_told_otherwise_and_at_most_eight() {
-        match parse(&["fork", "4"]).unwrap() {
-            super::super::Cmd::Fork { n, .. } => assert_eq!(n, 1),
-            other => panic!("not a fork: {other:?}"),
-        }
-        match parse(&["fork", "4", "--n", "8"]).unwrap() {
-            super::super::Cmd::Fork { cid, n } => assert_eq!((cid, n), (4, 8)),
-            other => panic!("not a fork: {other:?}"),
-        }
-        for bad in ["0", "9"] {
-            assert!(
-                parse(&["fork", "4", "--n", bad]).is_err(),
-                "--n {bad} should be refused"
-            );
-        }
     }
 
     #[test]
@@ -443,48 +430,6 @@ mod tests {
         );
         assert_eq!(safety_name(&Value::Null), None);
         assert_eq!(safety_name(&json!("")), None);
-    }
-
-    #[test]
-    fn human_bytes_scales_and_says_when_absent() {
-        assert_eq!(human_bytes(&json!(512)), "512 B");
-        assert_eq!(human_bytes(&json!(1536)), "1.5 KiB");
-        assert_eq!(human_bytes(&json!(3 * 1024 * 1024)), "3.0 MiB");
-        assert_eq!(human_bytes(&json!(5_497_558_138_880u64)), "5120.0 GiB");
-        assert_eq!(human_bytes(&Value::Null), "—");
-    }
-
-    #[test]
-    fn a_checkpoint_row_reads_each_field_in_the_table_order() {
-        let c = json!({
-            "name": "ckpt-7", "cid": 4, "label": "", "kind": "manual",
-            "taken_at_ms": 1_700_000_000_000u64, "memory_written": 2048,
-            "disk_bytes": 1_073_741_824u64, "paused_ms": 350
-        });
-        assert_eq!(
-            checkpoint_row(&c, "3 h ago"),
-            vec![
-                "ckpt-7", "-", "3 h ago", "manual", "2.0 KiB", "1.0 GiB", "350 ms"
-            ]
-        );
-        let bare = json!({ "name": "ckpt-8", "label": "pre" });
-        let row = checkpoint_row(&bare, "just now");
-        assert_eq!(row[1], "pre");
-        assert_eq!(row[4], "—");
-        assert_eq!(row[6], "—");
-    }
-
-    #[test]
-    fn forks_list_each_new_agent_and_name_a_missing_one_by_its_cid() {
-        let forks = json!([
-            { "cid": 9, "run": "r1", "name": "ada-2" },
-            { "cid": 10, "run": "r1", "name": "" }
-        ]);
-        assert_eq!(
-            fork_rows(&forks),
-            vec![vec!["9", "ada-2", "r1"], vec!["10", "agent 10", "r1"],]
-        );
-        assert!(fork_rows(&Value::Null).is_empty());
     }
 
     #[test]

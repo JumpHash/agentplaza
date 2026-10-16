@@ -727,40 +727,42 @@ mod tests {
     }
 
     #[test]
-    fn windows_facts_come_from_one_json_line() {
-        let json = r#"{"os_version":"10.0.22631","model":"Precision 5690","manufacturer":"Dell Inc.","memory":34359738368,"chassis":[10],"battery":1,"video":[{"Name":"NVIDIA RTX 2000 Ada","AdapterRAM":4293918720,"AdapterCompatibility":"NVIDIA","CurrentHorizontalResolution":2560,"CurrentVerticalResolution":1600},{"Name":"Intel(R) Graphics","AdapterRAM":1073741824,"AdapterCompatibility":"Intel Corporation","CurrentHorizontalResolution":0,"CurrentVerticalResolution":0}]}"#;
-        let mut machine = raw(Os::Windows);
-        assert!(apply_windows(&mut machine, json));
-        assert_eq!(machine.os_version.as_deref(), Some("10.0.22631"));
-        assert_eq!(machine.model, "Precision 5690");
-        assert_eq!(machine.vendor, "Dell Inc.");
-        assert_eq!(machine.ram_mb, Some(32768));
-        assert_eq!(machine.chassis, vec![10]);
-        assert!(machine.battery);
-        assert_eq!(machine.gpus.len(), 2);
-        assert_eq!(machine.gpus[0].vendor, "nvidia");
-        assert_eq!(machine.gpus[0].vram_mb, 4095);
-        assert_eq!(machine.gpus[1].vendor, "intel");
-        assert_eq!(
-            machine.displays,
-            vec![Display {
-                id: 1,
-                w: 2560,
-                h: 1600,
-                scale: 1.0,
-            }]
-        );
-        assert!(!apply_windows(&mut machine, "not json"));
-    }
-
-    #[test]
-    fn a_single_windows_video_card_is_an_object_not_a_list() {
-        let json = r#"{"video":{"Name":"Microsoft Basic Display","AdapterRAM":0,"AdapterCompatibility":"Microsoft"}}"#;
-        let mut machine = raw(Os::Windows);
-        apply_windows(&mut machine, json);
-        assert_eq!(machine.gpus.len(), 1);
-        assert_eq!(machine.gpus[0].vendor, "microsoft");
-        assert!(machine.displays.is_empty());
+    fn windows_facts_are_read_from_one_json_line() {
+        // windows_facts_come_from_one_json_line: a full report with two video cards.
+        {
+            let json = r#"{"os_version":"10.0.22631","model":"Precision 5690","manufacturer":"Dell Inc.","memory":34359738368,"chassis":[10],"battery":1,"video":[{"Name":"NVIDIA RTX 2000 Ada","AdapterRAM":4293918720,"AdapterCompatibility":"NVIDIA","CurrentHorizontalResolution":2560,"CurrentVerticalResolution":1600},{"Name":"Intel(R) Graphics","AdapterRAM":1073741824,"AdapterCompatibility":"Intel Corporation","CurrentHorizontalResolution":0,"CurrentVerticalResolution":0}]}"#;
+            let mut machine = raw(Os::Windows);
+            assert!(apply_windows(&mut machine, json));
+            assert_eq!(machine.os_version.as_deref(), Some("10.0.22631"));
+            assert_eq!(machine.model, "Precision 5690");
+            assert_eq!(machine.vendor, "Dell Inc.");
+            assert_eq!(machine.ram_mb, Some(32768));
+            assert_eq!(machine.chassis, vec![10]);
+            assert!(machine.battery);
+            assert_eq!(machine.gpus.len(), 2);
+            assert_eq!(machine.gpus[0].vendor, "nvidia");
+            assert_eq!(machine.gpus[0].vram_mb, 4095);
+            assert_eq!(machine.gpus[1].vendor, "intel");
+            assert_eq!(
+                machine.displays,
+                vec![Display {
+                    id: 1,
+                    w: 2560,
+                    h: 1600,
+                    scale: 1.0,
+                }]
+            );
+            assert!(!apply_windows(&mut machine, "not json"));
+        }
+        // a_single_windows_video_card_is_an_object_not_a_list: one card given as an object, not a list.
+        {
+            let json = r#"{"video":{"Name":"Microsoft Basic Display","AdapterRAM":0,"AdapterCompatibility":"Microsoft"}}"#;
+            let mut machine = raw(Os::Windows);
+            apply_windows(&mut machine, json);
+            assert_eq!(machine.gpus.len(), 1);
+            assert_eq!(machine.gpus[0].vendor, "microsoft");
+            assert!(machine.displays.is_empty());
+        }
     }
 
     #[test]

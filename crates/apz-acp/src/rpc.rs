@@ -575,35 +575,49 @@ mod tests {
     }
 
     #[test]
-    fn a_line_split_across_reads_is_one_message() {
-        let harness = harness();
-        feed(&harness, "{\"jsonrpc\":\"2.0\",\"method\":\"note\",");
-        feed(&harness, "\"params\":{\"n\":1}}\n");
-        let (method, params) = harness.notes.recv_timeout(WAIT).unwrap();
-        assert_eq!(method, "note");
-        assert_eq!(params, json!({"n": 1}));
-        no_message(&harness);
-    }
+    fn framing_splits_joins_and_skips_lines() {
+        // A line split across two reads is one message.
+        {
+            let harness = harness();
+            feed(&harness, "{\"jsonrpc\":\"2.0\",\"method\":\"note\",");
+            feed(&harness, "\"params\":{\"n\":1}}\n");
+            let (method, params) = harness.notes.recv_timeout(WAIT).unwrap();
+            assert_eq!(method, "note");
+            assert_eq!(params, json!({"n": 1}));
+            no_message(&harness);
+        }
 
-    #[test]
-    fn two_messages_in_one_read_are_delivered_in_order() {
-        let harness = harness();
-        feed(
-            &harness,
-            "{\"jsonrpc\":\"2.0\",\"method\":\"a\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"b\"}\r\n",
-        );
-        assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "a");
-        assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "b");
-    }
+        // Two messages in one read are delivered in order.
+        {
+            let harness = harness();
+            feed(
+                &harness,
+                "{\"jsonrpc\":\"2.0\",\"method\":\"a\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"b\"}\r\n",
+            );
+            assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "a");
+            assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "b");
+        }
 
-    #[test]
-    fn a_final_line_without_newline_is_still_read() {
-        let harness = harness();
-        feed(&harness, "{\"jsonrpc\":\"2.0\",\"method\":\"last\"}");
-        // Only the end of the stream completes a line that has no newline.
-        let Harness { input, notes, .. } = harness;
-        drop(input);
-        assert_eq!(notes.recv_timeout(WAIT).unwrap().0, "last");
+        // A final line without a newline is still read.
+        {
+            let harness = harness();
+            feed(&harness, "{\"jsonrpc\":\"2.0\",\"method\":\"last\"}");
+            // Only the end of the stream completes a line that has no newline.
+            let Harness { input, notes, .. } = harness;
+            drop(input);
+            assert_eq!(notes.recv_timeout(WAIT).unwrap().0, "last");
+        }
+
+        // A line that is only whitespace is skipped.
+        {
+            let harness = harness();
+            feed(
+                &harness,
+                "   \r\n\n{\"jsonrpc\":\"2.0\",\"method\":\"note\"}\n",
+            );
+            assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "note");
+            no_message(&harness);
+        }
     }
 
     #[test]
@@ -798,20 +812,37 @@ mod tests {
     }
 
     #[test]
-    fn the_end_of_the_stream_fails_pending_calls() {
-        let harness = harness();
-        let peer = harness.peer.clone();
-        let caller = thread::spawn(move || peer.call("waiting", Value::Null, WAIT));
-        let _ = next_message(&harness);
-        let Harness { input, peer, .. } = harness;
-        drop(input);
-        assert!(matches!(caller.join().unwrap(), Err(Error::Closed)));
-        // Once the stream has ended, new calls fail at once.
-        assert!(matches!(
-            peer.call("later", Value::Null, WAIT),
-            Err(Error::Closed)
-        ));
-        assert!(peer.is_closed());
+    fn closing_fails_pending_calls_and_refuses_new_ones() {
+        // The end of the stream fails pending calls, and new calls then fail at once.
+        {
+            let harness = harness();
+            let peer = harness.peer.clone();
+            let caller = thread::spawn(move || peer.call("waiting", Value::Null, WAIT));
+            let _ = next_message(&harness);
+            let Harness { input, peer, .. } = harness;
+            drop(input);
+            assert!(matches!(caller.join().unwrap(), Err(Error::Closed)));
+            // Once the stream has ended, new calls fail at once.
+            assert!(matches!(
+                peer.call("later", Value::Null, WAIT),
+                Err(Error::Closed)
+            ));
+            assert!(peer.is_closed());
+        }
+
+        // close() fails pending calls and refuses new notifications.
+        {
+            let harness = harness();
+            let peer = harness.peer.clone();
+            let caller = thread::spawn(move || peer.call("waiting", Value::Null, WAIT));
+            let _ = next_message(&harness);
+            harness.peer.close();
+            assert!(matches!(caller.join().unwrap(), Err(Error::Closed)));
+            assert!(matches!(
+                harness.peer.notify("note", Value::Null),
+                Err(Error::Closed)
+            ));
+        }
     }
 
     #[test]
@@ -831,20 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn close_fails_pending_calls_and_refuses_new_ones() {
-        let harness = harness();
-        let peer = harness.peer.clone();
-        let caller = thread::spawn(move || peer.call("waiting", Value::Null, WAIT));
-        let _ = next_message(&harness);
-        harness.peer.close();
-        assert!(matches!(caller.join().unwrap(), Err(Error::Closed)));
-        assert!(matches!(
-            harness.peer.notify("note", Value::Null),
-            Err(Error::Closed)
-        ));
-    }
-
-    #[test]
     fn notify_writes_a_message_without_an_id() {
         let harness = harness();
         harness.peer.notify("ping", json!({"n": 1})).unwrap();
@@ -853,16 +870,5 @@ mod tests {
             message,
             json!({"jsonrpc": "2.0", "method": "ping", "params": {"n": 1}})
         );
-    }
-
-    #[test]
-    fn a_line_that_is_only_whitespace_is_skipped() {
-        let harness = harness();
-        feed(
-            &harness,
-            "   \r\n\n{\"jsonrpc\":\"2.0\",\"method\":\"note\"}\n",
-        );
-        assert_eq!(harness.notes.recv_timeout(WAIT).unwrap().0, "note");
-        no_message(&harness);
     }
 }

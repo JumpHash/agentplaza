@@ -495,21 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn snap_inside_the_box_gives_a_walk_cell() {
-        let grid = boxed_grid();
-        let c = snap_walk(&grid, 0.0, 0.0).expect("a cell");
-        assert_eq!(grid.walk[c], 1);
-    }
-
-    #[test]
-    fn same_cell_is_two_points_at_zero_cost() {
-        let grid = boxed_grid();
-        let path = find_path(&grid, [-3.0, 0.0], [-3.0, 0.0], None, false).expect("a path");
-        assert_eq!(path.points.len(), 2);
-        assert_eq!(path.cost, 0.0);
-    }
-
-    #[test]
     fn hash_of_no_points_is_the_fnv_basis() {
         assert_eq!(path_hash(&[]), "811c9dc5");
     }

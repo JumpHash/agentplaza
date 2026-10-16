@@ -176,15 +176,42 @@ mod tests {
     }
 
     #[test]
-    fn only_one_todo_may_be_in_progress() {
-        let workspace = scratch("one-current");
-        let input = list(json!([
-            {"content": "a", "status": "in_progress"},
-            {"content": "b", "status": "in_progress"},
-        ]));
-        let err = todo_write(&workspace, &input).expect_err("two current todos are refused");
-        assert!(err.contains("only one todo may be in_progress"), "{err}");
-        assert!(!workspace.dir().join(".plaza").join("todos.json").exists());
+    fn invalid_todo_lists_are_refused() {
+        // Only one todo may be in progress; a list with two is refused and nothing is saved.
+        {
+            let workspace = scratch("one-current");
+            let input = list(json!([
+                {"content": "a", "status": "in_progress"},
+                {"content": "b", "status": "in_progress"},
+            ]));
+            let err = todo_write(&workspace, &input).expect_err("two current todos are refused");
+            assert!(err.contains("only one todo may be in_progress"), "{err}");
+            assert!(!workspace.dir().join(".plaza").join("todos.json").exists());
+        }
+        // Empty lists, over-long content, unknown statuses and too many todos are all refused.
+        {
+            let workspace = scratch("refuse");
+            assert!(todo_write(&workspace, &list(json!([]))).is_err());
+            let long = "x".repeat(MAX_CONTENT + 1);
+            assert!(
+                todo_write(
+                    &workspace,
+                    &list(json!([{"content": long, "status": "pending"}]))
+                )
+                .is_err()
+            );
+            assert!(
+                todo_write(
+                    &workspace,
+                    &list(json!([{"content": "ok", "status": "later"}]))
+                )
+                .is_err()
+            );
+            let many: Vec<Value> = (0..=MAX_TODOS)
+                .map(|i| json!({"content": format!("t{i}"), "status": "pending"}))
+                .collect();
+            assert!(todo_write(&workspace, &list(Value::Array(many))).is_err());
+        }
     }
 
     #[test]
@@ -207,30 +234,5 @@ mod tests {
             parsed,
             list(json!([{"content": "second", "status": "completed"}]))
         );
-    }
-
-    #[test]
-    fn bad_lists_are_refused() {
-        let workspace = scratch("refuse");
-        assert!(todo_write(&workspace, &list(json!([]))).is_err());
-        let long = "x".repeat(MAX_CONTENT + 1);
-        assert!(
-            todo_write(
-                &workspace,
-                &list(json!([{"content": long, "status": "pending"}]))
-            )
-            .is_err()
-        );
-        assert!(
-            todo_write(
-                &workspace,
-                &list(json!([{"content": "ok", "status": "later"}]))
-            )
-            .is_err()
-        );
-        let many: Vec<Value> = (0..=MAX_TODOS)
-            .map(|i| json!({"content": format!("t{i}"), "status": "pending"}))
-            .collect();
-        assert!(todo_write(&workspace, &list(Value::Array(many))).is_err());
     }
 }

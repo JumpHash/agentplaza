@@ -328,29 +328,31 @@ mod tests {
     }
 
     #[test]
-    fn a_terrace_has_its_interior_band_and_door() {
-        let g = build(&board(), &[terrace(Vec::new())]);
-        let centre = g.cell_at(0.1, 0.1).unwrap();
-        assert_eq!((g.region[centre], g.y[centre]), (1, 1.0));
-        assert_eq!(
-            g.blocked[g.cell_at(3.6, 0.1).unwrap()],
-            1,
-            "the cliff band is blocked"
-        );
-        assert!(g.door_cells[0].0.is_some());
-    }
-
-    #[test]
-    fn a_solid_blocks_its_cells() {
-        let g = build(
-            &board(),
-            &[terrace(vec![NavSolid {
-                x: 0.0,
-                z: 0.0,
-                sx: 1.0,
-                sz: 1.0,
-            }])],
-        );
-        assert_eq!(g.blocked[g.cell_at(0.1, 0.1).unwrap()], 1);
+    fn build_places_terraces_and_solids() {
+        // A terrace has its interior band and its door.
+        {
+            let g = build(&board(), &[terrace(Vec::new())]);
+            let centre = g.cell_at(0.1, 0.1).unwrap();
+            assert_eq!((g.region[centre], g.y[centre]), (1, 1.0));
+            assert_eq!(
+                g.blocked[g.cell_at(3.6, 0.1).unwrap()],
+                1,
+                "the cliff band is blocked"
+            );
+            assert!(g.door_cells[0].0.is_some());
+        }
+        // A solid blocks its cells.
+        {
+            let g = build(
+                &board(),
+                &[terrace(vec![NavSolid {
+                    x: 0.0,
+                    z: 0.0,
+                    sx: 1.0,
+                    sz: 1.0,
+                }])],
+            );
+            assert_eq!(g.blocked[g.cell_at(0.1, 0.1).unwrap()], 1);
+        }
     }
 }

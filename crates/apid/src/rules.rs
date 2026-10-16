@@ -402,34 +402,54 @@ mod tests {
     }
 
     #[test]
-    fn a_constitutional_switch_off_without_the_typed_id_is_a_409() {
-        let laws = laws("no-confirm");
-        let bus = Bus::default();
-        let asked = format!("{C} is a constitutional law; to switch it off, send confirm: \"{C}\"");
-        let none = answer(
-            &laws,
-            &bus,
-            C,
-            json!({"disabled": true, "reason": "testing"}),
-        );
-        assert_eq!(none.status, 409);
-        assert_eq!(json_of(&none)["error"], asked);
-        let mismatch = answer(
-            &laws,
-            &bus,
-            C,
-            json!({"disabled": true, "reason": "testing", "confirm": "C-004a"}),
-        );
-        assert_eq!(mismatch.status, 409);
-        assert!(
-            json_of(&mismatch)["error"]
-                .as_str()
-                .unwrap()
-                .ends_with(&asked)
-        );
-        // Refused changes apply nothing: the law still holds, and no change is on record.
-        assert!(laws.constitutional_off().is_empty());
-        assert!(laws.rules().history.is_empty());
+    fn switching_a_law_off_depends_on_its_tier() {
+        // A constitutional switch-off without the typed id is a 409 and applies nothing.
+        {
+            let laws = laws("no-confirm");
+            let bus = Bus::default();
+            let asked =
+                format!("{C} is a constitutional law; to switch it off, send confirm: \"{C}\"");
+            let none = answer(
+                &laws,
+                &bus,
+                C,
+                json!({"disabled": true, "reason": "testing"}),
+            );
+            assert_eq!(none.status, 409);
+            assert_eq!(json_of(&none)["error"], asked);
+            let mismatch = answer(
+                &laws,
+                &bus,
+                C,
+                json!({"disabled": true, "reason": "testing", "confirm": "C-004a"}),
+            );
+            assert_eq!(mismatch.status, 409);
+            assert!(
+                json_of(&mismatch)["error"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&asked)
+            );
+            // Refused changes apply nothing: the law still holds, and no change is on record.
+            assert!(laws.constitutional_off().is_empty());
+            assert!(laws.rules().history.is_empty());
+        }
+        // A statute of another tier switches off as before, with no event.
+        {
+            let laws = laws("statute");
+            let bus = Bus::default();
+            let events = bus.subscribe();
+            let off = answer(
+                &laws,
+                &bus,
+                "S-013d",
+                json!({"disabled": true, "reason": "researchers may commit"}),
+            );
+            assert_eq!(off.status, 200);
+            assert!(laws.rules().history.is_empty());
+            assert!(events.try_recv().is_err(), "no event for a statute");
+            assert!(laws.constitutional_off().is_empty());
+        }
     }
 
     #[test]
@@ -479,22 +499,5 @@ mod tests {
             ),
             (Some(true), Some(0))
         );
-    }
-
-    #[test]
-    fn a_statute_of_another_tier_switches_off_as_before_with_no_event() {
-        let laws = laws("statute");
-        let bus = Bus::default();
-        let events = bus.subscribe();
-        let off = answer(
-            &laws,
-            &bus,
-            "S-013d",
-            json!({"disabled": true, "reason": "researchers may commit"}),
-        );
-        assert_eq!(off.status, 200);
-        assert!(laws.rules().history.is_empty());
-        assert!(events.try_recv().is_err(), "no event for a statute");
-        assert!(laws.constitutional_off().is_empty());
     }
 }

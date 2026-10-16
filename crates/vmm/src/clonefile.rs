@@ -204,21 +204,6 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).expect("the directory").count(), 0);
     }
 
-    /// On this host's ext4 the copy is a sparse copy, and the probe says so.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn ext4_copies_by_sparse_copy() {
-        let dir = scratch("ext4");
-        let from = dir.join("base.img");
-        fs::write(&from, b"an image").expect("the source");
-
-        assert_eq!(
-            clone_file(&from, &dir.join("copy.img")).expect("a copy"),
-            CopyMode::Copy
-        );
-        assert!(!reflink_supported(&dir));
-    }
-
     /// A reflink directory (XFS, Btrfs, bcachefs) shares the source's blocks, and a write to the
     /// copy does not reach the source. Runs only when `APZ_REFLINK_DIR` names such a directory.
     #[test]

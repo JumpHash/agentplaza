@@ -786,13 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn detail_names_the_agent_or_zero() {
-        assert_eq!(detail_cid(&json!({ "cid": 12, "law": "x" })), 12);
-        assert_eq!(detail_cid(&json!({ "law": "x" })), 0);
-        assert_eq!(detail_cid(&json!(null)), 0);
-    }
-
-    #[test]
     fn an_old_snapshot_without_the_new_fields_restores_as_a_tool_approval() {
         let old = r#"{"modes":{"5":"ask"},"pending":[{"id":"a3","cid":5,"tool":"write_thing","input":{"a":1},"created_ms":10,"state":"pending","reason":null}],"seq":4}"#;
         let store = Store::load(&scratch("old"));

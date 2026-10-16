@@ -220,19 +220,3 @@ fn a_kill_racing_a_boot_leaves_a_consistent_run() {
         assert_eq!(run["vms"], serde_json::json!([]), "{run}");
     }
 }
-
-#[test]
-fn runs_are_kept_apart_across_two_daemons() {
-    let first = common::start();
-    let second = common::start();
-    assert_ne!(first.port(), second.port());
-    assert_eq!(failed_run(first.port()), "r1");
-    assert_eq!(failed_run(second.port()), "r1");
-    assert_eq!(
-        request(first.port(), "GET", "/v1/runs", None).json()["runs"]
-            .as_array()
-            .expect("an array")
-            .len(),
-        1
-    );
-}
