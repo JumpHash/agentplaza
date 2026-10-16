@@ -72,6 +72,22 @@ export function thin(values: readonly (number | null | undefined)[], starts: rea
   });
 }
 
+/** The outlines of stacked layers: each layer's top edge forward and the layer below's top edge back, so neighbours
+ *  share one edge (no seam, no wedge). A gap counts as zero. */
+export function stackedPaths(
+  layers: readonly (readonly (number | null)[])[],
+  x: (j: number) => number,
+  y: (v: number) => number,
+): string[] {
+  let base: number[] = (layers[0] ?? []).map(() => 0);
+  return layers.map((vals) => {
+    const top = vals.map((v, j) => (base[j] ?? 0) + (v ?? 0));
+    const d = bandPath(top, base, x, y);
+    base = top;
+    return d;
+  });
+}
+
 /** The outline of a percentile band: the high edge left to right, then the low edge right to left (each point with
  * its own value), closed. A gap counts as 0, as on the desktop. */
 export function bandPath(
@@ -302,19 +318,8 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
     }
 
     if (cur.stacked) {
-      let base: number[] = starts.map(() => 0);
-      for (const { s, vals } of series) {
-        const top = vals.map((v, j) => (base[j] ?? 0) + (v ?? 0));
-        const up = top.map((v, j) => `${j ? 'L' : 'M'}${xAt(j).toFixed(1)},${Y(v).toFixed(1)}`).join('');
-        const down = base
-          .map((v, q) => {
-            const j = base.length - 1 - q;
-            return `L${xAt(j).toFixed(1)},${Y(v).toFixed(1)}`;
-          })
-          .join('');
-        root.append(svgNode('path', { d: up + down + 'Z', opacity: 0.78 }, { fill: toneVar(s.tone) }));
-        base = top;
-      }
+      const outlines = stackedPaths(series.map(({ vals }) => vals), xAt, Y);
+      series.forEach(({ s }, k) => root.append(svgNode('path', { d: outlines[k] ?? '', opacity: 0.78 }, { fill: toneVar(s.tone) })));
     } else {
       for (const { s, vals } of series) {
         const d = linePath(vals, xs, Y);
