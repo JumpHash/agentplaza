@@ -1075,22 +1075,14 @@ fn thaw(state: VmState, handle: &VmHandle) -> VmState {
     }
 }
 
-/// Copies the memory a VM was restored from into `dir` (created), where a snapshot of it is written.
-/// A VM restored from a snapshot always writes a diff, over that memory; `base` is the directory
-/// holding it.
+/// Creates `dir` for a snapshot of a VM. A VM restored from a snapshot writes a diff over the memory
+/// it was restored from; the VMM copies that memory into `dir` itself, through the descriptor it keeps
+/// (which also works inside a jail), so nothing is copied here: a second copy cost a full read and write
+/// of the memory file on a filesystem without reflinks.
 fn stage_base_memory(base: Option<&Path>, dir: &Path) -> Result<(), VmOpError> {
-    if let Some(base) = base {
+    if base.is_some() {
         snapshots::private_dir(dir)
             .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
-        clone_file(
-            &base.join(snapshots::MEMORY_FILE),
-            &dir.join(snapshots::MEMORY_FILE),
-        )
-        .map_err(|err| {
-            VmOpError::Failed(format!(
-                "cannot copy the memory the VM was restored from: {err}"
-            ))
-        })?;
     }
     Ok(())
 }
