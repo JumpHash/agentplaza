@@ -118,7 +118,8 @@ Sleeping is a snapshot of the VM followed by a stop (`POST /v1/runs/{run}/vms/{v
 Dozing comes first, after `doze_idle_s`: the VM is paused and its memory paged out (`POST .../doze`, about 0.4 s). The
 agent shows as `dozing` and keeps its session, held quiet on the gateway (`POST /v1/agents/{cid}/quiet`), so it resumes
 in about a millisecond (`POST .../resume`) with no reconnect and no hello. A dozing agent that reaches
-`idle_sleep_min` sleeps. Roles in `sleep_never_roles` never doze.
+`idle_sleep_min` sleeps. Roles in `sleep_never_roles` never doze. The tiers, what makes a wake fast and what an idle
+agent costs the host are in [vm-density.md](vm-density.md).
 
 **Wake comes before work.** Every path that delivers work calls `wake` or `ensure_awake` first: the scheduler's
 dispatch, a chat message, a `tell`, an IDE request and the owner's wake. The node restores the VM from its sleep

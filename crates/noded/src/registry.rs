@@ -2683,31 +2683,35 @@ impl Registry {
         })?;
         let name = SnapshotStore::checkpoint_name(label, now_ms());
         let dir = store.dir(cid, &name);
-        // Everything that can fail is done before the capture: a capture left unwritten would refuse
-        // the VM's next one.
-        let copied = snapshots::private_dir(&dir)
+        // The base memory is the file the VM was restored from, which never changes: it is staged
+        // before the pause.
+        let staged = snapshots::private_dir(&dir)
             .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))
-            .and_then(|()| stage_base_memory(held.restored_from.as_deref(), &dir))
-            .and_then(|()| match &held.spec.workspace {
-                Some(workspace) => clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE))
-                    .map(|_| ())
-                    .map_err(|err| {
-                        VmOpError::Failed(format!(
-                            "cannot copy the workspace into checkpoint {name}: {err}"
-                        ))
-                    }),
-                None => Ok(()),
-            });
-        if let Err(err) = copied {
+            .and_then(|()| stage_base_memory(held.restored_from.as_deref(), &dir));
+        if let Err(err) = staged {
             let _ = fs::remove_dir_all(&dir);
             return Err(err);
         }
         match held.handle.capture(&dir, kind) {
-            Ok(info) => Ok(PendingCheckpoint {
-                name,
-                paused_ms: info.paused_ms,
-                captured: true,
-            }),
+            Ok(info) => {
+                // The workspace is copied inside the pause the capture left, so the disk and the
+                // memory are of the same instant (a disk copied while the guest ran could be behind its
+                // page cache). A failed copy writes the capture out and discards it with the dir.
+                if let Some(workspace) = &held.spec.workspace {
+                    if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
+                        let _ = held.handle.write_captured();
+                        let _ = fs::remove_dir_all(&dir);
+                        return Err(VmOpError::Failed(format!(
+                            "cannot copy the workspace into checkpoint {name}: {err}"
+                        )));
+                    }
+                }
+                Ok(PendingCheckpoint {
+                    name,
+                    paused_ms: info.paused_ms,
+                    captured: true,
+                })
+            }
             Err(err) => {
                 // A capture that failed after keeping the memory (a reply lost in transit) would
                 // refuse the VM's next capture: its memory is written out, and discarded with the dir.

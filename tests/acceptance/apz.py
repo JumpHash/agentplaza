@@ -805,7 +805,7 @@ class Lab:
         self.admin_bound = int(match.group(1))
 
     def _await_line(self, log: Path, needle: str) -> str:
-        deadline = now() + START_DEADLINE_S
+        deadline = now() + getattr(self, "start_deadline_s", START_DEADLINE_S)
         while now() < deadline:
             text = log.read_text(errors="replace") if log.exists() else ""
             for line in text.splitlines():

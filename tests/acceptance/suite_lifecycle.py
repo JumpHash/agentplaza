@@ -25,6 +25,7 @@ import re
 import time
 from pathlib import Path
 
+import apz
 from apz import Lab, Suite, percentile, summary
 
 #: The keepalive agents' guest CIDs start here (``noded --agents-cid-base``).
@@ -64,7 +65,7 @@ def _agent_lab(ctx, roles: list[str], tag: str, extra_cids: list[int] | None = N
     lab's own work dir, and whose vsockd also listens on ``extra_cids``. Not started: use it as a context manager."""
     cids = [AGENT_CID_BASE + index for index in range(len(roles))] + list(extra_cids or [])
     snapshots = ctx.new_dir(f"lifecycle-snapshots-{tag}")
-    return Lab(
+    lab = Lab(
         ctx,
         cids,
         f"lifecycle-{tag}",
@@ -72,6 +73,9 @@ def _agent_lab(ctx, roles: list[str], tag: str, extra_cids: list[int] | None = N
         agents_cid_base=AGENT_CID_BASE,
         noded_args=["--snapshot-dir", str(snapshots)],
     )
+    # noded boots the whole role fleet before it serves: allow for each agent's boot.
+    lab.start_deadline_s = apz.START_DEADLINE_S + 2.0 * len(roles)
+    return lab
 
 
 def _fleet_run(lab: Lab) -> str | None:
