@@ -73,6 +73,14 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
         lines.push(meta(p.sub.as_str(), pal.ink_3).into());
     }
     lines.push(body(p, state));
+    // The web's hint under a panel's time chart.
+    if let Body::Chart(chart) = &p.body {
+        if matches!(chart.x, apz_metrics_view::XAxis::Time { .. })
+            && !state.as_table.contains(&p.id)
+        {
+            lines.push(meta("drag to zoom · click a point for what changed", pal.ink_3).into());
+        }
+    }
 
     container(column(lines).spacing(8).width(Length::Fill))
         .padding([12.0, 14.0])
@@ -133,7 +141,7 @@ fn local_offset() -> i32 {
 fn freshness<'a>(state: &State) -> Option<Element<'a, Msg>> {
     let at = state.fresh_at?;
     let pal = palette();
-    let (label, color) = if state.live {
+    let (label, color) = if super::live_applies(state) {
         (format!("live · {} s ago", at.elapsed().as_secs()), pal.ok)
     } else {
         let wall =

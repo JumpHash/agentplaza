@@ -118,7 +118,7 @@ pub struct Pointer {
     pub drag: Option<(String, f32, f32)>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct State {
     pub q: Query,
     pub view: Option<View>,
@@ -249,6 +249,76 @@ pub fn go(msg: &Msg) -> Option<Id> {
 }
 
 /// Loads the view (and the tree, the saved pins and the catalog when not yet loaded).
+impl Default for State {
+    fn default() -> Self {
+        let prefs = Prefs::load();
+        State {
+            q: Query::default(),
+            view: None,
+            error: None,
+            loading: false,
+            scopes: Vec::new(),
+            saved: Saved::default(),
+            catalog: Vec::new(),
+            tree_filter: String::new(),
+            tree_open: false,
+            overlay: None,
+            pointer: Pointer::default(),
+            as_table: BTreeSet::new(),
+            full: None,
+            span: None,
+            event_kind: None,
+            live: prefs.live,
+            annotations: prefs.annotations,
+            compact: prefs.compact,
+            fresh_at: None,
+            leased_at: None,
+            toast: None,
+            scopes_at: None,
+            loading_more: BTreeSet::new(),
+        }
+    }
+}
+
+/// The console's own preferences (live, annotations, compact), kept in `desktop.json` under `metrics` as the web
+/// keeps them in localStorage (`apz.metrics.prefs`). Live and annotations start on, compact off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Prefs {
+    live: bool,
+    annotations: bool,
+    compact: bool,
+}
+
+impl Prefs {
+    fn load() -> Prefs {
+        Prefs::from_json(crate::console::boot::saved_setting("metrics").as_ref())
+    }
+
+    /// The preferences in a saved value; a missing or wrong field takes its default.
+    fn from_json(v: Option<&serde_json::Value>) -> Prefs {
+        let flag = |key: &str, default: bool| {
+            v.and_then(|v| v.get(key))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default)
+        };
+        Prefs {
+            live: flag("live", true),
+            annotations: flag("annotations", true),
+            compact: flag("compact", false),
+        }
+    }
+
+    fn save(state: &State) {
+        let value = serde_json::json!({
+            "live": state.live,
+            "annotations": state.annotations,
+            "compact": state.compact,
+        });
+        // A failed save leaves the preferences for this run only.
+        let _ = crate::console::boot::save_setting("metrics", value);
+    }
+}
+
 /// A tab another screen asked the next opening of Metrics to show (the Treasury's "Real model cost" asks for Tokens
 /// & spend), as the web's `#/metrics?tab=tokens` link does.
 static ASKED_TAB: Mutex<Option<String>> = Mutex::new(None);
@@ -458,14 +528,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::ToggleLive => {
             state.live = !state.live;
+            Prefs::save(state);
             sync_live(state, ctx)
         }
         Msg::ToggleAnnotations => {
             state.annotations = !state.annotations;
+            Prefs::save(state);
             Task::none()
         }
         Msg::ToggleCompact => {
             state.compact = !state.compact;
+            Prefs::save(state);
             Task::none()
         }
         Msg::TogglePinScope => {
@@ -913,7 +986,7 @@ fn sync_live(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// Live applies to the 15m and 1h ranges, ending now, when live is on.
-fn live_applies(state: &State) -> bool {
+pub(super) fn live_applies(state: &State) -> bool {
     state.live && state.q.shift == 0 && matches!(state.q.range.as_str(), "15m" | "1h")
 }
 
@@ -1361,6 +1434,29 @@ pub const TOAST: Duration = Duration::from_millis(2400);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferences_start_live_with_annotations_and_keep_what_was_saved() {
+        let fresh = Prefs::from_json(None);
+        assert_eq!(
+            fresh,
+            Prefs {
+                live: true,
+                annotations: true,
+                compact: false
+            }
+        );
+        let saved = serde_json::json!({"live": false, "compact": true, "annotations": "x"});
+        let kept = Prefs::from_json(Some(&saved));
+        assert_eq!(
+            kept,
+            Prefs {
+                live: false,
+                annotations: true,
+                compact: true
+            }
+        );
+    }
 
     #[test]
     fn the_view_path_carries_the_query_the_hub_width_and_the_offset() {
