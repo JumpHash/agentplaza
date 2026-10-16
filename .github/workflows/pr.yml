@@ -107,6 +107,8 @@ jobs:
     uses: ./.github/workflows/linux.yml
     with:
       arches: '["x86_64","aarch64"]'
+      # arm64 natively, for the packages whose code differs there; nightly runs its full suite.
+      arm64: native
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
       only: ${{ needs.changes.outputs.only }}
 
