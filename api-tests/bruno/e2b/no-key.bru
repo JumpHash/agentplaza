@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the sandbox list without an E2B key
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+  res.body.error_code: eq "unauthorized"
+}
+
+tests {
+  test("the owner token alone is not an E2B key", function () {
+    expect(res.getBody().code).to.equal(401);
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Set an agent's permission mode to read_only
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/7/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "read_only"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "read_only"
+}

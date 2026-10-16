@@ -1,0 +1,28 @@
+meta {
+  name: Read the hub's settings
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.max_turns: eq 24
+  res.body.orchestrator_model: isString
+}
+
+tests {
+  test("settings carry the dev_models flag and the policy", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("dev_models");
+    expect(body.dev_models).to.be.a("boolean");
+    expect(body.model_policy).to.have.property("orchestrator");
+    expect(body.model_policy).to.have.property("worker");
+  });
+}

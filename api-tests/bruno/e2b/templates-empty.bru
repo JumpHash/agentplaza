@@ -1,0 +1,25 @@
+meta {
+  name: List the templates and their builds (empty)
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a fresh hub has no templates", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("templates");
+    expect(body.templates).to.be.an("array");
+    expect(body.templates).to.have.lengthOf(0);
+  });
+}

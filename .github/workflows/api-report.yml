@@ -1,0 +1,117 @@
+# Publishes the hub API report (api-tests/) to GitHub Pages after each gate run (pr.yml), and links
+# it from the pull request:
+#
+#   a pull request      https://jumphash.github.io/agentplaza/api/pr/<n>/   (removed when it closes)
+#   a merge-queue run   https://jumphash.github.io/agentplaza/api/main/     (the baseline; its timings
+#                       also go into api/main/history/ for the trend)
+#
+# Trust: this runs from main with write access, after a run that may be a fork's. It never runs or
+# serves anything from that run: the artifact holds only result data (JSON and JUnit), which main's
+# own report builder (api-tests/report/build.mjs) reads, escapes and scrubs into the page. The pull
+# request is found from the run's commit, not from anything in the artifact.
+name: api report
+
+on:
+  workflow_run:
+    workflows: [pr]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: api-report-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      EVENT: ${{ github.event.workflow_run.event }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      # Main's code: the report builder, the console's tokens and faces.
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.event.repository.default_branch }}", path: trusted }
+      - name: The run's results (data only)
+        id: data
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with: { name: api-results, run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}", path: data }
+      - name: Where it goes
+        id: where
+        if: steps.data.outcome == 'success'
+        run: |
+          case "$EVENT" in
+            pull_request)
+              pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "$HEAD_SHA" --json number,headRefOid \
+                --jq "[.[] | select(.headRefOid == \"$HEAD_SHA\")][0].number // empty")
+              [ -n "$pr" ] || { echo "no open pull request has head $HEAD_SHA: nothing to publish"; exit 0; }
+              echo "dir=api/pr/$pr" >> "$GITHUB_OUTPUT"; echo "pr=$pr" >> "$GITHUB_OUTPUT" ;;
+            merge_group)
+              [ "$CONCLUSION" = success ] || { echo "the queue run failed: main keeps its baseline"; exit 0; }
+              echo "dir=api/main" >> "$GITHUB_OUTPUT" ;;
+            *) echo "a $EVENT run: nothing to publish" ;;
+          esac
+      - uses: actions/checkout@v5
+        if: steps.where.outputs.dir != ''
+        with: { ref: gh-pages, path: pages }
+        continue-on-error: true
+        id: pages
+      - name: Build and publish the report
+        if: steps.where.outputs.dir != ''
+        env:
+          DIR: ${{ steps.where.outputs.dir }}
+          PR: ${{ steps.where.outputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.pages.outcome }}" != success ]; then
+            # The first report: a fresh gh-pages branch with nothing else on it.
+            rm -rf pages && mkdir pages && git -C pages init -q -b gh-pages
+            git -C pages remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            touch pages/.nojekyll
+          fi
+          baseline=""
+          [ -f pages/api/main/bench.json ] && [ "$DIR" != api/main ] && baseline="$PWD/pages/api/main/bench.json"
+          rm -rf "pages/$DIR" && mkdir -p "pages/$DIR"
+          (cd trusted && REPORT_PR="$PR" REPORT_SHA="$HEAD_SHA" REPORT_RUN_URL="$RUN_URL" REPORT_BASELINE="$baseline" \
+            REPORT_SPEC="$GITHUB_WORKSPACE/data/openapi.json" node api-tests/report/build.mjs "$GITHUB_WORKSPACE/data" "$GITHUB_WORKSPACE/pages/$DIR")
+          cp data/bench.json "pages/$DIR/bench.json"
+          if [ "$DIR" = api/main ]; then
+            # The trend: the last 60 baselines' timings, oldest first.
+            mkdir -p pages/api/main/history
+            cp data/bench.json "pages/api/main/history/$(date -u +%Y%m%dT%H%M%S)-${HEAD_SHA:0:10}.json"
+            ls pages/api/main/history | sort | head -n -60 | sed 's|^|pages/api/main/history/|' | xargs -r rm -f
+          fi
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "api report: $DIR at ${HEAD_SHA:0:10}" || { echo "no change"; exit 0; }
+          git push -q origin HEAD:gh-pages
+      - name: Link it from the pull request
+        if: steps.where.outputs.pr != ''
+        env:
+          PR: ${{ steps.where.outputs.pr }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%/*}"; repo="${GITHUB_REPOSITORY#*/}"
+          url="https://${owner,,}.github.io/${repo}/api/pr/${PR}/"
+          summary=$(node -e 'const s=require(process.argv[1]); console.log(`${s.passed}/${s.requests} API requests pass · ${s.tested}/${s.operations} operations tested · ${Object.values(s.findings).reduce((a,b)=>a+b,0)} fuzzing findings`)' \
+            "$GITHUB_WORKSPACE/pages/api/pr/$PR/summary.json")
+          body=$(printf '<!-- api-report -->\n**Hub API report** for %s: %s\n\n%s' "${HEAD_SHA:0:10}" "$url" "$summary")
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- api-report -->")))][0].id // empty')
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi

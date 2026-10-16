@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for files of an unknown tool version
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/files
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

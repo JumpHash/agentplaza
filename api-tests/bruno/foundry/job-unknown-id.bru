@@ -1,0 +1,23 @@
+meta {
+  name: Get a job that does not exist
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/jobs/no-such-job
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error says there is no such job", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

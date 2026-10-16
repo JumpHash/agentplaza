@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a permission mode that is not one of the three
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/7/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "bogus"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

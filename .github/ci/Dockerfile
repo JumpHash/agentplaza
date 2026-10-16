@@ -5,7 +5,7 @@
 # needs already installed: the build tools, the desktop app's headers, the guest kernel's
 # toolchain, the arm64 cross toolchain (gcc, libc, Rust target, an arm64 busybox for its guest,
 # qemu to run its tests), the packagers (fpm for deb/rpm/pacman), Rust (with clippy and rustfmt),
-# cargo-nextest, cargo-deny, the gh CLI and Node.js — so a job spends its time compiling, not installing.
+# cargo-nextest, cargo-deny, the gh CLI, Node.js, and the API tests' Bruno and Schemathesis — so a job spends its time compiling, not installing.
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -90,3 +90,12 @@ RUN arch="$(uname -m)"; [ "$arch" = x86_64 ] && narch=x64 || narch=arm64; \
     curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$narch.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1 \
  && node --version
+
+# The API tests (api-tests/run.sh): Bruno's CLI, and Schemathesis with its own Python (it needs 3.11
+# or newer; Ubuntu 22.04 has 3.10), installed through uv.
+ENV BRUNO_VERSION=4.2.1 UV_VERSION=0.13.1 SCHEMATHESIS_VERSION=4.31.1 \
+    UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/uv/python
+RUN npm install -g "@usebruno/cli@$BRUNO_VERSION" && bru --version \
+ && curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
+ && uv tool install --python 3.12 "schemathesis==$SCHEMATHESIS_VERSION" && st --version \
+ && chmod -R a+rX /opt/uv

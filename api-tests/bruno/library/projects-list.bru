@@ -1,0 +1,17 @@
+meta {
+  name: List the projects
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/projects
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

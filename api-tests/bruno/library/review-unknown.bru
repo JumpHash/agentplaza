@@ -1,0 +1,24 @@
+meta {
+  name: Answer 409 when reviewing an unknown tool version
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/review
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": true,
+    "note": "owner review"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "name": "AgentPlaza hub API",
+  "type": "collection",
+  "ignore": ["node_modules", ".git"]
+}

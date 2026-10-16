@@ -1,0 +1,22 @@
+meta {
+  name: Decide an approval that does not exist
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/approvals/no-such-approval
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

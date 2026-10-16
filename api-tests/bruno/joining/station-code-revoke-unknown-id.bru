@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when revoking an unknown workstation join code
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/codes/c999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

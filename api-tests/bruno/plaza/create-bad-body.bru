@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a task with no goal
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "budget": 200
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

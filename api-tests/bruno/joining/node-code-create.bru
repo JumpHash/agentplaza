@@ -1,0 +1,38 @@
+meta {
+  name: Issue a join code for a new node
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "bruno-node",
+    "ttl_minutes": 10
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.id: isString
+  res.body.token: isString
+  res.body.expires_ms: isNumber
+}
+
+script:post-response {
+  bru.setVar("nodeCodeId", res.getBody().id);
+}
+
+tests {
+  test("returns a code id and a token, never the token's value in asserts", function () {
+    const body = res.getBody();
+    expect(body.id).to.be.a("string").that.is.not.empty;
+    expect(body.token).to.be.a("string").that.is.not.empty;
+  });
+}

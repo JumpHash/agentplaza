@@ -1,0 +1,23 @@
+meta {
+  name: List the IDE's workspaces (none on a fresh hub)
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("no agents, workstations or repos, so no workspaces", function () {
+    expect(res.getBody()).to.be.an("array").that.is.empty;
+  });
+}

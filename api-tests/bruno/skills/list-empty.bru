@@ -1,0 +1,23 @@
+meta {
+  name: List skills on an empty hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.skills: isArray
+}
+
+tests {
+  test("no skills yet", function () {
+    expect(res.getBody().skills).to.have.length(0);
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown prompt id
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/no-such-prompt
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

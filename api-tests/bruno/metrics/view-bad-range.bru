@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a view with an unknown range
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=overview&range=2w
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the range parameter", function () {
+    expect(res.getBody().error).to.include("range");
+  });
+}

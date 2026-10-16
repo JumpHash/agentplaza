@@ -1,0 +1,19 @@
+meta {
+  name: List the model prices
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/prices
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.models: isArray
+  res.body.sources: isArray
+  res.body.fetched_at_ms: isNumber
+}

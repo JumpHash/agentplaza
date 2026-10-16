@@ -1,0 +1,23 @@
+meta {
+  name: Read the checkpoints of a workspace that does not exist
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:no-such-repo@main/checkpoints
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the missing workspace", function () {
+    expect(res.getBody().error).to.equal("no workspace repo:no-such-repo@main");
+  });
+}

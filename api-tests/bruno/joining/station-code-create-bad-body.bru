@@ -1,0 +1,21 @@
+meta {
+  name: Answer 400 when the workstation join code body is not JSON
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/codes
+  body: json
+  auth: none
+}
+
+body:json {
+  {"label": }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

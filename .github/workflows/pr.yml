@@ -9,6 +9,7 @@
 #   linux       the Linux tests (linux.yml): x86_64 always, arm64 when platform code changes
 #   windows     the Windows tests (windows.yml), when platform code changes
 #   macos       the macOS tests (macos.yml), when platform code changes
+#   api         the hub API's tests against a scratch hub (api-tests/): Bruno, timings, fuzzing
 #
 # Safety: this is a public repository whose jobs run on the org's self-hosted runners. Workflows of
 # outside contributors run only after an owner approves them (repository setting), no job here gets
@@ -112,9 +113,47 @@ jobs:
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
 
+  # The hub API: the Bruno collection (a failure fails the gate), timings, and fuzzing from the spec
+  # (reported, not failing yet). The results go to the api-results artifact; api-report.yml builds
+  # the report from them and publishes it to Pages.
+  api:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Untrusted build cache
+        if: needs.changes.outputs.trusted != 'true'
+        run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Build the hub
+        run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid'
+      - name: Run the API tests
+        id: run
+        continue-on-error: true
+        run: .github/ci/in-image.sh 'api-tests/run.sh /ci-target/release/apid api-out'
+      - name: Keep the results (data only)
+        if: always()
+        run: |
+          mkdir -p api-results/schemathesis
+          cp api-out/bruno.json api-out/bench.json api-results/ 2>/dev/null || true
+          cp api-out/schemathesis/*.xml api-results/schemathesis/ 2>/dev/null || true
+          cp docs/api/openapi.json api-results/openapi.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: api-results, path: api-results, retention-days: 7, if-no-files-found: warn }
+      - name: The API tests passed
+        if: steps.run.outcome != 'success'
+        run: |
+          echo "::error::the API tests failed; the report linked on the pull request has the details"
+          tail -n 60 api-out/bruno.log || true
+          exit 1
+
   # The one required check. A job skipped because the change does not touch it counts as passed.
   ci-ok:
-    needs: [changes, lint, migrations, console, linux, windows, macos]
+    needs: [changes, lint, migrations, console, linux, windows, macos, api]
     if: always()
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 2

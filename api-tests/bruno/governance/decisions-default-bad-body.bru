@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a default decision model without a provider and model
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

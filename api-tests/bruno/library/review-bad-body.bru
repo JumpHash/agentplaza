@@ -1,0 +1,23 @@
+meta {
+  name: Answer 400 when a review has no approve field
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/review
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "note": "missing approve"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

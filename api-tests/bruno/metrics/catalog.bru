@@ -1,0 +1,22 @@
+meta {
+  name: Read the metric catalog
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/catalog
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the catalog is a list of metrics", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

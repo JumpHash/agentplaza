@@ -1,0 +1,24 @@
+meta {
+  name: List the providers
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the test provider is not listed before it is created", function () {
+    const ids = res.getBody().map((p) => p.id);
+    expect(ids).to.not.include("scratch-provider");
+  });
+}

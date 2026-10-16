@@ -1,0 +1,18 @@
+meta {
+  name: Compose the overview view on an empty hub
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=overview&range=24h
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tab: eq "overview"
+  res.body.panels: isArray
+}

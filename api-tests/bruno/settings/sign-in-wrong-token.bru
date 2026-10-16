@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a sign-in with a wrong owner token
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/auth/session
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "token": "not-the-owner-token"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal is the generic owner-token message", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("error");
+    expect(body.error).to.equal("that is not the owner token");
+    expect(res.getHeader("set-cookie")).to.be.undefined;
+  });
+}

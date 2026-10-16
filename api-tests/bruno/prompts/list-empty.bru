@@ -1,0 +1,26 @@
+meta {
+  name: List the built-in prompts
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.prompts: isArray
+}
+
+tests {
+  test("a new hub has only the built-in role prompts", function () {
+    const prompts = res.getBody().prompts;
+    expect(prompts.length).to.be.above(0);
+    for (const p of prompts) expect(p.tags).to.include("built-in");
+    expect(prompts.map((p) => p.id)).to.not.include("planner");
+  });
+}

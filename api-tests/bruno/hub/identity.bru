@@ -1,0 +1,22 @@
+meta {
+  name: Read the hub's identity
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/hub/identity
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 500
+}
+
+tests {
+  test("names the hub", function () {
+    expect(res.getBody()).to.be.an("object");
+  });
+}

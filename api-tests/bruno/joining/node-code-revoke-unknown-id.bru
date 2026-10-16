@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when revoking an unknown node join code
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/nodes/codes/c999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Read the created prompt back
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{promptId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.prompt.id: eq "planner"
+  res.body.prompt.title: eq "Planner"
+  res.body.versions: isArray
+}
+
+tests {
+  test("shows its one version and no live version", function () {
+    const body = res.getBody();
+    expect(body.versions).to.have.length(1);
+    expect(body.versions[0].version).to.equal(1);
+    expect(body.live).to.equal(null);
+  });
+}

@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a workstation join with a bad join code
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "code": "bogus",
+    "name": "bruno-ws",
+    "facts": {
+      "os": "linux",
+      "os_version": "6.0",
+      "arch": "x86_64",
+      "hostname": "bruno-ws",
+      "form": "desktop",
+      "cpus": 4,
+      "ram_mb": 8192,
+      "gpus": [],
+      "displays": [],
+      "account": {"mode": "agent_user", "name": "agents"},
+      "apps": 0,
+      "virtual_displays": false,
+      "ui_tree": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

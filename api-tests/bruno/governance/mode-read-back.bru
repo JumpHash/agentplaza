@@ -1,0 +1,17 @@
+meta {
+  name: Read back the permission mode after the change
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/7/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "read_only"
+}

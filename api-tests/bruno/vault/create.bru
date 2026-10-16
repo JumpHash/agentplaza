@@ -1,0 +1,44 @@
+meta {
+  name: Create a secret
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_TEST_KEY",
+    "kind": "api_key",
+    "label": "bru test",
+    "value": "bru-test-value-0123456789",
+    "scope": { "kind": "plaza" },
+    "bindings": ["tool:bru-test"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: isString
+  res.body.name: eq "BRU_TEST_KEY"
+  res.body.kind: eq "api_key"
+  res.body.scope.kind: eq "plaza"
+  res.body.current: eq 1
+}
+
+script:post-response {
+  bru.setVar("secretId", res.getBody().id);
+}
+
+tests {
+  test("the created secret's view carries no value", function () {
+    const body = res.getBody();
+    expect(JSON.stringify(body)).to.not.include("bru-test-value-0123456789");
+    expect(body).to.not.have.property("value");
+  });
+}

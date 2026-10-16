@@ -1,0 +1,26 @@
+meta {
+  name: Read the hub's overview
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/overview
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 500
+  res.body.agents.total: eq 0
+}
+
+tests {
+  test("counts agents and tasks", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("agents");
+    expect(body).to.have.property("tasks");
+    expect(body.noded).to.equal(false);
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Show the vault's state
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/vault
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.state: eq "unsealed"
+  res.body.slots: isArray
+}
+
+tests {
+  test("the scratch vault holds a key-file slot and no value", function () {
+    const body = res.getBody();
+    expect(body.slots.some((s) => s.kind === "keyfile")).to.equal(true);
+    expect(body).to.not.have.property("value");
+  });
+}

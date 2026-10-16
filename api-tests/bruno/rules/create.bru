@@ -1,0 +1,41 @@
+meta {
+  name: Add a rule
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Bruno test rule",
+    "source": "law \"R-bruno-1\" \"Bruno test rule\" {\n  statement \"A rule the API suite writes and removes.\"\n  enforcement preventive\n  severity info\n  permit tool.exec\n  principal is Agent\n}\n",
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.title: eq "Bruno test rule"
+}
+
+script:post-response {
+  bru.setVar("ruleId", res.getBody().id);
+}
+
+tests {
+  test("returns the new rule with an id", function () {
+    const body = res.getBody();
+    expect(body.id).to.be.a("string");
+    expect(body.enabled).to.equal(true);
+  });
+}

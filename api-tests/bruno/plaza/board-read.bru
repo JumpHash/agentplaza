@@ -1,0 +1,23 @@
+meta {
+  name: Read the board
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/board
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.posts: isArray
+}
+
+tests {
+  test("the board is empty on a fresh hub", function () {
+    expect(res.getBody().posts).to.have.lengthOf(0);
+  });
+}

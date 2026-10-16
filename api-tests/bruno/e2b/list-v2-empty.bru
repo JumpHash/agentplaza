@@ -1,0 +1,27 @@
+meta {
+  name: List the sandboxes by state (empty)
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/e2b/v2/sandboxes?state=running,paused
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bKey}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("running and paused together, none on a fresh hub", function () {
+    expect(res.getBody()).to.be.an("array");
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

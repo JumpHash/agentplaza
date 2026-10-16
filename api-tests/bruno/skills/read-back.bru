@@ -1,0 +1,28 @@
+meta {
+  name: Read the skill back
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{skillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.skill.id: eq "pdf-forms"
+  res.body.skill.title: eq "PDF forms"
+  res.body.versions: isArray
+}
+
+tests {
+  test("one version, nothing live yet", function () {
+    const body = res.getBody();
+    expect(body.versions).to.have.length(1);
+    expect(body.versions[0].version).to.equal(1);
+    expect(body.live).to.be.null;
+  });
+}

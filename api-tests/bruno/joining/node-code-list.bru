@@ -1,0 +1,30 @@
+meta {
+  name: List the join codes shows the new code as active
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the created code is listed, active and unused", function () {
+    const codes = res.getBody();
+    const code = codes.find((c) => c.id === bru.getVar("nodeCodeId"));
+    expect(code, "the created code is listed").to.not.be.undefined;
+    expect(code.label).to.equal("bruno-node");
+    expect(code.state).to.equal("active");
+    expect(code.used_by == null).to.equal(true);
+    expect(code).to.not.have.property("token");
+    expect(code).to.not.have.property("secret_sha256");
+  });
+}

@@ -1,0 +1,43 @@
+meta {
+  name: Create a system prompt
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "planner",
+    "kind": "system",
+    "title": "Planner",
+    "description": "Plans the work in small steps",
+    "tags": ["plan"],
+    "body": "# Planner\n\nBreak each request into small steps.\n",
+    "note": "first draft"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.prompt.id: eq "planner"
+  res.body.prompt.kind: eq "system"
+  res.body.prompt.title: eq "Planner"
+}
+
+script:post-response {
+  bru.setVar("promptId", res.getBody().prompt.id);
+}
+
+tests {
+  test("the new prompt is at version 1 and not published", function () {
+    const prompt = res.getBody().prompt;
+    expect(prompt.latest_version).to.equal(1);
+    expect(prompt.active_version).to.equal(null);
+  });
+}

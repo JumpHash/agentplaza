@@ -1,0 +1,23 @@
+meta {
+  name: Read an agent's permission mode before any change
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/7/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "autonomous"
+}
+
+tests {
+  test("an agent with no saved mode runs autonomous", function () {
+    expect(res.getBody()).to.have.property("mode");
+  });
+}

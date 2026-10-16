@@ -1,0 +1,32 @@
+meta {
+  name: Edit the prompt's details
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/prompts/{{promptId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "Planner v2",
+    "description": "Plans the work in small steps",
+    "tags": ["plan", "ops"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.prompt.id: eq "planner"
+  res.body.prompt.title: eq "Planner v2"
+}
+
+tests {
+  test("keeps its tags", function () {
+    expect(res.getBody().prompt.tags).to.have.length(2);
+  });
+}

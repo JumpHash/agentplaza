@@ -1,0 +1,24 @@
+meta {
+  name: Read the task back
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{taskId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.goal: eq "Write the release notes"
+  res.body.state: eq "open"
+}
+
+tests {
+  test("returns the task that was created", function () {
+    expect(res.getBody().id).to.equal(bru.getVar("taskId"));
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an MCP server with an invalid id
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "X",
+    "name": "Bad server",
+    "transport": {
+      "kind": "http",
+      "url": "https://example.com/mcp"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.field: eq id
+  res.body.error: isString
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Read the saved change back
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.max_turns: eq 50
+}
+
+tests {
+  test("the refused value did not replace the saved one", function () {
+    const body = res.getBody();
+    expect(body.max_turns).to.equal(50);
+    expect(body.max_turns).to.not.equal(0);
+  });
+}

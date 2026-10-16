@@ -1,0 +1,23 @@
+meta {
+  name: Delete a rule
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/laws/rules/{{ruleId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.deleted: isString
+}
+
+tests {
+  test("names the deleted rule", function () {
+    expect(res.getBody().deleted).to.equal(bru.getVar("ruleId"));
+  });
+}

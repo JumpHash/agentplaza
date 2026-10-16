@@ -1,0 +1,27 @@
+meta {
+  name: List the prompts after the edit
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.prompts: isArray
+}
+
+tests {
+  test("lists the edited prompt", function () {
+    const prompts = res.getBody().prompts;
+    const planner = prompts.find((p) => p.id === "planner");
+    expect(planner).to.be.an("object");
+    expect(planner.title).to.equal("Planner v2");
+    expect(prompts.filter((p) => !p.tags.includes("built-in"))).to.have.length(1);
+  });
+}

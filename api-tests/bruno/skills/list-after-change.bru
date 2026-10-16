@@ -1,0 +1,26 @@
+meta {
+  name: List skills after the change
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.skills: isArray
+}
+
+tests {
+  test("the list shows the changed skill", function () {
+    const skills = res.getBody().skills;
+    expect(skills).to.have.length(1);
+    expect(skills[0].id).to.equal("pdf-forms");
+    expect(skills[0].title).to.equal("PDF forms (fillable)");
+  });
+}

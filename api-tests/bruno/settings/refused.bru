@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a settings value out of range
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "max_turns": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names max_turns and its range", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("error");
+    expect(body.error).to.be.a("string");
+    expect(body.error).to.include("max_turns");
+    expect(body.error).to.include("1..=200");
+  });
+}

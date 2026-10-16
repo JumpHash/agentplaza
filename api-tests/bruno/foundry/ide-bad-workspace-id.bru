@@ -1,0 +1,17 @@
+meta {
+  name: Read the checkpoints of a malformed workspace id
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/not-a-workspace/checkpoints
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

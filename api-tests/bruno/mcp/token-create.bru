@@ -1,0 +1,38 @@
+meta {
+  name: Create an MCP token
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "test token",
+    "scope": "observe"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.token: isString
+  res.body.record.name: eq test token
+}
+
+tests {
+  test("the record is returned without the token value", function () {
+    const body = res.getBody();
+    expect(body.record).to.have.property("id");
+    expect(body.record.revoked_at_ms).to.be.null;
+    expect(body.record).to.not.have.property("token");
+  });
+}
+
+script:post-response {
+  bru.setVar("tokenId", res.getBody().record.id);
+}

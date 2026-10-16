@@ -1,0 +1,26 @@
+meta {
+  name: Read the MCP server back
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/{{mcpId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq test-server
+  res.body.name: eq Test server
+}
+
+tests {
+  test("the stored transport is the one created", function () {
+    const body = res.getBody();
+    expect(body.transport.kind).to.equal("stdio");
+    expect(body.transport.image).to.equal("ghcr.io/example/server:1.0");
+  });
+}

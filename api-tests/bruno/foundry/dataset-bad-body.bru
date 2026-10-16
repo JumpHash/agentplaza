@@ -1,0 +1,27 @@
+meta {
+  name: Export a dataset from a body that is not JSON
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets
+  body: text
+  auth: none
+}
+
+body:text {
+  not json
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the export spec", function () {
+    expect(res.getBody().error).to.match(/^export spec:/);
+  });
+}
