@@ -1,14 +1,16 @@
 # Linux (x86_64, arm64): one job per architecture tests and, with `package`, builds the deb
 # (Ubuntu, Debian), rpm (Fedora), pacman (Arch, Arch Linux ARM) packages and tarballs from the same
 # optimised build, then installs and runs them in Ubuntu, Debian, Fedora and Arch containers.
-# Callers: pr.yml tests every pull request and merge-queue entry (x86_64; arm64 too when platform
-# code changes), release.yml packages main without testing again (`tests: false`: the queue
-# tested that commit), nightly.yml tests both architectures. It also runs by hand.
+# Callers: pr.yml tests every pull request and merge-queue entry on both architectures,
+# release.yml packages main without testing again (`tests: false`: the queue tested that commit),
+# nightly.yml tests both architectures. It also runs by hand.
 #
-# Where: the org's self-hosted Linux runner (an x86_64 Ubuntu host with Docker). Every build runs
-# inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on every
-# distribution as new or newer), built on the runner and kept there until its Dockerfile changes.
-# arm64 is cross-compiled and its tests run under qemu. Speed: cargo's build directory and
+# Where: the org's self-hosted Linux runners, x86_64 and arm64 Ubuntu hosts with Docker. Every
+# build runs inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on
+# every distribution as new or newer), built on each runner for its own architecture and kept there
+# until its Dockerfile changes. arm64 tests natively on the arm64 runners; arm64 packages are
+# cross-compiled on the x86_64 ones, where the AppImage tooling is (a run that tests and packages
+# arm64 at once tests there too, under qemu). Speed: cargo's build directory and
 # registry persist on the runner (.github/ci/in-image.sh), and the checkout keeps the mtimes this
 # runner last built with (.github/ci/build-cache.py), so only changed crates compile, with sccache
 # behind them; tests and packages use the same release profile; nextest runs the tests in parallel
@@ -57,19 +59,21 @@ jobs:
       fail-fast: false
       matrix:
         arch: ${{ fromJSON(inputs.arches) }}
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # arm64 runs on the arm64 runners unless it packages (cross-compiled on x86_64, see above).
+    runs-on: ${{ fromJSON(matrix.arch == 'aarch64' && !inputs.package && '["self-hosted","Linux","ARM64","hetzner"]' || '["self-hosted","Linux","X64","hetzner"]') }}
     # A cold build directory (a new runner, a new Rust or a dependency update) compiles everything
-    # once on the runner's 4 cores; after that a run rebuilds only what changed. A hung test is
-    # killed by nextest after 2 minutes.
+    # once; after that a run rebuilds only what changed. A hung test is killed by nextest after 2
+    # minutes.
     timeout-minutes: 90
     env:
       NET: apz-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-      # Per architecture: cargo's --target (none for the host, so tests and binaries share one
-      # build) and where the release build lands.
+      # Per architecture: cargo's --target (none on the runner's own architecture, so tests and
+      # binaries share one build; aarch64 when x86_64 cross-compiles it) and where the release
+      # build lands.
       TRIPLE: ${{ matrix.arch == 'aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}
       DEB: ${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
-      TARGET_ARG: ${{ matrix.arch == 'aarch64' && '--target aarch64-unknown-linux-gnu' || '' }}
-      OUT: ${{ matrix.arch == 'aarch64' && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
+      TARGET_ARG: ${{ matrix.arch == 'aarch64' && inputs.package && '--target aarch64-unknown-linux-gnu' || '' }}
+      OUT: ${{ matrix.arch == 'aarch64' && inputs.package && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
     steps:
       - uses: actions/checkout@v5
       - name: CI image
@@ -89,8 +93,8 @@ jobs:
           for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
           echo "the tests of $ONLY and of what depends on them: $filter"
           echo "NEXTEST_FILTER=-E '$filter' --no-tests=warn" >> "$GITHUB_ENV"
-      - name: Postgres for the tests (x86_64)
-        if: matrix.arch == 'x86_64' && inputs.tests
+      - name: Postgres for the tests
+        if: inputs.tests
         run: |
           docker network create "$NET"
           docker run -d --rm --name "$NET-pg" --network "$NET" \

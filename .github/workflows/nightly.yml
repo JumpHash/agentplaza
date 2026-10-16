@@ -1,8 +1,9 @@
 # The nightly safety net: every platform's tests on main, both Linux architectures, Windows and
-# macOS. The pull request gate (pr.yml) runs Windows, macOS and Linux arm64 only for changes it sees
-# as platform code, and main itself no longer tests (release.yml), so a shared-crate change that
-# breaks one platform shows up here by the next morning. Nothing runs on a night after a day with
-# no code changes (.github/ci/changes.sh against main as it was 24 hours earlier).
+# macOS. The pull request gate (pr.yml) runs Windows and macOS only for changes it sees as platform
+# code and a pull request's tests only for the packages it changes, and main itself no longer tests
+# (release.yml), so a shared-crate change that breaks one platform shows up here by the next
+# morning. Nothing runs on a night after a day with no code changes (.github/ci/changes.sh against
+# main as it was 24 hours earlier).
 name: nightly
 
 on:

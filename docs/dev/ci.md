@@ -24,7 +24,7 @@ required check, and changes under `.github/` need a code owner's review (CODEOWN
 | `lint` | code or CI changed | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo deny check` (advisories, licences, sources: `deny.toml`) |
 | `migrations` | code or CI changed | Applied migrations unchanged, new ones numbered in order (`scripts/check-migrations.sh`) |
 | `console` | the console or what it compiles from changed | The web console's type-check, build and tests (`console.yml`) |
-| `linux` | code or CI changed | The Linux tests (`linux.yml`): x86_64, and arm64 under qemu when platform code changed |
+| `linux` | code or CI changed | The Linux tests (`linux.yml`): x86_64 and arm64, each natively on its own runners |
 | `windows`, `macos` | platform code changed | The Windows and macOS tests |
 | `ci-ok` | always | Passes when every job above passed or was skipped |
 

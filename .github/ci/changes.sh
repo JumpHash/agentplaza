@@ -9,7 +9,7 @@
 #   release   main should release: code changed, or a workflow the release runs (not pr.yml/nightly.yml)
 #   web       the web console or what it compiles from (apps/web, the wasm crates, the engine)
 #   platform  code that differs per OS: the platform crates, `#[cfg]`-gated Rust, packaging, the
-#             lockfile and toolchain. Windows, macOS and Linux arm64 test only then.
+#             lockfile and toolchain. Windows and macOS test only then.
 #   tests     the workspace packages whose tests a pull request runs: the changed ones (their tests
 #             and those of every package that depends on them run), or `all` when a change reaches
 #             past a package's own directory (the lockfile, a root manifest, CI, sql/, assets/,

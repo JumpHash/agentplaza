@@ -6,7 +6,7 @@
 #   lint        rustfmt, clippy with warnings as errors, cargo deny (advisories, licences, sources)
 #   migrations  applied migrations unchanged, new ones numbered in order (scripts/check-migrations.sh)
 #   console     the web console's type-check, build and tests (console.yml)
-#   linux       the Linux tests (linux.yml): x86_64 always, arm64 when platform code changes
+#   linux       the Linux tests (linux.yml): x86_64 and arm64, each on its own runners
 #   windows     the Windows tests (windows.yml), when platform code changes
 #   macos       the macOS tests (macos.yml), when platform code changes
 #
@@ -104,7 +104,7 @@ jobs:
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/linux.yml
     with:
-      arches: ${{ needs.changes.outputs.platform == 'true' && '["x86_64","aarch64"]' || '["x86_64"]' }}
+      arches: '["x86_64","aarch64"]'
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
       only: ${{ needs.changes.outputs.only }}
 
