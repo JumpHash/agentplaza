@@ -19,9 +19,7 @@ serde_json.workspace = true
 # Warm templates are keyed by the SHA-256 of their images and shape (`templates`).
 sha2.workspace = true
 vmm = { path = "../vmm" }
-
-# Linux reads `/proc` for the host stats; other hosts ask the OS through sysinfo.
-[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Volume sizes everywhere; on hosts other than Linux, the host stats too (Linux reads `/proc`).
 sysinfo = "0.33"
 
 [lib]

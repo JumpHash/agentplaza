@@ -205,7 +205,10 @@ fn owned_by(key: &SeriesKey, node: &str) -> SeriesKey {
         EntityKind::Node if key.entity.is_empty() || key.entity == "node" => {
             key.entity = node.to_string()
         }
-        EntityKind::Volume | EntityKind::Service if !key.entity.contains(':') => {
+        // Always prefixed, even a name with a colon of its own (`C:\`): a node never knows its id.
+        EntityKind::Volume | EntityKind::Service
+            if !key.entity.starts_with(&format!("{node}:")) =>
+        {
             key.entity = format!("{node}:{}", key.entity);
         }
         _ => {}
@@ -236,6 +239,14 @@ fn merged_reports(old: serde_json::Value, mut new: serde_json::Value) -> serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nodes_volumes_are_prefixed_with_its_id_even_with_a_colon_in_the_name() {
+        let key = |e: &str| SeriesKey::new("volume.used_pct", EntityKind::Volume, e);
+        assert_eq!(owned_by(&key("/"), "n1").entity, "n1:/");
+        assert_eq!(owned_by(&key("C:\\"), "n1").entity, "n1:C:\\");
+        assert_eq!(owned_by(&key("n1:/data"), "n1").entity, "n1:/data");
+    }
 
     #[test]
     fn a_node_batch_keeps_the_process_rows_the_guests_reported() {

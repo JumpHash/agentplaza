@@ -47,6 +47,7 @@ pub fn sample(node: &Node, m: &NodeMetrics, now_ms: u64) {
     set_vm_io(m, &fleet.io, now_ms);
     set_pressure(m);
     set_gpus(m);
+    set_volumes(m);
 }
 
 /// The node's VMs: the running count and their guest memory (counted as `GET /v1/machine/stats` counts them), the
@@ -164,6 +165,49 @@ fn set_io_rates(m: &NodeMetrics, now_ms: u64) {
             m.gauge(node_series("host.net_tx_bps")).set(sent);
         }
     }
+}
+
+/// Volumes reported at most: the node's fixed disks, largest first.
+const MAX_VOLUMES: usize = 8;
+
+/// `volume.size_bytes`, `volume.used_bytes` and `volume.used_pct` of each fixed disk, keyed by its mount point (the
+/// hub prefixes the node: `n1:/var/lib/plaza`).
+fn set_volumes(m: &NodeMetrics) {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let found: Vec<(String, u64, u64)> = disks
+        .list()
+        .iter()
+        .filter(|d| !d.is_removable())
+        .map(|d| {
+            (
+                d.mount_point().to_string_lossy().into_owned(),
+                d.total_space(),
+                d.available_space(),
+            )
+        })
+        .collect();
+    for (mount, size, used) in volumes(found) {
+        let key = |metric: &str| SeriesKey::new(metric, EntityKind::Volume, &mount);
+        m.gauge(key("volume.size_bytes")).set(size as f64);
+        m.gauge(key("volume.used_bytes")).set(used as f64);
+        m.gauge(key("volume.used_pct"))
+            .set(used as f64 / size as f64 * 100.0);
+    }
+}
+
+/// (mount, size, used) of the volumes worth reporting, from (mount, total, available): sized ones, each mount once,
+/// largest first, at most [`MAX_VOLUMES`].
+fn volumes(found: Vec<(String, u64, u64)>) -> Vec<(String, u64, u64)> {
+    let mut out: Vec<(String, u64, u64)> = Vec::new();
+    for (mount, total, available) in found {
+        if total == 0 || out.iter().any(|(m, ..)| *m == mount) {
+            continue;
+        }
+        out.push((mount, total, total.saturating_sub(available)));
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.truncate(MAX_VOLUMES);
+    out
 }
 
 fn set_pressure(m: &NodeMetrics) {
@@ -481,6 +525,25 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volumes_are_the_sized_mounts_once_each_largest_first() {
+        let found = vec![
+            ("/".to_string(), 100, 40),
+            ("/boot".to_string(), 1, 1),
+            ("/var/lib/plaza".to_string(), 500, 100),
+            ("/".to_string(), 100, 40),
+            ("/proc".to_string(), 0, 0),
+        ];
+        assert_eq!(
+            volumes(found),
+            vec![
+                ("/var/lib/plaza".to_string(), 500, 400),
+                ("/".to_string(), 100, 60),
+                ("/boot".to_string(), 1, 0),
+            ]
+        );
+    }
 
     const DISKSTATS: &str = "\
    7       0 loop0 1 0 8 0 0 0 0 0 0 0 0
