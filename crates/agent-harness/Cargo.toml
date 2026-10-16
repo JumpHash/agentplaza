@@ -1,5 +1,6 @@
 [package]
 name = "agent-harness"
+publish = false
 description = "AgentPlaza in-guest agent harness v0: the guest end of the vsock orchestration loop"
 version.workspace = true
 edition.workspace = true

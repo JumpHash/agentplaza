@@ -3,8 +3,12 @@ name: console
 # The web console (apps/web/dist): built once per commit with its wasm engine and the IDE's wasm, tested, and
 # saved to the Actions cache (no artifact storage) under this commit, for every package to ship. The build is not
 # committed: each platform job restores it from here before it stages.
+# pr.yml also runs it to test pull requests that touch the console (`trusted: false` for a fork:
+# its own cache directory on the runner).
 on:
   workflow_call:
+    inputs:
+      trusted: { type: boolean, default: true }
 
 jobs:
   console:
@@ -14,10 +18,15 @@ jobs:
       - uses: actions/checkout@v5
       - name: CI image
         run: .github/ci/image.sh
-      # The console is built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
+      - name: Untrusted build cache
+        if: ${{ !inputs.trusted }}
+        run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      # Type-checked, then built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
       - name: Build and test the console
-        run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run build && npm test'
+        run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run typecheck && npm run build && npm test'
         env:
           APZ_REQUIRE_ENGINE: "1"
+      # Only a release ships it; a pull request, queue or nightly run only tests.
       - uses: actions/cache/save@v4
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with: { path: apps/web/dist, key: "console-${{ github.sha }}", enableCrossOsArchive: true }

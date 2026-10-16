@@ -1,8 +1,9 @@
 # macOS: one job on the org's self-hosted Mac (Intel) tests the Intel build natively, builds the
 # Apple Silicon one alongside it (cross-compiled; its tests are built, not run) and, with `package`,
 # makes a DMG for each: AgentPlaza-<v>-macos-x86_64.dmg and AgentPlaza-<v>-macos-arm64.dmg.
-# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
-# request builds); it also runs by hand.
+# Callers: pr.yml tests pull requests and merge-queue entries that touch platform code,
+# release.yml packages main without testing again (`tests: false`: the queue tested that commit),
+# nightly.yml tests. It also runs by hand.
 #
 # The runner's labels come from the repository variable MACOS_RUNNER (a JSON list; default
 # ["self-hosted","macOS","X64"]); APZ_MACOS=off skips macOS, and a release then ships without it.
@@ -15,10 +16,14 @@ on:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
 
 concurrency:
   group: ${{ github.workflow }}-macos-${{ github.ref }}
@@ -41,7 +46,7 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && 'test and package' || 'test' }}
+    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }}
     if: vars.APZ_MACOS != 'off'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","X64"]') }}
     # A cold build directory compiles everything once; after that a run rebuilds only what changed.
@@ -72,15 +77,19 @@ jobs:
           else
             zstd --version
           fi
+      # A pull request from a fork builds in its own directory, never in the one releases use.
       - name: The runner's build directory
-        run: echo "CARGO_TARGET_DIR=$HOME/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=$HOME/.cache/${{ inputs.trusted && 'agentplaza-ci' || 'agentplaza-ci-untrusted' }}/target" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "x86_64-apple-darwin,aarch64-apple-darwin" }
       - uses: taiki-e/install-action@v2
+        if: inputs.tests
         with: { tool: nextest }
       - name: Test (Intel; the guest harness runs only inside Linux VMs)
+        if: inputs.tests
         run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target x86_64-apple-darwin
       - name: Build the tests (Apple Silicon cannot run here)
+        if: inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
         run: cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
       - name: Build the binaries

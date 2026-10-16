@@ -1,8 +1,9 @@
 # Windows (x64, arm64): one job per architecture tests and, with `package`, builds an MSI and a zip
 # from the same optimised build, then installs the MSI and runs what it installed. The x64 package
 # carries the VM node (the Windows Hypervisor Platform backend) and the x86_64 guest.
-# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
-# request builds); it also runs by hand.
+# Callers: pr.yml tests pull requests and merge-queue entries that touch platform code,
+# release.yml packages main without testing again (`tests: false`: the queue tested that commit),
+# nightly.yml tests. It also runs by hand.
 # Where: the org's self-hosted Windows runner (x64). arm64 is cross-compiled there: its tests are
 # built, not run, and its MSI is not installed. That needs LLVM (ring builds its arm64 code with
 # clang) and Visual Studio's "MSVC v143 ARM64 build tools" on the runner, so the arm64 leg runs
@@ -15,10 +16,14 @@ on:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
 
 concurrency:
   group: ${{ github.workflow }}-windows-${{ github.ref }}
@@ -42,7 +47,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ inputs.package && 'test and package' || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -83,20 +88,22 @@ jobs:
           & (Join-Path $dir 'zstd.exe') --version
       # The runner's user is not an administrator: everything lives in its profile, the build
       # directory (kept between runs) and .NET (for WiX) included.
+      # A pull request from a fork builds in its own directory, never in the one releases use.
       - name: The runner's build directory and .NET
         run: |
           home=$(cygpath -m "$USERPROFILE")
-          echo "CARGO_TARGET_DIR=$home/.cache/agentplaza-ci/target" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$home/.cache/${{ inputs.trusted && 'agentplaza-ci' || 'agentplaza-ci-untrusted' }}/target" >> "$GITHUB_ENV"
           echo "DOTNET_INSTALL_DIR=$home/.dotnet" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ env.TRIPLE }}" }
       - uses: taiki-e/install-action@v2
+        if: inputs.tests
         with: { tool: nextest }
       - name: Test (the guest harness runs only inside Linux VMs)
-        if: matrix.arch == 'x64'
+        if: matrix.arch == 'x64' && inputs.tests
         run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }}
       - name: Build the tests (arm64 cannot run here)
-        if: matrix.arch != 'x64'
+        if: matrix.arch != 'x64' && inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
         run: cargo test --workspace --exclude agent-harness --locked --profile release --target ${{ env.TRIPLE }} --no-run
       - name: Build the binaries
