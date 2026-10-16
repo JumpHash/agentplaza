@@ -122,18 +122,13 @@ fn a_guest_runs_on_after_a_restore_and_a_restore_of_its_diff() {
         Duration::from_secs(10)
     ));
 
-    // A full snapshot of the booted guest, taken as a capture: the guest runs on while the capture is
-    // written, and the restore reads the files the write completed. Then the guest is gone.
+    // A full snapshot of the booted guest, asked for as a capture: a full snapshot is written at once
+    // (only a diff is held in RAM), so nothing waits for the write. Then the guest is gone.
     let snap = dir.join("snap1");
     let info = first.capture(&snap, SnapshotKind::Full).expect("capture");
     assert_eq!(info.kind, SnapshotKind::Full);
     assert!(info.memory_written > 0);
-    first.resume().expect("resume");
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(
-        first.write_captured().expect("write the capture"),
-        info.memory_written
-    );
+    assert_eq!(first.write_captured().expect("nothing to write"), 0);
     // The booted guest touched memory, so the snapshot records its working set for the restore.
     let working_set = std::fs::read(snap.join(vmm::vstate::snapshot::WORKING_SET_FILE))
         .expect("the working-set file");
@@ -169,13 +164,21 @@ fn a_guest_runs_on_after_a_restore_and_a_restore_of_its_diff() {
     );
     eprintln!("restore returned in {restore_ms} ms; console answered after {answered_ms} ms");
 
-    // A diff snapshot of the restored guest (over a copy of the first memory file), restored again.
+    // A diff snapshot of the restored guest (over a copy of the first memory file), taken as a capture:
+    // the guest runs on while the captured pages are written, and the restore reads the files the write
+    // completed. Then it is restored again.
     let snap2 = dir.join("snap2");
     let mut second = second;
     let info2 = second
-        .snapshot(&snap2, SnapshotKind::Diff)
-        .expect("diff snapshot");
+        .capture(&snap2, SnapshotKind::Diff)
+        .expect("diff capture");
     assert_eq!(info2.kind, SnapshotKind::Diff);
+    second.resume().expect("resume");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        second.write_captured().expect("write the capture"),
+        info2.memory_written
+    );
     eprintln!(
         "diff snapshot wrote {} KiB, paused {} ms",
         info2.memory_written / 1024,

@@ -288,7 +288,10 @@ impl InProcessControl {
                 &resident_or_none(&vm, &regions),
             )
         };
-        let kept = if keep {
+        // Only a diff (a restored VM: the pages it changed) is captured. A booted VM's snapshot holds every
+        // page it touched, and copying those into RAM before writing them doubles the work for no shorter
+        // pause, so it is written at once, as a snapshot is.
+        let kept = if keep && self.memory_kind() == SnapshotKind::Diff {
             capture_memory(
                 vm.guest_memory(),
                 &regions,
@@ -790,6 +793,29 @@ mod tests {
     /// A capture is a point-in-time copy: the guest writes after the resume, and the memory file that
     /// `write_captured` writes still holds the page from before it. The state file waits for the
     /// write, and a second capture is refused while the first is unwritten.
+    /// A booted VM's capture is a full snapshot written at once: nothing waits for `write_captured`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_booted_vm_capture_writes_at_once() {
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
+        let vm = vm_without_vcpus(1 << 20);
+        let serial = serial();
+        let control = control_of(&vm, &serial, None);
+        let root = scratch("capture-full");
+        let dir = root.join("snap");
+        let info = control.capture(&dir, SnapshotKind::Full).unwrap();
+        assert_eq!(info.kind, SnapshotKind::Full);
+        assert!(
+            dir.join(STATE_FILE).exists(),
+            "a full capture is written at once"
+        );
+        assert_eq!(control.write_captured().unwrap(), 0, "nothing waits");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_capture_is_written_after_the_resume_with_the_memory_it_held() {
@@ -798,17 +824,23 @@ mod tests {
             eprintln!("skipped: /dev/kvm is not usable here");
             return;
         }
+        // A restored VM (its snapshots are diffs): the case a capture is for.
         let vm = vm_without_vcpus(1 << 20);
         let serial = serial();
-        let control = control_of(&vm, &serial, None);
+        let root = scratch("capture");
+        let base_dir = root.join("base");
+        control_of(&vm, &serial, None)
+            .snapshot(&base_dir, SnapshotKind::Full)
+            .unwrap();
+        let base = File::open(base_dir.join(MEMORY_FILE)).unwrap();
+        let control = control_of(&vm, &serial, Some(base));
         vm.guest_memory()
             .write_slice(&[0xAA; 4096], GuestAddress(4 * 4096))
             .unwrap();
-        let root = scratch("capture");
         let dir = root.join("snap");
 
         let info = control.capture(&dir, SnapshotKind::Full).unwrap();
-        assert_eq!(info.kind, SnapshotKind::Full);
+        assert_eq!(info.kind, SnapshotKind::Diff);
         assert!(
             control.paused.load(Ordering::SeqCst),
             "the VM is left paused"
