@@ -359,6 +359,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   function liveText(): string {
     if (!state.live) return 'live off';
+    if (state.fixture) return 'the fixture does not stream';
     if (state.shift) return 'live pauses while looking back';
     if (!LIVE_RANGES.includes(state.range)) return 'live applies to the 15m and 1h ranges';
     if (document.hidden) return 'live paused while this page is hidden';

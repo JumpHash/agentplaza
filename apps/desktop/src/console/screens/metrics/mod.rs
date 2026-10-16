@@ -985,9 +985,13 @@ fn sync_live(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Live applies to the 15m and 1h ranges, ending now, when live is on.
+/// Live applies to the 15m and 1h ranges, ending now, when live is on and the view is not the fixture (live frames
+/// are composed from recorded data).
 pub(super) fn live_applies(state: &State) -> bool {
-    state.live && state.q.shift == 0 && matches!(state.q.range.as_str(), "15m" | "1h")
+    state.live
+        && !state.q.fixture
+        && state.q.shift == 0
+        && matches!(state.q.range.as_str(), "15m" | "1h")
 }
 
 /// Replaces the panels of a live frame that is for the query on screen.

@@ -315,6 +315,8 @@ fn tier<'a>(state: &'a State) -> Element<'a, Msg> {
 fn live_text(state: &State) -> &'static str {
     if !state.live {
         "live off"
+    } else if state.q.fixture {
+        "the fixture does not stream"
     } else if state.q.shift != 0 {
         "live pauses while looking back"
     } else if !matches!(state.q.range.as_str(), "15m" | "1h") {

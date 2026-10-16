@@ -108,9 +108,10 @@ export function queryOf(s: MetricsState, width: number, tz: number): ViewQuery {
   return query;
 }
 
-/** Live applies to the 15m and 1h ranges, ending now, when live is on. */
+/** Live applies to the 15m and 1h ranges, ending now, when live is on and the view is not the fixture (live frames
+ * are composed from recorded data). */
 export function liveApplies(s: MetricsState): boolean {
-  return s.live && s.shift === 0 && (s.range === '15m' || s.range === '1h');
+  return s.live && !s.fixture && s.shift === 0 && (s.range === '15m' || s.range === '1h');
 }
 
 /** The per-console preferences (live, annotations, compact) from localStorage (defaults when unavailable). */
