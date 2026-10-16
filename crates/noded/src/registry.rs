@@ -1129,7 +1129,7 @@ fn boot_from(
         return Ok((handle, None));
     }
     let base = store
-        .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+        .stage_base(cid)
         .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
     let handle = spawn_timed(VmSpec {
         restore: Some(snapshot.to_path_buf()),
@@ -1212,7 +1212,7 @@ fn boot_recovered(
             }
         }
         store
-            .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+            .stage_base(cid)
             .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?
     };
     let handle = spawn_timed(VmSpec {
