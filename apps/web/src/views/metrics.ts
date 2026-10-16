@@ -2,6 +2,7 @@
 // the scope tree, the grouped tabs and the panel grid) and the flow around it: the URL state, the hub requests, live
 // frames, pins, overlays and the keyboard. The numbers all come from the hub; this file lays them out.
 
+import '../styles/chart.css';
 import '../styles/metrics.css';
 import type { Cleanup } from './index';
 import { api } from '../api';
