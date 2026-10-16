@@ -30,8 +30,9 @@ use crate::vsock::VsockStream;
 /// gives up after vsockd's `MAX_TELL_TIMEOUT_MS` (5 s), so an answer later than that is wasted.
 pub const OPERATOR_EXPIRY: Duration = Duration::from_secs(5);
 
-/// How long the reader waits for a line before it checks whether the session is stopping.
-const POLL: Duration = Duration::from_millis(50);
+/// How long the reader waits for a line before it checks whether the session is stopping. Only a stop
+/// (rare) waits on it, while every idle guest pays its wakeups (a VM exit each): a second, not 50 ms.
+const POLL: Duration = Duration::from_secs(1);
 
 /// A connection the session can split: one handle reads, another writes.
 pub trait Duplex: Read + Write + ReadTimeout + Send + Sized {
