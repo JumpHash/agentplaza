@@ -38,7 +38,8 @@ permissions:
 
 jobs:
   changes:
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 5
     outputs:
       build: ${{ steps.diff.outputs.build }}
@@ -82,7 +83,8 @@ jobs:
   migrations:
     needs: changes
     if: needs.changes.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
@@ -130,7 +132,8 @@ jobs:
   ci-ok:
     needs: [changes, lint, migrations, console, linux, windows, macos]
     if: always()
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 2
     steps:
       - env:

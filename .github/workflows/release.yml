@@ -38,7 +38,8 @@ permissions:
 # APZ_WINDOWS_ARM64=on (its runner needs LLVM and the VS ARM64 tools): a release ships without them.
 jobs:
   version:
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 3
     outputs:
       release: ${{ steps.changes.outputs.release }}
