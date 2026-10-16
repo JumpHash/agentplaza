@@ -206,5 +206,6 @@ jobs:
       - name: Prune the build directory
         if: always()
         run: |
+          [ -f .github/ci/build-cache.py ] || exit 0  # the job ended before its checkout
           py=python3; $py -c '' 2>/dev/null || py=python
           $py .github/ci/build-cache.py prune "$CARGO_TARGET_DIR"

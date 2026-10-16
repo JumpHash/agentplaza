@@ -179,4 +179,7 @@ jobs:
           docker rm -f "$NET-pg" >/dev/null 2>&1 || true
           docker network rm "$NET" >/dev/null 2>&1 || true
           # Units no build has used for days go first; the directory is emptied only if the disk is short.
-          python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
+          # (Not when the job ended before its checkout.)
+          if [ -f .github/ci/build-cache.py ]; then
+            python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
+          fi
