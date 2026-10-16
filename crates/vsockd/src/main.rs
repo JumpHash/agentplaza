@@ -323,7 +323,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 }
 
 /// Raises the descriptor limit so `max_sessions` guest sessions fit, and reports what it is now.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn raise_fd_limit(max_sessions: usize) {
     match sys::raise_fd_limit() {
         Ok(limit) => {
@@ -363,7 +363,7 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 /// Serves until a signal asks the daemon to stop.
 #[cfg(any(target_os = "linux", windows))]
 fn run(config: Config) -> Result<(), String> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     raise_fd_limit(config.max_sessions);
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
     let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone())
