@@ -70,7 +70,8 @@ pub struct Query {
 impl Default for Query {
     fn default() -> Self {
         Query {
-            tab: "overview".into(),
+            // `APZ_METRICS_TAB` opens another tab first (design review and snapshots, like the fixture flag).
+            tab: std::env::var("APZ_METRICS_TAB").unwrap_or_else(|_| "overview".into()),
             scope: "global".into(),
             range: "24h".into(),
             shift: 0,
@@ -1184,7 +1185,7 @@ fn view_path(q: &Query, width: u32, tz: i32) -> String {
 fn route_hash(q: &Query) -> String {
     let d = Query::default();
     let mut pairs: Vec<(&str, String)> = Vec::new();
-    if q.tab != d.tab {
+    if q.tab != "overview" {
         pairs.push(("tab", q.tab.clone()));
     }
     if q.scope != d.scope {

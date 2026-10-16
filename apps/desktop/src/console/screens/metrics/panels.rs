@@ -21,6 +21,10 @@ const PORTIONS: u16 = 1000;
 /// A panel's card with its body. The grid sets the card's width from `p.span`.
 pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
     let pal = palette();
+    // Tiles and health have no title: they sit bare on the grid, as in the design, unless pinned elsewhere.
+    if p.title.is_empty() && p.pinned.is_none() {
+        return container(body(p, state)).width(Length::Fill).into();
+    }
     let mut head: Vec<Element<'a, Msg>> = vec![
         text(p.title.as_str())
             .font(SANS_SEMIBOLD)

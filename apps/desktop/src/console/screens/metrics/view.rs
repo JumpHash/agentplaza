@@ -652,7 +652,8 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
                 ..Default::default()
             });
         cells.push(
-            button(column![label, underline].spacing(8))
+            // Shrink: the underline fills the label's width, not the row's, so the tabs wrap in rows.
+            button(column![label, underline].spacing(8).width(Length::Shrink))
                 .padding(Padding {
                     top: 8.0,
                     right: 10.0,
