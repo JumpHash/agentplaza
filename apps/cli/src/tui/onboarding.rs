@@ -489,14 +489,14 @@ impl Onboarding {
             DEPS_SCREEN => lines.extend(self.deps_lines(palette)),
             3 => {
                 lines.push(line(&self.keys_text(), palette.paper, true));
-                if let Some(Ok(keys)) = self.facts.as_ref().map(|f| &f.keys) {
-                    if !keys.missing.is_empty() {
-                        lines.push(line(
-                            &format!("Without a key: {}", keys.missing.join(", ")),
-                            palette.accent,
-                            false,
-                        ));
-                    }
+                if let Some(Ok(keys)) = self.facts.as_ref().map(|f| &f.keys)
+                    && !keys.missing.is_empty()
+                {
+                    lines.push(line(
+                        &format!("Without a key: {}", keys.missing.join(", ")),
+                        palette.accent,
+                        false,
+                    ));
                 }
                 lines.push(Line::from(""));
                 lines.push(line(
@@ -968,8 +968,10 @@ mod tests {
     #[test]
     fn saving_a_part_keeps_the_hubs_and_the_other_flag() {
         let path = temp_file("persist");
-        let mut config = Config::default();
-        config.default = Some("home".to_string());
+        let mut config = Config {
+            default: Some("home".to_string()),
+            ..Default::default()
+        };
         config.hubs.insert(
             "home".to_string(),
             crate::ctx::SavedHub {

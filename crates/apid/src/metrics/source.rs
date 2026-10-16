@@ -217,7 +217,7 @@ pub mod reads {
         let open: Vec<(SeriesKey, u64, Agg)> = lock(&src.m.rollup)
             .open_at(tier)
             .filter(|(key, start, _)| {
-                key.metric == metric && *start >= from_ms && *start < to_ms && keep(*key)
+                key.metric == metric && *start >= from_ms && *start < to_ms && keep(key)
             })
             .map(|(key, start, agg)| (key.clone(), start, agg.clone()))
             .collect();
@@ -277,20 +277,20 @@ pub mod reads {
             })
             .collect();
         groups.sort_by(|a, b| b.0.total().total_cmp(&a.0.total()));
-        if let Some(top) = read.top {
-            if groups.len() > top {
-                let folded: Vec<Vec<(u64, Agg)>> = groups
-                    .split_off(top)
-                    .into_iter()
-                    .flat_map(|(_, windows)| windows)
-                    .collect();
-                let other = Group {
-                    name: "other".to_string(),
-                    scope: None,
-                    values: bucket(&folded),
-                };
-                groups.push((other, folded));
-            }
+        if let Some(top) = read.top
+            && groups.len() > top
+        {
+            let folded: Vec<Vec<(u64, Agg)>> = groups
+                .split_off(top)
+                .into_iter()
+                .flat_map(|(_, windows)| windows)
+                .collect();
+            let other = Group {
+                name: "other".to_string(),
+                scope: None,
+                values: bucket(&folded),
+            };
+            groups.push((other, folded));
         }
         let mut out: Vec<Group> = groups.into_iter().map(|(group, _)| group).collect();
         out.sort_by(|a, b| b.total().total_cmp(&a.total()));

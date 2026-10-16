@@ -1120,7 +1120,7 @@ fn stations_view(state: &State) -> Element<'_, Msg> {
         ),
         Load::Ready(list) => {
             let mut sorted: Vec<&Station> = list.iter().collect();
-            sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            sorted.sort_by_key(|a| a.name.to_lowercase());
             table(
                 &[
                     (3, "Name"),
@@ -1208,7 +1208,7 @@ fn codes_view(state: &State) -> Element<'_, Msg> {
         ),
         Load::Ready(list) => {
             let mut sorted: Vec<&Code> = list.iter().collect();
-            sorted.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+            sorted.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
             table(
                 &[
                     (3, "Label"),

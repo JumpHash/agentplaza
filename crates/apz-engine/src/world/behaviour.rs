@@ -425,7 +425,7 @@ pub fn pick_index(weights: &[f64], u: f64) -> Option<usize> {
     for w in weights {
         total += w;
     }
-    if !(total > 0.0) {
+    if total.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     let mut x = u * total;
@@ -558,10 +558,10 @@ impl<'c> Behaviour<'c> {
             return &t.category;
         }
         for t in &cfg.tools {
-            if let Some(prefix) = t.pattern.strip_suffix('*') {
-                if tool.starts_with(prefix) {
-                    return &t.category;
-                }
+            if let Some(prefix) = t.pattern.strip_suffix('*')
+                && tool.starts_with(prefix)
+            {
+                return &t.category;
             }
         }
         "default"
@@ -609,12 +609,11 @@ impl<'c> Behaviour<'c> {
                     d.pending = false;
                     d.until = until;
                 }
-                if let Some(p) = partner {
-                    if let Some(h) = self.mems.get_mut(&p).and_then(|m| m.dec.as_mut()) {
-                        if h.partner == Some(cid) {
-                            h.until = until;
-                        }
-                    }
+                if let Some(p) = partner
+                    && let Some(h) = self.mems.get_mut(&p).and_then(|m| m.dec.as_mut())
+                    && h.partner == Some(cid)
+                {
+                    h.until = until;
                 }
             }
         }
@@ -746,10 +745,10 @@ impl<'c> Behaviour<'c> {
         if eff != d.state || d.held != self.held {
             return true;
         }
-        if let Some(sp) = &d.spot {
-            if b.avoid.contains(sp) {
-                return true;
-            }
+        if let Some(sp) = &d.spot
+            && b.avoid.contains(sp)
+        {
+            return true;
         }
         if self.now >= d.until {
             return true;
@@ -785,17 +784,16 @@ impl<'c> Behaviour<'c> {
         let Some(d) = self.mems.get_mut(&cid).and_then(|m| m.dec.take()) else {
             return;
         };
-        if let Some(s) = &d.spot {
-            if self.reserved.get(s) == Some(&cid) {
-                self.reserved.remove(s);
-            }
+        if let Some(s) = &d.spot
+            && self.reserved.get(s) == Some(&cid)
+        {
+            self.reserved.remove(s);
         }
-        if let Some(p) = d.partner {
-            if let Some(pd) = self.mems.get_mut(&p).and_then(|m| m.dec.as_mut()) {
-                if pd.partner == Some(cid) {
-                    pd.until = now;
-                }
-            }
+        if let Some(p) = d.partner
+            && let Some(pd) = self.mems.get_mut(&p).and_then(|m| m.dec.as_mut())
+            && pd.partner == Some(cid)
+        {
+            pd.until = now;
         }
     }
 
@@ -847,23 +845,23 @@ impl<'c> Behaviour<'c> {
                     continue;
                 }
                 "desk" => {
-                    if let Some(key) = b.desk.as_deref() {
-                        if let Some(&i) = self.spot_by_key.get(key) {
-                            let s = &self.spots[i];
-                            if self.free(&s.key, b.cid) && !b.avoid.contains(&s.key) {
-                                let d = self.distance(&b.at, &spot_pos(s));
-                                return Some(Loc::Spot { idx: i, d });
-                            }
+                    if let Some(key) = b.desk.as_deref()
+                        && let Some(&i) = self.spot_by_key.get(key)
+                    {
+                        let s = &self.spots[i];
+                        if self.free(&s.key, b.cid) && !b.avoid.contains(&s.key) {
+                            let d = self.distance(&b.at, &spot_pos(s));
+                            return Some(Loc::Spot { idx: i, d });
                         }
                     }
                     continue;
                 }
                 _ => {}
             }
-            if let Some(p) = tok.strip_prefix("prop:") {
-                if !props.iter().any(|x| x == p) {
-                    continue;
-                }
+            if let Some(p) = tok.strip_prefix("prop:")
+                && !props.iter().any(|x| x == p)
+            {
+                continue;
             }
             let want = match slot {
                 Some(s) if tok == "component" => format!("component:{s}"),
@@ -937,10 +935,11 @@ impl<'c> Behaviour<'c> {
                 {
                     return None;
                 }
-                if let Some(k) = self.kind_of(o.cid) {
-                    if k != Kind::Idle && k != Kind::Work {
-                        return None;
-                    }
+                if let Some(k) = self.kind_of(o.cid)
+                    && k != Kind::Idle
+                    && k != Kind::Work
+                {
+                    return None;
                 }
                 Some(Partner {
                     cid: o.cid,
@@ -1203,10 +1202,10 @@ impl<'c> Behaviour<'c> {
         let chat = self.chat_pick(&b, &mut rng);
         let mut entries: Vec<Entry<'c>> = Vec::new();
         for def in &cfg.idle {
-            if let Some(g) = &def.gate {
-                if b.personality.get(&g.trait_name).unwrap_or(0.0) < g.min {
-                    continue;
-                }
+            if let Some(g) = &def.gate
+                && b.personality.get(&g.trait_name).unwrap_or(0.0) < g.min
+            {
+                continue;
             }
             if def.activity == "quirk" {
                 for q in &b.quirks {
@@ -1311,7 +1310,10 @@ impl<'c> Behaviour<'c> {
                         continue;
                     }
                     let d = self.distance(&c.at, &o.at);
-                    if !(d <= radius) {
+                    if !matches!(
+                        d.partial_cmp(&radius),
+                        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                    ) {
                         continue;
                     }
                     near.push((o.cid, d));
@@ -1686,7 +1688,7 @@ pub fn run_scenario(cfg: &BehaviourConfig, s: u32) -> ScenarioRun {
                 }
             }
         }
-        let held = s % 5 == 0 && t >= 20;
+        let held = s.is_multiple_of(5) && t >= 20;
         let mut events: Vec<EventIn> = Vec::new();
         if rng.next_f64() < 0.2 {
             let kind = pick(&mut rng, 5);
@@ -1940,12 +1942,12 @@ mod tests {
         }
         let mut parent: BTreeMap<i64, i64> = out.iter().map(|d| (d.cid, d.cid)).collect();
         for d in out {
-            if let Some(p) = d.partner {
-                if parent.contains_key(&p) {
-                    let a = find(&parent, d.cid);
-                    let b = find(&parent, p);
-                    parent.insert(a, b);
-                }
+            if let Some(p) = d.partner
+                && parent.contains_key(&p)
+            {
+                let a = find(&parent, d.cid);
+                let b = find(&parent, p);
+                parent.insert(a, b);
             }
         }
         let mut sizes: BTreeMap<i64, usize> = BTreeMap::new();

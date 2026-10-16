@@ -551,7 +551,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                             state.journal.push(e);
                         }
                     }
-                    state.journal.sort_by(|a, b| b.id.cmp(&a.id));
+                    state.journal.sort_by_key(|a| std::cmp::Reverse(a.id));
                     state.journal_next = page.next_before;
                     state.journal_total = page.total;
                 }
@@ -2429,7 +2429,7 @@ fn money(n: f64) -> String {
     let digits = rounded.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -2514,7 +2514,7 @@ fn merge_head(existing: &[Entry], head: Vec<Entry>) -> Vec<Entry> {
     };
     let mut out = head;
     out.extend(existing.iter().filter(|e| e.id < oldest).cloned());
-    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out.sort_by_key(|a| std::cmp::Reverse(a.id));
     out
 }
 

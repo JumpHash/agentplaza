@@ -482,14 +482,13 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
                 wizard.model = fallback;
             }
             wizard.refresh_choices();
-            if wizard.model.is_empty() {
-                if let Some(first) = wizard
+            if wizard.model.is_empty()
+                && let Some(first) = wizard
                     .choices
                     .iter()
                     .find(|c| !picker::trains_on_data(&wizard.models, &c.id))
-                {
-                    wizard.model = first.id.clone();
-                }
+            {
+                wizard.model = first.id.clone();
             }
             wizard.loaded = true;
             wizard.load_error = None;

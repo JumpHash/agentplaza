@@ -11,3 +11,6 @@ name = "mcp_relay"
 path = "src/main.rs"
 
 [dependencies]
+
+[lints]
+workspace = true

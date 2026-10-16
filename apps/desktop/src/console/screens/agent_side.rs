@@ -459,7 +459,7 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
         },
         SideMsg::Loops(Ok(list)) => {
             let mut list = list;
-            list.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+            list.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
             side.loops = list;
             Task::none()
         }
@@ -1099,8 +1099,7 @@ fn reader_view<'a>(
                         None,
                         ui::Kind::Ghost,
                         Some(SideMsg::OpenNote(n.slug.clone())),
-                    )
-                    .into(),
+                    ),
                     None => ui::faint(format!("{b} (missing)")).into(),
                 }
             })

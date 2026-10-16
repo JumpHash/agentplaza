@@ -148,7 +148,9 @@ fn check_picture(label: &str, px: &[u8]) {
         "{label}: the readback is the asked size"
     );
     let distinct: HashSet<[u8; 4]> = px
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2], c[3]])
         .collect();
     assert!(
@@ -157,7 +159,9 @@ fn check_picture(label: &str, px: &[u8]) {
         distinct.len()
     );
     let luma: f64 = px
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| 0.2126 * f64::from(c[0]) + 0.7152 * f64::from(c[1]) + 0.0722 * f64::from(c[2]))
         .sum::<f64>()
         / f64::from(W * H);
@@ -168,6 +172,8 @@ fn check_picture(label: &str, px: &[u8]) {
 }
 
 #[test]
+// GPU_HW_ANIM is a const; the test pins it on, so the assert is deliberate.
+#[allow(clippy::assertions_on_constants)]
 fn real_frames_pass_wgpu_validation_and_show_a_picture() {
     assert!(
         apz_engine::scene::GPU_HW_ANIM,

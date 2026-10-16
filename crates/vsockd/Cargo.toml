@@ -33,3 +33,6 @@ windows-sys = { workspace = true, features = [
 [[bin]]
 name = "vsockd"
 path = "src/main.rs"
+
+[lints]
+workspace = true

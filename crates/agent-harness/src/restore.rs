@@ -113,7 +113,7 @@ fn decode_entropy(hex: &str) -> Option<[u8; ENTROPY_BYTES]> {
         return None;
     }
     let mut bytes = [0u8; ENTROPY_BYTES];
-    for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+    for (byte, pair) in bytes.iter_mut().zip(digits.as_chunks::<2>().0.iter()) {
         *byte = (hex_value(pair[0])? << 4) | hex_value(pair[1])?;
     }
     Some(bytes)

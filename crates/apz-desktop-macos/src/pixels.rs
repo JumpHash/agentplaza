@@ -89,7 +89,7 @@ pub fn repack(
     let mut rgba = Vec::with_capacity(row * height);
     for y in 0..height {
         let start = y * bytes_per_row;
-        for pixel in source[start..start + row].chunks_exact(4) {
+        for pixel in source[start..start + row].as_chunks::<4>().0 {
             rgba.extend_from_slice(&[
                 pixel[layout.red],
                 pixel[layout.green],

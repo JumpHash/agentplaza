@@ -400,10 +400,10 @@ fn export_spec(e: &Export) -> Result<DatasetSpec, String> {
     }
     let since = parse_local(&e.since, "start")?;
     let until = parse_local(&e.until, "end")?;
-    if let (Some(a), Some(b)) = (since, until) {
-        if a >= b {
-            return Err("The start must be before the end.".to_string());
-        }
+    if let (Some(a), Some(b)) = (since, until)
+        && a >= b
+    {
+        return Err("The start must be before the end.".to_string());
     }
     Ok(DatasetSpec {
         kind: e.kind.clone(),
@@ -456,7 +456,7 @@ fn jsonl_problem(text: &str) -> Option<String> {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let sorted: Option<Vec<&'a Dataset>> = state.datasets.as_ref().map(|list| {
         let mut shown: Vec<&'a Dataset> = list.iter().collect();
-        shown.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+        shown.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
         shown
     });
     let count = match &sorted {
@@ -1165,10 +1165,10 @@ fn portion(n: u64, total: u64) -> u16 {
 
 /// Where a dataset came from: its provenance's `source` when it names one, else what its kind says.
 fn source_of(d: &Dataset) -> String {
-    if let Some(s) = d.provenance.get("source").and_then(Value::as_str) {
-        if !s.is_empty() {
-            return s.to_string();
-        }
+    if let Some(s) = d.provenance.get("source").and_then(Value::as_str)
+        && !s.is_empty()
+    {
+        return s.to_string();
     }
     match d.kind.as_str() {
         "upload" => "uploaded file".to_string(),

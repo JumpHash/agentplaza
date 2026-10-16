@@ -1182,12 +1182,12 @@ pub fn parse_litellm(body: &str) -> Result<BTreeMap<String, ModelPrice>, String>
             cache_read: field("cache_read_input_token_cost"),
             cache_write: field("cache_creation_input_token_cost"),
         };
-        if !key.contains('/') {
-            if let Some(provider) = entry.get("litellm_provider").and_then(Value::as_str) {
-                let provider = provider.to_lowercase();
-                if ALIAS_PROVIDERS.contains(&provider.as_str()) {
-                    aliases.push((format!("{provider}/{key}"), price));
-                }
+        if !key.contains('/')
+            && let Some(provider) = entry.get("litellm_provider").and_then(Value::as_str)
+        {
+            let provider = provider.to_lowercase();
+            if ALIAS_PROVIDERS.contains(&provider.as_str()) {
+                aliases.push((format!("{provider}/{key}"), price));
             }
         }
         out.insert(key, price);

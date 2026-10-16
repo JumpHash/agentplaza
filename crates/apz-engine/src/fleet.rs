@@ -1055,7 +1055,7 @@ impl FleetScene {
             let Some(t) = ray_sphere(origin, dir, m.center, m.radius) else {
                 continue;
             };
-            if best.map_or(true, |(bt, _)| t < bt) {
+            if best.is_none_or(|(bt, _)| t < bt) {
                 best = Some((t, id.as_str()));
             }
         }
@@ -1129,6 +1129,13 @@ impl FleetScene {
         if let Some(m) = self.machines.get_mut(id) {
             m.open = t.clamp(0.0, 1.0);
         }
+    }
+}
+
+impl FleetScene {
+    /// A machine's label anchor in the world at rest, the point its name tag sits above, or None for an unknown id.
+    pub fn label_of(&self, id: &str) -> Option<[f32; 3]> {
+        self.machines.get(id).map(|m| m.label)
     }
 }
 
@@ -1308,12 +1315,5 @@ mod tests {
         scene.update(0.016, 0.016, 0.016, &grown);
         assert_eq!(scene.machines.len(), 4);
         assert!(scene.frame().radius > 0.0);
-    }
-}
-
-impl FleetScene {
-    /// A machine's label anchor in the world at rest, the point its name tag sits above, or None for an unknown id.
-    pub fn label_of(&self, id: &str) -> Option<[f32; 3]> {
-        self.machines.get(id).map(|m| m.label)
     }
 }

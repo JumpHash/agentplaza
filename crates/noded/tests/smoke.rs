@@ -22,9 +22,9 @@ use common::request;
 /// seconds and reboot after two beats.
 const RUN_DEADLINE: Duration = Duration::from_secs(180);
 
-/// The guest CID of the live task-ledger test's one-agent fleet. It is well
-/// clear of the live fleet's CIDs (100..=120) so the test never competes for a
-/// socket path with a running daemon.
+// The guest CID of the live task-ledger test's one-agent fleet. It is well
+// clear of the live fleet's CIDs (100..=120) so the test never competes for a
+// socket path with a running daemon.
 
 /// The repository root. The daemon's default image paths are relative to the
 /// working directory, and a test binary's working directory is the package
@@ -134,7 +134,7 @@ fn a_churn_run_boots_heartbeats_and_finishes() {
         .as_u64()
         .expect("the second run's VM has an allocated CID");
     assert!(
-        second_cid >= noded::registry::RUN_CID_BASE && second_cid <= noded::registry::RUN_CID_END,
+        (noded::registry::RUN_CID_BASE..=noded::registry::RUN_CID_END).contains(&second_cid),
         "the second run's CID is inside the run range: {second}"
     );
     assert!(

@@ -81,7 +81,7 @@ pub fn slab(surface: &WalkSurface, thickness: f64) -> Mesh {
 /// support field. The result is the drawn height at that point: the walk height, read back from the mesh.
 pub fn ray_down(mesh: &Mesh, x: f64, z: f64, above: f64) -> Option<f64> {
     let mut best: Option<f64> = None;
-    for t in mesh.indices.chunks_exact(3) {
+    for t in mesh.indices.as_chunks::<3>().0 {
         let Some([a, b, c]) = corners(mesh, t) else {
             continue;
         };
@@ -272,7 +272,7 @@ mod tests {
             },
         );
         let m = slab(&s, 0.1);
-        for t in m.indices.chunks_exact(3) {
+        for t in m.indices.as_chunks::<3>().0 {
             let n = normal(&m, t);
             if t.iter().all(|&i| i < 4) {
                 assert!(n[1] > 0.0, "top triangle {t:?} normal {n:?}");

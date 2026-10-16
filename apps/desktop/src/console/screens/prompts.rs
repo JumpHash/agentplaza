@@ -308,9 +308,7 @@ fn open_editor(st: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
 /// Prefill the body from the kind's template while the author has not typed in it.
 fn refill(st: &mut State) {
     if !st.body_touched {
-        st.new_body = text_editor::Content::with_text(
-            &apz_prompt::template(api_kind(st.new_kind)).to_string(),
-        );
+        st.new_body = text_editor::Content::with_text(apz_prompt::template(api_kind(st.new_kind)));
     }
 }
 
@@ -519,10 +517,10 @@ fn row_card(p: &Summary) -> Element<'_, Msg> {
     if let Some(s) = p.score {
         badges.push(ui::badge(&format!("score {s:.0}"), score_tone(s)));
     }
-    if let Some(b) = p.best_version {
-        if Some(b) != p.active_version {
-            badges.push(ui::badge(&format!("best: v{b}"), ui::Tone::Muted));
-        }
+    if let Some(b) = p.best_version
+        && Some(b) != p.active_version
+    {
+        badges.push(ui::badge(&format!("best: v{b}"), ui::Tone::Muted));
     }
     if p.archived_ms.is_some() {
         badges.push(ui::badge("Archived", ui::Tone::Muted));

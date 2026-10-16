@@ -951,81 +951,6 @@ pub fn meta_body(kind: Kind, d: &Details) -> Result<Value, String> {
     }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_finding_moves_the_cursor_to_its_line() {
-        // A finding on a line selects that line.
-        {
-            let text = "# Title\nfirst line\nsecond";
-            let c = finding_cursor(text, 2).expect("line 2 has a cursor");
-            assert_eq!(
-                c.position,
-                Position {
-                    line: 1,
-                    column: "first line".len()
-                }
-            );
-            assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
-        }
-        // A finding past the end selects the last line.
-        {
-            let c = finding_cursor("a\nbb", 9).expect("clamped to the last line");
-            assert_eq!(c.position, Position { line: 1, column: 2 });
-        }
-        // A document finding has no line to jump to.
-        {
-            assert_eq!(finding_cursor("anything", 0), None);
-        }
-    }
-
-    #[test]
-    fn the_binding_follows_the_kind() {
-        assert_eq!(
-            binding_for(Kind::System, " builder ", false),
-            Some("role:builder".to_string())
-        );
-        assert_eq!(binding_for(Kind::System, "  ", true), None);
-        assert_eq!(
-            binding_for(Kind::AgentsMd, "", true),
-            Some("plaza".to_string())
-        );
-        assert_eq!(binding_for(Kind::AgentsMd, "builder", false), None);
-        assert_eq!(binding_for(Kind::Fragment, "builder", true), None);
-    }
-
-    #[test]
-    fn the_meta_body_is_built_from_the_form_fields() {
-        // The form fields are carried trimmed.
-        {
-            let d = Details {
-                title: "  Builder  ".to_string(),
-                description: " Builds things ".to_string(),
-                tags: "review, safety".to_string(),
-                role: "builder".to_string(),
-                every: false,
-            };
-            assert_eq!(
-                meta_body(Kind::System, &d).unwrap(),
-                json!({ "title": "Builder", "description": "Builds things", "tags": ["review", "safety"], "binding": "role:builder" })
-            );
-        }
-        // A fragment sends no binding.
-        {
-            let d = Details {
-                title: "Note".to_string(),
-                role: "builder".to_string(),
-                every: true,
-                ..Details::default()
-            };
-            let body = meta_body(Kind::Fragment, &d).unwrap();
-            assert_eq!(body["binding"], Value::Null);
-        }
-    }
-}
-
 // ---- Views ---------------------------------------------------------------------------------------------------------
 
 fn header(l: &Loaded) -> Element<'_, Msg> {
@@ -1453,4 +1378,79 @@ fn rules_tab(kind: Kind) -> Element<'static, Msg> {
         }
     }
     column(parts).spacing(14).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finding_moves_the_cursor_to_its_line() {
+        // A finding on a line selects that line.
+        {
+            let text = "# Title\nfirst line\nsecond";
+            let c = finding_cursor(text, 2).expect("line 2 has a cursor");
+            assert_eq!(
+                c.position,
+                Position {
+                    line: 1,
+                    column: "first line".len()
+                }
+            );
+            assert_eq!(c.selection, Some(Position { line: 1, column: 0 }));
+        }
+        // A finding past the end selects the last line.
+        {
+            let c = finding_cursor("a\nbb", 9).expect("clamped to the last line");
+            assert_eq!(c.position, Position { line: 1, column: 2 });
+        }
+        // A document finding has no line to jump to.
+        {
+            assert_eq!(finding_cursor("anything", 0), None);
+        }
+    }
+
+    #[test]
+    fn the_binding_follows_the_kind() {
+        assert_eq!(
+            binding_for(Kind::System, " builder ", false),
+            Some("role:builder".to_string())
+        );
+        assert_eq!(binding_for(Kind::System, "  ", true), None);
+        assert_eq!(
+            binding_for(Kind::AgentsMd, "", true),
+            Some("plaza".to_string())
+        );
+        assert_eq!(binding_for(Kind::AgentsMd, "builder", false), None);
+        assert_eq!(binding_for(Kind::Fragment, "builder", true), None);
+    }
+
+    #[test]
+    fn the_meta_body_is_built_from_the_form_fields() {
+        // The form fields are carried trimmed.
+        {
+            let d = Details {
+                title: "  Builder  ".to_string(),
+                description: " Builds things ".to_string(),
+                tags: "review, safety".to_string(),
+                role: "builder".to_string(),
+                every: false,
+            };
+            assert_eq!(
+                meta_body(Kind::System, &d).unwrap(),
+                json!({ "title": "Builder", "description": "Builds things", "tags": ["review", "safety"], "binding": "role:builder" })
+            );
+        }
+        // A fragment sends no binding.
+        {
+            let d = Details {
+                title: "Note".to_string(),
+                role: "builder".to_string(),
+                every: true,
+                ..Details::default()
+            };
+            let body = meta_body(Kind::Fragment, &d).unwrap();
+            assert_eq!(body["binding"], Value::Null);
+        }
+    }
 }

@@ -284,11 +284,11 @@ fn absorb(cur: &mut Cursor, e: &Entry) {
         if !output.is_empty() {
             row.result = output.clone();
         }
-        if name == "foundry_submit_job" {
-            if let Some((id, false)) = job_of(&output) {
-                let status = status_of(&output).unwrap_or_else(|| "submitted".to_string());
-                row.result = format!("job {id} {status}");
-            }
+        if name == "foundry_submit_job"
+            && let Some((id, false)) = job_of(&output)
+        {
+            let status = status_of(&output).unwrap_or_else(|| "submitted".to_string());
+            row.result = format!("job {id} {status}");
         }
     } else if e.kind == "tool_result" {
         if !output.is_empty() && row.result.is_empty() {

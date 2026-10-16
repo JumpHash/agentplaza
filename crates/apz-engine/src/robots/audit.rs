@@ -323,7 +323,7 @@ fn is_closed(verts: &[DVec3]) -> bool {
         ]
     };
     let mut edges: HashMap<([i64; 3], [i64; 3]), u32> = HashMap::new();
-    for t in verts.chunks_exact(3) {
+    for t in verts.as_chunks::<3>().0 {
         let k = [key(t[0]), key(t[1]), key(t[2])];
         for i in 0..3 {
             let (a, b) = (k[i], k[(i + 1) % 3]);
@@ -354,7 +354,7 @@ fn make_piece(
     let stride = (verts.len() / SAMPLES).max(1);
     let samples: Vec<DVec3> = verts.iter().step_by(stride).copied().collect();
     let mut area = 0.0;
-    for t in verts.chunks_exact(3) {
+    for t in verts.as_chunks::<3>().0 {
         area += 0.5 * (t[1] - t[0]).cross(t[2] - t[0]).length();
     }
     let mat = mat_name(p);
@@ -448,10 +448,10 @@ fn world(
 }
 
 fn clip_for<'a>(s: &'a Species, id: &str, shared: &'a BTreeMap<String, Clip>) -> Option<&'a Clip> {
-    if let Some(own) = s.overrides.get(id) {
-        if let Some(c) = s.clips.get(own) {
-            return Some(c);
-        }
+    if let Some(own) = s.overrides.get(id)
+        && let Some(c) = s.clips.get(own)
+    {
+        return Some(c);
     }
     s.clips.get(id).or_else(|| shared.get(id))
 }
@@ -564,7 +564,9 @@ fn tri_dist_sq(t: &[DVec3], p: DVec3) -> f64 {
 /// The distance from p to the piece's surface.
 fn dist_to(pc: &Piece, p: DVec3) -> f64 {
     pc.verts
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| tri_dist_sq(t, p))
         .fold(f64::INFINITY, f64::min)
         .sqrt()
@@ -597,11 +599,11 @@ fn ray_tri(t: &[DVec3], o: DVec3, d: DVec3) -> Option<f64> {
 pub fn ray_hits(list: &[&Piece], o: DVec3, d: DVec3) -> Vec<f64> {
     let mut out = Vec::new();
     for pc in list {
-        for t in pc.verts.chunks_exact(3) {
-            if let Some(hit) = ray_tri(t, o, d) {
-                if hit >= -EPS {
-                    out.push(hit);
-                }
+        for t in pc.verts.as_chunks::<3>().0 {
+            if let Some(hit) = ray_tri(t, o, d)
+                && hit >= -EPS
+            {
+                out.push(hit);
             }
         }
     }
@@ -617,8 +619,10 @@ fn inside_of(pc: &Piece, p: DVec3) -> bool {
     let d = ray_dir();
     let n = pc
         .verts
-        .chunks_exact(3)
-        .filter(|t| ray_tri(t, p, d).is_some_and(|hit| hit > EPS))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .filter(|t| ray_tri(t.as_slice(), p, d).is_some_and(|hit| hit > EPS))
         .count();
     n % 2 == 1
 }
@@ -677,12 +681,13 @@ fn hider_of<'a>(list: &[&'a Piece], from: DVec3, to: DVec3) -> Option<&'a Piece>
         if pc.mat == "clear" {
             continue;
         }
-        for t in pc.verts.chunks_exact(3) {
-            if let Some(hit) = ray_tri(t, from, d) {
-                if hit > EPS && hit < best_t {
-                    best_t = hit;
-                    best = Some(pc);
-                }
+        for t in pc.verts.as_chunks::<3>().0 {
+            if let Some(hit) = ray_tri(t, from, d)
+                && hit > EPS
+                && hit < best_t
+            {
+                best_t = hit;
+                best = Some(pc);
             }
         }
     }
@@ -1125,10 +1130,10 @@ fn check_features(pieces: &[&Piece], face_bones: &[String], issues: &mut Vec<Iss
 fn related(s: &Species, bone: &str) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::from([bone.to_string()]);
     let parent = s.bones.get(bone).map(|b| b.parent.as_str());
-    if let Some(p) = parent {
-        if p != "root" {
-            out.insert(p.to_string());
-        }
+    if let Some(p) = parent
+        && p != "root"
+    {
+        out.insert(p.to_string());
     }
     let trunk = parent.is_none_or(|p| p == "root");
     for (name, b) in &s.bones {
@@ -1359,21 +1364,21 @@ fn check_tools(
                 }
             }
         }
-        if let Some((depth, into)) = worst {
-            if depth > PIERCE {
-                let idx = match by_grip.iter().position(|(g, _)| *g == tool.grip) {
-                    Some(i) => i,
-                    None => {
-                        by_grip.push((tool.grip.clone(), GripHit::default()));
-                        by_grip.len() - 1
-                    }
-                };
-                let hit = &mut by_grip[idx].1;
-                hit.n += 1;
-                hit.names.push(id.clone());
-                if hit.worst.as_ref().is_none_or(|w| depth > w.1) {
-                    hit.worst = Some((id.clone(), depth, into));
+        if let Some((depth, into)) = worst
+            && depth > PIERCE
+        {
+            let idx = match by_grip.iter().position(|(g, _)| *g == tool.grip) {
+                Some(i) => i,
+                None => {
+                    by_grip.push((tool.grip.clone(), GripHit::default()));
+                    by_grip.len() - 1
                 }
+            };
+            let hit = &mut by_grip[idx].1;
+            hit.n += 1;
+            hit.names.push(id.clone());
+            if hit.worst.as_ref().is_none_or(|w| depth > w.1) {
+                hit.worst = Some((id.clone(), depth, into));
             }
         }
     }
@@ -1926,14 +1931,14 @@ pub fn seat_eyes(s: &Species, clips: &BTreeMap<String, Clip>) -> Seat {
                         .iter()
                         .filter_map(|&(px, py)| front_z(px, py))
                         .collect();
-                    if let Some(cz) = front_z(gx, gy) {
-                        if zs.len() == ring.len() {
-                            grid.push((
-                                gx,
-                                gy,
-                                zs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - cz,
-                            ));
-                        }
+                    if let Some(cz) = front_z(gx, gy)
+                        && zs.len() == ring.len()
+                    {
+                        grid.push((
+                            gx,
+                            gy,
+                            zs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - cz,
+                        ));
                     }
                     up += 0.01;
                 }

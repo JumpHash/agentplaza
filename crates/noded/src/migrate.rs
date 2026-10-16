@@ -578,13 +578,13 @@ pub fn abort_import(migrations: &Migrations, import: &str) -> Result<(), Migrate
 /// The value of query parameter `key` as a whole number: `None` when absent.
 fn query_u64(query: &str, key: &str) -> Result<Option<u64>, MigrateError> {
     for pair in query.split('&') {
-        if let Some((name, value)) = pair.split_once('=') {
-            if name == key {
-                return value
-                    .parse()
-                    .map(Some)
-                    .map_err(|_| MigrateError::Invalid(format!("{key} must be a whole number")));
-            }
+        if let Some((name, value)) = pair.split_once('=')
+            && name == key
+        {
+            return value
+                .parse()
+                .map(Some)
+                .map_err(|_| MigrateError::Invalid(format!("{key} must be a whole number")));
         }
     }
     Ok(None)

@@ -215,7 +215,7 @@ mod tests {
             highlighted: false,
         };
         let (canvas, _, _) = draw(&label, 2.0);
-        assert!(canvas.rgba().chunks_exact(4).any(|p| p[3] > 0));
+        assert!(canvas.rgba().as_chunks::<4>().0.iter().any(|p| p[3] > 0));
     }
 
     #[test]

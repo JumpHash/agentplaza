@@ -769,7 +769,7 @@ fn record(sessions: &mut Vec<Session>, engine: &str, id: &str, summary: &str, no
             summary: summary.to_string(),
         }),
     }
-    sessions.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    sessions.sort_by_key(|a| std::cmp::Reverse(a.last_used));
     sessions.truncate(MAX_SESSIONS);
 }
 

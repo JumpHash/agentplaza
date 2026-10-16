@@ -93,7 +93,6 @@ impl Store {
     }
 
     /// The operator asked noded for one more run of `role`; its first hello of that role is it.
-
     pub fn expect(&self, role: &str, model: Option<String>) {
         self.pending
             .lock()

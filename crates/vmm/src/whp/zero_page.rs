@@ -281,9 +281,9 @@ mod tests {
         }
         // too_long_setup_header_is_rejected: 0x9f bytes fit, 0xa0 bytes are rejected.
         {
-            assert!(ZeroPage::new(Some(&vec![0u8; 0x9f])).is_ok());
+            assert!(ZeroPage::new(Some(&[0u8; 0x9f])).is_ok());
             assert_eq!(
-                ZeroPage::new(Some(&vec![0u8; 0xa0])).err(),
+                ZeroPage::new(Some(&[0u8; 0xa0])).err(),
                 Some(ZeroPageError::SetupHeaderTooLong(0xa0))
             );
         }

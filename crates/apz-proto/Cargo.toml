@@ -16,3 +16,6 @@ apz-os = { path = "../apz-os" }
 
 [target.'cfg(windows)'.dependencies]
 apz-uds.workspace = true
+
+[lints]
+workspace = true

@@ -19,3 +19,6 @@ apz-station = { path = "../apz-station" }
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast", "remote_desktop"] }
 pipewire = { version = "0.10", optional = true }
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
+[lints]
+workspace = true

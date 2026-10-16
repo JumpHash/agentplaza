@@ -385,9 +385,7 @@ pub fn importable(files: &[TreeFile], task: Option<&str>) -> Value {
             false,
             Some("no ONNX graph (model.onnx or onnx/model.onnx) in the repo"),
         )
-    } else if has("model_card.json") {
-        (true, None)
-    } else if has("tokenizer.json") && text_task {
+    } else if has("model_card.json") || (has("tokenizer.json") && text_task) {
         (true, None)
     } else if has("tokenizer.json") {
         (
@@ -470,10 +468,10 @@ fn is_base_file(path: &str) -> bool {
 /// The README's first paragraph after any front matter, trimmed to 400 characters.
 pub fn summary(readme: &str) -> String {
     let mut body = readme;
-    if let Some(rest) = readme.strip_prefix("---") {
-        if let Some(end) = rest.find("\n---") {
-            body = &rest[end + 4..];
-        }
+    if let Some(rest) = readme.strip_prefix("---")
+        && let Some(end) = rest.find("\n---")
+    {
+        body = &rest[end + 4..];
     }
     let paragraph: Vec<&str> = body
         .lines()
@@ -611,10 +609,10 @@ fn send(
         let mut builder = ureq::http::Request::builder()
             .method("GET")
             .uri(current.as_str());
-        if uri.host() == Some("huggingface.co") {
-            if let Some(token) = token {
-                builder = builder.header("Authorization", format!("Bearer {token}"));
-            }
+        if uri.host() == Some("huggingface.co")
+            && let Some(token) = token
+        {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         if offset > 0 {
             builder = builder.header("Range", format!("bytes={offset}-"));

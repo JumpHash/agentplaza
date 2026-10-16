@@ -561,9 +561,10 @@ fn inflate(chain: &DescriptorChain, mem: &GuestMemoryMmap, discard: &mut dyn Dis
             return;
         };
         let pfns = bytes
-            .chunks_exact(4)
-            .filter_map(|c| <[u8; 4]>::try_from(c).ok())
-            .map(|c| u64::from(u32::from_le_bytes(c)));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u64::from(u32::from_le_bytes(*c)));
         discard_pages(mem, discard, pfns);
     });
 }
@@ -589,7 +590,7 @@ fn record_stats(chain: &DescriptorChain, mem: &GuestMemoryMmap, stats: &mut BTre
         let Some(bytes) = read_buffer(desc, mem) else {
             return;
         };
-        for entry in bytes.chunks_exact(STAT_ENTRY_SIZE) {
+        for entry in bytes.as_chunks::<STAT_ENTRY_SIZE>().0 {
             if let Some((tag, val)) = parse_stat(entry) {
                 stats.insert(tag, val);
             }

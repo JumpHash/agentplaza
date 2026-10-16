@@ -389,8 +389,8 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>) -> Result<(), Strin
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|a| role.map_or(true, |r| ctx::s(a, "role") == r))
-        .filter(|a| status.map_or(true, |s| ctx::s(a, "status") == s))
+        .filter(|a| role.is_none_or(|r| ctx::s(a, "role") == r))
+        .filter(|a| status.is_none_or(|s| ctx::s(a, "status") == s))
         .collect();
     ctx.out(&Value::Array(agents.clone()), |_| {
         let rows: Vec<Vec<String>> = agents

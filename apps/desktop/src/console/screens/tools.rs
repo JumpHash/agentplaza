@@ -1122,7 +1122,7 @@ fn connectors_section<'a>(state: &State) -> Element<'a, Msg> {
                 let cards: Vec<Element<'a, Msg>> = list
                     .iter()
                     .filter(|c| section_of(c) == section)
-                    .map(|c| connector_card(c))
+                    .map(connector_card)
                     .collect();
                 if !cards.is_empty() {
                     col = col.push(column![group_title(section), ui::card_grid(cards)].spacing(12));
@@ -1548,13 +1548,13 @@ fn library_section<'a>(state: &State) -> Element<'a, Msg> {
         .library
         .iter()
         .filter(|t| t.state == "pending")
-        .map(|t| library_card(t))
+        .map(library_card)
         .collect();
     let rest: Vec<Element<'a, Msg>> = state
         .library
         .iter()
         .filter(|t| t.state != "pending")
-        .map(|t| library_card(t))
+        .map(library_card)
         .collect();
     if !pending.is_empty() {
         col = col.push(

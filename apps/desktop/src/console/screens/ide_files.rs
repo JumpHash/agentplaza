@@ -260,7 +260,7 @@ fn diff_view(file: &FileChange) -> Element<'static, Msg> {
 fn checkpoints_panel(st: &State) -> Element<'_, Msg> {
     let mut list = column![].spacing(10);
     let mut points: Vec<&Checkpoint> = st.checkpoints.iter().collect();
-    points.sort_by(|a, b| b.n.cmp(&a.n));
+    points.sort_by_key(|a| std::cmp::Reverse(a.n));
     if points.is_empty() {
         list = list.push(ui::faint("No checkpoints yet."));
     }

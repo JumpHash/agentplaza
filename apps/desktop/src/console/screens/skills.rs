@@ -954,10 +954,10 @@ fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
     if let Some(score) = s.score {
         badges.push(ui::badge(&format!("score {score:.0}"), score_tone(score)));
     }
-    if let Some(best) = s.best_version {
-        if Some(best) != s.active_version {
-            badges.push(ui::badge(&format!("best: v{best}"), ui::Tone::Muted));
-        }
+    if let Some(best) = s.best_version
+        && Some(best) != s.active_version
+    {
+        badges.push(ui::badge(&format!("best: v{best}"), ui::Tone::Muted));
     }
     badges.push(ui::badge(&source_label(&s.source), ui::Tone::Muted));
     if s.archived_ms.is_some() {

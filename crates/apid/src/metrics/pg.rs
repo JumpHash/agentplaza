@@ -137,12 +137,12 @@ impl PgStore {
         mut op: impl FnMut(&mut postgres::Client) -> Result<T, postgres::Error>,
     ) -> Result<T, String> {
         let mut client = guard(&self.client);
-        match op(&mut *client) {
+        match op(&mut client) {
             Ok(value) => Ok(value),
             Err(e) if e.is_closed() => {
                 *client = postgres::Client::connect(&self.url, postgres::NoTls)
                     .map_err(|e| format!("reconnect failed: {e}"))?;
-                op(&mut *client).map_err(|e| e.to_string())
+                op(&mut client).map_err(|e| e.to_string())
             }
             Err(e) => Err(e.to_string()),
         }

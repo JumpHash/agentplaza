@@ -310,10 +310,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.loaded = true;
             state.missing.clear();
-            if let Some(cid) = state.author {
-                if !state.posts.iter().any(|p| p.agent_cid == cid) {
-                    state.author = None;
-                }
+            if let Some(cid) = state.author
+                && !state.posts.iter().any(|p| p.agent_cid == cid)
+            {
+                state.author = None;
             }
             Task::batch([fetch_files(state, ctx), prefetch_posts(state, ctx)])
         }
@@ -651,7 +651,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             .into_iter()
             .enumerate()
             .map(|(i, p)| (total - i, p))
-            .filter(|(_, p)| state.author.map_or(true, |cid| p.agent_cid == cid))
+            .filter(|(_, p)| state.author.is_none_or(|cid| p.agent_cid == cid))
             .filter(|(_, p)| {
                 needle.is_empty()
                     || format!("{}\n{}", p.subject, p.body)
@@ -829,7 +829,7 @@ fn author_options(state: &State) -> Vec<Author> {
             seen.push((p.agent_cid, state.name_of(p.agent_cid)));
         }
     }
-    seen.sort_by(|x, y| x.1.to_lowercase().cmp(&y.1.to_lowercase()));
+    seen.sort_by_key(|x| x.1.to_lowercase());
     let mut out = vec![Author {
         cid: None,
         name: "All authors".to_string(),

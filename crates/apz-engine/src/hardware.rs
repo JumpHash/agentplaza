@@ -598,10 +598,10 @@ impl Check<'_> {
 
     fn parts(&mut self, list: &[Part]) {
         for p in list {
-            if let Some(id) = &p.id {
-                if !self.ids.insert(id.clone()) {
-                    self.err(format!("duplicate id '{id}'"));
-                }
+            if let Some(id) = &p.id
+                && !self.ids.insert(id.clone())
+            {
+                self.err(format!("duplicate id '{id}'"));
             }
             match &p.mat {
                 Some(MatSpec::Name(n)) => {
@@ -618,20 +618,20 @@ impl Check<'_> {
                 }
                 None => {}
             }
-            if let Some(name) = &p.use_ {
-                if model(name).is_none() {
-                    self.err(format!("unknown part '{name}'"));
-                }
+            if let Some(name) = &p.use_
+                && model(name).is_none()
+            {
+                self.err(format!("unknown part '{name}'"));
             }
-            if let Some(expr) = &p.when {
-                if let Err(e) = parse_when(expr) {
-                    self.err(format!("bad when: {e}"));
-                }
+            if let Some(expr) = &p.when
+                && let Err(e) = parse_when(expr)
+            {
+                self.err(format!("bad when: {e}"));
             }
-            if let Some(t) = &p.tag {
-                if !TAGS.contains(&t.as_str()) {
-                    self.err(format!("unknown tag '{t}'"));
-                }
+            if let Some(t) = &p.tag
+                && !TAGS.contains(&t.as_str())
+            {
+                self.err(format!("unknown tag '{t}'"));
             }
             if let Some(r) = &p.repeat {
                 match &r.count {
@@ -656,15 +656,16 @@ impl Check<'_> {
                     _ => {}
                 }
             }
-            if let Some(d) = p.detail {
-                if d != 1 && d != 2 {
-                    self.err(format!("detail {d} (expected 1 or 2)"));
-                }
+            if let Some(d) = p.detail
+                && d != 1
+                && d != 2
+            {
+                self.err(format!("detail {d} (expected 1 or 2)"));
             }
-            if let Some(l) = &p.label {
-                if Color::css(&l.color).is_none() {
-                    self.err(format!("bad label colour '{}'", l.color));
-                }
+            if let Some(l) = &p.label
+                && Color::css(&l.color).is_none()
+            {
+                self.err(format!("bad label colour '{}'", l.color));
             }
             self.parts(&p.children);
         }
@@ -694,10 +695,10 @@ pub fn validate(model: &Model, name: &str) -> Vec<String> {
             c.err(format!("slot '{}': unknown type '{}'", s.id, s.kind));
         }
     }
-    if let Some(open) = &model.anchors.open {
-        if !c.ids.contains(open) {
-            c.err(format!("anchors.open: missing part '{open}'"));
-        }
+    if let Some(open) = &model.anchors.open
+        && !c.ids.contains(open)
+    {
+        c.err(format!("anchors.open: missing part '{open}'"));
     }
     for t in &model.traces {
         if t.path.len() < 2 {
@@ -1534,14 +1535,13 @@ impl Builder {
         }
         obj.get().fade = self.fade;
 
-        if let Some(name) = &p.use_ {
-            if self.depth < MAX_USE_DEPTH {
-                if let Some(m) = model(name) {
-                    self.depth += 1;
-                    self.add_parts(&obj, &m.parts);
-                    self.depth -= 1;
-                }
-            }
+        if let Some(name) = &p.use_
+            && self.depth < MAX_USE_DEPTH
+            && let Some(m) = model(name)
+        {
+            self.depth += 1;
+            self.add_parts(&obj, &m.parts);
+            self.depth -= 1;
         }
         self.add_parts(&obj, &p.children);
         if let Some(label) = &p.label {
@@ -1907,10 +1907,10 @@ fn box_walk(
                     hi: hi.to_array(),
                 });
             }
-            if let Some(name) = &p.use_ {
-                if let Some(used) = model(name).filter(|_| depth < MAX_USE_DEPTH) {
-                    box_walk(out, vals, &used.parts, m, "parts", depth + 1);
-                }
+            if let Some(name) = &p.use_
+                && let Some(used) = model(name).filter(|_| depth < MAX_USE_DEPTH)
+            {
+                box_walk(out, vals, &used.parts, m, "parts", depth + 1);
             }
             box_walk(
                 out,

@@ -105,10 +105,10 @@ fn edge_of(kind: u8) -> Option<Edge> {
 
 /// Rule 2: the plannable cell nearest to (x, z), or None (nav-plan.ts snapWalk).
 pub fn snap_walk(grid: &NavGrid, x: f64, z: f64) -> Option<usize> {
-    if let Some(c) = grid.cell_at(x, z) {
-        if grid.walk[c] == 1 {
-            return Some(c);
-        }
+    if let Some(c) = grid.cell_at(x, z)
+        && grid.walk[c] == 1
+    {
+        return Some(c);
     }
     let ci = ((x - grid.x0) / grid.cell).floor() as i64;
     let cj = ((z - grid.z0) / grid.cell).floor() as i64;
@@ -270,31 +270,32 @@ pub fn find_path(
         }
         // Portal edges are extra to the 8 moves.
         let p = grid.portal[c];
-        if p >= 0 {
-            if let Some(pt) = grid.portals.get(p as usize) {
-                if !(no_lifts && pt.kind == PortalKind::Lift) {
-                    let o = if c == pt.a {
-                        Some(pt.b)
-                    } else if c == pt.b {
-                        Some(pt.a)
-                    } else {
-                        None
-                    };
-                    if let Some(o) = o {
-                        if o < n_cells && grid.walk[o] == 1 && !closed[o] {
-                            let gn = gc + pt.cost;
-                            if gn < g[o] {
-                                g[o] = gn;
-                                parent[o] = Some(c);
-                                via[o] = p;
-                                edge_kind[o] = 0;
-                                open.push(Open {
-                                    f: gn + h(o),
-                                    idx: o,
-                                });
-                            }
-                        }
-                    }
+        if p >= 0
+            && let Some(pt) = grid.portals.get(p as usize)
+            && !(no_lifts && pt.kind == PortalKind::Lift)
+        {
+            let o = if c == pt.a {
+                Some(pt.b)
+            } else if c == pt.b {
+                Some(pt.a)
+            } else {
+                None
+            };
+            if let Some(o) = o
+                && o < n_cells
+                && grid.walk[o] == 1
+                && !closed[o]
+            {
+                let gn = gc + pt.cost;
+                if gn < g[o] {
+                    g[o] = gn;
+                    parent[o] = Some(c);
+                    via[o] = p;
+                    edge_kind[o] = 0;
+                    open.push(Open {
+                        f: gn + h(o),
+                        idx: o,
+                    });
                 }
             }
         }

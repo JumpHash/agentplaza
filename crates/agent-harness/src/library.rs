@@ -552,13 +552,12 @@ fn unpack(
         }
         return Err(format!("cannot unpack {}: {err}", dir.display()));
     }
-    if !program.requires.is_empty() {
-        if let Err(err) = install_packages(workspace, &json!({ "packages": program.requires })) {
-            if !err.contains("already installed") {
-                let _ = fs::remove_dir_all(dir);
-                return Err(format!("cannot install the tool's requirements: {err}"));
-            }
-        }
+    if !program.requires.is_empty()
+        && let Err(err) = install_packages(workspace, &json!({ "packages": program.requires }))
+        && !err.contains("already installed")
+    {
+        let _ = fs::remove_dir_all(dir);
+        return Err(format!("cannot install the tool's requirements: {err}"));
     }
     Ok(())
 }
@@ -770,7 +769,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     let bad = || "the content is not valid base64".to_string();
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(bad());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
@@ -811,6 +810,52 @@ fn sextet_of(byte: u8) -> Option<u8> {
         b'/' => Some(63),
         _ => None,
     }
+}
+
+/// In a root guest, hands the unpacked tree to the agent user (uid 1000), so a tool that
+/// writes beside itself works when it runs as the agent.
+fn give_to_agent(dir: &Path) -> Result<(), String> {
+    if !crate::bash::runs_as_root().unwrap_or(false) {
+        return Ok(());
+    }
+    let id = crate::bash::UNPRIVILEGED;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        std::os::unix::fs::lchown(&path, Some(id), Some(id))
+            .map_err(|e| format!("cannot hand {} to the agent: {e}", path.display()))?;
+        if path.is_dir() {
+            for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                stack.push(entry.map_err(|e| e.to_string())?.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What the model hears after `tool_package`: the tool's name, file count, size and hash.
+pub fn summary(bundle: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(bundle) else {
+        return "packaged".to_string();
+    };
+    let p = &value["package"];
+    let files = p["files"].as_array().map_or(0, Vec::len);
+    let bytes: usize = p["files"].as_array().map_or(0, |f| {
+        f.iter()
+            .filter_map(|x| x["content_b64"].as_str())
+            .map(|s| s.len() * 3 / 4)
+            .sum()
+    });
+    format!(
+        "packaged x_{} ({files} files, ~{} KiB, hash {}) for the plaza's library{}",
+        p["name"].as_str().unwrap_or("?"),
+        bytes.div_ceil(1024),
+        p["hash"].as_str().map_or("?", |h| &h[..h.len().min(12)]),
+        if p["publish"].as_bool() == Some(true) {
+            "; publishing to every agent awaits review"
+        } else {
+            "; it is yours to use now as a tool"
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1210,50 +1255,4 @@ mod tests {
         assert!(err.contains("413") && err.contains("too big"), "{err}");
         server.join().expect("the server");
     }
-}
-
-/// In a root guest, hands the unpacked tree to the agent user (uid 1000), so a tool that
-/// writes beside itself works when it runs as the agent.
-fn give_to_agent(dir: &Path) -> Result<(), String> {
-    if !crate::bash::runs_as_root().unwrap_or(false) {
-        return Ok(());
-    }
-    let id = crate::bash::UNPRIVILEGED;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        std::os::unix::fs::lchown(&path, Some(id), Some(id))
-            .map_err(|e| format!("cannot hand {} to the agent: {e}", path.display()))?;
-        if path.is_dir() {
-            for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
-                stack.push(entry.map_err(|e| e.to_string())?.path());
-            }
-        }
-    }
-    Ok(())
-}
-
-/// What the model hears after `tool_package`: the tool's name, file count, size and hash.
-pub fn summary(bundle: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(bundle) else {
-        return "packaged".to_string();
-    };
-    let p = &value["package"];
-    let files = p["files"].as_array().map_or(0, Vec::len);
-    let bytes: usize = p["files"].as_array().map_or(0, |f| {
-        f.iter()
-            .filter_map(|x| x["content_b64"].as_str())
-            .map(|s| s.len() * 3 / 4)
-            .sum()
-    });
-    format!(
-        "packaged x_{} ({files} files, ~{} KiB, hash {}) for the plaza's library{}",
-        p["name"].as_str().unwrap_or("?"),
-        bytes.div_ceil(1024),
-        p["hash"].as_str().map_or("?", |h| &h[..h.len().min(12)]),
-        if p["publish"].as_bool() == Some(true) {
-            "; publishing to every agent awaits review"
-        } else {
-            "; it is yours to use now as a tool"
-        },
-    )
 }

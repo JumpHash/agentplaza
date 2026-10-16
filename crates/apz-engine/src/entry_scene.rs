@@ -350,13 +350,13 @@ impl Entry {
         p.floor.statics_dirty = true;
         p.machines.statics_dirty = true;
         set_dynamic_all(p.floor, true);
-        if let Some(fleet) = p.fleet.as_deref_mut() {
-            if self.handoff.is_some() {
-                // The fleet joins the plaza for the sequence (a reverse after a finish joins it again: `attach` keeps one).
-                attach(&p.machines.root, &fleet.group, false);
-                attach(&p.floor.root, &fleet.group, true);
-                fleet.group.set_dynamic(true);
-            }
+        if let Some(fleet) = p.fleet.as_deref_mut()
+            && self.handoff.is_some()
+        {
+            // The fleet joins the plaza for the sequence (a reverse after a finish joins it again: `attach` keeps one).
+            attach(&p.machines.root, &fleet.group, false);
+            attach(&p.floor.root, &fleet.group, true);
+            fleet.group.set_dynamic(true);
         }
         attach(&p.floor.root, &self.light, self.handoff.is_some());
     }

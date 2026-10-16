@@ -457,7 +457,7 @@ fn normalize_cpuid_topology(
                         set_range(
                             &mut entry.eax,
                             0..=4,
-                            u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2()),
+                            MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2(),
                         );
                         // All logical processors fit in the next
                         // higher-scoped domain (the socket).
@@ -488,24 +488,24 @@ impl Peripherals {
         match exit {
             VcpuExit::IoIn(addr, data) => {
                 data.fill(0);
-                if let Some(pio_bus) = &self.pio_bus {
-                    if let Err(err) = pio_bus.read(u64::from(addr), data) {
-                        eprintln!(
-                            "warning: vcpu: IO read @ {addr:#x}:{:#x} failed: {err}",
-                            data.len()
-                        );
-                    }
+                if let Some(pio_bus) = &self.pio_bus
+                    && let Err(err) = pio_bus.read(u64::from(addr), data)
+                {
+                    eprintln!(
+                        "warning: vcpu: IO read @ {addr:#x}:{:#x} failed: {err}",
+                        data.len()
+                    );
                 }
                 Ok(VcpuEmulation::Handled)
             }
             VcpuExit::IoOut(addr, data) => {
-                if let Some(pio_bus) = &self.pio_bus {
-                    if let Err(err) = pio_bus.write_and_wait(u64::from(addr), data) {
-                        eprintln!(
-                            "warning: vcpu: IO write @ {addr:#x}:{:#x} failed: {err}",
-                            data.len()
-                        );
-                    }
+                if let Some(pio_bus) = &self.pio_bus
+                    && let Err(err) = pio_bus.write_and_wait(u64::from(addr), data)
+                {
+                    eprintln!(
+                        "warning: vcpu: IO write @ {addr:#x}:{:#x} failed: {err}",
+                        data.len()
+                    );
                 }
                 Ok(VcpuEmulation::Handled)
             }
@@ -1180,7 +1180,7 @@ mod tests {
             let sub1 = &entries[2];
             assert_eq!(
                 sub1.eax & 0x1f,
-                u32::from(MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2())
+                MAX_SUPPORTED_VCPUS.next_power_of_two().ilog2()
             );
             assert_eq!(sub1.ebx & 0xffff, 6);
             assert_eq!(sub1.ecx & 0xff, 1);

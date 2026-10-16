@@ -238,17 +238,17 @@ fn set_plaza(m: &NodeMetrics, plaza: &PlazaUsage) {
 /// The rates of the disks' and the network's byte totals since the previous call. The first call, and a call
 /// that finds the clock unmoved or a counter gone backwards, sets nothing.
 fn set_io_rates(m: &NodeMetrics, now_ms: u64) {
-    if let Some(bytes) = read_file("/proc/diskstats").and_then(|text| disk_bytes(&text)) {
-        if let Some([read, written]) = rates(&mut lock(&DISK_TOTALS), now_ms, bytes) {
-            m.gauge(node_series("host.disk_read_bps")).set(read);
-            m.gauge(node_series("host.disk_write_bps")).set(written);
-        }
+    if let Some(bytes) = read_file("/proc/diskstats").and_then(|text| disk_bytes(&text))
+        && let Some([read, written]) = rates(&mut lock(&DISK_TOTALS), now_ms, bytes)
+    {
+        m.gauge(node_series("host.disk_read_bps")).set(read);
+        m.gauge(node_series("host.disk_write_bps")).set(written);
     }
-    if let Some(bytes) = read_file("/proc/net/dev").and_then(|text| net_bytes(&text)) {
-        if let Some([received, sent]) = rates(&mut lock(&NET_TOTALS), now_ms, bytes) {
-            m.gauge(node_series("host.net_rx_bps")).set(received);
-            m.gauge(node_series("host.net_tx_bps")).set(sent);
-        }
+    if let Some(bytes) = read_file("/proc/net/dev").and_then(|text| net_bytes(&text))
+        && let Some([received, sent]) = rates(&mut lock(&NET_TOTALS), now_ms, bytes)
+    {
+        m.gauge(node_series("host.net_rx_bps")).set(received);
+        m.gauge(node_series("host.net_tx_bps")).set(sent);
     }
 }
 

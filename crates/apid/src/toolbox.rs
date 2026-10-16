@@ -93,7 +93,7 @@ impl Store {
             .lock()
             .map(|items| items.clone())
             .unwrap_or_default();
-        items.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+        items.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
         items
     }
 

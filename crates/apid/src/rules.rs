@@ -143,7 +143,7 @@ fn override_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Err(response) => return response,
     };
     set_override_answer(
-        &app.laws,
+        app.laws,
         &app.bus,
         params.get("law"),
         &body,
@@ -332,7 +332,7 @@ fn infractions_of(app: &App, cid: Option<u64>, limit: i64) -> Vec<Infraction> {
             detail: v.detail,
         })
         .collect();
-    found.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    found.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
     found.truncate(usize::try_from(limit).unwrap_or(0));
     found
 }

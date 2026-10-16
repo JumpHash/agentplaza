@@ -52,3 +52,6 @@ vm-fdt.workspace = true
 
 [lib]
 name = "vmm"
+
+[lints]
+workspace = true

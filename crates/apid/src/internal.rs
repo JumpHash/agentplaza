@@ -541,16 +541,17 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             let _ = meter(app, cid, work, 1, "tool report");
             // A report carries no duration of its own, so the tool's time is recorded as 0.
             collect::tool_call(app, cid, &take_tool(cid, &call), 0.0, ok);
-            if crate::library::take_package_call(cid, &call) && ok {
-                if let Err(err) = crate::library::accept(app, cid, &output) {
-                    app.transcripts.record(
-                        &app.bus,
-                        cid,
-                        work,
-                        "error",
-                        json!({ "message": format!("tool_package: {err}") }),
-                    );
-                }
+            if crate::library::take_package_call(cid, &call)
+                && ok
+                && let Err(err) = crate::library::accept(app, cid, &output)
+            {
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    work,
+                    "error",
+                    json!({ "message": format!("tool_package: {err}") }),
+                );
             }
             app.transcripts.record(
                 &app.bus,
@@ -879,7 +880,7 @@ fn tool_request(
         .map(|t| t.name)
         .collect();
     // The plaza's laws and the grant come first (see `gate_call`).
-    let verdict = gate_call(&app.laws, cid, &agent.role, &granted, name, input)
+    let verdict = gate_call(app.laws, cid, &agent.role, &granted, name, input)
         .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err));
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue. An ACP engine's own request may wait

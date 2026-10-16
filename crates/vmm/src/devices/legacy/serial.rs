@@ -272,10 +272,10 @@ impl BusDevice for SerialWrapper {
     }
 
     fn write(&mut self, _base: u64, offset: u64, data: &[u8]) -> Option<Arc<Barrier>> {
-        if let (Ok(offset), 1) = (u8::try_from(offset), data.len()) {
-            if let Err(err) = self.serial.write(offset, data[0]) {
-                eprintln!("warning: failed the write to serial: {err:?}");
-            }
+        if let (Ok(offset), 1) = (u8::try_from(offset), data.len())
+            && let Err(err) = self.serial.write(offset, data[0])
+        {
+            eprintln!("warning: failed the write to serial: {err:?}");
         }
         // Wider or unaligned writes are dropped (upstream counts a
         // missed-write metric here).

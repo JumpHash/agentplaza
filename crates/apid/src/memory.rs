@@ -188,7 +188,7 @@ impl Memory {
             ));
         }
         // A stable sort keeps the newest-first order among equal scores.
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
         scored.into_iter().take(limit).map(|(_, hit)| hit).collect()
     }
 
@@ -289,10 +289,10 @@ impl Memory {
 
     /// Deletes every note of `cid`, its whole memory library.
     pub fn wipe(&self, cid: u64) {
-        if let Err(err) = std::fs::remove_dir_all(self.dir(cid)) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("apid: memory wipe {cid}: {err}");
-            }
+        if let Err(err) = std::fs::remove_dir_all(self.dir(cid))
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("apid: memory wipe {cid}: {err}");
         }
     }
 

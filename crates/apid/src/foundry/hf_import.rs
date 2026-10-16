@@ -181,7 +181,7 @@ impl Imports {
 
     pub fn list(&self) -> Vec<Import> {
         let mut imports = self.lock().imports.clone();
-        imports.sort_by(|a, b| b.n.cmp(&a.n));
+        imports.sort_by_key(|i| std::cmp::Reverse(i.n));
         imports
     }
 

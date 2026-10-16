@@ -474,13 +474,13 @@ pub fn validate_meta(
             "at most {MAX_TAGS} tags of 1-{MAX_TAG} characters"
         )));
     }
-    if let Some(b) = binding {
-        if !valid_binding(kind, b) {
-            return Err(invalid(format!(
-                "{} prompts cannot bind to {b}",
-                kind.as_str()
-            )));
-        }
+    if let Some(b) = binding
+        && !valid_binding(kind, b)
+    {
+        return Err(invalid(format!(
+            "{} prompts cannot bind to {b}",
+            kind.as_str()
+        )));
     }
     Ok(())
 }

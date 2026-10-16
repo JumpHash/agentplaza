@@ -186,7 +186,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     }
                 }
             }
-            state.feed.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+            state.feed.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
             state.feed.truncate(FEED_MAX);
             state.overview = Some(snap.overview);
             state.agents = snap.agents;

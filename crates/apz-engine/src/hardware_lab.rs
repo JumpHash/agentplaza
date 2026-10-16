@@ -89,10 +89,10 @@ fn direction(cam: &str) -> Vec3 {
 /// The camera's eye and target for `cam`: the model's anchor view when `anchor` names one, else the preset framed on the
 /// model's size (its half-diagonal, 40 degrees of field, 0.9 of the frame).
 fn view(model: &hardware::Model, cam: &str) -> ([f32; 3], [f32; 3]) {
-    if cam == "anchor" {
-        if let Some(c) = model.anchors.camera {
-            return (c.at, c.look);
-        }
+    if cam == "anchor"
+        && let Some(c) = model.anchors.camera
+    {
+        return (c.at, c.look);
     }
     let [w, h, d] = model.size;
     let centre = Vec3::new(0.0, h / 2.0, 0.0);

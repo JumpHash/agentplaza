@@ -13,3 +13,6 @@ apz-desktop = { path = "../apz-desktop" }
 apz-station = { path = "../apz-station" }
 libc.workspace = true
 x11rb = { version = "0.13", features = ["shm", "xtest", "screensaver"] }
+
+[lints]
+workspace = true

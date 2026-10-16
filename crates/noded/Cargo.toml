@@ -30,3 +30,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "noded"
 path = "src/main.rs"
+
+[lints]
+workspace = true

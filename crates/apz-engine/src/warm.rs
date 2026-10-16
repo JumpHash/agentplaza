@@ -112,10 +112,10 @@ impl<V> BuildCache<V> {
     /// pushed out (the replaced one, then the oldest past `max`) for the caller to dispose.
     pub fn insert(&mut self, key: String, value: V) -> Vec<V> {
         let mut out = Vec::new();
-        if let Some(i) = self.position(&key) {
-            if let Some((_, old)) = self.entries.remove(i) {
-                out.push(old);
-            }
+        if let Some(i) = self.position(&key)
+            && let Some((_, old)) = self.entries.remove(i)
+        {
+            out.push(old);
         }
         self.entries.push_back((key, value));
         while self.entries.len() > self.max {

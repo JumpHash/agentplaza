@@ -611,7 +611,7 @@ impl Laws {
             .iter()
             .filter(|v| v.at_ms + WINDOW_MS >= now_ms)
             .collect();
-        found.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+        found.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
         found
             .into_iter()
             .map(|v| serde_json::to_value(v).unwrap_or(Json::Null))
@@ -1101,8 +1101,7 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
 
 /// Writes a value as JSON atomically: a temporary file, then a rename over the old one.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
@@ -1155,8 +1154,7 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
 
 /// Writes the violations atomically: a temporary file, then a rename over the old one.
 fn save(path: &Path, all: &BTreeMap<String, Vec<Violation>>) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(all)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let text = serde_json::to_string_pretty(all).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)

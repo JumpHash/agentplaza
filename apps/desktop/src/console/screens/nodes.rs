@@ -1000,7 +1000,7 @@ fn fact<'a>(name: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
 fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     let heads: Vec<(u16, Element<'a, Msg>)> = head
         .iter()
-        .map(|(p, l)| (*p, ui::label(*l).into()))
+        .map(|(p, l)| (*p, ui::label(l).into()))
         .collect();
     let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), ui::hairline()];
     for r in rows {

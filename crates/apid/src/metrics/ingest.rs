@@ -225,11 +225,12 @@ fn corrected(t_ms: u64, shift: i64) -> u64 {
 /// each VM's stats), which stay when the node's batch does not carry them.
 fn merged_reports(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
     if let (serde_json::Value::Object(old), serde_json::Value::Object(fresh)) = (old, &mut new) {
-        for key in ["top_processes"] {
-            if !fresh.contains_key(key) {
-                if let Some(rows) = old.get(key) {
-                    fresh.insert(key.to_string(), rows.clone());
-                }
+        {
+            let key = "top_processes";
+            if !fresh.contains_key(key)
+                && let Some(rows) = old.get(key)
+            {
+                fresh.insert(key.to_string(), rows.clone());
             }
         }
     }

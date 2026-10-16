@@ -5,6 +5,7 @@
 //!   - `arrived(bot)`: once the robot has reached its goal, starts the activity's clip, tool and carried item (and shows
 //!     the walk clip while it walks);
 //!   - `facing(bot)`: the heading a station or a partner wants, or None (the floor keeps the nav pose's heading).
+//!
 //! The floor owns one `RobotWork`: `note_tool` reports tool calls, `bus_frame` reports hub events, and `frame(dt, bots,
 //! held)` runs once per frame before the poses are read. Nothing here drives the nav world, reads wall-clock time or
 //! draws random numbers: the engine's clock is the frame time.
@@ -309,10 +310,10 @@ impl RobotWork {
             }
             None => tr.talking_to = None,
         }
-        if tool == "plaza_pay" {
-            if let Some(to) = inp.get("to").and_then(Value::as_i64) {
-                self.pending.push(EventIn::Payment { to });
-            }
+        if tool == "plaza_pay"
+            && let Some(to) = inp.get("to").and_then(Value::as_i64)
+        {
+            self.pending.push(EventIn::Payment { to });
         }
     }
 
@@ -353,14 +354,14 @@ impl RobotWork {
                 let Some(author) = d.get("author_cid").and_then(Value::as_i64) else {
                     return;
                 };
-                if let Some(to) = self.orchestrator_cid() {
-                    if to != author {
-                        self.pending.push(EventIn::Deliver {
-                            from: author,
-                            to,
-                            item: Some("crate".into()),
-                        });
-                    }
+                if let Some(to) = self.orchestrator_cid()
+                    && to != author
+                {
+                    self.pending.push(EventIn::Deliver {
+                        from: author,
+                        to,
+                        item: Some("crate".into()),
+                    });
                 }
             }
             "work" => {
@@ -528,10 +529,10 @@ impl RobotWork {
                 None
             };
         }
-        if tr.started == tr.seq {
-            if let Some(face) = d.goal.and_then(|g| g.face) {
-                return Some(face as f32);
-            }
+        if tr.started == tr.seq
+            && let Some(face) = d.goal.and_then(|g| g.face)
+        {
+            return Some(face as f32);
         }
         None
     }
@@ -563,20 +564,20 @@ impl RobotWork {
         tr.has_target = false;
         tr.started = tr.seq;
         let mut robot = robot;
-        if tr.shown.take().is_some() {
-            if let Some(r) = robot.as_mut() {
-                r.play(None, None);
-            }
+        if tr.shown.take().is_some()
+            && let Some(r) = robot.as_mut()
+        {
+            r.play(None, None);
         }
-        if tr.hand.take().is_some() {
-            if let Some(r) = robot.as_mut() {
-                r.hold(None);
-            }
+        if tr.hand.take().is_some()
+            && let Some(r) = robot.as_mut()
+        {
+            r.hold(None);
         }
-        if tr.carried.take().is_some() {
-            if let Some(r) = robot.as_mut() {
-                r.carry(None);
-            }
+        if tr.carried.take().is_some()
+            && let Some(r) = robot.as_mut()
+        {
+            r.carry(None);
         }
     }
 

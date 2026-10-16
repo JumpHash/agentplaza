@@ -9,3 +9,6 @@ publish = false
 [dependencies]
 # The VT parser (MIT or Apache-2.0). Default features only: `std` pulls memchr, nothing else.
 vte = "0.15"
+
+[lints]
+workspace = true

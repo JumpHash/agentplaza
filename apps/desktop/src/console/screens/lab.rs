@@ -738,7 +738,7 @@ fn queue_card(d: &Data) -> Element<'_, Msg> {
 /// The recent models: the newest first, each linked to its detail.
 fn models_card(d: &Data) -> Element<'_, Msg> {
     let mut newest: Vec<&ModelView> = d.models.iter().collect();
-    newest.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    newest.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
     newest.truncate(MODELS_SHOWN);
     let meta = format!("{} registered", lab_common::count(d.models.len() as u64));
     let body: Element<'_, Msg> = if newest.is_empty() {

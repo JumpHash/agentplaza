@@ -170,9 +170,13 @@ pub(super) fn height_at(
     let len2 = dx * dx + dz * dz;
     let mut u = 0.0;
     if len2 > 1e-12 {
-        u = (((x - from[0]) * dx + (z - from[2]) * dz) / len2)
-            .max(0.0)
-            .min(1.0);
+        // max/min, not clamp: a NaN projection must give 0, not NaN.
+        #[allow(clippy::manual_clamp)]
+        {
+            u = (((x - from[0]) * dx + (z - from[2]) * dz) / len2)
+                .max(0.0)
+                .min(1.0);
+        }
     }
     Some(from[1] + (t.y - from[1]) * u)
 }
@@ -308,10 +312,10 @@ impl NavWorld {
         if on_wall {
             self.audit.on_wall += 1;
         }
-        if let (Some(d), Some(_)) = (self.drawn.as_ref(), grid_top) {
-            if drawn_top_at(d, x, z).is_nan() {
-                self.audit.fallback += 1;
-            }
+        if let (Some(d), Some(_)) = (self.drawn.as_ref(), grid_top)
+            && drawn_top_at(d, x, z).is_nan()
+        {
+            self.audit.fallback += 1;
         }
         let sup = self.surfaces_at(x, z).walk_top;
         match sup {
@@ -399,11 +403,12 @@ impl NavWorld {
         r.blocked_since = -1.0;
         r.x = cx;
         r.z = cz;
-        if !lift && full {
-            if let Some(w) = walk {
-                r.next = w.next;
-                r.from = w.from;
-            }
+        if !lift
+            && full
+            && let Some(w) = walk
+        {
+            r.next = w.next;
+            r.from = w.from;
         }
         if !lift {
             self.project_walk(id);
@@ -424,11 +429,11 @@ impl NavWorld {
             let mut prev = self.grid.cell_at(rx, rz);
             let mut ok = true;
             for c in cells {
-                if let Some(p) = prev {
-                    if !step_height_ok(&self.grid, p, c, &edges) {
-                        ok = false;
-                        break;
-                    }
+                if let Some(p) = prev
+                    && !step_height_ok(&self.grid, p, c, &edges)
+                {
+                    ok = false;
+                    break;
                 }
                 prev = Some(c);
             }
@@ -451,8 +456,7 @@ impl NavWorld {
             return out;
         }
         let last = (pts.len() - 1).min(r.next.max(upto));
-        for k in r.next..=last {
-            let p = pts[k];
+        for p in pts.get(r.next..=last).unwrap_or_default() {
             let kind = match p.edge {
                 Some(Edge::Jump) => 1,
                 Some(Edge::Drop) => 2,
@@ -532,10 +536,9 @@ impl NavWorld {
             let ticket = self.lifts.get(&lid).map(|s| s.ctrl.ticket(id));
             if matches!(ticket, Some(LiftTicket::Queued | LiftTicket::Boarding))
                 && !self.path_uses_lift(id, lid)
+                && let Some(s) = self.lifts.get_mut(&lid)
             {
-                if let Some(s) = self.lifts.get_mut(&lid) {
-                    s.ctrl.cancel(id);
-                }
+                s.ctrl.cancel(id);
             }
         }
         if self.avoidance.get(&id).is_some_and(|a| a.hold.is_some()) {
@@ -620,10 +623,10 @@ impl NavWorld {
                 };
                 let (from_y, to_y) = if need == 0 { (low, high) } else { (high, low) };
                 // LiftController.request takes (id, fromY, toY); the handle takes (fromY, toY, id). This call is the controller's.
-                if let Some(s) = self.lifts.get_mut(&lid) {
-                    if matches!(s.ctrl.ticket(id), LiftTicket::None) {
-                        s.ctrl.request(id, from_y as f32, to_y as f32);
-                    }
+                if let Some(s) = self.lifts.get_mut(&lid)
+                    && matches!(s.ctrl.ticket(id), LiftTicket::None)
+                {
+                    s.ctrl.request(id, from_y as f32, to_y as f32);
                 }
                 let boarding = matches!(
                     self.lifts.get(&lid).map(|s| s.ctrl.ticket(id)),
@@ -754,6 +757,8 @@ impl NavWorld {
     }
 
     /// Rule 3c: easing into the final point.
+    // max/min, not clamp: a NaN distance must give ARRIVE_MIN, not NaN.
+    #[allow(clippy::manual_clamp)]
     pub(super) fn arrival_factor(&self, id: u32) -> f64 {
         let r = &self.robots[&id];
         let Some(pts) = r.path.as_deref() else {

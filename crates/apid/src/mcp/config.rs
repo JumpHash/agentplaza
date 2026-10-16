@@ -343,13 +343,13 @@ pub fn validate(server: &McpServer) -> Result<(), Invalid> {
                     "at most 32 arguments of 512 bytes each",
                 ));
             }
-            if let Some(dir) = workdir {
-                if !dir.starts_with('/') || dir.len() > 256 || dir.contains('\0') {
-                    return Err(Invalid::new(
-                        "transport.workdir",
-                        "an absolute path inside the container",
-                    ));
-                }
+            if let Some(dir) = workdir
+                && (!dir.starts_with('/') || dir.len() > 256 || dir.contains('\0'))
+            {
+                return Err(Invalid::new(
+                    "transport.workdir",
+                    "an absolute path inside the container",
+                ));
             }
             for (name, setting) in &server.env {
                 if !env_name(name) || RESERVED_ENV.contains(&name.as_str()) {
@@ -397,13 +397,13 @@ pub fn validate(server: &McpServer) -> Result<(), Invalid> {
             ));
         }
     }
-    if let Pick::Only(names) = &server.tools.allow {
-        if names.iter().any(|n| n.is_empty() || n.len() > 128) {
-            return Err(Invalid::new(
-                "tools.allow",
-                "tool names of 1 to 128 characters",
-            ));
-        }
+    if let Pick::Only(names) = &server.tools.allow
+        && names.iter().any(|n| n.is_empty() || n.len() > 128)
+    {
+        return Err(Invalid::new(
+            "tools.allow",
+            "tool names of 1 to 128 characters",
+        ));
     }
     for (field, pick, check) in [
         (
@@ -417,10 +417,10 @@ pub fn validate(server: &McpServer) -> Result<(), Invalid> {
             role_or_node as fn(&str) -> bool,
         ),
     ] {
-        if let Pick::Only(names) = pick {
-            if names.iter().any(|n| !check(n)) {
-                return Err(Invalid::new(field, "names of letters, digits, '-' or '_'"));
-            }
+        if let Pick::Only(names) = pick
+            && names.iter().any(|n| !check(n))
+        {
+            return Err(Invalid::new(field, "names of letters, digits, '-' or '_'"));
         }
     }
     let limits = &server.limits;
@@ -518,11 +518,11 @@ impl Store {
             version: AtomicU64::new(0),
             saved: AtomicU64::new(0),
         };
-        if let Ok(text) = std::fs::read_to_string(&store.path) {
-            if let Err(err) = store.restore(&text) {
-                eprintln!("apid: mcp.json refused ({err}); kept aside as mcp.json.rejected");
-                let _ = std::fs::rename(&store.path, store.path.with_extension("json.rejected"));
-            }
+        if let Ok(text) = std::fs::read_to_string(&store.path)
+            && let Err(err) = store.restore(&text)
+        {
+            eprintln!("apid: mcp.json refused ({err}); kept aside as mcp.json.rejected");
+            let _ = std::fs::rename(&store.path, store.path.with_extension("json.rejected"));
         }
         store
             .saved

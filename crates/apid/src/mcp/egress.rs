@@ -305,12 +305,12 @@ impl Egress {
     fn admit_pending(&self, socket: Arc<TcpStream>) -> u64 {
         let id = self.next_pending.fetch_add(1, Ordering::SeqCst);
         let mut pending = lock(&self.pending);
-        if pending.len() >= self.handshake.max_pending {
-            if let Some(oldest) = pending.pop_front() {
-                let _ = oldest.socket.shutdown(Shutdown::Both);
-                if let Some(line) = lock(&self.eviction_log).record(Instant::now()) {
-                    eprintln!("apid: mcp: {line}");
-                }
+        if pending.len() >= self.handshake.max_pending
+            && let Some(oldest) = pending.pop_front()
+        {
+            let _ = oldest.socket.shutdown(Shutdown::Both);
+            if let Some(line) = lock(&self.eviction_log).record(Instant::now()) {
+                eprintln!("apid: mcp: {line}");
             }
         }
         pending.push_back(Pending { id, socket });
@@ -364,10 +364,10 @@ impl Egress {
     /// is given through its environment and must send first on every connection.
     fn ensure_relay(&self) -> Result<(), String> {
         let mut slot = lock(&self.relay);
-        if let Some(process) = slot.as_mut() {
-            if process.alive() {
-                return Ok(());
-            }
+        if let Some(process) = slot.as_mut()
+            && process.alive()
+        {
+            return Ok(());
         }
         *slot = None;
         ensure_network(self.docker.as_ref())?;
@@ -667,15 +667,14 @@ pub fn decide(
     if addresses.is_empty() {
         return Err(format!("refused: {host} does not resolve"));
     }
-    if !allow_private {
-        if let Some((ip, why)) = addresses
+    if !allow_private
+        && let Some((ip, why)) = addresses
             .iter()
             .find_map(|ip| refusal(*ip).map(|why| (*ip, why)))
-        {
-            return Err(format!(
-                "refused: {host} is a {why} address ({ip}); set allow_private to reach it"
-            ));
-        }
+    {
+        return Err(format!(
+            "refused: {host} is a {why} address ({ip}); set allow_private to reach it"
+        ));
     }
     Ok(SocketAddr::new(addresses[0], port))
 }

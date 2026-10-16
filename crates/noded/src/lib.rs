@@ -1105,10 +1105,10 @@ fn cached_fabric(
     let mut cache = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((read_at, fabric)) = cache.as_ref() {
-        if now.saturating_duration_since(*read_at) < FABRIC_TTL {
-            return fabric.clone();
-        }
+    if let Some((read_at, fabric)) = cache.as_ref()
+        && now.saturating_duration_since(*read_at) < FABRIC_TTL
+    {
+        return fabric.clone();
     }
     let fabric = probe();
     *cache = Some((now, fabric.clone()));
@@ -1416,12 +1416,11 @@ fn parse_ifconfig(text: &str) -> Vec<String> {
             continue;
         }
         let mut words = line.split_whitespace();
-        if let Some("inet" | "inet6") = words.next() {
-            if let Some(address) = words.next().and_then(|address| address.split('%').next()) {
-                if !virtual_link {
-                    addresses.push(address.to_string());
-                }
-            }
+        if let Some("inet" | "inet6") = words.next()
+            && let Some(address) = words.next().and_then(|address| address.split('%').next())
+            && !virtual_link
+        {
+            addresses.push(address.to_string());
         }
     }
     addresses
@@ -1663,7 +1662,6 @@ mod tests {
 }
 
 /// A bound, serving node daemon.
-
 pub struct Server {
     http: apz_http::Handle,
     node: Arc<Node>,
@@ -1727,7 +1725,6 @@ struct InputRequest {
 /// The API under `/v1`, and the console's files.
 ///
 /// Everything that changes state or drives an agent is a POST (or DELETE), so
-
 /// The API under `/v1`. Everything that changes state is a POST or DELETE.
 fn router() -> Router<Node> {
     Router::<Node>::new()

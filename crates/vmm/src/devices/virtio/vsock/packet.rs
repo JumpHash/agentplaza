@@ -128,6 +128,10 @@ impl VsockPacketHeader {
         u32::from_le(self.len)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn set_len(&mut self, len: u32) -> &mut Self {
         self.len = len.to_le();
         self

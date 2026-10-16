@@ -203,8 +203,8 @@ pub fn join(pieces: &[Piece]) -> Option<Mesh> {
         } else {
             indices.extend(g.indices.iter().map(|i| base + i));
         }
-        colors.extend(std::iter::repeat(p.colour).take(n));
-        slots.extend(std::iter::repeat(p.slot).take(n));
+        colors.extend(std::iter::repeat_n(p.colour, n));
+        slots.extend(std::iter::repeat_n(p.slot, n));
     }
     let mut mesh = Geometry::new(positions, normals, Vec::new(), indices);
     let g = Arc::get_mut(&mut mesh).expect("a fresh geometry has one owner");

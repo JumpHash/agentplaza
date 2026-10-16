@@ -10,3 +10,6 @@ publish = false
 apz-metrics = { path = "../apz-metrics" }
 serde.workspace = true
 serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -55,7 +55,12 @@ pub fn to_rgba(
     let mut rgba = vec![0u8; row * h];
     for (y, out_row) in rgba.chunks_exact_mut(row).enumerate() {
         let in_row = &data[y * stride..y * stride + row];
-        for (src, dst) in in_row.chunks_exact(4).zip(out_row.chunks_exact_mut(4)) {
+        for (src, dst) in in_row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(out_row.as_chunks_mut::<4>().0.iter_mut())
+        {
             dst[0] = src[red];
             dst[1] = src[1];
             dst[2] = src[blue];

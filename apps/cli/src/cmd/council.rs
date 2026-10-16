@@ -84,10 +84,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { state } => {
             let mut v = ctx.client.get("/v1/motions")?;
-            if let Some(state) = state {
-                if let Some(list) = v.get_mut("motions").and_then(Value::as_array_mut) {
-                    list.retain(|m| ctx::s(m, "state") == state.as_str());
-                }
+            if let Some(state) = state
+                && let Some(list) = v.get_mut("motions").and_then(Value::as_array_mut)
+            {
+                list.retain(|m| ctx::s(m, "state") == state.as_str());
             }
             ctx.out(&v, |v| {
                 let rows: Vec<Vec<String>> = motions(v)

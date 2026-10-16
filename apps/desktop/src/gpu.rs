@@ -56,15 +56,15 @@ pub fn use_matching_driver() {
     let dir = cache.join(&kernel);
     let lib = dir.join("lib");
     let glx = lib.join(format!("libGLX_nvidia.so.{kernel}"));
-    if !glx.exists() {
-        if let Err(err) = prepare(&kernel, &lib) {
-            eprintln!(
-                "agentplaza-desktop: the NVIDIA kernel module is {kernel} but the libraries on disk are {disk}, \
+    if !glx.exists()
+        && let Err(err) = prepare(&kernel, &lib)
+    {
+        eprintln!(
+            "agentplaza-desktop: the NVIDIA kernel module is {kernel} but the libraries on disk are {disk}, \
                  and no matching {kernel} userspace was found ({err}); rendering may fall back to software. Reboot to fix."
-            );
-            let _ = fs::remove_dir_all(&dir);
-            return;
-        }
+        );
+        let _ = fs::remove_dir_all(&dir);
+        return;
     }
     let icd = dir.join("nvidia_icd.json");
     let egl = dir.join("10_nvidia.json");

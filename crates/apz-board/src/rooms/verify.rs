@@ -311,10 +311,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
         if ![0.0, 90.0, 180.0, 270.0].contains(&it.rot) {
             out.push(format!("{label}: rot {} is not 0/90/180/270", js(it.rot)));
         }
-        if let Some(h) = it.host {
-            if h >= k {
-                out.push(format!("{label}: host {h} is not an earlier item"));
-            }
+        if let Some(h) = it.host
+            && h >= k
+        {
+            out.push(format!("{label}: host {h} is not an earlier item"));
         }
         let fw = cat.size[0];
         let fd = if kind == Kind::Wall {
@@ -665,10 +665,10 @@ pub fn verify(layout: &Layout, input: &Input, data: &Data) -> Vec<String> {
     // v2 purpose rules. The first item of each group instance is its anchor (items are in placement order).
     let mut anchor_of: Vec<Option<usize>> = vec![None; groups.len()];
     for v in vs.iter().flatten() {
-        if let Some(g) = v.g {
-            if anchor_of[g].is_none() {
-                anchor_of[g] = Some(v.k);
-            }
+        if let Some(g) = v.g
+            && anchor_of[g].is_none()
+        {
+            anchor_of[g] = Some(v.k);
         }
     }
     let group_of = |v: &VItem| -> Option<&str> { v.g.map(|g| groups[g].as_str()) };

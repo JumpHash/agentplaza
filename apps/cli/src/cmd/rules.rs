@@ -269,10 +269,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::List { effect } => {
             let mut v = ctx.client.get("/v1/laws")?;
-            if let Some(effect) = effect {
-                if let Some(list) = v.as_array_mut() {
-                    list.retain(|l| ctx::s(l, "effect") == effect.as_str());
-                }
+            if let Some(effect) = effect
+                && let Some(list) = v.as_array_mut()
+            {
+                list.retain(|l| ctx::s(l, "effect") == effect.as_str());
             }
             ctx.out(&v, |v| {
                 let rows: Vec<Vec<String>> = array(v)

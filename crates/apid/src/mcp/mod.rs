@@ -442,10 +442,10 @@ pub fn law_operation(name: &str) -> Option<(String, String, &'static str)> {
 /// The background work of the MCP store: saves the file when it changed (unless the database holds it), and
 /// stops the instances that sat idle. Run every three seconds from `state::App::start`.
 pub fn tick(app: &App) {
-    if !app.db.is_held("mcp") {
-        if let Err(err) = app.mcp.store.save_if_changed() {
-            eprintln!("apid: cannot save mcp.json: {err}");
-        }
+    if !app.db.is_held("mcp")
+        && let Err(err) = app.mcp.store.save_if_changed()
+    {
+        eprintln!("apid: cannot save mcp.json: {err}");
     }
     app.mcp.runtime.reap_idle(apz_plaza::now_ms());
 }

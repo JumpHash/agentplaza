@@ -53,3 +53,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 [features]
 default = []
 pipewire = ["apz-desktop-wayland/pipewire"]
+
+[lints]
+workspace = true

@@ -359,13 +359,11 @@ impl SkillStore for DbSkills {
             let Some(skill) = lock_skill(&mut tx, id)? else {
                 return Ok(Outcome::NotFound);
             };
-            if !archived {
-                if let Some(holder) = name_holder(&mut tx, &skill.name, id)? {
-                    return Ok(Outcome::Conflict(format!(
-                        "name {} is held by {holder}",
-                        skill.name
-                    )));
-                }
+            if !archived && let Some(holder) = name_holder(&mut tx, &skill.name, id)? {
+                return Ok(Outcome::Conflict(format!(
+                    "name {} is held by {holder}",
+                    skill.name
+                )));
             }
             let now = now_ms as i64;
             tx.execute(sql::SKILL_SET_ARCHIVED, &[&id, &archived, &now])?;

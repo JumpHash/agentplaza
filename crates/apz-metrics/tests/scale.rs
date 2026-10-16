@@ -289,7 +289,7 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
 /// other tick, a turn every minute), the rest idle or asleep.
 fn record_load(agents: &[AgentSeries], tick: u64, rng: &mut Lcg) {
     for (cid, a) in agents.iter().enumerate() {
-        let busy = (cid + tick as usize / 30) % BUSY_EVERY == 0;
+        let busy = (cid + tick as usize / 30).is_multiple_of(BUSY_EVERY);
         if busy {
             let tokens = 20_000.0 + 30_000.0 * rng.unit();
             a.calls.inc();
@@ -300,10 +300,10 @@ fn record_load(agents: &[AgentSeries], tick: u64, rng: &mut Lcg) {
             a.spend.add(0.01 + 0.03 * rng.unit());
             a.ttft.record(800.0 + 2_000.0 * rng.unit());
             a.duration.record(3_000.0 + 9_000.0 * rng.unit());
-            if tick % 2 == 0 {
+            if tick.is_multiple_of(2) {
                 a.tool.record(50.0 + 900.0 * rng.unit());
             }
-            if tick % 6 == 0 {
+            if tick.is_multiple_of(6) {
                 a.turn.record(20_000.0 + 60_000.0 * rng.unit());
                 for (i, part) in a.parts.iter().enumerate() {
                     part.set((tokens * (i + 1) as f64 / 21.0).round());
@@ -331,8 +331,8 @@ fn vm_samples(
 ) -> Vec<Sample> {
     let mut out = Vec::new();
     for (vm, keys) in vm_keys.iter().enumerate() {
-        let busy = (vm + tick as usize / 30) % BUSY_EVERY == 0;
-        if busy || tick % 6 == 0 {
+        let busy = (vm + tick as usize / 30).is_multiple_of(BUSY_EVERY);
+        if busy || tick.is_multiple_of(6) {
             for (i, key) in keys.iter().enumerate() {
                 if busy {
                     levels[vm][i] *= 1.0 + 0.01 * (rng.unit() - 0.5);
@@ -409,9 +409,9 @@ fn the_metrics_core_holds_steady_over_hours() {
         closed.extend(rollup.flush_due(now));
         store.put(&closed);
         store.flush(now, false);
-        if now % HOUR_MS == 0 {
+        if now.is_multiple_of(HOUR_MS) {
             // The store keeps one day of hour windows per series; a simulated day boundary drops the day before.
-            if now % 86_400_000 == 0 {
+            if now.is_multiple_of(86_400_000) {
                 store.hours.clear();
             }
             let mib = rss_bytes().saturating_sub(rss_start) as f64 / (1024.0 * 1024.0);

@@ -17,3 +17,6 @@ core-foundation = "0.9"
 core-graphics = { version = "0.23", features = ["highsierra"] }
 foreign-types = "0.5"
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
+
+[lints]
+workspace = true

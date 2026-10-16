@@ -630,10 +630,8 @@ fn abort(app: &App, cid: u64, target: &str, staged: &Staged, was_asleep: bool) {
             call(app, target, "DELETE", &format!("/v1/runs/{run}"), None),
         );
     }
-    if !was_asleep {
-        if let Err(err) = sleep::ensure_awake(app, cid, WAKE_WAIT) {
-            eprintln!("apid: move of agent {cid} aborted; it did not wake again: {err}");
-        }
+    if !was_asleep && let Err(err) = sleep::ensure_awake(app, cid, WAKE_WAIT) {
+        eprintln!("apid: move of agent {cid} aborted; it did not wake again: {err}");
     }
 }
 

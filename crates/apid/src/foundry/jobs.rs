@@ -102,18 +102,18 @@ pub fn parse(doc: &Value, new_id: impl FnOnce() -> String) -> Result<Spec, Refus
         .get("budget_gpu_hours")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
-    if !(budget > 0.0) {
+    if budget.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Err((400, "budget_gpu_hours is a number above 0".into()));
     }
-    if let Some(export) = obj.get("export") {
-        if export != "onnx" {
-            return Err((400, "export is \"onnx\"".into()));
-        }
+    if let Some(export) = obj.get("export")
+        && export != "onnx"
+    {
+        return Err((400, "export is \"onnx\"".into()));
     }
-    if let Some(target) = obj.get("target") {
-        if !matches!(target.as_str(), Some("x86_64" | "aarch64" | "any")) {
-            return Err((400, "target is x86_64, aarch64 or any".into()));
-        }
+    if let Some(target) = obj.get("target")
+        && !matches!(target.as_str(), Some("x86_64" | "aarch64" | "any"))
+    {
+        return Err((400, "target is x86_64, aarch64 or any".into()));
     }
     let mut request: Request = match obj.get("devices") {
         Some(value) => {
@@ -292,10 +292,10 @@ pub fn plan_document(plan: &Plan, spec: &Spec, datasets: &[Dataset]) -> Value {
         "output_dir": "/job/out",
         "train": spec.train,
     });
-    if plan.mode == Mode::Loose {
-        if let Some(steps) = steps {
-            doc["rounds"] = json!((steps / u64::from(plan.inner_steps)).max(1));
-        }
+    if plan.mode == Mode::Loose
+        && let Some(steps) = steps
+    {
+        doc["rounds"] = json!((steps / u64::from(plan.inner_steps)).max(1));
     }
     doc
 }

@@ -1045,15 +1045,15 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Msg> {
             ));
         }
         items.push(file_block(&state.file_path, file));
-    } else if let Some(readme) = &state.data.readme {
-        if let Some(source) = &readme.text {
-            // The web shows the README as plain text in a file box, not rendered.
-            let body = container(ui::prose(source.clone()).size(14.0)).padding([12, 14]);
-            items.push(filebox(
-                ui::sans("README.md", 13.0, INK).into(),
-                body.into(),
-            ));
-        }
+    } else if let Some(readme) = &state.data.readme
+        && let Some(source) = &readme.text
+    {
+        // The web shows the README as plain text in a file box, not rendered.
+        let body = container(ui::prose(source.clone()).size(14.0)).padding([12, 14]);
+        items.push(filebox(
+            ui::sans("README.md", 13.0, INK).into(),
+            body.into(),
+        ));
     }
     column(items).spacing(14).into()
 }

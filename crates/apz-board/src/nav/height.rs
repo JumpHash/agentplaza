@@ -140,21 +140,22 @@ pub fn step_body(b: &mut Body, s: Surfaces, dt: f64, floats: bool) {
             if s.floor_top.is_none() || b.y0 - y > NAV_DROP_DOWN {
                 return enter(b, BodyMode::Out, v);
             }
-            if let Some(walk) = s.walk_top {
-                if v <= 0.0 && y <= walk + EPS {
-                    b.y = walk;
-                    return enter(b, BodyMode::Land, 0.0);
-                }
+            if let Some(walk) = s.walk_top
+                && v <= 0.0
+                && y <= walk + EPS
+            {
+                b.y = walk;
+                enter(b, BodyMode::Land, 0.0)
             }
         }
         BodyMode::Glide => {
             b.t += dt;
-            if let Some(walk) = s.walk_top {
-                if walk - b.y >= -NAV_STEP {
-                    b.mode = BodyMode::Ground;
-                    b.t = 0.0;
-                    return;
-                }
+            if let Some(walk) = s.walk_top
+                && walk - b.y >= -NAV_STEP
+            {
+                b.mode = BodyMode::Ground;
+                b.t = 0.0;
+                return;
             }
             let Some(target) = s.walk_top.or(s.floor_top) else {
                 return enter(b, BodyMode::Out, 0.0);

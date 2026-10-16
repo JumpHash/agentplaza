@@ -142,7 +142,7 @@ pub struct LiftController {
 impl LiftController {
     /// Ports the `LiftController` constructor. Errors when `high` is not above `low`.
     pub fn new(low: f32, high: f32, cfg: LiftConfig) -> Result<Self, &'static str> {
-        if !(high > low) {
+        if high.partial_cmp(&low) != Some(std::cmp::Ordering::Greater) {
             return Err("lift: high must be above low");
         }
         Ok(LiftController {
@@ -491,10 +491,10 @@ impl LiftController {
         }
         for id in leaving {
             // defensive: a rider at the stop is ready to leave
-            if let Some(r) = self.find_mut(id) {
-                if r.state == ReqState::Riding {
-                    r.state = ReqState::Arrived;
-                }
+            if let Some(r) = self.find_mut(id)
+                && r.state == ReqState::Riding
+            {
+                r.state = ReqState::Arrived;
             }
         }
         self.phase = LiftPhase::Unloading;

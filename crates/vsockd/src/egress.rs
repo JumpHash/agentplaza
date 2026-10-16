@@ -987,10 +987,10 @@ fn egress_decision(apid: &Apid, cid: u32, host: &str, port: u16) -> EgressAnswer
         let kept = DECISIONS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((expires, answer)) = kept.get(&key) {
-            if Instant::now() < *expires {
-                return answer.clone();
-            }
+        if let Some((expires, answer)) = kept.get(&key)
+            && Instant::now() < *expires
+        {
+            return answer.clone();
         }
     }
     // Read before apid is asked: a `forget` that runs meanwhile moves the generation, so the answer is not kept.

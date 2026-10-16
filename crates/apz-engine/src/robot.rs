@@ -461,10 +461,10 @@ impl Robot {
 
     /// The clip playing now and its elapsed time: the body layer over a one-shot over a held clip over the state's clip.
     fn active(&mut self, t: f32) -> Option<(&'static Clip, f64)> {
-        if self.wave_back.is_some_and(|(_, until)| t >= until) {
-            if let Some((held, _)) = self.wave_back.take() {
-                self.held_clip = held;
-            }
+        if self.wave_back.is_some_and(|(_, until)| t >= until)
+            && let Some((held, _)) = self.wave_back.take()
+        {
+            self.held_clip = held;
         }
         if let Some(b) = self.body {
             return Some((b.clip, f64::from(t - b.start)));
@@ -512,10 +512,10 @@ impl Robot {
 
     /// The bone an effect is anchored to, and the point on it: `head` is 0.3 above its pivot.
     fn anchor(&self, name: &str) -> (Obj, Vec3) {
-        if name != "head" {
-            if let Some(obj) = self.bone_obj(name) {
-                return (obj, Vec3::ZERO);
-            }
+        if name != "head"
+            && let Some(obj) = self.bone_obj(name)
+        {
+            return (obj, Vec3::ZERO);
         }
         (
             self.bone_obj("head").unwrap_or_else(|| self.group.clone()),
@@ -548,8 +548,8 @@ impl Robot {
                 targets[j] = Some((value as f32, false));
             }
         });
-        for j in 0..self.cur.len() {
-            let v = targets[j].map_or_else(|| self.rest(j), |(v, _)| v);
+        for (j, target) in targets.iter().enumerate().take(self.cur.len()) {
+            let v = target.map_or_else(|| self.rest(j), |(v, _)| v);
             self.cur[j] = v;
         }
         self.targets = targets;
@@ -596,10 +596,10 @@ impl Robot {
                 }
             });
             for ch in &clip.channels {
-                if let Some(rate) = ch.rate {
-                    if let Some(a) = self.acc_of(&ch.bone, &ch.prop) {
-                        self.acc[a] += rate * dt;
-                    }
+                if let Some(rate) = ch.rate
+                    && let Some(a) = self.acc_of(&ch.bone, &ch.prop)
+                {
+                    self.acc[a] += rate * dt;
                 }
             }
             self.clip_fx(clip, dt);
@@ -629,9 +629,7 @@ impl Robot {
         }
 
         // Feet step alternately while walking; floating robots bob, and sit down when offline.
-        for e in &mut self.extras {
-            *e = Vec3::ZERO;
-        }
+        self.extras.fill(Vec3::ZERO);
         for (i, bone) in sp.feet.iter().enumerate() {
             let p = if self.state == RobotState::Walking {
                 (WALK_FEET_RATE * t + i as f32 * PI).sin()

@@ -182,7 +182,7 @@ impl Eval<'_> {
             ExprKind::Bool(b) => Value::Bool(*b),
             ExprKind::Str(s) => Value::Str(s.clone()),
             ExprKind::NoneLit => Value::None,
-            ExprKind::Num(n, d) => Value::Num(n.clone(), d.clone()),
+            ExprKind::Num(n, d) => Value::Num(*n, *d),
             ExprKind::Name(n) => match n.as_str() {
                 "principal" => entity_value(self.principal),
                 "resource" => entity_value(self.resource),
@@ -519,7 +519,7 @@ pub fn run_authz(program: &Program) -> Vec<(String, bool, String)> {
             let by = match &outcome.decision {
                 Decision::Allow { by } | Decision::Deny { by, .. } => by.clone(),
             };
-            let law_ok = c.law.as_ref().map_or(true, |l| by.contains(l));
+            let law_ok = c.law.as_ref().is_none_or(|l| by.contains(l));
             let pass = allowed == c.allow && law_ok;
             let detail = if pass {
                 describe(&outcome.decision)

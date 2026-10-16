@@ -17,3 +17,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "dispatchd"
 path = "src/main.rs"
+
+[lints]
+workspace = true

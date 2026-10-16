@@ -1533,10 +1533,10 @@ fn to_usize(count: u64) -> usize {
     usize::try_from(count).unwrap_or(usize::MAX)
 }
 
-/// The stub admin surface the delivery tests use is a plain `TcpListener`, the
-/// same shape `tests/agent_tell.rs` drives the daemon against: the delivery is
-/// asserted from both ends — what the daemon asked for, and what the row says
-/// came back.
+// The stub admin surface the delivery tests use is a plain `TcpListener`, the
+// same shape `tests/agent_tell.rs` drives the daemon against: the delivery is
+// asserted from both ends — what the daemon asked for, and what the row says
+// came back.
 
 impl Social {
     /// The whole state as JSON, for Postgres: the board with its comments and

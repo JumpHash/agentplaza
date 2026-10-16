@@ -100,18 +100,20 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
         }
     }
 
-    let mut world = World::default();
-    world.hemi_sky = scene::Color::hex(0xeaf4ff);
-    world.hemi_ground = scene::Color::hex(0x8a7a5a);
-    world.hemi_intensity = 1.3;
-    world.sun_color = scene::Color::hex(0xfff1d6);
-    world.sun_intensity = 2.6;
-    world.sun_position = Vec3::new(2.5, 4.0, 3.0);
-    world.shadow_extent = 5.0;
-    world.shadow_near = 0.5;
-    world.shadow_far = 60.0;
-    world.fog_near = 1.0e6;
-    world.fog_far = 1.0e6 + 1.0;
+    let world = World {
+        hemi_sky: scene::Color::hex(0xeaf4ff),
+        hemi_ground: scene::Color::hex(0x8a7a5a),
+        hemi_intensity: 1.3,
+        sun_color: scene::Color::hex(0xfff1d6),
+        sun_intensity: 2.6,
+        sun_position: Vec3::new(2.5, 4.0, 3.0),
+        shadow_extent: 5.0,
+        shadow_near: 0.5,
+        shadow_far: 60.0,
+        fog_near: 1.0e6,
+        fog_far: 1.0e6 + 1.0,
+        ..Default::default()
+    };
     Frame {
         animated: None,
         camera: Camera {
@@ -263,7 +265,7 @@ fn sunburst(hue: f32) -> Texture {
             if angle < 0.0 {
                 angle += TAU;
             }
-            let mut c = if ((angle / sector) as u32) % 2 == 0 {
+            let mut c = if ((angle / sector) as u32).is_multiple_of(2) {
                 ray
             } else {
                 night

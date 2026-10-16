@@ -12,3 +12,6 @@ agent-client-protocol-schema = { version = "=1.10.2", features = ["unstable_prot
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

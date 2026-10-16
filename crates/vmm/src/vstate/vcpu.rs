@@ -509,24 +509,24 @@ fn handle_kvm_exit(
         Ok(run) => match run {
             VcpuExit::MmioRead(addr, data) => {
                 data.fill(0);
-                if let Some(mmio_bus) = &peripherals.mmio_bus {
-                    if let Err(err) = mmio_bus.read(addr, data) {
-                        eprintln!(
-                            "warning: invalid MMIO read @ {addr:#x}:{:#x}: {err}",
-                            data.len()
-                        );
-                    }
+                if let Some(mmio_bus) = &peripherals.mmio_bus
+                    && let Err(err) = mmio_bus.read(addr, data)
+                {
+                    eprintln!(
+                        "warning: invalid MMIO read @ {addr:#x}:{:#x}: {err}",
+                        data.len()
+                    );
                 }
                 Ok(VcpuEmulation::Handled)
             }
             VcpuExit::MmioWrite(addr, data) => {
-                if let Some(mmio_bus) = &peripherals.mmio_bus {
-                    if let Err(err) = mmio_bus.write_and_wait(addr, data) {
-                        eprintln!(
-                            "warning: invalid MMIO write @ {addr:#x}:{:#x}: {err}",
-                            data.len()
-                        );
-                    }
+                if let Some(mmio_bus) = &peripherals.mmio_bus
+                    && let Err(err) = mmio_bus.write_and_wait(addr, data)
+                {
+                    eprintln!(
+                        "warning: invalid MMIO write @ {addr:#x}:{:#x}: {err}",
+                        data.len()
+                    );
                 }
                 Ok(VcpuEmulation::Handled)
             }
@@ -732,10 +732,10 @@ impl VcpuHandle {
 // Wait for the Vcpu thread to finish execution
 impl Drop for VcpuHandle {
     fn drop(&mut self) {
-        if let Some(thread) = self.vcpu_thread.take() {
-            if thread.join().is_err() {
-                eprintln!("warning: vCPU thread panicked during teardown");
-            }
+        if let Some(thread) = self.vcpu_thread.take()
+            && thread.join().is_err()
+        {
+            eprintln!("warning: vCPU thread panicked during teardown");
         }
     }
 }

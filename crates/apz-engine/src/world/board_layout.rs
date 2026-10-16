@@ -217,7 +217,7 @@ fn cell(rect: [f32; 4], n: usize, k: usize) -> (f32, f32, f32, f32) {
     let n = n.max(1);
     let mut along = 1;
     let mut best = f32::INFINITY;
-    for f in (1..=n).filter(|f| n % f == 0) {
+    for f in (1..=n).filter(|f| n.is_multiple_of(*f)) {
         let score = ((long / f as f32) / (short / (n / f) as f32)).ln().abs();
         if score <= best {
             best = score;
@@ -988,10 +988,11 @@ pub fn trace_graph(board: &Model) -> TraceGraph {
                     g.nodes.len() - 1
                 }
             };
-            if let Some(j) = prev {
-                if j != i && seen.insert((j.min(i), j.max(i))) {
-                    g.edges.push((j, i));
-                }
+            if let Some(j) = prev
+                && j != i
+                && seen.insert((j.min(i), j.max(i)))
+            {
+                g.edges.push((j, i));
             }
             prev = Some(i);
         }
@@ -1313,7 +1314,7 @@ mod tests {
 
     /// The first request for a key starts its layout and returns None; once it is done, polling moves it into the
     /// cache and requests return it, without computing it again.
-
+    ///
     /// The same with GPUs fitted (real workstations and servers have them). apz-board cannot seat a workstation with
     /// one GPU and one agent within the scale cap 3 today; the engine falls back to its own layout meanwhile.
     #[test]

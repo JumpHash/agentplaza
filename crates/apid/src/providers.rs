@@ -930,10 +930,9 @@ impl Store {
                 continue;
             };
             if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth)
+                && command.is_empty()
             {
-                if command.is_empty() {
-                    command.clone_from(live_command);
-                }
+                command.clone_from(live_command);
             }
             for (name, value) in p.extra_headers.iter_mut() {
                 if let (true, Some(live_value)) = (value.is_empty(), old.extra_headers.get(name)) {

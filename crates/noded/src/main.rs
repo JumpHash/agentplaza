@@ -143,11 +143,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .workspace
         .clone()
         .filter(|image| Some(image) == default_image.as_ref())
+        && let Err(why) = workspace_image::ensure(&image)
     {
-        if let Err(why) = workspace_image::ensure(&image) {
-            eprintln!("noded: no workspace image: {why}; agents run without a workspace volume");
-            config.workspace = None;
-        }
+        eprintln!("noded: no workspace image: {why}; agents run without a workspace volume");
+        config.workspace = None;
     }
     println!(
         "noded: workspace image {}, persist dir {}",

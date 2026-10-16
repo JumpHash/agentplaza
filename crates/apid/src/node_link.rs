@@ -348,10 +348,10 @@ fn leave_route(body: &[u8]) -> Response {
     }
     if forget {
         let dir = identity_dir();
-        if let Err(e) = fs::remove_dir_all(&dir) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return error(500, &format!("{}: {e}", dir.display()));
-            }
+        if let Err(e) = fs::remove_dir_all(&dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return error(500, &format!("{}: {e}", dir.display()));
         }
     }
     Response::json(200, &status().json())

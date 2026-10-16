@@ -3127,13 +3127,9 @@ index 0000000..3333333
         });
         let host = Fake::new("station-read", |_, _| Err("no tool".into())).with_station("w3", link);
 
-        let tree = station_tree(&host, "w3", Some("docs"), Some("0"))
-            .ok()
-            .expect("listed");
+        let tree = station_tree(&host, "w3", Some("docs"), Some("0")).expect("listed");
         assert_eq!(tree["entries"][0]["path"], "docs");
-        let text = station_read(&host, "w3", Some("docs/a.txt"))
-            .ok()
-            .expect("read");
+        let text = station_read(&host, "w3", Some("docs/a.txt")).expect("read");
         assert_eq!(
             (text["text"].as_str(), text["hash"].as_str()),
             (Some("hi"), Some("h1"))
@@ -3178,7 +3174,6 @@ index 0000000..3333333
             "w3",
             &json!({ "path": "a.txt", "text": "new", "expected_hash": "h1" }),
         )
-        .ok()
         .expect("saved");
         assert_eq!(saved["hash"], "h2");
         let Err(stale) = station_write(
@@ -3234,16 +3229,11 @@ index 0000000..3333333
             "an empty command is refused"
         );
         let started = station_run_start(&host, "w3", &json!({ "command": "ls", "timeout_s": 30 }))
-            .ok()
             .expect("started");
         assert_eq!(started["run"], "run-1");
-        let polled = station_run_poll(&host, "w3", "run-1", Some("0"))
-            .ok()
-            .expect("polled");
+        let polled = station_run_poll(&host, "w3", "run-1", Some("0")).expect("polled");
         assert_eq!(polled["output"], "hi\n");
-        station_run_stop(&host, "w3", "run-1")
-            .ok()
-            .expect("stopped");
+        station_run_stop(&host, "w3", "run-1").expect("stopped");
         assert_eq!(
             *seen.lock().unwrap(),
             vec![
@@ -3284,7 +3274,7 @@ index 0000000..3333333
         let (link, _) = scripted_station(|_| Ok(Value::Null));
         let host =
             Fake::new("station-checkpoints", |_, _| Err("no tool".into())).with_station("w3", link);
-        let answer = station_checkpoints(&host, "w3").ok().expect("answers");
+        let answer = station_checkpoints(&host, "w3").expect("answers");
         assert_eq!(answer["checkpoints"], json!([]));
         assert!(
             answer["reason"]

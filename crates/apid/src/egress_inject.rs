@@ -539,10 +539,10 @@ impl Authority {
     /// before it ends.
     fn leaf_for(&self, host: &str, now: u64) -> Result<(String, String), String> {
         let mut leaves = self.leaves.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(leaf) = leaves.get(host) {
-            if now + DAY_MS < leaf.ends_ms {
-                return Ok((leaf.cert_pem.clone(), leaf.key_pem.clone()));
-            }
+        if let Some(leaf) = leaves.get(host)
+            && now + DAY_MS < leaf.ends_ms
+        {
+            return Ok((leaf.cert_pem.clone(), leaf.key_pem.clone()));
         }
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| e.to_string())?;
         let mut params =

@@ -35,3 +35,6 @@ naga = { version = "27", features = ["wgsl-in", "glsl-out"] }
 apz-os = { path = "../apz-os" }
 
 
+
+[lints]
+workspace = true

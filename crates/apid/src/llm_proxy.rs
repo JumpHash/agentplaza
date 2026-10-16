@@ -209,10 +209,10 @@ pub fn decide_model(provider: &str, requested: &str, own: &str, allowed: &[Strin
     if allowed.iter().any(|m| canonical(m) == candidate.as_str()) {
         return Decision::Allow;
     }
-    if let Some((own_provider, own_model)) = canonical(own).split_once('/') {
-        if own_provider == provider {
-            return Decision::Rewrite(own_model.to_string());
-        }
+    if let Some((own_provider, own_model)) = canonical(own).split_once('/')
+        && own_provider == provider
+    {
+        return Decision::Rewrite(own_model.to_string());
     }
     let names: Vec<&str> = allowed.iter().map(|m| canonical(m)).collect();
     Decision::Refuse(format!(
@@ -494,7 +494,7 @@ fn tokens_in_gemini_sse(text: &str) -> Option<Metered> {
         .filter_map(|line| line.strip_prefix("data:"))
         .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
         .filter_map(|event| event.get("usageMetadata").and_then(gemini_metered))
-        .last()
+        .next_back()
 }
 
 /// The model and method a Gemini path names (`{model}:{method}` after `/v1beta/models/`), or `None`
@@ -899,10 +899,10 @@ fn relay(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if provider == "opencode" {
-        if let Some(message) = opencode_endpoint_error(path, &model) {
-            return Err(Response::json(400, &json!({ "error": message })));
-        }
+    if provider == "opencode"
+        && let Some(message) = opencode_endpoint_error(path, &model)
+    {
+        return Err(Response::json(400, &json!({ "error": message })));
     }
     // OpenRouter and OpenCode models are metered as `provider/model`, as the policy names them.
     let model = if is_aggregator(provider) {
@@ -975,10 +975,8 @@ fn relay(
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
-    if ok {
-        if let Some(tokens) = tokens_in(&value) {
-            record_usage(app, cid, charge, &model, tokens, Some(timing));
-        }
+    if ok && let Some(tokens) = tokens_in(&value) {
+        record_usage(app, cid, charge, &model, tokens, Some(timing));
     }
     Ok(Response::json(status, &value))
 }
@@ -1109,10 +1107,8 @@ fn relay_gemini(
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
-    if ok {
-        if let Some(tokens) = tokens_in_gemini(&value) {
-            record_usage(app, cid, charge, &model, tokens, Some(timing));
-        }
+    if ok && let Some(tokens) = tokens_in_gemini(&value) {
+        record_usage(app, cid, charge, &model, tokens, Some(timing));
     }
     Ok(Response::json(status, &value))
 }
@@ -1426,10 +1422,10 @@ fn relay_messages(mut client: Socket, grant: Grant) {
                 }
             },
         }
-        if let Some((id, request)) = queue.pop_front() {
-            if bridge_call(&mut client, &grant, &id, request).is_err() {
-                return;
-            }
+        if let Some((id, request)) = queue.pop_front()
+            && bridge_call(&mut client, &grant, &id, request).is_err()
+        {
+            return;
         }
     }
 }

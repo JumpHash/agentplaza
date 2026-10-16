@@ -1077,15 +1077,15 @@ fn visible(state: &State, l: &Law) -> bool {
         Effect::Forbid if !forbid => return false,
         _ => {}
     }
-    if let Some(s) = state.severity {
-        if l.severity != s {
-            return false;
-        }
+    if let Some(s) = state.severity
+        && l.severity != s
+    {
+        return false;
     }
-    if let Some(t) = state.tier {
-        if tier_of(l) != t {
-            return false;
-        }
+    if let Some(t) = state.tier
+        && tier_of(l) != t
+    {
+        return false;
     }
     let q = state.query.trim().to_lowercase();
     if !q.is_empty() {
@@ -2077,7 +2077,7 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
         ui::loading()
     } else {
         let mut latest: Vec<&Infraction> = state.recent.iter().collect();
-        latest.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+        latest.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
         latest.truncate(LATEST_SHOWN);
         if latest.is_empty() {
             ui::faint("No infractions yet.").into()

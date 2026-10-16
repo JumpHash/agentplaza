@@ -112,7 +112,9 @@ pub fn unpack(bytes: &[u8]) -> Result<(Value, Tensors), String> {
             .ok_or_else(|| format!("tensor {name} runs past the body"))?;
         let raw = &body[offset as usize..end as usize];
         let data = raw
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         tensors.insert(name.to_string(), Tensor { shape, data });

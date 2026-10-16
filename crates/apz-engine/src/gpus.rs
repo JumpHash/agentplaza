@@ -408,10 +408,10 @@ pub fn match_card(gpu: &GpuInput, machine_kind: Option<&str>) -> Option<Match> {
         if r.vendor != "*" && r.vendor != vendor {
             continue;
         }
-        if let Some(want) = r.machine_kind {
-            if machine_kind != Some(want.as_str()) {
-                continue;
-            }
+        if let Some(want) = r.machine_kind
+            && machine_kind != Some(want.as_str())
+        {
+            continue;
         }
         if let Some(range) = &r.memory_mib {
             let Some(m) = gpu.memory_mib else { continue };
@@ -452,7 +452,7 @@ fn is_hex(v: &str) -> bool {
 }
 
 fn nullable_hex(v: &Option<String>) -> bool {
-    v.as_deref().map_or(true, is_hex)
+    v.as_deref().is_none_or(is_hex)
 }
 
 fn dim_ok(v: f64) -> bool {
@@ -523,10 +523,12 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
                 if spec.form == Form::Pcie && l > 340.0 {
                     bad!("PCIe length {l} mm is over 340");
                 }
-                if spec.form == Form::Pcie && (h < 30.0 || h > 150.0 || t < 15.0 || t > 70.0) {
+                if spec.form == Form::Pcie
+                    && (!(30.0..=150.0).contains(&h) || !(15.0..=70.0).contains(&t))
+                {
                     bad!("PCIe height {h} or thickness {t} mm is out of range");
                 }
-                if matches!(spec.form, Form::Sxm | Form::Oam) && (t < 5.0 || t > 200.0) {
+                if matches!(spec.form, Form::Sxm | Form::Oam) && !(5.0..=200.0).contains(&t) {
                     bad!("module thickness {t} mm is out of range");
                 }
             }
@@ -548,14 +550,14 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
         bad!("{} cooling needs fans", cooling_name);
     }
     for f in &c.fans {
-        if !f.d_mm.map_or(true, |d| (30.0..=200.0).contains(&d)) {
+        if !f.d_mm.is_none_or(|d| (30.0..=200.0).contains(&d)) {
             bad!(
                 "a fan needs d_mm (30 to 200, or null), x_mm (a number, or null) and side front or back"
             );
-        } else if let (Some(x), Some(l)) = (f.x_mm, length) {
-            if x < 0.0 || x > l {
-                bad!("fan x_mm {x} is outside the length");
-            }
+        } else if let (Some(x), Some(l)) = (f.x_mm, length)
+            && (x < 0.0 || x > l)
+        {
+            bad!("fan x_mm {x} is outside the length");
         }
     }
 
@@ -566,10 +568,10 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
     for s in &sh.shapes {
         if !nullable_hex(&s.color) {
             bad!("a shape needs a known kind and a hex colour");
-        } else if let Some(at) = s.at_mm {
-            if at < 0.0 || length.is_some_and(|l| at > l) {
-                bad!("shape at_mm {at} is outside the length");
-            }
+        } else if let Some(at) = s.at_mm
+            && (at < 0.0 || length.is_some_and(|l| at > l))
+        {
+            bad!("shape at_mm {at} is outside the length");
         }
     }
 
@@ -604,7 +606,7 @@ pub fn validate_spec(spec: &GpuSpec) -> Vec<String> {
         match &spec.die {
             None => bad!("a bga entry needs die {{die_mm, vram {{chips, arrangement}}}}"),
             Some(d) => {
-                let die_ok = d.die_mm.map_or(true, |[a, b]| dim_ok(a) && dim_ok(b));
+                let die_ok = d.die_mm.is_none_or(|[a, b]| dim_ok(a) && dim_ok(b));
                 if !die_ok || !(1..=16).contains(&d.vram.chips) {
                     bad!("a bga entry needs die {{die_mm, vram {{chips, arrangement}}}}");
                 } else if d.die_mm.is_none() && !approx_has("die") {

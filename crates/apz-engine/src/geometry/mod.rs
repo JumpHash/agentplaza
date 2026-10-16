@@ -254,8 +254,8 @@ pub fn rounded_box(w: f32, h: f32, d: f32, segments: u32, radius: f32) -> Geo {
     for (v, &k) in boxed.indices.iter().enumerate() {
         let position = to_f64(boxed.positions[k as usize]);
         let mut nrm = position;
-        for c in 0..3 {
-            nrm[c] -= sign(nrm[c]) * half_seg;
+        for c in nrm.iter_mut() {
+            *c -= sign(*c) * half_seg;
         }
         let nrm = normalized(nrm);
         let pos = [
@@ -418,7 +418,7 @@ pub fn ring(
 pub fn from_triangles(positions: Vec<[f32; 3]>) -> Geo {
     let n = positions.len() - positions.len() % 3;
     let mut normals = Vec::with_capacity(n);
-    for tri in positions[..n].chunks_exact(3) {
+    for tri in positions[..n].as_chunks::<3>().0 {
         let (a, b, c) = (to_f64(tri[0]), to_f64(tri[1]), to_f64(tri[2]));
         let nrm = to_f32(normalized(cross(sub(c, b), sub(a, b))));
         normals.extend_from_slice(&[nrm; 3]);
@@ -478,7 +478,7 @@ fn weld(geo: &Geometry, tolerance: f32) -> Geo {
     let indices: Vec<u32> = source.iter().map(|&i| remap[i as usize]).collect();
 
     let mut sums: Vec<V3> = vec![[0.0; 3]; positions.len()];
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         let (pa, pb, pc) = (
             to_f64(positions[a]),

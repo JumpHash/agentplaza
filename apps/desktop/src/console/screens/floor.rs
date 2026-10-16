@@ -272,14 +272,14 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::AutoTick => state.auto_tick(),
         Msg::Go(_) => {}
     }
-    if let Some((name, t0)) = perf_msg {
-        if ms_since(t0) > 16.0 {
-            perf_line(&format!(
-                "update {name} took {:.1} ms at {:.3} s",
-                ms_since(t0),
-                perf_t(t0)
-            ));
-        }
+    if let Some((name, t0)) = perf_msg
+        && ms_since(t0) > 16.0
+    {
+        perf_line(&format!(
+            "update {name} took {:.1} ms at {:.3} s",
+            ms_since(t0),
+            perf_t(t0)
+        ));
     }
     task
 }

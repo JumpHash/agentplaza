@@ -178,10 +178,10 @@ impl Hub for AppHub<'_> {
         from: &str,
     ) -> Result<String, String> {
         let running = self.app.work.current(cid);
-        if let Some(work) = work {
-            if running.as_ref().map(|item| item.id) != Some(work) {
-                return Err(format!("work {work} is not running"));
-            }
+        if let Some(work) = work
+            && running.as_ref().map(|item| item.id) != Some(work)
+        {
+            return Err(format!("work {work} is not running"));
         }
         match command {
             "compress" => crate::harness_control::control(self.app, cid, Control::Compress)

@@ -320,10 +320,10 @@ fn script_reasons(f: &FileInfo) -> Vec<String> {
     if matches!(&f.text, Some(t) if t.starts_with("#!")) {
         why.push("a shebang line".to_string());
     }
-    if let Some(ext) = extension(&f.path) {
-        if SCRIPT_EXTENSIONS.contains(&ext.as_str()) {
-            why.push(format!("a .{ext} file"));
-        }
+    if let Some(ext) = extension(&f.path)
+        && SCRIPT_EXTENSIONS.contains(&ext.as_str())
+    {
+        why.push(format!("a .{ext} file"));
     }
     why
 }
@@ -354,10 +354,7 @@ fn references(text: &str) -> Vec<(u32, String, bool)> {
             let after = &rest[at + 2..];
             let Some(end) = after.find(')') else { break };
             let target = after[..end].split_whitespace().next().unwrap_or("");
-            let target = target
-                .split(|c: char| c == '#' || c == '?')
-                .next()
-                .unwrap_or("");
+            let target = target.split(['#', '?']).next().unwrap_or("");
             let relative = !target.is_empty()
                 && !target.starts_with('/')
                 && !target.contains("://")

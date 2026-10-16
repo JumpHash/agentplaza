@@ -98,7 +98,7 @@ pub fn derive(dir: &Path, graph: &str, task: &str) -> Result<TextContract, Strin
     Ok(TextContract {
         kind: "text".into(),
         task: task.to_string(),
-        max_len: positions.min(MAX_LEN_CAP).max(2),
+        max_len: positions.clamp(2, MAX_LEN_CAP),
         labels,
         graph: graph.to_string(),
     })

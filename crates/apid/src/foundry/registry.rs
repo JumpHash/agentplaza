@@ -202,10 +202,10 @@ impl Models {
     pub fn derived_ids(&self, build: impl FnOnce(&[ModelRecord]) -> Vec<String>) -> Vec<String> {
         let generation = self.generation();
         let mut cache = self.derived.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((seen, ids)) = cache.as_ref() {
-            if *seen == generation {
-                return ids.clone();
-            }
+        if let Some((seen, ids)) = cache.as_ref()
+            && *seen == generation
+        {
+            return ids.clone();
         }
         let records: Vec<ModelRecord> = self.list();
         let ids = build(&records);
@@ -307,12 +307,13 @@ impl Models {
         }
         let mut source = source;
         let mut problem = servable_problem(dir, &source.as_);
-        if problem.is_some() && source.as_ == "servable" {
-            if let Some(task) = source.task.clone() {
-                match self.register_text(dir, &source, &task, id, size_bytes) {
-                    Ok(record) => return Ok(record),
-                    Err(e) => problem = Some(e),
-                }
+        if problem.is_some()
+            && source.as_ == "servable"
+            && let Some(task) = source.task.clone()
+        {
+            match self.register_text(dir, &source, &task, id, size_bytes) {
+                Ok(record) => return Ok(record),
+                Err(e) => problem = Some(e),
             }
         }
         if problem.is_none() {
@@ -873,7 +874,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             Response::json(200, &json!({ "models": models }))
         })
         .get("/v1/foundry/models/{id}", |app, _req, p| {
-            match app.models.get(&p.get("id").to_string()) {
+            match app.models.get(p.get("id")) {
                 Some(record) => Response::json(200, &view(&record)),
                 None => Response::error(404, "no such model"),
             }
@@ -889,29 +890,23 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
         .post("/v1/foundry/models/{id}/shadow", |app, _req, p| {
-            outcome(app.models.shadow(&p.get("id").to_string()))
+            outcome(app.models.shadow(p.get("id")))
         })
         .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
-            outcome(
-                app.models
-                    .promote(&app.agents, &app.looks, &p.get("id").to_string()),
-            )
+            outcome(app.models.promote(&app.agents, &app.looks, p.get("id")))
         })
         .post("/v1/foundry/models/{id}/invoke", |app, req, p| {
             let input: Value = match crate::agents::body(req) {
                 Ok(input) => input,
                 Err(resp) => return resp,
             };
-            match crate::foundry::breeder::invoke(app, &p.get("id").to_string(), &input) {
+            match crate::foundry::breeder::invoke(app, p.get("id"), &input) {
                 Ok((output, ms)) => Response::json(200, &json!({ "output": output, "ms": ms })),
                 Err(e) => Response::error(400, &e),
             }
         })
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
-            outcome(
-                app.models
-                    .retire(&app.agents, &app.looks, &p.get("id").to_string()),
-            )
+            outcome(app.models.retire(&app.agents, &app.looks, p.get("id")))
         })
 }
 
@@ -1105,7 +1100,7 @@ mod tests {
             roster.get(cid).is_none(),
             "retiring removes the model agent"
         );
-        assert!(looks.all().get(&cid).is_none());
+        assert!(!looks.all().contains_key(&cid));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1501,7 +1496,7 @@ mod tests {
             &json!({ "task": "t1", "agent": 42 }),
         );
         assert!(
-            plain.map_or(true, |r| !r.contains("S-006f")),
+            plain.is_none_or(|r| !r.contains("S-006f")),
             "an ordinary agent is not caught by S-006f"
         );
         let _ = fs::remove_dir_all(&root);

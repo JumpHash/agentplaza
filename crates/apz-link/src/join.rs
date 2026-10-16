@@ -43,10 +43,10 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
     if status != 200 {
         return Err(hub_error(status, &body));
     }
-    if let Some(fingerprint) = body.get("fingerprint").and_then(Value::as_str) {
-        if fingerprint != apz_trust::b64(&token.cert_sha256) {
-            return Err("the hub's certificate does not match the code".into());
-        }
+    if let Some(fingerprint) = body.get("fingerprint").and_then(Value::as_str)
+        && fingerprint != apz_trust::b64(&token.cert_sha256)
+    {
+        return Err("the hub's certificate does not match the code".into());
     }
     let identity_name = body
         .get("name")

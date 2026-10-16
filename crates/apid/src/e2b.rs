@@ -952,10 +952,10 @@ fn wait_healthy(id: &str, token: Option<&str>, wait: Duration) -> Result<(), Str
     let started = Instant::now();
     loop {
         // The gateway asks for the sandbox's token on every request, the hub's own included.
-        if let Ok(reply) = gateway(id, token, "GET", "/health", None, Duration::from_secs(2)) {
-            if (200..300).contains(&reply.status) {
-                return Ok(());
-            }
+        if let Ok(reply) = gateway(id, token, "GET", "/health", None, Duration::from_secs(2))
+            && (200..300).contains(&reply.status)
+        {
+            return Ok(());
         }
         if started.elapsed() >= wait {
             return Err(format!(
@@ -1505,7 +1505,7 @@ fn list(app: &App, req: &Request) -> Result<Response, Refused> {
         .into_iter()
         .filter(|s| s.phase == Phase::Running && matches(s, &filter))
         .collect();
-    running.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
+    running.sort_by_key(|s| std::cmp::Reverse(s.started_ms));
     Ok(Response::json(
         200,
         &running.iter().map(listed_view).collect::<Vec<Value>>(),
@@ -1529,7 +1529,7 @@ fn list_v2(app: &App, req: &Request) -> Result<Response, Refused> {
         .into_iter()
         .filter(|s| phases.contains(&s.phase) && matches(s, &filter))
         .collect();
-    listed.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
+    listed.sort_by_key(|a| std::cmp::Reverse(a.started_ms));
     Ok(Response::json(
         200,
         &listed.iter().map(listed_view).collect::<Vec<Value>>(),
@@ -1629,7 +1629,7 @@ fn snapshot(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, R
         .map(str::trim)
         .filter(|n| !n.is_empty())
     {
-        Some(name) => crate::vm_snapshots::check_label(name).map_err(|why| invalid(why))?,
+        Some(name) => crate::vm_snapshots::check_label(name).map_err(invalid)?,
         None => "snapshot".to_string(),
     };
     let sandbox = find(app, id)?;
@@ -1720,7 +1720,7 @@ const METRICS_BUDGET: Duration = Duration::from_secs(15);
 fn metrics_many(app: &App, req: &Request) -> Result<Response, Refused> {
     let ids = req
         .query_param("sandbox_ids")
-        .map(|raw| crate::plaza::percent_decode(raw))
+        .map(crate::plaza::percent_decode)
         .ok_or_else(|| invalid("sandbox_ids is required"))?;
     let ids: Vec<&str> = ids
         .split(',')
@@ -1774,9 +1774,7 @@ fn logs(app: &App, req: &Request, id: &str, v2: bool) -> Result<Response, Refuse
         limit: number("limit")?.map_or(1000, |n| n.min(1000) as usize),
         backward: req.query_param("direction") == Some("backward"),
         level,
-        search: req
-            .query_param("search")
-            .map(|raw| crate::plaza::percent_decode(raw)),
+        search: req.query_param("search").map(crate::plaza::percent_decode),
     };
     let daemon = daemon_json(&sandbox, "/logs")?.unwrap_or_else(|| json!([]));
     let entries = crate::e2b_obs::entries(&daemon, &query, rfc3339);
@@ -1946,7 +1944,7 @@ fn snapshots_list(app: &App) -> Response {
         .into_iter()
         .flat_map(|s| s.snapshots)
         .collect();
-    snaps.sort_by(|a, b| b.taken_ms.cmp(&a.taken_ms));
+    snaps.sort_by_key(|a| std::cmp::Reverse(a.taken_ms));
     Response::json(
         200,
         &snaps.iter().map(snapshot_view).collect::<Vec<Value>>(),
@@ -2062,7 +2060,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         // VM's CID and run; never its envd token. Ending, pausing and resuming act as the owner.
         .get("/v1/e2b/sandboxes", |app, _, _| {
             let mut all = live(app);
-            all.sort_by(|a, b| b.started_ms.cmp(&a.started_ms));
+            all.sort_by_key(|a| std::cmp::Reverse(a.started_ms));
             let rows: Vec<Value> = all
                 .iter()
                 .map(|s| {

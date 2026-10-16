@@ -107,12 +107,10 @@ impl NavWorld {
             Some(c) => self.grid.walk[c] != 1,
             None => true,
         };
-        if off_walk {
-            if let Some(snapped) = snap_walk(&self.grid, x, z) {
-                let p = self.grid.centre(snapped);
-                x = p[0];
-                z = p[1];
-            }
+        if off_walk && let Some(snapped) = snap_walk(&self.grid, x, z) {
+            let p = self.grid.centre(snapped);
+            x = p[0];
+            z = p[1];
         }
         let s = self.surfaces_at(x, z);
         let mut body = new_body(s.walk_top.or(s.floor_top).unwrap_or(0.0));
@@ -327,7 +325,7 @@ impl NavWorld {
             .and_then(|p| p.get(r.next..))
             .map(|s| s.to_vec())
             .unwrap_or_default();
-        let saved = r.goal.clone();
+        let saved = r.goal;
         // Clear of the rival's way too (the web's rule is the yielder's own path only): a side-step onto the cells the
         // rival walks next leaves both stuck at a chokepoint. In a corridor with no such cell, the yielder backs off
         // along its own path, clear of the rival's alone.
@@ -570,13 +568,7 @@ impl NavWorld {
                 None => LiftController::new(def.low as f32, def.high as f32, LiftConfig::default())
                     .expect("lift shaft"),
             };
-            next.insert(
-                def.id,
-                LiftSlot {
-                    def: def.clone(),
-                    ctrl,
-                },
-            );
+            next.insert(def.id, LiftSlot { def: *def, ctrl });
         }
         self.lifts = next;
     }
@@ -593,7 +585,7 @@ impl NavWorld {
             };
         };
         match r.path.as_ref().and_then(|p| p.first()) {
-            Some(first) => first.clone(),
+            Some(first) => *first,
             None => NavPoint {
                 x: r.x,
                 y: r.y,
@@ -671,10 +663,10 @@ impl NavWorld {
     /// next step. Called from setGrid, the proposal is committed at once.
     pub(super) fn step_off(&mut self, id: u32) {
         let exit = self.exit_of(id);
-        if let Some(key) = self.robots.get(&id).and_then(|r| lift_key(r.lift_id)) {
-            if let Some(L) = self.lifts.get_mut(&key) {
-                L.ctrl.cancel(id);
-            }
+        if let Some(key) = self.robots.get(&id).and_then(|r| lift_key(r.lift_id))
+            && let Some(L) = self.lifts.get_mut(&key)
+        {
+            L.ctrl.cancel(id);
         }
         if let Some(r) = self.robots.get_mut(&id) {
             r.riding = false;
@@ -701,25 +693,24 @@ impl NavWorld {
         let q = pts.get(k + 1)?;
         let grid = &self.grid;
         let front = grid.cell_at(p.x, p.z);
-        if let Some(lk) = lift_of_portal(grid, p.portal as usize) {
-            if let Some(L) = self.lifts.get(&lk) {
-                if front == Some(L.def.front) {
-                    return Some((lk, 1));
-                }
-            }
+        if let Some(lk) = lift_of_portal(grid, p.portal as usize)
+            && let Some(L) = self.lifts.get(&lk)
+            && front == Some(L.def.front)
+        {
+            return Some((lk, 1));
         }
-        if let Some(lk) = lift_of_portal(grid, q.portal as usize) {
-            if let Some(L) = self.lifts.get(&lk) {
-                // The portal joins the lift's two landings: the front (the platform's cell on the board) and the door (the plate's
-                // edge). A robot standing at either boards the cab at its own level: the board side needs the low end, the plate
-                // side the high end. The path's next point is the step-off.
-                let b = grid.cell_at(q.x, q.z);
-                if front == Some(L.def.front) && b == Some(L.def.door) {
-                    return Some((lk, 0));
-                }
-                if front == Some(L.def.door) && b == Some(L.def.front) {
-                    return Some((lk, 1));
-                }
+        if let Some(lk) = lift_of_portal(grid, q.portal as usize)
+            && let Some(L) = self.lifts.get(&lk)
+        {
+            // The portal joins the lift's two landings: the front (the platform's cell on the board) and the door (the plate's
+            // edge). A robot standing at either boards the cab at its own level: the board side needs the low end, the plate
+            // side the high end. The path's next point is the step-off.
+            let b = grid.cell_at(q.x, q.z);
+            if front == Some(L.def.front) && b == Some(L.def.door) {
+                return Some((lk, 0));
+            }
+            if front == Some(L.def.door) && b == Some(L.def.front) {
+                return Some((lk, 1));
             }
         }
         None

@@ -269,7 +269,7 @@ impl Files {
             })
             .map_err(text)?;
         }
-        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        rows.sort_by_key(|a| std::cmp::Reverse(a.0));
         rows.truncate(limit);
         rows.reverse();
         Ok(rows)
@@ -287,14 +287,13 @@ impl Files {
         for entry in entries {
             let name = entry.map_err(text)?.file_name();
             let name = name.to_string_lossy();
-            if let Some(stem) = name.strip_suffix(".jsonl") {
-                if let Some(cid) = stem
+            if let Some(stem) = name.strip_suffix(".jsonl")
+                && let Some(cid) = stem
                     .split('.')
                     .next()
                     .and_then(|cid| cid.parse::<u64>().ok())
-                {
-                    cids.insert(cid);
-                }
+            {
+                cids.insert(cid);
             }
         }
         Ok(cids.into_iter().collect())
@@ -347,16 +346,16 @@ impl Files {
                 break;
             }
             for_each_line_rev(&file, self.chunk, |line| {
-                if let Ok(row) = serde_json::from_slice::<InfractionIn>(line) {
-                    if cid.map_or(true, |wanted| wanted == row.cid) {
-                        rows.push(row);
-                    }
+                if let Ok(row) = serde_json::from_slice::<InfractionIn>(line)
+                    && cid.is_none_or(|wanted| wanted == row.cid)
+                {
+                    rows.push(row);
                 }
                 rows.len() < limit
             })
             .map_err(text)?;
         }
-        rows.sort_by(|a, b| (b.at_ms, b.id).cmp(&(a.at_ms, a.id)));
+        rows.sort_by_key(|r| std::cmp::Reverse((r.at_ms, r.id)));
         rows.truncate(limit);
         Ok(rows
             .into_iter()
@@ -580,10 +579,10 @@ impl Files {
                 break;
             }
             for_each_line_rev(&file, self.chunk, |line| {
-                if let Ok(row) = serde_json::from_slice::<EventIn>(line) {
-                    if row.recording == recording {
-                        rows.push(row.event);
-                    }
+                if let Ok(row) = serde_json::from_slice::<EventIn>(line)
+                    && row.recording == recording
+                {
+                    rows.push(row.event);
                 }
                 rows.len() < limit
             })

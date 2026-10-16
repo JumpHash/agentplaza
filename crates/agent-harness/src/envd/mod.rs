@@ -362,10 +362,10 @@ fn init(request: &Request, shared: &Shared) -> Reply {
     // The plaza's own field: a sandbox starts as a restore of a warm template (and wakes as a
     // restore of its snapshot), so the hub sends fresh entropy with every `/init` and no two
     // sandboxes share the template's random state.
-    if let Some(entropy) = body.get("entropy").and_then(Value::as_str) {
-        if let Err(err) = crate::restore::mix_hex_entropy(entropy) {
-            println!("agent-harness: envd: host entropy not mixed: {err}");
-        }
+    if let Some(entropy) = body.get("entropy").and_then(Value::as_str)
+        && let Err(err) = crate::restore::mix_hex_entropy(entropy)
+    {
+        println!("agent-harness: envd: host entropy not mixed: {err}");
     }
     Reply::empty(204)
 }

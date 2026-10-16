@@ -2369,12 +2369,12 @@ pub(crate) fn delete(app: &App, id: &str, key: &str) -> Option<Result<Response, 
 /// change first, with each build's status, tags, size and, for a failed one, why.
 pub(crate) fn owner_view(app: &App) -> Value {
     let mut all = templates(app).list();
-    all.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    all.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
     let rows: Vec<Value> = all
         .iter()
         .map(|t| {
             let mut builds: Vec<&Build> = t.builds.iter().collect();
-            builds.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+            builds.sort_by_key(|b| std::cmp::Reverse(b.created_ms));
             json!({
                 "templateID": t.id,
                 "name": t.name,

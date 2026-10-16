@@ -140,12 +140,12 @@ impl PromptStore for DbPrompts {
                     new.id
                 )));
             }
-            if let Some(binding) = new.binding.as_deref() {
-                if let Some(holder) = binding_holder(&mut tx, binding, &new.id)? {
-                    return Ok(Outcome::Conflict(format!(
-                        "binding {binding} is held by {holder}"
-                    )));
-                }
+            if let Some(binding) = new.binding.as_deref()
+                && let Some(holder) = binding_holder(&mut tx, binding, &new.id)?
+            {
+                return Ok(Outcome::Conflict(format!(
+                    "binding {binding} is held by {holder}"
+                )));
             }
             let now = now_ms as i64;
             tx.execute(
@@ -229,12 +229,12 @@ impl PromptStore for DbPrompts {
             if lock_prompt(&mut tx, id)?.is_none() {
                 return Ok(Outcome::NotFound);
             }
-            if let Some(binding) = meta.binding.as_deref() {
-                if let Some(holder) = binding_holder(&mut tx, binding, id)? {
-                    return Ok(Outcome::Conflict(format!(
-                        "binding {binding} is held by {holder}"
-                    )));
-                }
+            if let Some(binding) = meta.binding.as_deref()
+                && let Some(holder) = binding_holder(&mut tx, binding, id)?
+            {
+                return Ok(Outcome::Conflict(format!(
+                    "binding {binding} is held by {holder}"
+                )));
             }
             let now = now_ms as i64;
             tx.execute(
@@ -298,14 +298,13 @@ impl PromptStore for DbPrompts {
             let Some(prompt) = lock_prompt(&mut tx, id)? else {
                 return Ok(Outcome::NotFound);
             };
-            if !archived {
-                if let Some(binding) = prompt.binding.as_deref() {
-                    if let Some(holder) = binding_holder(&mut tx, binding, id)? {
-                        return Ok(Outcome::Conflict(format!(
-                            "binding {binding} is held by {holder}"
-                        )));
-                    }
-                }
+            if !archived
+                && let Some(binding) = prompt.binding.as_deref()
+                && let Some(holder) = binding_holder(&mut tx, binding, id)?
+            {
+                return Ok(Outcome::Conflict(format!(
+                    "binding {binding} is held by {holder}"
+                )));
             }
             let now = now_ms as i64;
             tx.execute(sql::PROMPT_SET_ARCHIVED, &[&id, &archived, &now])?;

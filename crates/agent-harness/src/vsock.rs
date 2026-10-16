@@ -14,11 +14,11 @@ use std::time::Duration;
 use apz_proto::line::ReadTimeout;
 
 /// The orchestrator's CID (`VMADDR_CID_HOST`).
-pub const HOST_CID: u32 = libc::VMADDR_CID_HOST as u32;
+pub const HOST_CID: u32 = libc::VMADDR_CID_HOST;
 
 /// `VMADDR_CID_ANY`: what the vsock stack reports when a transport has no CID
 /// to report (a guest whose device never published one reads back this).
-pub const CID_ANY: u32 = libc::VMADDR_CID_ANY as u32;
+pub const CID_ANY: u32 = libc::VMADDR_CID_ANY;
 
 /// `IOCTL_VM_SOCKETS_GET_LOCAL_CID = _IO(7, 0xb9)` (`include/uapi/linux/vm_sockets.h`):
 /// asks the vsock stack for the local CID of the socket's transport — on a

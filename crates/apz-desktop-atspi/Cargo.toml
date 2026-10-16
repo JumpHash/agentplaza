@@ -13,3 +13,6 @@ apz-station = { path = "../apz-station" }
 async-io = "2"
 atspi = { version = "0.30", default-features = false, features = ["connection", "proxies"] }
 zbus = "5"
+
+[lints]
+workspace = true

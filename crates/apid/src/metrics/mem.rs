@@ -100,7 +100,7 @@ impl Store for MemStore {
         // The map is ordered by series key, so the rows come out sorted.
         series_of_metric
             .iter()
-            .filter(|(key, _)| keep(*key))
+            .filter(|(key, _)| keep(key))
             .filter_map(|(key, windows)| {
                 let in_range: Vec<(u64, Agg)> = windows
                     .iter()

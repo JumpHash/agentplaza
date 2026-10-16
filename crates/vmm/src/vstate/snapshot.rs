@@ -464,11 +464,11 @@ pub fn encode_runs(runs: &[Run]) -> Vec<u8> {
 /// The runs a [`WORKING_SET_FILE`]'s bytes hold, or `None` if they are not a whole number of runs, or
 /// name more than [`MAX_WORKING_SET_RUNS`].
 pub fn decode_runs(bytes: &[u8]) -> Option<Vec<Run>> {
-    if bytes.len() % 16 != 0 || bytes.len() / 16 > MAX_WORKING_SET_RUNS {
+    if !bytes.len().is_multiple_of(16) || bytes.len() / 16 > MAX_WORKING_SET_RUNS {
         return None;
     }
     let mut runs = Vec::with_capacity(bytes.len() / 16);
-    for chunk in bytes.chunks_exact(16) {
+    for chunk in bytes.as_chunks::<16>().0 {
         let offset = u64::from_le_bytes(chunk[..8].try_into().ok()?);
         let len = u64::from_le_bytes(chunk[8..].try_into().ok()?);
         runs.push((offset, len));

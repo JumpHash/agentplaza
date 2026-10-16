@@ -1154,7 +1154,7 @@ mod tests {
             r#"{"goal": "work", "budget": 100}"#,
             r#"{"goal": "work", "budget": 0}"#,
         ] {
-            let refusal = resolve(body).err().expect("below the minimum is refused");
+            let refusal = resolve(body).expect_err("below the minimum is refused");
             assert_eq!(refusal.status, 400);
             assert!(String::from_utf8_lossy(refusal.bytes()).contains("minimum of 200"));
         }

@@ -4,6 +4,7 @@
 //! - **Host a hub**: a hub other machines join — bound to an address, HTTPS, owner token, join codes.
 //! - **Join a hub**: this machine becomes a node of another hub (paste a join code).
 //! - **Connect to a hub**: open the console of a hub elsewhere (its URL and the owner token).
+//!
 //! The choice is remembered (`~/.config/agentplaza/desktop.json`) and offered first next time.
 //!
 //! Start locally and Host a hub first check every requirement (`setup`), and install or set up

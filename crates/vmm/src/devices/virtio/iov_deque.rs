@@ -94,7 +94,6 @@ pub enum IovDequeError {
 //    pub iov_len: ::size_t,
 // }
 // ```
-
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct IovDeque<const L: u16> {
@@ -269,6 +268,12 @@ impl<const L: u16> IovDeque<L> {
         self.len
     }
 
+    /// Returns `true` if the [`IovDeque`] contains no `iovec` objects
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Returns `true` if the [`IovDeque`] is full, `false` otherwise
     #[inline(always)]
     pub fn is_full(&self) -> bool {
@@ -422,6 +427,12 @@ impl<const L: u16> IovDeque<L> {
     #[inline(always)]
     pub fn len(&self) -> u16 {
         self.len
+    }
+
+    /// Returns `true` if the [`IovDeque`] contains no `iovec` objects
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns `true` if the [`IovDeque`] is full, `false` otherwise

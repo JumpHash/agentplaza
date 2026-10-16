@@ -348,7 +348,7 @@ fn keepalive(config: &Config, out: &mut (impl Write + Send)) -> Result<(), Harne
                 );
                 // A template waiting for its restore retries every 25 ms: only its first failure
                 // is printed, so the serial console (and the template's memory) is not flooded.
-                if !(config.template && !welcomed) || failures == 1 {
+                if !config.template || welcomed || failures == 1 {
                     let restored = if after_restore { " (quick retry)" } else { "" };
                     let _ = writeln!(
                         out,

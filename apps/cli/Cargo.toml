@@ -33,3 +33,6 @@ libc = { workspace = true }
 
 [build-dependencies]
 winresource = "0.1.34"
+
+[lints]
+workspace = true

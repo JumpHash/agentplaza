@@ -435,9 +435,7 @@ impl Floor {
     /// grown by a third of their size on each side in x and z (the shrouds beside the plaza stand in view).
     /// None without a board.
     pub fn plaza_area(&self) -> Option<(Vec3, Vec3)> {
-        if self.board.is_none() {
-            return None;
-        }
+        self.board.as_ref()?;
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for p in self.fit_points() {
             lo = lo.min(p);

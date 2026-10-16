@@ -134,20 +134,21 @@ impl Store {
     /// Validates the given fields, merges them over the agent's stored limits, saves, and
     /// returns the merged limits.
     pub fn set_limits(&self, cid: u64, limits: Limits) -> Result<Limits, String> {
-        if let Some(v) = limits.max_turns {
-            if !(1..=500).contains(&v) {
-                return Err("max_turns must be 1 to 500".into());
-            }
+        if let Some(v) = limits.max_turns
+            && !(1..=500).contains(&v)
+        {
+            return Err("max_turns must be 1 to 500".into());
         }
-        if let Some(v) = limits.compress_at {
-            if v != 0 && !(20_000..=4_000_000).contains(&v) {
-                return Err("compress_at must be 0 (never) or 20000 to 4000000 bytes".into());
-            }
+        if let Some(v) = limits.compress_at
+            && v != 0
+            && !(20_000..=4_000_000).contains(&v)
+        {
+            return Err("compress_at must be 0 (never) or 20000 to 4000000 bytes".into());
         }
-        if let Some(v) = limits.keep_recent {
-            if !(1..=50).contains(&v) {
-                return Err("keep_recent must be 1 to 50".into());
-            }
+        if let Some(v) = limits.keep_recent
+            && !(1..=50).contains(&v)
+        {
+            return Err("keep_recent must be 1 to 50".into());
         }
         let mut guard = self.locked();
         let mut next = guard.1.get(&cid).cloned().unwrap_or_default();
@@ -269,10 +270,10 @@ pub fn tick(app: &App) {
         .collect();
     for l in due {
         // The agent is still busy with the previous run of this loop: wait for it.
-        if let Some(previous) = l.last_work {
-            if app.work.current(l.cid).is_some_and(|w| w.id == previous) {
-                continue;
-            }
+        if let Some(previous) = l.last_work
+            && app.work.current(l.cid).is_some_and(|w| w.id == previous)
+        {
+            continue;
         }
         let run = l.runs + 1;
         let of = if l.max_runs > 0 {

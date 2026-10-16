@@ -460,7 +460,9 @@ fn tris(geo: &Geometry) -> Vec<[usize; 3]> {
             .collect()
     } else {
         geo.indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
             .collect()
     }
