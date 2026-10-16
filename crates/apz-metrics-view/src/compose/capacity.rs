@@ -354,7 +354,12 @@ fn treasury_tile(treasury: Option<(f64, f64)>, burn: f64) -> Tile {
                 let days = credits * usd_per_credit / burn;
                 stat(
                     "Treasury credits left",
-                    format!("{days:.0} days"),
+                    // One decimal under ten days ("1.3 days", never "1 days").
+                    if days < 10.0 {
+                        format!("{days:.1} days")
+                    } else {
+                        format!("{days:.0} days")
+                    },
                     left,
                     Tone::C1,
                     None,

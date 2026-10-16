@@ -35,7 +35,8 @@ export interface ChartHandle {
 }
 
 const NS = 'http://www.w3.org/2000/svg';
-const PAD_L = 50;
+/** Room for the y labels: "1.4 MiB/s" and "$1,264" fit at 11 px. The desktop uses the same gutter. */
+const PAD_L = 64;
 const PAD_R = 10;
 const PAD_T = 8;
 const PAD_B = 20;

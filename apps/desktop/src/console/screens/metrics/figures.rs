@@ -552,6 +552,9 @@ pub fn gauges<'a>(items: &'a [GaugeItem]) -> Element<'a, Msg> {
             .collect();
         column(rows).spacing(GAUGE_GAP).into()
     })
+    // Shrink: a responsive fills its parent's height by default, which collapses the card inside the scroll.
+    .width(Length::Fill)
+    .height(Length::Shrink)
     .into()
 }
 
@@ -719,6 +722,8 @@ pub fn swimlanes<'a>(s: &'a Swimlanes, tz: i32) -> Element<'a, Msg> {
         .spacing(8.0)
         .into()
     })
+    .width(Length::Fill)
+    .height(Length::Shrink)
     .into()
 }
 

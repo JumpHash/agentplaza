@@ -14,8 +14,9 @@ use iced::{Background, Color, Element, Event, Length, Point, Rectangle, Renderer
 use super::{Msg, Pointer, axis_color, grid_color, tone};
 use crate::theme::{SANS, TYPE_META};
 
-/// The space left of the plot for the value labels, and right, above and below it.
-const PAD_L: f32 = 50.0;
+/// The space left of the plot for the value labels ("1.4 MiB/s" and "$1,264" fit at 11 px; the web uses the same
+/// gutter), and right, above and below it.
+const PAD_L: f32 = 64.0;
 const PAD_R: f32 = 10.0;
 const PAD_T: f32 = 8.0;
 const PAD_B: f32 = 20.0;
