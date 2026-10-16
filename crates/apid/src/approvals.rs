@@ -13,6 +13,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_metrics::{EntityKind, SeriesKey};
 use apz_proto::wire::HostMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -297,6 +298,15 @@ impl Store {
     pub fn list(&self) -> Vec<Approval> {
         self.lock().queue.iter().rev().cloned().collect()
     }
+
+    /// How many approvals wait on the owner now.
+    pub fn pending_count(&self) -> usize {
+        self.lock()
+            .queue
+            .iter()
+            .filter(|a| a.state == State::Pending)
+            .count()
+    }
 }
 
 fn now_ms() -> u64 {
@@ -347,6 +357,7 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
     } = &gate
     {
         app.bus.publish("approval", item);
+        record_pushed(app, cid);
     }
     gate
 }
@@ -356,11 +367,29 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
 // Used by the sanctions and payments work, which is not wired yet.
 #[allow(dead_code)]
 pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
-    let item = app
-        .approvals
-        .submit(detail_cid(&detail), kind, subject, detail);
+    let cid = detail_cid(&detail);
+    let item = app.approvals.submit(cid, kind, subject, detail);
     app.bus.publish("approval", &item);
+    record_pushed(app, cid);
     item
+}
+
+/// Records a newly queued approval for agent `cid`: the waiting count and the agent's state.
+fn record_pushed(app: &App, cid: u64) {
+    record_pending(app);
+    crate::metrics::collect::agent_state(app, cid, "approval");
+}
+
+/// Sets the `approval.pending` gauge to the approvals waiting on the owner now.
+fn record_pending(app: &App) {
+    app.metrics
+        .registry
+        .gauge(SeriesKey::new(
+            "approval.pending",
+            EntityKind::Global,
+            "global",
+        ))
+        .set(app.approvals.pending_count() as f64);
 }
 
 /// The agent a decision's detail names (`cid`), or 0 when it names none.
@@ -429,6 +458,15 @@ pub(crate) fn decide_approval(
             return Err((409, "this approval is already decided".to_string()));
         }
     };
+    app.metrics
+        .registry
+        .hist(SeriesKey::new(
+            "approval.wait_ms",
+            EntityKind::Agent,
+            &item.cid.to_string(),
+        ))
+        .record(now_ms().saturating_sub(item.created_ms) as f64);
+    record_pending(app);
     app.bus.publish("approval", &item);
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {

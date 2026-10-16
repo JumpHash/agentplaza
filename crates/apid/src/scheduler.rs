@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
+use apz_metrics::{EntityKind, Registry, SeriesKey};
 use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
 use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
@@ -123,6 +124,11 @@ impl Lanes {
             .unwrap_or_default()
     }
 
+    /// How many items wait behind the one in flight for `cid`.
+    fn waiting(&self, cid: u64) -> usize {
+        self.lanes.get(&cid).map_or(0, |lane| lane.queue.len())
+    }
+
     /// Takes item `work` out of `cid`'s queue, if it waits there. The item in flight is not queued, so it is not taken.
     fn remove_queued(&mut self, cid: u64, work: u64) -> Option<WorkItem> {
         let lane = self.lanes.get_mut(&cid)?;
@@ -230,6 +236,7 @@ impl Queues {
         };
         self.locked().push(item);
         self.dispatch(app, cid);
+        set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
         id
     }
 
@@ -253,6 +260,20 @@ impl Queues {
             return;
         };
         let state = status_str(status);
+        // Stopped work was abandoned, so it counts as failed.
+        let outcome = match status {
+            WorkStatus::Done => "work.done",
+            WorkStatus::Failed | WorkStatus::Stopped => "work.failed",
+        };
+        let registry = &app.metrics.registry;
+        registry.counter(agent_key(outcome, cid)).inc();
+        let totals = app.usage.work_totals(cid, work);
+        registry
+            .hist(agent_key("work.turns", cid))
+            .record(totals.calls as f64);
+        registry
+            .hist(agent_key("work.cost_usd", cid))
+            .record(totals.usd);
         app.transcripts.record(
             &app.bus,
             cid,
@@ -286,6 +307,7 @@ impl Queues {
         self.review_lost(app, item.id, "reviewer ended without a verdict");
         app.agents.update(cid, |a| a.status = Status::Idle);
         self.dispatch(app, cid);
+        set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
         // This agent is free now: it may be the reviewer a waiting task was waiting for.
         self.assign_reviews(app);
     }
@@ -736,8 +758,16 @@ impl Queues {
         if !matches!(sent, Ok((code, _)) if (200..300).contains(&code)) {
             self.locked().requeue_front(item);
             app.agents.update(cid, |a| a.status = Status::Idle);
+            set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
             return;
         }
+        let now = apz_plaza::now_ms();
+        app.metrics
+            .registry
+            .hist(agent_key("work.wait_ms", cid))
+            .record(now.saturating_sub(item.created_ms) as f64);
+        set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
+        crate::metrics::collect::agent_state(app, cid, "first_token");
         app.transcripts.record(
             &app.bus,
             cid,
@@ -776,6 +806,18 @@ fn dispatch_step(status: Option<Status>, paused: bool) -> DispatchStep {
         Some(Status::Asleep) => DispatchStep::Wake,
         Some(Status::Idle | Status::Working) => DispatchStep::Send,
     }
+}
+
+/// The series of metric `metric` for agent `cid`.
+fn agent_key(metric: &str, cid: u64) -> SeriesKey {
+    SeriesKey::new(metric, EntityKind::Agent, &cid.to_string())
+}
+
+/// Sets the `work.queued` gauge of `cid` to the items waiting behind its item in flight.
+fn set_queued_gauge(registry: &Registry, lanes: &Lanes, cid: u64) {
+    registry
+        .gauge(agent_key("work.queued", cid))
+        .set(lanes.waiting(cid) as f64);
 }
 
 /// The wire spelling of a work status, for the transcript and events.
@@ -1143,6 +1185,20 @@ impl Queues {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_queued_gauge_follows_the_lane_as_items_are_queued_and_started() {
+        let registry = Registry::new(64);
+        let mut lanes = Lanes::default();
+        lanes.push(item(1, 7, None));
+        lanes.push(item(2, 7, None));
+        set_queued_gauge(&registry, &lanes, 7);
+        assert_eq!(registry.gauge(agent_key("work.queued", 7)).get(), 2.0);
+
+        assert!(lanes.start_next(7, 5).is_some());
+        set_queued_gauge(&registry, &lanes, 7);
+        assert_eq!(registry.gauge(agent_key("work.queued", 7)).get(), 1.0);
+    }
 
     #[test]
     fn origin_without_acp_still_parses() {
