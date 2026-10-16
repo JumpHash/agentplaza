@@ -20,6 +20,10 @@ serde_json.workspace = true
 sha2.workspace = true
 vmm = { path = "../vmm" }
 
+# Linux reads `/proc` for the host stats; other hosts ask the OS through sysinfo.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo = "0.33"
+
 [lib]
 name = "noded"
 path = "src/lib.rs"

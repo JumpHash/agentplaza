@@ -1,17 +1,24 @@
-//! Live resource stats for this machine. A background sampler reads `/proc`
+//! Live resource stats for this machine. A background sampler reads the host
 //! every [`SAMPLE_INTERVAL`] and keeps the latest sample and the last
 //! [`HISTORY_LEN`] of them, plus the latest reading of every process, so the
-//! API can say where the machine's CPU and memory go. It reads `/proc` only;
-//! no process is spawned.
+//! API can say where the machine's CPU and memory go. On Linux the sampler
+//! reads `/proc`; on other systems it asks the OS through `sysinfo`. No process
+//! is spawned.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+#[cfg(not(target_os = "linux"))]
+use sysinfo::{Process, ProcessesToUpdate, System};
 
 /// How often the host is sampled.
 pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Bytes in a MiB, for the sysinfo readings (which are in bytes).
+#[cfg(not(target_os = "linux"))]
+const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 /// How many samples the history keeps.
 pub const HISTORY_LEN: usize = 60;
@@ -130,6 +137,7 @@ struct ProcSample {
     /// The command name (`/proc/<pid>/comm`).
     comm: String,
     /// The process's CPU ticks (`utime + stime`) when it was read.
+    #[cfg(target_os = "linux")]
     ticks: u64,
     /// Busy share since the previous sample, in percent of all CPU time.
     cpu_percent: f64,
@@ -214,6 +222,7 @@ pub fn spawn(stats: Arc<Stats>) -> std::io::Result<()> {
         .map(|_handle| ())
 }
 
+#[cfg(target_os = "linux")]
 fn run(stats: &Stats) {
     let mut prev_cpu = cpu_line();
     let mut prev_ticks: HashMap<u32, u64> = HashMap::new();
@@ -244,14 +253,80 @@ fn run(stats: &Stats) {
     }
 }
 
+/// The sampler on systems without `/proc`: `sysinfo` reads the host's CPU and
+/// memory, and every process, once per [`SAMPLE_INTERVAL`].
+#[cfg(not(target_os = "linux"))]
+fn run(stats: &Stats) {
+    let mut system = System::new();
+    // A CPU share is worked out between two refreshes, so refresh once before
+    // the first sample.
+    system.refresh_cpu_usage();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    loop {
+        std::thread::sleep(SAMPLE_INTERVAL);
+        system.refresh_cpu_usage();
+        system.refresh_memory();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        stats.push(host_sample(&system));
+        stats.set_procs(process_samples(&system));
+    }
+}
+
+/// A full sample of the host, from the CPU, memory and uptime `system` holds.
+/// The load averages are zeros on Windows, which has none.
+#[cfg(not(target_os = "linux"))]
+fn host_sample(system: &System) -> Sample {
+    let load = System::load_average();
+    Sample {
+        t_ms: now_ms(),
+        cpu_percent: f64::from(system.global_cpu_usage()),
+        load: [load.one, load.five, load.fifteen],
+        mem_total_mib: system.total_memory() / BYTES_PER_MIB,
+        mem_used_mib: system.used_memory() / BYTES_PER_MIB,
+        uptime_s: System::uptime() as f64,
+    }
+}
+
+/// Every process `system` lists, keyed by pid. `sysinfo` reports a process's
+/// CPU per core, so it is divided by the number of CPUs to give the share of
+/// all CPU time that `/proc` gives on Linux.
+#[cfg(not(target_os = "linux"))]
+fn process_samples(system: &System) -> HashMap<u32, ProcSample> {
+    let cpus = system.cpus().len().max(1) as f32;
+    system
+        .processes()
+        .iter()
+        .map(|(pid, process)| {
+            (
+                pid.as_u32(),
+                ProcSample {
+                    comm: process_name(process),
+                    cpu_percent: f64::from(process.cpu_usage() / cpus),
+                    rss_mib: process.memory() / BYTES_PER_MIB,
+                },
+            )
+        })
+        .collect()
+}
+
+/// The command name of a process. Windows names an executable with its
+/// `.exe` extension, which the plaza's service names do not carry.
+#[cfg(not(target_os = "linux"))]
+fn process_name(process: &Process) -> String {
+    let name = process.name().to_string_lossy();
+    name.strip_suffix(".exe").unwrap_or(&name).to_string()
+}
+
 /// The aggregate counters of a `cpu` line in `/proc/stat`: `total` is every
 /// counted field, `busy` is `total` minus idle and iowait.
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CpuTimes {
     total: u64,
     busy: u64,
 }
 
+#[cfg(target_os = "linux")]
 fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
     let mut fields = line.split_whitespace();
     if fields.next()? != "cpu" {
@@ -276,6 +351,7 @@ fn parse_cpu_line(line: &str) -> Option<CpuTimes> {
 
 /// The machine's total CPU ticks (every counted field, every CPU) on a `cpu`
 /// line of `/proc/stat`.
+#[cfg(target_os = "linux")]
 fn total_jiffies(line: &str) -> Option<u64> {
     parse_cpu_line(line).map(|times| times.total)
 }
@@ -295,6 +371,7 @@ pub fn cpu_percent(before: &str, after: &str) -> Option<f64> {
 /// A process's busy share, in percent of all CPU time, between two samples: its
 /// ticks over the machine's ticks (every CPU) in the same span. `None` when the
 /// process's counter went backwards or no machine time passed.
+#[cfg(target_os = "linux")]
 fn process_cpu_percent(before_ticks: u64, after_ticks: u64, total_ticks: u64) -> Option<f64> {
     let ticks = after_ticks.checked_sub(before_ticks)?;
     if total_ticks == 0 {
@@ -306,6 +383,7 @@ fn process_cpu_percent(before_ticks: u64, after_ticks: u64, total_ticks: u64) ->
 /// The command name and CPU ticks (`utime + stime`, fields 14 and 15) of a
 /// `/proc/<pid>/stat` line. The name sits in parentheses and may hold spaces
 /// and parentheses, so the fields are counted from the last `)`.
+#[cfg(target_os = "linux")]
 fn parse_proc_stat(line: &str) -> Option<(String, u64)> {
     let open = line.find('(')?;
     let close = line.rfind(')')?;
@@ -321,6 +399,7 @@ fn parse_proc_stat(line: &str) -> Option<(String, u64)> {
 /// The resident memory in MiB, from the `VmRSS` line (in kB) of a
 /// `/proc/<pid>/status` text. `None` for a process with no resident memory,
 /// such as a kernel thread.
+#[cfg(target_os = "linux")]
 fn parse_vm_rss_mib(text: &str) -> Option<u64> {
     let kib: u64 = text
         .lines()
@@ -349,6 +428,7 @@ fn service_name(comm: &str) -> Option<&'static str> {
 /// share is its ticks since the previous sample (`prev_ticks`) over `total`,
 /// the machine's ticks in the same span; a process with no previous reading,
 /// or no machine time to divide by, reports 0.
+#[cfg(target_os = "linux")]
 fn read_processes(prev_ticks: &HashMap<u32, u64>, total: Option<u64>) -> HashMap<u32, ProcSample> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return HashMap::new();
@@ -367,6 +447,7 @@ fn read_processes(prev_ticks: &HashMap<u32, u64>, total: Option<u64>) -> HashMap
                 pid,
                 ProcSample {
                     comm,
+                    #[cfg(target_os = "linux")]
                     ticks,
                     cpu_percent,
                     rss_mib,
@@ -428,10 +509,12 @@ fn plaza_usage(procs: &HashMap<u32, ProcSample>, vms: &[VmProcess]) -> PlazaUsag
     }
 }
 
+#[cfg(target_os = "linux")]
 fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+#[cfg(target_os = "linux")]
 fn cpu_line() -> Option<String> {
     read("/proc/stat")?
         .lines()
@@ -440,6 +523,7 @@ fn cpu_line() -> Option<String> {
 }
 
 /// `(MemTotal, MemAvailable)` in MiB, from `/proc/meminfo` text.
+#[cfg(target_os = "linux")]
 fn parse_meminfo(text: &str) -> Option<(u64, u64)> {
     let kib = |key: &str| {
         text.lines().find_map(|line| {
@@ -454,6 +538,7 @@ fn parse_meminfo(text: &str) -> Option<(u64, u64)> {
     Some((kib("MemTotal:")? / 1024, kib("MemAvailable:")? / 1024))
 }
 
+#[cfg(target_os = "linux")]
 fn parse_loadavg(text: &str) -> Option<[f64; 3]> {
     let mut fields = text
         .split_whitespace()
@@ -461,11 +546,13 @@ fn parse_loadavg(text: &str) -> Option<[f64; 3]> {
     Some([fields.next()??, fields.next()??, fields.next()??])
 }
 
+#[cfg(target_os = "linux")]
 fn parse_uptime(text: &str) -> Option<f64> {
     text.split_whitespace().next()?.parse().ok()
 }
 
 /// A full sample, given the CPU share already worked out from `/proc/stat`.
+#[cfg(target_os = "linux")]
 fn read_host(cpu_percent: f64) -> Option<Sample> {
     let (mem_total_mib, mem_available_mib) = parse_meminfo(&read("/proc/meminfo")?)?;
     Some(Sample {
@@ -506,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn total_jiffies_is_every_counted_field_of_the_cpu_line() {
         assert_eq!(
             total_jiffies("cpu  100 0 100 800 100 0 0 0 0 0"),
@@ -515,6 +603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn proc_stat_ticks_are_utime_plus_stime_counted_after_the_name() {
         // The name holds spaces and parentheses; utime is 30 and stime 12.
         let line =
@@ -524,6 +613,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn vm_rss_is_read_from_the_status_text_in_mib() {
         let status = "Name:\tapid\nVmPeak:\t  9000 kB\nVmRSS:\t   2048 kB\nThreads:\t1\n";
         assert_eq!(parse_vm_rss_mib(status), Some(2));
@@ -532,6 +622,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn process_cpu_percent_is_its_ticks_over_the_machine_ticks() {
         assert_eq!(process_cpu_percent(100, 150, 1000), Some(5.0));
         // the counter went backwards (pid reuse), or no machine time passed
@@ -552,6 +643,7 @@ mod tests {
     fn plaza_usage_names_the_services_and_sums_the_totals() {
         let sample = |comm: &str, cpu_percent: f64, rss_mib: u64| ProcSample {
             comm: comm.to_string(),
+            #[cfg(target_os = "linux")]
             ticks: 0,
             cpu_percent,
             rss_mib,
