@@ -3,7 +3,7 @@
 //! for daily sums, the day so far); a transition is published (`metrics.alert` on the bus, which the consoles turn
 //! into a banner and a desktop notification), recorded as an `alert` event, and optionally posted to the board.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -181,8 +181,10 @@ impl Alerts {
             let mut saved = super::lock(&self.inner);
             let rules: Vec<Rule> = saved.rules.iter().filter(|rule| rule.on).cloned().collect();
             let mut changed = false;
+            let mut present: HashSet<String> = HashSet::new();
             for rule in &rules {
                 for subject in subjects(app, &rule.scope) {
+                    present.insert(pair_key(&rule.id, &subject));
                     let Some(value) = src.scalar(
                         &rule.metric,
                         &subject,
@@ -237,6 +239,7 @@ impl Alerts {
                     }
                 }
             }
+            keep_present_values(&mut saved.values, &present);
             if changed {
                 save(m.store.as_ref(), &saved);
             }
@@ -321,6 +324,13 @@ fn next_rule_id(rules: &[Rule]) -> String {
 /// The key of a (rule, subject) pair, as the tracker keys it.
 fn pair_key(rule: &str, subject: &str) -> String {
     format!("{rule}{KEY_SEP}{subject}")
+}
+
+/// Keeps the latest value only of the (rule, subject) pairs that exist now. A subject that went away (a VM
+/// stopped, an agent deleted) takes its value with it, so the map follows the subjects rather than growing with
+/// every subject ever seen.
+fn keep_present_values(values: &mut HashMap<String, f64>, present: &HashSet<String>) {
+    values.retain(|key, _| present.contains(key));
 }
 
 /// Writes the saved state through the store.
@@ -468,5 +478,16 @@ mod tests {
             alerts.delete(&store, &owner.id),
             Err("no such rule".to_string())
         );
+    }
+
+    #[test]
+    fn a_value_is_kept_only_while_its_subject_is_present() {
+        let mut values: HashMap<String, f64> = HashMap::new();
+        values.insert(pair_key("cpu", "node-a"), 41.0);
+        values.insert(pair_key("cpu", "vm-stopped"), 7.0);
+        let present: HashSet<String> = [pair_key("cpu", "node-a")].into_iter().collect();
+        keep_present_values(&mut values, &present);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.get(&pair_key("cpu", "node-a")), Some(&41.0));
     }
 }

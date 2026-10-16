@@ -9,6 +9,10 @@ use apz_metrics::trace::{Ring, Span, TailSampler, Trace};
 use super::store::Store;
 use crate::inference::fnv1a64;
 
+/// How long a turn may run before its spans are dropped unfinished: no turn runs this long, so a turn still open
+/// after it has lost its agent.
+const STALE_TURN_MS: u64 = 6 * 3_600_000;
+
 pub struct Traces {
     /// Per agent: the turn's start and its spans so far.
     rings: Mutex<HashMap<u64, (u64, Ring)>>,
@@ -34,9 +38,11 @@ impl Traces {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Adds a span to the agent's running turn (starting the turn at the span's start when none runs).
+    /// Adds a span to the agent's running turn (starting the turn at the span's start when none runs). A turn
+    /// that never ended (its agent went away mid-turn) is dropped once it is older than [`STALE_TURN_MS`].
     pub fn span(&self, cid: u64, span: Span) {
         let mut rings = super::lock(&self.rings);
+        rings.retain(|_, (start_ms, _)| start_ms.saturating_add(STALE_TURN_MS) >= span.start_ms);
         let entry = rings
             .entry(cid)
             .or_insert_with(|| (span.start_ms, Ring::default()));
@@ -107,6 +113,16 @@ mod tests {
             ok,
             attrs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_turn_left_open_for_hours_is_dropped_when_another_turn_runs() {
+        let traces = Traces::new(1);
+        traces.span(1, span(1, 0, true));
+        traces.span(2, span(2, STALE_TURN_MS + 1, true));
+        let rings = super::super::lock(&traces.rings);
+        assert_eq!(rings.len(), 1);
+        assert!(rings.contains_key(&2));
     }
 
     #[test]

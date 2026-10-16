@@ -113,9 +113,49 @@ pub fn tick(m: &Metrics, app: &App, now_ms: u64) {
     }
 
     live::frames(m, app, now_ms);
+    prune_agent_states(m, app, now_ms);
     m.store.flush();
     govern(m, now_ms);
     hourly(m, now_ms);
+}
+
+/// Drops the state of each agent that no longer exists, booking the time it spent in that state up to now to
+/// `agent.state_ms`, as a transition would. A live agent keeps its entry: its time is booked when it changes.
+fn prune_agent_states(m: &Metrics, app: &App, now_ms: u64) {
+    let gone = drop_gone_agent_states(&mut super::lock(&AGENT_STATES), now_ms, |cid| {
+        app.agents.get(cid).is_some()
+    });
+    for (cid, state, ms) in gone {
+        m.registry
+            .counter(
+                SeriesKey::new("agent.state_ms", EntityKind::Agent, &cid.to_string())
+                    .label("state", &state),
+            )
+            .add(ms as f64);
+    }
+}
+
+/// Removes the entries of the agents `is_live` does not know, returning (agent, state, ms spent in it so far).
+fn drop_gone_agent_states(
+    states: &mut HashMap<u64, (String, u64)>,
+    now_ms: u64,
+    is_live: impl Fn(u64) -> bool,
+) -> Vec<(u64, String, u64)> {
+    let mut booked = Vec::new();
+    states.retain(|cid, (state, since)| {
+        if is_live(*cid) {
+            return true;
+        }
+        booked.push((*cid, state.clone(), now_ms.saturating_sub(*since)));
+        false
+    });
+    booked
+}
+
+/// Drops the latest point of each series that has not reported for an hour: the series of a VM stopped or an
+/// agent deleted would otherwise stay in the map for as long as the hub runs.
+fn drop_stale_latest(latest: &mut HashMap<SeriesKey, (u64, f64)>, now_ms: u64) {
+    latest.retain(|_, (t_ms, _)| now_ms.saturating_sub(*t_ms) < HOUR_MS);
 }
 
 /// Feeds the governor whether the metrics system is over its CPU budget, and applies a changed level to the
@@ -137,6 +177,7 @@ fn hourly(m: &Metrics, now_ms: u64) {
         }
         *last = now_ms;
     }
+    drop_stale_latest(&mut super::lock(&m.latest), now_ms);
     m.store.prune(now_ms, &m.settings.get().retention);
     let kind = m.store.kind();
     for (name, bytes) in m.store.sizes() {
@@ -539,5 +580,28 @@ mod tests {
     fn output_speed_counts_only_the_time_after_the_first_token() {
         assert_eq!(output_speed(500, 3_000.0, 1_000.0), Some(250.0));
         assert_eq!(output_speed(500, 1_000.0, 1_000.0), None);
+    }
+
+    #[test]
+    fn a_deleted_agents_state_is_dropped_and_the_time_in_it_booked() {
+        let mut states: HashMap<u64, (String, u64)> = HashMap::new();
+        states.insert(1, ("streaming".to_string(), 1_000));
+        states.insert(2, ("idle".to_string(), 2_000));
+        let booked = drop_gone_agent_states(&mut states, 5_000, |cid| cid == 2);
+        assert_eq!(booked, vec![(1, "streaming".to_string(), 4_000)]);
+        assert_eq!(states.len(), 1);
+        assert!(states.contains_key(&2));
+    }
+
+    #[test]
+    fn a_series_silent_for_an_hour_leaves_the_latest_map() {
+        let mut latest: HashMap<SeriesKey, (u64, f64)> = HashMap::new();
+        let fresh = SeriesKey::new("vm.blk_ops", EntityKind::Vm, "r1/0");
+        let gone = SeriesKey::new("vm.blk_ops", EntityKind::Vm, "r1/9");
+        latest.insert(fresh.clone(), (9_000_000, 1.0));
+        latest.insert(gone, (1_000, 2.0));
+        drop_stale_latest(&mut latest, 9_000_000 + 1_000);
+        assert_eq!(latest.len(), 1);
+        assert!(latest.contains_key(&fresh));
     }
 }

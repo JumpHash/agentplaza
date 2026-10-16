@@ -175,7 +175,13 @@ impl Tracker {
                 }
             }
         };
-        self.states.insert(key, next);
+        // A subject at rest has no entry: `state` reads a missing one as Ok, and a subject that went away
+        // (a VM stopped, an agent deleted) must not leave an Ok entry behind.
+        if next == State::Ok {
+            self.states.remove(&key);
+        } else {
+            self.states.insert(key, next);
+        }
         what.map(|what| Transition {
             rule: rule.id.clone(),
             subject: subject.to_string(),
@@ -450,6 +456,21 @@ mod tests {
             tracker.firing("test-rule"),
             vec![("global".to_string(), 1_000)]
         );
+    }
+
+    #[test]
+    fn a_subject_back_at_rest_leaves_no_state_behind() {
+        let rule = rule(0);
+        let mut tracker = Tracker::default();
+        tracker.observe(&rule, "vm-gone", 95.0, 0);
+        assert_eq!(tracker.states.len(), 1);
+        tracker.observe(&rule, "vm-gone", 10.0, 1);
+        assert!(tracker.states.is_empty());
+        for subject in ["a", "b", "c"] {
+            tracker.observe(&rule, subject, 10.0, 2);
+        }
+        assert!(tracker.states.is_empty());
+        assert_eq!(tracker.state("test-rule", "a"), State::Ok);
     }
 
     #[test]
