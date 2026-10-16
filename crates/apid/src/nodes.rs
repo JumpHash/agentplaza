@@ -18,7 +18,8 @@
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
 //!   POST   /v1/nodes/{id}/results            (signed) {command, ok, status, body}
-//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine}
+//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine, status, runs, metrics?}
+//!   POST   /v1/nodes/{id}/metrics            (signed) a metrics batch (`apz_metrics::wire::Batch`)
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,8 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_metrics::wire::Batch;
+use apz_metrics::{EntityKind, SeriesKey};
 use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -44,6 +47,8 @@ pub const JOIN_RATE_PER_MINUTE: u32 = 5;
 pub const JOIN_TRIES_PER_CODE: u32 = 3;
 /// A node is offline when it has not polled for this long.
 pub const OFFLINE_AFTER_MS: u64 = 60_000;
+/// A node beats every 15 seconds; a beat that comes later than that is lag (`link.beat_lag_ms`).
+const BEAT_MS: u64 = 15_000;
 
 /// The one message every failed redemption gets, so a caller learns nothing about the code.
 pub(crate) const INVALID_CODE: &str = "this join code is not valid";
@@ -431,6 +436,13 @@ impl Store {
         admit_join(&self.join_attempts, source, now_ms)
     }
 
+    /// How many commands are waiting for the node to take them.
+    pub fn queued(&self, node: &str) -> usize {
+        self.queues
+            .lock()
+            .map_or(0, |queues| queues.get(node).map_or(0, VecDeque::len))
+    }
+
     pub fn enqueue(
         &self,
         node: &str,
@@ -630,6 +642,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/nodes/{id}/commands", commands_route)
         .post("/v1/nodes/{id}/results", results_route)
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
+        .post("/v1/nodes/{id}/metrics", metrics_route)
 }
 
 /// `n0`, the hub's own machine, as a node record: never stored (it is always there), online while
@@ -885,8 +898,13 @@ struct Heartbeat {
     /// The node's noded `GET /v1/runs`.
     #[serde(default)]
     runs: Value,
+    /// The node's noded `GET /v1/metrics/batch`, when it has one; null otherwise.
+    #[serde(default)]
+    metrics: Value,
 }
 
+/// A beat takes the node's machine, status and runs, and its metrics batch when it carries one. A
+/// metrics body this hub cannot read is dropped; the beat itself still counts.
 fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let node = match signed_node(app, req, p) {
         Ok(n) => n,
@@ -897,15 +915,77 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Err(_) => return Response::error(400, "bad heartbeat"),
     };
     app.nodes.set_report(&node.id, beat.status, beat.runs);
-    match app.nodes.set_machine(&node.id, beat.machine) {
-        Ok(()) => Response::json(200, &serde_json::json!({"ok": true})),
-        Err(e) => Response::error(404, &e),
+    if let Err(e) = app.nodes.set_machine(&node.id, beat.machine) {
+        return Response::error(404, &e);
     }
+    let now = apz_plaza::now_ms();
+    // Read before the batch is ingested, which moves the node's last beat to now.
+    let previous_beat = crate::metrics::lock(&app.metrics.links)
+        .get(&node.id)
+        .map_or(0, |link| link.last_beat_ms);
+    app.metrics
+        .registry
+        .gauge(SeriesKey::new(
+            "link.commands_queued",
+            EntityKind::Node,
+            &node.id,
+        ))
+        .set(app.nodes.queued(&node.id) as f64);
+    // A null metrics field does not decode as a batch, so a beat without one skips this.
+    if let Ok(batch) = serde_json::from_value::<Batch>(beat.metrics) {
+        if previous_beat > 0 {
+            let late = now.saturating_sub(previous_beat).saturating_sub(BEAT_MS);
+            app.metrics
+                .registry
+                .hist(SeriesKey::new(
+                    "link.beat_lag_ms",
+                    EntityKind::Node,
+                    &node.id,
+                ))
+                .record(late as f64);
+        }
+        crate::metrics::ingest::batch(&app.metrics, &node.id, batch, now);
+    }
+    Response::json(200, &serde_json::json!({"ok": true}))
+}
+
+/// A signed node's metrics batch, posted on its own: the live batch (every 2 seconds while a scope
+/// on the node is watched) or one too big for a beat. It is ingested as a beat's batch is.
+fn metrics_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let batch: Batch = match req.json() {
+        Ok(b) => b,
+        Err(_) => return Response::error(400, "bad metrics batch"),
+    };
+    crate::metrics::ingest::batch(&app.metrics, &node.id, batch, apz_plaza::now_ms());
+    Response::json(200, &serde_json::json!({"ok": true}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_heartbeat_deserializes_with_or_without_a_metrics_batch() {
+        let bare: Heartbeat = serde_json::from_value(serde_json::json!({
+            "machine": {"name": "n1"},
+            "status": {},
+            "runs": []
+        }))
+        .unwrap();
+        assert!(bare.metrics.is_null());
+
+        let with: Heartbeat = serde_json::from_value(serde_json::json!({
+            "machine": {},
+            "metrics": {"node": "n1", "sent_ms": 5}
+        }))
+        .unwrap();
+        let batch: Batch = serde_json::from_value(with.metrics).unwrap();
+        assert_eq!(batch.sent_ms, 5);
+    }
 
     const NOW: u64 = 1_000_000_000;
     const TTL_MS: u64 = 15 * 60_000;

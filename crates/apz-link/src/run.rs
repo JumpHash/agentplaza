@@ -70,6 +70,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_TIMEOUT: Duration = Duration::from_secs(40);
 const HUB_TIMEOUT: Duration = Duration::from_secs(15);
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the live metrics batch is asked for while a scope on the node is watched.
+const LIVE_EVERY: Duration = Duration::from_secs(2);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const REVOKED: &str = "the hub refused this node (revoked?)";
@@ -135,6 +137,10 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
     let _heartbeat = {
         let (identity, key, local) = (identity.clone(), key.clone(), local.clone());
         thread::spawn(move || beat_forever(identity, key, local))
+    };
+    let _live = {
+        let (identity, key, local) = (identity.clone(), key.clone(), local.clone());
+        thread::spawn(move || live_forever(identity, key, local))
     };
     command_loop(&identity, &key, &local)
 }
@@ -265,6 +271,7 @@ fn heartbeat_once(identity: &Identity, key: &NodeKey, local: &Local) {
         "machine": machine_report(local),
         "status": local_json(local, local.vsockd, "/v1/status"),
         "runs": local_json(local, local.noded, "/v1/runs"),
+        "metrics": local_json(local, local.noded, "/v1/metrics/batch"),
     });
     let bytes = serde_json::to_vec(&body).unwrap_or_default();
     // A failed beat is not reported here: the command loop reports the hub's state.
@@ -282,6 +289,41 @@ fn beat_forever(identity: Arc<Identity>, key: Arc<NodeKey>, local: Local) {
     loop {
         heartbeat_once(&identity, &key, &local);
         thread::sleep(HEARTBEAT);
+    }
+}
+
+/// Posts noded's live metrics batch to the hub: `live_once` asks noded every `LIVE_EVERY` and only
+/// sends a batch when noded has one (a 204 means none).
+fn live_once(identity: &Identity, key: &NodeKey, local: &Local) {
+    let Ok(reply) = send_local(
+        local,
+        local.noded,
+        "GET",
+        "/v1/metrics/batch?live=1",
+        None,
+        LOCAL_TIMEOUT,
+    ) else {
+        return;
+    };
+    if reply.status != 200 || reply.body.is_empty() {
+        return;
+    }
+    let path = format!("/v1/nodes/{}/metrics", identity.node_id);
+    // A failed post is dropped: the next live batch replaces it.
+    let _ = hub_request(
+        identity,
+        key,
+        "POST",
+        &path,
+        Some(reply.body.as_slice()),
+        HUB_TIMEOUT,
+    );
+}
+
+fn live_forever(identity: Arc<Identity>, key: Arc<NodeKey>, local: Local) {
+    loop {
+        live_once(&identity, &key, &local);
+        thread::sleep(LIVE_EVERY);
     }
 }
 
