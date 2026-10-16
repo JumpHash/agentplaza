@@ -116,14 +116,21 @@ Agents are 1 vCPU, 1024 MiB with 32 MiB usable at boot (the balloon). 2026-10-16
 | host RSS per idle agent, dozing | — | 0.5 MiB |
 | connected agents per vsockd | 64 (hard cap) | 4096 by default (`--max-sessions`) |
 
+With the snapshots on a reflink filesystem (btrfs on a loop file, same host, release build of this work): wake p50 45 ms,
+checkpoint p50 17 ms, fork of two copies to both hellos p50 54 ms (24 ms of it in noded). A booted agent's first full
+snapshot onto that loop device took up to 8 s with its fsync (the sleep p99 and checkpoint p95 there).
+
+Connected sessions, one vsockd with guests stood in by sockets (`run.py lifecycle --soak-sessions N`): 2,000 sessions for
+60 s at 3-4% of one core (203 MiB, 6,002 threads); 5,000 at 8.7% (501 MiB, 15,002 threads, `--max-sessions 8192`); none
+refused, dropped or reaped. Each CID costs three threads (two accept loops and its session), all asleep while idle.
+
 Per thread, an idle agent costs noded 6/s and vsockd 2/s wakeups (main: 48/s and 58/s); the rest is the guest's vCPU
 (~23/s). Under heavy host load (load average ~60) main's wake p99 reached 5.8 s and this work's stayed near 50 ms.
 
 ## Not built
 
 - **Forks from a shared memory file** (memfd, mapped privately by the source and every copy, so a fork writes nothing).
-  Gated on 5.1–5.3 missing the fork target (two copies connected in 60 ms). On the host above they bring it to 78 ms,
-  with each copy's workspace still a full-file copy (no reflinks); the gate is read on the reference host (NVMe on XFS),
-  where those copies are reflinks.
+  Gated on 5.1–5.3 missing the fork target (two copies connected in 60 ms). With reflinks they meet it (54 ms above); on
+  tmpfs, without reflinks, a fork is 78 ms because its memory is copied in full. Scale mode requires a reflink filesystem.
 - **Agents without a VM** (a hub-side loop that attaches a VM on demand). An owner decision, to be made with soak data
   from real fleets.
