@@ -15,6 +15,7 @@ use crate::source::{AgentInfo, Entity, Group, GroupBy, Read};
 
 const MINUTE_MS: u64 = 60_000;
 const DAY_MS: u64 = 86_400_000;
+const HOUR_MS: u64 = 3_600_000;
 /// n2 was offline from 13.5 hours before now until 13.27 hours before now (about 14 minutes).
 const OFFLINE_FROM_AGO_MS: u64 = 48_600_000;
 const OFFLINE_TO_AGO_MS: u64 = 47_772_000;
@@ -393,6 +394,7 @@ pub fn series(f: &Fixture, read: &Read) -> Vec<Group> {
         return Vec::new();
     }
     let count = steps(read.from_ms, read.to_ms, read.step_ms);
+    let bucket = counter_bucket_ms(read.to_ms.saturating_sub(read.from_ms));
     let groups: Vec<Group> = partition(&read.group, &read.scope, &all)
         .into_iter()
         .map(
@@ -407,8 +409,13 @@ pub fn series(f: &Fixture, read: &Read) -> Vec<Group> {
                 values: (0..count)
                     .map(|i| {
                         let t = step_mid(read.from_ms, read.step_ms, i);
-                        group_value(metric, &members, f.now_ms, t, read.step_ms)
-                            .map(|v| reduce(read.agg, metric, read.step_ms, v))
+                        let from = read.from_ms + i * read.step_ms;
+                        let value = if is_integrated(metric) {
+                            counter_span(metric, &members, bucket, from, from + read.step_ms)
+                        } else {
+                            group_value(metric, &members, f.now_ms, t, read.step_ms)
+                        };
+                        value.map(|v| reduce(read.agg, metric, read.step_ms, v))
                     })
                     .collect(),
             },
@@ -433,9 +440,16 @@ pub fn scalar(
     let all = leaves(metric, scope);
     let refs: Vec<&Leaf> = all.iter().collect();
     let step = scalar_step(from_ms, to_ms);
-    let values: Vec<f64> = (0..steps(from_ms, to_ms, step))
-        .filter_map(|i| group_value(metric, &refs, f.now_ms, step_mid(from_ms, step, i), step))
-        .collect();
+    let values: Vec<f64> = if is_integrated(metric) {
+        let bucket = counter_bucket_ms(to_ms.saturating_sub(from_ms));
+        counter_span(metric, &refs, bucket, from_ms, to_ms)
+            .into_iter()
+            .collect()
+    } else {
+        (0..steps(from_ms, to_ms, step))
+            .filter_map(|i| group_value(metric, &refs, f.now_ms, step_mid(from_ms, step, i), step))
+            .collect()
+    };
     if values.is_empty() {
         return None;
     }
@@ -692,6 +706,52 @@ fn leaf_value(metric: &MetricDef, leaf: &Leaf, t_ms: u64, step_ms: u64) -> f64 {
     } else {
         rate
     }
+}
+
+/// Whether a counter's amount is integrated over time buckets. The whole-event counters (a cold wake, a compaction)
+/// keep their per-step count, since a step holds whole events and not a fraction of one.
+fn is_integrated(metric: &MetricDef) -> bool {
+    is_counter(metric) && !matches!(metric.id, "life.wake_cold" | "ctx.compactions")
+}
+
+/// The width of the buckets a counter is integrated over. The bucket grows with the window, so a long window stays
+/// cheap, and the width depends only on the window: the series and the scalar of one window use the same buckets.
+fn counter_bucket_ms(window_ms: u64) -> u64 {
+    if window_ms <= DAY_MS {
+        MINUTE_MS
+    } else if window_ms <= 7 * DAY_MS {
+        5 * MINUTE_MS
+    } else {
+        HOUR_MS
+    }
+}
+
+/// What the leaves of a counter add up to over `[from_ms, to_ms)`. Each bucket of the grid that the span overlaps
+/// adds its leaves' rates, taken at the bucket's middle, times the part of the bucket inside the span, in minutes.
+/// The buckets sit on a fixed grid, so the steps of a window add up to its total.
+fn counter_span(
+    metric: &MetricDef,
+    leaves: &[&Leaf],
+    bucket_ms: u64,
+    from_ms: u64,
+    to_ms: u64,
+) -> Option<f64> {
+    if leaves.is_empty() {
+        return None;
+    }
+    let mut total = 0.0;
+    let mut bucket = from_ms - from_ms % bucket_ms;
+    while bucket < to_ms {
+        let lo = bucket.max(from_ms);
+        let hi = (bucket + bucket_ms).min(to_ms);
+        if hi > lo {
+            let mid = bucket + bucket_ms / 2;
+            let rate: f64 = leaves.iter().map(|l| level(metric, l, mid)).sum();
+            total += rate * (hi - lo) as f64 / MINUTE_MS as f64;
+        }
+        bucket += bucket_ms;
+    }
+    Some(total)
 }
 
 /// The value of a group at a moment: the sum of its live leaves for an additive metric, their mean otherwise.
