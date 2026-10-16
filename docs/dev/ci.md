@@ -40,6 +40,14 @@ that depends on them (`changes.sh` → `tests`). A change outside a package's ow
 `Cargo.lock`, a root manifest, `.github/`, `sql/`, `assets/` or `apps/web`, runs every test. The
 merge queue always runs every test, on the exact commit that will land.
 
+**Compile what can't run.** Windows arm64 and Apple Silicon tests can't run on our x64 runners.
+On a pull request, `cargo check` only checks that they compile. The merge queue, nightly and
+releases build and link them in full.
+
+**The light runner.** `changes`, `migrations`, `ci-ok`, the release's `version` job and nightly's
+`changes` check take seconds. They run on the org's light runner (`[self-hosted, light]`, 1 vCPU),
+so they never wait behind a build.
+
 **Outside contributors.** The repository is public and its jobs run on our own machines, so:
 workflows from every outside contributor wait for an owner's approval before they run; no
 pull-request job gets a secret; the token is read-only; and a pull request from a fork builds in its
@@ -64,6 +72,8 @@ whatever depends on them:
   source and flags. It fills in whatever the build directory lacks, such as units the prune removed
   or the guest build.
 - **npm's download cache** persists for the console's `npm ci`.
+- **Not the runner fleet's sccache.** Windows and macOS clear the fleet's `RUSTC_WRAPPER`, because its
+  server died mid-build. Their persistent build directory keeps unchanged crates built.
 - **Prune.** `build-cache.py prune` runs at the end of each build job. It reports the build
   directory's size and the disk's free space. Over 80 GB, or with less than 25 GB free, it removes
   the units no build has used for 14, then 7, 3 and 1 days. It empties the directory only if the

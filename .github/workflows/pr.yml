@@ -117,6 +117,8 @@ jobs:
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
       only: ${{ needs.changes.outputs.only }}
+      # A pull request only compiles what this runner cannot run; the queue builds it in full.
+      link: ${{ github.event_name == 'merge_group' }}
 
   macos:
     needs: changes
@@ -125,6 +127,8 @@ jobs:
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
       only: ${{ needs.changes.outputs.only }}
+      # A pull request only compiles what this runner cannot run; the queue builds it in full.
+      link: ${{ github.event_name == 'merge_group' }}
 
   # The one required check. A job skipped because the change does not touch it counts as passed.
   # It runs even when the run is cancelled (`always()`): GitHub counts a skipped required check as

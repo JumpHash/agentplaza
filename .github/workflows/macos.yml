@@ -22,6 +22,10 @@ on:
       # Packages (space-separated) whose tests run, with those of every package that depends on
       # them; empty: all.
       only: { type: string, default: "" }
+      # Build and link the tests of the architecture this runner cannot run; false only checks that
+      # they compile (cargo check: no code generated, nothing linked). pr.yml passes false for a
+      # pull request; the merge queue, nightly and releases build them in full.
+      link: { type: boolean, default: true }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
@@ -31,6 +35,10 @@ on:
       # Packages (space-separated) whose tests run, with those of every package that depends on
       # them; empty: all.
       only: { type: string, default: "" }
+      # Build and link the tests of the architecture this runner cannot run; false only checks that
+      # they compile (cargo check: no code generated, nothing linked). pr.yml passes false for a
+      # pull request; the merge queue, nightly and releases build them in full.
+      link: { type: boolean, default: true }
 
 concurrency:
   group: ${{ github.workflow }}-macos-${{ github.ref }}
@@ -119,7 +127,12 @@ jobs:
       - name: Build the tests (Apple Silicon cannot run here)
         if: inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
-        run: cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
+        run: |
+          if [ "${{ inputs.link }}" = true ]; then
+            cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
+          else
+            cargo check --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --all-targets
+          fi
       - name: Build the binaries
         if: inputs.package
         run: |
