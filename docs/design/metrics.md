@@ -274,10 +274,18 @@ design review and for the composers' tests, and it never reads the store.
 
 ## The CLI
 
-The CLI has no metrics commands yet. `apz metrics top`, `query`, `watch` and `alerts` are planned. They would use the
-`/v1/metrics/*` routes above, which exist now. The existing `/v1/usage/*` routes are unchanged.
+`apz metrics` (`apps/cli/src/cmd/metrics.rs`) reads the same routes as the consoles:
+
+- `apz metrics top [--metric llm.spend_usd] [--scope global] [--window 24h] [--by agent|node|provider|model|role]
+  [--limit 10]` prints the
+  groups with the largest totals (counters) or means (everything else) over the window.
+- `apz metrics query --metric <id> [--scope …] [--window 24h] [--step 1h] [--agg …] [--by agent] [--csv]` prints one metric as a
+  row per step and a column per group, or CSV with epoch milliseconds and raw values.
+- `apz metrics watch [--scope global] [--interval 2]` prints the overview tiles again every interval until Ctrl-C.
+- `apz metrics alerts` lists the alert rules and the subjects firing now.
+
+The `/v1/usage/*` routes are unchanged.
 
 ## Not yet built
 
-- The `apz metrics` commands in the CLI.
 - The CI benchmark that runs a fake node with 50 VMs and checks the budgets above.
