@@ -25,7 +25,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use apz_metrics::level::Governor;
-use apz_metrics::{Event, Registry, Rollup, SeriesKey};
+use apz_metrics::{Registry, Rollup, SeriesKey};
 
 use crate::state::App;
 

@@ -1671,6 +1671,9 @@ impl Server {
         let node = Arc::new(Node::new(config));
         stats::spawn(Arc::clone(&node.stats))?;
         spawn_metrics(Arc::clone(&node));
+        // VM lifecycle events (boot, wake, sleep, snapshot …) go into the node's metrics for the hub.
+        let events = Arc::clone(&node);
+        registry::set_events(Box::new(move |e| events.metrics.event(e)));
         let (router, serving) = (router(), Arc::clone(&node));
         let http =
             server.spawn(internal_token.guard(move |request| router.handle(&serving, request)))?;
