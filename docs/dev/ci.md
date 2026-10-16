@@ -10,7 +10,8 @@ again. A nightly run tests every platform, to catch what the gate's path filter 
 **No code, no run.** `.github/ci/changes.sh` decides what a change touches, for the gate, the
 release and the nightly run alike. A change with no code in it (Markdown, `docs/`, `.gitignore`,
 `.gitattributes`, `.editorconfig`, `LICENSE`, `VERSION`, `.github/CODEOWNERS`) builds nothing,
-tests nothing, and cuts no version or release.
+tests nothing, and cuts no version or release. `docs/agents/` and `docs/api/` are the exception:
+the hub compiles them in or tests against them, so they count as code.
 
 `main` takes squash merges of pull requests only, through the merge queue. `ci-ok` is its one
 required check, and changes under `.github/` need a code owner's review (CODEOWNERS).
@@ -34,6 +35,11 @@ toolchain and nextest config, the platform workflows, `.github/ci/`, and any Rus
 
 A newer push to a pull request cancels its older run; merge-queue runs are never cancelled.
 
+**Only what changed.** A pull request runs the tests of the packages it changes and of every package
+that depends on them (`changes.sh` → `tests`). A change outside a package's own directory, such as
+`Cargo.lock`, a root manifest, `.github/`, `sql/`, `assets/` or `apps/web`, runs every test. The
+merge queue always runs every test, on the exact commit that will land.
+
 **Outside contributors.** The repository is public and its jobs run on our own machines, so:
 workflows from every outside contributor wait for an owner's approval before they run; no
 pull-request job gets a secret; the token is read-only; and a pull request from a fork builds in its
@@ -41,6 +47,31 @@ own cache directory on the runners (`trusted: false`), never in the one releases
 
 Clippy runs on the CI image's pinned Rust (`.github/ci/Dockerfile`), so its lints change only when
 that pin does. The workspace's allowed lints are in `[workspace.lints.clippy]` in `Cargo.toml`.
+
+## Build caches
+
+Every build reuses the runner's own state, so a run compiles only the crates its change touched and
+whatever depends on them:
+
+- **The build directory persists** on each runner, outside the workspace, in
+  `~/.cache/agentplaza-ci/target` (`agentplaza-ci-untrusted` for forks). It holds cargo's registry
+  and git checkouts too.
+- **mtimes.** The runners start each job from a fresh clone, so every file would look new to cargo.
+  `.github/ci/build-cache.py mtimes`, run right after the checkout, gives every file the runner has
+  seen with the same content the mtime it had then. Only changed files look new, as if the working
+  copy had persisted.
+- **sccache** (Linux, 20 GB per runner) returns any library crate compiled before with the same
+  source and flags. It fills in whatever the build directory lacks, such as units the prune removed
+  or the guest build.
+- **npm's download cache** persists for the console's `npm ci`.
+- **Prune.** `build-cache.py prune` runs at the end of each build job. It reports the build
+  directory's size and the disk's free space. Over 80 GB, or with less than 25 GB free, it removes
+  the units no build has used for 14, then 7, 3 and 1 days. It empties the directory only if the
+  disk is still short.
+- **Pinned Rust**: 1.99.0 everywhere (`.github/ci/Dockerfile`, `windows.yml`, `macos.yml`). A Rust
+  release does not rebuild everything on the day it ships; bumping it is a deliberate change.
+
+Each runner keeps its own caches. The first job on a new runner compiles everything once.
 
 ## All workflows
 

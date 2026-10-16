@@ -21,6 +21,8 @@ jobs:
       - name: Untrusted build cache
         if: ${{ !inputs.trusted }}
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
       # Type-checked, then built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
       - name: Build and test the console
         run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run typecheck && npm run build && npm test'

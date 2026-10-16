@@ -10,6 +10,11 @@
 #   windows     the Windows tests (windows.yml), when platform code changes
 #   macos       the macOS tests (macos.yml), when platform code changes
 #
+# Speed: every build job starts from the runner's warm build directory and rebuilds only the crates
+# the change touches (.github/ci/build-cache.py, in-image.sh). A pull request runs only the tests of
+# the packages it changes and of every package that depends on them (changes.sh `tests`); the merge
+# queue runs them all on the exact commit that lands.
+#
 # Safety: this is a public repository whose jobs run on the org's self-hosted runners. Workflows of
 # outside contributors run only after an owner approves them (repository setting), no job here gets
 # a secret, the token is read-only, and a pull request from a fork builds in its own cache
@@ -39,6 +44,8 @@ jobs:
       build: ${{ steps.diff.outputs.build }}
       web: ${{ steps.diff.outputs.web }}
       platform: ${{ steps.diff.outputs.platform }}
+      # On a pull request, the packages whose tests run (and their dependents'); the queue runs all.
+      only: ${{ github.event_name == 'pull_request' && steps.diff.outputs.tests != 'all' && steps.diff.outputs.tests || '' }}
       trusted: ${{ steps.diff.outputs.trusted }}
     steps:
       - uses: actions/checkout@v5
@@ -63,6 +70,8 @@ jobs:
       - name: Untrusted build cache
         if: needs.changes.outputs.trusted != 'true'
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
       - name: rustfmt
         run: .github/ci/in-image.sh 'cargo fmt --all -- --check'
       - name: clippy (warnings fail)
@@ -97,6 +106,7 @@ jobs:
     with:
       arches: ${{ needs.changes.outputs.platform == 'true' && '["x86_64","aarch64"]' || '["x86_64"]' }}
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
 
   windows:
     needs: changes
@@ -104,6 +114,7 @@ jobs:
     uses: ./.github/workflows/windows.yml
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
 
   macos:
     needs: changes
@@ -111,6 +122,7 @@ jobs:
     uses: ./.github/workflows/macos.yml
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
 
   # The one required check. A job skipped because the change does not touch it counts as passed.
   ci-ok:

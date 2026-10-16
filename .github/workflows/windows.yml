@@ -8,7 +8,8 @@
 # built, not run, and its MSI is not installed. That needs LLVM (ring builds its arm64 code with
 # clang) and Visual Studio's "MSVC v143 ARM64 build tools" on the runner, so the arm64 leg runs
 # only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64. Speed: cargo's build directory persists on the
-# runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest.
+# runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest; the checkout keeps the mtimes
+# this runner last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
 name: windows
 
 on:
@@ -18,12 +19,18 @@ on:
       package: { type: boolean, default: false }
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
 
 concurrency:
   group: ${{ github.workflow }}-windows-${{ github.ref }}
@@ -94,14 +101,29 @@ jobs:
           home=$(cygpath -m "$USERPROFILE")
           echo "CARGO_TARGET_DIR=$home/.cache/${{ inputs.trusted && 'agentplaza-ci' || 'agentplaza-ci-untrusted' }}/target" >> "$GITHUB_ENV"
           echo "DOTNET_INSTALL_DIR=$home/.dotnet" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ env.TRIPLE }}" }
+      # Pinned like the Linux image's (.github/ci/Dockerfile RUST_VERSION): a new Rust is a deliberate
+      # change, not a full rebuild on the day it ships.
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99.0", targets: "${{ env.TRIPLE }}" }
+      # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
+      - name: Keep the build directory fresh
+        run: |
+          py=python3; $py -c '' 2>/dev/null || py=python
+          $py .github/ci/build-cache.py mtimes "$(dirname "$CARGO_TARGET_DIR")"
+      - name: Which tests
+        if: inputs.tests && inputs.only != ''
+        env: { ONLY: "${{ inputs.only }}" }
+        run: |
+          filter=""
+          for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
+          echo "the tests of $ONLY and of what depends on them: $filter"
+          echo "NEXTEST_FILTER=$filter" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         if: inputs.tests
         with: { tool: nextest }
       - name: Test (the guest harness runs only inside Linux VMs)
         if: matrix.arch == 'x64' && inputs.tests
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }}
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (arm64 cannot run here)
         if: matrix.arch != 'x64' && inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
@@ -180,3 +202,9 @@ jobs:
       - uses: actions/cache/save@v4
         if: inputs.package
         with: { path: "out-windows-${{ matrix.arch }}", key: "pkg-windows-${{ matrix.arch }}-${{ github.run_id }}", enableCrossOsArchive: true }
+      # Units no build has used for days go first; the directory is emptied only if the disk is short.
+      - name: Prune the build directory
+        if: always()
+        run: |
+          py=python3; $py -c '' 2>/dev/null || py=python
+          $py .github/ci/build-cache.py prune "$CARGO_TARGET_DIR"

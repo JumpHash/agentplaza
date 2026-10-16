@@ -9,8 +9,11 @@
 # inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on every
 # distribution as new or newer), built on the runner and kept there until its Dockerfile changes.
 # arm64 is cross-compiled and its tests run under qemu. Speed: cargo's build directory and
-# registry persist on the runner (.github/ci/in-image.sh), so only changed crates compile; tests
-# and packages use the same release profile; nextest runs the tests in parallel and kills a hang.
+# registry persist on the runner (.github/ci/in-image.sh), and the checkout keeps the mtimes this
+# runner last built with (.github/ci/build-cache.py), so only changed crates compile, with sccache
+# behind them; tests and packages use the same release profile; nextest runs the tests in parallel
+# and kills a hang; a pull request runs only the tests of the packages it changes and of those that
+# depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
 # packages go to the cache under this run's id for release.yml's publish job.
 name: linux
@@ -23,6 +26,9 @@ on:
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
       arches: { type: string, default: '["x86_64","aarch64"]' }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
@@ -30,6 +36,9 @@ on:
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
       arches: { type: string, default: '["x86_64","aarch64"]' }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
 
 concurrency:
   group: ${{ github.workflow }}-linux-${{ github.ref }}
@@ -69,6 +78,17 @@ jobs:
       - name: Untrusted build cache
         if: ${{ !inputs.trusted }}
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      - name: Which tests
+        if: inputs.tests && inputs.only != ''
+        env: { ONLY: "${{ inputs.only }}" }
+        run: |
+          filter=""
+          for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
+          echo "the tests of $ONLY and of what depends on them: $filter"
+          echo "NEXTEST_FILTER=-E '$filter' --no-tests=warn" >> "$GITHUB_ENV"
       - name: Postgres for the tests (x86_64)
         if: matrix.arch == 'x86_64' && inputs.tests
         run: |
@@ -80,7 +100,7 @@ jobs:
           echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
       - name: Test
         if: inputs.tests
-        run: .github/ci/in-image.sh "cargo nextest run --workspace --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }}"
+        run: .github/ci/in-image.sh "cargo nextest run --workspace --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
       - name: Build the binaries
         if: inputs.package
         run: >-
@@ -151,8 +171,5 @@ jobs:
         run: |
           docker rm -f "$NET-pg" >/dev/null 2>&1 || true
           docker network rm "$NET" >/dev/null 2>&1 || true
-          # Keep the runner's build directory under 60 GB: past that, start it afresh.
-          cache="${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
-          if [ "$(du -s --block-size=1G "$cache" 2>/dev/null | cut -f1)" -gt 60 ] 2>/dev/null; then
-            docker run --rm -v "$cache:/t" alpine sh -c 'rm -rf /t/*'
-          fi
+          # Units no build has used for days go first; the directory is emptied only if the disk is short.
+          python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
