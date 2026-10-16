@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 
-use crate::{Limits, Request, Response, host_is_loopback, ws};
+use crate::{Body, Limits, Request, Response, host_is_loopback, ws};
 
 /// The most connections served at once; the next one is answered 503.
 const MAX_CONNECTIONS: usize = 256;
@@ -27,6 +27,16 @@ const PREFACE_WAIT: Duration = Duration::from_secs(2);
 /// client may stall a write, and how long a TLS client may stall a handshake
 /// between bytes.
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// After a response with a length to a client that asked for keep-alive (a browser, Python's
+/// requests: it closes on `Connection: close`), how long the server waits for that client to close
+/// first. The client then keeps the TIME_WAIT, not the server: a server that closes first on every
+/// connection fills loopback with TIME_WAITs, and a client reusing one of their ports has its
+/// connect stall for seconds. A client that keeps the connection open is cut off after this.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+/// The most a waiting server reads (and discards) before it closes anyway.
+const CLOSE_DRAIN: usize = 64 << 10;
 
 /// A bound, not yet serving, listener.
 pub struct Server {
@@ -164,30 +174,67 @@ fn relayed(stream: &TcpStream) -> bool {
     }
 }
 
-/// One request, one response, close. `peer` is the connection's remote address. An upgrade keeps
-/// the connection: its closure gets the connection with whatever the request reading had already
-/// buffered still to be read.
+/// One request, one response; after a response with a length to a pooling client, the client closes
+/// first ([`CLOSE_WAIT`]). `peer` is the connection's remote address. An upgrade keeps the connection: its
+/// closure gets the connection with whatever the request reading had already buffered still to be
+/// read.
 fn serve_connection<S, H>(stream: S, peer: Option<IpAddr>, handler: &H, limits: Limits)
 where
     S: ws::Duplex + 'static,
     H: Fn(&Request) -> Response,
 {
     let mut reader = BufReader::new(stream);
-    let response = match Request::read(&mut reader, limits) {
-        Err(message) => Response::error(400, message),
+    let (response, pooled) = match Request::read(&mut reader, limits) {
+        Err(message) => (Response::error(400, message), false),
         Ok(mut request) => {
             request.peer = peer;
+            let pooled = keeps_alive(&request);
             if host_allowed(request.header("host"), peer) {
-                handler(&request)
+                (handler(&request), pooled)
             } else {
-                Response::error(403, "the Host header must name loopback")
+                (
+                    Response::error(403, "the Host header must name loopback"),
+                    pooled,
+                )
             }
         }
     };
+    // A client reading to the close (no length) needs the server to close first.
+    let wait = pooled && matches!(response.body, Body::Bytes(_));
     let mut connection = Buffered(reader);
     // A client that hung up has nobody left to tell.
-    if let Ok(Some(run)) = response.write_to(&mut connection) {
-        run(Box::new(connection));
+    match response.write_to(&mut connection) {
+        Ok(Some(run)) => run(Box::new(connection)),
+        Ok(None) if wait => await_close(&mut connection),
+        _ => {}
+    }
+}
+
+/// Whether the client asked to keep the connection (`Connection: keep-alive`): a pooling client
+/// (a browser, Python's requests) that closes as soon as the answer says `Connection: close`. A
+/// client without it may read the answer to the close, so the server closes for it.
+fn keeps_alive(request: &Request) -> bool {
+    request.header("connection").is_some_and(|value| {
+        let has = |token: &str| {
+            value
+                .split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case(token))
+        };
+        has("keep-alive") && !has("close")
+    })
+}
+
+/// Reads until the client closes (or [`CLOSE_WAIT`] or [`CLOSE_DRAIN`] runs out), discarding what
+/// it sends, so the client's close comes first ([`CLOSE_WAIT`] says why).
+fn await_close<S: ws::Duplex>(connection: &mut S) {
+    let _ = connection.set_read_timeout(Some(CLOSE_WAIT));
+    let mut buf = [0u8; 4096];
+    let mut left = CLOSE_DRAIN;
+    while left > 0 {
+        match connection.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => left = left.saturating_sub(read),
+        }
     }
 }
 
@@ -318,6 +365,52 @@ mod tests {
     }
 
     #[test]
+    fn a_client_without_keep_alive_is_closed_at_once() {
+        let handle = Server::bind(0)
+            .expect("bind")
+            .spawn(move |_request: &Request| Response::text(200, "ok"))
+            .expect("spawn");
+        let started = Instant::now();
+        let reply = get_plain(handle.port());
+        assert!(reply.ends_with("ok"), "{reply}");
+        assert!(
+            started.elapsed() < CLOSE_WAIT / 2,
+            "the server waited for a client reading to the close"
+        );
+    }
+
+    #[test]
+    fn the_client_closes_first_after_a_response_with_a_length() {
+        let handle = Server::bind(0)
+            .expect("bind")
+            .spawn(move |_request: &Request| Response::text(200, "ok"))
+            .expect("spawn");
+        let mut stream = TcpStream::connect(("127.0.0.1", handle.port())).expect("connect");
+        stream
+            .write_all(b"GET /x HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+            .expect("send");
+        // Read the whole response (it ends with the body "ok").
+        let mut reply = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !reply.ends_with(b"ok") {
+            let n = stream.read(&mut buf).expect("read");
+            assert!(n > 0, "the server closed before the whole response arrived");
+            reply.extend_from_slice(&buf[..n]);
+        }
+        // The server has not closed: it waits for this client to close first.
+        stream
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .expect("timeout");
+        let err = stream
+            .read(&mut buf)
+            .expect_err("the server should still be waiting");
+        assert!(matches!(
+            err.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ));
+    }
+
+    #[test]
     fn a_relayed_loopback_connection_is_served_as_one_from_elsewhere() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
@@ -338,7 +431,8 @@ mod tests {
             stream.read_to_string(&mut reply).expect("read");
             reply
         };
-        let get = b"GET /x HTTP/1.1\r\nHost: localhost\r\n\r\n".as_slice();
+        let get =
+            b"GET /x HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n".as_slice();
         // The preface whole, then in two writes: either way it is consumed.
         assert!(send(&[RELAY_PREFACE, get]).starts_with("HTTP/1.1 200"));
         let (head, tail) = RELAY_PREFACE.split_at(4);

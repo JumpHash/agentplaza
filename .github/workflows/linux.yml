@@ -74,6 +74,9 @@ jobs:
       DEB: ${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
       TARGET_ARG: ${{ matrix.arch == 'aarch64' && inputs.package && '--target aarch64-unknown-linux-gnu' || '' }}
       OUT: ${{ matrix.arch == 'aarch64' && inputs.package && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
+      # The tests' time budgets (APZ_PERF_SLACK): arm64 cross-compiled on x86_64 runs its tests
+      # emulated, 15 to 50 times slower (natively it needs no more than x86_64).
+      APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && inputs.package && '25' || '' }}
     steps:
       - uses: actions/checkout@v5
       - name: CI image
