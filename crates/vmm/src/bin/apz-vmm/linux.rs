@@ -42,7 +42,7 @@
 //
 // The **control socket** (`--control PATH`, a VM with a balloon only) is the
 // one channel the parent uses to resize the VM's memory while it runs: one
-// request line per connection (`usable N` or `stats`), one reply line back.
+// request line per connection (`usable N`, `stats` or `io`), one reply line back.
 // See [`serve_control`].
 
 // Syscall boundary: this binary's own unsafe allow entry (see
@@ -600,6 +600,20 @@ fn answer(request: &str, controls: &Controls) -> String {
             }
             None => NO_BALLOON.to_string(),
         },
+        (Some("io"), None, None) => match controls.memory.as_deref() {
+            Some(memory) => match memory.io_stats() {
+                Some(io) => format!(
+                    "io {} {} {} {} {}",
+                    io.blk_read_bytes,
+                    io.blk_write_bytes,
+                    io.blk_ops,
+                    io.vsock_rx_bytes,
+                    io.vsock_tx_bytes
+                ),
+                None => "err this VM reports no I/O counters".to_string(),
+            },
+            None => NO_BALLOON.to_string(),
+        },
         (Some("pause"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.pause()),
         (Some("resume"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.resume()),
         _ => format!("err {request:?} is not a request this control socket takes"),
@@ -854,6 +868,15 @@ mod tests {
                 available_mib: Some(180),
             }
         }
+        fn io_stats(&self) -> Option<vmm::spawner::IoStats> {
+            Some(vmm::spawner::IoStats {
+                blk_read_bytes: 1024,
+                blk_write_bytes: 512,
+                blk_ops: 3,
+                vsock_rx_bytes: 40,
+                vsock_tx_bytes: 20,
+            })
+        }
     }
 
     /// A VM whose pause and snapshot control succeed: the snapshot holds the kind
@@ -892,6 +915,7 @@ mod tests {
         };
         assert_eq!(answer("usable 128", &controls), "ok");
         assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
+        assert_eq!(answer("io", &controls), "io 1024 512 3 40 20");
         assert_eq!(answer("pause", &controls), "ok");
         assert_eq!(answer("resume", &controls), "ok");
         assert_eq!(

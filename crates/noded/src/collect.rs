@@ -1,11 +1,13 @@
 //! The node's collectors, run before every metrics scrape: host disk, IO, network and pressure, volumes, GPUs, the
 //! plaza's own services and each VM (CPU, RSS, guest memory, disk and vsock traffic), and VM counts by state.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use apz_metrics::{EntityKind, SeriesKey};
 use serde_json::{Value, json};
+use vmm::spawner::IoStats;
 
 use crate::Node;
 use crate::metrics::NodeMetrics;
@@ -25,6 +27,9 @@ const MIB: u64 = 1024 * 1024;
 static DISK_TOTALS: Mutex<Option<Totals>> = Mutex::new(None);
 static NET_TOTALS: Mutex<Option<Totals>> = Mutex::new(None);
 
+/// Each running VM's I/O totals at their last reading, by entity (`<run>/<index>`).
+static VM_IO_TOTALS: Mutex<BTreeMap<String, VmIoTotals>> = Mutex::new(BTreeMap::new());
+
 /// Sets every gauge from fresh readings (series keys as in the catalog: `crates/apz-metrics/src/catalog.rs`).
 pub fn sample(node: &Node, m: &NodeMetrics, now_ms: u64) {
     let fleet = fleet(node);
@@ -39,6 +44,7 @@ pub fn sample(node: &Node, m: &NodeMetrics, now_ms: u64) {
         }
     }
     set_io_rates(m, now_ms);
+    set_vm_io(m, &fleet.io, now_ms);
     set_pressure(m);
     set_gpus(m);
 }
@@ -50,6 +56,7 @@ struct Fleet {
     guest_mib: u64,
     counts: [u64; 3],
     processes: Vec<VmProcess>,
+    io: Vec<VmIo>,
 }
 
 fn fleet(node: &Node) -> Fleet {
@@ -58,10 +65,12 @@ fn fleet(node: &Node) -> Fleet {
         guest_mib: 0,
         counts: [0; 3],
         processes: Vec::new(),
+        io: Vec::new(),
     };
     for run in node.registry().list() {
         let view = run.view(Detail::Summary);
         let pids = run.process_ids();
+        let io = run.io_stats();
         for vm in &view.vms {
             if let Some(index) = VM_STATES.iter().position(|state| *state == vm.state) {
                 fleet.counts[index] += 1;
@@ -74,6 +83,13 @@ fn fleet(node: &Node) -> Fleet {
             let Some(&(_, pid)) = pids.iter().find(|(index, _)| *index == vm.id) else {
                 continue;
             };
+            if let Some((_, stats)) = io.iter().find(|(index, _)| *index == vm.id) {
+                fleet.io.push(VmIo {
+                    entity: format!("{}/{}", view.id, vm.id),
+                    pid,
+                    stats: *stats,
+                });
+            }
             fleet.processes.push(VmProcess {
                 pid,
                 run: view.id.to_string(),
@@ -252,12 +268,114 @@ fn rates(previous: &mut Option<Totals>, now_ms: u64, bytes: [u64; 2]) -> Option<
         at_ms: now_ms,
         bytes,
     })?;
+    rates_since(before, now_ms, bytes)
+}
+
+/// The rate of each of two totals between the reading `before` and the reading `bytes` at `now_ms`, in bytes per
+/// second. None when the clock has not moved or a total went backwards.
+fn rates_since(before: Totals, now_ms: u64, bytes: [u64; 2]) -> Option<[f64; 2]> {
     let elapsed_ms = now_ms.checked_sub(before.at_ms).filter(|ms| *ms > 0)?;
     let rate = |index: usize| -> Option<f64> {
         let delta = bytes[index].checked_sub(before.bytes[index])?;
         Some(delta as f64 * 1000.0 / elapsed_ms as f64)
     };
     Some([rate(0)?, rate(1)?])
+}
+
+/// One running VM's I/O counters, with the process that reported them.
+struct VmIo {
+    entity: String,
+    pid: u32,
+    stats: IoStats,
+}
+
+/// A VM's I/O totals at a reading, and the process that reported them. A new process starts its counters over, so a
+/// reading from another process is never compared with these.
+#[derive(Debug, Clone, Copy)]
+struct VmIoTotals {
+    pid: u32,
+    blk: Totals,
+    vsock: Totals,
+    ops: u64,
+}
+
+/// The rates a VM's totals make between two readings of the same process.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VmIoRates {
+    blk_read_bps: f64,
+    blk_write_bps: f64,
+    vsock_rx_bps: f64,
+    vsock_tx_bps: f64,
+}
+
+/// What one reading of a VM's counters makes: its new totals, the disk requests since the previous reading (all of
+/// them on a first reading, or after a new process), and the rates when a previous reading of the same process exists.
+#[derive(Debug, Clone, Copy)]
+struct VmIoStep {
+    totals: VmIoTotals,
+    new_ops: u64,
+    rates: Option<VmIoRates>,
+}
+
+fn vm_io_step(previous: Option<VmIoTotals>, pid: u32, now_ms: u64, stats: IoStats) -> VmIoStep {
+    let blk = [stats.blk_read_bytes, stats.blk_write_bytes];
+    let vsock = [stats.vsock_rx_bytes, stats.vsock_tx_bytes];
+    let totals = VmIoTotals {
+        pid,
+        blk: Totals {
+            at_ms: now_ms,
+            bytes: blk,
+        },
+        vsock: Totals {
+            at_ms: now_ms,
+            bytes: vsock,
+        },
+        ops: stats.blk_ops,
+    };
+    let before = previous.filter(|before| before.pid == pid);
+    let new_ops = match before {
+        Some(before) => stats
+            .blk_ops
+            .checked_sub(before.ops)
+            .unwrap_or(stats.blk_ops),
+        None => stats.blk_ops,
+    };
+    let rates = before.and_then(|before| {
+        let [blk_read_bps, blk_write_bps] = rates_since(before.blk, now_ms, blk)?;
+        let [vsock_rx_bps, vsock_tx_bps] = rates_since(before.vsock, now_ms, vsock)?;
+        Some(VmIoRates {
+            blk_read_bps,
+            blk_write_bps,
+            vsock_rx_bps,
+            vsock_tx_bps,
+        })
+    });
+    VmIoStep {
+        totals,
+        new_ops,
+        rates,
+    }
+}
+
+/// Sets each running VM's disk and vsock rates, and adds its new disk requests to the request counter, from the
+/// readings `fleet` took. A VM that is no longer running drops out of the totals.
+fn set_vm_io(m: &NodeMetrics, readings: &[VmIo], now_ms: u64) {
+    let mut totals = lock(&VM_IO_TOTALS);
+    let mut next = BTreeMap::new();
+    for reading in readings {
+        let previous = totals.get(&reading.entity).copied();
+        let step = vm_io_step(previous, reading.pid, now_ms, reading.stats);
+        let key = |metric: &str| SeriesKey::new(metric, EntityKind::Vm, &reading.entity);
+        m.counter(key("vm.blk_ops")).add(step.new_ops as f64);
+        if let Some(rates) = step.rates {
+            m.gauge(key("vm.blk_read_bps")).set(rates.blk_read_bps);
+            m.gauge(key("vm.blk_write_bps")).set(rates.blk_write_bps);
+            m.gauge(key("vm.vsock_rx_bps")).set(rates.vsock_rx_bps);
+            m.gauge(key("vm.vsock_tx_bps")).set(rates.vsock_tx_bps);
+        }
+        next.insert(reading.entity.clone(), step.totals);
+    }
+    *totals = next;
 }
 
 /// The bytes read and written by the whole disks in `/proc/diskstats` text. Partitions and loop, RAM, zram and
@@ -399,6 +517,67 @@ wlan0: 300 3 0 0 0 0 0 0  400 4 0 0 0 0 0 0";
         assert_eq!(pressure_some_avg10(cpu), Some(1.25));
         assert_eq!(pressure_some_avg10(memory), Some(0.0));
         assert_eq!(pressure_some_avg10("garbage"), None);
+    }
+
+    #[test]
+    fn a_vm_io_rate_is_the_increase_per_second_from_the_same_process() {
+        let first = IoStats {
+            blk_read_bytes: 1000,
+            blk_write_bytes: 0,
+            blk_ops: 3,
+            vsock_rx_bytes: 0,
+            vsock_tx_bytes: 100,
+        };
+        let step = vm_io_step(None, 7, 0, first);
+        assert_eq!(step.rates, None, "the first reading has no rate yet");
+        assert_eq!(
+            step.new_ops, 3,
+            "the first reading counts every request since boot"
+        );
+
+        let second = IoStats {
+            blk_read_bytes: 3000,
+            blk_write_bytes: 500,
+            blk_ops: 5,
+            vsock_rx_bytes: 2000,
+            vsock_tx_bytes: 100,
+        };
+        let step = vm_io_step(Some(step.totals), 7, 2000, second);
+        assert_eq!(
+            step.rates,
+            Some(VmIoRates {
+                blk_read_bps: 1000.0,
+                blk_write_bps: 250.0,
+                vsock_rx_bps: 1000.0,
+                vsock_tx_bps: 0.0,
+            })
+        );
+        assert_eq!(step.new_ops, 2, "two requests since the previous reading");
+    }
+
+    #[test]
+    fn a_vm_whose_process_changed_starts_its_io_over() {
+        let before = IoStats {
+            blk_read_bytes: 9000,
+            blk_write_bytes: 0,
+            blk_ops: 40,
+            vsock_rx_bytes: 0,
+            vsock_tx_bytes: 0,
+        };
+        let step = vm_io_step(None, 7, 0, before);
+        let restarted = IoStats {
+            blk_read_bytes: 100,
+            blk_write_bytes: 0,
+            blk_ops: 1,
+            vsock_rx_bytes: 0,
+            vsock_tx_bytes: 0,
+        };
+        let step = vm_io_step(Some(step.totals), 8, 2000, restarted);
+        assert_eq!(
+            step.rates, None,
+            "a new process has no reading of its own to compare with"
+        );
+        assert_eq!(step.new_ops, 1, "a new process's requests are all new");
     }
 
     #[test]

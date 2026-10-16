@@ -49,6 +49,18 @@ impl IncMetric for SharedIncMetric {
     }
 }
 
+/// The vsock bytes this process has moved, as `(rx, tx)`: rx is what the hub sent the guest, tx what the guest sent
+/// the hub.
+///
+/// The counters are process-wide. The node runs each VM in its own process, so for it they are the VM's own; VMs
+/// that share a process share these.
+pub fn byte_totals() -> (u64, u64) {
+    (
+        METRICS.rx_bytes_count.count(),
+        METRICS.tx_bytes_count.count(),
+    )
+}
+
 /// Aggregate metrics of all vsock connections/actions (one vsock device per
 /// VM, so no per-device split).
 pub(super) static METRICS: VsockDeviceMetrics = VsockDeviceMetrics::new();

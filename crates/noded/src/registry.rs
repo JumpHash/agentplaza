@@ -3160,6 +3160,18 @@ impl Run {
             .collect()
     }
 
+    /// The disk and vsock totals of each running VM of the run that reports them, as `(VM index, totals)`. A VM in
+    /// process-less form, or mid-kill, has none.
+    pub fn io_stats(&self) -> Vec<(u32, vmm::spawner::IoStats)> {
+        let inner = self.lock();
+        inner
+            .vms
+            .iter()
+            .filter(|slot| slot.state == VmState::Running)
+            .filter_map(|slot| Some((slot.id, slot.handle.as_ref()?.io_stats()?)))
+            .collect()
+    }
+
     /// The run as the API reports it.
     pub fn view(&self, detail: Detail) -> RunView<'_> {
         let inner = self.lock();
