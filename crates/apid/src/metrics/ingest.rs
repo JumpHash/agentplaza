@@ -149,7 +149,7 @@ pub fn batch(m: &Metrics, node: &str, b: Batch, hub_now_ms: u64) {
         };
         link.last_beat_ms = hub_now_ms;
         if !reports.is_null() {
-            link.reports = reports;
+            link.reports = merged_reports(std::mem::take(&mut link.reports), reports);
         }
         link.offset_ms
     };
@@ -218,9 +218,34 @@ fn corrected(t_ms: u64, shift: i64) -> u64 {
     (t_ms as i64 - shift).max(0) as u64
 }
 
+/// A node's new reports in place of its old ones, except the reports only the guests send (`top_processes`, from
+/// each VM's stats), which stay when the node's batch does not carry them.
+fn merged_reports(old: serde_json::Value, mut new: serde_json::Value) -> serde_json::Value {
+    if let (serde_json::Value::Object(old), serde_json::Value::Object(fresh)) = (old, &mut new) {
+        for key in ["top_processes"] {
+            if !fresh.contains_key(key) {
+                if let Some(rows) = old.get(key) {
+                    fresh.insert(key.to_string(), rows.clone());
+                }
+            }
+        }
+    }
+    new
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_node_batch_keeps_the_process_rows_the_guests_reported() {
+        use serde_json::json;
+        let old = json!({"top_processes": [["cargo", "r1/0", 80.0, 900.0]], "volumes": []});
+        let merged = merged_reports(old.clone(), json!({"volumes": [1]}));
+        assert_eq!(merged, json!({"volumes": [1], "top_processes": [["cargo", "r1/0", 80.0, 900.0]]}));
+        let replaced = merged_reports(old, json!({"top_processes": []}));
+        assert_eq!(replaced, json!({"top_processes": []}));
+    }
     use apz_metrics::Tier;
     use apz_metrics::wire::encode_gauge;
 
