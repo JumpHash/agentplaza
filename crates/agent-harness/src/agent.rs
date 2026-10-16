@@ -1134,10 +1134,10 @@ fn clip_old_results(messages: &mut [Message]) {
         .unwrap_or(0);
     for message in &mut messages[..latest] {
         for block in &mut message.content {
-            if let Block::ToolResult { content, .. } = block {
-                if content.len() > KEPT_RESULT_BYTES {
-                    *content = cap_output(content, KEPT_RESULT_BYTES);
-                }
+            if let Block::ToolResult { content, .. } = block
+                && content.len() > KEPT_RESULT_BYTES
+            {
+                *content = cap_output(content, KEPT_RESULT_BYTES);
             }
         }
     }
@@ -1193,7 +1193,7 @@ fn save_threads(workspace: &Workspace, threads: &HashMap<String, Thread>) -> std
         .iter()
         .filter(|(id, _)| id.starts_with("op-"))
         .collect();
-    kept.sort_by(|a, b| b.1.at.cmp(&a.1.at));
+    kept.sort_by_key(|a| std::cmp::Reverse(a.1.at));
     let render = |kept: &[(&String, &Thread)]| {
         let object: serde_json::Map<String, Value> = kept
             .iter()

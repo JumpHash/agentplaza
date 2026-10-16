@@ -3,7 +3,7 @@
 /// Appends the RGBA form of one BGRA row to `out`. Alpha is forced to opaque: GDI leaves it zero, and a frame
 /// with zero alpha shows as transparent.
 pub fn bgra_row_to_rgba(row: &[u8], out: &mut Vec<u8>) {
-    for pixel in row.chunks_exact(4) {
+    for pixel in row.as_chunks::<4>().0 {
         out.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
     }
 }

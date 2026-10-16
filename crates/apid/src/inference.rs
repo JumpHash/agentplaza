@@ -165,13 +165,13 @@ impl Schema {
                 .ok_or_else(|| format!("unknown field `{name}`"))?;
             check_type(prop.kind, field)
                 .map_err(|_| format!("field `{name}` must be a {}", kind_name(prop.kind)))?;
-            if let Some(allowed) = &prop.allowed {
-                if !allowed.iter().any(|a| value_eq(a, field)) {
-                    return Err(format!(
-                        "field `{name}` must be one of {}",
-                        Value::Array(allowed.clone())
-                    ));
-                }
+            if let Some(allowed) = &prop.allowed
+                && !allowed.iter().any(|a| value_eq(a, field))
+            {
+                return Err(format!(
+                    "field `{name}` must be one of {}",
+                    Value::Array(allowed.clone())
+                ));
             }
         }
         Ok(())
@@ -234,12 +234,12 @@ impl FeatureSpec {
                         "feature `{name}`: numeric takes neither values nor buckets"
                     ));
                 }
-                if let Some(s) = self.scale {
-                    if !s.mean.is_finite() || !s.std.is_finite() || s.std == 0.0 {
-                        return Err(format!(
-                            "feature `{name}`: scale needs a finite mean and a non-zero std"
-                        ));
-                    }
+                if let Some(s) = self.scale
+                    && (!s.mean.is_finite() || !s.std.is_finite() || s.std == 0.0)
+                {
+                    return Err(format!(
+                        "feature `{name}`: scale needs a finite mean and a non-zero std"
+                    ));
                 }
             }
             FeatureKind::Onehot => {

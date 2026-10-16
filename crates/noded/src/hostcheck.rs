@@ -239,7 +239,7 @@ pub fn swap_check(
     let kinds: Vec<(&str, SwapKind)> = swap_devices(proc_swaps)
         .into_iter()
         .map(|device| {
-            let uuid = dm_name(device).and_then(|name| dm_uuid(name));
+            let uuid = dm_name(device).and_then(&dm_uuid);
             (device, swap_kind(device, uuid.as_deref()))
         })
         .collect();

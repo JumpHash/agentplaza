@@ -647,7 +647,7 @@ pub(crate) fn expect_stdin_marker(value: &str) -> Result<(), String> {
 fn filter(list: &Value, group: Option<&str>, group_of: fn(&Value) -> &'static str) -> Value {
     Value::Array(
         items(list)
-            .filter(|p| group.map_or(true, |g| group_of(p) == g))
+            .filter(|p| group.is_none_or(|g| group_of(p) == g))
             .cloned()
             .collect(),
     )

@@ -86,15 +86,17 @@ fn numbers_after(text: &str, pre: &str, tail: &str) -> Vec<usize> {
             || text[..start]
                 .chars()
                 .next_back()
-                .map_or(true, |c| !(c.is_alphanumeric() || c == '_'));
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
         let digits: String = text[digits_at..]
             .chars()
             .take_while(|c| c.is_ascii_digit())
             .collect();
-        if word_start && !digits.is_empty() && text[digits_at + digits.len()..].starts_with(tail) {
-            if let Ok(n) = digits.parse() {
-                out.push(n);
-            }
+        if word_start
+            && !digits.is_empty()
+            && text[digits_at + digits.len()..].starts_with(tail)
+            && let Ok(n) = digits.parse()
+        {
+            out.push(n);
         }
         from = digits_at;
     }

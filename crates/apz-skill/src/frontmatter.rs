@@ -23,7 +23,7 @@ enum Value {
 
 pub fn parse(skill_md: &str) -> Res<Parsed> {
     let raws: Vec<&str> = skill_md.split_inclusive('\n').collect();
-    if raws.first().map(|r| text(*r)) != Some("---") {
+    if raws.first().map(|r| text(r)) != Some("---") {
         return Err((1, "SKILL.md must open with a --- line".into()));
     }
     let close = (1..raws.len())

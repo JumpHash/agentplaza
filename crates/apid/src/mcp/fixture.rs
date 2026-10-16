@@ -598,9 +598,7 @@ pub fn handle(msg: &Json, ctx: &Ctx<'_>) -> Option<Json> {
     if !matches!(msg, Json::Obj(_)) {
         return Some(error(&Json::Null, -32600, "invalid request"));
     }
-    let Some(id) = msg.get("id") else {
-        return None;
-    };
+    let id = msg.get("id")?;
     let empty = Json::Obj(Vec::new());
     let params = msg.get("params").unwrap_or(&empty);
     let method = msg.get("method").and_then(Json::as_str).unwrap_or("");
@@ -819,11 +817,9 @@ fn handle_conn(mut stream: TcpStream) -> std::io::Result<()> {
 
 /// Accepts connections forever, one thread per connection.
 pub fn serve_http(listener: TcpListener) {
-    for conn in listener.incoming() {
-        if let Ok(stream) = conn {
-            let _ = std::thread::spawn(move || {
-                let _ = handle_conn(stream);
-            });
-        }
+    for stream in listener.incoming().flatten() {
+        let _ = std::thread::spawn(move || {
+            let _ = handle_conn(stream);
+        });
     }
 }

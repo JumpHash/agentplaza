@@ -302,11 +302,11 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     if !agents.is_null() {
                         state.agents = parse_agents(&agents);
                     }
-                    if !state.retention.dirty {
-                        if let Some((keep, days)) = retention_fields(&settings) {
-                            state.retention.keep = keep;
-                            state.retention.days = days;
-                        }
+                    if !state.retention.dirty
+                        && let Some((keep, days)) = retention_fields(&settings)
+                    {
+                        state.retention.keep = keep;
+                        state.retention.days = days;
                     }
                 }
                 Err(err) => state.error = Some(err),
@@ -650,7 +650,7 @@ fn group_pairs(list: &[Conversation]) -> Vec<Pair> {
         pairs[i].messages.push(c.clone());
         pairs[i].last = c.clone();
     }
-    pairs.sort_by(|x, y| y.last.created_at.cmp(&x.last.created_at));
+    pairs.sort_by_key(|x| std::cmp::Reverse(x.last.created_at));
     pairs
 }
 
@@ -1056,6 +1056,24 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
+    iced::Subscription::batch([
+        crate::console::events::subscription(&ctx.client).map(Msg::Event),
+        iced::event::listen_with(escape),
+    ])
+}
+
+/// Escape clears the search, as the web's search box does.
+fn escape(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Msg::Search(String::new())),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,23 +1149,5 @@ mod tests {
         assert_eq!(times(&parse_thread(&page)), vec![2, 1]);
         assert_eq!(next_of(&page), Some(1));
         assert_eq!(next_of(&json!({"messages": []})), None);
-    }
-}
-
-pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
-    iced::Subscription::batch([
-        crate::console::events::subscription(&ctx.client).map(Msg::Event),
-        iced::event::listen_with(escape),
-    ])
-}
-
-/// Escape clears the search, as the web's search box does.
-fn escape(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Msg> {
-    match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-            ..
-        }) => Some(Msg::Search(String::new())),
-        _ => None,
     }
 }

@@ -150,9 +150,9 @@ pub fn raise_fd_limit() -> io::Result<u64> {
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        return Ok(raised.rlim_cur as u64);
+        return Ok(raised.rlim_cur);
     }
-    Ok(limit.rlim_cur as u64)
+    Ok(limit.rlim_cur)
 }
 
 /// Asks the process to stop on `SIGTERM`/`SIGINT`.

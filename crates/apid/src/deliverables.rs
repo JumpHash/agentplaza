@@ -369,7 +369,7 @@ fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         .deliverables
         .list()
         .into_iter()
-        .filter(|d| kind.as_deref().map_or(true, |k| d.kind == k))
+        .filter(|d| kind.as_deref().is_none_or(|k| d.kind == k))
         .collect();
     Response::json(200, &items)
 }
@@ -555,10 +555,7 @@ fn serve(app: &App, item: &Deliverable, download: bool) -> Response {
 /// The name as stored: its basename, with anything outside `[A-Za-z0-9._-]` made `_`. A name
 /// that is empty, only dots, or longer than 120 characters is refused.
 pub fn clean_name(raw: &str) -> Result<String, String> {
-    let base = raw
-        .rsplit(|c: char| c == '/' || c == '\\')
-        .next()
-        .unwrap_or("");
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
     let name: String = base
         .chars()
         .map(|c| {

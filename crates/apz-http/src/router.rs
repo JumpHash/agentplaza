@@ -125,16 +125,15 @@ fn decode_segment(raw: &str) -> Option<Cow<'_, str>> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) =
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) =
                 std::str::from_utf8(&bytes[i + 1..i + 3]).map(|hex| u8::from_str_radix(hex, 16))
-            {
-                if let Ok(byte) = byte {
-                    out.push(byte);
-                    i += 3;
-                    continue;
-                }
-            }
+            && let Ok(byte) = byte
+        {
+            out.push(byte);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
@@ -182,7 +181,7 @@ fn matches<'a>(pattern: &[&'static str], path: &'a str) -> Option<Result<Params<
             None => return None,
         }
     }
-    segments.next().is_none().then(|| Ok(Params { pairs }))
+    segments.next().is_none().then_some(Ok(Params { pairs }))
 }
 
 #[cfg(test)]

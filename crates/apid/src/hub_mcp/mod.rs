@@ -285,10 +285,10 @@ pub fn default_origins(port: u16, public_url: &str, tls: bool) -> Vec<String> {
         format!("{scheme}://localhost:{port}"),
         format!("{scheme}://[::1]:{port}"),
     ];
-    if let Some(origin) = origin_of(public_url) {
-        if !origins.contains(&origin) {
-            origins.push(origin);
-        }
+    if let Some(origin) = origin_of(public_url)
+        && !origins.contains(&origin)
+    {
+        origins.push(origin);
     }
     origins
 }
@@ -374,10 +374,10 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
     if !hub.enabled() || !hub.reachable(req.peer) {
         return Response::error(404, "no such endpoint");
     }
-    if let Some(origin) = req.header("origin") {
-        if !hub.origin_allowed(origin) {
-            return Response::error(403, "this origin may not call the hub's MCP server");
-        }
+    if let Some(origin) = req.header("origin")
+        && !hub.origin_allowed(origin)
+    {
+        return Response::error(403, "this origin may not call the hub's MCP server");
     }
     let now = hub.now();
     let caller = match hub.caller(req, now) {
@@ -429,7 +429,11 @@ pub fn handle_post(hub: &HubMcp, plaza: &dyn Plaza, req: &Request) -> Response {
                 None,
             )),
             rpc::Message::Notification => {}
-            rpc::Message::Request { id, method, params } if method == "initialize" => {
+            rpc::Message::Request {
+                id,
+                method: "initialize",
+                params,
+            } => {
                 if batch {
                     answers.push(rpc::failure(
                         &id,
@@ -501,7 +505,7 @@ fn dispatch(
         "tools/list" => {
             let tools: Vec<Value> = tools::visible(tools::REGISTRY, &caller.record)
                 .into_iter()
-                .map(|tool| descriptor(tool))
+                .map(descriptor)
                 .collect();
             rpc::result(id, json!({ "tools": tools }))
         }

@@ -21,7 +21,6 @@
 //! another hard link. Stray engine processes are killed before a walk (see [`bash::kill_engine_processes`]).
 
 use std::ffi::{CStr, CString, OsStr};
-use std::fs;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -486,6 +485,7 @@ pub(crate) fn first_missing(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

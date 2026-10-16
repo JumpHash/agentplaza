@@ -16,3 +16,6 @@ serde_json.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
+
+[lints]
+workspace = true

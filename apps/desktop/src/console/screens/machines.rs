@@ -1563,17 +1563,17 @@ fn guest_cell<'a>(v: &VmUsage) -> Element<'a, Msg> {
     let usable = v.usable.map_or("—".to_string(), human);
     let mut parts: Vec<Element<'a, Msg>> =
         vec![ui::sans(format!("{used} / {usable}"), 12.0, INK).into()];
-    if let (Some(used), Some(usable)) = (v.guest_used, v.usable) {
-        if usable > 0.0 {
-            parts.push(stacked(
-                &[
-                    (used.min(usable), INK_2),
-                    ((usable - used).max(0.0), RULE_FAINT),
-                ],
-                usable,
-                4.0,
-            ));
-        }
+    if let (Some(used), Some(usable)) = (v.guest_used, v.usable)
+        && usable > 0.0
+    {
+        parts.push(stacked(
+            &[
+                (used.min(usable), INK_2),
+                ((usable - used).max(0.0), RULE_FAINT),
+            ],
+            usable,
+            4.0,
+        ));
     }
     column(parts).spacing(4).into()
 }

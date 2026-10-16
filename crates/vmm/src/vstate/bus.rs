@@ -208,7 +208,9 @@ impl Bus {
         let slot = ranges
             .remove(&bus_range)
             .ok_or(BusError::MissingAddressRange)?;
-        devices.get_mut(slot).map(|slot| *slot = None);
+        if let Some(slot) = devices.get_mut(slot) {
+            *slot = None;
+        }
 
         Ok(())
     }

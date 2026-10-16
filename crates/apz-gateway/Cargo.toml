@@ -15,3 +15,6 @@ thiserror.workspace = true
 ureq.workspace = true
 sha2.workspace = true
 hmac.workspace = true
+
+[lints]
+workspace = true

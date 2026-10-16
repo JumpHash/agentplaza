@@ -159,10 +159,10 @@ pub fn apply_settings(ctx: &Ctx, body: SettingsBody) -> Response {
         auth_mode,
         open_scope,
     };
-    if ctx.db.enabled() {
-        if let Err(err) = ctx.db.hub_mcp_settings_put(&next) {
-            return Response::error(500, &format!("the settings are not saved: {err}"));
-        }
+    if ctx.db.enabled()
+        && let Err(err) = ctx.db.hub_mcp_settings_put(&next)
+    {
+        return Response::error(500, &format!("the settings are not saved: {err}"));
     }
     ctx.hub.apply(&next);
     status(ctx)

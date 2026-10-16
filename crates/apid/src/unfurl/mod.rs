@@ -77,14 +77,14 @@ impl Store for Cache {
 
     fn put(&self, key: &str, row: Row) {
         let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
-        if rows.len() >= MEMORY_LIMIT && !rows.contains_key(key) {
-            if let Some(stalest) = rows
+        if rows.len() >= MEMORY_LIMIT
+            && !rows.contains_key(key)
+            && let Some(stalest) = rows
                 .iter()
                 .min_by_key(|(_, r)| r.fetched_ms)
                 .map(|(k, _)| k.clone())
-            {
-                rows.remove(&stalest);
-            }
+        {
+            rows.remove(&stalest);
         }
         rows.insert(key.to_string(), row);
     }
@@ -200,10 +200,10 @@ pub fn unfurl(app: &App, refs: &[Ref], now: u64) -> Vec<Value> {
 /// The answer for a remote reference: from the store while it is fresh, else fetched and stored (failures too).
 fn resolve_remote(source: &dyn Source, store: &dyn Store, r: &Ref, now: u64) -> Value {
     let key = serde_json::to_string(r).unwrap_or_default();
-    if let Some(row) = store.get(&key) {
-        if now.saturating_sub(row.fetched_ms) < cards::ttl_ms(&row.data) {
-            return row.data;
-        }
+    if let Some(row) = store.get(&key)
+        && now.saturating_sub(row.fetched_ms) < cards::ttl_ms(&row.data)
+    {
+        return row.data;
     }
     let item = match fetch(source, r) {
         Ok(card) => json!({"ok": true, "card": card}),
@@ -465,7 +465,7 @@ fn task_card(app: &App, number: u64) -> Result<Value, &'static str> {
         .projects
         .list()
         .into_iter()
-        .find(|p| p.tasks.iter().any(|t| *t == id))
+        .find(|p| p.tasks.contains(&id))
         .map(|p| p.id);
     Ok(json!({
         "number": number,

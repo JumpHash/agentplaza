@@ -14,7 +14,8 @@
 //!   (`/v1/nodes/{id}/…`, and `/internal/…` from a remote node) — `crate::nodes` checks those.
 //! - Off loopback the hub serves HTTPS with a self-signed certificate made on first start
 //!   (`<state>/tls/cert.pem`, `key.pem`); its SHA-256 is the pin join tokens carry.
-//! Saved: `<state>/hub.json` (owner token hash, public URL, name), mode 0600.
+//!
+//! Saved:`<state>/hub.json` (owner token hash, public URL, name), mode 0600.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

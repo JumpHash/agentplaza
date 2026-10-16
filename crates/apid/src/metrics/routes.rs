@@ -90,11 +90,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             "/v1/metrics/alerts/rules/{id}",
             |app, _, params| delete_rule_route(app, params),
         )
-        .route(
-            "POST",
-            "/v1/metrics/alerts/{id}/mute",
-            |app, req, params| mute_route(app, req, params),
-        )
+        .route("POST", "/v1/metrics/alerts/{id}/mute", mute_route)
         .route("POST", "/v1/metrics/alerts/{id}/ack", |app, req, params| {
             ack_route(app, req, params)
         })

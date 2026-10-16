@@ -104,6 +104,8 @@ impl Orbit {
     }
 
     /// Applies the damped deltas for one frame; true while still moving.
+    // max/min, not clamp: a NaN phi must pin to POLE_EPS, not stay NaN.
+    #[allow(clippy::manual_clamp)]
     pub fn update(&mut self) -> bool {
         self.theta += self.delta_theta * self.damping;
         self.phi += self.delta_phi * self.damping;

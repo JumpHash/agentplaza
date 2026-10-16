@@ -54,10 +54,10 @@ static EARLY_PAGEMAP: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 /// [`EARLY_PAGEMAP`]). The builder calls it before it enters the jail; a failure is left for the
 /// snapshot to report.
 pub fn open_pagemap_early() {
-    if EARLY_PAGEMAP.get().is_none() {
-        if let Ok(file) = File::open(PAGEMAP) {
-            let _ = EARLY_PAGEMAP.set(file);
-        }
+    if EARLY_PAGEMAP.get().is_none()
+        && let Ok(file) = File::open(PAGEMAP)
+    {
+        let _ = EARLY_PAGEMAP.set(file);
     }
 }
 /// Bytes in one pagemap entry.
@@ -274,7 +274,7 @@ fn write_region(
         .get_host_address(MemoryRegionAddress(0))
         .map_err(|e| SnapshotError::State(format!("guest memory has no host address: {e}")))?;
     let host = usize_to_u64(host as usize);
-    if host % page != 0 {
+    if !host.is_multiple_of(page) {
         return Err(SnapshotError::State(format!(
             "guest memory at host address {host:#x} is not page aligned"
         )));
@@ -296,7 +296,7 @@ fn write_region(
                 (first_page + done) * PAGEMAP_ENTRY_SIZE,
             )
             .map_err(|source| io_error(PAGEMAP, source))?;
-        for (i, chunk) in entries[..bytes].chunks_exact(8).enumerate() {
+        for (i, chunk) in entries[..bytes].as_chunks::<8>().0.iter().enumerate() {
             let page_index = done + usize_to_u64(i);
             if selected(pagemap_entry(chunk), kind) {
                 match run {

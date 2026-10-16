@@ -752,11 +752,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
                 _ => return Task::none(),
             };
-            if count > 0 {
-                if let Some(Overlay::Palette { selected, .. }) = state.overlay.as_mut() {
-                    let next = (*selected as i64 + i64::from(step)).rem_euclid(count as i64);
-                    *selected = next as usize;
-                }
+            if count > 0
+                && let Some(Overlay::Palette { selected, .. }) = state.overlay.as_mut()
+            {
+                let next = (*selected as i64 + i64::from(step)).rem_euclid(count as i64);
+                *selected = next as usize;
             }
             Task::none()
         }
@@ -1096,10 +1096,10 @@ fn saved_answer(state: &mut State, result: Result<Value, String>, ctx: &Ctx) -> 
             show_toast(state, error);
         }
     }
-    if let Some(token) = answer.get("token").and_then(Value::as_str) {
-        if let Some(Overlay::Settings(form)) = state.overlay.as_mut() {
-            form.token = Some(token.into());
-        }
+    if let Some(token) = answer.get("token").and_then(Value::as_str)
+        && let Some(Overlay::Settings(form)) = state.overlay.as_mut()
+    {
+        form.token = Some(token.into());
     }
     if let Some(settings) = answer.get("settings") {
         state.overlay = Some(Overlay::Settings(dialogs::SettingsForm::from_json(

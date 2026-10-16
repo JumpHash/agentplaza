@@ -382,10 +382,10 @@ impl App {
 
     /// Switches to the tab the tour's current step shows (a step without one keeps the current tab).
     fn show_tour_step(&mut self) {
-        if let Some(Stage::Tour(i)) = self.onboarding.as_ref().map(|ob| ob.stage) {
-            if let Some(tab) = TOUR[i].tab {
-                self.select_tab(tab);
-            }
+        if let Some(Stage::Tour(i)) = self.onboarding.as_ref().map(|ob| ob.stage)
+            && let Some(tab) = TOUR[i].tab
+        {
+            self.select_tab(tab);
         }
     }
 
@@ -416,15 +416,15 @@ impl App {
             }
             None => self.onboarding = None,
         }
-        if let Some(mark) = mark {
-            if let Err(e) = onboarding::persist(&Config::path(), mark) {
-                self.notice = Some(format!("could not save the setup: {e}"));
-            }
+        if let Some(mark) = mark
+            && let Err(e) = onboarding::persist(&Config::path(), mark)
+        {
+            self.notice = Some(format!("could not save the setup: {e}"));
         }
-        if let Some(to @ Stage::Tour(_)) = next {
-            if to != stage {
-                self.show_tour_step();
-            }
+        if let Some(to @ Stage::Tour(_)) = next
+            && to != stage
+        {
+            self.show_tour_step();
         }
     }
 
@@ -1151,10 +1151,10 @@ fn follow_events(target: Target, tx: Sender<Msg>) {
             loop {
                 match socket.recv(Duration::from_secs(1)) {
                     Ok(Some(ws::Message::Text(text))) => {
-                        if let Some((kind, data)) = parse_frame(&text) {
-                            if tx.send(Msg::Event(kind, data)).is_err() {
-                                return;
-                            }
+                        if let Some((kind, data)) = parse_frame(&text)
+                            && tx.send(Msg::Event(kind, data)).is_err()
+                        {
+                            return;
                         }
                     }
                     Ok(Some(ws::Message::Binary(_))) | Ok(None) => {}
@@ -1258,12 +1258,11 @@ pub fn run(client: Client, start: Option<Stage>) -> Result<(), String> {
         app.drain();
         term.draw(|frame| app.draw(frame))
             .map_err(|e| e.to_string())?;
-        if event::poll(FRAME).map_err(|e| e.to_string())? {
-            if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
-                if app.on_key(key) {
-                    return Ok(());
-                }
-            }
+        if event::poll(FRAME).map_err(|e| e.to_string())?
+            && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
+            && app.on_key(key)
+        {
+            return Ok(());
         }
         let now = Instant::now();
         app.tick(now.duration_since(last).as_secs_f32());

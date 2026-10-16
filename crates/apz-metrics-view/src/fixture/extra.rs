@@ -869,7 +869,7 @@ pub fn events(
         .filter(|e| kinds.is_empty() || kinds.contains(&e.kind.as_str()))
         .filter(|e| event_in_scope(e, scope))
         .collect();
-    found.sort_by(|a, b| b.t_ms.cmp(&a.t_ms));
+    found.sort_by_key(|a| std::cmp::Reverse(a.t_ms));
     found.truncate(limit);
     found
 }
@@ -882,7 +882,7 @@ pub fn calls(f: &Fixture, scope: &str, before_ms: u64, limit: usize) -> Vec<Call
         .filter(|c| c.at_ms < before_ms)
         .filter(|c| call_in_scope(c, scope))
         .collect();
-    rows.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    rows.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
     rows.truncate(limit);
     rows
 }
@@ -895,7 +895,7 @@ pub fn traces(f: &Fixture, scope: &str, from_ms: u64, to_ms: u64, limit: usize) 
         .filter(|t| t.start_ms >= from_ms && t.start_ms <= to_ms)
         .filter(|t| trace_in_scope(t, scope))
         .collect();
-    found.sort_by(|a, b| b.start_ms.cmp(&a.start_ms));
+    found.sort_by_key(|a| std::cmp::Reverse(a.start_ms));
     found.truncate(limit);
     found
 }

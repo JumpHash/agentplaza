@@ -260,10 +260,8 @@ impl SnapshotStore {
                 .ok()
                 .and_then(|taken| taken.elapsed().ok())
                 .is_some_and(|age| age > PARTIAL_AGE);
-            if aged {
-                if let Err(err) = remove_dir(&dir) {
-                    eprintln!("noded: VM CID {cid}: cannot sweep checkpoint {name}: {err}");
-                }
+            if aged && let Err(err) = remove_dir(&dir) {
+                eprintln!("noded: VM CID {cid}: cannot sweep checkpoint {name}: {err}");
             }
         }
     }

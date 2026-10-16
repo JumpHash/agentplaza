@@ -85,7 +85,7 @@ fn detacher(state: Arc<ConnState>, peer: Peer) -> impl Fn(Detached) {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/acp", |app, req, _| {
-            let caller = match authenticate(&app, req) {
+            let caller = match authenticate(app, req) {
                 Ok(caller) => caller,
                 Err(refused) => return refused,
             };

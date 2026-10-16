@@ -228,15 +228,15 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
     let settings = ui::btn_sm("Settings", None, ui::Kind::Ghost, Some(Msg::OpenSettings));
 
     let items: Vec<Element<'a, Msg>> = vec![
-        find.into(),
-        shift.into(),
-        range.into(),
-        live.into(),
+        find,
+        shift,
+        range,
+        live,
         group.into(),
         compare.into(),
-        annotations.into(),
-        export.into(),
-        settings.into(),
+        annotations,
+        export,
+        settings,
     ];
     row(items).spacing(8).wrap().vertical_spacing(8).into()
 }
@@ -686,20 +686,20 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
 /// The panels in rows whose spans add to twelve, each panel a portion of its row. In full screen, the one panel at
 /// full size with a button to leave.
 fn grid<'a>(view: &'a View, state: &'a State, gap: f32) -> Element<'a, Msg> {
-    if let Some(id) = &state.full {
-        if let Some(panel) = view.panels.iter().find(|panel| &panel.id == id) {
-            return column![
-                ui::btn_sm(
-                    "Exit full screen",
-                    None,
-                    ui::Kind::Ghost,
-                    Some(Msg::Full(None))
-                ),
-                panels::panel(panel, state),
-            ]
-            .spacing(gap)
-            .into();
-        }
+    if let Some(id) = &state.full
+        && let Some(panel) = view.panels.iter().find(|panel| &panel.id == id)
+    {
+        return column![
+            ui::btn_sm(
+                "Exit full screen",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Full(None))
+            ),
+            panels::panel(panel, state),
+        ]
+        .spacing(gap)
+        .into();
     }
     responsive(move |size: Size| {
         let narrow = size.width < NARROW_GRID;

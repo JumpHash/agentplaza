@@ -259,7 +259,7 @@ fn is_bare_command(plain: &str, is_item: bool) -> bool {
             == Some("make")
         && raw_words
             .get(1)
-            .map_or(true, |w| w.starts_with(char::is_lowercase) && *w != "sure")
+            .is_none_or(|w| w.starts_with(char::is_lowercase) && *w != "sure")
 }
 
 #[cfg(test)]

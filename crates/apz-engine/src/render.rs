@@ -2176,10 +2176,9 @@ impl Pipeline {
                 && stamp.shadows
                 && casts_shadow(d)
                 && !matches!(d.kind, DrawKind::Mesh)
+                && let Some(id) = mesh
             {
-                if let Some(id) = mesh {
-                    self.static_shadow.push((id, range.clone()));
-                }
+                self.static_shadow.push((id, range.clone()));
             }
             let cmd = Cmd {
                 key,
@@ -2583,10 +2582,8 @@ impl Primitive {
                 }
                 None => 0,
             };
-            if in_shadow {
-                if let Some(id) = mesh {
-                    dyn_shadow.push((id, range.clone()));
-                }
+            if in_shadow && let Some(id) = mesh {
+                dyn_shadow.push((id, range.clone()));
             }
             if !in_main {
                 continue;

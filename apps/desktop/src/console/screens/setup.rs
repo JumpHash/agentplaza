@@ -583,7 +583,7 @@ fn vault_row(vault: &Value) -> CheckRow {
         format!(
             "unsealed: {}, {}",
             plural(entries as usize, "secret"),
-            plural(slots as usize, "unlock slot")
+            plural(slots, "unlock slot")
         ),
         None,
     )

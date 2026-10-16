@@ -38,10 +38,10 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
     if !p.right.is_empty() {
         head.push(meta(p.right.as_str(), pal.ink_3).into());
     }
-    if p.live {
-        if let Some(stamp) = freshness(state) {
-            head.push(stamp);
-        }
+    if p.live
+        && let Some(stamp) = freshness(state)
+    {
+        head.push(stamp);
     }
     for action in &p.actions {
         head.push(ui::btn_sm(
@@ -76,19 +76,18 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
     }
     lines.push(body(p, state));
     // The web's hint under a panel's time chart.
-    if let Body::Chart(chart) = &p.body {
-        if matches!(chart.x, apz_metrics_view::XAxis::Time { .. })
-            && !state.as_table.contains(&p.id)
-        {
-            // The web's `.mx-hint`, a size under the meta text.
-            lines.push(
-                text("drag to zoom · click a point for what changed")
-                    .font(SANS)
-                    .size(TYPE_BADGE)
-                    .color(pal.ink_3)
-                    .into(),
-            );
-        }
+    if let Body::Chart(chart) = &p.body
+        && matches!(chart.x, apz_metrics_view::XAxis::Time { .. })
+        && !state.as_table.contains(&p.id)
+    {
+        // The web's `.mx-hint`, a size under the meta text.
+        lines.push(
+            text("drag to zoom · click a point for what changed")
+                .font(SANS)
+                .size(TYPE_BADGE)
+                .color(pal.ink_3)
+                .into(),
+        );
     }
 
     container(column(lines).spacing(8).width(Length::Fill))

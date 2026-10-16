@@ -89,7 +89,9 @@ pub fn encode(frame: &Frame, format: ImageFormat, quality: u8) -> Result<Vec<u8>
         ImageFormat::Jpeg => {
             let rgb: Vec<u8> = frame
                 .rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
                 .collect();
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100))

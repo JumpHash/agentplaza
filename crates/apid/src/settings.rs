@@ -668,13 +668,13 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     for (role, volumes) in &new.role_volumes {
         check_role_volumes(role, volumes)?;
     }
-    if let Some(effort) = &new.effort {
-        if !EFFORT_LEVELS.contains(&effort.as_str()) {
-            return Err(format!(
-                "unknown effort {effort:?}; expected one of {}",
-                EFFORT_LEVELS.join(", ")
-            ));
-        }
+    if let Some(effort) = &new.effort
+        && !EFFORT_LEVELS.contains(&effort.as_str())
+    {
+        return Err(format!(
+            "unknown effort {effort:?}; expected one of {}",
+            EFFORT_LEVELS.join(", ")
+        ));
     }
     if !(1..=500).contains(&new.foundry.hf_max_gb) {
         return Err(format!(
@@ -1229,8 +1229,10 @@ mod tests {
                 .role_models
                 .insert("scout".into(), "anthropic/claude-fable-5-1".into());
             assert!(store.put(worker_role).is_ok());
-            let mut worker_default = Settings::default();
-            worker_default.default_model = "openai/gpt-6-astra".into();
+            let worker_default = Settings {
+                default_model: "openai/gpt-6-astra".into(),
+                ..Settings::default()
+            };
             assert!(store.put(worker_default).is_ok());
 
             // An empty orchestrator list admits nothing and says so; an empty worker list changes nothing.
@@ -1261,8 +1263,10 @@ mod tests {
     fn snapshot_round_trips_and_a_refusal_changes_nothing() {
         let dir = temp_dir("snapshot");
         let store = Store::load(&dir, false).unwrap();
-        let mut s = Settings::default();
-        s.max_turns = 50;
+        let s = Settings {
+            max_turns: 50,
+            ..Settings::default()
+        };
         store.put(s.clone()).unwrap();
         let json = store.snapshot();
 
@@ -1272,8 +1276,10 @@ mod tests {
         assert_eq!(other.get(), s);
         assert_eq!(Store::load(&other_dir, false).unwrap().get(), s);
 
-        let mut bad = Settings::default();
-        bad.max_turns = 0;
+        let bad = Settings {
+            max_turns: 0,
+            ..Settings::default()
+        };
         assert!(
             other
                 .restore(&serde_json::to_string(&bad).unwrap())
@@ -1297,12 +1303,16 @@ mod tests {
             "",
             "a.*.com",
         ] {
-            let mut s = Settings::default();
-            s.fetch_block = vec![bad.to_string()];
+            let s = Settings {
+                fetch_block: vec![bad.to_string()],
+                ..Settings::default()
+            };
             assert!(store.put(s).is_err(), "{bad:?} should be rejected");
         }
-        let mut ok = Settings::default();
-        ok.fetch_block = vec!["example.com".into(), "*.example.net".into()];
+        let ok = Settings {
+            fetch_block: vec!["example.com".into(), "*.example.net".into()],
+            ..Settings::default()
+        };
         assert!(store.put(ok).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1312,19 +1322,27 @@ mod tests {
         let dir = temp_dir("persist");
         let store = Store::load(&dir, false).unwrap();
         // A worker default may be any model; an orchestrator model outside its list is refused.
-        let mut any = Settings::default();
-        any.default_model = "anthropic/claude-fable-5-1".into();
+        let any = Settings {
+            default_model: "anthropic/claude-fable-5-1".into(),
+            ..Settings::default()
+        };
         assert!(store.put(any).is_ok());
-        let mut bad = Settings::default();
-        bad.orchestrator_model = "deepseek/deepseek-flash".into();
+        let bad = Settings {
+            orchestrator_model: "deepseek/deepseek-flash".into(),
+            ..Settings::default()
+        };
         assert!(store.put(bad).is_err());
-        let mut zero = Settings::default();
-        zero.max_turns = 0;
+        let zero = Settings {
+            max_turns: 0,
+            ..Settings::default()
+        };
         assert!(store.put(zero).is_err());
 
-        let mut s = Settings::default();
-        s.max_turns = 50;
-        s.effort = Some("low".into());
+        let s = Settings {
+            max_turns: 50,
+            effort: Some("low".into()),
+            ..Settings::default()
+        };
         let saved = store.put(s.clone()).unwrap();
         assert_eq!(saved, s);
         assert_eq!(store.get(), s);
@@ -1361,18 +1379,22 @@ mod tests {
                 ..Retention::default()
             },
         ] {
-            let mut s = Settings::default();
-            s.retention = bad;
+            let s = Settings {
+                retention: bad,
+                ..Settings::default()
+            };
             assert!(store.put(s).is_err(), "{bad:?} should be refused");
         }
-        let mut ok = Settings::default();
-        ok.retention = Retention {
-            conversations_max: RETENTION_MIN,
-            conversations_days: 0,
-            posts_max: RETENTION_MAX,
-            posts_days: RETENTION_DAYS_MAX,
-            usage_calls_max: RETENTION_MIN,
-            usage_days: 0,
+        let ok = Settings {
+            retention: Retention {
+                conversations_max: RETENTION_MIN,
+                conversations_days: 0,
+                posts_max: RETENTION_MAX,
+                posts_days: RETENTION_DAYS_MAX,
+                usage_calls_max: RETENTION_MIN,
+                usage_days: 0,
+            },
+            ..Settings::default()
         };
         assert_eq!(store.put(ok.clone()).unwrap(), ok);
 
@@ -1400,8 +1422,10 @@ mod tests {
         // No default names a contributor model.
         assert!(!Settings::default().default_model.contains("contributor"));
 
-        let mut as_default = Settings::default();
-        as_default.default_model = "meta/muse-spark-1.3-contributor".into();
+        let mut as_default = Settings {
+            default_model: "meta/muse-spark-1.3-contributor".into(),
+            ..Settings::default()
+        };
         let err = store.put(as_default.clone()).unwrap_err();
         assert!(
             err.contains("contributor model") && err.contains("allow_training_models"),
@@ -1430,8 +1454,10 @@ mod tests {
         );
 
         // Meta's own models are never contributor models: no confirmation needed.
-        let mut plain = Settings::default();
-        plain.default_model = "meta/muse-spark-1.3".into();
+        let plain = Settings {
+            default_model: "meta/muse-spark-1.3".into(),
+            ..Settings::default()
+        };
         assert!(store.put(plain).is_ok());
         // A per-agent pick is an explicit choice of one agent: the tier rules still allow it.
         assert!(
@@ -1659,9 +1685,11 @@ mod tests {
             assert_eq!(old.engines_mode, "acp");
 
             // A hand-edited file: an unknown or repeated id is dropped, a bad mode is reset.
-            let mut s = Settings::default();
-            s.engines_enabled = vec!["claude".into(), "bash".into(), "claude".into()];
-            s.engines_mode = "pipes".into();
+            let s = Settings {
+                engines_enabled: vec!["claude".into(), "bash".into(), "claude".into()],
+                engines_mode: "pipes".into(),
+                ..Settings::default()
+            };
             let (fixed, notes) = repair(s, false);
             assert_eq!(fixed.engines_enabled, ["claude"]);
             assert_eq!(fixed.engines_mode, "acp");
@@ -1675,8 +1703,10 @@ mod tests {
             assert!(notes.iter().any(|n| n.contains("headless")), "{notes:?}");
 
             // A list with no engine left is the defaults.
-            let mut none = Settings::default();
-            none.engines_enabled = vec!["bash".into()];
+            let none = Settings {
+                engines_enabled: vec!["bash".into()],
+                ..Settings::default()
+            };
             let (fixed, _) = repair(none, false);
             assert_eq!(fixed.engines_enabled, DEFAULT_ENGINE_IDS);
         }
@@ -1693,10 +1723,12 @@ mod tests {
             assert_eq!(loaded.sleep_never_roles, vec!["orchestrator".to_string()]);
             assert_eq!(loaded.doze_idle_s, DEFAULT_DOZE_IDLE_S);
 
-            let mut bad = Settings::default();
-            bad.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 5;
-            bad.sleep_never_roles = vec!["".into(), "builder".into()];
-            bad.doze_idle_s = MAX_DOZE_IDLE_S + 1;
+            let bad = Settings {
+                idle_sleep_min: MAX_IDLE_SLEEP_MIN + 5,
+                sleep_never_roles: vec!["".into(), "builder".into()],
+                doze_idle_s: MAX_DOZE_IDLE_S + 1,
+                ..Settings::default()
+            };
             let (fixed, notes) = repair(bad, false);
             assert_eq!(fixed.idle_sleep_min, DEFAULT_IDLE_SLEEP_MIN);
             assert_eq!(fixed.sleep_never_roles, vec!["builder".to_string()]);
@@ -1719,22 +1751,32 @@ mod tests {
 
         let dir = temp_dir("idle-sleep");
         let store = Store::load(&dir, false).unwrap();
-        let mut too_long = Settings::default();
-        too_long.idle_sleep_min = MAX_IDLE_SLEEP_MIN + 1;
+        let too_long = Settings {
+            idle_sleep_min: MAX_IDLE_SLEEP_MIN + 1,
+            ..Settings::default()
+        };
         assert!(store.put(too_long).is_err(), "above a day is refused");
-        let mut dozes_too_long = Settings::default();
-        dozes_too_long.doze_idle_s = MAX_DOZE_IDLE_S + 1;
+        let dozes_too_long = Settings {
+            doze_idle_s: MAX_DOZE_IDLE_S + 1,
+            ..Settings::default()
+        };
         assert!(store.put(dozes_too_long).is_err(), "above a day is refused");
-        let mut dozing_never = Settings::default();
-        dozing_never.doze_idle_s = 0;
+        let dozing_never = Settings {
+            doze_idle_s: 0,
+            ..Settings::default()
+        };
         let saved_dozing = store.put(dozing_never.clone()).unwrap();
         assert_eq!(saved_dozing.doze_idle_s, 0, "0 (agents never doze) is kept");
-        let mut blank_role = Settings::default();
-        blank_role.sleep_never_roles = vec!["  ".into()];
+        let blank_role = Settings {
+            sleep_never_roles: vec!["  ".into()],
+            ..Settings::default()
+        };
         assert!(store.put(blank_role).is_err(), "a blank role is refused");
-        let mut never = Settings::default();
-        never.idle_sleep_min = 0;
-        never.sleep_never_roles = vec![];
+        let never = Settings {
+            idle_sleep_min: 0,
+            sleep_never_roles: vec![],
+            ..Settings::default()
+        };
         let saved = store.put(never.clone()).unwrap();
         assert_eq!(
             saved, never,
@@ -1747,10 +1789,12 @@ mod tests {
     fn payments_round_trip_through_the_store() {
         let dir = temp_dir("payments");
         let store = Store::load(&dir, false).unwrap();
-        let mut s = Settings::default();
-        s.payments = Payments {
-            approve_over: 0,
-            charge_models: false,
+        let s = Settings {
+            payments: Payments {
+                approve_over: 0,
+                charge_models: false,
+            },
+            ..Settings::default()
         };
         assert_eq!(store.put(s.clone()).unwrap(), s);
         assert_eq!(Store::load(&dir, false).unwrap().get().payments, s.payments);

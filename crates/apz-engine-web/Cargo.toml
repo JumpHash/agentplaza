@@ -45,3 +45,6 @@ web-sys = { version = "0.3.106", features = [
 ] }
 # The WebGPU and WebGL2 backends of wgpu, as apz-engine enables them for the browser.
 wgpu = { version = "27.0.1", features = ["webgpu", "webgl"] }
+
+[lints]
+workspace = true

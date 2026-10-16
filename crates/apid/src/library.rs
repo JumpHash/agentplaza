@@ -238,7 +238,7 @@ impl Store {
     /// Every stored version, newest first.
     pub fn all(&self) -> Vec<Entry> {
         let mut entries = self.lock().to_vec();
-        entries.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+        entries.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
         entries
     }
 

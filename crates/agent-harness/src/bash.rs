@@ -465,6 +465,19 @@ fn is_live_engine(status: &str) -> bool {
     engine && !zombie
 }
 
+/// Kills a command started in its own process group (`process_group(0)`, so the group id is
+/// the shell's pid) together with everything it started — a dev server, a sleeping
+/// grandchild. The crate forbids `unsafe`, so the group is signalled with kill(1).
+pub(crate) fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,17 +697,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(left.is_empty(), "{left:?}");
     }
-}
-
-/// Kills a command started in its own process group (`process_group(0)`, so the group id is
-/// the shell's pid) together with everything it started — a dev server, a sleeping
-/// grandchild. The crate forbids `unsafe`, so the group is signalled with kill(1).
-pub(crate) fn kill_group(child: &mut std::process::Child) {
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let _ = child.kill();
 }

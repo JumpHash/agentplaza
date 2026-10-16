@@ -476,10 +476,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Imports(Ok(list)) => {
             let mut finished = false;
             for r in &list {
-                if let Some(before) = state.known.get(&r.n) {
-                    if before != &r.state && (r.state == "done" || r.state == "failed") {
-                        finished = true;
-                    }
+                if let Some(before) = state.known.get(&r.n)
+                    && before != &r.state
+                    && (r.state == "done" || r.state == "failed")
+                {
+                    finished = true;
                 }
                 state.known.insert(r.n, r.state.clone());
             }

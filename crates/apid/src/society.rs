@@ -68,10 +68,10 @@ fn verified_agents(app: &App) -> Vec<u64> {
     let mut out: HashSet<u64> = HashSet::new();
     for task in app.plaza.tasks.list() {
         let view = serde_json::to_value(task.view()).unwrap_or(Value::Null);
-        if task.state() == "done" {
-            if let Some(cid) = view.get("agent_cid").and_then(Value::as_u64) {
-                out.insert(cid);
-            }
+        if task.state() == "done"
+            && let Some(cid) = view.get("agent_cid").and_then(Value::as_u64)
+        {
+            out.insert(cid);
         }
     }
     out.into_iter().collect()
@@ -254,16 +254,17 @@ pub fn task_ended(app: &App, task: &str, poster: u64, worker: u64, passed: bool)
         eprintln!("apid: bonds: evidence {poster}->{worker}: {err:?}");
     }
     let bonus = lock(&app.society.bonuses).remove(task);
-    if let Some((hirer, to, amount)) = bonus {
-        if passed && amount > 0 {
-            match app
-                .plaza
-                .treasury
-                .transfer(hirer, to, amount, &format!("bonus for {task}"))
-            {
-                Ok(_) => interact(app, hirer, to, Interaction::Credit),
-                Err(err) => eprintln!("apid: bonus for {task}: {err:?}"),
-            }
+    if let Some((hirer, to, amount)) = bonus
+        && passed
+        && amount > 0
+    {
+        match app
+            .plaza
+            .treasury
+            .transfer(hirer, to, amount, &format!("bonus for {task}"))
+        {
+            Ok(_) => interact(app, hirer, to, Interaction::Credit),
+            Err(err) => eprintln!("apid: bonus for {task}: {err:?}"),
         }
     }
 }

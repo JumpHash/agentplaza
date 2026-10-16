@@ -134,7 +134,7 @@ impl MeshAsset {
 
     /// True when the indices are whole triangles and each one names a vertex.
     pub fn is_valid(&self) -> bool {
-        self.indices.len() % 3 == 0
+        self.indices.len().is_multiple_of(3)
             && self
                 .indices
                 .iter()

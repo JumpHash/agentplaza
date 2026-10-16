@@ -120,7 +120,7 @@ fn every_board_and_count_lays_out() {
             assert!(
                 lay.walk.links.iter().all(|k| k.from < surfaces
                     && k.to < surfaces
-                    && k.via.map_or(true, |v| v < surfaces)),
+                    && k.via.is_none_or(|v| v < surfaces)),
                 "{tag}: link refers to a missing walk surface"
             );
             let b = board(kind, 0);

@@ -294,10 +294,11 @@ impl Templates {
         let mtime = meta
             .modified()
             .map_err(|err| format!("{}: {err}", path.display()))?;
-        if let Some(cached) = lock(&self.digests).get(path) {
-            if cached.len == len && cached.mtime == mtime {
-                return Ok(cached.sha256);
-            }
+        if let Some(cached) = lock(&self.digests).get(path)
+            && cached.len == len
+            && cached.mtime == mtime
+        {
+            return Ok(cached.sha256);
         }
         let sha256 = hash_file(path).map_err(|err| format!("hash {}: {err}", path.display()))?;
         lock(&self.digests).insert(path.to_path_buf(), CachedDigest { len, mtime, sha256 });

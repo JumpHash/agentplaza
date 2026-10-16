@@ -72,3 +72,11 @@ strip = true
 # stay fast with the app itself optimised (dependencies are, below).
 [profile.dev.package.agentplaza-desktop]
 opt-level = 2
+
+[workspace.lints.clippy]
+# Long signatures and nested generic types are the house style in places (handlers, layout code).
+type_complexity = "allow"
+too_many_arguments = "allow"
+# Protocol and error enums are sized for clarity, not boxed for size.
+large_enum_variant = "allow"
+result_large_err = "allow"

@@ -17,6 +17,8 @@ impl Rng {
         Rng(seed)
     }
     /// The next number in [0, 1).
+    // Not an iterator: renaming it would change the public API.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         // `a = (a + 0x6d2b79f5) >>> 0`
         self.0 = self.0.wrapping_add(0x6d2b_79f5);

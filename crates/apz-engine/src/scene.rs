@@ -231,6 +231,8 @@ impl Color {
     }
 
     /// Component-wise product (three's `multiply`).
+    // A named method, not an operator: renaming it would change the public API.
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(self, other: Color) -> Color {
         Color {
             r: self.r * other.r,
@@ -2181,7 +2183,7 @@ pub fn merge_tinted(parts: &[(Geo, Mat4, Option<[f32; 3]>)]) -> Geo {
             // The part's own vertex colours (if any) times its tint: the colour the GPU would multiply.
             let t = tint.unwrap_or([1.0; 3]);
             if geo.colors.is_empty() {
-                colors.extend(std::iter::repeat(t).take(geo.positions.len()));
+                colors.extend(std::iter::repeat_n(t, geo.positions.len()));
             } else {
                 colors.extend(
                     geo.colors

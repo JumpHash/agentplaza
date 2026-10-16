@@ -413,10 +413,10 @@ pub fn min_size_table() -> &'static BTreeMap<String, Vec<Option<f64>>> {
 /// `agents` desks: the table's value when it holds this role and count, otherwise computed (`minSize` in gen.ts).
 /// `f64::INFINITY` when no side up to 8 qualifies.
 pub fn min_size(role: &str, agents: usize, data: &Data) -> f64 {
-    if let Some(row) = min_size_table().get(role) {
-        if let Some(v) = agents.checked_sub(1).and_then(|i| row.get(i)) {
-            return v.unwrap_or(f64::INFINITY);
-        }
+    if let Some(row) = min_size_table().get(role)
+        && let Some(v) = agents.checked_sub(1).and_then(|i| row.get(i))
+    {
+        return v.unwrap_or(f64::INFINITY);
     }
     compute_min_size(role, agents, data)
 }
@@ -1108,10 +1108,11 @@ fn try_place<'a>(
         }
         // A tall solid may not stand in the view strip of a wall-mounted item.
         for r in &ctx.recs {
-            if let (Kind::Wall, Some(v)) = (r.kind, r.view) {
-                if overlaps(v, g.bx()) && top > r.limit {
-                    return None;
-                }
+            if let (Kind::Wall, Some(v)) = (r.kind, r.view)
+                && overlaps(v, g.bx())
+                && top > r.limit
+            {
+                return None;
             }
         }
     }
@@ -1157,9 +1158,7 @@ fn commit<'a>(ctx: &mut Ctx<'a>, rec: Rec<'a>) {
         for j in g.j0..=g.j1 {
             for i in g.i0..=g.i1 {
                 let c = ctx.cell_at(i, j);
-                if ctx.occ[c] < 255 {
-                    ctx.occ[c] += 1;
-                }
+                ctx.occ[c] = ctx.occ[c].saturating_add(1);
                 if !walk {
                     if ctx.blk[c] == 0 {
                         ctx.blocked += 1;
@@ -1211,7 +1210,7 @@ fn beyond_opening(door_half: f64, lo: f64, hi: f64) -> bool {
 }
 
 fn door_fit(near: f64) -> f64 {
-    if near >= -EPS && near <= DOOR_NEAR {
+    if (-EPS..=DOOR_NEAR).contains(&near) {
         1.0
     } else {
         0.0
@@ -1823,7 +1822,7 @@ pub fn generate(input: &Input, data: &Data) -> Layout {
                 total += weight_of(k);
             }
         }
-        if !(total > 0.0) {
+        if total.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
             break;
         }
         let u = ctx.rng.next_f64() * total;

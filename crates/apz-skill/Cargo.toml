@@ -13,3 +13,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints]
+workspace = true

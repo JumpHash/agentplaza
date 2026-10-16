@@ -1282,14 +1282,14 @@ fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
 /// config space claims a reserved (or unconvertible) CID and that no host
 /// listener path can match, so it is refused before any VM is built.
 fn validate_spec(spec: &VmSpec) -> Result<(), SpawnError> {
-    if let Some(vsock) = &spec.vsock {
-        if !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&vsock.guest_cid) {
-            return Err(SpawnError::GuestCidOutOfRange {
-                guest_cid: vsock.guest_cid,
-                min: MIN_GUEST_CID,
-                max: MAX_GUEST_CID,
-            });
-        }
+    if let Some(vsock) = &spec.vsock
+        && !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&vsock.guest_cid)
+    {
+        return Err(SpawnError::GuestCidOutOfRange {
+            guest_cid: vsock.guest_cid,
+            min: MIN_GUEST_CID,
+            max: MAX_GUEST_CID,
+        });
     }
     Ok(())
 }
@@ -1390,11 +1390,11 @@ pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Re
     let mut buf = vec![0u8; COPY_CHUNK];
     #[cfg(target_os = "linux")]
     {
-        if copy_data_extents(&src, &dst, len, &mut buf)? {
+        if copy_data_extents(src, dst, len, &mut buf)? {
             return Ok(len);
         }
     }
-    copy_skipping_zero_blocks(&src, &dst, len, &mut buf)?;
+    copy_skipping_zero_blocks(src, dst, len, &mut buf)?;
     Ok(len)
 }
 

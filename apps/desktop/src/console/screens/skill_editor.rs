@@ -478,11 +478,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Jump(path, line) => {
-            if let Some(l) = state.loaded.as_mut() {
-                if l.has_path(&path) {
-                    l.selected = path;
-                    l.jump = (line > 0).then_some(line);
-                }
+            if let Some(l) = state.loaded.as_mut()
+                && l.has_path(&path)
+            {
+                l.selected = path;
+                l.jump = (line > 0).then_some(line);
             }
             Task::none()
         }
@@ -555,10 +555,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 .map(str::to_string);
             match (name, std::fs::read(&path)) {
                 (Some(name), Ok(bytes)) => {
-                    if let Some(l) = state.loaded.as_mut() {
-                        if let Err(e) = add(l, name, body_of(bytes)) {
-                            state.notice = Some((e, true));
-                        }
+                    if let Some(l) = state.loaded.as_mut()
+                        && let Err(e) = add(l, name, body_of(bytes))
+                    {
+                        state.notice = Some((e, true));
                     }
                 }
                 (_, Err(e)) => {
@@ -577,10 +577,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Rename => {
-            if let Some(l) = state.loaded.as_mut() {
-                if let Err(e) = rename(l) {
-                    state.notice = Some((e, true));
-                }
+            if let Some(l) = state.loaded.as_mut()
+                && let Err(e) = rename(l)
+            {
+                state.notice = Some((e, true));
             }
             Task::none()
         }
@@ -1787,14 +1787,14 @@ fn selected_pane(l: &Loaded) -> Element<'_, Msg> {
     } else {
         parts.push(ui::faint("Pick a file in the tree.").into());
     }
-    if let Some(line) = l.jump {
-        if let Some(text) = selected_text(l).and_then(|t| {
+    if let Some(line) = l.jump
+        && let Some(text) = selected_text(l).and_then(|t| {
             t.lines()
                 .nth(line.saturating_sub(1) as usize)
                 .map(str::to_string)
-        }) {
-            parts.push(ui::mono(format!("line {line}: {text}"), 12.0, palette().ink_3).into());
-        }
+        })
+    {
+        parts.push(ui::mono(format!("line {line}: {text}"), 12.0, palette().ink_3).into());
     }
     column(parts).spacing(10).width(Length::Fill).into()
 }

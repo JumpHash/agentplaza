@@ -564,7 +564,7 @@ impl Queues {
         // contract
         let rulings = self.rulings.lock().unwrap_or_else(|p| p.into_inner());
         let mut reviews = self.reviews.lock().unwrap_or_else(|p| p.into_inner());
-        if !reviews.get(task).is_some_and(|r| r.work == work) {
+        if reviews.get(task).is_none_or(|r| r.work != work) {
             return Err(format!(
                 "no verdict is pending on task {task} from this review"
             ));

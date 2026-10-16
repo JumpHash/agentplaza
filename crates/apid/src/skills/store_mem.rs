@@ -507,10 +507,10 @@ impl SkillStore for MemorySkills {
     ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let s = d.skill_mut(id)?;
-            if let Some(v) = version {
-                if s.version(v).is_none() {
-                    return Err(StoreError::Invalid(format!("{id} has no version {v}")));
-                }
+            if let Some(v) = version
+                && s.version(v).is_none()
+            {
+                return Err(StoreError::Invalid(format!("{id} has no version {v}")));
             }
             s.active_version = version;
             s.updated_ms = now_ms;
@@ -534,12 +534,10 @@ impl SkillStore for MemorySkills {
     ) -> Result<Skill, StoreError> {
         self.write(|d| {
             let name = d.skill_mut(id)?.name.clone();
-            if !archived {
-                if let Some(other) = d.name_holder(&name, id) {
-                    return Err(StoreError::Conflict(format!(
-                        "{name} is the name of {other}"
-                    )));
-                }
+            if !archived && let Some(other) = d.name_holder(&name, id) {
+                return Err(StoreError::Conflict(format!(
+                    "{name} is the name of {other}"
+                )));
             }
             let s = d.skill_mut(id)?;
             s.archived_ms = if archived {

@@ -13,3 +13,6 @@ serde_json.workspace = true
 [dev-dependencies]
 base64.workspace = true
 flate2 = "1.1"
+
+[lints]
+workspace = true

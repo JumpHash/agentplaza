@@ -402,7 +402,7 @@ fn list<'a>(state: &'a State) -> Element<'a, Msg> {
             let rows: Vec<&AgentRow> = all
                 .iter()
                 .filter(|a| {
-                    state.role_filter.as_ref().map_or(true, |r| *r == a.role)
+                    state.role_filter.as_ref().is_none_or(|r| *r == a.role)
                         && state.status_filter.matches(&a.status)
                 })
                 .collect();

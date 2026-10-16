@@ -182,8 +182,7 @@ pub fn lttb(points: &[(f64, f64)], threshold: usize) -> Vec<(f64, f64)> {
         let (ax, ay) = points[anchor];
         let mut best = range_start;
         let mut best_area = -1.0;
-        for index in range_start..range_end {
-            let (px, py) = points[index];
+        for (index, &(px, py)) in (range_start..range_end).zip(&points[range_start..range_end]) {
             let area = ((ax - avg_x) * (py - ay) - (ax - px) * (avg_y - ay)).abs();
             if area > best_area {
                 best_area = area;

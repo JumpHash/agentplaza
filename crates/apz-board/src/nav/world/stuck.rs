@@ -15,10 +15,10 @@ impl NavWorld {
     /// Invariant 4: the goal, or the nearest walk cell of the start's component to it (None: no such cell).
     pub(super) fn goal_in_component(&self, goal: NavGoal, start: [f64; 2]) -> Option<NavGoal> {
         let grid = &self.grid;
-        if let Some(gc) = grid.cell_at(goal.x, goal.z) {
-            if grid.walk[gc] == 1 {
-                return Some(goal);
-            }
+        if let Some(gc) = grid.cell_at(goal.x, goal.z)
+            && grid.walk[gc] == 1
+        {
+            return Some(goal);
         }
         let sc = grid.cell_at(start[0], start[1]);
         let mut comp = sc.map_or(-1, |c| self.comp.get(c).copied().unwrap_or(-1));
@@ -113,10 +113,10 @@ impl NavWorld {
         }
         // A lift is taken only for a change of level: between two points within NAV_JUMP_UP of each other, the plan first
         // avoids lifts (a ramp or a walk), and only when that finds no way does it allow them.
-        if (grid.y[g] - grid.y[s]).abs() <= NAV_JUMP_UP {
-            if let Some(level) = find_path(grid, from, to, penalty, true) {
-                return Some(level);
-            }
+        if (grid.y[g] - grid.y[s]).abs() <= NAV_JUMP_UP
+            && let Some(level) = find_path(grid, from, to, penalty, true)
+        {
+            return Some(level);
         }
         find_path(grid, from, to, penalty, false)
     }
@@ -163,7 +163,7 @@ impl NavWorld {
         let Some((goal, x, z)) = self
             .robots
             .get(&id)
-            .and_then(|r| r.goal.clone().map(|g| (g, r.x, r.z)))
+            .and_then(|r| r.goal.map(|g| (g, r.x, r.z)))
         else {
             return false;
         };
@@ -277,12 +277,12 @@ impl NavWorld {
 
     /// Rule 2: plans the robot's path to its goal from `start` (x, y, z).
     pub(super) fn plan(&mut self, id: u32, start: [f64; 3]) {
-        let Some((riding, goal)) = self.robots.get(&id).map(|r| (r.riding, r.goal.clone())) else {
+        let Some((riding, goal)) = self.robots.get(&id).map(|r| (r.riding, r.goal)) else {
             return;
         };
         let exit = if riding { Some(self.exit_of(id)) } else { None };
         let pts = match &goal {
-            Some(g) => self.find_cached([start[0], start[2]], g.clone()),
+            Some(g) => self.find_cached([start[0], start[2]], *g),
             None => None,
         };
         let Some(r) = self.robots.get_mut(&id) else {
@@ -290,20 +290,20 @@ impl NavWorld {
         };
         r.next = 0;
         r.proposal = None;
-        if let (Some(g), Some(pts)) = (&goal, pts) {
-            if !pts.is_empty() {
-                r.ref_path = None;
-                r.path = Some(pts);
-                r.from = NavPoint {
-                    x: start[0],
-                    y: start[1],
-                    z: start[2],
-                    portal: -1,
-                    edge: None,
-                };
-                r.final_face = final_face_of(g, r.path.as_deref().unwrap_or(&[]));
-                return;
-            }
+        if let (Some(g), Some(pts)) = (&goal, pts)
+            && !pts.is_empty()
+        {
+            r.ref_path = None;
+            r.path = Some(pts);
+            r.from = NavPoint {
+                x: start[0],
+                y: start[1],
+                z: start[2],
+                portal: -1,
+                edge: None,
+            };
+            r.final_face = final_face_of(g, r.path.as_deref().unwrap_or(&[]));
+            return;
         }
         r.final_face = None;
         if let Some(e) = exit {
@@ -326,16 +326,16 @@ impl NavWorld {
             // Off the grid: planned without the cache.
             _ => return self.search(start, to, None).map(|p| p.points),
         };
-        if let Some((path, made)) = self.cache.get(&key) {
-            if self.sim_time - *made < NAV_PATH_TTL {
-                // The cached path was made from another start in the same cell: its first point becomes this start.
-                let mut pts = path.points.clone();
-                if let Some(first) = pts.first_mut() {
-                    first.x = start[0];
-                    first.z = start[1];
-                }
-                return Some(pts);
+        if let Some((path, made)) = self.cache.get(&key)
+            && self.sim_time - *made < NAV_PATH_TTL
+        {
+            // The cached path was made from another start in the same cell: its first point becomes this start.
+            let mut pts = path.points.clone();
+            if let Some(first) = pts.first_mut() {
+                first.x = start[0];
+                first.z = start[1];
             }
+            return Some(pts);
         }
         match self.search(start, to, None) {
             Some(p) => {

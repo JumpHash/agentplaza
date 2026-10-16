@@ -408,17 +408,15 @@ impl Transport for HttpTransport {
                 reply.content_type
             )));
         };
-        if message.get("method").and_then(Value::as_str) == Some("initialize") {
-            if let Some(version) = messages
+        if message.get("method").and_then(Value::as_str) == Some("initialize")
+            && let Some(version) = messages
                 .iter()
                 .find(|m| is_reply(m, &id))
                 .and_then(|m| m.pointer("/result/protocolVersion"))
                 .and_then(Value::as_str)
-            {
-                if PROTOCOLS.contains(&version) {
-                    self.protocol = Some(version.to_string());
-                }
-            }
+            && PROTOCOLS.contains(&version)
+        {
+            self.protocol = Some(version.to_string());
         }
         Ok(messages)
     }

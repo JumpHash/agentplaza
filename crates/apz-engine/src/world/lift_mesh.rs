@@ -412,7 +412,7 @@ impl LiftMesh {
         self.glow += (target - self.glow) * 0.15;
         self.bar.get().color = self.bar_base.scale(self.glow);
 
-        for st in 0..2usize {
+        for (st, &call) in calls.iter().enumerate().take(2) {
             let open = if stop == st { door_t } else { 0.0 };
             let off = GATE_W / 2.0 + 0.01 + open * GATE_W;
             let gate = &self.gates[st];
@@ -421,7 +421,7 @@ impl LiftMesh {
             let here = stop == st && !travelling;
             let mat = if here {
                 &self.lamp_here
-            } else if calls[st] > 0 {
+            } else if call > 0 {
                 &self.lamp_call
             } else {
                 &self.lamp_idle

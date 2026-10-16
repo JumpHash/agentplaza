@@ -12,3 +12,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "jhrl"
 path = "src/main.rs"
+
+[lints]
+workspace = true

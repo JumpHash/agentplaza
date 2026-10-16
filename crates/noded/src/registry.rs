@@ -237,13 +237,13 @@ impl CreateRun {
         // before a run id, a CID or a workspace copy is spent on it.
         spawner_vcpus(self.vcpus)?;
         spawner_memory_mib(self.memory_mib)?;
-        if let Some(usable) = self.balloon_usable_mib {
-            if usable == 0 || usable > self.memory_mib {
-                return Err(format!(
-                    "balloon_usable_mib must be between 1 and memory_mib ({})",
-                    self.memory_mib
-                ));
-            }
+        if let Some(usable) = self.balloon_usable_mib
+            && (usable == 0 || usable > self.memory_mib)
+        {
+            return Err(format!(
+                "balloon_usable_mib must be between 1 and memory_mib ({})",
+                self.memory_mib
+            ));
         }
         if self.sandbox {
             if self.role.is_some() {
@@ -2055,13 +2055,13 @@ impl Registry {
                 run.return_vm_in(vm, handle, state);
                 return Err(VmOpError::Refused(err.to_string()));
             }
-            if store.view(cid, snapshots::SLEEP).is_some() {
-                if let Err(err) = store.remove(cid, snapshots::SLEEP) {
-                    run.set_vm_killed(vm, handle);
-                    return Err(VmOpError::Failed(format!(
-                        "VM {vm} stopped, but its stale sleep snapshot could not be removed: {err}"
-                    )));
-                }
+            if store.view(cid, snapshots::SLEEP).is_some()
+                && let Err(err) = store.remove(cid, snapshots::SLEEP)
+            {
+                run.set_vm_killed(vm, handle);
+                return Err(VmOpError::Failed(format!(
+                    "VM {vm} stopped, but its stale sleep snapshot could not be removed: {err}"
+                )));
             }
             run.return_vm_in(vm, handle, VmState::Asleep);
             record_vm_event(
@@ -2389,14 +2389,14 @@ impl Registry {
         handle: &VmHandle,
         taken: PendingCheckpoint,
     ) -> Result<SnapshotView, VmOpError> {
-        if taken.captured {
-            if let Err(err) = handle.write_captured() {
-                let _ = fs::remove_dir_all(store.dir(cid, &taken.name));
-                return Err(VmOpError::Failed(format!(
-                    "cannot write the VM's memory into checkpoint {}: {err}",
-                    taken.name
-                )));
-            }
+        if taken.captured
+            && let Err(err) = handle.write_captured()
+        {
+            let _ = fs::remove_dir_all(store.dir(cid, &taken.name));
+            return Err(VmOpError::Failed(format!(
+                "cannot write the VM's memory into checkpoint {}: {err}",
+                taken.name
+            )));
         }
         let mut view = store.view(cid, &taken.name).ok_or_else(|| {
             VmOpError::Failed(format!("checkpoint {} cannot be read back", taken.name))
@@ -2857,14 +2857,14 @@ impl Registry {
                 // The workspace is copied inside the pause the capture left, so the disk and the
                 // memory are of the same instant (a disk copied while the guest ran could be behind its
                 // page cache). A failed copy writes the capture out and discards it with the dir.
-                if let Some(workspace) = &held.spec.workspace {
-                    if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
-                        let _ = held.handle.write_captured();
-                        let _ = fs::remove_dir_all(&dir);
-                        return Err(VmOpError::Failed(format!(
-                            "cannot copy the workspace into checkpoint {name}: {err}"
-                        )));
-                    }
+                if let Some(workspace) = &held.spec.workspace
+                    && let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE))
+                {
+                    let _ = held.handle.write_captured();
+                    let _ = fs::remove_dir_all(&dir);
+                    return Err(VmOpError::Failed(format!(
+                        "cannot copy the workspace into checkpoint {name}: {err}"
+                    )));
                 }
                 Ok(PendingCheckpoint {
                     name,
@@ -3051,13 +3051,13 @@ impl Registry {
             run.return_vm(vm, killed);
             return Err(VmOpError::Refused(err.to_string()));
         }
-        if let Some(base) = &base {
-            if let Err(err) = self.reset_workspace(base, run, &spec) {
-                run.set_vm_killed(vm, killed);
-                return Err(VmOpError::Failed(format!(
-                    "cannot reset VM {vm}'s workspace: {err}"
-                )));
-            }
+        if let Some(base) = &base
+            && let Err(err) = self.reset_workspace(base, run, &spec)
+        {
+            run.set_vm_killed(vm, killed);
+            return Err(VmOpError::Failed(format!(
+                "cannot reset VM {vm}'s workspace: {err}"
+            )));
         }
         match spawn_timed(spec) {
             Ok(fresh) => {
@@ -4697,11 +4697,11 @@ mod tests {
         );
         // The range is the node's own: it must not collide with the role
         // fleet's default first CID.
-        assert!(
+        const _: () = assert!(
             RUN_CID_END < crate::DEFAULT_AGENTS_CID_BASE,
             "the run range runs into the fleet's default CID base"
         );
-        assert!(RUN_CID_BASE >= MIN_GUEST_CID);
+        const _: () = assert!(RUN_CID_BASE >= MIN_GUEST_CID);
     }
 
     #[test]

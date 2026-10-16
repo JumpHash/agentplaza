@@ -994,7 +994,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if state
                 .policy
                 .as_ref()
-                .map_or(true, |p| !p.dirty() && !p.saving)
+                .is_none_or(|p| !p.dirty() && !p.saving)
             {
                 state.policy = Some(Policy::new(settings, view));
             }
@@ -1518,7 +1518,7 @@ fn auth_env(auth: &Value) -> Option<String> {
 
 /// Comma- or newline-separated values, trimmed, without blanks.
 fn split_list(text: &str) -> Vec<String> {
-    text.split(|c: char| c == ',' || c == '\n')
+    text.split([',', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -1685,7 +1685,6 @@ fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> 
 // ----- Providers tab -------------------------------------------------------------------------
 
 /// Cards per row in a provider or kind grid, as the web's `minmax(300px, 1fr)` at the console's width.
-
 fn providers_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![
         row(vec![

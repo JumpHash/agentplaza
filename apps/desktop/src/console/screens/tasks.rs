@@ -594,7 +594,7 @@ fn lane_of(state: &str) -> usize {
 /// The board's cards in the order the lanes show them: lane by lane, each lane newest first.
 fn board_order(tasks: &[TaskRecord]) -> Vec<&TaskRecord> {
     let mut sorted: Vec<&TaskRecord> = tasks.iter().collect();
-    sorted.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     (0..LANES.len())
         .flat_map(|lane| {
             sorted

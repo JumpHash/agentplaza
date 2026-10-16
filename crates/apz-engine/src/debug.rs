@@ -204,31 +204,6 @@ impl Stage {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use crate::stage::Stage;
-
-    #[test]
-    fn no_board_gives_empty_hooks() {
-        let mut stage = Stage::default();
-        let bots: Value = serde_json::from_str(&stage.bots_json()).unwrap();
-        assert_eq!(bots["bots"], json!([]));
-        assert_eq!(bots["nav"], json!(false));
-        assert_eq!(bots["held"], json!(false));
-        assert!(bots["frames"].is_u64());
-        assert_eq!(stage.nav_cell_json(0.0, 0.0), "null");
-        assert_eq!(stage.nav_audit_json(), "null");
-        assert_eq!(stage.lifts_json(), "[]");
-        assert!(!stage.shove(1, 0.0, 0.0));
-        assert_eq!(
-            stage.lift_ride_json(0, 1),
-            r#"{"ok":false,"reason":"no nav or no such lift"}"#
-        );
-    }
-}
-
 impl Stage {
     /// The shown view's name as the three.js build's `__apzPerf` gave it: `machines` (the fleet), else `floor` (a board).
     pub fn view_name(&self) -> String {
@@ -301,5 +276,30 @@ impl Stage {
         let root = self.active().root.clone();
         let children: Vec<Value> = root.get().children.clone().iter().map(node_json).collect();
         json!({ "type": "Scene", "name": "", "children": children }).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use crate::stage::Stage;
+
+    #[test]
+    fn no_board_gives_empty_hooks() {
+        let mut stage = Stage::default();
+        let bots: Value = serde_json::from_str(&stage.bots_json()).unwrap();
+        assert_eq!(bots["bots"], json!([]));
+        assert_eq!(bots["nav"], json!(false));
+        assert_eq!(bots["held"], json!(false));
+        assert!(bots["frames"].is_u64());
+        assert_eq!(stage.nav_cell_json(0.0, 0.0), "null");
+        assert_eq!(stage.nav_audit_json(), "null");
+        assert_eq!(stage.lifts_json(), "[]");
+        assert!(!stage.shove(1, 0.0, 0.0));
+        assert_eq!(
+            stage.lift_ride_json(0, 1),
+            r#"{"ok":false,"reason":"no nav or no such lift"}"#
+        );
     }
 }

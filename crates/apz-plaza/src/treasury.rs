@@ -948,15 +948,15 @@ fn check_snapshot(inner: &Inner) -> Result<(), String> {
         if sum != 0 {
             return Err(format!("entry {} does not balance (sum = {sum})", entry.id));
         }
-        if entry.kind == EntryKind::Payment {
-            if let Some(root) = entry.root_task.as_deref() {
-                let (cost, paid) = margins.get(root).copied().unwrap_or((0, 0));
-                if paid * 100 > cost * i128::from(MARGIN_CAP_PCT) {
-                    return Err(format!(
-                        "entry {} breaks the chain margin cap: {paid} paid against {cost} real cost in chain {root}",
-                        entry.id
-                    ));
-                }
+        if entry.kind == EntryKind::Payment
+            && let Some(root) = entry.root_task.as_deref()
+        {
+            let (cost, paid) = margins.get(root).copied().unwrap_or((0, 0));
+            if paid * 100 > cost * i128::from(MARGIN_CAP_PCT) {
+                return Err(format!(
+                    "entry {} breaks the chain margin cap: {paid} paid against {cost} real cost in chain {root}",
+                    entry.id
+                ));
             }
         }
     }

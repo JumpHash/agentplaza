@@ -467,21 +467,21 @@ fn verify(hub: &SavedHub) -> Result<Client, String> {
         .token
         .clone()
         .ok_or_else(|| "Sign in to this hub first: paste its owner token.".to_string())?;
-    if hub.pin.is_none() {
-        if let Some(pinned) = &hub.pinned {
-            let fresh = fetch_identity(&hub.url, "")?;
-            if fresh.fingerprint.as_deref() != Some(pinned.fingerprint.as_str()) {
-                return Err(format!(
-                    "{}'s identity changed: expected {}, received {}. Check it on the Connect screen before signing in.",
-                    hub.url,
-                    short(&pinned.fingerprint),
-                    fresh
-                        .fingerprint
-                        .as_deref()
-                        .map(short)
-                        .unwrap_or_else(|| "no certificate".into()),
-                ));
-            }
+    if hub.pin.is_none()
+        && let Some(pinned) = &hub.pinned
+    {
+        let fresh = fetch_identity(&hub.url, "")?;
+        if fresh.fingerprint.as_deref() != Some(pinned.fingerprint.as_str()) {
+            return Err(format!(
+                "{}'s identity changed: expected {}, received {}. Check it on the Connect screen before signing in.",
+                hub.url,
+                short(&pinned.fingerprint),
+                fresh
+                    .fingerprint
+                    .as_deref()
+                    .map(short)
+                    .unwrap_or_else(|| "no certificate".into()),
+            ));
         }
     }
     let client = Client::new(

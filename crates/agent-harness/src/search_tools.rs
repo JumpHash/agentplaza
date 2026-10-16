@@ -379,8 +379,8 @@ fn emit_content(
         if index > 0 {
             entries.push("--".to_string());
         }
-        for line in first..=last {
-            let text = cut_text(lines[line]);
+        for (line, text) in lines.iter().enumerate().take(last + 1).skip(first) {
+            let text = cut_text(text);
             let number = line + 1;
             if hits.binary_search(&line).is_ok() {
                 entries.push(format!("{rel}:{number}:{text}"));

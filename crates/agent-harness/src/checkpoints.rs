@@ -90,7 +90,7 @@ fn snapshot_locked(workspace: &Workspace, label: &str) -> Result<String, String>
     let snaps_dir = base.join("snaps");
     fs::create_dir_all(&objects).map_err(|e| e.to_string())?;
     fs::create_dir_all(&snaps_dir).map_err(|e| e.to_string())?;
-    let tree = walk(&workspace.dir(), Some(objects.as_path()))?;
+    let tree = walk(workspace.dir(), Some(objects.as_path()))?;
     let n = load_snaps(&base).last().map_or(1, |s| s.n + 1);
     let slug: String = label
         .chars()

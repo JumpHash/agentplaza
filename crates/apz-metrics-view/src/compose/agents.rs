@@ -102,13 +102,15 @@ fn busy_steps(groups: &[Group]) -> Vec<f64> {
 fn step_shares(columns: &[Vec<Option<f64>>]) -> Vec<Vec<Option<f64>>> {
     let steps = columns.iter().map(Vec::len).max().unwrap_or(0);
     let mut out = vec![vec![None; steps]; columns.len()];
-    for i in 0..steps {
-        let total: f64 = columns.iter().filter_map(|c| value_at(c, i)).sum();
-        if total <= 0.0 {
-            continue;
-        }
-        for (k, column) in columns.iter().enumerate() {
-            out[k][i] = value_at(column, i).map(|v| v / total * 100.0);
+    let totals: Vec<f64> = (0..steps)
+        .map(|i| columns.iter().filter_map(|c| value_at(c, i)).sum::<f64>())
+        .collect();
+    for (column, row) in columns.iter().zip(out.iter_mut()) {
+        for (i, (cell, &total)) in row.iter_mut().zip(&totals).enumerate() {
+            if total <= 0.0 {
+                continue;
+            }
+            *cell = value_at(column, i).map(|v| v / total * 100.0);
         }
     }
     out

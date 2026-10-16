@@ -659,7 +659,7 @@ impl Floor {
             if !built.parts.contains_key(&slot.on) {
                 continue;
             }
-            let [x0, z0, w, d] = slot.rect.map(|v| v as f32);
+            let [x0, z0, w, d] = slot.rect.map(|v| v);
             let mat = crate::scene::Mat::new(crate::scene::Material {
                 color: self.colors.info,
                 shading: crate::scene::Shading::Basic,
@@ -672,7 +672,7 @@ impl Floor {
             let mesh = Obj::mesh(&geometry::plane(w, d, 1, 1), &mat);
             mesh.set_rotation(-FRAC_PI_2, 0.0, 0.0).set_position(
                 x0 + w / 2.0,
-                slot.top as f32 + 0.012,
+                slot.top + 0.012,
                 z0 + d / 2.0,
             );
             mesh.get().no_outline = true;
@@ -1063,15 +1063,15 @@ impl Floor {
                 remove_bot(&self.root, &old);
             }
         }
-        if let Some(c) = self.selected {
-            if !self.bots.iter().any(|b| b.agent.cid == c) {
-                self.selected = None;
-            }
+        if let Some(c) = self.selected
+            && !self.bots.iter().any(|b| b.agent.cid == c)
+        {
+            self.selected = None;
         }
-        if let Some(c) = self.hovered {
-            if !self.bots.iter().any(|b| b.agent.cid == c) {
-                self.hovered = None;
-            }
+        if let Some(c) = self.hovered
+            && !self.bots.iter().any(|b| b.agent.cid == c)
+        {
+            self.hovered = None;
         }
     }
 

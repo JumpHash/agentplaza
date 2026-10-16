@@ -211,7 +211,7 @@ impl App {
         let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let hub_auth =
             crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+                .map_err(std::io::Error::other)?;
         let foundry_dir = config.state_dir.join("foundry");
         let db = Arc::new(crate::db::Db::connect(&env));
         let vault_db = db.enabled().then(|| Arc::clone(&db));
@@ -417,7 +417,7 @@ impl App {
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| {
             let started = std::time::Instant::now();
-            let response = match crate::hub_auth::gate(&app, &request) {
+            let response = match crate::hub_auth::gate(&app, request) {
                 Some(refused) => refused,
                 None => router.handle(&app, request),
             };
@@ -469,15 +469,15 @@ fn spawn_component_savers(app: Arc<App>) {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3));
             crate::mcp::tick(&app);
-            if !app.db.is_held("foundry") {
-                if let Err(err) = app.foundry.save() {
-                    eprintln!("apid: cannot save the foundry: {err}");
-                }
+            if !app.db.is_held("foundry")
+                && let Err(err) = app.foundry.save()
+            {
+                eprintln!("apid: cannot save the foundry: {err}");
             }
-            if !app.db.is_held("looks") {
-                if let Err(err) = app.looks.save() {
-                    eprintln!("apid: cannot save the looks: {err}");
-                }
+            if !app.db.is_held("looks")
+                && let Err(err) = app.looks.save()
+            {
+                eprintln!("apid: cannot save the looks: {err}");
             }
         }
     });

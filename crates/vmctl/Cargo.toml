@@ -12,3 +12,6 @@ vmm = { path = "../vmm" }
 [[bin]]
 name = "vmctl"
 path = "src/main.rs"
+
+[lints]
+workspace = true

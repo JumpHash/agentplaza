@@ -302,9 +302,9 @@ fn quote(value: &str) -> String {
     out
 }
 
-/// How long a stream waits for an event before it writes a heartbeat
-/// comment, so a dead connection is noticed (the write fails) instead of
-/// sitting in the channel's wait forever.
+// How long a stream waits for an event before it writes a heartbeat
+// comment, so a dead connection is noticed (the write fails) instead of
+// sitting in the channel's wait forever.
 
 /// The bus the registry publishes to and the events endpoint subscribes to.
 ///

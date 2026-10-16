@@ -18,3 +18,6 @@ wasm-opt = { version = "=0.116.1", default-features = false, optional = true }
 # binaryen's wasm-opt, compiled from C++. Off by default: on the engine's opt-level z + fat LTO build, -Oz comes out
 # smaller raw but larger compressed (brotli 1331 KB against 1266 KB), so the packer would not keep it anyway.
 wasm-opt = ["dep:wasm-opt"]
+
+[lints]
+workspace = true

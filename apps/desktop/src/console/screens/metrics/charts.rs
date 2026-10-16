@@ -420,118 +420,121 @@ impl LineChart<'_> {
         }
 
         // Annotations: a dotted line and a small triangle on the axis, on a time axis only.
-        if let XAxis::Time { start_ms, step_ms } = &c.x {
-            if *step_ms > 0 && c.annotate && self.show_annotations {
-                for a in self.annotations {
-                    let i = (a.t_ms as f64 - *start_ms as f64) / *step_ms as f64;
-                    if !(i >= 0.0 && i <= n as f64 - 1.0) {
-                        continue;
-                    }
-                    let x = scale.x(i as f32);
-                    frame.stroke(
-                        &Path::line(Point::new(x, plot.top), Point::new(x, bottom)),
-                        stroke(palette.ink_3, 1.0, Some(DASH_ANNOTATION)),
-                    );
-                    frame.fill(
-                        &polygon(&[
-                            Point::new(x - 5.0, bottom),
-                            Point::new(x + 5.0, bottom),
-                            Point::new(x, bottom - 7.0),
-                        ]),
-                        palette.signal,
-                    );
+        if let XAxis::Time { start_ms, step_ms } = &c.x
+            && *step_ms > 0
+            && c.annotate
+            && self.show_annotations
+        {
+            for a in self.annotations {
+                let i = (a.t_ms as f64 - *start_ms as f64) / *step_ms as f64;
+                if !(i >= 0.0 && i <= n as f64 - 1.0) {
+                    continue;
                 }
+                let x = scale.x(i as f32);
+                frame.stroke(
+                    &Path::line(Point::new(x, plot.top), Point::new(x, bottom)),
+                    stroke(palette.ink_3, 1.0, Some(DASH_ANNOTATION)),
+                );
+                frame.fill(
+                    &polygon(&[
+                        Point::new(x - 5.0, bottom),
+                        Point::new(x + 5.0, bottom),
+                        Point::new(x, bottom - 7.0),
+                    ]),
+                    palette.signal,
+                );
             }
         }
 
         // The crosshair at the hovered fraction (shared by every chart), with a dot on each series there.
-        if let (Some(frac), true) = (self.pointer.hover, n > 0) {
-            if let Some(i) = index_at(frac, n) {
-                let x = scale.x(i as f32);
-                frame.stroke(
-                    &Path::line(Point::new(x, plot.top), Point::new(x, bottom)),
-                    stroke(palette.ink_3, 1.0, None),
-                );
-                let mut acc = 0.0;
-                for (s, _) in &series {
-                    let v = s.values.get(i).copied().flatten();
-                    acc += v.unwrap_or(0.0);
-                    if let Some(v) = v {
-                        let cy = scale.y(if c.stacked { acc } else { v });
-                        frame.fill(&Path::circle(Point::new(x, cy), 2.8), tone(s.tone));
-                    }
+        if let (Some(frac), true) = (self.pointer.hover, n > 0)
+            && let Some(i) = index_at(frac, n)
+        {
+            let x = scale.x(i as f32);
+            frame.stroke(
+                &Path::line(Point::new(x, plot.top), Point::new(x, bottom)),
+                stroke(palette.ink_3, 1.0, None),
+            );
+            let mut acc = 0.0;
+            for (s, _) in &series {
+                let v = s.values.get(i).copied().flatten();
+                acc += v.unwrap_or(0.0);
+                if let Some(v) = v {
+                    let cy = scale.y(if c.stacked { acc } else { v });
+                    frame.fill(&Path::circle(Point::new(x, cy), 2.8), tone(s.tone));
                 }
             }
         }
 
         // The drag brush: the span between the start and the current fraction, while this panel is being dragged.
-        if let Some((panel, from, to)) = &self.pointer.drag {
-            if panel.as_str() == self.panel && self.is_time() {
-                let (lo, hi) = (from.min(*to).clamp(0.0, 1.0), from.max(*to).clamp(0.0, 1.0));
-                frame.fill_rectangle(
-                    Point::new(plot.left + lo * plot.width, plot.top),
-                    Size::new((hi - lo) * plot.width, plot.height),
-                    palette.signal.scale_alpha(0.12),
-                );
-            }
+        if let Some((panel, from, to)) = &self.pointer.drag
+            && panel.as_str() == self.panel
+            && self.is_time()
+        {
+            let (lo, hi) = (from.min(*to).clamp(0.0, 1.0), from.max(*to).clamp(0.0, 1.0));
+            frame.fill_rectangle(
+                Point::new(plot.left + lo * plot.width, plot.top),
+                Size::new((hi - lo) * plot.width, plot.height),
+                palette.signal.scale_alpha(0.12),
+            );
         }
 
         // The tooltip, on the chart the pointer is over: a sheet box with an ink-3 border and a 2 px ink shadow.
-        if self.pointer.hover_panel.as_deref() == Some(self.panel) {
-            if let Some(i) = self.pointer.hover.and_then(|frac| index_at(frac, n)) {
-                let rows = self.tip_rows(i);
-                let x = scale.x(i as f32);
-                let height = 8.0 + rows.len() as f32 * TIP_ROW + 8.0;
-                let left = (if x + 14.0 + TIP_W > bounds.width {
-                    x - 210.0
-                } else {
-                    x + 14.0
-                })
-                .max(0.0);
-                let top = plot.top + 2.0;
-                frame.fill_rectangle(
-                    Point::new(left + 2.0, top + 2.0),
-                    Size::new(TIP_W, height),
-                    palette.ink,
-                );
-                frame.fill_rectangle(
-                    Point::new(left, top),
-                    Size::new(TIP_W, height),
-                    palette.sheet,
-                );
-                frame.stroke(
-                    &Path::rectangle(Point::new(left, top), Size::new(TIP_W, height)),
-                    stroke(palette.ink_3, 1.0, None),
-                );
-                for (k, row) in rows.iter().enumerate() {
-                    let y = top + 8.0 + TIP_ROW / 2.0 + k as f32 * TIP_ROW;
-                    let mut x0 = left + 8.0;
-                    if let Some(color) = row.swatch {
-                        frame.fill_rectangle(Point::new(x0, y - 4.0), Size::new(8.0, 8.0), color);
-                        x0 += 14.0;
-                    }
-                    let ink = if row.muted {
-                        palette.ink_3
-                    } else {
-                        palette.ink
-                    };
-                    text_at(
-                        frame,
-                        row.left.as_str(),
-                        Point::new(x0, y),
-                        ink,
-                        alignment::Horizontal::Left,
-                        alignment::Vertical::Center,
-                    );
-                    text_at(
-                        frame,
-                        row.right.as_str(),
-                        Point::new(left + TIP_W - 8.0, y),
-                        ink,
-                        alignment::Horizontal::Right,
-                        alignment::Vertical::Center,
-                    );
+        if self.pointer.hover_panel.as_deref() == Some(self.panel)
+            && let Some(i) = self.pointer.hover.and_then(|frac| index_at(frac, n))
+        {
+            let rows = self.tip_rows(i);
+            let x = scale.x(i as f32);
+            let height = 8.0 + rows.len() as f32 * TIP_ROW + 8.0;
+            let left = (if x + 14.0 + TIP_W > bounds.width {
+                x - 210.0
+            } else {
+                x + 14.0
+            })
+            .max(0.0);
+            let top = plot.top + 2.0;
+            frame.fill_rectangle(
+                Point::new(left + 2.0, top + 2.0),
+                Size::new(TIP_W, height),
+                palette.ink,
+            );
+            frame.fill_rectangle(
+                Point::new(left, top),
+                Size::new(TIP_W, height),
+                palette.sheet,
+            );
+            frame.stroke(
+                &Path::rectangle(Point::new(left, top), Size::new(TIP_W, height)),
+                stroke(palette.ink_3, 1.0, None),
+            );
+            for (k, row) in rows.iter().enumerate() {
+                let y = top + 8.0 + TIP_ROW / 2.0 + k as f32 * TIP_ROW;
+                let mut x0 = left + 8.0;
+                if let Some(color) = row.swatch {
+                    frame.fill_rectangle(Point::new(x0, y - 4.0), Size::new(8.0, 8.0), color);
+                    x0 += 14.0;
                 }
+                let ink = if row.muted {
+                    palette.ink_3
+                } else {
+                    palette.ink
+                };
+                text_at(
+                    frame,
+                    row.left.as_str(),
+                    Point::new(x0, y),
+                    ink,
+                    alignment::Horizontal::Left,
+                    alignment::Vertical::Center,
+                );
+                text_at(
+                    frame,
+                    row.right.as_str(),
+                    Point::new(left + TIP_W - 8.0, y),
+                    ink,
+                    alignment::Horizontal::Right,
+                    alignment::Vertical::Center,
+                );
             }
         }
     }

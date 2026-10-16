@@ -264,7 +264,7 @@ fn has_token(line: &str, prefix: &str, min: usize, accept: impl Fn(char) -> bool
         let word_start = line[..at]
             .chars()
             .next_back()
-            .map_or(true, |c| !c.is_ascii_alphanumeric());
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
         word_start
             && line[at + prefix.len()..]
                 .chars()
@@ -290,7 +290,7 @@ fn assigned_secret(line: &str) -> bool {
                 return false;
             };
             let value: String = rest[sep + 1..]
-                .trim_start_matches(|c: char| c == ' ' || c == '"' || c == '\'')
+                .trim_start_matches([' ', '"', '\''])
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || "+/=_-".contains(*c))
                 .collect();
@@ -331,30 +331,30 @@ fn template_vars(text: &str, out: &mut Vec<Finding>) {
 }
 
 fn heading_first(doc: &Doc, out: &mut Vec<Finding>) {
-    if let Some(first) = doc.lines.iter().find(|l| !matches!(l.block, Block::Blank)) {
-        if !matches!(first.block, Block::Heading { .. }) {
-            out.push(Finding::new(
-                "heading-first",
-                Severity::Warning,
-                first.number,
-                "Start with a title heading (# …) that says what this document is.",
-            ));
-        }
+    if let Some(first) = doc.lines.iter().find(|l| !matches!(l.block, Block::Blank))
+        && !matches!(first.block, Block::Heading { .. })
+    {
+        out.push(Finding::new(
+            "heading-first",
+            Severity::Warning,
+            first.number,
+            "Start with a title heading (# …) that says what this document is.",
+        ));
     }
 }
 
 fn heading_skip(doc: &Doc, out: &mut Vec<Finding>) {
     let mut previous: Option<u8> = None;
     for (line, level, _) in doc.headings() {
-        if let Some(prev) = previous {
-            if level > prev + 1 {
-                out.push(Finding::new(
+        if let Some(prev) = previous
+            && level > prev + 1
+        {
+            out.push(Finding::new(
                     "heading-skip",
                     Severity::Warning,
                     line,
                     format!("This heading is level {level} right after a level {prev}; go one level deeper at a time."),
                 ));
-            }
         }
         previous = Some(level);
     }
@@ -362,10 +362,10 @@ fn heading_skip(doc: &Doc, out: &mut Vec<Finding>) {
 
 fn empty_sections(doc: &Doc, out: &mut Vec<Finding>) {
     for section in doc.sections().into_iter().filter(|s| s.level > 0) {
-        let blank = section.span.iter().all(|&n| {
-            doc.line(n)
-                .map_or(true, |l| matches!(l.block, Block::Blank))
-        });
+        let blank = section
+            .span
+            .iter()
+            .all(|&n| doc.line(n).is_none_or(|l| matches!(l.block, Block::Blank)));
         if blank {
             out.push(Finding::new(
                 "empty-section",
@@ -525,15 +525,14 @@ fn fence_language(doc: &Doc, out: &mut Vec<Finding>) {
             opening: true,
             lang,
         } = &line.block
+            && lang.is_empty()
         {
-            if lang.is_empty() {
-                out.push(Finding::new(
+            out.push(Finding::new(
                     "fence-language",
                     Severity::Info,
                     line.number,
                     "This code fence has no language; name it (```bash, ```json) so the block reads correctly.",
                 ));
-            }
         }
     }
 }
@@ -589,11 +588,11 @@ fn has_phrase(lower: &str, phrase: &str) -> bool {
         let before = lower[..at]
             .chars()
             .next_back()
-            .map_or(true, |c| !c.is_alphanumeric());
+            .is_none_or(|c| !c.is_alphanumeric());
         let after = lower[at + phrase.len()..]
             .chars()
             .next()
-            .map_or(true, |c| !c.is_alphanumeric());
+            .is_none_or(|c| !c.is_alphanumeric());
         before && after
     })
 }

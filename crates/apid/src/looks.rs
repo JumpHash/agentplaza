@@ -238,11 +238,11 @@ impl Looks {
             path: Some(path.clone()),
             ..Looks::default()
         };
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Err(e) = looks.restore(&text) {
-                eprintln!("looks: {} refused ({e}); kept aside", path.display());
-                let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
-            }
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Err(e) = looks.restore(&text)
+        {
+            eprintln!("looks: {} refused ({e}); kept aside", path.display());
+            let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
         }
         looks
     }
@@ -292,7 +292,7 @@ impl Looks {
         } else {
             let roster = roster();
             let mut rng = self.rng.lock().unwrap_or_else(PoisonError::into_inner);
-            deal(&*looks, &roster, &catalog().dealable(), &mut |n| {
+            deal(&looks, &roster, &catalog().dealable(), &mut |n| {
                 rng.below(n)
             })
         };

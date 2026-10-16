@@ -27,13 +27,12 @@ fn available(skills: &Skills, role: &str) -> Result<Vec<(Skill, VersionMeta)>, S
     let mut by_name: BTreeMap<String, (Skill, VersionMeta)> = BTreeMap::new();
     for binding in ["plaza".to_string(), format!("role:{role}")] {
         for (mut skill, meta) in skills.store().bound(&binding)? {
-            if meta.version != skill.latest_version {
-                if let Some(live) = skills.store().version(&skill.id, meta.version)? {
-                    if let Ok(parsed) = apz_skill::parse(&live.skill_md) {
-                        skill.name = parsed.frontmatter.name;
-                        skill.description = parsed.frontmatter.description;
-                    }
-                }
+            if meta.version != skill.latest_version
+                && let Some(live) = skills.store().version(&skill.id, meta.version)?
+                && let Ok(parsed) = apz_skill::parse(&live.skill_md)
+            {
+                skill.name = parsed.frontmatter.name;
+                skill.description = parsed.frontmatter.description;
             }
             by_name.entry(skill.name.clone()).or_insert((skill, meta));
         }

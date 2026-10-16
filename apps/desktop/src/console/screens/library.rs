@@ -300,7 +300,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
         Msg::Files(Ok(mut files)) => {
-            files.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+            files.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
             state.files = files;
             state.error = None;
             clamp_kbd(state);
@@ -804,9 +804,7 @@ fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
 
 fn matches(state: &State, d: &Deliverable) -> bool {
     let q = state.query.trim().to_lowercase();
-    state
-        .filter
-        .map_or(true, |g| g == Group::of(&d.content_type))
+    state.filter.is_none_or(|g| g == Group::of(&d.content_type))
         && (q.is_empty()
             || d.title.to_lowercase().contains(&q)
             || d.name.to_lowercase().contains(&q))

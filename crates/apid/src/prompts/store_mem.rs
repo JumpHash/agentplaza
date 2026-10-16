@@ -297,10 +297,10 @@ impl PromptStore for MemoryPrompts {
                     new.id
                 )));
             }
-            if let Some(b) = new.binding.as_deref() {
-                if let Some(other) = d.holder(b, &new.id) {
-                    return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
-                }
+            if let Some(b) = new.binding.as_deref()
+                && let Some(other) = d.holder(b, &new.id)
+            {
+                return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
             }
             let stored = Stored {
                 id: new.id.clone(),
@@ -359,10 +359,10 @@ impl PromptStore for MemoryPrompts {
             if !d.prompts.contains_key(id) {
                 return Err(StoreError::NotFound);
             }
-            if let Some(b) = meta.binding.as_deref() {
-                if let Some(other) = d.holder(b, id) {
-                    return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
-                }
+            if let Some(b) = meta.binding.as_deref()
+                && let Some(other) = d.holder(b, id)
+            {
+                return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
             }
             let p = d.prompt_mut(id)?;
             p.title = meta.title.clone();
@@ -385,10 +385,10 @@ impl PromptStore for MemoryPrompts {
     ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             let p = d.prompt_mut(id)?;
-            if let Some(v) = version {
-                if !p.versions.iter().any(|x| x.version == v) {
-                    return Err(StoreError::Invalid(format!("{id} has no version {v}")));
-                }
+            if let Some(v) = version
+                && !p.versions.iter().any(|x| x.version == v)
+            {
+                return Err(StoreError::Invalid(format!("{id} has no version {v}")));
             }
             p.active_version = version;
             p.updated_ms = now_ms;
@@ -412,10 +412,10 @@ impl PromptStore for MemoryPrompts {
     ) -> Result<Prompt, StoreError> {
         self.write(|d| {
             let binding = d.prompt_mut(id)?.binding.clone();
-            if let Some(b) = binding.as_deref() {
-                if let Some(other) = d.holder(b, id) {
-                    return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
-                }
+            if let Some(b) = binding.as_deref()
+                && let Some(other) = d.holder(b, id)
+            {
+                return Err(StoreError::Conflict(format!("{b} is bound to {other}")));
             }
             let p = d.prompt_mut(id)?;
             p.archived_ms = if archived {

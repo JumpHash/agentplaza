@@ -125,7 +125,7 @@ pub fn events<'a>(kinds: &'a [String], rows: &'a [EventRow], state: &'a State) -
             state
                 .event_kind
                 .as_deref()
-                .map_or(true, |kind| r.kind == kind)
+                .is_none_or(|kind| r.kind == kind)
         })
         .collect();
     let body: Element<'a, Msg> = if shown.is_empty() {

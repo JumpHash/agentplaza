@@ -152,7 +152,7 @@ pub trait Plaza: Sync {
         for prompt in store
             .list(false)?
             .into_iter()
-            .filter(|prompt| kind.map_or(true, |wanted| prompt.kind == wanted))
+            .filter(|prompt| kind.is_none_or(|wanted| prompt.kind == wanted))
         {
             let score = match prompt.active_version {
                 Some(live) => store

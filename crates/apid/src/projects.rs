@@ -269,7 +269,7 @@ impl Store {
 
     pub fn list(&self) -> Vec<Project> {
         let mut out = self.items.lock().map(|i| i.clone()).unwrap_or_default();
-        out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+        out.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
         out
     }
 

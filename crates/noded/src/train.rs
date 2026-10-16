@@ -524,9 +524,7 @@ fn check_devices(devices: &[u32], available: &[u32]) -> Result<Vec<u32>, String>
 fn plain_path(text: &str) -> bool {
     !text.is_empty()
         && !text.chars().any(|c| matches!(c, ',' | '\0' | '\n'))
-        && !text
-            .split(|c| c == '/' || c == '\\')
-            .any(|part| part == "..")
+        && !text.split(['/', '\\']).any(|part| part == "..")
 }
 
 /// A mount's host path must be absolute and exist under the state directory (symlinks resolved);

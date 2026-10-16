@@ -165,10 +165,10 @@ impl NavWorld {
             }
             // A robot standing off a walk cell of the new grid goes to the nearest one, and its body follows the surface there.
             self.project_walk(id);
-            if self.robot_has_goal(id) {
-                if let Some(p) = self.robot_pos(id) {
-                    self.plan(id, p);
-                }
+            if self.robot_has_goal(id)
+                && let Some(p) = self.robot_pos(id)
+            {
+                self.plan(id, p);
             }
             if !self.robot_has_path(id) {
                 self.rest_height(id);
@@ -186,10 +186,10 @@ impl NavWorld {
         if forced {
             return;
         }
-        if let Some(c) = self.grid.cell_at(x, z) {
-            if self.grid.walk[c] == 1 {
-                return;
-            }
+        if let Some(c) = self.grid.cell_at(x, z)
+            && self.grid.walk[c] == 1
+        {
+            return;
         }
         let Some(snapped) = snap_walk(&self.grid, x, z) else {
             return;
@@ -212,11 +212,11 @@ impl NavWorld {
         if riding {
             return;
         }
-        if let Some(r) = self.robots.get_mut(&id) {
-            if matches!(r.body.mode, BodyMode::Lift) {
-                r.body.mode = BodyMode::Ground;
-                r.body.t = 0.0;
-            }
+        if let Some(r) = self.robots.get_mut(&id)
+            && matches!(r.body.mode, BodyMode::Lift)
+        {
+            r.body.mode = BodyMode::Ground;
+            r.body.t = 0.0;
         }
         let surfaces = self.surfaces_at(x, z);
         if let Some(r) = self.robots.get_mut(&id) {
@@ -273,15 +273,15 @@ impl NavWorld {
             forced: false,
         };
         self.robots.insert(spec.id, r);
-        if cell.map_or(true, |c| self.grid.walk[c] != 1) {
-            if let Some(snapped) = snap_walk(&self.grid, x, z) {
-                let c = self.grid.centre(snapped);
-                x = c[0];
-                z = c[1];
-                cell = Some(snapped);
-                // A spawn is a placement: it lands on the snapped point at once (lift = true: no sweep).
-                self.commit(spec.id, x, z, true, None);
-            }
+        if cell.is_none_or(|c| self.grid.walk[c] != 1)
+            && let Some(snapped) = snap_walk(&self.grid, x, z)
+        {
+            let c = self.grid.centre(snapped);
+            x = c[0];
+            z = c[1];
+            cell = Some(snapped);
+            // A spawn is a placement: it lands on the snapped point at once (lift = true: no sweep).
+            self.commit(spec.id, x, z, true, None);
         }
         let y = match cell {
             Some(c) => self.grid.y[c],
@@ -321,15 +321,15 @@ impl NavWorld {
         let Some(riding) = self.robots.get(&id).map(|r| r.riding) else {
             return;
         };
-        if let Some(st) = self.avoidance.get_mut(&id) {
-            if st.yielding {
-                st.yielding = false;
-                st.hold = None;
-                st.saved = None;
-                st.blocker = -1;
-                st.yield_t = 0.0;
-                st.clear = 0.0;
-            }
+        if let Some(st) = self.avoidance.get_mut(&id)
+            && st.yielding
+        {
+            st.yielding = false;
+            st.hold = None;
+            st.saved = None;
+            st.blocker = -1;
+            st.yield_t = 0.0;
+            st.clear = 0.0;
         }
         let start = if riding {
             let e = self.exit_of(id);
@@ -444,7 +444,7 @@ impl NavWorld {
             on_lift: r.riding,
             body: r.body.mode,
             scale: body_scale(&r.body),
-            yielding: self.avoidance.get(&id).map_or(false, |a| a.yielding),
+            yielding: self.avoidance.get(&id).is_some_and(|a| a.yielding),
         }
     }
 
@@ -502,11 +502,11 @@ impl NavWorld {
     }
 
     fn robot_has_path(&self, id: u32) -> bool {
-        self.robots.get(&id).map_or(false, |r| r.path.is_some())
+        self.robots.get(&id).is_some_and(|r| r.path.is_some())
     }
 
     fn robot_has_goal(&self, id: u32) -> bool {
-        self.robots.get(&id).map_or(false, |r| r.goal.is_some())
+        self.robots.get(&id).is_some_and(|r| r.goal.is_some())
     }
 
     /// A robot's (x, y, z) as the TS's {x, y, z} start point.

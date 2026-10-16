@@ -93,7 +93,7 @@ fn check(providers: &[ProviderConfig], pick: &Pick) -> Result<(), Failure> {
             ),
         ));
     }
-    if !provider.models.iter().any(|m| *m == pick.model) {
+    if !provider.models.contains(&pick.model) {
         return Err((
             400,
             format!(

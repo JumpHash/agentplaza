@@ -20,3 +20,6 @@ serde_json.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The same wasm-bindgen as apz-engine-web and apz-pack (Cargo.lock pins it).
 wasm-bindgen = "=0.2.129"
+
+[lints]
+workspace = true

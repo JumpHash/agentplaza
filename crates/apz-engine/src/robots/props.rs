@@ -76,10 +76,10 @@ pub fn validate_prop(file: &Value, name: &str, clips: &BTreeSet<String>) -> Vec<
     if obj.get("id").and_then(Value::as_str) != Some(name) {
         errs.push(format!("{name}.id: must match the file name \"{name}\""));
     }
-    if !obj
+    if obj
         .get("name")
         .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty())
+        .is_none_or(|s| s.is_empty())
     {
         errs.push(format!("{name}.name: a name"));
     }

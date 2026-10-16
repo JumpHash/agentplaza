@@ -647,16 +647,16 @@ mod tests {
             ]
         );
         for p in &view.panels {
-            let right_kind = match (p.id.as_str(), &p.body) {
-                (_, Body::Empty { .. }) => true,
-                ("tiles", Body::Tiles { .. })
-                | ("wake-split", Body::Split { .. })
-                | ("wake", Body::Chart(_))
-                | ("timeline", Body::Swimlanes(_))
-                | ("snapshots", Body::Table(_))
-                | ("sleep", Body::Chart(_)) => true,
-                _ => false,
-            };
+            let right_kind = matches!(
+                (p.id.as_str(), &p.body),
+                (_, Body::Empty { .. })
+                    | ("tiles", Body::Tiles { .. })
+                    | ("wake-split", Body::Split { .. })
+                    | ("wake", Body::Chart(_))
+                    | ("timeline", Body::Swimlanes(_))
+                    | ("snapshots", Body::Table(_))
+                    | ("sleep", Body::Chart(_))
+            );
             assert!(right_kind, "panel {} has the wrong body", p.id);
         }
     }

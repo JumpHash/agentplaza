@@ -158,7 +158,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .iter()
                 .filter(|t| {
                     lane.as_deref()
-                        .map_or(true, |l| lane_of(ctx::s(t, "state")) == l)
+                        .is_none_or(|l| lane_of(ctx::s(t, "state")) == l)
                 })
                 .cloned()
                 .collect();

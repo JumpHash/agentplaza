@@ -1261,10 +1261,10 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             match res {
                 Ok(entry) => {
                     st.picked.remove(&row);
-                    if let Vault::Ready(list) = &mut st.vault {
-                        if let Some(slot) = list.iter_mut().find(|e| e.id == entry.id) {
-                            *slot = entry.clone();
-                        }
+                    if let Vault::Ready(list) = &mut st.vault
+                        && let Some(slot) = list.iter_mut().find(|e| e.id == entry.id)
+                    {
+                        *slot = entry.clone();
                     }
                     let format = st.rows.get(row).and_then(|r| r.spec.format.clone());
                     set(
@@ -1289,12 +1289,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Outcome {
             st.create_name = st
                 .rows
                 .get(row)
-                .map(|r| {
-                    r.spec
-                        .name
-                        .to_uppercase()
-                        .replace(|c: char| c == '-' || c == '.', "_")
-                })
+                .map(|r| r.spec.name.to_uppercase().replace(['-', '.'], "_"))
                 .unwrap_or_default();
             st.create_value.clear();
             st.error.clear();
@@ -1868,7 +1863,7 @@ fn step4(st: &State) -> Element<'_, Msg> {
         }
         Some(rows) => {
             let all = d.tools == Pick::All;
-            items.push(ui::seg(&TOOL_MODE, all, Msg::ToolsAll).into());
+            items.push(ui::seg(&TOOL_MODE, all, Msg::ToolsAll));
             items.push(ui::faint("Risk sets how a call is treated. Auto uses the risk the hub derives from each tool's hints.").into());
             for tool in rows {
                 let mut lines: Vec<Element<'_, Msg>> = Vec::new();
@@ -1928,7 +1923,7 @@ fn pick_group<'a>(
 ) -> Element<'a, Msg> {
     let is_all = *pick == Pick::All;
     let mut items: Vec<Element<'a, Msg>> =
-        vec![ui::label(title).into(), ui::seg(modes, is_all, all).into()];
+        vec![ui::label(title).into(), ui::seg(modes, is_all, all)];
     if !is_all {
         for (id, name) in options {
             let on = pick.has(&id);

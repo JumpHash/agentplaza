@@ -285,9 +285,7 @@ pub fn refuse(reason: &str, input: impl BufRead, mut out: impl Write) -> Result<
 pub fn unreachable_answer(line: &str, reason: &str) -> Option<String> {
     let message: Value = serde_json::from_str(line).ok()?;
     let id = message.get("id")?;
-    if message.get("method").is_none() {
-        return None;
-    }
+    message.get("method")?;
     Some(error_line(id, -32000, &format!("{reason} {HINT}")))
 }
 

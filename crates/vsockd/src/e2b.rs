@@ -87,10 +87,10 @@ impl Gateway {
     /// The sandbox `id` as apid names it, `None` when apid does not know it. A found sandbox is
     /// kept for [`CACHE_TTL`]; the access token is still checked on every request.
     fn resolve(&self, id: &str) -> Result<Option<E2bSandbox>, String> {
-        if let Some((at, sandbox)) = lock(&self.cache).get(id) {
-            if at.elapsed() < CACHE_TTL {
-                return Ok(Some(sandbox.clone()));
-            }
+        if let Some((at, sandbox)) = lock(&self.cache).get(id)
+            && at.elapsed() < CACHE_TTL
+        {
+            return Ok(Some(sandbox.clone()));
         }
         let found = self.apid.e2b_sandbox(id)?;
         if let Some(sandbox) = &found {

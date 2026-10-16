@@ -455,23 +455,22 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     conn.sessions
         .add_work(&session.id, work, &text, conn.hub.now_ms());
     // The first prompt sets the title; the editor learns it once.
-    if !had_title {
-        if let Some(titled) = conn
+    if !had_title
+        && let Some(titled) = conn
             .sessions
             .get(&session.id)
             .filter(|s| !s.title.is_empty())
-        {
-            notify_update(
-                peer,
-                &session.id,
-                conn.wire(Some(work)),
-                json!({
-                    "sessionUpdate": "session_info_update",
-                    "title": titled.title,
-                    "updatedAt": rfc3339(titled.updated_ms),
-                }),
-            );
-        }
+    {
+        notify_update(
+            peer,
+            &session.id,
+            conn.wire(Some(work)),
+            json!({
+                "sessionUpdate": "session_info_update",
+                "title": titled.title,
+                "updatedAt": rfc3339(titled.updated_ms),
+            }),
+        );
     }
     if conn.is_v2() {
         // The turn runs after the answer: its updates are the `state_update`s and the work's stream.
@@ -499,10 +498,10 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     // The turn's tokens are reported whatever its end: a failed work spent them too.
     report_usage(conn.hub, peer, &session.id, session.cid, work);
     // A pull request the work opened is reported whatever the end too: it is on the repository.
-    if let Some(repo) = &session.repo {
-        if let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo, Wire::default()) {
-            offer_write_back(conn, peer, &session, &pull);
-        }
+    if let Some(repo) = &session.repo
+        && let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo, Wire::default())
+    {
+        offer_write_back(conn, peer, &session, &pull);
     }
     result
 }

@@ -198,7 +198,7 @@ impl Foundry {
 
     /// The JSON the db writer stores (series capped by construction).
     pub fn snapshot(&self) -> String {
-        self.read(|s| serde_json::to_string(s)).unwrap_or_default()
+        self.read(serde_json::to_string).unwrap_or_default()
     }
 
     /// The file the state is kept in: `<dir>/state.json`.

@@ -152,7 +152,7 @@ fn check_geo(g: &Value, path: &str, errs: &mut Errs) {
     unknown_keys(o, GEO_KEYS, path, errs);
     for k in geo_required(kind) {
         if *k == "points" {
-            if !field(o, "points").as_array().is_some_and(|a| a.len() >= 3) {
+            if field(o, "points").as_array().is_none_or(|a| a.len() < 3) {
                 errs.push(format!("{path}.points: at least 3 [x, z] points"));
             }
         } else if !is_num(field(o, k)) {
@@ -619,7 +619,7 @@ pub fn validate_species(file: &Value, name: &str, shared: &BTreeSet<String>) -> 
                 if !shared.contains(key) {
                     errs.push(format!("{name}.overrides.{key}: not a shared clip"));
                 }
-                if !target.as_str().is_some_and(&own) {
+                if !target.as_str().is_some_and(own) {
                     errs.push(format!(
                         "{name}.overrides.{key}: \"{}\" is not a clip of this species",
                         show(target)

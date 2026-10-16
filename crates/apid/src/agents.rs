@@ -492,10 +492,10 @@ impl Roles {
 /// Drops a leading one-line `<!-- … -->` comment and the blank lines after it.
 fn strip_comment(prompt: &str) -> String {
     let trimmed = prompt.trim_start();
-    if trimmed.starts_with("<!--") {
-        if let Some(end) = trimmed.find("-->") {
-            return trimmed[end + 3..].trim_start().to_owned();
-        }
+    if trimmed.starts_with("<!--")
+        && let Some(end) = trimmed.find("-->")
+    {
+        return trimmed[end + 3..].trim_start().to_owned();
     }
     prompt.to_owned()
 }
@@ -902,10 +902,8 @@ fn reconcile_once(app: &App) {
                 slot.role = role;
                 slot.species = species;
             });
-            if updated {
-                if let Some(fresh) = app.agents.get(agent.cid) {
-                    app.bus.publish("agent", &fresh);
-                }
+            if updated && let Some(fresh) = app.agents.get(agent.cid) {
+                app.bus.publish("agent", &fresh);
             }
         }
     }
@@ -925,8 +923,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
             patch(app, req, p)
         })
         .delete("/v1/agents/{cid}", |app, _req, p| delete(app, p))
-        .post("/v1/agents/{cid}/chat", |app, req, p| chat(app, req, p))
-        .post("/v1/agents/{cid}/assign", |app, req, p| assign(app, req, p))
+        .post("/v1/agents/{cid}/chat", chat)
+        .post("/v1/agents/{cid}/assign", assign)
         .post("/v1/agents/{cid}/cancel", |app, _req, p| cancel(app, p))
         .post("/v1/agents/{cid}/stop", |app, req, p| {
             to_hub(app, req, p, "stop")
@@ -1141,10 +1139,10 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
         },
         Some(_) => return Response::error(400, "name must be a string"),
     };
-    if let Some(m) = &model {
-        if let Err(e) = app.spawned.set_model(agent.cid, m.as_deref()) {
-            eprintln!("apid: model override not saved: {e}");
-        }
+    if let Some(m) = &model
+        && let Err(e) = app.spawned.set_model(agent.cid, m.as_deref())
+    {
+        eprintln!("apid: model override not saved: {e}");
     }
     if let Some(n) = &name {
         let _ = app.spawned.set_name(agent.cid, n);
@@ -1154,10 +1152,10 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
             a.model_override = m;
         }
     });
-    if let Some(n) = &name {
-        if let Err(e) = store_name(app, agent.cid, n) {
-            return Response::error(500, &e);
-        }
+    if let Some(n) = &name
+        && let Err(e) = store_name(app, agent.cid, n)
+    {
+        return Response::error(500, &e);
     }
     let Some(updated) = app.agents.get(agent.cid) else {
         return Response::error(404, "no such agent");
@@ -1294,10 +1292,10 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Err(resp) => return resp,
     };
     // A tell wakes a sleeping agent first: the gateway has no session to deliver it to otherwise.
-    if action == "tell" {
-        if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
-            return resp;
-        }
+    if action == "tell"
+        && let Err(resp) = crate::sleep::awake_or_503(app, agent.cid)
+    {
+        return resp;
     }
     let body: Option<Value> = serde_json::from_slice(&req.body).ok();
     crate::fleet::respond(crate::fleet::gateway(
@@ -1316,13 +1314,12 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
-    if req.query_param("after").is_none() {
-        if let Some(last) = req
+    if req.query_param("after").is_none()
+        && let Some(last) = req
             .query_param("last")
             .and_then(|v| v.parse::<usize>().ok())
-        {
-            return Response::json(200, &app.transcripts.last(agent.cid, last.min(1000)));
-        }
+    {
+        return Response::json(200, &app.transcripts.last(agent.cid, last.min(1000)));
     }
     let after = req
         .query_param("after")

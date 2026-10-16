@@ -378,7 +378,7 @@ fn job_list(jobs: &[Job]) -> Value {
             .cmp(&a.created_ms)
             .then_with(|| b.id.cmp(&a.id))
     });
-    Value::Array(rows.into_iter().map(|j| job_summary(j)).collect())
+    Value::Array(rows.into_iter().map(job_summary).collect())
 }
 
 fn job_summary(job: &Job) -> Value {

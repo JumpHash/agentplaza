@@ -171,10 +171,9 @@ fn duration_ms(text: &str) -> Option<u64> {
         (days, DAY_MS)
     } else if let Some(hours) = text.strip_suffix('h') {
         (hours, 60 * MINUTE_MS)
-    } else if let Some(minutes) = text.strip_suffix('m') {
-        (minutes, MINUTE_MS)
     } else {
-        return None;
+        let minutes = text.strip_suffix('m')?;
+        (minutes, MINUTE_MS)
     };
     digits.parse::<u64>().ok()?.checked_mul(unit_ms)
 }
@@ -334,6 +333,8 @@ impl State {
 
 /// Why a sanction cannot be lifted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// The variant names state the refusal; renaming them changes the public API.
+#[allow(clippy::enum_variant_names)]
 pub enum LiftError {
     NotFound,
     NotSuspension,

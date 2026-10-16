@@ -457,7 +457,7 @@ impl Canvas {
         }
         let data = self.pixmap.data();
         let mut out = Vec::with_capacity(data.len());
-        for px in data.chunks_exact(4) {
+        for px in data.as_chunks::<4>().0 {
             let a = px[3] as u32;
             if a == 0 {
                 out.extend_from_slice(&[0, 0, 0, 0]);
@@ -850,7 +850,7 @@ fn parse_font(css: &str) -> Option<FontSpec> {
     let size = tokens[idx].trim_end_matches("px").parse::<f32>().ok()?;
     let bold = tokens[..idx]
         .iter()
-        .any(|t| *t == "bold" || *t == "bolder" || t.parse::<u32>().map_or(false, |w| w >= 600));
+        .any(|t| *t == "bold" || *t == "bolder" || t.parse::<u32>().is_ok_and(|w| w >= 600));
     let family = tokens[idx + 1..].join(" ");
     let mono = family.contains("mono") || family.contains("courier");
     Some(FontSpec {
@@ -902,6 +902,8 @@ const BUNDLED: [&[u8]; 2] = [
     include_bytes!("../../../assets/fonts/MartianMono-Bold.ttf"),
 ];
 
+// A fresh, empty cell for each array slot.
+#[allow(clippy::declare_interior_mutable_const)]
 const UNLOADED: OnceLock<Option<FontVec>> = OnceLock::new();
 static FONTS: [OnceLock<Option<FontVec>>; 6] = [UNLOADED; 6];
 

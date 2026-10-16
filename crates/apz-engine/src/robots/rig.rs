@@ -171,15 +171,15 @@ fn bake(
     for p in parts {
         let (geo, radius) = part_geometry(p);
         let acc = accs.entry(bone_of(p)).or_default();
-        if let MatRef::Name(name) = &p.mat {
-            if let Some((colour, slot)) = matte_of(name, pal, accent) {
-                // The ink line: every part but an ink one, unless `outline` says otherwise; small parts are not inked.
-                if p.outline.unwrap_or(name != "ink") && radius >= INK_MIN {
-                    acc.hull.push(Piece::plain(geo.clone()));
-                }
-                acc.matte.push(Piece { geo, colour, slot });
-                continue;
+        if let MatRef::Name(name) = &p.mat
+            && let Some((colour, slot)) = matte_of(name, pal, accent)
+        {
+            // The ink line: every part but an ink one, unless `outline` says otherwise; small parts are not inked.
+            if p.outline.unwrap_or(name != "ink") && radius >= INK_MIN {
+                acc.hull.push(Piece::plain(geo.clone()));
             }
+            acc.matte.push(Piece { geo, colour, slot });
+            continue;
         }
         let entry = acc
             .solo
@@ -239,12 +239,10 @@ pub fn bake_species(sp: &Species, pal: &RobotPalette, orchestrator: bool) -> Spe
     bake(&sp.parts, pal, accent, &mut accs, |p| {
         p.bone.clone().unwrap_or_default()
     });
-    if orchestrator {
-        if let Some(extra) = &sp.orchestrator {
-            bake(&extra.parts, pal, accent, &mut accs, |p| {
-                p.bone.clone().unwrap_or_default()
-            });
-        }
+    if orchestrator && let Some(extra) = &sp.orchestrator {
+        bake(&extra.parts, pal, accent, &mut accs, |p| {
+            p.bone.clone().unwrap_or_default()
+        });
     }
     bake_eyes(sp, pal, &mut accs);
     SpeciesGeo {

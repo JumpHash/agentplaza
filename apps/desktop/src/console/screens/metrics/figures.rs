@@ -366,7 +366,7 @@ fn place<'a>(list: &[&'a TreeItem], x: f64, y: f64, w: f64, h: f64, cells: &mut 
     match list {
         [] => {}
         [only] => cells.push(TreeCell {
-            item: *only,
+            item: only,
             x,
             y,
             w,

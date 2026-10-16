@@ -181,7 +181,7 @@ fn connect_raw(url: &str) -> Result<postgres::Client, postgres::Error> {
 
 /// Whether a log line last written at `last` may be written again now.
 fn due(last: Option<Instant>) -> bool {
-    last.map_or(true, |t| t.elapsed() >= MINUTE)
+    last.is_none_or(|t| t.elapsed() >= MINUTE)
 }
 
 /// The connection, and the hash of what each component last stored.
@@ -282,10 +282,10 @@ impl Db {
 
     /// Fsyncs the file fallback's writes since the last call (the periodic writer runs it).
     pub fn sync_files(&self) {
-        if let Some(files) = self.file_store() {
-            if let Err(e) = files.sync() {
-                eprintln!("db: sync files failed: {e}");
-            }
+        if let Some(files) = self.file_store()
+            && let Err(e) = files.sync()
+        {
+            eprintln!("db: sync files failed: {e}");
         }
     }
 
@@ -314,11 +314,11 @@ impl Db {
             crate::metrics::collect::database(started.elapsed().as_secs_f64() * 1000.0);
             result
         };
-        match timed(&mut *client) {
+        match timed(&mut client) {
             Ok(value) => Ok(value),
             Err(e) if e.is_closed() => {
                 *client = connect_raw(&self.url).map_err(|e| format!("reconnect failed: {e}"))?;
-                timed(&mut *client).map_err(|e| e.to_string())
+                timed(&mut client).map_err(|e| e.to_string())
             }
             Err(e) => Err(e.to_string()),
         }
@@ -867,11 +867,11 @@ pub fn spawn_writer(app: Arc<App>) {
                     if app.db.is_held(name) {
                         continue;
                     }
-                    if let Err(e) = app.db.store(name, &snapshot_of(&app, name)) {
-                        if due(logged.get(name).copied()) {
-                            eprintln!("db: store {name} failed: {e}");
-                            logged.insert(name, Instant::now());
-                        }
+                    if let Err(e) = app.db.store(name, &snapshot_of(&app, name))
+                        && due(logged.get(name).copied())
+                    {
+                        eprintln!("db: store {name} failed: {e}");
+                        logged.insert(name, Instant::now());
                     }
                 }
                 app.db.sync_files();

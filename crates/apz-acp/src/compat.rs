@@ -334,10 +334,11 @@ fn auth_methods_to_v1(methods: &Value) -> Value {
 /// Commands already in v2 shape are left as they are.
 fn command_to_v2(command: &Value) -> Value {
     let mut out = command.clone();
-    if let Some(input) = out.get_mut("input").and_then(Value::as_object_mut) {
-        if input.contains_key("hint") && !input.contains_key("type") {
-            input.insert("type".to_owned(), json!("text"));
-        }
+    if let Some(input) = out.get_mut("input").and_then(Value::as_object_mut)
+        && input.contains_key("hint")
+        && !input.contains_key("type")
+    {
+        input.insert("type".to_owned(), json!("text"));
     }
     out
 }
@@ -345,10 +346,10 @@ fn command_to_v2(command: &Value) -> Value {
 /// A command in v1 shape: the text input loses its kind, which v1 does not have.
 fn command_to_v1(command: &Value) -> Value {
     let mut out = command.clone();
-    if let Some(input) = out.get_mut("input").and_then(Value::as_object_mut) {
-        if input.get("type") == Some(&json!("text")) {
-            input.remove("type");
-        }
+    if let Some(input) = out.get_mut("input").and_then(Value::as_object_mut)
+        && input.get("type") == Some(&json!("text"))
+    {
+        input.remove("type");
     }
     out
 }
@@ -366,10 +367,10 @@ fn config_option_to_v1(option: &Value) -> Value {
 /// Copies `value` with its key `from` renamed to `to`. An option already in the target shape is unchanged.
 fn rename_key(value: &Value, from: &str, to: &str) -> Value {
     let mut out = value.clone();
-    if let Some(object) = out.as_object_mut() {
-        if let Some(field) = object.remove(from) {
-            object.entry(to.to_owned()).or_insert(field);
-        }
+    if let Some(object) = out.as_object_mut()
+        && let Some(field) = object.remove(from)
+    {
+        object.entry(to.to_owned()).or_insert(field);
     }
     out
 }

@@ -241,8 +241,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Open(key) => {
             state.nav = match &key {
-                Key::Family(f) => vec![Key::Family(*f)],
-                Key::Role(f, r) => vec![Key::Family(*f), Key::Role(*f, r.clone())],
+                Key::Family(f) => vec![Key::Family(f)],
+                Key::Role(f, r) => vec![Key::Family(f), Key::Role(f, r.clone())],
                 Key::Agent(_) => state.nav.clone(),
             };
             state.selected = Some(key);
@@ -1534,7 +1534,7 @@ fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
 // ---- Panel -----------------------------------------------------------------
 
 /// The bond from `from` to `to`, if there is one.
-fn bond_between<'a>(d: &'a Society, from: u64, to: u64) -> Option<&'a Bond> {
+fn bond_between(d: &Society, from: u64, to: u64) -> Option<&Bond> {
     d.bonds.iter().find(|b| b.from == from && b.to == to)
 }
 

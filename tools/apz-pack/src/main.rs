@@ -67,10 +67,10 @@ fn run(args: &[String]) -> Result<String, String> {
 /// path this binary was built from. A cached binary built in another checkout (a git worktree) must not send the
 /// engine build to that checkout, which may be gone.
 fn repo_root() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join("tools/apz-pack/Cargo.toml").is_file() {
-            return cwd;
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.join("tools/apz-pack/Cargo.toml").is_file()
+    {
+        return cwd;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }

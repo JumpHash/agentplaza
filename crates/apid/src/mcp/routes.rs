@@ -189,14 +189,15 @@ fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         );
     }
     changed(app, id);
-    if req.query_param("purge") == Some("1") && server.storage.volume {
-        if let Err(why) = stdio::purge_volume(id) {
-            return error(
-                500,
-                &format!("the server is deleted, but its volume was not purged: {why}"),
-                None,
-            );
-        }
+    if req.query_param("purge") == Some("1")
+        && server.storage.volume
+        && let Err(why) = stdio::purge_volume(id)
+    {
+        return error(
+            500,
+            &format!("the server is deleted, but its volume was not purged: {why}"),
+            None,
+        );
     }
     Response::new(204, "application/json", Vec::new())
 }

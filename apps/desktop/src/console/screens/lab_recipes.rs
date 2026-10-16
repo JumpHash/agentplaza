@@ -93,11 +93,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.busy = false;
             match result {
                 Ok(list) => {
-                    if state.capture_vet {
-                        if let Some(first) = list.first().cloned() {
-                            state.capture_vet = false;
-                            state.vet = Some(vet_for(first));
-                        }
+                    if state.capture_vet
+                        && let Some(first) = list.first().cloned()
+                    {
+                        state.capture_vet = false;
+                        state.vet = Some(vet_for(first));
                     }
                     state.recipes = Some(list);
                     state.error = None;
@@ -157,10 +157,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 done.id,
                 short_commit(&done.commit)
             ));
-            if let Some(list) = state.recipes.as_mut() {
-                if let Some(slot) = list.iter_mut().find(|r| r.id == done.id) {
-                    *slot = done;
-                }
+            if let Some(list) = state.recipes.as_mut()
+                && let Some(slot) = list.iter_mut().find(|r| r.id == done.id)
+            {
+                *slot = done;
             }
             Task::none()
         }

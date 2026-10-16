@@ -458,7 +458,7 @@ impl Stage {
         self.entry.as_ref().is_some_and(Entry::driving)
     }
 
-    /// The time `work_board` may spend per frame: one district's rooms (5 to 18 ms each on the desktop's test machine) or the bake.
+    // The time `work_board` may spend per frame: one district's rooms (5 to 18 ms each on the desktop's test machine) or the bake.
 
     /// The popup's board, built while the Machines view shows: its queued rooms one district per frame, then its statics
     /// baked. Nothing draws the board in this view, so the work waits for no frame of the sequence.
@@ -545,24 +545,27 @@ impl Stage {
         let enter_due = !auto.entered && auto.enter.is_some_and(|at| t >= at);
         let back_due = !auto.backed && auto.back.is_some_and(|at| t >= at);
         let select_due = !auto.selected && auto.select.is_some_and(|at| t >= at);
-        if select_due && self.fleet.is_some() && self.view == View::Machines {
-            if let Some(id) = self.board_of(None).map(|m| m.id.clone()) {
-                self.open_popup(Some(id));
-                if let Some(auto) = self.auto.as_mut() {
-                    auto.selected = true;
-                }
+        if select_due
+            && self.fleet.is_some()
+            && self.view == View::Machines
+            && let Some(id) = self.board_of(None).map(|m| m.id.clone())
+        {
+            self.open_popup(Some(id));
+            if let Some(auto) = self.auto.as_mut() {
+                auto.selected = true;
             }
         }
-        if enter_due && self.fleet.is_some() && self.entry.is_none() {
-            if let Some(id) = self
+        if enter_due
+            && self.fleet.is_some()
+            && self.entry.is_none()
+            && let Some(id) = self
                 .popup
                 .clone()
                 .or_else(|| self.board_of(None).map(|m| m.id.clone()))
-            {
-                self.enter(id);
-                if let Some(auto) = self.auto.as_mut() {
-                    auto.entered = true;
-                }
+        {
+            self.enter(id);
+            if let Some(auto) = self.auto.as_mut() {
+                auto.entered = true;
             }
         }
         if back_due && self.entry.is_some() {
@@ -900,8 +903,10 @@ mod tests {
 
     /// The default stage in the Machines view, with two online machines and their fleet read.
     fn online_fleet_stage() -> Stage {
-        let mut s = Stage::default();
-        s.size = (800.0, 600.0);
+        let mut s = Stage {
+            size: (800.0, 600.0),
+            ..Default::default()
+        };
         let data: FleetResponse = serde_json::from_str(
             r#"{"machines":[{"id":"n0","status":"online"},{"id":"n1","status":"online"}]}"#,
         )
@@ -929,8 +934,10 @@ mod tests {
         let json = format!(
             r#"{{"machines":[{{"id":"m0","role":"hub","kind":"{kind}","status":"online","gpus":[{gpu_json}]{apple}}}]}}"#
         );
-        let mut s = Stage::default();
-        s.size = (800.0, 600.0);
+        let mut s = Stage {
+            size: (800.0, 600.0),
+            ..Default::default()
+        };
         s.apply_fleet(serde_json::from_str(&json).unwrap());
         s
     }
@@ -1046,8 +1053,10 @@ mod tests {
 
     #[test]
     fn inside_a_machine_only_its_board_draws() {
-        let mut s = Stage::default();
-        s.size = (800.0, 600.0);
+        let mut s = Stage {
+            size: (800.0, 600.0),
+            ..Default::default()
+        };
         let data: FleetResponse = serde_json::from_str(
             r#"{"machines":[{"id":"n0","kind":"edge","status":"online","agents":[1,2,3,4]},{"id":"n1","kind":"laptop","status":"online"},
                 {"id":"n2","kind":"phone","status":"online"},{"id":"n3","kind":"workstation","status":"online"},

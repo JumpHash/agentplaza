@@ -616,34 +616,34 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
             .spacing(4)
             .into(),
         );
-        if state.confirm == Some(check.need) {
-            if let Some(fix) = &check.fix {
-                out.push(
-                    container(column![
-                        ui::prose(t("wizard.deps.confirm")),
-                        ui::prose(fix.clone()),
-                        row![
-                            ui::btn(
-                                t("wizard.deps.run"),
-                                None,
-                                Kind::Primary,
-                                Some(Msg::RunFix(check.need))
-                            ),
-                            Space::new().width(Length::Fill),
-                            ui::btn(
-                                t("wizard.deps.cancel"),
-                                None,
-                                Kind::Ghost,
-                                Some(Msg::CancelFix)
-                            ),
-                        ]
-                        .align_y(Alignment::Center),
-                    ])
-                    .padding(12)
-                    .style(boxed)
-                    .into(),
-                );
-            }
+        if state.confirm == Some(check.need)
+            && let Some(fix) = &check.fix
+        {
+            out.push(
+                container(column![
+                    ui::prose(t("wizard.deps.confirm")),
+                    ui::prose(fix.clone()),
+                    row![
+                        ui::btn(
+                            t("wizard.deps.run"),
+                            None,
+                            Kind::Primary,
+                            Some(Msg::RunFix(check.need))
+                        ),
+                        Space::new().width(Length::Fill),
+                        ui::btn(
+                            t("wizard.deps.cancel"),
+                            None,
+                            Kind::Ghost,
+                            Some(Msg::CancelFix)
+                        ),
+                    ]
+                    .align_y(Alignment::Center),
+                ])
+                .padding(12)
+                .style(boxed)
+                .into(),
+            );
         }
     }
     if !state.log.is_empty() {

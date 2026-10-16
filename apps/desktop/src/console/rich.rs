@@ -304,10 +304,8 @@ pub fn prefetch(
                         urls.push(url.clone());
                     }
                 }
-                other if unfurls(other) => {
-                    if seen.insert(key(other)) {
-                        refs.push(r.clone());
-                    }
+                other if unfurls(other) && seen.insert(key(other)) => {
+                    refs.push(r.clone());
                 }
                 _ => {}
             }

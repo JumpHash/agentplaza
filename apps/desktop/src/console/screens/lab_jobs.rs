@@ -333,10 +333,10 @@ fn build_devices(form: &Form) -> Result<Option<DeviceRequest>, String> {
         "Min memory is a whole number of MiB, 1 or more.",
         1,
     )?;
-    if let (Some(lo), Some(hi)) = (min, max) {
-        if hi < lo {
-            return Err("Max devices is below min devices.".to_string());
-        }
+    if let (Some(lo), Some(hi)) = (min, max)
+        && hi < lo
+    {
+        return Err("Max devices is below min devices.".to_string());
     }
     let too_big = || "Devices is a number too large for the planner.".to_string();
     let mut req = DeviceRequest {
@@ -1623,10 +1623,10 @@ fn preview_area<'a>(state: &'a State, errors: &[String], fresh_now: bool) -> Ele
     if state.previewing {
         return ui::faint("Planning the job…").into();
     }
-    if let (Some((k, message)), Some(now)) = (&state.preview_error, &key) {
-        if k == now {
-            return ui::error_line(message);
-        }
+    if let (Some((k, message)), Some(now)) = (&state.preview_error, &key)
+        && k == now
+    {
+        return ui::error_line(message);
     }
     if let Some(p) = &state.preview {
         if fresh_now {

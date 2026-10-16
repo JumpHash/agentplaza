@@ -1260,7 +1260,7 @@ pub fn usd(v: f64) -> String {
 fn commas(digits: &str) -> String {
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

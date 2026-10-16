@@ -552,11 +552,11 @@ impl Floor {
         let me = self.bots[i].agent.cid;
         let s = self.bots[i].social.take();
         self.bots[i].next_wander = now;
-        if let Some(partner) = s.and_then(|s| s.partner).and_then(|pc| self.index_of(pc)) {
-            if self.bots[partner].social.as_ref().and_then(|s| s.partner) == Some(me) {
-                self.bots[partner].social = None;
-                self.bots[partner].next_wander = now;
-            }
+        if let Some(partner) = s.and_then(|s| s.partner).and_then(|pc| self.index_of(pc))
+            && self.bots[partner].social.as_ref().and_then(|s| s.partner) == Some(me)
+        {
+            self.bots[partner].social = None;
+            self.bots[partner].next_wander = now;
         }
     }
 
@@ -574,11 +574,11 @@ impl Floor {
         // spawns hearts, then goes back to what it was doing. Only its heading and pose change; it is not moved.
         if self.selected != self.reacted {
             self.reacted = self.selected;
-            if let Some(cid) = self.selected {
-                if let Some(b) = self.bots.iter_mut().find(|b| b.agent.cid == cid) {
-                    b.robot.wave(WAVE_SECS);
-                    b.robot.fx("hearts");
-                }
+            if let Some(cid) = self.selected
+                && let Some(b) = self.bots.iter_mut().find(|b| b.agent.cid == cid)
+            {
+                b.robot.wave(WAVE_SECS);
+                b.robot.fx("hearts");
             }
         }
         let eye = self.orbit.camera(1.0).eye; // the eye's position does not depend on the aspect
@@ -708,25 +708,23 @@ impl Floor {
                 }
             }
             // Social arrivals: a visitor that has reached its partner starts the chat; a stroller waits briefly at the ring.
-            if roaming {
-                if let Some(sc) = s.as_mut() {
-                    let moving = self.bots[i].moving;
-                    if sc.phase == Phase::Go && !moving {
-                        let until = now + 3000.0 + random() as f64 * 2000.0;
-                        sc.phase = Phase::Talk;
-                        sc.until = until;
-                        if let Some(j) = sc.partner.and_then(|pc| self.index_of(pc)) {
-                            if let Some(ps) = self.bots[j].social.as_mut() {
-                                ps.until = until;
-                            }
-                        }
-                    } else if sc.phase == Phase::Stroll && !moving && sc.until == f64::INFINITY {
-                        sc.until = now + 2000.0;
+            if roaming && let Some(sc) = s.as_mut() {
+                let moving = self.bots[i].moving;
+                if sc.phase == Phase::Go && !moving {
+                    let until = now + 3000.0 + random() as f64 * 2000.0;
+                    sc.phase = Phase::Talk;
+                    sc.until = until;
+                    if let Some(j) = sc.partner.and_then(|pc| self.index_of(pc))
+                        && let Some(ps) = self.bots[j].social.as_mut()
+                    {
+                        ps.until = until;
                     }
-                    self.bots[i].social = Some(sc.clone());
-                    if now >= sc.until {
-                        self.end_social(i, now);
-                    }
+                } else if sc.phase == Phase::Stroll && !moving && sc.until == f64::INFINITY {
+                    sc.until = now + 2000.0;
+                }
+                self.bots[i].social = Some(sc.clone());
+                if now >= sc.until {
+                    self.end_social(i, now);
                 }
             }
             // Local +Z is forward. Talkers face each other; walkers face their direction of travel.

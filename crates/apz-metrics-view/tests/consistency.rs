@@ -139,7 +139,7 @@ fn tile_shown(view: &View, label: &str) -> Shown {
 const EXPECTED_EMPTY: &[(&str, &str)] = &[("dash", "intro"), ("agents", "infractions")];
 
 /// The series of a chart panel, whichever way the panel carries them.
-fn chart_series<'a>(panel: &'a Panel) -> &'a [Series] {
+fn chart_series(panel: &Panel) -> &[Series] {
     match &panel.body {
         Body::Chart(chart) => &chart.series,
         other => panic!("panel {} is not a chart: {other:?}", panel.id),
