@@ -47,7 +47,7 @@ exec docker run --rm \
   $target_args \
   -v "$cache/sccache:/ci-sccache" -e RUSTC_WRAPPER=sccache -e SCCACHE_DIR=/ci-sccache -e SCCACHE_CACHE_SIZE=20G \
   -v "$cache/npm:/ci-npm" -e npm_config_cache=/ci-npm -e npm_config_prefer_offline=true \
-  -e CARGO_TERM_COLOR=always -e CARGO_INCREMENTAL=0 -e CARGO_NET_RETRY=10 \
+  -e CARGO_TERM_COLOR=always -e CARGO_NET_RETRY=10 \
   -e VERSION -e APZ_TEST_DATABASE_URL -e APZ_ALLOW_NO_GUEST -e APZ_REQUIRE_ENGINE -e CROSS_COMPILE -e APZ_BUSYBOX \
   -e APZ_PERF_SLACK -e CI \
   -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SHA ${GITHUB_REPOSITORY:+-e GH_REPO=$GITHUB_REPOSITORY} \

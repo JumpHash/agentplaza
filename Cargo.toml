@@ -58,6 +58,14 @@ strip = "debuginfo"
 # double that for little speed at run time.
 lto = false
 
+# CI's test build (`--cargo-profile ci`): the release profile with incremental compilation. A change
+# recompiles only what it touches in each crate it reaches, not those whole crates (the big ones
+# depending on a changed crate took a quarter of an hour). Its own build directory, so it never
+# invalidates the non-incremental release build the packages are made from.
+[profile.ci]
+inherits = "release"
+incremental = true
+
 # The web engine (crates/apz-engine-web) ships to every browser that opens the console: built for size, with the
 # whole program optimised at link time. Only apps/web/build.mjs uses this profile.
 [profile.wasm-release]

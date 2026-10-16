@@ -80,6 +80,10 @@ whatever depends on them:
     counts as short below 25 GB free or 10% of the disk, whichever is less.
   - **What it removes:** over budget or short, it removes the units no build has used for 14, then
     7, 3 and 1 days. It empties the directory only if the disk is still short.
+- **Incremental test builds.** The tests build with the `ci` profile (`Cargo.toml`): release
+  optimisation plus incremental compilation. A change recompiles only what it touches in each crate
+  it reaches, not those whole crates. The packages build with the plain, non-incremental `release`
+  profile, in its own directory.
 - **Pinned Rust**: 1.99.0 everywhere (`.github/ci/Dockerfile`, `windows.yml`, `macos.yml`). A Rust
   release does not rebuild everything on the day it ships; bumping it is a deliberate change.
 
