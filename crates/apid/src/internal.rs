@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use apz_gateway::Caller;
 use apz_http::{Request, Response, Router};
-use apz_metrics::{EntityKind, Event};
+use apz_metrics::{EntityKind, Event, SeriesKey};
 use apz_proto::chat::{Block, ChatRequest, Message, Role};
 use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, WorkStatus, cap_output};
 use serde::Deserialize;
@@ -138,6 +138,49 @@ fn record_compaction(app: &App, cid: u64, before: u64, after: u64) {
         ],
     };
     crate::metrics::ingest::record_event(&app.metrics, event, "");
+}
+
+/// Records one stats report of agent `cid`'s VM: its `/workspace` use and size as gauges, and its busiest
+/// processes as rows of the node's `top_processes` report, in place of the VM's previous rows.
+fn record_stats(app: &App, cid: u64, used_mib: u64, size_mib: u64, top: Vec<(String, f64, f64)>) {
+    let Some(agent) = app.agents.get(cid) else {
+        return;
+    };
+    let run = agent.run.clone().filter(|run| !run.is_empty());
+    let (Some(run), Some(index)) = (run, agent.vm) else {
+        return;
+    };
+    let vm = format!("{run}/{index}");
+    let registry = &app.metrics.registry;
+    registry
+        .gauge(SeriesKey::new("vm.workspace_used_mib", EntityKind::Vm, &vm))
+        .set(used_mib as f64);
+    registry
+        .gauge(SeriesKey::new("vm.workspace_size_mib", EntityKind::Vm, &vm))
+        .set(size_mib as f64);
+
+    let node = crate::fleet::node_of(app, cid);
+    let mut links = crate::metrics::lock(&app.metrics.links);
+    let link = links.entry(node).or_default();
+    let mut rows: Vec<Value> = link
+        .reports
+        .get("top_processes")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.get(1).and_then(Value::as_str) != Some(vm.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.extend(
+        top.into_iter()
+            .map(|(name, cpu, rss)| json!([name, vm, cpu, rss])),
+    );
+    if !link.reports.is_object() {
+        link.reports = json!({});
+    }
+    link.reports["top_processes"] = Value::Array(rows);
 }
 
 #[derive(Deserialize)]
@@ -601,6 +644,14 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
             );
             record_compaction(app, cid, before, after);
+            None
+        }
+        GuestMessage::Stats {
+            workspace_used_mib,
+            workspace_size_mib,
+            top,
+        } => {
+            record_stats(app, cid, workspace_used_mib, workspace_size_mib, top);
             None
         }
         _ => None,

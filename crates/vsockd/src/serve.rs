@@ -421,9 +421,8 @@ impl Session<'_> {
                 | GuestMessage::EngineUpdate { .. }
                 | GuestMessage::ToolReport { .. }
                 | GuestMessage::WorkDone { .. }
-                | GuestMessage::Compressed { .. }) => {
-                    self.forward(lines, &bridge, &line, message)?
-                }
+                | GuestMessage::Compressed { .. }
+                | GuestMessage::Stats { .. }) => self.forward(lines, &bridge, &line, message)?,
             }
         }
     }
@@ -632,6 +631,7 @@ fn guest_kind(message: &GuestMessage) -> &'static str {
         GuestMessage::ToolReport { .. } => "tool_report",
         GuestMessage::WorkDone { .. } => "work_done",
         GuestMessage::Compressed { .. } => "compressed",
+        GuestMessage::Stats { .. } => "stats",
     }
 }
 

@@ -126,6 +126,13 @@ pub enum GuestMessage {
         folded: u32,
         reason: String,
     },
+    /// The harness's stats, about once a minute while it runs: the size and use of `/workspace` in
+    /// MiB, and the busiest processes since the last report as (name, CPU %, RSS MiB).
+    Stats {
+        workspace_used_mib: u64,
+        workspace_size_mib: u64,
+        top: Vec<(String, f64, f64)>,
+    },
 }
 
 /// An agent-made tool from the plaza's library, as the guest runs it: its files are
@@ -553,6 +560,21 @@ mod tests {
             HostMessage::from_line(&decision.to_line().unwrap()).unwrap(),
             decision
         );
+    }
+
+    #[test]
+    fn a_stats_report_round_trips_with_its_processes_as_arrays() {
+        let stats = GuestMessage::Stats {
+            workspace_used_mib: 812,
+            workspace_size_mib: 4096,
+            top: vec![("node".into(), 37.5, 220.25), ("bash".into(), 0.0, 3.0)],
+        };
+        let line = stats.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"stats","workspace_used_mib":812,"workspace_size_mib":4096,"top":[["node",37.5,220.25],["bash",0.0,3.0]]}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), stats);
     }
 
     #[test]
