@@ -213,13 +213,7 @@ fn tiles_panel(ctx: &Ctx, src: &dyn Source, state: &[Group]) -> Panel {
     } else {
         Body::Tiles { tiles }
     };
-    panel(
-        "tiles",
-        "Agent work",
-        "This window, against the comparison",
-        12,
-        body,
-    )
+    panel("tiles", "", "This window, against the comparison", 12, body)
 }
 
 fn success_tile(ctx: &Ctx, src: &dyn Source) -> Tile {
@@ -435,7 +429,7 @@ fn infractions_panel(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     panel(
         "infractions",
-        "Infractions",
+        "Law infractions",
         "What the laws stopped, newest first",
         4,
         body,

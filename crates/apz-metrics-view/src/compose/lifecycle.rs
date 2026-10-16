@@ -24,21 +24,21 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
     vec![
         panel(
             "tiles",
-            "Lifecycle steps",
+            "",
             "Median and p95 of each step over the window",
             12,
             tiles(ctx, src),
         ),
         panel(
             "wake-split",
-            "Wake by run",
+            "Where wake time goes",
             "Restore and harness-ready time, median",
             6,
             wake_split(ctx, src),
         ),
         panel(
             "wake",
-            "Wake time",
+            "Wake latency over time",
             "Wake request until the agent is ready",
             6,
             wake(ctx, src),
@@ -52,14 +52,14 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
         ),
         panel(
             "snapshots",
-            "Snapshots by run",
+            "Snapshots",
             "Memory snapshots, pauses and writes",
             6,
             snapshots(ctx, src),
         ),
         panel(
             "sleep",
-            "VMs by state",
+            "Sleep policy effect",
             "Running and asleep VMs over the window",
             6,
             sleep(ctx, src),

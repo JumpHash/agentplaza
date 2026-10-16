@@ -62,7 +62,7 @@ fn ttft_by_provider(ctx: &Ctx, src: &dyn Source) -> Panel {
     chart.series = series;
     let mut out = chart_panel(
         "ttft-by-provider",
-        "First token",
+        "Time to first token by provider",
         "p95 and p50 time to the first token, by provider",
         8,
         "llm.ttft_ms",
@@ -115,7 +115,7 @@ fn duration_heatmap(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     metric_panel(
         "duration-heatmap",
-        "Call durations",
+        "Model call duration, distribution over time",
         "calls per duration band, step by step",
         12,
         "llm.duration_ms",
@@ -226,7 +226,7 @@ fn tools(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     metric_panel(
         "tools",
-        "Tools",
+        "Tools and MCP",
         "calls, latency and error rate per tool",
         6,
         "tool.duration_ms",
@@ -277,7 +277,7 @@ fn errors_by_provider(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     chart_panel(
         "errors",
-        "Error rate",
+        "Errors and retries by provider",
         "(errors + retries) / calls, by provider",
         6,
         "llm.errors",

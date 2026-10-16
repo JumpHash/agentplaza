@@ -21,7 +21,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
 
     let mut disk = panel(
         "disk-io",
-        "Disk I/O",
+        "Disk IO",
         "Reads and writes of all VMs",
         8,
         disk_io(ctx, src),
@@ -31,7 +31,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
 
     let mut vsock = panel(
         "vsock",
-        "vsock",
+        "vsock traffic",
         "Bytes between the hub and the guests",
         6,
         vsock(ctx, src),
@@ -40,7 +40,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
 
     let mut workspaces = panel(
         "workspaces",
-        "Workspaces",
+        "/workspace growth",
         "/workspace of each VM",
         6,
         workspaces(ctx, src),
@@ -49,7 +49,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
 
     let mut network = panel(
         "network",
-        "Network",
+        "Host network",
         "Each node, in and out",
         6,
         network(ctx, src),
@@ -58,7 +58,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
 
     let mut stores = panel(
         "stores",
-        "Stores",
+        "Plaza stores",
         "Size and growth per day",
         6,
         stores(ctx, src),

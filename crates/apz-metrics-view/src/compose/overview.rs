@@ -54,7 +54,7 @@ fn health(ctx: &Ctx, src: &dyn Source) -> Panel {
     .collect();
     panel(
         "health",
-        "Health",
+        "",
         &format!("{} · worst status per area", ctx.scope.label),
         12,
         Body::Health { items },
@@ -295,7 +295,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
     } else {
         Body::Tiles { tiles }
     };
-    panel("tiles", "Key numbers", &ctx.scope.label, 12, body)
+    panel("tiles", "", &ctx.scope.label, 12, body)
 }
 
 /// Spend stacked by the view's group choice.
@@ -397,7 +397,7 @@ fn flagged(ctx: &Ctx, src: &dyn Source) -> Panel {
     } else {
         Body::Flags { flags }
     };
-    panel("flagged", "Changes", &sub, 4, body)
+    panel("flagged", "Flagged", &sub, 4, body)
 }
 
 /// The first-token chart: the p50 line over all providers, with the p10 to p95 band behind it.
@@ -610,7 +610,7 @@ fn top_agents(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     panel(
         "top-agents",
-        "Top agents",
+        "Top agents by spend",
         "by spend in the window",
         6,
         body,

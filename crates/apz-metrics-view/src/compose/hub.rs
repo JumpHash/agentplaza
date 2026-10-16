@@ -102,7 +102,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             tab,
         ),
     ];
-    panel("tiles", "Hub", "", 12, Body::Tiles { tiles: items })
+    panel("tiles", "", "", 12, Body::Tiles { tiles: items })
 }
 
 /// The API routes: requests per minute, latency, error rate and a request sparkline, one row per route family.
@@ -131,7 +131,7 @@ fn routes(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     panel(
         "routes",
-        "Routes",
+        "API routes",
         "Per route family, over the window",
         8,
         body,

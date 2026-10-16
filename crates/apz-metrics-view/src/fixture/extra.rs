@@ -766,7 +766,7 @@ fn plan(now: u64) -> Plan {
                         "arguments".to_string(),
                         "1.2k bytes (content not stored)".to_string(),
                     ),
-                    ("result_tokens".to_string(), rng.int(120, 900).to_string()),
+                    ("result tokens".to_string(), rng.int(120, 900).to_string()),
                     (
                         "outcome".to_string(),
                         if fails {

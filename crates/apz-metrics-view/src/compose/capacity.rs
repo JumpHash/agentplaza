@@ -40,7 +40,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
     vec![
         panel(
             "tiles",
-            "Spend and capacity",
+            "",
             "This month, and when things run out",
             12,
             Body::Tiles {
@@ -49,28 +49,28 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
         ),
         panel(
             "forecast",
-            "Month-end forecast",
+            "Spend forecast",
             "Spend by day against the monthly budget",
             8,
             forecast_chart(&month),
         ),
         panel(
             "budgets",
-            "Daily caps",
+            "Budgets",
             "Spend today against each cap",
             4,
             budget_bars(src),
         ),
         panel(
             "headroom",
-            "Headroom by node",
+            "Node headroom",
             "Free CPU, memory and disk, and when each disk fills",
             8,
             headroom_table(&nodes, ctx.now_ms),
         ),
         panel(
             "rate-limits",
-            "Rate limits",
+            "Provider rate limits",
             "Share of each provider's window still left",
             4,
             limits_body,
@@ -579,21 +579,23 @@ fn disk_panel(nodes: &[Node], now: u64, tz: i32) -> Panel {
         .or_else(|| fullest(nodes));
     let found = picked.and_then(|(node, vol)| {
         disk_chart(vol, now, tz).map(|body| {
+            let title = format!("{}, projected", vol.name);
             let sub = format!(
                 "{} · {}, projected {} days ahead",
                 node.label, vol.name, DISK_PROJECTION_DAYS
             );
-            (sub, body)
+            (title, sub, body)
         })
     });
-    let (sub, body) = match found {
+    let (title, sub, body) = match found {
         Some(found) => found,
         None => (
+            "Disk projection".to_string(),
             "Volumes filling first".to_string(),
             empty("No volume has reported its use in the last 7 days."),
         ),
     };
-    panel("disk-projection", "Disk projection", &sub, 12, body)
+    panel("disk-projection", &title, &sub, 12, body)
 }
 
 fn disk_chart(vol: &Volume, now: u64, tz: i32) -> Option<Body> {

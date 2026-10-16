@@ -212,10 +212,12 @@ const AGENT_STATES: &[(&str, f64)] = &[
     ("asleep", 0.08),
 ];
 const PARTS: &[(&str, f64)] = &[
-    ("system", 0.12),
-    ("tools", 0.18),
-    ("history", 0.60),
-    ("output", 0.10),
+    ("system", 0.10),
+    ("tools", 0.14),
+    ("history", 0.46),
+    ("tool_results", 0.18),
+    ("attachments", 0.06),
+    ("summary", 0.06),
 ];
 
 /// The scope tree, in order.
@@ -520,7 +522,7 @@ fn base_level(id: &str) -> f64 {
         "llm.spend_usd" | "llm.engine_spend_usd" => 1.6 / 60.0,
         "llm.ratelimit_requests_left_pct" => 70.0,
         "llm.ratelimit_tokens_left_pct" => 60.0,
-        "ctx.compactions" => 0.004,
+        "ctx.compactions" => 0.3,
         "ctx.freed_tokens" => 900.0,
         "ctx.carried_tokens" => 1_200.0,
         "turn.duration_ms" => 9_000.0,
@@ -661,7 +663,13 @@ fn growth(id: &str, t_ms: u64) -> f64 {
 fn leaf_value(metric: &MetricDef, leaf: &Leaf, t_ms: u64, step_ms: u64) -> f64 {
     let rate = level(metric, leaf, t_ms);
     if is_counter(metric) {
-        rate * step_ms as f64 / MINUTE_MS as f64
+        let amount = rate * step_ms as f64 / MINUTE_MS as f64;
+        // A compaction is a whole event: a step counts whole ones, never a fraction of one.
+        if metric.id == "ctx.compactions" {
+            amount.round()
+        } else {
+            amount
+        }
     } else {
         rate
     }

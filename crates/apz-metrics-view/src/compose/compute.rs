@@ -43,13 +43,7 @@ fn cpu(ctx: &Ctx, src: &dyn Source) -> Panel {
         false,
         "No nodes report CPU in this scope.",
     );
-    let mut p = panel(
-        "cpu",
-        "CPU by node",
-        "host CPU share, one line per node",
-        6,
-        body,
-    );
+    let mut p = panel("cpu", "CPU", "host CPU share, one line per node", 6, body);
     p.live = true;
     p
 }
@@ -67,7 +61,7 @@ fn memory(ctx: &Ctx, src: &dyn Source) -> Panel {
     );
     let mut p = panel(
         "memory",
-        "Memory by node",
+        "Memory",
         "host memory in use, one area per node",
         6,
         body,
@@ -159,7 +153,7 @@ fn density(ctx: &Ctx, src: &dyn Source, nodes: &[Entity]) -> Panel {
     };
     panel(
         "density",
-        "Density",
+        "VM density",
         "running and asleep VMs per node",
         4,
         body,
@@ -212,7 +206,7 @@ fn services(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     panel(
         "services",
-        "Services",
+        "Plaza services",
         "services in scope, with their CPU and memory",
         8,
         body,
@@ -274,7 +268,7 @@ fn processes(src: &dyn Source, nodes: &[Entity]) -> Panel {
     };
     panel(
         "processes",
-        "Top processes",
+        "Top guest processes",
         "by CPU, from the latest node reports",
         4,
         body,
@@ -360,13 +354,7 @@ fn vms(ctx: &Ctx, src: &dyn Source) -> Panel {
             rows,
         )
     };
-    let mut p = panel(
-        "vms",
-        "Virtual machines",
-        "one row per VM in scope",
-        12,
-        body,
-    );
+    let mut p = panel("vms", "VMs", "one row per VM in scope", 12, body);
     p.right = "asleep VMs are not sampled".into();
     p
 }

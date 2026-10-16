@@ -231,7 +231,7 @@ fn fills_panel(ctx: &Ctx, src: &dyn Source, focus: Option<&AgentRow>) -> Panel {
     };
     panel(
         "fills",
-        "Context split",
+        "What fills the window",
         "latest call · estimated split, scaled to provider token counts",
         4,
         body,
@@ -295,7 +295,7 @@ fn composition_panel(ctx: &Ctx, src: &dyn Source, focus: Option<&AgentRow>) -> P
     let Some(a) = focus else {
         return panel(
             "composition",
-            "Context composition",
+            "Context composition per model call",
             "",
             12,
             empty(NO_AGENT),
@@ -335,7 +335,7 @@ fn composition_panel(ctx: &Ctx, src: &dyn Source, focus: Option<&AgentRow>) -> P
     };
     panel(
         "composition",
-        "Context composition",
+        "Context composition per model call",
         &format!(
             "{} · stacked by part, with compactions · click a call for its trace",
             a.name

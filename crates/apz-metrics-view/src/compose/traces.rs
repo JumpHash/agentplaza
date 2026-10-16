@@ -44,7 +44,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
     });
     vec![panel(
         "traces",
-        "Turns",
+        "Kept traces",
         "Kept turns in this window, newest first",
         12,
         Body::Traces(TracesBody {

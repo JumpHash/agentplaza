@@ -97,7 +97,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             tab,
         ),
     ];
-    panel("tiles", "Totals", "", 12, Body::Tiles { tiles })
+    panel("tiles", "", "", 12, Body::Tiles { tiles })
 }
 
 /// A tile whose value combines two metrics, such as cache reads over all input or spend per call.
@@ -162,6 +162,11 @@ fn cost_per_call(spend: f64, calls: f64) -> Option<f64> {
 
 /// Input tokens by group, with output stacked on top.
 fn tokens_by_group(ctx: &Ctx, src: &dyn Source) -> Panel {
+    let choice = if ctx.q.group.is_empty() {
+        "provider"
+    } else {
+        ctx.q.group.as_str()
+    };
     let input = ctx.read("llm.tokens_in", AggFn::Sum, ctx.group.clone());
     let output = ctx.read("llm.tokens_out", AggFn::Sum, GroupBy::All);
     let chart = stacked(
@@ -173,7 +178,7 @@ fn tokens_by_group(ctx: &Ctx, src: &dyn Source) -> Panel {
     );
     panel(
         "tokens-by-group",
-        "Tokens by group",
+        &format!("Tokens by {choice}"),
         "input by group, output stacked on top",
         8,
         chart_or_empty(chart, "No model calls in this window."),
@@ -230,7 +235,7 @@ fn cache(ctx: &Ctx, src: &dyn Source) -> Panel {
     let chart = stacked(ctx, src, &reads, Unit::Tokens, 200);
     panel(
         "cache",
-        "Cache",
+        "Input: cached vs fresh",
         "cache reads cost about a tenth of fresh input",
         6,
         chart_or_empty(chart, "No input tokens in this window."),
@@ -317,7 +322,7 @@ fn unit_cost(ctx: &Ctx, src: &dyn Source) -> Panel {
     };
     panel(
         "unit-cost",
-        "Unit cost",
+        "Cost per unit of work",
         "per role · per task is the median work cost",
         6,
         body,
@@ -498,7 +503,13 @@ fn savings(ctx: &Ctx, src: &dyn Source) -> Panel {
     } else {
         Body::Flags { flags }
     };
-    panel("savings", "Savings", "estimated, not a bill", 6, body)
+    panel(
+        "savings",
+        "Savings available",
+        "estimated, not a bill",
+        6,
+        body,
+    )
 }
 
 /// The total of the group with this name (zero when there is none).
