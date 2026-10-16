@@ -2,8 +2,10 @@
 //! controls), the tier line (window end, storage tier, live text, zoom and compare chips, level), the scope tree,
 //! the grouped tabs with the alerts badge, and the grid of panels by span (twelfths), as the web's `.mx-view`.
 
-use iced::widget::{Space, button, column, container, pick_list, row, stack, text, text_input};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Theme};
+use iced::widget::{
+    Space, button, column, container, pick_list, responsive, row, stack, text, text_input,
+};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Size, Theme};
 
 use apz_metrics_view::{ScopeNode, View};
 
@@ -696,24 +698,75 @@ fn grid<'a>(view: &'a View, state: &'a State, gap: f32) -> Element<'a, Msg> {
             .into();
         }
     }
-    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
-    let mut cells: Vec<Element<'a, Msg>> = Vec::new();
-    let mut used: u32 = 0;
-    for panel in &view.panels {
-        let span = u32::from(panel.span).clamp(1, 12);
-        if used + span > 12 && !cells.is_empty() {
-            rows.push(row(std::mem::take(&mut cells)).spacing(gap).into());
-            used = 0;
+    responsive(move |size: Size| {
+        let narrow = size.width < NARROW_GRID;
+        let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+        let mut cells: Vec<Element<'a, Msg>> = Vec::new();
+        let mut used: u32 = 0;
+        // A row that is not full keeps its empty columns, as the web's grid does.
+        let close = |cells: Vec<Element<'a, Msg>>, used: u32| -> Element<'a, Msg> {
+            let mut cells = cells;
+            if used < 12 {
+                cells.push(
+                    Space::new()
+                        .width(Length::FillPortion((12 - used) as u16))
+                        .into(),
+                );
+            }
+            row(cells).spacing(gap).into()
+        };
+        for panel in &view.panels {
+            let span = grid_span(panel.span, narrow);
+            if used + span > 12 && !cells.is_empty() {
+                rows.push(close(std::mem::take(&mut cells), used));
+                used = 0;
+            }
+            used += span;
+            cells.push(
+                container(panels::panel(panel, state))
+                    .width(Length::FillPortion(span as u16))
+                    .into(),
+            );
         }
-        used += span;
-        cells.push(
-            container(panels::panel(panel, state))
-                .width(Length::FillPortion(span as u16))
-                .into(),
-        );
+        if !cells.is_empty() {
+            rows.push(close(cells, used));
+        }
+        column(rows).spacing(gap).into()
+    })
+    .width(Length::Fill)
+    .height(Length::Shrink)
+    .into()
+}
+
+/// Below this grid width, wide panels take the full row and quarter panels half of it (the web's `@container mxg`).
+const NARROW_GRID: f32 = 800.0;
+
+/// A panel's columns of twelve: as composed, or in a narrow grid 4, 6 and 8 become 12 and 3 becomes 6.
+fn grid_span(span: u8, narrow: bool) -> u32 {
+    let span = u32::from(span).clamp(1, 12);
+    match (narrow, span) {
+        (true, 4 | 6 | 8) => 12,
+        (true, 3) => 6,
+        _ => span,
     }
-    if !cells.is_empty() {
-        rows.push(row(cells).spacing(gap).into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_span;
+
+    #[test]
+    fn a_narrow_grid_widens_halves_and_thirds_and_halves_quarters() {
+        let wide: Vec<u32> = [12, 8, 6, 4, 3, 2]
+            .iter()
+            .map(|&s| grid_span(s, false))
+            .collect();
+        let narrow: Vec<u32> = [12, 8, 6, 4, 3, 2]
+            .iter()
+            .map(|&s| grid_span(s, true))
+            .collect();
+        assert_eq!(wide, vec![12, 8, 6, 4, 3, 2]);
+        assert_eq!(narrow, vec![12, 12, 12, 12, 6, 2]);
+        assert_eq!(grid_span(0, false), 1);
     }
-    column(rows).spacing(gap).into()
 }

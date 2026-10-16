@@ -271,9 +271,15 @@ table.mx-t tr.mx-sel td { background: var(--hover); }
   .mx-tiles { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
-@container mx (max-width: 1100px) {
+/* The panel grid answers to its own width: under 800 px wide panels take the full row and quarter panels half of
+   it. The desktop applies the same rule (view.rs, grid_span). */
+.mx-grid { container: mxg / inline-size; }
+@container mxg (max-width: 800px) {
   .mx-c8, .mx-c6, .mx-c4 { grid-column: span 12; }
   .mx-c3 { grid-column: span 6; }
+}
+
+@container mx (max-width: 1100px) {
   .mx-alert-row { grid-template-columns: 4px 1fr auto; }
   .mx-alert-row .mx-spk, .mx-alert-row .mx-val { display: none; }
 }
