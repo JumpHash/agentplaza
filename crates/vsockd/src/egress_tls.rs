@@ -358,6 +358,21 @@ fn is_hang_up(err: &std::io::Error) -> bool {
     )
 }
 
+/// Whether this side's reader has seen (or within [`HANG_UP_GRACE`] sees) the peer close its end.
+fn peer_closes_soon(side: &Side) -> bool {
+    let deadline = Instant::now() + HANG_UP_GRACE;
+    while !side.peer_closed.load(Ordering::SeqCst) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    true
+}
+
+/// How long a writer that saw the peer hang up waits for the reader to see the peer's close.
+const HANG_UP_GRACE: Duration = Duration::from_millis(500);
+
 /// Ends one side's TLS stream: close_notify, then the writer hangs up once it has written what came
 /// before. Used when the other end closed cleanly.
 fn finish(side: &Side) {
@@ -377,8 +392,10 @@ fn write_loop(mut socket: impl Write, queue: Receiver<Out>, side: &Side, link: &
                 side.waiting.fetch_sub(bytes.len(), Ordering::SeqCst);
                 if let Err(err) = written {
                     // A peer that closed first (the guest dropping its connection after its last
-                    // response, then our close_notify reaching it) is a clean end.
-                    if !(side.peer_closed.load(Ordering::SeqCst) && is_hang_up(&err)) {
+                    // response, then our close_notify reaching it) is a clean end. The write can
+                    // see the hang-up before this side's reader has read the peer's end, so a
+                    // hang-up gets a moment for the reader to record it.
+                    if !(is_hang_up(&err) && peer_closes_soon(side)) {
                         link.fail(format!("the {which} socket write failed: {err}"));
                     }
                     break;
@@ -446,6 +463,12 @@ fn guest_read_loop(
                     link.fail("the guest was idle");
                     return;
                 }
+            }
+            // A guest that hangs up with our close_notify unread gets its socket reset: it closed,
+            // as with an end of stream.
+            Err(err) if is_hang_up(&err) => {
+                side.peer_closed.store(true, Ordering::SeqCst);
+                return;
             }
             Err(err) => {
                 link.fail(format!("the guest socket read failed: {err}"));
