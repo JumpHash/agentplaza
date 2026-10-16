@@ -11,9 +11,11 @@ use iced::alignment::Horizontal;
 use iced::widget::{Space, button, column, container, responsive, row, text};
 use iced::{Alignment, Border, Color, Element, Length, Size, Theme};
 
+use super::grid_row::GridRow;
+use super::measure::{self, ColumnWidth};
 use super::{Msg, State, charts, figures, panels_ops, status, tone};
 use crate::console::ui::{self, Kind};
-use crate::theme::{SANS, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_UI, palette};
+use crate::theme::{MONO, SANS, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_UI, palette};
 
 /// Bar and split widths are counted in thousandths of the track.
 const PORTIONS: u16 = 1000;
@@ -78,7 +80,14 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
         if matches!(chart.x, apz_metrics_view::XAxis::Time { .. })
             && !state.as_table.contains(&p.id)
         {
-            lines.push(meta("drag to zoom · click a point for what changed", pal.ink_3).into());
+            // The web's `.mx-hint`, a size under the meta text.
+            lines.push(
+                text("drag to zoom · click a point for what changed")
+                    .font(SANS)
+                    .size(TYPE_BADGE)
+                    .color(pal.ink_3)
+                    .into(),
+            );
         }
     }
 
@@ -141,14 +150,23 @@ fn local_offset() -> i32 {
 fn freshness<'a>(state: &State) -> Option<Element<'a, Msg>> {
     let at = state.fresh_at?;
     let pal = palette();
-    let (label, color) = if super::live_applies(state) {
+    let (label, dot) = if super::live_applies(state) {
         (format!("live · {} s ago", at.elapsed().as_secs()), pal.ok)
     } else {
         let wall =
             chrono::DateTime::<chrono::Local>::from(std::time::SystemTime::now() - at.elapsed());
         (format!("as of {}", wall.format("%H:%M:%S")), pal.ink_3)
     };
-    Some(meta(label, color).into())
+    // The web's `.mx-fresh`: a dot, green while live and muted otherwise, before the muted stamp.
+    Some(
+        row![
+            text("●").font(SANS).size(TYPE_META - 2.0).color(dot),
+            meta(label, pal.ink_3)
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .into(),
+    )
 }
 
 /// The comparison period's label ("vs previous"), when the view compares.
@@ -292,41 +310,44 @@ fn change_line<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
 /// The health row: one button per area, with its status dot, the area and its text. A press opens the tab.
 fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
     let pal = palette();
-    row(items.iter().map(|item| {
-        let color = status(item.status);
-        let dot = container(Space::new())
-            .width(Length::Fixed(8.0))
-            .height(Length::Fixed(8.0))
-            .style(move |_: &Theme| container::Style {
-                background: Some(color.into()),
-                border: Border {
-                    radius: 4.0.into(),
+    let cells: Vec<Element<'a, Msg>> = items
+        .iter()
+        .map(|item| {
+            let color = status(item.status);
+            let dot = container(Space::new())
+                .width(Length::Fixed(8.0))
+                .height(Length::Fixed(8.0))
+                .style(move |_: &Theme| container::Style {
+                    background: Some(color.into()),
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            });
-        let label = row![
-            dot,
-            text(item.area.as_str())
-                .font(SANS_SEMIBOLD)
-                .size(TYPE_UI)
-                .color(pal.ink)
-        ]
-        .spacing(7)
-        .align_y(Alignment::Center);
-        let content = column![label, meta(item.text.as_str(), pal.ink_3)]
-            .spacing(4)
-            .width(Length::Fill);
-        let cell = button(content)
-            .width(Length::Fill)
-            .padding([10.0, 12.0])
-            .style(boxed)
-            .on_press(Msg::Tab(item.tab.clone()));
-        container(cell).width(Length::FillPortion(1)).into()
-    }))
-    .spacing(8)
-    .width(Length::Fill)
-    .into()
+                });
+            let label = row![
+                dot,
+                text(item.area.as_str())
+                    .font(SANS_SEMIBOLD)
+                    .size(TYPE_UI)
+                    .color(pal.ink)
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center);
+            let content = column![label, meta(item.text.as_str(), pal.ink_3)]
+                .spacing(4)
+                .width(Length::Fill);
+            let cell = button(content)
+                .width(Length::Fill)
+                .padding([10.0, 12.0])
+                .style(boxed)
+                .on_press(Msg::Tab(item.tab.clone()));
+            cell.into()
+        })
+        .collect();
+    // One equal column per area, every cell as tall as the tallest.
+    let n = cells.len();
+    GridRow::even(cells, n, 8.0).into()
 }
 
 /// The tiles, sharing each row equally. Under 1000 px the row holds three tiles, so the tiles wrap; the last row is
@@ -340,12 +361,10 @@ fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg
             tiles.len().max(1)
         };
         let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+        // Every tile in a row as tall as the tallest, as the web's grid stretches them.
         for chunk in tiles.chunks(per_row) {
-            let mut cells: Vec<Element<'a, Msg>> = chunk.iter().map(|t| tile(t, compare)).collect();
-            while cells.len() < per_row {
-                cells.push(Space::new().width(Length::FillPortion(1)).into());
-            }
-            rows.push(row(cells).spacing(8).width(Length::Fill).into());
+            let cells: Vec<Element<'a, Msg>> = chunk.iter().map(|t| tile(t, compare)).collect();
+            rows.push(GridRow::even(cells, per_row, 8.0).into());
         }
         column(rows).spacing(8).width(Length::Fill).into()
     })
@@ -389,7 +408,8 @@ fn tile<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
         Some(tab) => body.on_press(Msg::Tab(tab.clone())).into(),
         None => body.into(),
     };
-    container(tile).width(Length::FillPortion(1)).into()
+    // The button itself is the cell, so it takes the row's height (the tiles of a row are equally tall).
+    tile
 }
 
 /// One table cell's content, by its kind.
@@ -424,7 +444,7 @@ fn cell_content<'a>(cell: &'a Cell) -> Element<'a, Msg> {
         .style(ui::frame(None, status(*s)))
         .into(),
         Cell::Muted { text: value } => meta(value.as_str(), pal.ink_3).into(),
-        Cell::Spark { values, tone: t } => figures::spark(values, *t, 80.0, 18.0),
+        Cell::Spark { values, tone: t } => figures::spark(values, *t, SPARK_W, 18.0),
         Cell::Bar { parts } => segments(
             parts
                 .iter()
@@ -435,10 +455,17 @@ fn cell_content<'a>(cell: &'a Cell) -> Element<'a, Msg> {
     }
 }
 
-/// A cell in a grid row: its content, aligned right when the column (or the cell) is numeric.
-fn cell<'a>(content: Element<'a, Msg>, numeric: bool, portion: u16) -> Element<'a, Msg> {
+/// The gap between a table's columns, and the padding at its ends (the web's 8 px cell padding on each side).
+const CELL_GAP: f32 = 16.0;
+const CELL_EDGE: f32 = 8.0;
+/// A sparkline cell's width (the web's `spark` at 90 px).
+const SPARK_W: f32 = 90.0;
+
+/// A cell in a table line: its content at its column's width, aligned right when the column (or the cell) is
+/// numeric. Without widths (a chart shown as a table) the columns share the line equally.
+fn cell<'a>(content: Element<'a, Msg>, numeric: bool, width: Option<f32>) -> Element<'a, Msg> {
     container(content)
-        .width(Length::FillPortion(portion))
+        .width(width.map_or(Length::FillPortion(1), Length::Fixed))
         .align_x(if numeric {
             Horizontal::Right
         } else {
@@ -447,58 +474,90 @@ fn cell<'a>(content: Element<'a, Msg>, numeric: bool, portion: u16) -> Element<'
         .into()
 }
 
-/// A row of cells, each with its numeric flag.
-/// `portions` are the columns' shares of the width (equal when empty).
-fn cells_row<'a>(cells: Vec<(Element<'a, Msg>, bool)>, portions: &[u16]) -> Element<'a, Msg> {
-    row(cells
+/// A table line, as the web's `tr`: the cells with the cell padding, over a rule (the full rule under the head, the
+/// faint one between rows). `widths` are the columns' widths (equal shares when empty).
+fn cells_row<'a>(
+    cells: Vec<(Element<'a, Msg>, bool)>,
+    widths: &[f32],
+    head: bool,
+) -> Element<'a, Msg> {
+    let pal = palette();
+    let line = row(cells
         .into_iter()
         .enumerate()
-        .map(|(i, (content, numeric))| {
-            cell(content, numeric, portions.get(i).copied().unwrap_or(1))
-        }))
-    .spacing(12)
+        .map(|(i, (content, numeric))| cell(content, numeric, widths.get(i).copied())))
+    .spacing(CELL_GAP)
+    .align_y(Alignment::Center);
+    let rule = if head { pal.rule } else { pal.rule_faint };
+    column![
+        container(line)
+            .padding([if head { 4.0 } else { 5.0 }, CELL_EDGE])
+            .width(Length::Fill),
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(fill(rule)),
+    ]
     .width(Length::Fill)
     .into()
 }
 
-/// A grid: the header row, then the rows.
+/// A table: the head line, then the rows.
 fn grid<'a>(
     head: Vec<(Element<'a, Msg>, bool)>,
     rows: Vec<Element<'a, Msg>>,
-    portions: &[u16],
+    widths: &[f32],
 ) -> Element<'a, Msg> {
-    let mut lines = vec![cells_row(head, portions)];
+    let mut lines = vec![cells_row(head, widths, true)];
     lines.extend(rows);
-    column(lines).spacing(6).width(Length::Fill).into()
+    column(lines).width(Length::Fill).into()
 }
 
-/// Each column's share of a table's width: its longest text (head or cell) in characters, between 3 and 32, so
-/// columns size to their content as the web's tables do. Sparks and bars count as 12.
-fn column_portions(t: &Table) -> Vec<u16> {
+/// Each column's widths as the web's table sizes it: the head and every cell on one line, except free text, which
+/// can wrap down to its longest word.
+fn column_widths(t: &Table) -> Vec<ColumnWidth> {
     t.columns
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let longest = t
-                .rows
+            let head = measure::width(&c.head, SANS, TYPE_META);
+            t.rows
                 .iter()
                 .filter_map(|r| r.cells.get(i))
-                .map(|cell| match cell {
-                    Cell::Text { text }
-                    | Cell::Mono { text }
-                    | Cell::Num { text }
-                    | Cell::Status { text, .. }
-                    | Cell::Pill { text, .. }
-                    | Cell::Muted { text } => text.chars().count(),
-                    Cell::Named { name, id } => name.chars().count() + 1 + id.chars().count(),
-                    Cell::Spark { .. } | Cell::Bar { .. } => 12,
-                })
-                .max()
-                .unwrap_or(0)
-                .max(c.head.chars().count());
-            longest.clamp(3, 32) as u16
+                .map(cell_width)
+                .fold(
+                    ColumnWidth {
+                        min: head,
+                        max: head,
+                    },
+                    |w, (min, max)| ColumnWidth {
+                        min: w.min.max(min),
+                        max: w.max.max(max),
+                    },
+                )
         })
         .collect()
+}
+
+/// A cell's narrowest and widest width, in the fonts `cell_content` draws it with.
+fn cell_width(cell: &Cell) -> (f32, f32) {
+    let one = |w: f32| (w, w);
+    match cell {
+        Cell::Text { text } => (
+            measure::longest_word(text, SANS, TYPE_UI),
+            measure::width(text, SANS, TYPE_UI),
+        ),
+        Cell::Muted { text } => (
+            measure::longest_word(text, SANS, TYPE_META),
+            measure::width(text, SANS, TYPE_META),
+        ),
+        Cell::Num { text } | Cell::Status { text, .. } => one(measure::width(text, SANS, TYPE_UI)),
+        Cell::Mono { text } => one(measure::width(text, MONO, TYPE_UI)),
+        Cell::Named { name, id } => {
+            one(measure::width(name, SANS, TYPE_UI) + 6.0 + measure::width(id, MONO, TYPE_META))
+        }
+        Cell::Pill { text, .. } => one(measure::width(text, SANS_SEMIBOLD, TYPE_BADGE) + 14.0),
+        Cell::Spark { .. } | Cell::Bar { .. } => one(SPARK_W),
+    }
 }
 
 /// A table of rows. A row that names a scope, tab or trace is a button that opens it. When the table has older
@@ -511,19 +570,35 @@ fn table<'a>(panel: &'a str, t: &'a Table) -> Element<'a, Msg> {
             t.empty.as_str()
         })
     } else {
-        let pal = palette();
-        let head: Vec<(Element<'a, Msg>, bool)> = t
-            .columns
-            .iter()
-            .map(|c| (meta(c.head.as_str(), pal.ink_3).into(), c.num))
-            .collect();
-        let portions = column_portions(t);
-        let rows: Vec<Element<'a, Msg>> = t
-            .rows
-            .iter()
-            .map(|r| table_row(r, &t.columns, &portions))
-            .collect();
-        grid(head, rows, &portions)
+        responsive(move |size: Size| {
+            let pal = palette();
+            let widths = measure::layout(&column_widths(t), size.width - 2.0 * CELL_EDGE, CELL_GAP);
+            let total = widths.iter().sum::<f32>()
+                + CELL_GAP * widths.len().saturating_sub(1) as f32
+                + 2.0 * CELL_EDGE;
+            let head: Vec<(Element<'a, Msg>, bool)> = t
+                .columns
+                .iter()
+                .map(|c| (meta(c.head.as_str(), pal.ink_3).into(), c.num))
+                .collect();
+            let rows: Vec<Element<'a, Msg>> = t
+                .rows
+                .iter()
+                .map(|r| table_row(r, &t.columns, &widths))
+                .collect();
+            let body = grid(head, rows, &widths);
+            // Wider than the card even at its narrowest: the table scrolls sideways, as the web's `.mx-tablewrap`.
+            if total > size.width + 0.5 {
+                ui::scroll_x(container(body).width(Length::Fixed(total)))
+                    .width(Length::Fill)
+                    .into()
+            } else {
+                body
+            }
+        })
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .into()
     };
     let Some(path) = &t.more else {
         return content;
@@ -543,11 +618,7 @@ fn table<'a>(panel: &'a str, t: &'a Table) -> Element<'a, Msg> {
         .into()
 }
 
-fn table_row<'a>(
-    r: &'a TableRow,
-    columns: &'a [TableColumn],
-    portions: &[u16],
-) -> Element<'a, Msg> {
+fn table_row<'a>(r: &'a TableRow, columns: &'a [TableColumn], widths: &[f32]) -> Element<'a, Msg> {
     let cells: Vec<(Element<'a, Msg>, bool)> = r
         .cells
         .iter()
@@ -558,7 +629,7 @@ fn table_row<'a>(
             (cell_content(c), numeric)
         })
         .collect();
-    let line = cells_row(cells, portions);
+    let line = cells_row(cells, widths, false);
     match target(r.scope.as_deref(), r.tab.as_deref(), r.trace.as_deref()) {
         Some(msg) => button(line)
             .width(Length::Fill)
@@ -603,7 +674,7 @@ fn chart_table<'a>(c: &'a Chart, tz: i32) -> Element<'a, Msg> {
                 };
                 cells.push((text(value).size(TYPE_UI).color(pal.ink).into(), true));
             }
-            cells_row(cells, &[])
+            cells_row(cells, &[], false)
         })
         .collect();
     ui::scroll(grid(head, rows, &[]))
@@ -640,10 +711,17 @@ fn flags<'a>(list: &'a [Flag]) -> Element<'a, Msg> {
         ]
         .width(Length::Fill)
         .height(Length::Shrink);
-        let flag = button(content)
-            .width(Length::Fill)
-            .padding(0.0)
-            .style(boxed);
+        // The web's `.mx-flag`: the paper ground and the status strip, no box around it.
+        let flag = button(content).width(Length::Fill).padding(0.0).style(
+            |_: &Theme, st: button::Status| {
+                let pal = palette();
+                button::Style {
+                    background: Some(if hovered(st) { pal.hover } else { pal.paper }.into()),
+                    text_color: pal.ink,
+                    ..Default::default()
+                }
+            },
+        );
         match target(f.scope.as_deref(), f.tab.as_deref(), None) {
             Some(msg) => flag.on_press(msg).into(),
             None => flag.into(),
@@ -662,10 +740,17 @@ fn bars<'a>(rows: &'a [BarRow], note: &'a str) -> Element<'a, Msg> {
     for r in rows {
         let mut body: Vec<Element<'a, Msg>> = vec![
             row![
-                text(r.label.as_str()).size(TYPE_UI).color(pal.ink),
-                Space::new().width(Length::Fill),
-                text(r.value.as_str()).size(TYPE_UI).color(pal.ink)
+                // The label wraps, the value never does (as the web's budget rows).
+                text(r.label.as_str())
+                    .size(TYPE_UI)
+                    .color(pal.ink)
+                    .width(Length::Fill),
+                text(r.value.as_str())
+                    .size(TYPE_UI)
+                    .color(pal.ink)
+                    .wrapping(text::Wrapping::None)
             ]
+            .spacing(8)
             .align_y(Alignment::Center)
             .into(),
             segments(vec![(portion(r.frac), status(r.status))], 6.0),

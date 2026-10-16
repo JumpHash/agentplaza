@@ -487,17 +487,18 @@ where
     T: Copy + PartialEq,
     M: Clone + 'a,
 {
-    let mut strip = row![].align_y(Alignment::Center);
+    let mut strip: Vec<Element<'a, M>> = Vec::new();
     for (i, (value, name)) in options.iter().enumerate() {
         if i > 0 {
-            strip = strip.push(
+            strip.push(
                 container(Space::new())
                     .width(Length::Fixed(1.0))
                     .height(Length::Fixed(SEG_HEIGHT))
                     .style(|_: &Theme| container::Style {
                         background: Some(crate::theme::palette().rule.into()),
                         ..Default::default()
-                    }),
+                    })
+                    .into(),
             );
         }
         let on = *value == selected;
@@ -527,18 +528,23 @@ where
                 }
             })
             .on_press(on_select(*value));
-        strip = strip.push(cell);
+        strip.push(cell.into());
     }
-    container(strip)
-        .style(|_: &Theme| container::Style {
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+    // Options that do not fit wrap to another line inside the box, as the web's `.mx-seg` (flex-wrap).
+    container(
+        iced::widget::Row::with_children(strip)
+            .align_y(Alignment::Center)
+            .wrap(),
+    )
+    .style(|_: &Theme| container::Style {
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// Underline tabs, as the web's `.tabs`: mono caps, ink-3 until the pointer or the choice reaches

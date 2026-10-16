@@ -27,6 +27,9 @@ const TIP_W: f32 = 200.0;
 const TIP_ROW: f32 = 16.0;
 /// The size of the axis, gap and label text, in pixels.
 const LABEL_PX: f32 = 11.0;
+/// The height a limit's label needs above its line; with less room it sits under the line.
+const LIMIT_LABEL_ROOM: f32 = 16.0;
+
 /// The dash patterns of the lines, the comparison overlays, the markers, the limit and the annotations.
 const DASH_SERIES: &[f32] = &[4.0, 3.0];
 const DASH_GHOST: &[f32] = &[5.0, 4.0];
@@ -400,13 +403,19 @@ impl LineChart<'_> {
                 ),
                 stroke(crit, 1.0, Some(DASH_LIMIT)),
             );
+            // Above the line, or under it when the line runs along the top and the label would leave the chart.
+            let (label_y, valign) = if y - LIMIT_LABEL_ROOM < 0.0 {
+                (y + 4.0, alignment::Vertical::Top)
+            } else {
+                (y - 4.0, alignment::Vertical::Bottom)
+            };
             text_at(
                 frame,
                 limit.label.as_str(),
-                Point::new(bounds.width - PAD_R, y - 4.0),
+                Point::new(bounds.width - PAD_R, label_y),
                 crit,
                 alignment::Horizontal::Right,
-                alignment::Vertical::Bottom,
+                valign,
             );
         }
 
@@ -669,9 +678,12 @@ fn legend(c: &Chart) -> Element<'_, Msg> {
             palette.ink_2,
         ));
     }
+    // Whole entries wrap to the next line, as the web's flex-wrap legend does; an entry's name never breaks.
     Row::with_children(items)
         .spacing(14.0)
         .align_y(alignment::Vertical::Center)
+        .wrap()
+        .vertical_spacing(4.0)
         .into()
 }
 

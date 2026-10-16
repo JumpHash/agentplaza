@@ -30,6 +30,8 @@ use crate::console::{Ctx, events};
 pub mod charts;
 pub mod dialogs;
 pub mod figures;
+pub mod grid_row;
+pub mod measure;
 pub mod overlays;
 pub mod panels;
 pub mod panels_ops;

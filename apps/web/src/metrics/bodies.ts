@@ -80,7 +80,9 @@ function tableRow(row: Row, columns: Column[], ctx: PanelCtx): HTMLTableRowEleme
   const tr = h('tr', { class: classes || null, tabindex: clickable ? 0 : null });
   row.cells.forEach((cell, i) => {
     const numeric = columns[i]?.num ?? false;
-    const cellClasses = [numeric ? 'mx-r' : '', numeric || cell.type === 'num' ? 'mx-num' : ''].filter(Boolean).join(' ');
+    // Only free text wraps; names, ids, numbers and pills stay on one line (the desktop sizes its columns the same way).
+    const wraps = !numeric && (cell.type === 'text' || cell.type === 'muted');
+    const cellClasses = [numeric ? 'mx-r' : '', numeric || cell.type === 'num' ? 'mx-num' : '', wraps ? 'mx-wrap' : ''].filter(Boolean).join(' ');
     tr.appendChild(h('td', { class: cellClasses || null }, cellContent(cell)));
   });
   if (clickable) {
@@ -97,9 +99,16 @@ function tableRow(row: Row, columns: Column[], ctx: PanelCtx): HTMLTableRowEleme
 }
 
 /** The content of one table cell, by the cell's kind. */
+/** Free text wraps at spaces only: hyphens become non-breaking, so a name like "sonnet-5.5" stays whole (as on the
+ * desktop). */
+export function wrapsAtSpaces(text: string): string {
+  return text.replace(/-/g, '\u2011');
+}
+
 function cellContent(cell: Cell): Node | string {
   switch (cell.type) {
     case 'text':
+      return wrapsAtSpaces(cell.text);
     case 'num':
       return cell.text;
     case 'mono':
@@ -111,7 +120,7 @@ function cellContent(cell: Cell): Node | string {
     case 'pill':
       return h('span.mx-pill', { class: `mx-${cell.status}` }, cell.text);
     case 'muted':
-      return h('span.mx-mute', null, cell.text);
+      return h('span.mx-mute', null, wrapsAtSpaces(cell.text));
     case 'spark':
       return spark(cell.values, cell.tone);
     case 'bar':

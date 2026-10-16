@@ -436,9 +436,10 @@ fn forecast_chart(m: &Month) -> Body {
         stacked: false,
         area: false,
         y_max: None,
+        // In the projection's tone, so the band reads as its spread (and shows on the dark sheet too).
         band: Some(Band {
             name: "p10–p90".into(),
-            tone: Tone::Ink3,
+            tone: Tone::C2,
             lo,
             hi,
         }),

@@ -222,7 +222,7 @@ export function treemap(host: HTMLElement, unit: Unit, items: TreeItem[]): Figur
         const share = total > 0 ? (Math.max(0, c.item.value) / total) * 100 : 0;
         const pct = `${share.toFixed(0)}%`;
         if ((c.w / 100) * width * ((c.h / 100) * TREE_H) > TREE_TEXT_MIN_AREA) {
-          d.replaceChildren(el('b', null, c.item.name), el('br'), `${format(unit, c.item.value)} · ${pct}`);
+          d.replaceChildren(el('b', null, c.item.name), el('span', null, `${format(unit, c.item.value)} · ${pct}`));
         }
         d.title = `${c.item.name}: ${format(unit, c.item.value)} (${pct})`;
         return d;

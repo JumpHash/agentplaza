@@ -195,8 +195,9 @@ function subject(text: string, scope: string | undefined, ctx: PanelCtx): HTMLEl
 }
 
 function makeTable(heads: string[], rows: HTMLElement[]): HTMLElement {
+  // Rules, traces and events flow their text in their cells (as the desktop's ops tables do).
   return h('div.mx-tablewrap', null,
-    h('table.mx-t', null,
+    h('table.mx-t.mx-flow', null,
       h('thead', null, h('tr', null, heads.map((label) => h('th', null, label)))),
       h('tbody', null, rows)));
 }
