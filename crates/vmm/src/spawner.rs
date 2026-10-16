@@ -283,6 +283,18 @@ pub trait VmControl: Send + Sync {
     /// Pauses the VM (if it is running), writes a snapshot into `dir`, and leaves it **paused**: the
     /// caller resumes it, or stops it (to sleep or move it).
     fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError>;
+    /// Like `snapshot`, but may keep the memory and the state file in RAM instead of writing them:
+    /// the VM is left paused, and `write_captured` (callable after a resume) completes the files. The
+    /// default writes everything now.
+    fn capture(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.snapshot(dir, kind)
+    }
+    /// Writes what the last `capture` kept in RAM: the memory pages, then the state file. Returns
+    /// the guest memory bytes written. Nothing to do after a `snapshot` or a capture that wrote at
+    /// once, so the default is `0`.
+    fn write_captured(&self) -> Result<u64, SpawnError> {
+        Ok(0)
+    }
     /// Pages a paused VM's guest memory out of host RAM (`MADV_PAGEOUT` on every guest region):
     /// the guest is not touched, and its next accesses fault the pages back. Refused while the VM
     /// runs. Returns the bytes advised; 0 where the backend cannot page out.
@@ -1131,6 +1143,22 @@ impl VmHandle {
             .vm_control()
             .ok_or(SpawnError::NoSnapshots)?
             .snapshot(dir, kind)
+    }
+
+    /// Captures a snapshot of the VM into `dir` and leaves it paused (see [`VmControl::capture`]).
+    pub fn capture(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .capture(dir, kind)
+    }
+
+    /// Writes the snapshot the last capture kept in RAM (see [`VmControl::write_captured`]).
+    pub fn write_captured(&self) -> Result<u64, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .write_captured()
     }
 
     /// Pages a paused VM's guest memory out of host RAM (see [`VmControl::reclaim`]).

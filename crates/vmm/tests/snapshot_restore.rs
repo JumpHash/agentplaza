@@ -122,11 +122,18 @@ fn a_guest_runs_on_after_a_restore_and_a_restore_of_its_diff() {
         Duration::from_secs(10)
     ));
 
-    // A full snapshot of the booted guest, then the guest is gone.
+    // A full snapshot of the booted guest, taken as a capture: the guest runs on while the capture is
+    // written, and the restore reads the files the write completed. Then the guest is gone.
     let snap = dir.join("snap1");
-    let info = first.snapshot(&snap, SnapshotKind::Full).expect("snapshot");
+    let info = first.capture(&snap, SnapshotKind::Full).expect("capture");
     assert_eq!(info.kind, SnapshotKind::Full);
     assert!(info.memory_written > 0);
+    first.resume().expect("resume");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        first.write_captured().expect("write the capture"),
+        info.memory_written
+    );
     // The booted guest touched memory, so the snapshot records its working set for the restore.
     let working_set = std::fs::read(snap.join(vmm::vstate::snapshot::WORKING_SET_FILE))
         .expect("the working-set file");

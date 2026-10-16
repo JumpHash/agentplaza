@@ -36,7 +36,7 @@
 use std::fmt::Display;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
@@ -55,11 +55,17 @@ use crate::vstate::snapshot::{
     self, DeviceStates, MEMORY_FILE, RegionMeta, Run, SerialRegisters, VcpuState, VmSnapshot,
     VmState, merge_runs, meta_now, write_state, write_working_set,
 };
-use crate::vstate::snapshot_memory::{layout, resident_runs, write_memory};
+use crate::vstate::snapshot_memory::{
+    CapturedMemory, capture_memory, layout, resident_runs, write_captured, write_memory,
+};
 use crate::vstate::vm::{KvmVm, KvmVmError};
 
 /// What every call on a VM that has stopped fails with.
 const VM_STOPPED: &str = "the VM has stopped";
+
+/// The most guest memory a capture keeps in RAM. A capture whose pages would pass it writes the
+/// memory file at once, as a snapshot does.
+const CAPTURE_LIMIT: u64 = 256 << 20;
 
 /// The VM's device gate (see the vsock event thread, where it is defined for every backend).
 pub use crate::devices::virtio::vsock::event_thread::DeviceGate;
@@ -93,6 +99,17 @@ pub struct InProcessControl {
     /// paged them out. A snapshot of a reclaimed VM would otherwise record almost nothing; the next
     /// snapshot takes this set (merged with what is resident then) and clears it.
     reclaimed_working_set: Mutex<Option<Vec<Run>>>,
+    /// The last capture, kept in RAM until `write_captured` writes it (see [`VmControl::capture`]).
+    captured: Mutex<Option<Captured>>,
+}
+
+/// What a capture holds, all of it in RAM: what `write_captured` writes into the snapshot directory.
+struct Captured {
+    dir: PathBuf,
+    memory: CapturedMemory,
+    working_set: Vec<Run>,
+    state: VmSnapshot,
+    durable: bool,
 }
 
 impl InProcessControl {
@@ -115,6 +132,7 @@ impl InProcessControl {
             busy: Mutex::new(()),
             paused: AtomicBool::new(false),
             reclaimed_working_set: Mutex::new(None),
+            captured: Mutex::new(None),
         }
     }
 
@@ -164,33 +182,43 @@ impl InProcessControl {
         })
     }
 
-    /// Writes the memory file of the snapshot in `dir`, returning its kind and the bytes written.
-    ///
-    /// A VM restored from a file gets a reflinked copy of that file with its changed pages written
-    /// over it (a diff); a booted VM gets every page it touched (full). See the module docs.
-    fn save_memory(
-        &self,
-        vm: &KvmVm,
-        dir: &Path,
-        regions: &[RegionMeta],
-    ) -> Result<(SnapshotKind, u64), SpawnError> {
+    /// The kind of memory file a snapshot of this VM holds: a VM restored from a file gets a diff, a
+    /// booted VM a full snapshot. See the module docs.
+    fn memory_kind(&self) -> SnapshotKind {
+        match self.restored_from {
+            Some(_) => SnapshotKind::Diff,
+            None => SnapshotKind::Full,
+        }
+    }
+
+    /// Refuses a snapshot whose memory file would be the file the VM was restored from: the base is
+    /// the file the VM still maps, and copying onto it would truncate the pages the VM has not read.
+    fn check_memory_target(&self, dir: &Path) -> Result<(), SpawnError> {
+        let Some(base) = &self.restored_from else {
+            return Ok(());
+        };
         let path = dir.join(MEMORY_FILE);
-        let (kind, file) = match &self.restored_from {
+        let base_meta = base
+            .metadata()
+            .map_err(|err| step("read the restored memory file", err))?;
+        if let Ok(existing) = fs::metadata(&path)
+            && existing.dev() == base_meta.dev()
+            && existing.ino() == base_meta.ino()
+        {
+            return Err(snapshot_error(format!(
+                "write the memory file: {} is the file the VM was restored from",
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Creates the memory file of the snapshot in `dir`, empty for a booted VM, or a reflinked copy
+    /// of the base with the diff written over it for a restored one. Returns the file's kind.
+    fn memory_file(&self, dir: &Path) -> Result<(SnapshotKind, File), SpawnError> {
+        let path = dir.join(MEMORY_FILE);
+        match &self.restored_from {
             Some(base) => {
-                // The base is the file the VM still maps: copying onto it would truncate the pages
-                // the VM has not read yet.
-                let base_meta = base
-                    .metadata()
-                    .map_err(|err| step("read the restored memory file", err))?;
-                if let Ok(existing) = fs::metadata(&path)
-                    && existing.dev() == base_meta.dev()
-                    && existing.ino() == base_meta.ino()
-                {
-                    return Err(snapshot_error(format!(
-                        "write the memory file: {} is the file the VM was restored from",
-                        path.display()
-                    )));
-                }
                 // The copy goes through the open descriptor, so it works after the base was unlinked
                 // and inside a jail with no `/proc`.
                 crate::clonefile::clone_open_file(base, &path)
@@ -202,17 +230,119 @@ impl InProcessControl {
                     .write(true)
                     .open(&path)
                     .map_err(|err| step("open the memory file", err))?;
-                (SnapshotKind::Diff, file)
+                Ok((SnapshotKind::Diff, file))
             }
             None => {
                 let file = snapshot::private_file(&path)
                     .map_err(|err| step("create the memory file", err))?;
-                (SnapshotKind::Full, file)
+                Ok((SnapshotKind::Full, file))
             }
-        };
+        }
+    }
+
+    /// Writes the memory file of the snapshot in `dir`, returning its kind and the bytes written.
+    fn save_memory(
+        &self,
+        vm: &KvmVm,
+        dir: &Path,
+        regions: &[RegionMeta],
+    ) -> Result<(SnapshotKind, u64), SpawnError> {
+        let (kind, file) = self.memory_file(dir)?;
         let written = write_memory(vm.guest_memory(), regions, &file, kind)
             .map_err(|err| step("write the guest memory", err))?;
         Ok((kind, written))
+    }
+
+    /// Writes the snapshot's memory and state: the shared body of `snapshot` and `capture`. With
+    /// `keep` the memory is captured into RAM (`capture`), and the state file waits for
+    /// `write_captured`; a capture past [`CAPTURE_LIMIT`] writes both at once, as a snapshot does.
+    fn take(
+        &self,
+        dir: &Path,
+        requested: SnapshotKind,
+        keep: bool,
+    ) -> Result<SnapshotInfo, SpawnError> {
+        self.check_memory_target(dir)?;
+        let vm = self.live_vm()?;
+        // The clock starts before the pause: `paused_ms` is how long the guest was stopped.
+        let started = Instant::now();
+        self.pause_vm(&vm)?;
+        // Held to the end: the vsock event thread must not land a packet between the device state
+        // and the memory dump.
+        let _gate = self.gate.write().unwrap_or_else(PoisonError::into_inner);
+
+        snapshot::create_private_dir(dir)
+            .map_err(|err| step("create the snapshot directory", err))?;
+        let vcpus = vm
+            .save_vcpu_states()
+            .map_err(|err| step("save the vCPU states", err))?;
+        let vm_state = save_vm_state(&vm, &vcpus).map_err(|err| step("save the VM state", err))?;
+        let devices = self.save_devices()?;
+        let regions = layout(vm.guest_memory());
+        // Read before the memory is written: the write reads the touched pages back in.
+        // The working set is a hint for the restore: failing to read or write it never fails the snapshot.
+        let working_set = {
+            let kept = lock(&self.reclaimed_working_set);
+            merge_runs(
+                kept.as_deref().unwrap_or(&[]),
+                &resident_or_none(&vm, &regions),
+            )
+        };
+        let kept = if keep {
+            capture_memory(
+                vm.guest_memory(),
+                &regions,
+                self.memory_kind(),
+                CAPTURE_LIMIT,
+            )
+            .map_err(|err| step("capture the guest memory", err))?
+        } else {
+            None
+        };
+        let (kind, memory_written, memory) = match kept {
+            Some(memory) => (self.memory_kind(), memory.bytes, Some(memory)),
+            None => {
+                let (kind, written) = self.save_memory(&vm, dir, &regions)?;
+                (kind, written, None)
+            }
+        };
+
+        let mut meta = meta_now(kind, self.vcpus, self.memory_mib, regions);
+        meta.memory_written = memory_written;
+        let state = VmSnapshot {
+            meta,
+            vm: vm_state,
+            vcpus,
+            devices,
+        };
+        let durable = requested.is_durable();
+        match memory {
+            Some(memory) => {
+                *lock(&self.captured) = Some(Captured {
+                    dir: dir.to_path_buf(),
+                    memory,
+                    working_set,
+                    state,
+                    durable,
+                });
+            }
+            None => {
+                if let Err(err) = write_working_set(dir, &working_set) {
+                    eprintln!("warning: snapshot: the working-set hint was not written: {err}");
+                }
+                write_state(dir, &state, durable)
+                    .map_err(|err| step("write the state file", err))?;
+            }
+        }
+        // The snapshot has taken what the reclaim kept; a later snapshot records what is resident then.
+        *lock(&self.reclaimed_working_set) = None;
+
+        Ok(SnapshotInfo {
+            dir: dir.to_path_buf(),
+            kind,
+            memory_written,
+            paused_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        })
     }
 }
 
@@ -244,55 +374,45 @@ impl VmControl for InProcessControl {
     /// `requested` kind is honored: a `DiffUnsynced` state file is not fsynced.
     fn snapshot(&self, dir: &Path, requested: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
         let _busy = lock(&self.busy);
-        let vm = self.live_vm()?;
-        // The clock starts before the pause: `paused_ms` is how long the guest was stopped.
-        let started = Instant::now();
-        self.pause_vm(&vm)?;
-        // Held to the end: the vsock event thread must not land a packet between the device state
-        // and the memory dump.
-        let _gate = self.gate.write().unwrap_or_else(PoisonError::into_inner);
+        // A snapshot supersedes a capture that was never written.
+        *lock(&self.captured) = None;
+        self.take(dir, requested, false)
+    }
 
-        snapshot::create_private_dir(dir)
-            .map_err(|err| step("create the snapshot directory", err))?;
-        let vcpus = vm
-            .save_vcpu_states()
-            .map_err(|err| step("save the vCPU states", err))?;
-        let vm_state = save_vm_state(&vm, &vcpus).map_err(|err| step("save the VM state", err))?;
-        let devices = self.save_devices()?;
-        let regions = layout(vm.guest_memory());
-        // Read before the memory is written: the write reads the touched pages back in.
-        // The working set is a hint for the restore: failing to read or write it never fails the snapshot.
-        let working_set = {
-            let kept = lock(&self.reclaimed_working_set);
-            merge_runs(
-                kept.as_deref().unwrap_or(&[]),
-                &resident_or_none(&vm, &regions),
-            )
+    /// Takes a snapshot like [`snapshot`](Self::snapshot), but keeps the memory and the state in RAM
+    /// (see [`VmControl::capture`]). A capture while an earlier one is unwritten is refused.
+    fn capture(&self, dir: &Path, requested: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        let _busy = lock(&self.busy);
+        if lock(&self.captured).is_some() {
+            return Err(snapshot_error(
+                "a previous capture is not written yet; write it before capturing again",
+            ));
+        }
+        self.take(dir, requested, true)
+    }
+
+    /// Writes the capture the VM holds, with the VM running: the memory pages, the working-set hint,
+    /// then the state file last, as a snapshot writes them. Nothing to write is `Ok(0)`.
+    fn write_captured(&self) -> Result<u64, SpawnError> {
+        let _busy = lock(&self.busy);
+        let Some(captured) = lock(&self.captured).take() else {
+            return Ok(0);
         };
-        let (kind, memory_written) = self.save_memory(&vm, dir, &regions)?;
-        if let Err(err) = write_working_set(dir, &working_set) {
+        let Captured {
+            dir,
+            memory,
+            working_set,
+            state,
+            durable,
+        } = captured;
+        let (kind, file) = self.memory_file(&dir)?;
+        let written = write_captured(&memory, &file, kind)
+            .map_err(|err| step("write the guest memory", err))?;
+        if let Err(err) = write_working_set(&dir, &working_set) {
             eprintln!("warning: snapshot: the working-set hint was not written: {err}");
         }
-
-        let mut meta = meta_now(kind, self.vcpus, self.memory_mib, regions);
-        meta.memory_written = memory_written;
-        let state = VmSnapshot {
-            meta,
-            vm: vm_state,
-            vcpus,
-            devices,
-        };
-        write_state(dir, &state, requested.is_durable())
-            .map_err(|err| step("write the state file", err))?;
-        // The snapshot has taken what the reclaim kept; a later snapshot records what is resident then.
-        *lock(&self.reclaimed_working_set) = None;
-
-        Ok(SnapshotInfo {
-            dir: dir.to_path_buf(),
-            kind,
-            memory_written,
-            paused_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        })
+        write_state(&dir, &state, durable).map_err(|err| step("write the state file", err))?;
+        Ok(written)
     }
 
     /// Pages every guest region out of host RAM. The vCPUs and devices are stopped, so nothing
@@ -664,6 +784,67 @@ mod tests {
         assert_eq!(fs::metadata(&base_file).unwrap().len(), base_len);
 
         control.resume().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A capture is a point-in-time copy: the guest writes after the resume, and the memory file that
+    /// `write_captured` writes still holds the page from before it. The state file waits for the
+    /// write, and a second capture is refused while the first is unwritten.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_capture_is_written_after_the_resume_with_the_memory_it_held() {
+        use crate::vstate::memory::Bytes;
+        if !crate::vstate::kvm::usable_for_tests() {
+            eprintln!("skipped: /dev/kvm is not usable here");
+            return;
+        }
+        let vm = vm_without_vcpus(1 << 20);
+        let serial = serial();
+        let control = control_of(&vm, &serial, None);
+        vm.guest_memory()
+            .write_slice(&[0xAA; 4096], GuestAddress(4 * 4096))
+            .unwrap();
+        let root = scratch("capture");
+        let dir = root.join("snap");
+
+        let info = control.capture(&dir, SnapshotKind::Full).unwrap();
+        assert_eq!(info.kind, SnapshotKind::Full);
+        assert!(
+            control.paused.load(Ordering::SeqCst),
+            "the VM is left paused"
+        );
+        assert!(
+            !dir.join(STATE_FILE).exists(),
+            "the state file waits for the write"
+        );
+        let other = root.join("other");
+        assert!(
+            control.capture(&other, SnapshotKind::Full).is_err(),
+            "a capture is refused while the first is unwritten"
+        );
+        assert!(!other.exists(), "a refused capture writes nothing");
+
+        control.resume().unwrap();
+        vm.guest_memory()
+            .write_slice(&[0xBB; 4096], GuestAddress(4 * 4096))
+            .unwrap();
+        assert_eq!(control.write_captured().unwrap(), info.memory_written);
+        assert_eq!(
+            control.write_captured().unwrap(),
+            0,
+            "nothing is left to write"
+        );
+
+        let memory = fs::read(dir.join(MEMORY_FILE)).unwrap();
+        assert_eq!(memory.len(), 1 << 20);
+        assert!(
+            memory[4 * 4096..5 * 4096].iter().all(|&b| b == 0xAA),
+            "the captured page is the one from before the resume"
+        );
+        let state = read_state(&dir).unwrap();
+        assert_eq!(state.meta.memory_written, info.memory_written);
+        assert_eq!(state.devices.serial.in_buffer, Vec::<u8>::new());
+        assert_eq!(mode(&dir.join(MEMORY_FILE)), 0o600);
         fs::remove_dir_all(&root).unwrap();
     }
 }

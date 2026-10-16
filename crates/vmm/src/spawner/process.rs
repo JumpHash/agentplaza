@@ -48,8 +48,9 @@
 //! The child binds `{uds_path}.ctl` ([`control_path`], `--control`) before its
 //! readiness line, and the parent makes one exchange over it per call — one
 //! request line, one reply line ([`parse_reply`]). The requests are `usable N`
-//! and `stats` (the balloon, [`ChildMemory`]) and `pause`, `resume` and
-//! `snapshot <full|diff> <dir>` ([`ChildControl`]); the child answers each from
+//! and `stats` (the balloon, [`ChildMemory`]) and `pause`, `resume`,
+//! `snapshot <full|diff> <dir>`, `capture <full|diff> <dir>` and `write_captured`
+//! ([`ChildControl`]); the child answers each from
 //! its own VM's control. It lives beside the muxer's socket, so the jail's bind
 //! of the UDS directory covers it at the same path. A VM with no vsock socket
 //! has no such directory to live in, so it has no control socket in this mode:
@@ -679,17 +680,18 @@ enum Reply {
         memory_written: u64,
         paused_ms: u64,
     },
-    /// `ok <bytes>`: the reclaim took, and the child advised this many bytes of guest memory out
-    /// of host RAM.
-    Reclaimed(u64),
+    /// `ok <bytes>`: a reclaim took, and the child advised this many bytes of guest memory out of
+    /// host RAM; or a `write_captured` wrote this many bytes of guest memory.
+    Bytes(u64),
     /// `err <message>`: the child refused or could not carry out the request.
     Err(String),
     /// `stats …`: the balloon's counters.
     Stats(MemoryStats),
 }
 
-/// Parses one reply line: `ok`, `ok <bytes>` (a reclaim), `ok <kind> <memory_written>
-/// <paused_ms>` (a snapshot), `err <message>`, or `stats <max> <usable> <held> <free|-> <available|->`.
+/// Parses one reply line: `ok`, `ok <bytes>` (a reclaim, a `write_captured`), `ok <kind>
+/// <memory_written> <paused_ms>` (a snapshot or a capture), `err <message>`, or `stats <max> <usable>
+/// <held> <free|-> <available|->`.
 /// A line that is none of these is an error, never a guess.
 fn parse_reply(line: &str) -> Result<Reply, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -697,7 +699,7 @@ fn parse_reply(line: &str) -> Result<Reply, String> {
         "ok" if rest.is_empty() => Ok(Reply::Ok),
         "ok" if !rest.contains(' ') => rest
             .parse::<u64>()
-            .map(Reply::Reclaimed)
+            .map(Reply::Bytes)
             .map_err(|_| format!("the reclaim reply {rest:?} is not a number of bytes")),
         "ok" => parse_snapshot(rest),
         "err" => Ok(Reply::Err(rest.to_string())),
@@ -877,12 +879,36 @@ impl VmControl for ChildControl {
 
     fn reclaim(&self) -> Result<u64, SpawnError> {
         match self.request("reclaim", RECLAIM_TIMEOUT)? {
-            Reply::Reclaimed(bytes) => Ok(bytes),
+            Reply::Bytes(bytes) => Ok(bytes),
             other => Err(unexpected("reclaim", &other)),
         }
     }
 
     fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.snapshot_request("snapshot", dir, kind)
+    }
+
+    fn capture(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.snapshot_request("capture", dir, kind)
+    }
+
+    fn write_captured(&self) -> Result<u64, SpawnError> {
+        match self.request("write_captured", SNAPSHOT_TIMEOUT)? {
+            Reply::Bytes(bytes) => Ok(bytes),
+            other => Err(unexpected("write_captured", &other)),
+        }
+    }
+}
+
+impl ChildControl {
+    /// One `snapshot` or `capture` request (`verb`): the child answers with the snapshot's three
+    /// fields.
+    fn snapshot_request(
+        &self,
+        verb: &str,
+        dir: &Path,
+        kind: SnapshotKind,
+    ) -> Result<SnapshotInfo, SpawnError> {
         // The directory is the rest of the request line, so it must be one
         // absolute line of text: a relative path or a line break would not reach
         // the child as the directory the caller named.
@@ -897,7 +923,7 @@ impl VmControl for ChildControl {
                 ),
             });
         };
-        let request = format!("snapshot {} {text}", snapshot_kind_word(kind));
+        let request = format!("{verb} {} {text}", snapshot_kind_word(kind));
         match self.request(&request, SNAPSHOT_TIMEOUT)? {
             Reply::Snapshot {
                 kind,
@@ -1084,7 +1110,7 @@ mod tests {
                 paused_ms: 37,
             })
         );
-        assert_eq!(parse_reply("ok 8192"), Ok(Reply::Reclaimed(8192)));
+        assert_eq!(parse_reply("ok 8192"), Ok(Reply::Bytes(8192)));
         for bad in [
             "",
             "okay",
@@ -1249,6 +1275,54 @@ mod tests {
                 "snapshot full /var/snap/a".to_string(),
                 "snapshot full /var/snap/b".to_string(),
                 "snapshot diff /var/snap/c".to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capture is one `capture <kind> <dir>` request, answered with a snapshot's three fields.
+    /// `write_captured` is one request answered `ok <bytes>`; any other shape of answer is an error.
+    #[test]
+    fn the_child_control_captures_and_writes_the_capture() {
+        let dir = test_dir("child-capture");
+        let path = dir.join("vm.ctl");
+        let listener = UnixListener::bind(&path).expect("a control socket");
+        let server = serve_replies(listener, vec!["ok diff 0 9", "ok 4096", "ok full 4096 12"]);
+        let control = ChildControl { path: path.clone() };
+
+        let captured = control
+            .capture(Path::new("/var/snap/a"), SnapshotKind::Diff)
+            .expect("the capture is kept");
+        assert_eq!(
+            captured,
+            SnapshotInfo {
+                dir: PathBuf::from("/var/snap/a"),
+                kind: SnapshotKind::Diff,
+                memory_written: 0,
+                paused_ms: 9,
+            }
+        );
+        assert_eq!(
+            control.write_captured().expect("the capture is written"),
+            4096
+        );
+        assert!(
+            control.write_captured().is_err(),
+            "a write answered with a snapshot's fields is an error"
+        );
+        // Refused before any connection, as a snapshot is.
+        assert!(
+            control
+                .capture(Path::new("relative"), SnapshotKind::Full)
+                .is_err()
+        );
+
+        assert_eq!(
+            server.join().expect("the stand-in child ends"),
+            vec![
+                "capture diff /var/snap/a".to_string(),
+                "write_captured".to_string(),
+                "write_captured".to_string(),
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
