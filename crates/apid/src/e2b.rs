@@ -1085,6 +1085,7 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
     if app.control.paused() {
         return Err(held());
     }
+    let started = Instant::now();
     let mut spec = Spec::from_body(json_body::<NewSandbox>(req)?)?;
     // A built template (by id, name or `name:tag`; see `crate::e2b_tpl`) starts from its build's
     // snapshot and keeps the template's id as the sandbox's template.
@@ -1128,6 +1129,20 @@ fn create(app: &App, req: &Request, actor: &str) -> Result<Response, Refused> {
         None => new_run(app, SANDBOX_VCPUS, SANDBOX_MEMORY_MIB)?,
     };
     let sandbox = admit(app, &spec, run, cid, actor)?;
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    crate::metrics::ingest::record_event(
+        &app.metrics,
+        apz_metrics::Event {
+            t_ms: apz_plaza::now_ms(),
+            kind: "sandbox_create".to_string(),
+            entity_kind: apz_metrics::EntityKind::Sandbox,
+            entity: sandbox.id.clone(),
+            duration_ms: Some(ms),
+            detail: format!("created in {ms:.0} ms"),
+            parts: Vec::new(),
+        },
+        "",
+    );
     Ok(Response::json(201, &created_view(&sandbox)))
 }
 

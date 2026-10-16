@@ -132,12 +132,14 @@ pub fn ensure_awake(app: &App, cid: u64, timeout: Duration) -> Result<(), String
         touch(app, cid);
         return Ok(());
     }
+    let started = Instant::now();
     wake(app, cid);
-    let deadline = Instant::now() + timeout;
+    let deadline = started + timeout;
     loop {
         match app.agents.get(cid).map(|agent| agent.status) {
             Some(Status::Idle | Status::Working) => {
                 touch(app, cid);
+                record_wake(app, cid, started.elapsed());
                 return Ok(());
             }
             None | Some(Status::Offline) => return Ok(()),
@@ -148,6 +150,26 @@ pub fn ensure_awake(app: &App, cid: u64, timeout: Duration) -> Result<(), String
         }
         std::thread::sleep(POLL_EVERY);
     }
+}
+
+/// Records a finished wake of `cid` (the whole wait for the agent to be back, as `ready_ms`) and marks
+/// the agent idle in the state metrics.
+fn record_wake(app: &App, cid: u64, waited: Duration) {
+    let ms = waited.as_secs_f64() * 1000.0;
+    crate::metrics::ingest::record_event(
+        &app.metrics,
+        apz_metrics::Event {
+            t_ms: apz_plaza::now_ms(),
+            kind: "wake".to_string(),
+            entity_kind: apz_metrics::EntityKind::Agent,
+            entity: cid.to_string(),
+            duration_ms: Some(ms),
+            detail: format!("ready in {ms:.0} ms"),
+            parts: vec![("ready_ms".to_string(), ms)],
+        },
+        &crate::fleet::node_of(app, cid),
+    );
+    crate::metrics::collect::agent_state(app, cid, "idle");
 }
 
 /// The entry points' wake: [`ensure_awake`] for the usual wait, answering 503 when the agent is not
@@ -299,6 +321,20 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
                 "sleep",
                 json!({ "snapshot": body["snapshot"] }),
             );
+            crate::metrics::ingest::record_event(
+                &app.metrics,
+                apz_metrics::Event {
+                    t_ms: apz_plaza::now_ms(),
+                    kind: "sleep".to_string(),
+                    entity_kind: apz_metrics::EntityKind::Agent,
+                    entity: cid.to_string(),
+                    duration_ms: None,
+                    detail: "asleep".to_string(),
+                    parts: Vec::new(),
+                },
+                &crate::fleet::node_of(app, cid),
+            );
+            crate::metrics::collect::agent_state(app, cid, "asleep");
             // Work that arrived while the sleep was in flight waits for a wake now.
             if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
                 wake(app, cid);
