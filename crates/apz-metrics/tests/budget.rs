@@ -147,6 +147,23 @@ fn heartbeat_sizes(batch: &wire::Batch) -> (usize, usize) {
     (json.len(), sent.len())
 }
 
+/// The time budgets' multiplier (the sizes have none): `APZ_PERF_SLACK` when set and positive; else
+/// 4 under CI, where the runners are shared and loaded, and 1 on a developer's machine. The Linux
+/// arm64 tests run under qemu and set it higher (linux.yml).
+fn perf_slack() -> f64 {
+    match std::env::var("APZ_PERF_SLACK")
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+    {
+        Some(text) => match text.trim().parse::<f64>() {
+            Ok(slack) if slack.is_finite() && slack > 0.0 => slack,
+            _ => panic!("APZ_PERF_SLACK must be a positive number, got {text:?}"),
+        },
+        None if std::env::var_os("CI").is_some() => 4.0,
+        None => 1.0,
+    }
+}
+
 #[test]
 fn a_simulated_node_of_fifty_vms_stays_inside_the_collection_budget() {
     let registry = Registry::default();
@@ -275,11 +292,12 @@ fn a_simulated_node_of_fifty_vms_stays_inside_the_collection_budget() {
 
     let gauge_ns = gauge_time.as_nanos() as f64 / gauge_sets as f64;
     let hist_ns = hist_time.as_nanos() as f64 / hist_records as f64;
-    let limit_ns = if cfg!(debug_assertions) {
-        5_000.0
-    } else {
-        1_000.0
-    };
+    let limit_ns = perf_slack()
+        * if cfg!(debug_assertions) {
+            5_000.0
+        } else {
+            1_000.0
+        };
     let json_mean = beat_sizes.iter().map(|s| s.0).sum::<usize>() as f64 / beat_sizes.len() as f64;
     let sent_mean = beat_sizes.iter().map(|s| s.1).sum::<usize>() as f64 / beat_sizes.len() as f64;
     let sent_max = beat_sizes.iter().map(|s| s.1).max().unwrap_or(0);
