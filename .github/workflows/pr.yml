@@ -125,6 +125,8 @@ jobs:
       only: ${{ needs.changes.outputs.only }}
 
   # The one required check. A job skipped because the change does not touch it counts as passed.
+  # It runs even when the run is cancelled (`always()`): GitHub counts a skipped required check as
+  # passed, so a cancelled run would otherwise look green. It then says which jobs never finished.
   ci-ok:
     needs: [changes, lint, migrations, console, linux, windows, macos]
     if: always()
@@ -135,7 +137,14 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.value.result)\t\(.key)"'
+          # Jobs with the given result, comma-separated.
+          with() { echo "$RESULTS" | jq -r --arg r "$1" '[to_entries[] | select(.value.result == $r) | .key] | join(", ")'; }
+          failed=$(with failure) cancelled=$(with cancelled)
+          if [ -n "$failed" ]; then echo "::error::failed: $failed"; fi
+          if [ -n "$cancelled" ]; then
+            echo "::error::cancelled before they finished (by hand, or by a newer push): $cancelled. Nothing failed there; re-run them."
+          fi
           bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
-          if [ -n "$bad" ]; then echo "::error::not passed: $bad"; exit 1; fi
+          if [ -n "$bad" ]; then exit 1; fi
           # `changes` decides what runs; if it did not succeed, nothing was checked.
           [ "$(echo "$RESULTS" | jq -r .changes.result)" = success ]
