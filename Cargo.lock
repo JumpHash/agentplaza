@@ -83,6 +83,8 @@ version = "0.1.0"
 dependencies = [
  "apz-http",
  "apz-ide",
+ "apz-metrics",
+ "apz-metrics-view",
  "apz-os",
  "apz-rich",
  "apz-setup",

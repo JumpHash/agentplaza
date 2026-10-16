@@ -18,6 +18,7 @@ pub mod lab;
 pub mod library;
 pub mod machines;
 pub mod mcp;
+pub mod metrics;
 pub mod models;
 pub mod node;
 pub mod nodes;
