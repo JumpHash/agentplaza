@@ -414,7 +414,16 @@ pub fn series(f: &Fixture, read: &Read) -> Vec<Group> {
                         let t = step_mid(read.from_ms, read.step_ms, i);
                         let from = read.from_ms + i * read.step_ms;
                         let value = if is_integrated(metric) {
-                            counter_span(metric, &members, bucket, from, from + read.step_ms)
+                            counter_span(
+                                metric,
+                                &members,
+                                f.now_ms,
+                                bucket,
+                                from,
+                                from + read.step_ms,
+                            )
+                        } else if matches!(read.agg, AggFn::Max) {
+                            step_max(metric, &members, f.now_ms, from, read.step_ms)
                         } else {
                             group_value(metric, &members, f.now_ms, t, read.step_ms)
                         };
@@ -428,6 +437,26 @@ pub fn series(f: &Fixture, read: &Read) -> Vec<Group> {
         Some(top) => keep_top(groups, top),
         None => groups,
     }
+}
+
+/// The highest level of a step: the most of several readings across it (up to now), so a peak inside a long step
+/// shows, as a real maximum over the step would.
+fn step_max(
+    metric: &MetricDef,
+    leaves: &[&Leaf],
+    now: u64,
+    from_ms: u64,
+    step_ms: u64,
+) -> Option<f64> {
+    const READINGS: u64 = 8;
+    let end = (from_ms + step_ms).min(now.max(from_ms + 1));
+    let span = end - from_ms;
+    // Readings across the step, and one at its end (the latest moment it holds).
+    (0..READINGS)
+        .map(|k| from_ms + span * (2 * k + 1) / (2 * READINGS))
+        .chain([end - 1])
+        .filter_map(|t| group_value(metric, leaves, now, t, step_ms))
+        .reduce(f64::max)
 }
 
 /// One number for a metric over a window.
@@ -445,7 +474,7 @@ pub fn scalar(
     let step = scalar_step(from_ms, to_ms);
     let values: Vec<f64> = if is_integrated(metric) {
         let bucket = counter_bucket_ms(to_ms.saturating_sub(from_ms));
-        counter_span(metric, &refs, bucket, from_ms, to_ms)
+        counter_span(metric, &refs, f.now_ms, bucket, from_ms, to_ms)
             .into_iter()
             .collect()
     } else {
@@ -473,6 +502,11 @@ pub fn scalar(
     let picked = match agg {
         AggFn::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
         AggFn::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        // The latest reading: at the window's end, or now when the window reaches past it.
+        AggFn::Last => {
+            let end = to_ms.min(f.now_ms.max(from_ms + 1)) - 1;
+            group_value(metric, &refs, f.now_ms, end, step).unwrap_or(values[values.len() - 1])
+        }
         _ => values.iter().sum::<f64>() / values.len() as f64,
     };
     Some(reduce(agg, metric, step, picked))
@@ -640,9 +674,12 @@ fn amplitude(id: &str) -> f64 {
 
 /// The level of one leaf at a moment: the base times the leaf's weight, with the daily swing, the noise and the
 /// occasional spike (a noise draw above 0.97 is 1.8 times the level). Percentages stay within 0 to 100.
-fn level(metric: &MetricDef, leaf: &Leaf, t_ms: u64) -> f64 {
+fn level(metric: &MetricDef, leaf: &Leaf, now: u64, t_ms: u64) -> f64 {
     if metric.id == "ctx.fill_pct" {
-        return fill_level(leaf, t_ms);
+        return fill_level(leaf, now, t_ms);
+    }
+    if metric.id == "ctx.tokens" {
+        return part_level(leaf, now, t_ms);
     }
     let amp = amplitude(metric.id);
     let factor = if amp == 0.0 {
@@ -650,7 +687,8 @@ fn level(metric: &MetricDef, leaf: &Leaf, t_ms: u64) -> f64 {
     } else {
         let n = noise(&format!("{}|{}", metric.id, leaf.key), t_ms / MINUTE_MS);
         let phase = 2.0 * PI * (t_ms as f64 / DAY_MS as f64);
-        let mut factor = 1.0 + amp * (0.25 * phase.sin() + 0.3 * (n - 0.5));
+        let mut factor =
+            (1.0 + amp * (0.25 * phase.sin() + 0.3 * (n - 0.5))) * day_swing(metric.id, t_ms, amp);
         if n > 0.97 {
             factor *= 1.8;
         }
@@ -664,12 +702,113 @@ fn level(metric: &MetricDef, leaf: &Leaf, t_ms: u64) -> f64 {
     }
 }
 
-/// A context fill: the agent's fill, with a swing of up to 4 points over the day and a little noise. It stays
-/// between 0 and 99, so a window never reads as full.
-fn fill_level(leaf: &Leaf, t_ms: u64) -> f64 {
-    let n = noise(&format!("ctx.fill_pct|{}", leaf.key), t_ms / MINUTE_MS);
-    let phase = 2.0 * PI * (t_ms as f64 / DAY_MS as f64);
-    (leaf.weight + 4.0 * (0.8 * phase.sin() + 0.2 * (2.0 * n - 1.0))).clamp(0.0, 99.0)
+/// Busier and quieter days: a factor of 1 ± 0.25 × `amp` per day, eased from one day's draw to the next so no step
+/// shows at midnight. Daily totals then differ, as real ones do (the month forecast's p10–p90 band needs that).
+fn day_swing(metric_id: &str, t_ms: u64, amp: f64) -> f64 {
+    let day = t_ms / DAY_MS;
+    let frac = (t_ms % DAY_MS) as f64 / DAY_MS as f64;
+    let ease = frac * frac * (3.0 - 2.0 * frac);
+    let seed = format!("{metric_id}|day");
+    let draw = noise(&seed, day) * (1.0 - ease) + noise(&seed, day + 1) * ease;
+    1.0 + 0.25 * amp * (2.0 * draw - 1.0)
+}
+
+/// A context fill: the sum of the agent's parts (see `part_level`) as a share of its window, so the fill climbs
+/// through each cycle to the agent's peak fill and drops at a compaction. It stays between 0 and 99.
+fn fill_level(leaf: &Leaf, now: u64, t_ms: u64) -> f64 {
+    let Some(a) = agent_by_id(&leaf.member) else {
+        return leaf.weight.clamp(0.0, 99.0);
+    };
+    let fixed: f64 = PARTS
+        .iter()
+        .filter(|(part, _)| CTX_FIXED.contains(part))
+        .map(|(_, share)| share)
+        .sum();
+    (leaf.weight * (fixed + (1.0 - fixed) * ctx_growth(ctx_cycle(a.cid, now, t_ms))))
+        .clamp(0.0, 99.0)
+}
+
+/// One part of an agent's context: the system prompt and the tool definitions stay as they are; the other parts
+/// grow through the cycle from `CTX_LOW` of their peak, with a little noise, and fall back at each compaction.
+fn part_level(leaf: &Leaf, now: u64, t_ms: u64) -> f64 {
+    let Some(a) = agent_by_id(&leaf.member) else {
+        return leaf.weight;
+    };
+    if leaf_attr(leaf, "part").is_some_and(|part| CTX_FIXED.contains(&part)) {
+        return leaf.weight;
+    }
+    let n = noise(&format!("ctx.tokens|{}", leaf.key), t_ms / MINUTE_MS);
+    leaf.weight * ctx_growth(ctx_cycle(a.cid, now, t_ms)) * (0.98 + 0.04 * n)
+}
+
+/// The context parts a compaction never frees.
+const CTX_FIXED: &[&str] = &["system", "tools"];
+/// How full the growing parts are right after a compaction, as a share of their peak.
+const CTX_LOW: f64 = 0.3;
+
+/// The growing parts' level at a point of the cycle, as a share of their peak.
+fn ctx_growth(cycle: f64) -> f64 {
+    CTX_LOW + (1.0 - CTX_LOW) * cycle
+}
+
+/// An agent's context cycle: its period (5 to 11 hours, by agent) and its offset on the clock. The phase is set
+/// against `now`, as the fixture's events are: ada, the agent nearest its limit, is just before a compaction, the
+/// others where their draw puts them.
+fn ctx_period(cid: u64, now: u64) -> (u64, u64) {
+    let period = HOUR_MS * (5 + cid % 7);
+    let phase = if cid == ADA_CID {
+        0.97
+    } else {
+        noise("ctx.cycle", cid)
+    };
+    let at_now = (phase * period as f64) as u64;
+    let offset = (at_now + period - now % period) % period;
+    (period, offset)
+}
+
+/// The agent nearest its context limit.
+const ADA_CID: u64 = 4417;
+
+/// Where an agent is in its context cycle at a moment: 0 just after a compaction, rising to 1 just before the next.
+fn ctx_cycle(cid: u64, now: u64, t_ms: u64) -> f64 {
+    let (period, offset) = ctx_period(cid, now);
+    ((t_ms + offset) % period) as f64 / period as f64
+}
+
+/// An agent's compactions in `[from_ms, to_ms)`: the ends of its cycles, each with the context before and after it
+/// in thousands of tokens. The events feed and the composition chart's markers come from here, so the markers sit
+/// on the drops.
+pub(crate) fn ctx_compactions(
+    cid: u64,
+    now: u64,
+    from_ms: u64,
+    to_ms: u64,
+) -> Vec<(u64, f64, f64)> {
+    let Some(a) = AGENTS.iter().find(|a| a.cid == cid) else {
+        return Vec::new();
+    };
+    let (period, offset) = ctx_period(cid, now);
+    let fixed: f64 = PARTS
+        .iter()
+        .filter(|(part, _)| CTX_FIXED.contains(part))
+        .map(|(_, share)| share)
+        .sum();
+    let peak = a.window as f64 * a.fill / 100.0 / 1000.0;
+    let before = (peak * (fixed + (1.0 - fixed) * ctx_growth(1.0))).round();
+    let after = (peak * (fixed + (1.0 - fixed) * ctx_growth(0.0))).round();
+    let mut out = Vec::new();
+    let mut k = (from_ms + offset).div_ceil(period).max(1);
+    loop {
+        let at = k * period - offset;
+        if at >= to_ms {
+            break;
+        }
+        if at >= from_ms {
+            out.push((at, before, after));
+        }
+        k += 1;
+    }
+    out
 }
 
 /// The instant a store's growth is counted from. Fixed, so a read repeated gives the same numbers.
@@ -689,8 +828,8 @@ fn growth(id: &str, t_ms: u64) -> f64 {
 }
 
 /// What one leaf contributes to a step: the level, or for a counter the amount over the step.
-fn leaf_value(metric: &MetricDef, leaf: &Leaf, t_ms: u64, step_ms: u64) -> f64 {
-    let rate = level(metric, leaf, t_ms);
+fn leaf_value(metric: &MetricDef, leaf: &Leaf, now: u64, t_ms: u64, step_ms: u64) -> f64 {
+    let rate = level(metric, leaf, now, t_ms);
     if is_counter(metric) {
         let amount = rate * step_ms as f64 / MINUTE_MS as f64;
         // A compaction or a cold wake is a whole event: a step counts whole ones, never a fraction of one.
@@ -735,6 +874,7 @@ fn counter_bucket_ms(window_ms: u64) -> u64 {
 fn counter_span(
     metric: &MetricDef,
     leaves: &[&Leaf],
+    now: u64,
     bucket_ms: u64,
     from_ms: u64,
     to_ms: u64,
@@ -749,7 +889,7 @@ fn counter_span(
         let hi = (bucket + bucket_ms).min(to_ms);
         if hi > lo {
             let mid = bucket + bucket_ms / 2;
-            let rate: f64 = leaves.iter().map(|l| level(metric, l, mid)).sum();
+            let rate: f64 = leaves.iter().map(|l| level(metric, l, now, mid)).sum();
             total += rate * (hi - lo) as f64 / MINUTE_MS as f64;
         }
         bucket += bucket_ms;
@@ -769,7 +909,7 @@ fn group_value(
     let values: Vec<f64> = leaves
         .iter()
         .filter(|l| !offline(metric, l, now, t_ms))
-        .map(|l| leaf_value(metric, l, t_ms, step_ms))
+        .map(|l| leaf_value(metric, l, now, t_ms, step_ms))
         .collect();
     if values.is_empty() {
         return None;

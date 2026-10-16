@@ -274,13 +274,22 @@ fn postgres(ctx: &Ctx, src: &dyn Source) -> Panel {
         false,
         CHART_HEIGHT,
     );
+    // Both series read the whole hub, so each is named by what it measures rather than by its scope.
+    let first = chart.series.first().map(|s| s.name.clone());
+    if let Some(s) = chart.series.first_mut() {
+        s.name = "query p95".into();
+    }
+    if let Some(first) = first {
+        for g in &mut chart.ghosts {
+            g.name = g.name.replacen(&first, "query p95", 1);
+        }
+    }
     let in_use = src.series(&ctx.read("hub.pg_in_use", AggFn::Last, GroupBy::All));
-    chart.series.extend(
-        in_use
-            .iter()
-            .enumerate()
-            .map(|(i, g)| series_of(g, Tone::chart(i + 1))),
-    );
+    chart.series.extend(in_use.iter().enumerate().map(|(i, g)| {
+        let mut s = series_of(g, Tone::chart(i + 1));
+        s.name = "connections in use".into();
+        s
+    }));
     chart_panel(
         "postgres",
         "Postgres",

@@ -541,7 +541,13 @@ fn recent_calls(ctx: &Ctx, src: &dyn Source) -> Panel {
     } else {
         Body::Table(table)
     };
-    panel("calls", "Recent model calls", "", 12, body)
+    panel(
+        "calls",
+        "Recent model calls",
+        "one row per call, newest first · click a row for its trace",
+        12,
+        body,
+    )
 }
 
 /// The page of the call log before `before_ms` (`GET /v1/metrics/calls/page`), for the query's scope and time zone.

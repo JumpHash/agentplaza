@@ -469,7 +469,27 @@ fn plaza_events(now: u64) -> Vec<Event> {
         let at = (now.saturating_sub(back) + shift)
             .saturating_sub(10 * MINUTE_MS)
             .min(now);
+        // Compactions come from the agents' context cycles below, where their context drops.
+        if *kind == "compaction" {
+            continue;
+        }
         out.push(work_event(kind, at, slot, &mut rng));
+    }
+    for agent in AGENTS {
+        for (at, before, after) in
+            super::data::ctx_compactions(agent.cid, now, now.saturating_sub(3 * DAY_MS), now)
+        {
+            let freed = before - after;
+            out.push(event(
+                at,
+                "compaction",
+                EntityKind::Agent,
+                &agent.cid.to_string(),
+                None,
+                format!("freed {freed:.0}k tokens ({before:.0}k → {after:.0}k)"),
+                vec![("before".to_string(), before), ("after".to_string(), after)],
+            ));
+        }
     }
     for (i, kind) in OLDER_KINDS.iter().enumerate() {
         let back = DAY_MS * 3 / 2 + i as u64 * DAY_MS * 13 / 10;
@@ -662,7 +682,8 @@ fn plan(now: u64) -> Plan {
         let mut at = start;
         let mut next_id = 0u32;
 
-        if k % 4 == 1 {
+        // Every fourth turn, the first (the one a trace view opens on) among them, starts by waking its VM.
+        if k % 4 == 0 {
             let restore = rng.range(140.0, 180.0).round();
             let ready = restore + rng.range(230.0, 260.0).round();
             let vm = VMS[k % VMS.len()];

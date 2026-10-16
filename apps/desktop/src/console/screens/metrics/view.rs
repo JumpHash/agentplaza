@@ -9,6 +9,7 @@ use iced::{Alignment, Border, Color, Element, Length, Padding, Size, Theme};
 
 use apz_metrics_view::{ScopeNode, View};
 
+use super::grid_row::GridRow;
 use super::{Msg, State, overlays, panels};
 use crate::console::Ctx;
 use crate::console::ui;
@@ -703,35 +704,21 @@ fn grid<'a>(view: &'a View, state: &'a State, gap: f32) -> Element<'a, Msg> {
     responsive(move |size: Size| {
         let narrow = size.width < NARROW_GRID;
         let mut rows: Vec<Element<'a, Msg>> = Vec::new();
-        let mut cells: Vec<Element<'a, Msg>> = Vec::new();
+        let mut cells: Vec<(Element<'a, Msg>, u32)> = Vec::new();
         let mut used: u32 = 0;
-        // A row that is not full keeps its empty columns, as the web's grid does.
-        let close = |cells: Vec<Element<'a, Msg>>, used: u32| -> Element<'a, Msg> {
-            let mut cells = cells;
-            if used < 12 {
-                cells.push(
-                    Space::new()
-                        .width(Length::FillPortion((12 - used) as u16))
-                        .into(),
-                );
-            }
-            row(cells).spacing(gap).into()
-        };
+        // Each row is the web's grid row: twelve columns, a row that is not full keeps its empty columns, and every
+        // card is as tall as the row's tallest.
         for panel in &view.panels {
             let span = grid_span(panel.span, narrow);
             if used + span > 12 && !cells.is_empty() {
-                rows.push(close(std::mem::take(&mut cells), used));
+                rows.push(GridRow::new(std::mem::take(&mut cells), gap).into());
                 used = 0;
             }
             used += span;
-            cells.push(
-                container(panels::panel(panel, state))
-                    .width(Length::FillPortion(span as u16))
-                    .into(),
-            );
+            cells.push((panels::panel(panel, state), span));
         }
         if !cells.is_empty() {
-            rows.push(close(cells, used));
+            rows.push(GridRow::new(cells, gap).into());
         }
         column(rows).spacing(gap).into()
     })

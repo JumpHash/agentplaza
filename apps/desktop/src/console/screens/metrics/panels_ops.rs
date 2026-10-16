@@ -6,13 +6,18 @@ use apz_metrics_view::{
     AlertRow, EventRow, LegendItem, RuleRow, SpanRow, Status, Tone, TraceDetail, TraceRow,
     TracesBody, Unit,
 };
-use iced::widget::{Space, button, checkbox, column, container, responsive, row, text};
+use iced::widget::{
+    Space, button, checkbox, column, container, responsive, rich_text, row, span, text,
+};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Size, Theme};
 
 use super::figures::spark;
+use super::measure;
 use super::{Msg, State, status, tone};
 use crate::console::ui;
-use crate::theme::{SANS_MEDIUM, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_SECTION, TYPE_UI};
+use crate::theme::{
+    MONO, SANS, SANS_MEDIUM, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_SECTION, TYPE_UI,
+};
 
 /// The trace filters, in the web's order.
 const TRACE_FILTERS: [&str; 5] = ["all", "error", "slow", "sampled", "open"];
@@ -50,7 +55,7 @@ pub fn rules<'a>(rows: &'a [RuleRow]) -> Element<'a, Msg> {
         ("On", 1, false),
         ("Rule", 3, false),
         ("Scope", 2, false),
-        ("Condition", 3, false),
+        ("Condition", 4, false),
         ("Severity", 2, false),
         ("State", 2, false),
         ("Last fired", 2, false),
@@ -80,8 +85,8 @@ pub fn traces<'a>(t: &'a TracesBody, state: &'a State) -> Element<'a, Msg> {
         &[
             ("Time", 2, false),
             ("Agent", 2, false),
-            ("Total", 1, true),
-            ("Kept because", 3, false),
+            ("Total", 2, false),
+            ("Kept because", 4, false),
         ],
         list_rows,
     );
@@ -131,8 +136,8 @@ pub fn events<'a>(kinds: &'a [String], rows: &'a [EventRow], state: &'a State) -
             &[
                 ("Time", 2, false),
                 ("Kind", 2, false),
-                ("Subject", 3, false),
-                ("Detail", 4, false),
+                ("Subject", 4, false),
+                ("Detail", 7, false),
             ],
             trs,
         )
@@ -217,11 +222,15 @@ fn rule_row<'a>(r: &'a RuleRow) -> Element<'a, Msg> {
     let p = crate::theme::palette();
     let id = r.id.clone();
     let toggle = checkbox(r.on).on_toggle(move |on| Msg::RuleOn(id.clone(), on));
-    let condition: Element<'a, Msg> = row![
-        ui::mono(r.cond.clone(), TYPE_META, p.ink_2),
-        ui::sans(format!(" for {}", r.for_text), TYPE_META, p.ink_2),
-    ]
-    .align_y(Alignment::Center)
+    // One flowing line, as the web's `<span.mono>cond</span> for …`: the window follows the expression and wraps
+    // with it, never in a column of its own.
+    let condition: Element<'a, Msg> = rich_text::<(), Msg, iced::Theme, iced::Renderer>([
+        span(r.cond.clone()).font(MONO),
+        span(format!(" for {}", r.for_text)).font(SANS),
+    ])
+    .size(TYPE_UI)
+    .color(p.ink)
+    .width(Length::Fill)
     .into();
     let state_color = match r.state.as_str() {
         "firing" => p.crit,
@@ -241,7 +250,7 @@ fn rule_row<'a>(r: &'a RuleRow) -> Element<'a, Msg> {
             false,
             ui::sans(r.scope_label.clone(), TYPE_UI, p.ink_2).into(),
         ),
-        (3, false, condition),
+        (4, false, condition),
         (2, false, pill(status_name(r.severity), status(r.severity))),
         (
             2,
@@ -255,22 +264,33 @@ fn rule_row<'a>(r: &'a RuleRow) -> Element<'a, Msg> {
 /// One kept turn in the list: its time, agent, total and why it was kept (crit for an error).
 fn trace_row<'a>(r: &'a TraceRow, selected: bool) -> Element<'a, Msg> {
     let p = crate::theme::palette();
+    // As the web's row: the time in mono, the agent, the total on one line, why it was kept muted (crit on error).
     let kept = ui::sans(
         r.kept_text.clone(),
-        TYPE_META,
+        TYPE_UI,
         if r.error { p.crit } else { p.ink_3 },
     );
     let content = cells(vec![
+        (2, false, ui::mono(r.time.clone(), TYPE_UI, p.ink).into()),
+        (2, false, ui::sans(r.agent.clone(), TYPE_UI, p.ink).into()),
         (
             2,
             false,
-            ui::mono(r.time.clone(), TYPE_META, p.ink_2).into(),
+            ui::sans(r.total.clone(), TYPE_UI, p.ink)
+                .wrapping(text::Wrapping::None)
+                .into(),
         ),
-        (2, false, ui::sans(r.agent.clone(), TYPE_UI, p.ink).into()),
-        (1, true, ui::mono(r.total.clone(), TYPE_META, p.ink).into()),
-        (3, false, kept.into()),
+        (4, false, kept.into()),
     ]);
-    row_button(content, selected, Msg::Trace(r.id.clone()))
+    ruled(
+        row_button(
+            content,
+            selected,
+            Msg::Trace(r.id.clone()),
+            Padding::from([5.0, 8.0]),
+        ),
+        p.rule_faint,
+    )
 }
 
 /// The selected trace: its title, the error note, the waterfall, the legend and the chosen span's details.
@@ -320,7 +340,6 @@ fn trace_detail<'a>(d: &'a TraceDetail, state: &'a State) -> Element<'a, Msg> {
 /// One span of the waterfall: its name indented by depth, the track of its time and its duration. The first
 /// token's wait is drawn faint, the rest in the span's tone (crit when it failed).
 fn waterfall_row<'a>(s: &SpanRow, total: f64, selected: bool, index: usize) -> Element<'a, Msg> {
-    let p = crate::theme::palette();
     let first_token = s.first_token_ms.unwrap_or(0.0);
     let mut bars: Vec<(f64, f64, Color)> = Vec::new();
     if first_token > 0.0 {
@@ -340,24 +359,44 @@ fn waterfall_row<'a>(s: &SpanRow, total: f64, selected: bool, index: usize) -> E
         body,
         tone(body_tone),
     ));
-    let indent = Padding {
-        top: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-        left: f32::from(s.depth) * 12.0,
-    };
-    let name = container(ui::sans(s.name.clone(), TYPE_UI, p.ink_2)).padding(indent);
-    let content = cells(vec![
-        (3, false, name.into()),
-        (6, false, track(&bars)),
-        (
-            1,
-            true,
-            ui::mono(format_value(Unit::Ms, s.dur_ms), TYPE_META, p.ink_2).into(),
-        ),
-    ]);
-    row_button(content, selected, Msg::SelectSpan(index))
+    let depth = f32::from(s.depth) * 12.0;
+    let name = s.name.clone();
+    let dur = format_value(Unit::Ms, s.dur_ms);
+    // The web's `.mx-wf-row`: the name in 90 to 160 px, cut with an ellipsis rather than wrapped; the track; the
+    // duration in 56 px.
+    let content = responsive(move |size: Size| {
+        let p = crate::theme::palette();
+        let name_w = (size.width - WF_DUR - 2.0 * WF_GAP - 80.0).clamp(90.0, 160.0);
+        let shown = measure::ellipsize(&name, SANS, TYPE_META, (name_w - depth).max(0.0));
+        row![
+            container(ui::sans(shown, TYPE_META, p.ink_2))
+                .padding(Padding {
+                    left: depth,
+                    ..Padding::ZERO
+                })
+                .width(Length::Fixed(name_w)),
+            container(track(&bars)).width(Length::Fill),
+            container(ui::sans(dur.clone(), TYPE_META, p.ink_3))
+                .width(Length::Fixed(WF_DUR))
+                .align_x(Alignment::End),
+        ]
+        .spacing(WF_GAP)
+        .align_y(Alignment::Center)
+        .into()
+    })
+    .width(Length::Fill)
+    .height(Length::Shrink);
+    row_button(
+        content.into(),
+        selected,
+        Msg::SelectSpan(index),
+        Padding::from([3.0, 0.0]),
+    )
 }
+
+/// A waterfall row's duration column and the gap between its columns (the web's `.mx-wf-row` grid).
+const WF_DUR: f32 = 56.0;
+const WF_GAP: f32 = 8.0;
 
 /// The track of a waterfall row: each bar at its share of the width, in order, with the gaps between them in
 /// rule_faint. Shares are in tenths of a percent, so a full track adds up to 1000 portions.
@@ -444,22 +483,23 @@ fn legend<'a>(items: &[LegendItem]) -> Element<'a, Msg> {
 fn event_row<'a>(r: &'a EventRow) -> Element<'a, Msg> {
     let p = crate::theme::palette();
     let subject: Element<'a, Msg> = match &r.scope {
-        Some(scope) => ui::link(&r.subject, Msg::Scope(scope.clone()), false),
+        // The web's ghost button: plain text that takes the hover tint.
+        Some(scope) => button(ui::sans(r.subject.clone(), TYPE_UI, p.ink))
+            .padding(Padding::from([2.0, 4.0]))
+            .style(|_: &Theme, st: button::Status| button::Style {
+                background: matches!(st, button::Status::Hovered | button::Status::Pressed)
+                    .then(|| crate::theme::palette().hover.into()),
+                ..Default::default()
+            })
+            .on_press(Msg::Scope(scope.clone()))
+            .into(),
         None => ui::sans(r.subject.clone(), TYPE_UI, p.ink).into(),
     };
     line(cells(vec![
-        (
-            2,
-            false,
-            ui::mono(r.time.clone(), TYPE_META, p.ink_3).into(),
-        ),
+        (2, false, ui::mono(r.time.clone(), TYPE_UI, p.ink).into()),
         (2, false, pill(&r.kind, status(r.status))),
-        (3, false, subject),
-        (
-            4,
-            false,
-            ui::sans(r.detail.clone(), TYPE_META, p.ink_2).into(),
-        ),
+        (4, false, subject),
+        (7, false, ui::sans(r.detail.clone(), TYPE_UI, p.ink).into()),
     ]))
 }
 
@@ -477,7 +517,10 @@ fn table<'a>(heads: &[(&str, u16, bool)], rows: Vec<Element<'a, Msg>>) -> Elemen
             )
         })
         .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![line(cells(head_cells)), ui::hairline::<Msg>()];
+    let head = container(cells(head_cells))
+        .padding(Padding::from([4.0, 8.0]))
+        .width(Length::Fill);
+    let mut lines: Vec<Element<'a, Msg>> = vec![ruled(head.into(), crate::theme::palette().rule)];
     lines.extend(rows);
     column(lines).width(Length::Fill).into()
 }
@@ -496,27 +539,51 @@ fn cells<'a>(parts: Vec<(u16, bool, Element<'a, Msg>)>) -> Element<'a, Msg> {
             cell.into()
         })
         .collect();
+    // The web's 8 px cell padding on each side: 16 px between columns.
     row(items)
-        .spacing(12)
+        .spacing(16)
         .align_y(Alignment::Center)
         .width(Length::Fill)
         .into()
 }
 
-/// A table line that is not a button: its cells with the table's padding.
+/// A table line that is not a button: its cells with the web's cell padding, over the faint rule between rows.
 fn line<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(content)
-        .padding(Padding::from([8.0, 12.0]))
-        .width(Length::Fill)
-        .into()
+    ruled(
+        container(content)
+            .padding(Padding::from([5.0, 8.0]))
+            .width(Length::Fill)
+            .into(),
+        crate::theme::palette().rule_faint,
+    )
+}
+
+/// `content` over a one-pixel rule in `color` (the web's `border-bottom` on a table cell).
+fn ruled<'a>(content: Element<'a, Msg>, color: Color) -> Element<'a, Msg> {
+    column![
+        content,
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                ..Default::default()
+            }),
+    ]
+    .width(Length::Fill)
+    .into()
 }
 
 /// A table row that opens something on a press. The selected row, and a hovered one, take the hover tint.
-fn row_button<'a>(content: Element<'a, Msg>, selected: bool, on_press: Msg) -> Element<'a, Msg> {
+fn row_button<'a>(
+    content: Element<'a, Msg>,
+    selected: bool,
+    on_press: Msg,
+    padding: Padding,
+) -> Element<'a, Msg> {
     let ink = crate::theme::palette().ink;
     button(content)
         .width(Length::Fill)
-        .padding(Padding::from([8.0, 12.0]))
+        .padding(padding)
         .style(move |_: &Theme, button_status: button::Status| {
             let hovered = matches!(
                 button_status,

@@ -350,7 +350,8 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
       const y = Y(cur.limit.value);
       root.append(
         svgNode('line', { x1: PAD_L, x2: W - PAD_R, y1: y, y2: y, 'stroke-dasharray': '5 3' }, { stroke: toneVar('crit') }),
-        svgText(W - PAD_R, y - 4, cur.limit.label, 'end', { fill: toneVar('crit') }),
+        // Above the line, or under it when the line runs along the top (as the desktop places it).
+        svgText(W - PAD_R, y - 16 < 0 ? y + 13 : y - 4, cur.limit.label, 'end', { fill: toneVar('crit') }),
       );
     }
 

@@ -50,7 +50,7 @@ import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.j
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
 import { bandPath, bucketStarts, stackedPaths, thin, xLabelIndexes } from '../src/metrics/charts';
-import { appendPage } from '../src/metrics/bodies';
+import { appendPage, wrapsAtSpaces } from '../src/metrics/bodies';
 import { DEFAULT_STATE, LeaseKeeper, narrowTileColumns, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
 import type { LiveLease, Saved } from '../src/metrics/model';
 
@@ -1733,5 +1733,6 @@ if (failedSections.length) {
   const [a, b] = stackedPaths([[2, 4], [1, null]], (j) => j * 100, (v) => v);
   eq(a, 'M0.0,2.0L100.0,4.0L100.0,0.0L0.0,0.0Z', 'stacked: the bottom layer sits on zero');
   eq(b, 'M0.0,3.0L100.0,4.0L100.0,4.0L0.0,2.0Z', 'stacked: the next layer shares the edge below, a gap counts as zero');
+  eq(wrapsAtSpaces('sonnet-5.5 on r-12'), 'sonnet\u20115.5 on r\u201112', 'table text: hyphens do not break, spaces do');
   console.log('metrics band tests: ok');
 }
