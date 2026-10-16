@@ -68,15 +68,13 @@ whatever depends on them:
   `.github/ci/build-cache.py mtimes`, run right after the checkout, gives every file the runner has
   seen with the same content the mtime it had then. Only changed files look new, as if the working
   copy had persisted.
-- **sccache** (Linux, 20 GB per runner) returns any library crate compiled before with the same
-  source and flags. It fills in whatever the build directory lacks, such as units the prune removed
-  or the guest build.
 - **npm's download cache** persists for the console's `npm ci`.
 - **Not the runner fleet's sccache.** Windows and macOS clear the fleet's `RUSTC_WRAPPER`, because its
   server died mid-build. Their persistent build directory keeps unchanged crates built.
 - **Prune.** `build-cache.py prune` runs at the end of each build job. It reports the build
   directory's size and the disk's free space.
-  - **The limits:** the directory's budget is 80 GB or 60% of the disk, whichever is less. The disk
+  - **The limits:** the directory's budget is 80 GB or 60% of the disk, whichever is less (40 GB on
+    the x86_64 Linux runners, below). The disk
     counts as short below 25 GB free or 10% of the disk, whichever is less.
   - **What it removes:** over budget or short, it removes the units no build has used for 14, then
     7, 3 and 1 days. It empties the directory only if the disk is still short.
@@ -84,6 +82,13 @@ whatever depends on them:
   release does not rebuild everything on the day it ships; bumping it is a deliberate change.
 
 Each runner keeps its own caches. The first job on a new runner compiles everything once.
+
+**The runner fleet's storage guard.** The x86_64 Linux runners are VMs whose disks share the host's.
+After each job, the fleet's guard empties the job's workspace, so every job starts from a fresh
+clone; `mtimes` covers that. When the host's disk passes its limit, the guard also deletes
+`~/.cache`, which holds our build directory, and every Docker image, including the CI image, on
+every runner. The next builds then start cold. So the Linux build directory is held to 40 GB, and
+no second copy of compiled crates (sccache) is kept beside it.
 
 ## All workflows
 

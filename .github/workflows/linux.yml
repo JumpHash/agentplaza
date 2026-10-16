@@ -12,8 +12,8 @@
 # cross-compiled on the x86_64 ones, where the AppImage tooling is (a run that tests and packages
 # arm64 at once tests there too, under qemu). Speed: cargo's build directory and
 # registry persist on the runner (.github/ci/in-image.sh), and the checkout keeps the mtimes this
-# runner last built with (.github/ci/build-cache.py), so only changed crates compile, with sccache
-# behind them; tests and packages use the same release profile; nextest runs the tests in parallel
+# runner last built with (.github/ci/build-cache.py), so only changed crates compile; tests and
+# packages use the same release profile; nextest runs the tests in parallel
 # and kills a hang; a pull request runs only the tests of the packages it changes and of those that
 # depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
@@ -180,6 +180,8 @@ jobs:
           docker network rm "$NET" >/dev/null 2>&1 || true
           # Units no build has used for days go first; the directory is emptied only if the disk is short.
           # (Not when the job ended before its checkout.)
+          # 40 GB: the runner fleet's storage guard wipes ~/.cache, and every Docker image, when the
+          # host's disk passes its limit, so the build directory stays well inside it.
           if [ -f .github/ci/build-cache.py ]; then
-            python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
+            python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target" --max-gb 40
           fi
