@@ -64,7 +64,7 @@ function renderOrchestrator(root: HTMLElement, orch: Agent | undefined): void {
   goal.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
   });
-  const status = orch.status === 'working' ? badge('Working', 'info', true) : orch.status === 'idle' ? badge('Idle', 'ok', true) : orch.status === 'asleep' ? badge('Asleep', 'muted', true) : badge('Offline', 'muted', true);
+  const status = orch.status === 'working' ? badge('Working', 'info', true) : orch.status === 'idle' ? badge('Idle', 'ok', true) : orch.status === 'asleep' ? badge('Asleep', 'muted', true) : orch.status === 'dozing' ? badge('Asleep (light)', 'muted', true) : badge('Offline', 'muted', true);
   replace(
     root,
     card(
@@ -93,7 +93,7 @@ function renderFleet(root: HTMLElement, list: Agent[]): void {
           'button.fleet-tile',
           { type: 'button', title: `${agentName(a)} · ${roleLabel(a.role)} · ${a.model}`, 'data-key': `ag-${a.cid}` },
           h('span.row', null, h('span.dot', { class: tone }), h('strong.truncate', null, agentName(a))),
-          h('span.faint.truncate', null, a.work ? clip(a.work.prompt, 60) : a.status === 'offline' ? 'offline' : a.status === 'asleep' ? 'asleep' : roleLabel(a.role)),
+          h('span.faint.truncate', null, a.work ? clip(a.work.prompt, 60) : a.status === 'offline' ? 'offline' : a.status === 'asleep' ? 'asleep' : a.status === 'dozing' ? 'asleep (light)' : roleLabel(a.role)),
         );
         tile.addEventListener('click', () => go('agents', a.cid));
         return tile;

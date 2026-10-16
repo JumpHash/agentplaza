@@ -79,6 +79,13 @@ impl<S> Lines<S> {
     pub fn get_mut(&mut self) -> &mut S {
         &mut self.inner
     }
+
+    /// Whether [`recv`](Self::recv) can return without reading the stream: a whole line is buffered, or the end of
+    /// the stream was seen. A caller that waits for its stream to become readable checks this first, so a line
+    /// already buffered is never left waiting for more bytes.
+    pub fn pending(&self) -> bool {
+        self.eof || self.buf.contains(&b'\n')
+    }
 }
 
 impl<S: Read> Lines<S> {
@@ -216,5 +223,26 @@ mod tests {
         lines.send("").unwrap();
         assert_eq!(lines.get_ref(), b"one\n\n");
         assert!(lines.send("two\nlines").is_err());
+    }
+
+    #[test]
+    fn a_fresh_channel_over_an_empty_stream_is_not_pending() {
+        let lines = script(&[]);
+        assert!(!lines.pending());
+    }
+
+    #[test]
+    fn a_second_buffered_line_is_pending_after_the_first_is_taken() {
+        let mut lines = script(&[Some(b"a\nb\n")]);
+        assert_eq!(lines.recv().unwrap(), line("a"));
+        assert!(lines.pending());
+        assert_eq!(lines.recv().unwrap(), line("b"));
+    }
+
+    #[test]
+    fn a_channel_that_saw_eof_is_pending() {
+        let mut lines = script(&[]);
+        assert_eq!(lines.recv().unwrap(), Recv::Closed);
+        assert!(lines.pending());
     }
 }

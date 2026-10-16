@@ -1,14 +1,20 @@
 //! The hub's client for `apid`'s internal surface (`docs/architecture.md`,
 //! "Internal endpoints"): the hello that fetches an agent's profile, the
 //! forward of each v3 guest line, and the `gone` at session end. Loopback
-//! only. Every request carries the internal token, read from its file on each
-//! call, so an apid that restarted with a new token is picked up at once.
+//! only. Every request carries the internal token. The token is read from its
+//! file on first use and kept, shared by every clone of the `Apid`. When apid
+//! refuses the kept token (403, which it answers before it runs a handler), the
+//! file is read again and, if it holds another token, the request is sent once
+//! more with that one. So an apid that restarted with a new token is picked up
+//! on its next refusal, and the file is not read on every call.
 
+use std::fmt;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use apz_http::client::send_with;
+use apz_http::client::{Reply, send_with};
 use apz_proto::wire::{AgentProfile, Decision, GuestMessage, HostMessage};
 use serde_json::json;
 
@@ -67,11 +73,23 @@ pub struct E2bSandbox {
 }
 
 /// Where apid's internal surface is, and the file that holds its token.
-/// Without a token file, forwarding is off and nothing is sent.
+/// Without a token file, forwarding is off and nothing is sent. The token is
+/// kept once read, and every clone of this value shares it.
 #[derive(Debug, Clone)]
 pub struct Apid {
     port: u16,
     token_file: Option<PathBuf>,
+    token: Arc<TokenCache>,
+}
+
+/// The token last read from the file, `None` before the first read. Its `Debug` never shows it.
+#[derive(Default)]
+struct TokenCache(Mutex<Option<String>>);
+
+impl fmt::Debug for TokenCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TokenCache(..)")
+    }
 }
 
 impl Apid {
@@ -81,6 +99,7 @@ impl Apid {
         Self {
             port: 0,
             token_file: None,
+            token: Arc::default(),
         }
     }
 
@@ -89,6 +108,7 @@ impl Apid {
         Ok(Self {
             port: port_of(url)?,
             token_file,
+            token: Arc::default(),
         })
     }
 
@@ -195,17 +215,8 @@ impl Apid {
     /// cannot be asked or answers anything but 200 or 404. The caller validates `id` first, since
     /// it becomes part of the path.
     pub fn e2b_sandbox(&self, id: &str) -> Result<Option<E2bSandbox>, String> {
-        let token = self.token()?;
         let path = format!("/internal/e2b/sandboxes/{id}");
-        let reply = send_with(
-            self.port,
-            "GET",
-            &path,
-            &[(TOKEN_HEADER, &token)],
-            None,
-            E2B_LOOKUP_TIMEOUT,
-        )
-        .map_err(|err| format!("apid unreachable: {err}"))?;
+        let reply = self.send_authorized("GET", &path, None, E2B_LOOKUP_TIMEOUT)?;
         match reply.status {
             404 => Ok(None),
             200 => {
@@ -237,24 +248,77 @@ impl Apid {
 
     /// One authenticated POST whose answer must be 200 and JSON.
     fn post(&self, path: &str, body: &str, timeout: Duration) -> Result<serde_json::Value, String> {
-        let token = self.token()?;
-        let reply = send_with(
-            self.port,
-            "POST",
-            path,
-            &[(TOKEN_HEADER, &token)],
-            Some(body.as_bytes()),
-            timeout,
-        )
-        .map_err(|err| format!("apid unreachable: {err}"))?;
+        let reply = self.send_authorized("POST", path, Some(body.as_bytes()), timeout)?;
         if reply.status != 200 {
             return Err(format!("apid answered {} to {path}", reply.status));
         }
         reply.json().map_err(|err| format!("apid's answer: {err}"))
     }
 
-    /// The token as the file holds it now (trimmed). Never echoed in an error.
+    /// Sends one request with the kept token and returns apid's answer, whatever its status. A 403
+    /// is apid refusing the token, and the request is then sent once more with the token the file
+    /// holds now, if that is a different one. A file that cannot be read leaves the 403 as it is.
+    fn send_authorized(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Reply, String> {
+        let token = self.token()?;
+        let reply = self.send_once(method, path, &token, body, timeout)?;
+        if reply.status != 403 {
+            return Ok(reply);
+        }
+        let Ok(fresh) = self.reload_token() else {
+            return Ok(reply);
+        };
+        if fresh == token {
+            return Ok(reply);
+        }
+        self.send_once(method, path, &fresh, body, timeout)
+    }
+
+    fn send_once(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        body: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Reply, String> {
+        send_with(
+            self.port,
+            method,
+            path,
+            &[(TOKEN_HEADER, token)],
+            body,
+            timeout,
+        )
+        .map_err(|err| format!("apid unreachable: {err}"))
+    }
+
+    /// The token, from the file on first use and kept after that. Never echoed in an error.
     pub fn token(&self) -> Result<String, String> {
+        let mut cached = self.cache();
+        if let Some(token) = cached.as_ref() {
+            return Ok(token.clone());
+        }
+        let token = self.read_token_file()?;
+        *cached = Some(token.clone());
+        Ok(token)
+    }
+
+    /// Reads the token file again, keeps what it holds and returns it. An unreadable file is an
+    /// `Err`, and the kept token stays as it was.
+    pub(crate) fn reload_token(&self) -> Result<String, String> {
+        let token = self.read_token_file()?;
+        *self.cache() = Some(token.clone());
+        Ok(token)
+    }
+
+    /// The token as the file holds it now (trimmed). Never echoed in an error.
+    fn read_token_file(&self) -> Result<String, String> {
         let path = self
             .token_file
             .as_ref()
@@ -266,6 +330,10 @@ impl Apid {
             return Err("the internal token file holds no usable token".to_string());
         }
         Ok(token.to_string())
+    }
+
+    fn cache(&self) -> MutexGuard<'_, Option<String>> {
+        self.token.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -445,6 +513,80 @@ mod tests {
             "the paths are fixed"
         );
         assert!(!Apid::off().enabled() && Apid::off().token().is_err());
+    }
+
+    /// A token file named for one test, so parallel tests do not share it.
+    fn token_file(name: &str, token: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("vsockd-apid-{name}-{}", std::process::id()));
+        std::fs::write(&path, format!("{token}\n")).unwrap();
+        path
+    }
+
+    /// A fake apid that answers 200 to the token `accepts` holds and 403 to any other, and records
+    /// the token each request carried, in arrival order.
+    fn apid_that_accepts(
+        accepts: &Arc<Mutex<String>>,
+        seen: &Arc<Mutex<Vec<String>>>,
+    ) -> apz_http::Handle {
+        let (accepts, seen) = (Arc::clone(accepts), Arc::clone(seen));
+        apz_http::Server::bind(0)
+            .unwrap()
+            .spawn(move |request| {
+                let token = request.header(TOKEN_HEADER).unwrap_or("").to_string();
+                seen.lock().unwrap().push(token.clone());
+                if token == *accepts.lock().unwrap() {
+                    apz_http::Response::new(200, "application/json", "{\"profile\":null}")
+                } else {
+                    apz_http::Response::new(403, "application/json", "{}")
+                }
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn the_token_is_read_once_and_a_refused_one_is_read_again() {
+        let accepts = Arc::new(Mutex::new("tok-a".to_string()));
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = apid_that_accepts(&accepts, &seen);
+        let path = token_file("read-once", "tok-a");
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{}", server.port()),
+            Some(path.clone()),
+        )
+        .unwrap();
+
+        // The file is read on the first call only: with it gone, the kept token is still sent.
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        std::fs::remove_file(&path).unwrap();
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        assert_eq!(*seen.lock().unwrap(), ["tok-a", "tok-a"]);
+
+        // apid rotates its token and the file holds the new one: the old one is refused, so the
+        // request goes out once more with the new one.
+        *accepts.lock().unwrap() = "tok-b".to_string();
+        std::fs::write(&path, "tok-b\n").unwrap();
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        assert_eq!(*seen.lock().unwrap(), ["tok-a", "tok-a", "tok-a", "tok-b"]);
+        assert_eq!(apid.token().unwrap(), "tok-b");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_refusal_with_the_same_token_in_the_file_is_not_retried() {
+        let accepts = Arc::new(Mutex::new("tok-never".to_string()));
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = apid_that_accepts(&accepts, &seen);
+        let path = token_file("same-token", "tok-a");
+        let apid = Apid::new(
+            &format!("http://127.0.0.1:{}", server.port()),
+            Some(path.clone()),
+        )
+        .unwrap();
+
+        let error = apid.hello(1, "builder", 0, &[]).unwrap_err();
+        assert_eq!(error, "apid answered 403 to /internal/v1/agents/1/hello");
+        assert_eq!(*seen.lock().unwrap(), ["tok-a"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

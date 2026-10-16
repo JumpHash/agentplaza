@@ -203,16 +203,16 @@ impl SnapshotStore {
         result
     }
 
-    /// Stages a copy of `memory` (a snapshot's memory file) as VM `cid`'s diff base, and returns the
-    /// directory holding it. A VM restored from a snapshot writes its next snapshot as a diff over
-    /// this copy, so the copy is what keeps that working when the snapshot it came from is removed
-    /// (a checkpoint the user deletes, or a run that ends). The copy is replaced on each restore.
-    pub fn stage_base(&self, cid: u64, memory: &Path) -> io::Result<PathBuf> {
+    /// Marks VM `cid` as restored from a snapshot, so its next snapshot is a diff, and returns the
+    /// directory that says so. Nothing is copied: the VMM keeps a descriptor of the memory file it was
+    /// restored from and copies it from there when it writes a snapshot, which keeps working when that
+    /// snapshot is removed or replaced. (A copy here cost a full read and write of the memory file per
+    /// restore on a filesystem without reflinks.)
+    pub fn stage_base(&self, cid: u64) -> io::Result<PathBuf> {
         self.prepare(cid)?;
         let dir = self.dir(cid, BASE);
         remove_dir(&dir)?;
         private_dir(&dir)?;
-        vmm::clonefile::clone_file(memory, &dir.join(MEMORY_FILE))?;
         Ok(dir)
     }
 
@@ -297,7 +297,7 @@ fn label_of(name: &str) -> String {
 fn kind_name(kind: SnapshotKind) -> &'static str {
     match kind {
         SnapshotKind::Full => "full",
-        SnapshotKind::Diff => "diff",
+        SnapshotKind::Diff | SnapshotKind::DiffUnsynced => "diff",
     }
 }
 

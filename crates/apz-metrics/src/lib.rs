@@ -1,5 +1,6 @@
 //! The plaza's metrics core, shared by the hub (apid), the node daemon (noded), the node link (apz-link), the
-//! guest harness and the CLI. Pure data and maths: no I/O, no threads, no clocks (callers pass `now_ms`).
+//! guest harness and the CLI. Pure data and maths: no I/O, no threads, no clocks (callers pass `now_ms`), except
+//! [`prom`].
 //!
 //! * [`catalog`] — every metric the plaza records: id, unit, kind, collection level, scopes, labels, text.
 //! * [`hist`] — fixed log-scale histograms (±2 %), atomic for recording, sparse snapshots that merge exactly.
@@ -16,6 +17,8 @@
 //! * [`movers`] — "what moved most" between two windows.
 //! * [`openmetrics`] — the OpenMetrics text exposition of aggregates (catalog labels only).
 //! * [`level`] — collection levels and the budget governor that steps them down and back up.
+//! * [`prom`] — the daemons' static counters, gauges and latency histograms in the Prometheus text format (their
+//!   `GET /v1/metrics`), and the one-line `timing op=…` records on stderr. It keeps its own clock and writes.
 
 #![forbid(unsafe_code)]
 
@@ -28,6 +31,7 @@ pub mod hist;
 pub mod level;
 pub mod movers;
 pub mod openmetrics;
+pub mod prom;
 pub mod query;
 pub mod registry;
 pub mod trace;

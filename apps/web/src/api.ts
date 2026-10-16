@@ -60,7 +60,8 @@ const query = (params: Record<string, string | number | undefined>): string => {
 // ---- Types -----------------------------------------------------------------
 
 /** A sleeping agent's VM is paused or stopped; a chat or a task wakes it. */
-export type AgentStatus = 'offline' | 'idle' | 'working' | 'asleep';
+/** `dozing`: the VM is paused and paged out after a short idle; it resumes in milliseconds (shown as asleep, light). */
+export type AgentStatus = 'offline' | 'idle' | 'working' | 'asleep' | 'dozing';
 export type Tier = 'orchestrator' | 'worker';
 export type WorkKind = 'task' | 'chat' | 'message' | 'motion';
 
@@ -181,6 +182,8 @@ export interface Settings {
   idle_sleep_min: number;
   /** Roles whose agents never sleep when idle. */
   sleep_never_roles: string[];
+  /** Seconds an idle agent waits before it dozes (its VM paused, memory paged out); 0 = never. */
+  doze_idle_s: number;
   /** Shared read-only data volumes per role: agents of the role mount each one at /data/<name>. */
   role_volumes: Record<string, string[]>;
   /** Take a checkpoint of the agent's VM before each irreversible tool call. */

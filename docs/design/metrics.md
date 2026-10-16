@@ -259,6 +259,12 @@ and the outside endpoints. The owner edits them in the Metrics view's settings d
 
 ## Outside endpoints
 
+- **Daemon scrape metrics.** apid, noded and vsockd each serve `GET /v1/metrics` in the Prometheus text format,
+  behind the route's usual auth: fixed counters and latency histograms for wakes, sleeps, dozes, checkpoints, forks,
+  spawns and sessions (`apz_metrics::prom`, with the statics in `crates/apid/src/metrics/prom.rs`,
+  `crates/noded/src/metrics.rs` and `crates/vsockd/src/metrics.rs`). Each timed VM operation also writes one
+  `timing op=<op> id=<id> total_ms=…` line on stderr, which the lifecycle benchmark reads. These sit beside the
+  series the Metrics view reads, and are always on.
 - **OpenMetrics.** `GET /metrics` returns the latest 1-minute window of every series, in OpenMetrics text
   (`export::openmetrics`, `crates/apz-metrics/src/openmetrics.rs`). It returns 404 unless the owner enables it. When
   enabled, it requires `Authorization: Bearer` with a token the owner's settings hold, and the token is issued when the

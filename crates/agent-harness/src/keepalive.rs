@@ -32,6 +32,14 @@ pub const BACKOFF_MAX_MS: u64 = 30_000;
 /// snapshotted in that wait and restored later, so its next attempt after a restore should land
 /// within one short interval rather than somewhere on the backoff schedule.
 pub const TEMPLATE_RETRY_MS: u64 = 25;
+/// The most a quick reconnect waits. Quick attempts follow any drop after an adoption, a restore's
+/// transport reset included: a restore makes the VMM send the guest a TRANSPORT_RESET, which fails
+/// the open connection with `ConnectionReset`, and the hub is already there, so the next attempt
+/// should not wait out the backoff schedule.
+pub const RESTORE_RETRY_MS: u64 = 25;
+/// How many quick attempts follow a drop after an adoption (a restore's transport reset among
+/// them) before the normal backoff takes over again.
+pub const RESTORE_FAST_TRIES: u32 = 8;
 
 pub fn heartbeat_interval() -> Duration {
     Duration::from_secs(HEARTBEAT_SECS)
@@ -44,6 +52,18 @@ pub struct KeepaliveError {
     /// adoption restarts the backoff.
     pub adopted: bool,
     pub error: SessionError,
+}
+
+impl KeepaliveError {
+    /// Whether the connection died to a vsock transport reset (`ConnectionReset`). The VMM sends
+    /// that reset when it restores a snapshot, so the hub is expected to be reachable at once; a
+    /// hub that hangs up (EOF, `HostClosed`) is not a restore and keeps the normal backoff.
+    pub fn transport_reset(&self) -> bool {
+        matches!(
+            &self.error,
+            SessionError::Io(err) if err.kind() == std::io::ErrorKind::ConnectionReset
+        )
+    }
 }
 
 impl fmt::Display for KeepaliveError {
@@ -155,11 +175,20 @@ pub fn backoff_delay(failures: u32, jitter: u64) -> Duration {
 }
 
 /// The delay before the next attempt. A template still waiting for its first welcome retries every
-/// [`TEMPLATE_RETRY_MS`]; every other guest, and a template once the hub has accepted it, follows
-/// [`backoff_delay`].
-pub fn reconnect_delay(template_waiting: bool, failures: u32, jitter: u64) -> Duration {
+/// [`TEMPLATE_RETRY_MS`]. In the quick window after a drop that followed an adoption (`after_restore`, a
+/// restore's transport reset among them), the attempt
+/// waits less than [`RESTORE_RETRY_MS`]. Every other guest, and a template once the hub has
+/// accepted it, follows [`backoff_delay`].
+pub fn reconnect_delay(
+    template_waiting: bool,
+    after_restore: bool,
+    failures: u32,
+    jitter: u64,
+) -> Duration {
     if template_waiting {
         Duration::from_millis(TEMPLATE_RETRY_MS)
+    } else if after_restore {
+        Duration::from_millis(jitter % RESTORE_RETRY_MS)
     } else {
         backoff_delay(failures, jitter)
     }
@@ -352,12 +381,31 @@ mod tests {
         {
             for failures in [1u32, 2, 40] {
                 assert_eq!(
-                    reconnect_delay(true, failures, 7),
+                    reconnect_delay(true, false, failures, 7),
                     Duration::from_millis(25)
                 );
             }
-            assert_eq!(reconnect_delay(false, 2, 0), backoff_delay(2, 0));
-            assert_eq!(reconnect_delay(false, 40, 3), backoff_delay(40, 3));
+            assert_eq!(reconnect_delay(false, false, 2, 0), backoff_delay(2, 0));
+            assert_eq!(reconnect_delay(false, false, 40, 3), backoff_delay(40, 3));
+        }
+        // After a transport reset from a restore, the retry is under 25 ms for any jitter and any
+        // failure count, and a template still waiting keeps its own interval.
+        {
+            for failures in [0u32, 1, 2, 40, u32::MAX] {
+                for jitter in [0u64, 7, 24, 25, u64::MAX] {
+                    let delay = reconnect_delay(false, true, failures, jitter);
+                    assert!(
+                        delay < Duration::from_millis(RESTORE_RETRY_MS),
+                        "{failures}/{jitter}: {delay:?}"
+                    );
+                }
+            }
+            for jitter in [0u64, 7, u64::MAX] {
+                assert_eq!(
+                    reconnect_delay(true, true, 3, jitter),
+                    Duration::from_millis(TEMPLATE_RETRY_MS)
+                );
+            }
         }
     }
 

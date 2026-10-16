@@ -8470,6 +8470,7 @@ name = "vsockd"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-metrics",
  "apz-os",
  "apz-proto",
  "apz-uds",

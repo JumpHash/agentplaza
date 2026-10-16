@@ -3,7 +3,7 @@
 treasury, social, agora and council suites.
 
 ```text
-tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|social|agora|council|all] [options]
+tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|social|agora|council|lifecycle|all] [options]
 ```
 
 Design (the stated choice):
@@ -54,6 +54,7 @@ import suite_demo
 import suite_fleet
 import suite_jail
 import suite_killresume
+import suite_lifecycle
 import suite_redteam
 import suite_social
 import suite_treasury
@@ -69,6 +70,7 @@ SUITES = {
     "social": suite_social,
     "agora": suite_agora,
     "council": suite_council,
+    "lifecycle": suite_lifecycle,
 }
 
 
@@ -106,6 +108,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="do not copy bounded artifact excerpts into results/evidence/",
     )
     parser.add_argument("--seed", default="apz-acceptance-v1", help="the fixed suite seed")
+    parser.add_argument(
+        "--soak",
+        type=int,
+        default=0,
+        help="the lifecycle suite's idle-density case: hold this many idle keepalive agents (0 skips it)",
+    )
+    parser.add_argument(
+        "--soak-seconds", type=float, default=60.0, help="how long the lifecycle soak holds its agents"
+    )
+    parser.add_argument(
+        "--soak-sessions",
+        type=int,
+        default=0,
+        help="the lifecycle suite's session case: one vsockd holds this many connected keepalive guests (no VMs; 0 skips it)",
+    )
     parser.add_argument(
         "--timeout-scale",
         type=float,
@@ -232,6 +249,10 @@ def main(argv: list[str]) -> int:
         started = time.monotonic()
         if name == "budgets":
             suite = module.run(ctx, boot_p95_ms=args.boot_p95_ms)
+        elif name == "lifecycle":
+            suite = module.run(
+                ctx, soak=args.soak, soak_seconds=args.soak_seconds, soak_sessions=args.soak_sessions
+            )
         else:
             suite = module.run(ctx)
         suite.duration_s = time.monotonic() - started

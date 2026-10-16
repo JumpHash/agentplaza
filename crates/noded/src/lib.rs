@@ -4,6 +4,8 @@
 //!
 //! * `GET /v1/machine` — the machine's facts
 //! * `GET /v1/machine/stats` — live CPU, load, memory and VM counts, with history
+//! * `GET /v1/host/scale` — whether this host suits scale mode (zswap, encrypted swap, reflinks,
+//!   cgroups, KSM), item by item
 //! * `GET /v1/runs` · `POST /v1/runs` — runs (groups of VMs) · boot one
 //! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
@@ -21,6 +23,7 @@
 mod collect;
 pub mod events;
 pub mod fleet;
+pub mod hostcheck;
 pub mod metrics;
 pub mod migrate;
 pub mod registry;
@@ -1748,6 +1751,15 @@ fn router() -> Router<Node> {
         .post("/v1/metrics/live", |node, request, _| {
             metrics_live(node, request)
         })
+        // The node's Prometheus metrics (fixed statics for scraping and the lifecycle benchmark).
+        .get("/v1/metrics", |_, _, _| {
+            Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
+        })
+        // Whether this host suits scale mode (see `hostcheck`); the same report as `--check-scale`.
+        .get("/v1/host/scale", |node, _, _| {
+            let snapshots = node.registry().snapshot_root().ok();
+            Response::json(200, &crate::hostcheck::report(snapshots).to_json())
+        })
         // Shared data volumes: read-only images agent VMs mount at /data/<name>.
         .get("/v1/volumes", |node, _, _| list_volumes(node))
         .post("/v1/volumes", |node, request, _| {
@@ -1862,6 +1874,10 @@ fn router() -> Router<Node> {
                 params.get("index"),
                 Registry::resume_vm,
             )
+        })
+        // A dozing VM is a paused VM whose guest memory is paged out of host RAM; resume wakes it.
+        .post("/v1/runs/{id}/vms/{index}/doze", |node, _, params| {
+            doze_vm(node, params.get("id"), params.get("index"))
         })
         .post(
             "/v1/runs/{id}/vms/{index}/sleep",
@@ -2040,7 +2056,13 @@ fn wake_vm(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
         Err(err) => return Response::error(400, &format!("invalid wake request: {err}")),
     };
     match node.registry().wake_vm(id, vm, cold) {
-        Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Ok((run, fallback)) => {
+            let mut body = serde_json::to_value(run.view(Detail::Summary)).unwrap_or_default();
+            if let Some(map) = body.as_object_mut() {
+                map.insert("cold_fallback".into(), serde_json::Value::Bool(fallback));
+            }
+            Response::json(200, &body)
+        }
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
@@ -2312,6 +2334,25 @@ fn vm_op(
     };
     match op(node.registry(), id, vm) {
         Ok(run) => Response::json(200, &run.view(Detail::Summary)),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/doze`: pauses the VM and pages its guest memory out of host RAM.
+/// The answer is the run, as pause answers it, with `reclaimed_bytes` added.
+fn doze_vm(node: &Node, id: &str, index: &str) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().doze_vm(id, vm) {
+        Ok((run, reclaimed)) => {
+            let mut body = serde_json::to_value(run.view(Detail::Summary)).unwrap_or_default();
+            if let Some(map) = body.as_object_mut() {
+                map.insert("reclaimed_bytes".into(), serde_json::json!(reclaimed));
+            }
+            Response::json(200, &body)
+        }
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }

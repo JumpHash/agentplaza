@@ -91,10 +91,15 @@ pub const RUN_CID_END: u64 = 99;
 /// The guest's console device: the first flag of every run's command line.
 const CONSOLE: &str = "console=ttyS0";
 
-/// How often the run watcher looks at its VMs. The watcher sleeps for this
-/// long *outside* the run's lock, so its polls stay non-blocking and no other
-/// caller of the run can be starved by them.
-const WATCH_INTERVAL: Duration = Duration::from_millis(5);
+/// How soon the run watcher looks at its VMs again after something changed: the
+/// shortest it sleeps between passes. The watcher sleeps for its interval
+/// *outside* the run's lock, so its polls stay non-blocking and no other caller
+/// of the run can be starved by them.
+const WATCH_INTERVAL_MIN: Duration = Duration::from_millis(5);
+
+/// The longest the run watcher waits while nothing changes: a VM's exit or
+/// serial output is seen at most this late.
+const WATCH_INTERVAL_MAX: Duration = Duration::from_millis(250);
 
 /// The newest a snapshot may be for a recovery to boot from it, in milliseconds: a day. An older
 /// snapshot is a stale copy of an agent, so the recovery boots the VM cold instead.
@@ -1070,9 +1075,6 @@ fn thaw(state: VmState, handle: &VmHandle) -> VmState {
     }
 }
 
-/// Writes a snapshot of a VM into `dir` (created). A VM restored from a snapshot always writes a
-/// diff, over the memory it was restored from, so that memory is copied into `dir` first: `base` is
-/// the directory holding it.
 /// Where the lifecycle events of VMs go (boot, pause, resume, sleep, wake, snapshot, exit). The node sets it once at
 /// start-up to its metrics (`NodeMetrics::event`); without a sink the events are dropped.
 static EVENT_SINK: OnceLock<Box<dyn Fn(apz_metrics::Event) + Send + Sync>> = OnceLock::new();
@@ -1133,27 +1135,39 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
+/// Creates `dir` for a snapshot of a VM. A VM restored from a snapshot writes a diff over the memory
+/// it was restored from; the VMM copies that memory into `dir` itself, through the descriptor it keeps
+/// (which also works inside a jail), so nothing is copied here: a second copy cost a full read and write
+/// of the memory file on a filesystem without reflinks.
+fn stage_base_memory(base: Option<&Path>, dir: &Path) -> Result<(), VmOpError> {
+    if base.is_some() {
+        snapshots::private_dir(dir)
+            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
+    }
+    Ok(())
+}
+
+/// Writes a snapshot of a VM into `dir` (created), with the memory staged as [`stage_base_memory`]
+/// does. `kind` is what the VM is asked for (see [`SnapshotKind::is_durable`]).
 fn write_snapshot(
     handle: &VmHandle,
     base: Option<&Path>,
     dir: &Path,
+    kind: SnapshotKind,
 ) -> Result<SnapshotInfo, VmOpError> {
-    if let Some(base) = base {
-        snapshots::private_dir(dir)
-            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
-        clone_file(
-            &base.join(snapshots::MEMORY_FILE),
-            &dir.join(snapshots::MEMORY_FILE),
-        )
-        .map_err(|err| {
-            VmOpError::Failed(format!(
-                "cannot copy the memory the VM was restored from: {err}"
-            ))
-        })?;
-    }
+    stage_base_memory(base, dir)?;
     handle
-        .snapshot(dir, SnapshotKind::Diff)
+        .snapshot(dir, kind)
         .map_err(|err| VmOpError::Failed(format!("the VM did not snapshot: {err}")))
+}
+
+/// A checkpoint whose directory is written, except (when `captured`) the VM's memory and state file,
+/// which wait in RAM until [`Registry::finish_checkpoint`] writes them.
+struct PendingCheckpoint {
+    name: String,
+    /// How long the VM was paused for the capture, in milliseconds.
+    paused_ms: u64,
+    captured: bool,
 }
 
 /// Boots a VM from the checkpoint directory `snapshot`, with its workspace copied back from it, and
@@ -1171,13 +1185,13 @@ fn boot_from(
             .map_err(|err| format!("cannot copy the workspace back: {err}"))?;
     }
     if snapshots::is_disk_only(snapshot) {
-        let handle = spawner::spawn(spec.clone()).map_err(|err| err.to_string())?;
+        let handle = spawn_timed(spec.clone()).map_err(|err| err.to_string())?;
         return Ok((handle, None));
     }
     let base = store
-        .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+        .stage_base(cid)
         .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?;
-    let handle = spawner::spawn(VmSpec {
+    let handle = spawn_timed(VmSpec {
         restore: Some(snapshot.to_path_buf()),
         ..spec.clone()
     })
@@ -1258,10 +1272,10 @@ fn boot_recovered(
             }
         }
         store
-            .stage_base(cid, &snapshot.join(snapshots::MEMORY_FILE))
+            .stage_base(cid)
             .map_err(|err| format!("cannot stage the snapshot's memory: {err}"))?
     };
-    let handle = spawner::spawn(VmSpec {
+    let handle = spawn_timed(VmSpec {
         restore: Some(snapshot),
         ..spec.clone()
     })
@@ -1302,6 +1316,14 @@ pub struct Registry {
 struct RegistryInner {
     next_seq: u64,
     runs: Vec<Arc<Run>>,
+}
+
+/// `spawner::spawn`, timed into `crate::metrics::SPAWN`.
+fn spawn_timed(spec: VmSpec) -> Result<VmHandle, SpawnError> {
+    let started = std::time::Instant::now();
+    let spawned = spawner::spawn(spec);
+    crate::metrics::SPAWN.observe(started.elapsed());
+    spawned
 }
 
 impl Registry {
@@ -1938,13 +1960,79 @@ impl Registry {
         Ok(run)
     }
 
+    /// Dozes VM `vm` of run `run`: pauses it if it runs, then pages its guest memory out of host RAM
+    /// (`VmHandle::reclaim`). The VM stays paused, and [`Registry::resume_vm`] wakes it. A reclaim that
+    /// fails leaves the VM paused and is refused. Returns the run and the bytes advised.
+    pub fn doze_vm(&self, run: &str, vm: u32) -> Result<(Arc<Run>, u64), VmOpError> {
+        let mut phases = apz_metrics::prom::Phases::start("doze", format!("{run}/{vm}"));
+        let result = self.doze_vm_timed(run, vm, &mut phases);
+        let ok = result.is_ok();
+        let reclaimed = result.as_ref().map_or(0, |(_, bytes)| *bytes);
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::DOZE)
+            } else {
+                None
+            },
+            &[("ok", &ok), ("reclaimed_bytes", &reclaimed)],
+        );
+        result
+    }
+
+    /// The work of [`Registry::doze_vm`], with its pause and reclaim marked on `phases`.
+    fn doze_vm_timed(
+        &self,
+        run: &str,
+        vm: u32,
+        phases: &mut apz_metrics::prom::Phases,
+    ) -> Result<(Arc<Run>, u64), VmOpError> {
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        if let Err(err) = held.handle.pause() {
+            run.return_vm(vm, held.handle);
+            return Err(VmOpError::Refused(err.to_string()));
+        }
+        phases.mark("pause");
+        let reclaimed = held.handle.reclaim();
+        // Paused in every case: a reclaim that failed leaves the VM as the pause left it.
+        run.return_vm_in(vm, held.handle, VmState::Paused);
+        phases.mark("reclaim");
+        match reclaimed {
+            Ok(bytes) => Ok((run, bytes)),
+            Err(err) => Err(VmOpError::Refused(err.to_string())),
+        }
+    }
+
+    /// Puts VM `vm` of run `run` to sleep (see `sleep_vm_inner`), timed: one `timing op=sleep` line and
+    /// `crate::metrics::SLEEP`.
+    pub fn sleep_vm(
+        &self,
+        run: &str,
+        vm: u32,
+        keep_memory: bool,
+    ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
+        let mut phases = apz_metrics::prom::Phases::start("sleep", format!("{run}/{vm}"));
+        let result = self.sleep_vm_inner(run, vm, keep_memory);
+        phases.mark("snapshot_and_stop");
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::SLEEP)
+            } else {
+                None
+            },
+            &[("ok", &ok)],
+        );
+        result
+    }
+
     /// Puts VM `vm` of run `run` to sleep: its state goes to the sleep snapshot, its process stops,
     /// and it waits as `asleep` until [`Registry::wake_vm`]. A paused VM is snapshotted as it is; a
     /// running one is paused for the snapshot. The sleep snapshot is written beside the old one and
     /// renamed over it once the VM is stopped (see [`crate::snapshots`]). With `keep_memory` false
     /// the VM is stopped without a memory image, any sleep snapshot is removed, and it returns no
     /// snapshot: it wakes cold.
-    pub fn sleep_vm(
+    fn sleep_vm_inner(
         &self,
         run: &str,
         vm: u32,
@@ -1988,7 +2076,12 @@ impl Registry {
         }
         let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
         let _ = fs::remove_dir_all(&partial);
-        let info = match write_snapshot(&handle, restored_from.as_deref(), &partial) {
+        let info = match write_snapshot(
+            &handle,
+            restored_from.as_deref(),
+            &partial,
+            SnapshotKind::Diff,
+        ) {
             Ok(info) => info,
             Err(err) => {
                 let _ = fs::remove_dir_all(&partial);
@@ -2037,11 +2130,47 @@ impl Registry {
         Ok((run, Some(view)))
     }
 
+    /// Wakes VM `vm` of run `run` (see `wake_vm_inner`), timed: one `timing op=wake` line and
+    /// `crate::metrics::WAKE`. The bool is true when the warm restore failed and the VM booted cold instead.
+    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<(Arc<Run>, bool), VmOpError> {
+        let started = Instant::now();
+        let mut phases = apz_metrics::prom::Phases::start("wake", format!("{run}/{vm}"));
+        let result = self
+            .wake_vm_inner(run, vm, cold)
+            .map(|(woken, fallback, restore)| {
+                // The wake's lifecycle event, for the Metrics view (restore time split out when it restored).
+                record_wake(&woken, vm, started, restore);
+                (woken, fallback)
+            });
+        phases.mark("spawn");
+        let fallback = matches!(result, Ok((_, true)));
+        let ok = result.is_ok();
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::WAKE)
+            } else {
+                None
+            },
+            &[("cold", &cold), ("fallback", &fallback), ("ok", &ok)],
+        );
+        if fallback {
+            crate::metrics::WAKE_COLD.inc();
+        }
+        result
+    }
+
     /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
     /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
     /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
-    pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<Arc<Run>, VmOpError> {
-        let started = Instant::now();
+    /// The bool is true only when that cold boot after a failed warm restore happened; the duration is the restore's,
+    /// when the VM woke from its snapshot.
+    #[allow(clippy::type_complexity)]
+    fn wake_vm_inner(
+        &self,
+        run: &str,
+        vm: u32,
+        cold: bool,
+    ) -> Result<(Arc<Run>, bool, Option<Duration>), VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
@@ -2053,15 +2182,14 @@ impl Registry {
         // swap out, only its spec.
         if let Some(spec) = run.take_unbooted(vm)? {
             let restoring = Instant::now();
-            return match spawner::spawn(VmSpec {
+            return match spawn_timed(VmSpec {
                 restore: warm.clone(),
                 ..spec.clone()
             }) {
                 Ok(fresh) => {
                     let restore = warm.as_ref().map(|_| restoring.elapsed());
                     run.seat_first(vm, spec, fresh, warm);
-                    record_wake(&run, vm, started, restore);
-                    Ok(run)
+                    Ok((run, false, restore))
                 }
                 Err(err) => {
                     run.untake_unbooted(vm, spec);
@@ -2076,7 +2204,7 @@ impl Registry {
             spec,
             ..
         } = run.take_vm(vm, &[VmState::Asleep])?;
-        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawner::spawn(VmSpec {
+        let boot_cold = |spec: VmSpec, warm_err: Option<String>| match spawn_timed(VmSpec {
             restore: None,
             ..spec
         }) {
@@ -2089,29 +2217,28 @@ impl Registry {
         let restoring = Instant::now();
         let mut restore = None;
         let woken = match warm {
-            Some(base) => match spawner::spawn(VmSpec {
+            Some(base) => match spawn_timed(VmSpec {
                 restore: Some(base.clone()),
                 ..spec.clone()
             }) {
                 Ok(fresh) => {
                     restore = Some(restoring.elapsed());
-                    Ok((fresh, Some(base)))
+                    Ok((fresh, Some(base), false))
                 }
                 Err(err) => {
                     eprintln!(
                         "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
                         run.id
                     );
-                    boot_cold(spec, Some(err.to_string()))
+                    boot_cold(spec, Some(err.to_string())).map(|(fresh, base)| (fresh, base, true))
                 }
             },
-            None => boot_cold(spec, None),
+            None => boot_cold(spec, None).map(|(fresh, base)| (fresh, base, false)),
         };
         match woken {
-            Ok((fresh, base)) => {
+            Ok((fresh, base, fallback)) => {
                 run.seat_vm(vm, killed, fresh, base);
-                record_wake(&run, vm, started, restore);
-                Ok(run)
+                Ok((run, fallback, restore))
             }
             Err(err) => {
                 run.return_vm(vm, killed);
@@ -2120,12 +2247,8 @@ impl Registry {
         }
     }
 
-    /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
-    /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
-    /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
-    /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
-    /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
-    /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
+    /// Takes checkpoint `label` of VM `vm` of run `run` (see `checkpoint_vm_inner`), timed: one
+    /// `timing op=checkpoint` line and `crate::metrics::CHECKPOINT`.
     pub fn checkpoint_vm(
         &self,
         run: &str,
@@ -2133,19 +2256,55 @@ impl Registry {
         label: &str,
         keep_memory: bool,
     ) -> Result<SnapshotView, VmOpError> {
-        let started = Instant::now();
+        let mut phases = apz_metrics::prom::Phases::start("checkpoint", format!("{run}/{vm}"));
+        let result = self.checkpoint_vm_inner(run, vm, label, keep_memory, &mut phases);
+        let ok = result.is_ok();
+        let paused_ms = result.as_ref().map_or(0, |view| view.paused_ms);
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::CHECKPOINT)
+            } else {
+                None
+            },
+            &[
+                ("memory", &keep_memory),
+                ("ok", &ok),
+                ("paused_ms", &paused_ms),
+            ],
+        );
+        result
+    }
+
+    /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
+    /// which the VM can be restored or forked. The VM is paused for the capture of its memory and the
+    /// copy of its workspace, and runs on after them; the memory is written while it runs. With
+    /// `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
+    /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
+    /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
+    /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
+    fn checkpoint_vm_inner(
+        &self,
+        run: &str,
+        vm: u32,
+        label: &str,
+        keep_memory: bool,
+        phases: &mut apz_metrics::prom::Phases,
+    ) -> Result<SnapshotView, VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
         let taken = if keep_memory {
-            Self::checkpoint_held(store, cid, &held, label)
+            Self::checkpoint_held(store, cid, &held, label, SnapshotKind::Diff)
         } else {
             Self::checkpoint_disk(store, cid, &held, label)
         };
+        phases.mark("capture");
         let state = thaw(held.state, &held.handle);
+        let view = taken.and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken));
+        phases.mark("write");
         run.return_vm_in(vm, held.handle, state);
-        let view = taken?;
+        let view = view?;
         store.prune(cid);
         let (detail, parts) = if keep_memory {
             let mut parts = vec![(
@@ -2173,7 +2332,7 @@ impl Registry {
             &run.id,
             vm,
             "snapshot",
-            Some(started.elapsed()),
+            Some(phases.elapsed()),
             detail,
             parts,
         );
@@ -2187,7 +2346,7 @@ impl Registry {
         cid: u64,
         held: &Held,
         label: &str,
-    ) -> Result<SnapshotView, VmOpError> {
+    ) -> Result<PendingCheckpoint, VmOpError> {
         let Some(workspace) = &held.spec.workspace else {
             return Err(VmOpError::Invalid(
                 "this VM has no workspace volume, so there is no disk to keep".to_string(),
@@ -2214,9 +2373,36 @@ impl Registry {
                 "cannot copy the workspace into checkpoint {name}: {err}"
             )));
         }
-        store
-            .view(cid, &name)
-            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))
+        Ok(PendingCheckpoint {
+            name,
+            paused_ms: 0,
+            captured: false,
+        })
+    }
+
+    /// Completes a checkpoint: writes the memory its capture kept in RAM, from `handle` (the VM it was
+    /// taken from, running or paused), then returns the checkpoint's view. A failed write removes the
+    /// checkpoint, as a failed snapshot does.
+    fn finish_checkpoint(
+        store: &SnapshotStore,
+        cid: u64,
+        handle: &VmHandle,
+        taken: PendingCheckpoint,
+    ) -> Result<SnapshotView, VmOpError> {
+        if taken.captured {
+            if let Err(err) = handle.write_captured() {
+                let _ = fs::remove_dir_all(store.dir(cid, &taken.name));
+                return Err(VmOpError::Failed(format!(
+                    "cannot write the VM's memory into checkpoint {}: {err}",
+                    taken.name
+                )));
+            }
+        }
+        let mut view = store.view(cid, &taken.name).ok_or_else(|| {
+            VmOpError::Failed(format!("checkpoint {} cannot be read back", taken.name))
+        })?;
+        view.paused_ms = taken.paused_ms;
+        Ok(view)
     }
 
     /// The checkpoints of VM `vm` of run `run`, newest first.
@@ -2257,14 +2443,19 @@ impl Registry {
             return Err(VmOpError::UnknownCheckpoint(name.to_string()));
         }
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
-        let safety = match Self::checkpoint_held(store, cid, &held, "before-restore") {
-            Ok(view) => view,
-            Err(err) => {
-                let state = thaw(held.state, &held.handle);
-                run.return_vm_in(vm, held.handle, state);
-                return Err(err);
-            }
-        };
+        // The VM is killed next, and a capture's memory lives in the VM's process, so it is written
+        // here, while the VM is still paused.
+        let safety =
+            match Self::checkpoint_held(store, cid, &held, "before-restore", SnapshotKind::Diff)
+                .and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken))
+            {
+                Ok(view) => view,
+                Err(err) => {
+                    let state = thaw(held.state, &held.handle);
+                    run.return_vm_in(vm, held.handle, state);
+                    return Err(err);
+                }
+            };
         let Held {
             mut handle,
             spec,
@@ -2287,7 +2478,7 @@ impl Registry {
                 let before = store.dir(cid, &safety.name);
                 let (fresh, base, back) = match boot_from(store, cid, &spec, &before) {
                     Ok((fresh, base)) => (fresh, base, safety.name.clone()),
-                    Err(back) => match spawner::spawn(spec.clone()) {
+                    Err(back) => match spawn_timed(spec.clone()) {
                         Ok(fresh) => {
                             eprintln!(
                                 "noded: run {}: VM {vm} did not return to {} ({back}); booted it cold",
@@ -2311,16 +2502,44 @@ impl Registry {
         }
     }
 
-    /// Forks VM `vm` of run `run` into `n` new single-VM runs: a checkpoint of the VM is taken, and each
-    /// fork boots from it with a CID of its own and a copy of its workspace. The forks are all made or
-    /// none is: a fork that cannot boot takes the ones made before it down. Returns the checkpoint and
-    /// each fork's run and CID.
+    /// Forks VM `vm` of run `run` into `n` new single-VM runs (see `fork_vm_inner`), timed: one
+    /// `timing op=fork` line and `crate::metrics::FORK`.
     pub fn fork_vm(
         &self,
         run: &str,
         vm: u32,
         n: u32,
         from: Option<&str>,
+    ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
+        let mut phases = apz_metrics::prom::Phases::start("fork", format!("{run}/{vm}"));
+        let result = self.fork_vm_inner(run, vm, n, from, &mut phases);
+        phases.mark("boot");
+        let ok = result.is_ok();
+        let paused_ms = result
+            .as_ref()
+            .map_or(0, |(checkpoint, _)| checkpoint.paused_ms);
+        phases.finish(
+            if ok {
+                Some(&crate::metrics::FORK)
+            } else {
+                None
+            },
+            &[("copies", &n), ("ok", &ok), ("paused_ms", &paused_ms)],
+        );
+        result
+    }
+
+    /// Forks VM `vm` of run `run` into `n` new single-VM runs: a checkpoint of the VM is taken, and each
+    /// fork boots from it with a CID of its own and a copy of its workspace. The forks are all made or
+    /// none is: a fork that cannot boot takes the ones made before it down. Returns the checkpoint and
+    /// each fork's run and CID.
+    fn fork_vm_inner(
+        &self,
+        run: &str,
+        vm: u32,
+        n: u32,
+        from: Option<&str>,
+        phases: &mut apz_metrics::prom::Phases,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
         if !(1..=MAX_FORKS).contains(&n) {
             return Err(VmOpError::Invalid(format!(
@@ -2347,24 +2566,50 @@ impl Registry {
                 let held = source.take_vm(vm, &[VmState::Running, VmState::Paused])?;
                 let meta = source.meta(held.spec.balloon);
                 let has_workspace = held.spec.workspace.is_some();
-                let taken = Self::checkpoint_held(store, cid, &held, "fork");
+                // A fork's checkpoint only has to outlive the restores made from it on this host, so
+                // it is written without the fsyncs.
+                let taken =
+                    Self::checkpoint_held(store, cid, &held, "fork", SnapshotKind::DiffUnsynced);
+                phases.mark("capture");
                 let state = thaw(held.state, &held.handle);
+                // The copies boot from the checkpoint, so its memory is written before they do.
+                let checkpoint = taken
+                    .and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken));
+                phases.mark("write");
                 source.return_vm_in(vm, held.handle, state);
-                let checkpoint = taken?;
+                let checkpoint = checkpoint?;
                 store.prune(cid);
                 (checkpoint, meta, has_workspace)
             }
         };
         let snapshot = store.dir(cid, &checkpoint.name);
+        // The copies boot concurrently: each boot has its own run id, CID, workspace and base. The
+        // results come back in index order, so the forks are returned in that order too.
+        let booted: Vec<Result<PreparedFork, VmOpError>> = std::thread::scope(|scope| {
+            let boots: Vec<_> = (0..n)
+                .map(|_| scope.spawn(|| self.boot_fork(store, &meta, &snapshot, has_workspace)))
+                .collect();
+            boots
+                .into_iter()
+                .map(|boot| {
+                    boot.join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        });
         let mut forks = Vec::with_capacity(n as usize);
-        for _ in 0..n {
-            match self.boot_fork(store, &meta, &snapshot, has_workspace) {
+        let mut failure = None;
+        for result in booted {
+            match result {
                 Ok(fork) => forks.push(fork),
                 Err(err) => {
-                    self.discard_forks(store, forks);
-                    return Err(err);
+                    failure.get_or_insert(err);
                 }
             }
+        }
+        if let Some(err) = failure {
+            self.discard_forks(store, forks);
+            return Err(err);
         }
         let made = forks
             .into_iter()
@@ -2583,39 +2828,58 @@ impl Registry {
         }
     }
 
-    /// Takes a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
-    /// workspace. The VM is left paused; the caller resumes it.
+    /// Captures a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
+    /// workspace, both taken while the VM is paused. `kind` is the snapshot kind asked for. The memory
+    /// waits in RAM for [`Registry::finish_checkpoint`]. The VM is left paused; the caller resumes it.
     fn checkpoint_held(
         store: &SnapshotStore,
         cid: u64,
         held: &Held,
         label: &str,
-    ) -> Result<SnapshotView, VmOpError> {
+        kind: SnapshotKind,
+    ) -> Result<PendingCheckpoint, VmOpError> {
         store.prepare(cid).map_err(|err| {
             VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
         })?;
         let name = SnapshotStore::checkpoint_name(label, now_ms());
         let dir = store.dir(cid, &name);
-        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir) {
-            Ok(info) => info,
-            Err(err) => {
-                let _ = fs::remove_dir_all(&dir);
-                return Err(err);
+        // The base memory is the file the VM was restored from, which never changes: it is staged
+        // before the pause.
+        let staged = snapshots::private_dir(&dir)
+            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))
+            .and_then(|()| stage_base_memory(held.restored_from.as_deref(), &dir));
+        if let Err(err) = staged {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+        match held.handle.capture(&dir, kind) {
+            Ok(info) => {
+                // The workspace is copied inside the pause the capture left, so the disk and the
+                // memory are of the same instant (a disk copied while the guest ran could be behind its
+                // page cache). A failed copy writes the capture out and discards it with the dir.
+                if let Some(workspace) = &held.spec.workspace {
+                    if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
+                        let _ = held.handle.write_captured();
+                        let _ = fs::remove_dir_all(&dir);
+                        return Err(VmOpError::Failed(format!(
+                            "cannot copy the workspace into checkpoint {name}: {err}"
+                        )));
+                    }
+                }
+                Ok(PendingCheckpoint {
+                    name,
+                    paused_ms: info.paused_ms,
+                    captured: true,
+                })
             }
-        };
-        if let Some(workspace) = &held.spec.workspace {
-            if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
+            Err(err) => {
+                // A capture that failed after keeping the memory (a reply lost in transit) would
+                // refuse the VM's next capture: its memory is written out, and discarded with the dir.
+                let _ = held.handle.write_captured();
                 let _ = fs::remove_dir_all(&dir);
-                return Err(VmOpError::Failed(format!(
-                    "cannot copy the workspace into checkpoint {name}: {err}"
-                )));
+                Err(VmOpError::Failed(format!("the VM did not snapshot: {err}")))
             }
         }
-        let mut view = store
-            .view(cid, &name)
-            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))?;
-        view.paused_ms = info.paused_ms;
-        Ok(view)
     }
 
     /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and, when
@@ -2795,7 +3059,7 @@ impl Registry {
                 )));
             }
         }
-        match spawner::spawn(spec) {
+        match spawn_timed(spec) {
             Ok(fresh) => {
                 run.seat_vm(vm, killed, fresh, None);
                 Ok(())
@@ -3695,7 +3959,9 @@ fn watch(run: Arc<Run>) {
 }
 
 fn watch_run(run: &Arc<Run>) {
+    let mut interval = WATCH_INTERVAL_MIN;
     loop {
+        let mut changed = false;
         {
             let mut inner = run.lock();
             if inner.state != RunState::Running {
@@ -3706,7 +3972,9 @@ fn watch_run(run: &Arc<Run>) {
                 // state: a VM that stopped between two passes grew its
                 // capture one last time, and that last stretch is exactly
                 // what the run's transcript wants.
-                publish_serial_delta(&run.events, &run.id, slot);
+                if publish_serial_delta(&run.events, &run.id, slot) {
+                    changed = true;
+                }
                 // A paused VM's process is still there to exit, so it is watched too.
                 if !matches!(slot.state, VmState::Running | VmState::Paused) {
                     continue;
@@ -3720,7 +3988,11 @@ fn watch_run(run: &Arc<Run>) {
                 // A non-blocking look, so the run's lock is held for the check
                 // and nothing else: a GET or a kill of the run never waits
                 // behind the watcher.
-                match handle.wait_timeout(Duration::ZERO) {
+                let polled = handle.wait_timeout(Duration::ZERO);
+                if matches!(polled, Ok(Some(_)) | Err(_)) {
+                    changed = true;
+                }
+                match polled {
                     Ok(Some(exit)) => match (slot.spec.clone(), slot.guest_cid) {
                         // A keepalive agent or sandbox that stopped by itself is recovered, not
                         // left exited: its handle goes to the recovery, and the slot keeps its
@@ -3793,7 +4065,12 @@ fn watch_run(run: &Arc<Run>) {
         // other caller of the run (measured: a GET right after a run started
         // waited for the run's whole life), so the watcher gives the lock up
         // for longer than it holds it.
-        thread::sleep(WATCH_INTERVAL);
+        interval = if changed {
+            WATCH_INTERVAL_MIN
+        } else {
+            (interval * 2).min(WATCH_INTERVAL_MAX)
+        };
+        thread::sleep(interval);
     }
 }
 
@@ -3858,7 +4135,7 @@ fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) 
             (fresh, Some(base), "the sleep snapshot".to_string())
         }
         Some((fresh, base, name)) => (fresh, Some(base), format!("checkpoint {name}")),
-        None => match spawner::spawn(spec.clone()) {
+        None => match spawn_timed(spec.clone()) {
             Ok(fresh) => (fresh, None, "a cold boot".to_string()),
             Err(err) => {
                 eprintln!(
@@ -3880,15 +4157,16 @@ fn recover_vm(run: Arc<Run>, vm: u32, cid: u64, spec: VmSpec, exited: VmHandle) 
 /// Publishes the part of the VM's serial capture that grew since the last
 /// look, as a `serial` event whose `offset` is the capture byte the `text`
 /// starts at. The capture is bounded, and so are the events: once the capture
-/// stops growing, no further events fire for it.
-fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
+/// stops growing, no further events fire for it. Returns whether it published
+/// anything, that is, whether the capture grew since the last look.
+fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) -> bool {
     let buffer = slot
         .runtime
         .serial
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if buffer.len() <= slot.serial_seen {
-        return;
+        return false;
     }
     let offset = slot.serial_seen;
     let text = String::from_utf8_lossy(&buffer[offset..]).into_owned();
@@ -3900,6 +4178,7 @@ fn publish_serial_delta(events: &EventBus, run: &str, slot: &mut VmSlot) {
         offset: offset as u64,
         text,
     });
+    true
 }
 
 /// The current time in milliseconds since the Unix epoch.
@@ -4951,6 +5230,7 @@ mod tests {
                 registry.pause_vm("r9", 0).err(),
                 Some(VmOpError::UnknownRun)
             );
+            assert_eq!(registry.doze_vm("r9", 0).err(), Some(VmOpError::UnknownRun));
             assert_eq!(
                 registry.sleep_vm("r1", 3, true).err(),
                 Some(VmOpError::UnknownVm(3))
@@ -5003,6 +5283,7 @@ mod tests {
         let state = VmState::Asleep;
         let wrong = Some(VmOpError::WrongState { vm: 0, state });
         assert_eq!(asleep.pause_vm("r1", 0).err(), wrong);
+        assert_eq!(asleep.doze_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.resume_vm("r1", 0).err(), wrong);
         assert_eq!(asleep.sleep_vm("r1", 0, true).err(), wrong);
         assert_eq!(asleep.checkpoint_vm("r1", 0, "x", true).err(), wrong);

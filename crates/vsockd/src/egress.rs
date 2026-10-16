@@ -134,15 +134,19 @@ struct Hangup {
     guest: UnixStream,
     upstream: TcpStream,
     done: AtomicBool,
+    /// Woken by [`Hangup::hang_up`] and never drained: a plain pump waits on its source and this, so the
+    /// other direction's end stops it at once instead of at its next poll.
+    waker: crate::waker::Waker,
 }
 
 impl Hangup {
-    fn new(guest: UnixStream, upstream: TcpStream) -> Self {
-        Self {
+    fn new(guest: UnixStream, upstream: TcpStream) -> std::io::Result<Self> {
+        Ok(Self {
             guest,
             upstream,
             done: AtomicBool::new(false),
-        }
+            waker: crate::waker::Waker::new()?,
+        })
     }
 
     fn is_done(&self) -> bool {
@@ -153,6 +157,7 @@ impl Hangup {
     /// shut down so the guest and the upstream see the tunnel end.
     fn hang_up(&self) {
         self.done.store(true, Ordering::SeqCst);
+        self.waker.wake();
         let _ = self.guest.shutdown(Shutdown::Both);
         let _ = self.upstream.shutdown(Shutdown::Both);
         // Ends a read already waiting on the upstream socket at once on
@@ -346,12 +351,29 @@ pub fn accept_loop(
     policy: Arc<Policy>,
     apid: Apid,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    stop_waker: Arc<crate::waker::Waker>,
 ) {
-    // `stop` is the CID's own stop request (it is no longer served), checked on every poll like
+    #[cfg(unix)]
+    let listener_handle = {
+        use std::os::fd::AsRawFd;
+        listener.as_raw_fd()
+    };
+    #[cfg(windows)]
+    let listener_handle = {
+        use std::os::windows::io::AsRawSocket;
+        listener.as_raw_socket()
+    };
+    // `stop` is the CID's own stop request (it is no longer served), checked on every wake like
     // the daemon-wide shutdown.
     while !sys::shutdown_requested() && !stop.load(std::sync::atomic::Ordering::SeqCst) {
-        if let Err(err) = sys::poll_readable(&listener, super::ACCEPT_POLL_MS) {
+        let handles = [
+            listener_handle,
+            stop_waker.handle(),
+            super::shutdown_waker().handle(),
+        ];
+        if let Err(err) = sys::wait_readable(&handles, None) {
             eprintln!("vsockd: egress poll failed: {err}");
+            thread::sleep(Duration::from_millis(100));
         }
         match listener.accept() {
             Ok((stream, _)) => {
@@ -359,7 +381,11 @@ pub fn accept_loop(
                 thread::spawn(move || serve_conn(stream, cid, &policy, &apid));
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) => eprintln!("vsockd: egress accept failed: {err}"),
+            Err(err) => {
+                eprintln!("vsockd: egress accept failed: {err}");
+                // A broken listener or fd exhaustion must not spin the loop.
+                thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 }
@@ -471,10 +497,10 @@ fn proxy(
     // leaves the guest an error answer rather than half a tunnel.
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
-    let hangup = Arc::new(Hangup::new(
-        guest.try_clone().map_err(|_| Stop::Unreachable)?,
-        upstream,
-    ));
+    let hangup = Arc::new(
+        Hangup::new(guest.try_clone().map_err(|_| Stop::Unreachable)?, upstream)
+            .map_err(|_| Stop::Unreachable)?,
+    );
     let mut upstream = &hangup.upstream;
 
     let mut sent = 0u64;
@@ -496,7 +522,7 @@ fn proxy(
     }
 
     let up_hangup = Arc::clone(&hangup);
-    let up = thread::spawn(move || pump(guest_read, &up_hangup.upstream, &up_hangup));
+    let up = thread::spawn(move || pump(&guest_read, &up_hangup.upstream, &up_hangup));
     let down = pump(upstream, guest_write, &hangup);
     audit.down = down;
     audit.up = sent + up.join().unwrap_or(0);
@@ -532,7 +558,9 @@ fn gateway(
     } else {
         None
     };
-    let token = apid.token().map_err(|_| Stop::Unreachable)?;
+    // This relay writes its own request and passes apid's answer through, so it cannot retry a refused
+    // token: it reads the file per connection, as every call did before the token was kept.
+    let token = apid.reload_token().map_err(|_| Stop::Unreachable)?;
     let upstream = apid
         .connect(CONNECT_TIMEOUT)
         .map_err(|_| Stop::Unreachable)?;
@@ -545,10 +573,10 @@ fn gateway(
 
     let guest_read = guest.try_clone().map_err(|_| Stop::Unreachable)?;
     let mut guest_write = guest.try_clone().map_err(|_| Stop::Unreachable)?;
-    let hangup = Arc::new(Hangup::new(
-        guest.try_clone().map_err(|_| Stop::Unreachable)?,
-        upstream,
-    ));
+    let hangup = Arc::new(
+        Hangup::new(guest.try_clone().map_err(|_| Stop::Unreachable)?, upstream)
+            .map_err(|_| Stop::Unreachable)?,
+    );
     let mut upstream = &hangup.upstream;
 
     let out = gateway_head(method, cid, path, head, &token, upgrade);
@@ -599,7 +627,7 @@ fn gateway(
         .set_read_timeout(Some(PUMP_POLL))
         .map_err(|_| Stop::Unreachable)?;
     let up_hangup = Arc::clone(&hangup);
-    let up = thread::spawn(move || pump(guest_read, &up_hangup.upstream, &up_hangup));
+    let up = thread::spawn(move || pump(&guest_read, &up_hangup.upstream, &up_hangup));
     audit.down = answered + pump(upstream, guest_write, &hangup);
     audit.up = sent + up.join().unwrap_or(0);
     Ok(())
@@ -783,15 +811,29 @@ fn gateway_head(
 
 /// Copies `from` to `to` until either side closes, this direction has been
 /// idle for [`IDLE_TIMEOUT`], or the other direction has ended; then hangs
-/// both up so the other direction ends too. `from` reads with a
-/// [`PUMP_POLL`] timeout, which is when the flag and the idle time are
-/// checked. Returns the bytes copied.
-fn pump(mut from: impl Read, mut to: impl Write, hangup: &Arc<Hangup>) -> u64 {
+/// both up so the other direction ends too. The pump sleeps in a readiness
+/// wait on `from` and the tunnel's waker, which the other direction's hang-up
+/// wakes, so an idle tunnel costs no wakeups and an ended one stops at once.
+/// `from`'s [`PUMP_POLL`] read timeout stays only as a backstop. Returns the
+/// bytes copied.
+fn pump(from: impl Read + Source, mut to: impl Write, hangup: &Arc<Hangup>) -> u64 {
     use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
+    let mut from = from;
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0u64;
     let mut last = Instant::now();
     while !hangup.is_done() {
+        let Some(left) = IDLE_TIMEOUT.checked_sub(last.elapsed()) else {
+            break;
+        };
+        match crate::sys::wait_readable(&[from.raw(), hangup.waker.handle()], Some(left)) {
+            Ok(ready) if !ready[0] => continue,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        if hangup.is_done() {
+            break;
+        }
         match from.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
@@ -801,16 +843,31 @@ fn pump(mut from: impl Read, mut to: impl Write, hangup: &Arc<Hangup>) -> u64 {
                 total += n as u64;
                 last = Instant::now();
             }
-            Err(err) if matches!(err.kind(), WouldBlock | TimedOut | Interrupted) => {
-                if last.elapsed() >= IDLE_TIMEOUT {
-                    break;
-                }
-            }
+            Err(err) if matches!(err.kind(), WouldBlock | TimedOut | Interrupted) => {}
             Err(_) => break,
         }
     }
     hangup.hang_up();
     total
+}
+
+/// A socket a plain pump can wait on: its raw handle for [`crate::sys::wait_readable`].
+trait Source {
+    fn raw(&self) -> crate::sys::RawHandle;
+}
+
+#[cfg(unix)]
+impl<T: std::os::fd::AsRawFd> Source for &T {
+    fn raw(&self) -> crate::sys::RawHandle {
+        self.as_raw_fd()
+    }
+}
+
+#[cfg(windows)]
+impl<T: std::os::windows::io::AsRawSocket> Source for &T {
+    fn raw(&self) -> crate::sys::RawHandle {
+        self.as_raw_socket()
+    }
 }
 
 /// Reads the request head through its blank line; returns it with any bytes

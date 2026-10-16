@@ -37,6 +37,7 @@ fn unknown_runs_are_404() {
     for (method, target, body) in [
         ("GET", "/v1/runs/r7", None),
         ("DELETE", "/v1/runs/r7", None),
+        ("POST", "/v1/runs/r7/vms/0/doze", None),
         (
             "POST",
             "/v1/runs/r7/input",

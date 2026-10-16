@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, Router};
@@ -20,7 +20,7 @@ use crate::scheduler::Origin;
 use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Offline,
@@ -29,6 +29,9 @@ pub enum Status {
     /// The agent's VM was snapshotted and stopped while it had nothing to do; it is woken (restored
     /// from that snapshot) as soon as work, a chat or the owner needs it (`crate::sleep`).
     Asleep,
+    /// The agent's VM is paused and its memory paged out after a short idle (`crate::sleep`): it keeps
+    /// its session, and resumes in milliseconds when work, a chat or the owner needs it.
+    Dozing,
 }
 
 /// One agent. `cid` is its identity.
@@ -54,14 +57,65 @@ pub struct Agent {
     pub caps: Vec<String>,
 }
 
-/// The roster: the agents by CID, in memory. With a database, every change to a durable field (name,
+/// The roster: the agents by CID, in memory, with an index of the CIDs by status, so a timer can ask for
+/// the idle ones without cloning the whole roster. With a database, every change to a durable field (name,
 /// role, model, species) is written through to the `agents` row, and a remove is a soft delete there
 /// (db/roster.rs). Writes happen after the roster lock is released.
 #[derive(Default)]
 pub struct Roster {
-    agents: Mutex<BTreeMap<u64, Agent>>,
+    agents: Mutex<Ledger>,
     /// Postgres, when this run has it; None keeps the roster in memory only.
     store: Option<Arc<Db>>,
+    /// Signalled after every change to the roster.
+    changed: Condvar,
+}
+
+/// The agents, and the CIDs under each status. Every mutation goes through `put`, `take`, `reindex` or
+/// `update`, so the index always agrees with the map.
+#[derive(Default)]
+struct Ledger {
+    agents: BTreeMap<u64, Agent>,
+    by_status: BTreeMap<Status, BTreeSet<u64>>,
+}
+
+impl Ledger {
+    /// Inserts or replaces `agent`; returns the status it replaced, if it was there.
+    fn put(&mut self, agent: Agent) -> Option<Status> {
+        let cid = agent.cid;
+        let status = agent.status;
+        let replaced = self.agents.insert(cid, agent).map(|old| old.status);
+        if let Some(old) = replaced {
+            self.unindex(old, cid);
+        }
+        self.by_status.entry(status).or_default().insert(cid);
+        replaced
+    }
+
+    /// Removes the agent; returns whether it was there.
+    fn take(&mut self, cid: u64) -> bool {
+        match self.agents.remove(&cid) {
+            Some(agent) => {
+                self.unindex(agent.status, cid);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Moves `cid` from the `from` status to the `to` status in the index.
+    fn reindex(&mut self, cid: u64, from: Status, to: Status) {
+        self.unindex(from, cid);
+        self.by_status.entry(to).or_default().insert(cid);
+    }
+
+    fn unindex(&mut self, status: Status, cid: u64) {
+        if let Some(cids) = self.by_status.get_mut(&status) {
+            cids.remove(&cid);
+            if cids.is_empty() {
+                self.by_status.remove(&status);
+            }
+        }
+    }
 }
 
 impl Roster {
@@ -70,46 +124,104 @@ impl Roster {
         Self {
             agents: Mutex::default(),
             store,
+            changed: Condvar::new(),
         }
     }
 
     pub fn get(&self, cid: u64) -> Option<Agent> {
         // contract
-        self.lock().get(&cid).cloned()
+        self.lock().agents.get(&cid).cloned()
     }
 
     pub fn list(&self) -> Vec<Agent> {
         // contract
-        self.lock().values().cloned().collect()
+        self.lock().agents.values().cloned().collect()
+    }
+
+    /// The CIDs of the agents in `status`, in CID order. Nothing is cloned.
+    pub fn cids_with(&self, status: Status) -> Vec<u64> {
+        self.lock()
+            .by_status
+            .get(&status)
+            .map(|cids| cids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// How many agents are in each status; a status with none is absent.
+    pub fn count_by_status(&self) -> BTreeMap<Status, usize> {
+        self.lock()
+            .by_status
+            .iter()
+            .map(|(status, cids)| (*status, cids.len()))
+            .collect()
+    }
+
+    /// Maps each agent through `f` in one pass under the lock, keeping what `f` returns, in CID order.
+    /// Only what `f` returns is cloned. `f` runs with the roster locked, so it must not call the roster.
+    pub fn select<T>(&self, mut f: impl FnMut(&Agent) -> Option<T>) -> Vec<T> {
+        self.lock().agents.values().filter_map(&mut f).collect()
     }
 
     /// Applies `f` to the agent, if it exists; returns whether it did. A change to a durable field is
-    /// written through.
+    /// written through. A change to Idle kicks the scheduler (see `scheduler::kick`).
     pub fn update(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
         // contract
-        let written = {
-            let mut agents = self.lock();
-            let Some(agent) = agents.get_mut(&cid) else {
+        self.change(cid, f, true)
+    }
+
+    /// As `update`, but a change to Idle does not kick the scheduler. For a dispatch that could not send its
+    /// item and puts the agent back to Idle: a kick there would retry at once, over and over.
+    pub fn update_quietly(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
+        self.change(cid, f, false)
+    }
+
+    fn change(&self, cid: u64, f: impl FnOnce(&mut Agent), kick: bool) -> bool {
+        let (written, became_idle) = {
+            let mut ledger = self.lock();
+            let Some(agent) = ledger.agents.get_mut(&cid) else {
                 return false;
             };
             let before = durable(agent);
+            let from = agent.status;
             f(agent);
-            (durable(agent) != before).then(|| agent.clone())
+            let to = agent.status;
+            let written = (durable(agent) != before).then(|| agent.clone());
+            if from != to {
+                ledger.reindex(cid, from, to);
+            }
+            (written, kick && to == Status::Idle && from != Status::Idle)
         };
+        self.changed.notify_all();
         self.persist(written.as_ref());
+        if became_idle {
+            crate::scheduler::kick();
+        }
         true
     }
 
-    /// Inserts or replaces an agent, and writes it through.
+    /// Inserts or replaces an agent, and writes it through. An agent that arrives Idle, or turns Idle, kicks
+    /// the scheduler.
     pub fn upsert(&self, agent: Agent) {
         // contract
         self.persist(Some(&agent));
-        self.lock().insert(agent.cid, agent);
+        let became_idle = {
+            let mut ledger = self.lock();
+            let idle = agent.status == Status::Idle;
+            let replaced = ledger.put(agent);
+            idle && replaced != Some(Status::Idle)
+        };
+        self.changed.notify_all();
+        if became_idle {
+            crate::scheduler::kick();
+        }
     }
 
     /// Takes the agent off the roster (a soft delete in the database); returns whether it was there.
     pub fn remove(&self, cid: u64) -> bool {
-        let removed = self.lock().remove(&cid).is_some();
+        let removed = self.lock().take(cid);
+        if removed {
+            self.changed.notify_all();
+        }
         if let (true, Some(store)) = (removed, &self.store) {
             store.retire_agent(cid);
         }
@@ -118,10 +230,30 @@ impl Roster {
 
     /// Puts agents loaded from the database on the roster; nothing is written back.
     pub fn restore(&self, agents: Vec<Agent>) {
-        let mut roster = self.lock();
-        for agent in agents {
-            roster.insert(agent.cid, agent);
+        {
+            let mut ledger = self.lock();
+            for agent in agents {
+                ledger.put(agent);
+            }
         }
+        self.changed.notify_all();
+    }
+
+    /// Waits, at most `timeout`, until `done` holds for agent `cid` (`None` when it is not on the roster);
+    /// returns whether it held. Every roster change wakes the wait, so nothing polls.
+    pub fn wait_until(
+        &self,
+        cid: u64,
+        timeout: Duration,
+        done: impl Fn(Option<&Agent>) -> bool,
+    ) -> bool {
+        let (_ledger, result) = self
+            .changed
+            .wait_timeout_while(self.lock(), timeout, |ledger| {
+                !done(ledger.agents.get(&cid))
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        !result.timed_out()
     }
 
     fn persist(&self, agent: Option<&Agent>) {
@@ -130,7 +262,7 @@ impl Roster {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Agent>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -584,6 +716,7 @@ pub(crate) fn role_on_hello(spawned_role: Option<String>) -> String {
 /// A session said hello: register the agent (idle) and return its profile. `caps` are the
 /// harness's features from its hello; an older harness sends none.
 pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Option<AgentProfile> {
+    crate::sleep::woke(cid);
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
@@ -620,9 +753,10 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
 }
 
 /// Whether a session ending takes an agent in `status` offline. An agent put to sleep ends its session
-/// on purpose: it is not offline, and its queued work waits for its wake.
+/// on purpose: it is not offline, and its queued work waits for its wake. A dozing agent keeps its
+/// session through its doze, so the same holds for it: its work waits for its undoze.
 fn ends_offline(status: Status) -> bool {
-    status != Status::Asleep
+    !matches!(status, Status::Asleep | Status::Dozing)
 }
 
 /// A session ended: mark the agent offline and fail its work.
@@ -660,6 +794,15 @@ pub fn spawn_reconcile(app: Arc<App>) {
     });
 }
 
+/// What a reconcile pass compares for an agent a node reported a VM for.
+struct Placed {
+    cid: u64,
+    role: String,
+    species: String,
+    run: Option<String>,
+    vm: Option<u32>,
+}
+
 /// One reconcile pass over every node (`fleet::reports`). A node whose gateway or noded did not
 /// answer changes nothing: its agents are only marked gone when its own gateway says so.
 fn reconcile_once(app: &App) {
@@ -667,12 +810,13 @@ fn reconcile_once(app: &App) {
     for (node, status, runs) in crate::fleet::reports(app) {
         // Sessions: register unknown or offline sessions, then mark this node's vanished agents offline.
         if let Some(rows) = status["agents"].as_array() {
-            let live: Vec<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
+            let live: BTreeSet<u64> = rows.iter().filter_map(|row| row["cid"].as_u64()).collect();
             for row in rows {
                 let (Some(cid), Some(role)) = (row["cid"].as_u64(), row["role"].as_str()) else {
                     continue;
                 };
-                // A session on the gateway means the agent is awake: an asleep one is registered idle.
+                // A session on the gateway means the agent is awake: an asleep one is registered idle. A
+                // dozing one has its session still (its VM is paused), so it is online and never hello'd.
                 let known_online = app
                     .agents
                     .get(cid)
@@ -681,13 +825,18 @@ fn reconcile_once(app: &App) {
                     hello(app, cid, role, 0, &[]);
                 }
             }
-            for agent in app.agents.list() {
-                // An asleep agent has no session by design: it is not gone.
-                if !matches!(agent.status, Status::Offline | Status::Asleep)
-                    && crate::fleet::node_of(app, agent.cid) == node
-                    && !live.contains(&agent.cid)
-                {
-                    gone(app, agent.cid, "session not on its node's gateway");
+            // An asleep agent has no session by design: it is not gone. Nor is a dozing one, whose paused
+            // session the gateway keeps (quiet) and may not list while its VM is paused.
+            let missing = app.agents.select(|agent| {
+                (!matches!(
+                    agent.status,
+                    Status::Offline | Status::Asleep | Status::Dozing
+                ) && !live.contains(&agent.cid))
+                .then_some(agent.cid)
+            });
+            for cid in missing {
+                if crate::fleet::node_of(app, cid) == node {
+                    gone(app, cid, "session not on its node's gateway");
                 }
             }
         }
@@ -714,7 +863,17 @@ fn reconcile_once(app: &App) {
             }
         }
     }
-    for agent in app.agents.list() {
+    // Only the agents a node reported a VM for, and only the fields compared below.
+    let placed = app.agents.select(|agent| {
+        placements.contains_key(&agent.cid).then(|| Placed {
+            cid: agent.cid,
+            role: agent.role.clone(),
+            species: agent.species.clone(),
+            run: agent.run.clone(),
+            vm: agent.vm,
+        })
+    });
+    for agent in placed {
         let Some((run, vm)) = placements.get(&agent.cid).cloned() else {
             continue;
         };
@@ -1254,8 +1413,9 @@ mod route_tests {
     use super::*;
 
     #[test]
-    fn a_session_ending_keeps_an_asleep_agent_and_takes_the_others_offline() {
+    fn a_session_ending_keeps_an_asleep_or_dozing_agent_and_takes_the_others_offline() {
         assert!(!ends_offline(Status::Asleep));
+        assert!(!ends_offline(Status::Dozing));
         assert!(ends_offline(Status::Idle));
         assert!(ends_offline(Status::Working));
         assert!(ends_offline(Status::Offline));
@@ -1289,6 +1449,37 @@ mod route_tests {
             kind: "llm".into(),
             caps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wait_until_returns_as_soon_as_a_change_makes_the_agent_idle() {
+        let roster = Arc::new(Roster::with_db(None));
+        let mut asleep = agent("builder");
+        asleep.status = Status::Asleep;
+        roster.upsert(asleep);
+
+        let writer = Arc::clone(&roster);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            writer.update(42, |slot| slot.status = Status::Idle);
+        });
+
+        let started = std::time::Instant::now();
+        let held = roster.wait_until(42, Duration::from_secs(5), |a| {
+            a.is_some_and(|a| a.status == Status::Idle)
+        });
+        assert!(held);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn wait_until_gives_up_at_the_timeout_when_the_condition_never_holds() {
+        let roster = Roster::with_db(None);
+        roster.upsert(agent("builder"));
+        let held = roster.wait_until(42, Duration::from_millis(50), |a| {
+            a.is_some_and(|a| a.status == Status::Offline)
+        });
+        assert!(!held);
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -1344,5 +1535,120 @@ mod route_tests {
         };
         let text = system_prompt(&unnamed, "");
         assert!(text.contains("You have no name yet. You are the QA agent"));
+    }
+}
+
+#[cfg(test)]
+mod roster_index_tests {
+    use super::*;
+
+    fn agent(cid: u64, status: Status) -> Agent {
+        Agent {
+            cid,
+            name: format!("a{cid}"),
+            role: "builder".into(),
+            model_override: None,
+            status,
+            connected_at_ms: 0,
+            last_seen_ms: 0,
+            run: None,
+            vm: None,
+            usage: Usage::default(),
+            species: String::new(),
+            kind: "llm".into(),
+            caps: Vec::new(),
+        }
+    }
+
+    /// The index holds exactly the CIDs of the agents in each status, and `cids_with` reads it.
+    fn assert_index_matches(roster: &Roster) {
+        let ledger = roster.lock();
+        let mut expected: BTreeMap<Status, BTreeSet<u64>> = BTreeMap::new();
+        for agent in ledger.agents.values() {
+            expected.entry(agent.status).or_default().insert(agent.cid);
+        }
+        assert_eq!(ledger.by_status, expected);
+        drop(ledger);
+        for status in [
+            Status::Offline,
+            Status::Idle,
+            Status::Working,
+            Status::Asleep,
+            Status::Dozing,
+        ] {
+            let want: Vec<u64> = expected
+                .get(&status)
+                .map(|cids| cids.iter().copied().collect())
+                .unwrap_or_default();
+            assert_eq!(roster.cids_with(status), want);
+        }
+    }
+
+    #[test]
+    fn index_follows_every_mutation() {
+        let roster = Roster::with_db(None);
+        let statuses = [
+            Status::Offline,
+            Status::Idle,
+            Status::Working,
+            Status::Asleep,
+            Status::Dozing,
+        ];
+        let mut seed: u64 = 7;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            seed >> 33
+        };
+        for step in 0..600 {
+            let cid = next() % 20;
+            let status = statuses[(next() % statuses.len() as u64) as usize];
+            match next() % 6 {
+                0 => roster.upsert(agent(cid, status)),
+                1 => {
+                    roster.remove(cid);
+                }
+                2 => {
+                    roster.update(cid, |a| a.status = status);
+                }
+                3 => roster.restore(vec![agent(cid, status)]),
+                4 => {
+                    roster.update(cid, |a| a.name = format!("n{step}"));
+                }
+                _ => {
+                    roster.update_quietly(cid, |a| a.status = status);
+                }
+            }
+            assert_index_matches(&roster);
+        }
+    }
+
+    #[test]
+    fn counts_and_select_read_the_index() {
+        let roster = Roster::with_db(None);
+        roster.restore(vec![
+            agent(1, Status::Idle),
+            agent(2, Status::Working),
+            agent(3, Status::Idle),
+        ]);
+        assert_eq!(
+            roster.count_by_status(),
+            BTreeMap::from([(Status::Idle, 2), (Status::Working, 1)])
+        );
+        assert_eq!(
+            roster.select(|a| (a.status == Status::Idle).then_some(a.cid)),
+            vec![1, 3]
+        );
+        assert_eq!(
+            roster.select(|a| (a.cid > 1).then(|| a.name.clone())),
+            vec!["a2".to_string(), "a3".to_string()]
+        );
+        roster.update(1, |a| a.status = Status::Asleep);
+        roster.remove(3);
+        assert_eq!(
+            roster.count_by_status(),
+            BTreeMap::from([(Status::Asleep, 1), (Status::Working, 1)])
+        );
     }
 }

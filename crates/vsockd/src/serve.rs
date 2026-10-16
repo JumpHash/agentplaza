@@ -25,6 +25,7 @@ use apz_proto::wire::{AgentProfile, GuestMessage, HostFacts, HostMessage};
 
 use crate::apid::{self, Apid};
 use crate::hub::{Command, Hub, ToolReply};
+use crate::waker::Waker;
 
 /// Forwards to apid in flight per session; the next one is refused at once.
 pub const MAX_FORWARDS: usize = 4;
@@ -44,6 +45,9 @@ impl SessionLog for StdoutLog {
         let _ = writeln!(io::stdout().lock(), "{text}");
     }
 }
+
+/// The longest a quiet keepalive session (a dozing VM: paused, silent) waits between passes.
+const QUIET_MAX_WAIT: Duration = Duration::from_secs(60);
 
 /// What deadlines are measured against; tests step it by hand.
 pub trait Clock: Send + Sync {
@@ -82,6 +86,32 @@ pub struct SessionLimits {
     pub keepalive_idle: Option<Duration>,
     /// How often a keepalive session wakes to take the hub's commands.
     pub keepalive_read_slice: Duration,
+    /// The longest a keepalive session waits for its guest, a hub command or an apid answer before it rechecks its deadlines.
+    pub keepalive_max_wait: Duration,
+}
+
+/// A guest stream a session can wait on together with its waker.
+pub trait WaitReady {
+    /// Waits at most `timeout` until the stream is readable (or closed) or `waker` was woken; `Ok(true)` when the
+    /// stream is readable.
+    fn wait_ready(&self, waker: &Waker, timeout: Duration) -> io::Result<bool>;
+}
+
+impl WaitReady for apz_uds::UnixStream {
+    fn wait_ready(&self, waker: &Waker, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        let own = {
+            use std::os::fd::AsRawFd;
+            self.as_raw_fd()
+        };
+        #[cfg(windows)]
+        let own = {
+            use std::os::windows::io::AsRawSocket;
+            self.as_raw_socket()
+        };
+        let ready = crate::sys::wait_readable(&[own, waker.handle()], Some(timeout))?;
+        Ok(ready[0])
+    }
 }
 
 /// Why a session ended without a `bye`.
@@ -119,7 +149,7 @@ fn violation(detail: impl Into<String>) -> HostError {
 }
 
 /// Serves one guest session accepted on the socket for `peer_cid`.
-pub fn handle_session<S: Read + Write + ReadTimeout>(
+pub fn handle_session<S: Read + Write + ReadTimeout + WaitReady>(
     lines: &mut Lines<S>,
     peer_cid: u32,
     limits: SessionLimits,
@@ -178,7 +208,15 @@ pub fn handle_session<S: Read + Write + ReadTimeout>(
     lines
         .get_ref()
         .set_read_timeout(Some(limits.keepalive_read_slice))?;
-    let outcome = session.keepalive(lines, role.as_deref(), &caps, idle, hub, clock);
+    let outcome = session.keepalive(
+        lines,
+        role.as_deref(),
+        &caps,
+        idle,
+        limits.keepalive_max_wait,
+        hub,
+        clock,
+    );
     session.gone(hub, &outcome);
     outcome
 }
@@ -250,12 +288,13 @@ impl Session<'_> {
 
     /// The keepalive body: the hub's commands out, the agent's lines in, until
     /// its `bye`, a drop, or the idle reap.
-    fn keepalive<S: Read + Write>(
+    fn keepalive<S: Read + Write + WaitReady>(
         &self,
         lines: &mut Lines<S>,
         role: Option<&str>,
         caps: &[String],
         idle: Duration,
+        max_wait: Duration,
         hub: &Hub,
         clock: &dyn Clock,
     ) -> Result<SessionSummary, HostError> {
@@ -267,12 +306,20 @@ impl Session<'_> {
         // the profile names the role the agent is registered under, and with no profile there
         // is no role to register it with, so the session is refused rather than registered
         // with an empty one.
-        let (token, steering, role, profile, mut next_hello) = match role.filter(|r| !r.is_empty())
+        let (token, steering, waker, role, profile, mut next_hello) = match role
+            .filter(|r| !r.is_empty())
         {
             Some(role) => {
-                let (token, steering) = hub.connect(cid, role, last_heartbeat);
+                let (token, steering, waker) = hub.connect(cid, role, last_heartbeat)?;
                 let (profile, next_hello) = self.ask_apid(&apid, role, caps, clock);
-                (token, steering, role.to_string(), profile, next_hello)
+                (
+                    token,
+                    steering,
+                    waker,
+                    role.to_string(),
+                    profile,
+                    next_hello,
+                )
             }
             None => {
                 let (profile, _) = self.ask_apid(&apid, "", caps, clock);
@@ -284,8 +331,8 @@ impl Session<'_> {
                         ));
                     }
                 };
-                let (token, steering) = hub.connect(cid, &role, last_heartbeat);
-                (token, steering, role, profile, None)
+                let (token, steering, waker) = hub.connect(cid, &role, last_heartbeat)?;
+                (token, steering, waker, role, profile, None)
             }
         };
         // Registered before the welcome; the guard unregisters on every exit.
@@ -296,6 +343,7 @@ impl Session<'_> {
             in_flight: Arc::new(AtomicUsize::new(0)),
             settled_tx,
             settled,
+            waker: Arc::clone(&waker),
         };
         // The welcome carries the host's clock and fresh entropy, so a guest restored from a
         // snapshot resumes with the right time and its own random stream.
@@ -309,8 +357,18 @@ impl Session<'_> {
         // Dispatched tool calls not yet answered, and who waits on each.
         let mut outstanding: Vec<(u64, Option<Sender<ToolReply>>)> = Vec::new();
         let mut stopping = false;
+        // Whether the previous pass found the session quiet.
+        let mut was_quiet = false;
         loop {
-            if clock.now().saturating_duration_since(last_heartbeat) > idle {
+            // A quiet agent (a dozing VM, paused, so it sends no heartbeats) is not reaped for its
+            // silence: while it is quiet its idle window restarts on every pass, and a full `idle`
+            // window starts the pass it stops being quiet.
+            let quiet = hub.is_quiet(cid, token);
+            if quiet || was_quiet {
+                last_heartbeat = clock.now();
+            }
+            was_quiet = quiet;
+            if !quiet && clock.now().saturating_duration_since(last_heartbeat) > idle {
                 hub.reap_idle(cid, token, idle);
                 return Err(HostError::Reaped);
             }
@@ -352,6 +410,25 @@ impl Session<'_> {
                         self.send(lines, &HostMessage::Stop { reason })?;
                         stopping = true;
                     }
+                }
+            }
+            // Sleep until the guest, a hub command or an apid answer wakes the session, or a deadline is due.
+            if !lines.pending() {
+                let mut until = last_heartbeat + idle;
+                if let Some(due) = next_hello {
+                    until = until.min(due);
+                }
+                // A quiet (dozing) agent has no deadline to recheck: the flag's change, a hub command or an
+                // apid answer wakes the session, so it waits much longer between passes.
+                let cap = if quiet { QUIET_MAX_WAIT } else { max_wait };
+                let wait = until
+                    .saturating_duration_since(clock.now())
+                    .clamp(Duration::from_millis(1), cap);
+                let readable = lines.get_ref().wait_ready(&waker, wait)?;
+                waker.drain();
+                crate::metrics::SESSION_WAKEUPS.inc();
+                if !readable {
+                    continue;
                 }
             }
             let line = match lines.recv()? {
@@ -474,10 +551,11 @@ impl Session<'_> {
             return Ok(());
         }
         bridge.in_flight.fetch_add(1, Ordering::SeqCst);
-        let (apid, in_flight, tx, line) = (
+        let (apid, in_flight, tx, waker, line) = (
             Arc::clone(&bridge.apid),
             Arc::clone(&bridge.in_flight),
             bridge.settled_tx.clone(),
+            Arc::clone(&bridge.waker),
             line.to_string(),
         );
         thread::spawn(move || {
@@ -497,6 +575,7 @@ impl Session<'_> {
             };
             in_flight.fetch_sub(1, Ordering::SeqCst);
             let _ = tx.send(done);
+            waker.wake();
         });
         Ok(())
     }
@@ -568,6 +647,8 @@ struct Bridge {
     in_flight: Arc<AtomicUsize>,
     settled_tx: Sender<Settled>,
     settled: Receiver<Settled>,
+    /// Woken after each settled answer, so a waiting keepalive session takes it up at once.
+    waker: Arc<Waker>,
 }
 
 /// A forward's or a profile retry's result: a note for the log, and the line to write, if any.
@@ -579,9 +660,10 @@ struct Settled {
 impl Bridge {
     /// Asks apid for the profile again, on a thread (a hello is bounded at 2 s).
     fn hello(&self, cid: u32, role: &str, vm: u32, caps: &[String]) {
-        let (apid, tx, role, caps) = (
+        let (apid, tx, waker, role, caps) = (
             Arc::clone(&self.apid),
             self.settled_tx.clone(),
+            Arc::clone(&self.waker),
             role.to_string(),
             caps.to_vec(),
         );
@@ -601,6 +683,7 @@ impl Bridge {
                 },
             };
             let _ = tx.send(done);
+            waker.wake();
         });
     }
 }
@@ -1106,6 +1189,7 @@ mod tests {
             deadline: None,
             keepalive_idle: None,
             keepalive_read_slice: Duration::from_secs(1),
+            keepalive_max_wait: Duration::from_millis(20),
         }
     }
 
@@ -1290,6 +1374,72 @@ mod tests {
         let (result, log, _) = scripted(&[KEEPALIVE_HELLO], false, keepalive_limits(), &clock);
         assert!(matches!(result, Err(HostError::Reaped)), "{result:?}");
         assert!(log.contains("vsockd: agent 3 reaped idle > 300s"), "{log}");
+    }
+
+    /// A clock the test moves by hand.
+    struct ManualClock(Mutex<Instant>);
+
+    impl ManualClock {
+        fn advance(&self, by: Duration) {
+            *self.0.lock().unwrap() += by;
+        }
+    }
+
+    impl Clock for ManualClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[test]
+    fn a_quiet_keepalive_is_not_reaped_and_a_loud_one_gets_a_full_idle_window() {
+        let (guest, host) = UnixStream::pair().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let (log, hub) = hub_with(None);
+        let hub = Arc::new(hub);
+        let clock = Arc::new(ManualClock(Mutex::new(Instant::now())));
+        let session = {
+            let (hub, log, clock) = (Arc::clone(&hub), Arc::clone(&log), Arc::clone(&clock));
+            thread::spawn(move || {
+                handle_session(
+                    &mut Lines::new(host),
+                    3,
+                    keepalive_limits(),
+                    &*log,
+                    &hub,
+                    &*clock,
+                )
+            })
+        };
+        let settle = || thread::sleep(Duration::from_millis(200));
+        let mut guest = Lines::new(guest);
+        guest.send(KEEPALIVE_HELLO).unwrap();
+        recv(&mut guest);
+
+        // Silent far past the idle window, but quiet: still connected.
+        assert!(hub.set_quiet(3, true));
+        clock.advance(Duration::from_secs(1000));
+        settle();
+        assert!(!session.is_finished(), "a quiet agent is not reaped");
+
+        // Loud again: the window starts now, so 299 s of silence is still inside it.
+        assert!(hub.set_quiet(3, false));
+        settle();
+        clock.advance(Duration::from_secs(299));
+        settle();
+        assert!(!session.is_finished(), "inside the idle window");
+
+        clock.advance(Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.is_finished() {
+            assert!(Instant::now() < deadline, "the loud agent was not reaped");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let result = session.join().unwrap();
+        assert!(matches!(result, Err(HostError::Reaped)), "{result:?}");
+        assert!(log.text().contains("vsockd: agent 3 reaped idle > 300s"));
     }
 
     /// The whole keepalive exchange over a real socket, steered through the

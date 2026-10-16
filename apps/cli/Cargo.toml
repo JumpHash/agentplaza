@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 apz-http = { path = "../../crates/apz-http" }
-apz-metrics = { path = "../../crates/apz-metrics" }
+apz-metrics.workspace = true
 apz-metrics-view = { path = "../../crates/apz-metrics-view" }
 apz-rich = { path = "../../crates/apz-rich" }
 apz-skill = { path = "../../crates/apz-skill" }

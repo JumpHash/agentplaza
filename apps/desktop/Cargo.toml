@@ -14,7 +14,7 @@ apz-board = { path = "../../crates/apz-board" }
 # The IDE's shared model (workspaces, entries, buffers, the diff parser, path rules, the state reducer); the web runs it too.
 apz-ide = { path = "../../crates/apz-ide" }
 # The Metrics view model (the panels the hub composes) and the metrics core types, shared with the hub.
-apz-metrics = { path = "../../crates/apz-metrics" }
+apz-metrics.workspace = true
 apz-metrics-view = { path = "../../crates/apz-metrics-view" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
 # fallback the renderer stack drops to when wgpu cannot get a device.

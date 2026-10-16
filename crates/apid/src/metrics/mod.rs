@@ -36,6 +36,7 @@ pub mod ingest;
 pub mod live;
 pub mod mem;
 pub mod pg;
+pub mod prom;
 pub mod routes;
 pub mod scope;
 pub mod settings;
@@ -43,6 +44,12 @@ pub mod source;
 pub mod source_misc;
 pub mod store;
 pub mod traces;
+
+// The Prometheus statics keep their short paths (`crate::metrics::WAKES`) for the code that records them.
+pub use prom::{
+    DOZES, SLEEP, SLEEPS, UNDOZE, WAKE, WAKE_NODE, WAKE_RECONNECT, WAKES, WAKES_IN_FLIGHT,
+    WAKES_REFUSED,
+};
 
 /// How often the hub scrapes its registry into the rollup (2 s while any scope is live).
 pub const SCRAPE_MS: u64 = 10_000;

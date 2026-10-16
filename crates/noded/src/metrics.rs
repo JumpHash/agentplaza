@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use apz_metrics::prom;
 use apz_metrics::registry::{Counter, Gauge, Hist, Registry, Sample, Value};
 use apz_metrics::wire::{self, Batch, HistPoint};
 use apz_metrics::{Event, SeriesKey};
@@ -211,6 +212,55 @@ fn median_gap(points: &[(u64, f64)]) -> Option<u64> {
     } else {
         (gaps[mid - 1] + gaps[mid]) / 2
     })
+}
+
+// The node's Prometheus metrics, on `GET /v1/metrics` in the Prometheus text format (behind the node's token, like
+// every route): fixed statics for scraping and the lifecycle benchmark. Each VM operation is timed here and also
+// writes one `timing op=<op>` line on stderr (see `crate::registry`).
+
+/// A wake: the restore from the sleep snapshot, to the VM running.
+pub static WAKE: prom::Histogram = prom::Histogram::new(
+    "apz_node_wake_seconds",
+    "A VM wake, from the request to the VM running",
+);
+/// Wakes that could not restore and booted the VM cold instead.
+pub static WAKE_COLD: prom::Counter = prom::Counter::new(
+    "apz_node_wake_cold_fallbacks_total",
+    "VM wakes that could not restore and booted cold instead",
+);
+/// A sleep: the snapshot and the stop.
+pub static SLEEP: prom::Histogram = prom::Histogram::new(
+    "apz_node_sleep_seconds",
+    "A VM sleep: its snapshot and its stop",
+);
+/// A doze: the VM paused and its guest memory paged out of host RAM.
+pub static DOZE: prom::Histogram = prom::Histogram::new(
+    "apz_node_doze_seconds",
+    "A VM doze: its pause and the page-out of its memory",
+);
+/// A checkpoint: the VM's memory and disk copied while it is paused.
+pub static CHECKPOINT: prom::Histogram =
+    prom::Histogram::new("apz_node_checkpoint_seconds", "A VM checkpoint");
+/// A fork: the copies made and started.
+pub static FORK: prom::Histogram =
+    prom::Histogram::new("apz_node_fork_seconds", "A VM fork, until its copies run");
+/// One VM start (boot or restore), from the spawn call to the VM running.
+pub static SPAWN: prom::Histogram = prom::Histogram::new(
+    "apz_node_spawn_seconds",
+    "One VM start, from the spawn call to the VM running",
+);
+
+/// The Prometheus text of every node metric.
+pub fn render() -> String {
+    prom::render(&[
+        &WAKE as &dyn prom::Metric,
+        &WAKE_COLD,
+        &SLEEP,
+        &DOZE,
+        &CHECKPOINT,
+        &FORK,
+        &SPAWN,
+    ])
 }
 
 #[cfg(test)]

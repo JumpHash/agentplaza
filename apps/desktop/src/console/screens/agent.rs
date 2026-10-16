@@ -906,7 +906,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let asleep = state
         .agent
         .as_ref()
-        .is_some_and(|a| s(a, "status") == "asleep");
+        .is_some_and(|a| matches!(s(a, "status"), "asleep" | "dozing"));
     // The hub refuses a sleep while the agent works or has queued work (409), so the button is off then.
     let sleep_blocked = state
         .agent
@@ -1970,6 +1970,7 @@ fn status_label(status: &str) -> (&'static str, ui::Tone) {
         "working" => ("Working", ui::Tone::Info),
         "idle" => ("Idle", ui::Tone::Ok),
         "asleep" => ("Asleep", ui::Tone::Muted),
+        "dozing" => ("Asleep (light)", ui::Tone::Muted),
         _ => ("Offline", ui::Tone::Muted),
     }
 }

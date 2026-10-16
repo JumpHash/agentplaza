@@ -693,7 +693,8 @@ fn node_status(app: &App, latest: &Latest, node: &str, now: u64) -> Status {
 }
 
 fn agent_status(agent: &AgentFact, latest: &Latest) -> Status {
-    if agent.status == AgentStatus::Asleep {
+    // Asleep and dozing (paused, paged out) agents are quiet, not unhealthy.
+    if matches!(agent.status, AgentStatus::Asleep | AgentStatus::Dozing) {
         return Status::Mute;
     }
     let cid = agent.cid.to_string();
@@ -772,6 +773,7 @@ fn status_word(status: AgentStatus) -> &'static str {
         AgentStatus::Idle => "idle",
         AgentStatus::Working => "working",
         AgentStatus::Asleep => "asleep",
+        AgentStatus::Dozing => "dozing",
     }
 }
 

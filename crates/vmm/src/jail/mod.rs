@@ -371,11 +371,14 @@ static ALLOWLIST: &[Group] = &[
               GROWS past glibc's 128 KiB mmap threshold is reallocated with mremap \
               (`syscall=25`), which the serial capture does on a long-running VM — the \
               acceptance matrix saw a run's VMs die on it (`comm=\\\"apz_vcpu_0\\\" sig=31 \
-              code=0x80000000`) once their captures crossed the threshold.",
+              code=0x80000000`) once their captures crossed the threshold. `mincore` is the \
+              snapshot's residency read: the pages in RAM when a snapshot is taken become its \
+              working-set hint (`control.rs`), and the snapshot runs under the filter.",
         syscalls: &[
             libc::SYS_mmap,
             libc::SYS_munmap,
             libc::SYS_madvise,
+            libc::SYS_mincore,
             libc::SYS_mprotect,
             libc::SYS_mremap,
             libc::SYS_brk,
@@ -667,7 +670,6 @@ const FC_DROPPED: &[(&str, &str)] = &[
         "the vCPU kick is tgkill(2), which the allowlist has instead",
     ),
     ("msync", "nothing flushes guest memory to a file"),
-    ("mincore", "nothing asks for page residency"),
     (
         "memfd_create",
         "the guest memory is anonymous; no memfd backing",
@@ -1119,6 +1121,7 @@ const NAMED: &[(&str, libc::c_long)] = &[
     ("mmap", libc::SYS_mmap),
     ("munmap", libc::SYS_munmap),
     ("madvise", libc::SYS_madvise),
+    ("mincore", libc::SYS_mincore),
     ("mprotect", libc::SYS_mprotect),
     ("mremap", libc::SYS_mremap),
     ("brk", libc::SYS_brk),

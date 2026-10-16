@@ -13,6 +13,7 @@ jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
 apz-proto.workspace = true
 apz-http = { path = "../apz-http" }
+apz-metrics.workspace = true
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
 apz-ide = { path = "../apz-ide" }
@@ -20,7 +21,6 @@ apz-ide = { path = "../apz-ide" }
 apz-station = { path = "../apz-station" }
 apz-rich = { path = "../apz-rich" }
 # The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
-apz-metrics = { path = "../apz-metrics" }
 apz-metrics-view = { path = "../apz-metrics-view" }
 serde.workspace = true
 serde_json.workspace = true
