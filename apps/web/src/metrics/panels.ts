@@ -140,6 +140,13 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
 
   /** The card's header, pinned-from and sub lines. The body host moves with them, so its contents survive. */
   const paintCard = (): void => {
+    // Tiles and health have no title: they sit bare on the grid, as in the design, unless pinned elsewhere.
+    const bare = current.title === '' && !current.pinned;
+    root.classList.toggle('mx-bare', bare);
+    if (bare) {
+      replace(root, bodyHost);
+      return;
+    }
     replace(
       root,
       h(

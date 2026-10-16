@@ -45,8 +45,11 @@ pub fn format(unit: Unit, v: f64) -> String {
                         0
                     } else if x >= 10.0 {
                         1
-                    } else {
+                    } else if x >= 0.01 || x == 0.0 {
                         2
+                    } else {
+                        // Under a cent (a call's or a turn's cost) keeps four places: $0.0044.
+                        4
                     }
                 });
                 if round_to(v, decimals) >= 1000.0 {

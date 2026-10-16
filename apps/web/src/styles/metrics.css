@@ -78,6 +78,7 @@
 /* Cards and panel chrome */
 
 .mx-card { background: var(--sheet); border: 1px solid var(--rule); padding: 12px 14px; min-width: 0; position: relative; }
+.mx-card.mx-bare { background: none; border: 0; padding: 0; }
 .mx-card h3 { font: 600 13px/1.4 var(--sans); margin: 0; display: flex; align-items: baseline; gap: 8px; }
 .mx-card h3 .mx-ttl { margin-right: auto; }
 .mx-card h3 small { font: 400 11px var(--sans); color: var(--ink-3); }

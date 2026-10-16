@@ -68,6 +68,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
                 label: "Cache hit",
                 first: "llm.tokens_cache_read",
                 second: "llm.tokens_in",
+                second_agg: AggFn::Sum,
                 combine: cache_hit,
                 unit: Unit::Percent,
                 up_bad: false,
@@ -80,8 +81,9 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             &Pair {
                 label: "Cost per turn",
                 first: "llm.spend_usd",
-                second: "llm.calls",
-                combine: cost_per_call,
+                second: "turn.duration_ms",
+                second_agg: AggFn::Count,
+                combine: cost_per_turn,
                 unit: Unit::Usd,
                 up_bad: true,
                 tone: Tone::C5,
@@ -106,6 +108,8 @@ struct Pair {
     label: &'static str,
     first: &'static str,
     second: &'static str,
+    /// How `second` is read: a sum for counters, a count for a histogram's values.
+    second_agg: AggFn,
     combine: fn(f64, f64) -> Option<f64>,
     unit: Unit,
     up_bad: bool,
@@ -117,7 +121,7 @@ struct Pair {
 fn pair_tile(ctx: &Ctx, src: &dyn Source, pair: &Pair) -> Tile {
     let value_in = |scope: &str, from_ms: u64, to_ms: u64| {
         let first = src.scalar(pair.first, scope, from_ms, to_ms, AggFn::Sum)?;
-        let second = src.scalar(pair.second, scope, from_ms, to_ms, AggFn::Sum)?;
+        let second = src.scalar(pair.second, scope, from_ms, to_ms, pair.second_agg)?;
         (pair.combine)(first, second)
     };
     let now = value_in(&ctx.q.scope, ctx.from_ms, ctx.to_ms);
@@ -127,7 +131,7 @@ fn pair_tile(ctx: &Ctx, src: &dyn Source, pair: &Pair) -> Tile {
         None
     };
     let first_spark = ctx.spark(src, pair.first, AggFn::Sum);
-    let second_spark = ctx.spark(src, pair.second, AggFn::Sum);
+    let second_spark = ctx.spark(src, pair.second, pair.second_agg);
     let spark = first_spark
         .iter()
         .zip(&second_spark)
@@ -157,8 +161,8 @@ fn cache_hit(reads: f64, fresh: f64) -> Option<f64> {
 }
 
 /// Spend per model call.
-fn cost_per_call(spend: f64, calls: f64) -> Option<f64> {
-    (calls > 0.0).then(|| spend / calls)
+fn cost_per_turn(spend: f64, turns: f64) -> Option<f64> {
+    (turns > 0.0).then(|| spend / turns)
 }
 
 /// Input tokens by group, with output stacked on top.
@@ -698,7 +702,7 @@ fn prices(ctx: &Ctx, src: &dyn Source) -> Panel {
                         }
                     } else {
                         Cell::Pill {
-                            text: "unpriced: set one under Models".into(),
+                            text: "unpriced".into(),
                             status: Status::Warn,
                         }
                     },
@@ -723,7 +727,7 @@ fn prices(ctx: &Ctx, src: &dyn Source) -> Panel {
     let mut p = panel(
         "prices",
         "Prices",
-        "USD per million tokens; the estimates use these rates, the reported cost is what the provider charged",
+        "USD per million tokens. Estimates use these rates; the reported cost is what the provider charged. Set a price for an unpriced model under Models.",
         12,
         body,
     );
@@ -879,7 +883,10 @@ mod tests {
         let Body::Table(table) = &calls.body else {
             panic!("the call log is a table");
         };
-        let more = table.more.as_deref().expect("a full first page offers older calls");
+        let more = table
+            .more
+            .as_deref()
+            .expect("a full first page offers older calls");
         assert!(more.starts_with("/v1/metrics/calls/page?scope=global&before="));
         let prices = view.panels.iter().find(|p| p.id == "prices").unwrap();
         assert_eq!(prices.actions[0].post, "/v1/prices/refresh");

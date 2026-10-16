@@ -16,7 +16,7 @@ export function format(unit: Unit, v: number | null | undefined): string {
   switch (unit) {
     case 'usd': {
       if (v >= 1000) return `$${groupThousands(fixed(v, 0))}`;
-      const decimals = settled(v, (x) => (x >= 100 ? 0 : x >= 10 ? 1 : 2));
+      const decimals = settled(v, (x) => (x >= 100 ? 0 : x >= 10 ? 1 : x >= 0.01 || x === 0 ? 2 : 4));
       if (roundTo(v, decimals) >= 1000) return `$${groupThousands(fixed(v, 0))}`;
       return `$${fixed(v, decimals)}`;
     }
