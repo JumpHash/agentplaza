@@ -265,14 +265,24 @@ table.mx-t tr.mx-sel td { background: var(--hover); }
    the console's sidebar and a narrow window both shrink it. */
 
 .mx-view { container-type: inline-size; container-name: mx; }
-/* Tiles share one row, or even rows when the panel is under 1000 px (8 → 4 + 4, see narrowTileColumns); the health
-   strip is always one row and its text wraps. The desktop lays them out the same way (tiles_row, health). */
+/* Tiles share one row, or even rows when each would get under 130 px (8 → 4 + 4, see narrowTileColumns); the
+   health strip is always one row and its text wraps. The desktop lays them out the same way (tiles_row, health). */
 .mx-panel-body { container: mxp / inline-size; }
 .mx-tiles, .mx-health { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; }
 .mx-health .mx-d { white-space: normal; }
-@container mxp (max-width: 1000px) {
-  .mx-tiles { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); }
-}
+/* Tiles keep one row while each gets 130 px (the design's width at 1440 px); below that they wrap into even rows (data-n is the tile count; the
+   desktop's tiles_row applies the same rule). */
+@container mxp (max-width: 259px) { .mx-tiles[data-n="2"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 389px) { .mx-tiles[data-n="3"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 519px) { .mx-tiles[data-n="4"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 649px) { .mx-tiles[data-n="5"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 779px) { .mx-tiles[data-n="6"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 909px) { .mx-tiles[data-n="7"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 1039px) { .mx-tiles[data-n="8"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 1169px) { .mx-tiles[data-n="9"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 1299px) { .mx-tiles[data-n="10"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 1429px) { .mx-tiles[data-n="11"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
+@container mxp (max-width: 1559px) { .mx-tiles[data-n="12"] { grid-auto-flow: row; grid-template-columns: repeat(var(--mx-tile-cols, 3), minmax(0, 1fr)); } }
 
 /* The panel grid answers to its own width: under 800 px wide panels take the full row and quarter panels half of
    it. The desktop applies the same rule (view.rs, grid_span). */

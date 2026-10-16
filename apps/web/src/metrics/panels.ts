@@ -215,8 +215,8 @@ export function renderPanel(p: Panel, ctx: PanelCtx): PanelHandle {
   };
 
   const tilesBody = (tiles: Tile[]): HTMLElement => {
-    const el = h('div.mx-tiles', null, tiles.map((t) => tileEl(t)));
-    // A narrow panel wraps the tiles into balanced rows (8 → 4 + 4); the desktop's tiles_row does the same.
+    const el = h('div.mx-tiles', { 'data-n': String(tiles.length) }, tiles.map((t) => tileEl(t)));
+    // Under 130 px a tile, the row wraps into balanced rows (8 → 4 + 4); the desktop's tiles_row does the same.
     el.style.setProperty('--mx-tile-cols', String(narrowTileColumns(tiles.length)));
     return el;
   };
