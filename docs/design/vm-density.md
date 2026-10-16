@@ -122,8 +122,8 @@ Per thread, an idle agent costs noded 6/s and vsockd 2/s wakeups (main: 48/s and
 ## Not built
 
 - **Forks from a shared memory file** (memfd, mapped privately by the source and every copy, so a fork writes nothing).
-  Gated on 5.1–5.3 missing the fork target on the reference host (NVMe on XFS), where a fork's memory and workspace
-  copies are reflinks. The host measured above has no reflink filesystem, so its fork time is dominated by full-file copies
-  and cannot settle the gate.
+  Gated on 5.1–5.3 missing the fork target (two copies connected in 60 ms). On the host above they bring it to 78 ms,
+  with each copy's workspace still a full-file copy (no reflinks); the gate is read on the reference host (NVMe on XFS),
+  where those copies are reflinks.
 - **Agents without a VM** (a hub-side loop that attaches a VM on demand). An owner decision, to be made with soak data
   from real fleets.
