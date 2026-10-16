@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use crate::doc::{RouteDoc, RouteInfo};
 use crate::{Request, Response};
 
 type Handler<S> = Box<dyn Fn(&S, &Request, &Params<'_>) -> Response + Send + Sync>;
@@ -15,8 +16,10 @@ pub struct Router<S> {
 
 struct Route<S> {
     method: &'static str,
+    source: &'static str,
     pattern: Vec<&'static str>,
     handler: Handler<S>,
+    doc: Option<RouteDoc>,
 }
 
 /// The segments a pattern's `{name}`s captured, percent-decoded.
@@ -55,10 +58,33 @@ impl<S> Router<S> {
     ) -> Self {
         self.routes.push(Route {
             method,
+            source: pattern,
             pattern: pattern.trim_start_matches('/').split('/').collect(),
             handler: Box::new(handler),
+            doc: None,
         });
         self
+    }
+
+    /// Documents the route added last, for the API's OpenAPI spec ([`RouteDoc`]).
+    ///
+    /// # Panics
+    /// On a router with no route yet.
+    pub fn doc(mut self, doc: RouteDoc) -> Self {
+        self.routes
+            .last_mut()
+            .expect("doc() follows the route it documents")
+            .doc = Some(doc);
+        self
+    }
+
+    /// Every route, in matching order.
+    pub fn routes(&self) -> impl Iterator<Item = RouteInfo<'_>> {
+        self.routes.iter().map(|route| RouteInfo {
+            method: route.method,
+            pattern: route.source,
+            doc: route.doc.as_ref(),
+        })
     }
 
     pub fn get(

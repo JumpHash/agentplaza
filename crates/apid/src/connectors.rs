@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -984,12 +984,19 @@ impl Store {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/connectors", list_route)
+        .doc(RouteDoc::new("List the connectors and their settings"))
         .route("PUT", "/v1/connectors/{id}", update_route)
+        .doc(RouteDoc::new("Update a connector's settings").errors(&[400]))
         .route("PUT", "/v1/connectors/{id}/secret", secret_route)
+        .doc(RouteDoc::new("Set a connector's credential").errors(&[400]))
         .delete("/v1/connectors/{id}/secret", delete_secret_route)
+        .doc(RouteDoc::new("Remove a connector's credential"))
         .post("/v1/connectors/{id}/test", test_route)
+        .doc(RouteDoc::new("Test a connector's connection"))
         .get("/v1/connectors/proposals", proposals_route)
+        .doc(RouteDoc::new("List connector proposals, newest first"))
         .post("/v1/connectors/proposals/{id}/review", review_route)
+        .doc(RouteDoc::new("Approve or reject a connector proposal").errors(&[400, 404, 409, 500]))
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {

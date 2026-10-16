@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -982,15 +982,25 @@ fn fail(app: &App, job: &Job, message: &str) {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/foundry/hf/status", status)
+        .doc(RouteDoc::new("Show the Hugging Face status"))
         .route("PUT", "/v1/foundry/hf/token", put_token)
+        .doc(RouteDoc::new("Save the Hugging Face token").errors(&[400]))
         .delete("/v1/foundry/hf/token", delete_token)
+        .doc(RouteDoc::new("Remove the Hugging Face token").errors(&[500]))
         .get("/v1/foundry/hf/models", search_route)
+        .doc(RouteDoc::new("Search Hugging Face models").errors(&[400]))
         .get("/v1/foundry/hf/models/{id..}", detail_route)
+        .doc(RouteDoc::new("Show a Hugging Face model"))
         .post("/v1/foundry/hf/import", import_route)
+        .doc(RouteDoc::new("Start a Hugging Face import").status(202))
         .post("/v1/foundry/models/{id}/rederive", rederive_route)
+        .doc(RouteDoc::new("Re-derive an imported model").errors(&[404, 409]))
         .get("/v1/foundry/hf/imports", list_route)
+        .doc(RouteDoc::new("List the Hugging Face imports"))
         .get("/v1/foundry/hf/imports/{n}", one_route)
+        .doc(RouteDoc::new("Show a Hugging Face import").errors(&[404]))
         .delete("/v1/foundry/hf/imports/{n}", delete_route)
+        .doc(RouteDoc::new("Remove a Hugging Face import"))
 }
 
 fn fail_response(fail: Fail) -> Response {

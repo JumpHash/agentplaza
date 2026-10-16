@@ -24,7 +24,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use apz_http::ws::{self, Message, Origins};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_station::{Event, InputAction, Op, SessionId, Takeover};
 use serde_json::{Value, json};
 
@@ -140,9 +140,11 @@ impl Desk for Live<'_> {
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.get("/v1/stations/{id}/control", |app, req, p| {
-        control_route(app, req, p.get("id"))
-    })
+    router
+        .get("/v1/stations/{id}/control", |app, req, p| {
+            control_route(app, req, p.get("id"))
+        })
+        .doc(RouteDoc::new("Open a socket to take over a station").errors(&[404, 409, 429]))
 }
 
 fn control_route(app: &App, req: &Request, id: &str) -> Response {

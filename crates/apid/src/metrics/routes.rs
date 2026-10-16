@@ -20,7 +20,7 @@
 //! * `POST /v1/nodes/{id}/metrics` lives in nodes.rs (signed by the node); this module ingests it.
 //! * `GET /metrics` — OpenMetrics text with `Authorization: Bearer <openmetrics token>`, 404 when off.
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::CATALOG;
 use apz_metrics::alerts::Rule;
 use apz_metrics::query::AggFn;
@@ -47,61 +47,87 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/metrics/catalog", |_, _, _| {
             Response::json(200, &CATALOG)
         })
+        .doc(RouteDoc::new("Read the metric catalog"))
         .get("/v1/metrics/scopes", |app, req, _| scopes_route(app, req))
+        .doc(RouteDoc::new("List the metric scopes"))
         .get("/v1/metrics/view", |app, req, _| view_route(app, req))
+        .doc(RouteDoc::new("Compose a metrics view").errors(&[400]))
         .get("/v1/metrics/around", |app, req, _| around_route(app, req))
+        .doc(RouteDoc::new("Show what changed around a time").errors(&[400]))
         .route("POST", "/v1/metrics/query", |app, req, _| {
             query_route(app, req)
         })
+        .doc(RouteDoc::new("Read metric series grouped by a key").errors(&[400]))
         .get("/v1/metrics/events", |app, req, _| events_route(app, req))
+        .doc(RouteDoc::new("List the metric events").errors(&[400]))
         .get("/v1/metrics/calls", |app, req, _| calls_route(app, req))
+        .doc(RouteDoc::new("List the agents' calls").errors(&[400]))
         .get("/v1/metrics/calls/page", |app, req, _| {
             calls_page_route(app, req)
         })
+        .doc(RouteDoc::new("Load the next page of calls").errors(&[400]))
         .get("/v1/metrics/traces", |app, req, _| traces_route(app, req))
+        .doc(RouteDoc::new("List the kept traces").errors(&[400]))
         .get("/v1/metrics/traces/{id}", |app, req, params| {
             trace_route(app, req, params)
         })
+        .doc(RouteDoc::new("Show a kept trace").errors(&[404]))
         .get("/v1/metrics/export", |app, req, _| export_route(app, req))
+        .doc(RouteDoc::new("Export a view as CSV").errors(&[400]))
         .route("POST", "/v1/metrics/live", |app, req, _| {
             live_route(app, req)
         })
+        .doc(RouteDoc::new("Renew the live metrics lease").errors(&[400]))
         .route("POST", "/v1/metrics/open/{cid}", |app, _, params| {
             open_route(app, params)
         })
+        .doc(RouteDoc::new("Mark an agent as open in the traces"))
         .get("/v1/metrics/settings", |app, _, _| {
             Response::json(200, &app.metrics.settings.get())
         })
+        .doc(RouteDoc::new("Read the metrics settings"))
         .route("PUT", "/v1/metrics/settings", |app, req, _| {
             put_settings_route(app, req)
         })
+        .doc(RouteDoc::new("Save the metrics settings").errors(&[400, 500]))
         .get("/v1/metrics/dashboards", |app, _, _| {
             dashboards_get_route(app)
         })
+        .doc(RouteDoc::new("Read the saved dashboards"))
         .route("PUT", "/v1/metrics/dashboards", |app, req, _| {
             dashboards_put_route(app, req)
         })
+        .doc(RouteDoc::new("Save the dashboards").errors(&[400]))
         .get("/v1/metrics/alerts", |app, _, _| alerts_route(app))
+        .doc(RouteDoc::new("List the alerts and their state"))
         .route("PUT", "/v1/metrics/alerts/rules", |app, req, _| {
             put_rule_route(app, req)
         })
+        .doc(RouteDoc::new("Save an alert rule").errors(&[400]))
         .route(
             "DELETE",
             "/v1/metrics/alerts/rules/{id}",
             |app, _, params| delete_rule_route(app, params),
         )
+        .doc(RouteDoc::new("Delete an alert rule").errors(&[400]))
         .route("POST", "/v1/metrics/alerts/{id}/mute", mute_route)
+        .doc(RouteDoc::new("Mute an alert until a time").errors(&[400]))
         .route("POST", "/v1/metrics/alerts/{id}/ack", |app, req, params| {
             ack_route(app, req, params)
         })
+        .doc(RouteDoc::new("Acknowledge an alert").errors(&[400]))
         .route("POST", "/v1/metrics/alerts/{id}/on", |app, req, params| {
             rule_on_route(app, req, params)
         })
+        .doc(RouteDoc::new("Switch an alert rule on or off").errors(&[400, 404]))
         .get("/v1/metrics/slos", |app, _, _| slos_route(app))
+        .doc(RouteDoc::new("List the service-level objectives"))
         .get("/v1/metrics/forecast", |app, req, _| {
             forecast_route(app, req)
         })
+        .doc(RouteDoc::new("Show the capacity forecast").errors(&[400, 404]))
         .get("/metrics", |app, req, _| metrics_route(app, req))
+        .doc(RouteDoc::new("Scrape the metrics in OpenMetrics").errors(&[404]))
 }
 
 /// The source a read goes to: the built-in fixture when `fixture` is set, else the hub at this moment.

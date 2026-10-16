@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::agents::Status;
@@ -114,9 +114,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/agents/{cid}/sleep", |app, req, p| {
             sleep_route(app, req, p)
         })
+        .doc(RouteDoc::new("Put an agent to sleep"))
         .post("/v1/agents/{cid}/wake", |app, req, p| {
             wake_route(app, req, p)
         })
+        .doc(RouteDoc::new("Wake an agent"))
 }
 
 /// Records activity for `cid` (work started or ended, a chat, an IDE call, a tool call): the idle

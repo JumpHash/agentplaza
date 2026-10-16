@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::state::App;
@@ -249,12 +249,17 @@ fn host_name(host: &str) -> &str {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/hub/identity", identity_route)
+        .doc(RouteDoc::new("Show the hub's identity"))
         .post("/v1/hub/owner-token/rotate", rotate_route)
+        .doc(RouteDoc::new("Rotate the owner token").errors(&[500]))
         .get("/v1/auth/check", |_, _, _| {
             Response::json(200, &serde_json::json!({ "ok": true }))
         })
+        .doc(RouteDoc::new("Check that the session is signed in"))
         .post("/v1/auth/session", sign_in_route)
+        .doc(RouteDoc::new("Sign in with the owner token").errors(&[400]))
         .delete("/v1/auth/session", sign_out_route)
+        .doc(RouteDoc::new("Sign out of this browser"))
 }
 
 /// The session id in the request's `Cookie` header, if any.

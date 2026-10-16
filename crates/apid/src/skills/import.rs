@@ -10,7 +10,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_skill::archive::{
     Entry, FoundSkill, Limits, find_skills, parse_github_url, read_zip, write_zip,
 };
@@ -45,6 +45,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/skills/import/preview", |app, req, _| {
             respond(zip_preview(&app.skills, previews(), &req.body, now()))
         })
+        .doc(RouteDoc::new("Preview the skills in an uploaded zip").errors(&[413, 422]))
         .post("/v1/skills/github/preview", |app, req, _| {
             match req.json::<UrlBody>() {
                 Ok(body) => respond(github_preview(
@@ -58,12 +59,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(_) => Response::error(400, "the body is not {\"url\": \"...\"}"),
             }
         })
+        .doc(RouteDoc::new("Preview the skills in a GitHub folder").errors(&[400, 422, 502]))
         .post("/v1/skills/import/commit", |app, req, _| {
             match req.json::<CommitBody>() {
                 Ok(body) => respond(commit(&app.skills, &app.bus, previews(), body, now())),
                 Err(_) => Response::error(400, "the body is not valid JSON for this route"),
             }
         })
+        .doc(RouteDoc::new("Create the skills picked from a preview").errors(&[400, 404, 409, 422]))
         .post("/v1/skills/{id}/github/check", |app, _, p| {
             respond(github_check(
                 &app.skills,
@@ -72,6 +75,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 p.get("id"),
             ))
         })
+        .doc(
+            RouteDoc::new("Check whether a GitHub skill has a newer commit")
+                .errors(&[404, 422, 502]),
+        )
         .post("/v1/skills/{id}/github/update", |app, _, p| {
             respond(github_update(
                 &app.skills,
@@ -82,15 +89,18 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 now(),
             ))
         })
+        .doc(RouteDoc::new("Update a GitHub skill to its latest commit").errors(&[404, 422, 502]))
         .get("/v1/skills/export", |app, req, _| {
             respond_zip(export_many(
                 &app.skills,
                 req.query_param("ids").unwrap_or(""),
             ))
         })
+        .doc(RouteDoc::new("Export several skills as one zip").errors(&[404, 422]))
         .get("/v1/skills/{id}/versions/{v}/export", |app, _, p| {
             respond_zip(export_version(&app.skills, p.get("id"), p.get("v")))
         })
+        .doc(RouteDoc::new("Export one version of a skill as a zip").errors(&[404]))
 }
 
 #[derive(Debug, Deserialize)]

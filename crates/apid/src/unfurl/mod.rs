@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_rich::{AgentName, Ctx, Ref, Span};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -543,7 +543,9 @@ struct Batch {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/v1/unfurl", |app, req, _| batch_route(app, req))
+        .doc(RouteDoc::new("Get cards for a batch of references"))
         .get("/v1/unfurl", |app, req, _| one_route(app, req))
+        .doc(RouteDoc::new("Get the card for one URL").errors(&[422]))
 }
 
 fn batch_route(app: &App, req: &Request) -> Response {

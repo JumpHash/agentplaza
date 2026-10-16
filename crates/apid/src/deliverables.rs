@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_gateway::s3::S3;
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -352,14 +352,24 @@ impl Store {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/files", list_route)
+        .doc(RouteDoc::new("List the files agents handed in"))
         .get("/v1/files/{id}", meta_route)
+        .doc(RouteDoc::new("Get a file's metadata").errors(&[404]))
         .get("/v1/files/{id}/content", content_route)
+        .doc(RouteDoc::new("Get a file's content").errors(&[404]))
         .delete("/v1/files/{id}", delete_route)
+        .doc(RouteDoc::new("Delete a file").errors(&[404, 500]))
         .route("PUT", "/internal/v1/agents/{cid}/gateway/files", put_route)
+        .doc(
+            RouteDoc::new("Store a file an agent hands in")
+                .status(201)
+                .errors(&[400, 403]),
+        )
         .get(
             "/internal/v1/agents/{cid}/gateway/files/{id}",
             agent_get_route,
         )
+        .doc(RouteDoc::new("Let an agent download a file it can read").errors(&[404]))
 }
 
 /// Every deliverable, or only one `kind` when the query names it.

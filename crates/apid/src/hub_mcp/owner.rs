@@ -2,7 +2,7 @@
 //! tokens, and the call log. Every `/v1` path is behind `hub_auth::gate`, which asks for the owner's token, so
 //! only the owner reaches these handlers. A token's value is in the answer to its creation, and nowhere else.
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -34,17 +34,31 @@ fn ctx(app: &App) -> Ctx<'_> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/hub-mcp", |app, _, _| status(&ctx(app)))
+        .doc(RouteDoc::new("Show the hub's MCP server status"))
         .route("PUT", "/v1/hub-mcp", |app, req, _| {
             put_settings(&ctx(app), req)
         })
+        .doc(RouteDoc::new("Save and apply the hub's MCP settings").errors(&[400, 500]))
         .get("/v1/hub-mcp/tokens", |app, _, _| list_tokens(&ctx(app)))
+        .doc(RouteDoc::new("List the MCP tokens"))
         .post("/v1/hub-mcp/tokens", |app, req, _| {
             create_token(&ctx(app), req)
         })
+        .doc(
+            RouteDoc::new("Create an MCP token")
+                .status(201)
+                .errors(&[400, 500]),
+        )
         .delete("/v1/hub-mcp/tokens/{id}", |app, _, p| {
             revoke_token(&ctx(app), p.get("id"))
         })
+        .doc(
+            RouteDoc::new("Revoke an MCP token")
+                .status(204)
+                .errors(&[404]),
+        )
         .get("/v1/hub-mcp/calls", |app, req, _| calls(&ctx(app), req))
+        .doc(RouteDoc::new("List the recent MCP calls").errors(&[400]))
 }
 
 /// `GET /v1/hub-mcp`: the switch, the bind, the auth mode, the origins, the URL to use, and the live token count.

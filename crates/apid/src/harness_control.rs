@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::{Control, WorkKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -596,12 +596,17 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/loops", |app, _, _| {
             Response::json(200, &app.harness.loops())
         })
+        .doc(RouteDoc::new("List the scheduled loops"))
         .post("/v1/loops", start_route)
+        .doc(RouteDoc::new("Start a loop that prompts an agent on a schedule").errors(&[400]))
         .delete("/v1/loops/{id}", stop_route)
+        .doc(RouteDoc::new("Stop a scheduled loop").errors(&[400]))
         .post("/v1/agents/{cid}/control", control_route)
+        .doc(RouteDoc::new("Control an agent's running work").errors(&[400, 409]))
         .get("/v1/agents/{cid}/limits", |app, _, p| {
             Response::json(200, &app.harness.limits(p.get("cid").parse().unwrap_or(0)))
         })
+        .doc(RouteDoc::new("Show an agent's limits"))
 }
 
 #[derive(Deserialize)]

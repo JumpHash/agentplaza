@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::bonds::Interaction;
 use apz_proto::wire::WorkKind;
 use serde::Deserialize;
@@ -41,12 +41,17 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/society", |app, _, _| society_view(app))
+        .doc(RouteDoc::new(
+            "Show the society: agents, bonds and reputations",
+        ))
         .post("/v1/agents/{cid}/rating", |app, req, p| {
             owner_rating(app, p.get("cid"), &req.body)
         })
+        .doc(RouteDoc::new("Rate an agent as the owner"))
         .get("/v1/agents/{cid}/profile", |app, _, p| {
             profile(app, p.get("cid"))
         })
+        .doc(RouteDoc::new("Show an agent's profile"))
 }
 
 fn now() -> i64 {

@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1390,6 +1390,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/prices", |app, _, _| {
             Response::json(200, &listing(app.prices.state()))
         })
+        .doc(RouteDoc::new("List the model prices"))
         .get("/v1/prices/{model}", |app, _, p| {
             let model = percent_decode_path(p.get("model"));
             let manual = app.settings.get().prices;
@@ -1398,10 +1399,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 None => Response::error(404, &format!("no price for {model}")),
             }
         })
+        .doc(RouteDoc::new("Show one model's price").errors(&[404]))
         .post("/v1/prices/refresh", |app, _, _| {
             app.prices.refresh();
             Response::json(200, &listing(app.prices.state()))
         })
+        .doc(RouteDoc::new(
+            "Refresh the model prices from the public lists",
+        ))
 }
 
 #[cfg(test)]

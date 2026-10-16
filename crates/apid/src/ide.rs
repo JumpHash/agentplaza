@@ -44,7 +44,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_ide::diff::{parse_unified, write_binary, write_unified};
 use apz_ide::path::{PathError, check_dir, check_read, check_write};
 use apz_ide::tree::PAGE_SIZE;
@@ -1635,6 +1635,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 ),
             )
         })
+        .doc(RouteDoc::new("List the IDE's workspaces"))
         .get("/v1/ide/workspaces/{id}/tree", |app, req, p| {
             let (path, cursor) = (query(req, "path"), query(req, "cursor"));
             respond(with_workspace(
@@ -1645,6 +1646,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_tree(host, id, path.as_deref(), cursor.as_deref()),
             ))
         })
+        .doc(RouteDoc::new("List one folder of a workspace"))
         .get("/v1/ide/workspaces/{id}/file", |app, req, p| {
             let path = query(req, "path");
             respond(with_workspace(
@@ -1655,6 +1657,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_read(host, id, path.as_deref()),
             ))
         })
+        .doc(RouteDoc::new("Read a file in a workspace"))
         .route("PUT", "/v1/ide/workspaces/{id}/file", |app, req, p| {
             respond(body(req).and_then(|body| {
                 with_workspace(
@@ -1666,6 +1669,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 )
             }))
         })
+        .doc(RouteDoc::new("Write a file in a workspace").errors(&[400, 409]))
         .get("/v1/ide/workspaces/{id}/changes", |app, req, p| {
             let base = query(req, "base");
             respond(with_workspace(
@@ -1676,6 +1680,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |_, _| not_for_stations(NO_CHECKPOINTS),
             ))
         })
+        .doc(RouteDoc::new("List the files changed since a base").errors(&[501]))
         .get("/v1/ide/workspaces/{id}/checkpoints", |app, _, p| {
             respond(with_workspace(
                 app,
@@ -1685,6 +1690,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 station_checkpoints,
             ))
         })
+        .doc(RouteDoc::new("List a workspace's checkpoints"))
         .post(
             "/v1/ide/workspaces/{id}/checkpoints/{n}/restore",
             |app, _, p| {
@@ -1703,6 +1709,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 }))
             },
         )
+        .doc(RouteDoc::new("Restore a workspace checkpoint").errors(&[501]))
         .get("/v1/ide/workspaces/{id}/search", |app, req, p| {
             let (q, glob, max) = (query(req, "q"), query(req, "glob"), query(req, "max"));
             respond(with_workspace(
@@ -1713,6 +1720,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_search(host, id, q.as_deref(), glob.as_deref(), max.as_deref()),
             ))
         })
+        .doc(RouteDoc::new("Search a workspace's files").errors(&[501]))
         .post("/v1/ide/workspaces/{id}/runs", |app, req, p| {
             respond(body(req).and_then(|body| {
                 with_workspace(
@@ -1724,6 +1732,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 )
             }))
         })
+        .doc(RouteDoc::new("Start a run in a workspace").errors(&[400, 501]))
         .get("/v1/ide/workspaces/{id}/runs/{run}", |app, req, p| {
             let offset = query(req, "offset");
             respond(with_workspace(
@@ -1734,6 +1743,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_run_poll(host, id, p.get("run"), offset.as_deref()),
             ))
         })
+        .doc(RouteDoc::new("Read a run's output").errors(&[501]))
         .post("/v1/ide/workspaces/{id}/runs/{run}/stop", |app, _, p| {
             respond(with_workspace(
                 app,
@@ -1743,6 +1753,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_run_stop(host, id, p.get("run")),
             ))
         })
+        .doc(RouteDoc::new("Stop a run").errors(&[501]))
         .post("/v1/ide/workspaces/{id}/pulls", |app, req, p| {
             created(body(req).and_then(|body| {
                 with_workspace(
@@ -1754,6 +1765,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 )
             }))
         })
+        .doc(
+            RouteDoc::new("Open a pull request from a workspace branch")
+                .status(201)
+                .errors(&[400]),
+        )
         .post("/v1/ide/workspaces/{id}/branch", |app, req, p| {
             created(body(req).and_then(|body| {
                 with_workspace(
@@ -1765,6 +1781,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 )
             }))
         })
+        .doc(
+            RouteDoc::new("Create a branch in a workspace repo")
+                .status(201)
+                .errors(&[400]),
+        )
         .get("/v1/ide/audit", |app, req, _| {
             respond(audit_rows(
                 &Live(app),
@@ -1772,6 +1793,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 query(req, "limit").as_deref(),
             ))
         })
+        .doc(RouteDoc::new("List the IDE's audit log").errors(&[500]))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! Wakes and sleeps are timed end to end here; the node times its own part (noded's `/v1/metrics`), and each wake also
 //! writes one `timing op=wake` line on stderr (see `crate::sleep`).
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_metrics::prom::{self, Counter, Gauge, Histogram, Metric};
 
 use crate::agents::Status;
@@ -51,23 +51,25 @@ pub static UNDOZE: Histogram = Histogram::new(
 
 /// `GET /v1/metrics`.
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.get("/v1/metrics", |app, _, _| {
-        let mut text = prom::render(&[
-            &WAKES as &dyn Metric,
-            &WAKES_REFUSED,
-            &WAKES_IN_FLIGHT,
-            &WAKE,
-            &WAKE_NODE,
-            &WAKE_RECONNECT,
-            &SLEEPS,
-            &SLEEP,
-            &DOZES,
-            &UNDOZE,
-        ]);
-        text.push_str(&agents_by_status(app));
-        text.push_str(&wakes_queued());
-        Response::new(200, "text/plain; version=0.0.4", text)
-    })
+    router
+        .get("/v1/metrics", |app, _, _| {
+            let mut text = prom::render(&[
+                &WAKES as &dyn Metric,
+                &WAKES_REFUSED,
+                &WAKES_IN_FLIGHT,
+                &WAKE,
+                &WAKE_NODE,
+                &WAKE_RECONNECT,
+                &SLEEPS,
+                &SLEEP,
+                &DOZES,
+                &UNDOZE,
+            ]);
+            text.push_str(&agents_by_status(app));
+            text.push_str(&wakes_queued());
+            Response::new(200, "text/plain; version=0.0.4", text)
+        })
+        .doc(RouteDoc::new("Scrape the hub's Prometheus metrics"))
 }
 
 /// `apz_hub_wakes_queued{lane}`: the wakes waiting for a worker, by lane, counted at scrape time.

@@ -14,7 +14,7 @@
 use std::sync::Mutex;
 
 use apz_gateway::{DecisionRequest, DecisionResponse, ProviderConfig};
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -209,8 +209,11 @@ pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/decisions/default", get_default_route)
+        .doc(RouteDoc::new("Get the default decision model"))
         .route("PUT", "/v1/decisions/default", put_default_route)
+        .doc(RouteDoc::new("Set the default decision model"))
         .post("/v1/decisions", post_route)
+        .doc(RouteDoc::new("Answer decision questions with a model"))
 }
 
 fn get_default_route(app: &App, _: &Request, _: &Params<'_>) -> Response {

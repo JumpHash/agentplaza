@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use apz_http::{Body, Params, Request, Response, Router};
+use apz_http::{Body, Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -782,7 +782,9 @@ pub fn spawn_drain(app: &App, node: &str) {
 
 /// Routes: `POST /v1/agents/{cid}/move`.
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.post("/v1/agents/{cid}/move", move_route)
+    router
+        .post("/v1/agents/{cid}/move", move_route)
+        .doc(RouteDoc::new("Move an agent to another node"))
 }
 
 #[derive(Deserialize)]

@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -2409,45 +2409,60 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/e2b/templates", |app, _, _| {
             Response::json(200, &owner_view(app))
         })
+        .doc(RouteDoc::new("List the templates and their builds"))
         .delete("/v1/e2b/templates/{id}", |app, _, p| {
             match delete(app, p.get("id"), "owner") {
                 Some(result) => result.unwrap_or_else(e2b::refuse),
                 None => e2b::refuse(template_not_found(p.get("id"))),
             }
         })
+        .doc(
+            RouteDoc::new("Delete a template as the owner")
+                .status(204)
+                .errors(&[409]),
+        )
         .post("/e2b/v3/templates", |app, req, _| {
             e2b::guard(app, req, |_| request_build(app, req))
         })
+        .doc(RouteDoc::new("Request a template build"))
         .get("/e2b/templates/aliases/{name}", |app, req, p| {
             e2b::guard(app, req, |_| alias(app, p.get("name")))
         })
+        .doc(RouteDoc::new("Look up a template by its alias"))
         .post("/e2b/templates/tags", |app, req, _| {
             e2b::guard(app, req, |_| assign_tags(app, req))
         })
+        .doc(RouteDoc::new("Assign tags to a template build"))
         .delete("/e2b/templates/tags", |app, req, _| {
             e2b::guard(app, req, |_| remove_tags(app, req))
         })
+        .doc(RouteDoc::new("Remove tags from a template build"))
         .get("/e2b/templates/{id}/tags", |app, req, p| {
             e2b::guard(app, req, |_| tags(app, p.get("id")))
         })
+        .doc(RouteDoc::new("List a template's tags"))
         .get("/e2b/templates/{id}/files/{hash}", |app, req, p| {
             e2b::guard(app, req, |_| {
                 file_link(app, req, p.get("id"), p.get("hash"))
             })
         })
+        .doc(RouteDoc::new("Get a template file's upload link"))
         // The upload link: no API key, the one-time token is its authority.
         .route("PUT", "/e2b/templates/{id}/files/{hash}", |app, req, p| {
             upload(app, req, p.get("id"), p.get("hash")).unwrap_or_else(e2b::refuse)
         })
+        .doc(RouteDoc::new("Upload a template file"))
         .post("/e2b/v2/templates/{id}/builds/{build}", |app, req, p| {
             e2b::guard(app, req, |key| {
                 trigger(app, req, p.get("id"), p.get("build"), key)
             })
         })
+        .doc(RouteDoc::new("Start a template build"))
         .get(
             "/e2b/templates/{id}/builds/{build}/status",
             |app, req, p| e2b::guard(app, req, |_| status(app, req, p.get("id"), p.get("build"))),
         )
+        .doc(RouteDoc::new("Get a template build's status"))
 }
 
 #[cfg(test)]
