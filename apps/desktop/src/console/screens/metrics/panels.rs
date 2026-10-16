@@ -333,7 +333,8 @@ fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
 /// padded with empty space so the columns stay aligned.
 fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg> {
     responsive(move |size: Size| {
-        let per_row = if size.width < 1000.0 {
+        // One row while each tile gets 130 px; below that, even rows (the web's `data-n` container rules).
+        let per_row = if size.width < TILE_MIN_W * tiles.len() as f32 {
             narrow_tile_columns(tiles.len())
         } else {
             tiles.len().max(1)
@@ -352,6 +353,9 @@ fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg
     .height(Length::Shrink)
     .into()
 }
+
+/// The width a tile needs to share one row with the others.
+const TILE_MIN_W: f32 = 130.0;
 
 /// The tiles per row once a panel is narrow: rows of about three, as even as they can be (6 → 3 + 3, 7 → 4 + 3,
 /// 8 → 4 + 4, 9 → 3 × 3); five or fewer keep one row. As the web's `narrowTileColumns`.
