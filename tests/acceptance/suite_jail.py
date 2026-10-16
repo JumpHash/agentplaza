@@ -17,7 +17,7 @@ asserts **both**, and the split is stated rather than implied:
   parent-death arming, a ``/tell`` through the child-bound muxer, and the
   orphan backstop under ``SIGKILL``) and ``_case_process_api_run`` (the
   regression case for a defect this suite found: a run created through ``POST
-  /api/v0/runs`` is killed within milliseconds in process mode — see that
+  /v1/runs`` is killed within milliseconds in process mode — see that
   case's vector and the suite's findings).
 
 The VMM's confinement layer (``crates/vmm/src/jail``) is armed **per VMM
@@ -764,17 +764,27 @@ def _case_process_mode(suite: Suite, ctx) -> None:
             # that completed is proof the daemon reads the child's stderr.
             grouped = _child_lines(child_log)
             arming = {pid: lines.count(PROC_ARMING_LINE) for pid, lines in grouped.items()}
+            # The tee wraps every apz-vmm the daemon starts, so the log can also carry apz-vmm children
+            # that are not the run's VMs (observed: warm-template builders, started before the run's VMs).
+            # Each is a jailed child too: every child on the log must be armed exactly once, and every run
+            # child must be among them.
             case.task(
                 "the parent-death arming is observable once per child, on the child's own stderr "
                 "(the stream the daemon's readiness gate reads)",
-                sorted(arming) == sorted(children) and all(count == 1 for count in arming.values()),
+                all(arming.get(pid) == 1 for pid in children) and all(count == 1 for count in arming.values()),
                 f"arming_lines={arming} children={children} log={child_log}",
             )
+            extra = sorted(set(arming) - set(children))
+            if extra:
+                case.note(
+                    f"the child log also carries {len(extra)} apz-vmm child(ren) that are not the run's VMs "
+                    f"({extra}); each is armed once as well"
+                )
             case.note(
                 "the child's log is read here through the product's own APZ_VMM_CHILD switch (with an exec "
                 "wrapper that tees the child's stderr), because the daemon captures that stream into "
                 "VmRuntime::process_log and surfaces it nowhere: noded.log carries no child line, and "
-                "GET /api/v0/runs/{id} returns a VM's serial, not its process log. Recorded as a finding."
+                "GET /v1/runs/{id} returns a VM's serial, not its process log. Recorded as a finding."
             )
             if PROC_ARMING_LINE not in lab.noded_log_text():
                 suite.finding(
@@ -800,7 +810,8 @@ def _case_process_mode(suite: Suite, ctx) -> None:
                 lambda: any(row.get("cid") == PROC_CID_BASE for row in lab.status().get("agents", [])),
                 PROC_SETTLE_S,
             )
-            tell = lab.api_post(f"/api/v0/agents/{PROC_CID_BASE}/tell", {"name": "uptime"})
+            # The hub's own tell (`POST /v1/agents/{cid}/tell`): the reply is `{ok, output}`, and the CID is the route's.
+            tell = lab.admin_tell(PROC_CID_BASE, "uptime")
             output = str(tell.json.get("output", "")) if tell.status == 200 else ""
             plausible, why = _plausible_uptime(output)
             case.invariant(
@@ -808,7 +819,6 @@ def _case_process_mode(suite: Suite, ctx) -> None:
                 "(the muxer the child bound, end to end)",
                 tell.status == 200
                 and tell.json.get("ok") is True
-                and tell.json.get("cid") == PROC_CID_BASE
                 and plausible,
                 f"agent_connected={connected} {tell.status} {tell.body[:200]} ({why})",
             )
@@ -843,7 +853,7 @@ def _case_process_api_run(suite: Suite, ctx) -> None:
     case = suite.case(
         "an API-created run in process mode: the VMs a POST booted are still up after the request",
         vector=(
-            "a daemon started with APZ_VMM_SPAWN=process boots a 2-VM run through POST /api/v0/runs; after a "
+            "a daemon started with APZ_VMM_SPAWN=process boots a 2-VM run through POST /v1/runs; after a "
             f"{PROC_API_SETTLE_S:.0f} s settle the run is still running, the daemon still has its 2 apz-vmm "
             "children, and the guests' console captures are non-empty — the request that created the VMs must "
             "not be able to take them down. FAILS on HEAD: apz-vmm arms PR_SET_PDEATHSIG(SIGKILL) against the "
@@ -899,7 +909,7 @@ def _case_process_api_run(suite: Suite, ctx) -> None:
                 grouped = _child_lines(child_log)
                 armed = [pid for pid, lines in grouped.items() if PROC_ARMING_LINE in lines]
                 suite.finding(
-                    "a run created through POST /api/v0/runs is killed in the per-VM process mode: the child's "
+                    "a run created through POST /v1/runs is killed in the per-VM process mode: the child's "
                     "PR_SET_PDEATHSIG(SIGKILL) fires when the thread that spawned it exits",
                     classification="product-defect",
                     severity="high",
@@ -929,7 +939,7 @@ def _case_process_api_run(suite: Suite, ctx) -> None:
                     ),
                     reproducer=(
                         "scripts/acceptance.sh jail  ->  the case 'an API-created run in process mode ...'; "
-                        "or by hand: start noded with APZ_VMM_SPAWN=process, POST /api/v0/runs n=2, and read "
+                        "or by hand: start noded with APZ_VMM_SPAWN=process, POST /v1/runs n=2, and read "
                         "the run 3 s later (state done/killed, no apz-vmm children)"
                     ),
                 )
@@ -1086,7 +1096,7 @@ def _case_grown_console_buffer(suite: Suite, ctx) -> None:
                     suspected_component="crates/vmm/src/jail/mod.rs (the ALLOWLIST's allocator group)",
                     reproducer=(
                         "scripts/acceptance.sh jail  ->  the case 'the jail admits the allocator ...'; or by "
-                        "hand: APZ_VMM_SPAWN=process noded --workspace <image>, POST /api/v0/runs n=1, then "
+                        "hand: APZ_VMM_SPAWN=process noded --workspace <image>, POST /v1/runs n=1, then "
                         "send `wspace <text>` until the run view's serial passes 128 KiB (the VM goes killed "
                         "at ~131 KiB and journalctl -k shows syscall=25 code=0x80000000 for the child)"
                     ),
