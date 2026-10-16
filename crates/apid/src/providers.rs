@@ -536,6 +536,11 @@ impl Store {
         Ok(view)
     }
 
+    /// The last `all_models` answer, however old, without asking any provider (None before the first).
+    fn cached_models(&self) -> Option<Value> {
+        lock(&self.models).as_ref().map(|(_, v)| v.clone())
+    }
+
     /// `GET /v1/models`: every provider's models, cached for [`MODEL_CACHE`].
     fn all_models(&self) -> Value {
         let cached = lock(&self.models)
@@ -691,9 +696,12 @@ fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
 /// The context window of `model` (`provider/model`, or a bare model id) in tokens: the window the
 /// provider's listing states for it, else the window of its known model family (see [`known_window`]).
 /// None when neither knows it, as for a local model.
+/// Reads only the cached listing: metrics compose this every few seconds and must never wait on a provider.
 pub fn context_window(app: &App, model: &str) -> Option<u64> {
-    let listed = app.providers.all_models();
-    listed_window(&listed["models"], model).or_else(|| known_window(model))
+    app.providers
+        .cached_models()
+        .and_then(|listed| listed_window(&listed["models"], model))
+        .or_else(|| known_window(model))
 }
 
 /// The window the `/v1/models` entries (`models`, the array `all_models` answers with) state for
