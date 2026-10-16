@@ -213,7 +213,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .route("PUT", "/v1/decisions/default", put_default_route)
         .doc(RouteDoc::new("Set the default decision model"))
         .post("/v1/decisions", post_route)
-        .doc(RouteDoc::new("Answer decision questions with a model"))
+        .doc(RouteDoc::new("Answer decision questions with a model").outbound())
 }
 
 fn get_default_route(app: &App, _: &Request, _: &Params<'_>) -> Response {

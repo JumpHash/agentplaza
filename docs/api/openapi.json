@@ -913,7 +913,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/providers/{id}/models": {
@@ -967,7 +968,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/models": {
@@ -991,7 +993,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/decisions/default": {
@@ -1061,7 +1064,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/agents": {
@@ -3696,7 +3700,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/connectors/proposals": {
@@ -4126,7 +4131,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/mcp/servers/{id}/start": {
@@ -8719,7 +8725,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       },
       "get": {
         "operationId": "get_v1_unfurl",
@@ -8751,7 +8758,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/ide/workspaces": {
@@ -14965,7 +14973,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/usage/summary": {
@@ -17433,7 +17442,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/skills/import/commit": {
@@ -17571,7 +17581,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/skills/{id}/github/update": {
@@ -17645,7 +17656,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/skills/export": {
@@ -18689,7 +18701,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/foundry/hf/models/{id..}": {
@@ -18733,7 +18746,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/foundry/hf/import": {
@@ -18757,7 +18771,8 @@
               }
             }
           }
-        }
+        },
+        "x-outbound": true
       }
     },
     "/v1/foundry/models/{id}/rederive": {

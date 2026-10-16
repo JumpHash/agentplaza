@@ -1404,9 +1404,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             app.prices.refresh();
             Response::json(200, &listing(app.prices.state()))
         })
-        .doc(RouteDoc::new(
-            "Refresh the model prices from the public lists",
-        ))
+        .doc(RouteDoc::new("Refresh the model prices from the public lists").outbound())
 }
 
 #[cfg(test)]

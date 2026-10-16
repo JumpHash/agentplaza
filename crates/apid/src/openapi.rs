@@ -133,6 +133,9 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
             .or_insert_with(|| error(error_text(*status)));
     }
     op.insert("responses".into(), responses.into());
+    if doc.outbound {
+        op.insert("x-outbound".into(), true.into());
+    }
     if route.doc.is_none_or(|doc| doc.summary.is_empty()) {
         op.insert("x-undocumented".into(), true.into());
     }

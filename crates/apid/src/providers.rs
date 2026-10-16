@@ -585,11 +585,19 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .route("PUT", "/v1/providers/{id}/secret", secret_route)
         .doc(RouteDoc::new("Set a provider's API key").errors(&[400]))
         .post("/v1/providers/{id}/test", test_route)
-        .doc(RouteDoc::new("Test a provider's connection").errors(&[502]))
+        .doc(
+            RouteDoc::new("Test a provider's connection")
+                .outbound()
+                .errors(&[502]),
+        )
         .get("/v1/providers/{id}/models", provider_models_route)
-        .doc(RouteDoc::new("List a provider's models").errors(&[502]))
+        .doc(
+            RouteDoc::new("List a provider's models")
+                .outbound()
+                .errors(&[502]),
+        )
         .get("/v1/models", all_models_route)
-        .doc(RouteDoc::new("List the models of every provider"))
+        .doc(RouteDoc::new("List the models of every provider").outbound())
 }
 
 fn kinds_route(_: &App, _: &Request, _: &Params<'_>) -> Response {

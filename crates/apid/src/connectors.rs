@@ -992,7 +992,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .delete("/v1/connectors/{id}/secret", delete_secret_route)
         .doc(RouteDoc::new("Remove a connector's credential"))
         .post("/v1/connectors/{id}/test", test_route)
-        .doc(RouteDoc::new("Test a connector's connection"))
+        .doc(RouteDoc::new("Test a connector's connection").outbound())
         .get("/v1/connectors/proposals", proposals_route)
         .doc(RouteDoc::new("List connector proposals, newest first"))
         .post("/v1/connectors/proposals/{id}/review", review_route)

@@ -59,7 +59,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(_) => Response::error(400, "the body is not {\"url\": \"...\"}"),
             }
         })
-        .doc(RouteDoc::new("Preview the skills in a GitHub folder").errors(&[400, 422, 502]))
+        .doc(
+            RouteDoc::new("Preview the skills in a GitHub folder")
+                .outbound()
+                .errors(&[400, 422, 502]),
+        )
         .post("/v1/skills/import/commit", |app, req, _| {
             match req.json::<CommitBody>() {
                 Ok(body) => respond(commit(&app.skills, &app.bus, previews(), body, now())),
@@ -77,6 +81,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(
             RouteDoc::new("Check whether a GitHub skill has a newer commit")
+                .outbound()
                 .errors(&[404, 422, 502]),
         )
         .post("/v1/skills/{id}/github/update", |app, _, p| {
@@ -89,7 +94,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 now(),
             ))
         })
-        .doc(RouteDoc::new("Update a GitHub skill to its latest commit").errors(&[404, 422, 502]))
+        .doc(
+            RouteDoc::new("Update a GitHub skill to its latest commit")
+                .outbound()
+                .errors(&[404, 422, 502]),
+        )
         .get("/v1/skills/export", |app, req, _| {
             respond_zip(export_many(
                 &app.skills,

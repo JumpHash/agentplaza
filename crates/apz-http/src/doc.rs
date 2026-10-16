@@ -35,6 +35,9 @@ pub struct RouteDoc {
     pub errors: &'static [u16],
     /// The response is a server-sent event stream (`text/event-stream`), not JSON.
     pub stream: bool,
+    /// The call reaches outside this machine (a model provider, GitHub, Hugging Face, a web page):
+    /// test tools leave it out of runs that must not touch the internet.
+    pub outbound: bool,
 }
 
 impl RouteDoc {
@@ -77,6 +80,11 @@ impl RouteDoc {
 
     pub fn stream(mut self) -> Self {
         self.stream = true;
+        self
+    }
+
+    pub fn outbound(mut self) -> Self {
+        self.outbound = true;
         self
     }
 }

@@ -988,11 +988,19 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .delete("/v1/foundry/hf/token", delete_token)
         .doc(RouteDoc::new("Remove the Hugging Face token").errors(&[500]))
         .get("/v1/foundry/hf/models", search_route)
-        .doc(RouteDoc::new("Search Hugging Face models").errors(&[400]))
+        .doc(
+            RouteDoc::new("Search Hugging Face models")
+                .outbound()
+                .errors(&[400]),
+        )
         .get("/v1/foundry/hf/models/{id..}", detail_route)
-        .doc(RouteDoc::new("Show a Hugging Face model"))
+        .doc(RouteDoc::new("Show a Hugging Face model").outbound())
         .post("/v1/foundry/hf/import", import_route)
-        .doc(RouteDoc::new("Start a Hugging Face import").status(202))
+        .doc(
+            RouteDoc::new("Start a Hugging Face import")
+                .outbound()
+                .status(202),
+        )
         .post("/v1/foundry/models/{id}/rederive", rederive_route)
         .doc(RouteDoc::new("Re-derive an imported model").errors(&[404, 409]))
         .get("/v1/foundry/hf/imports", list_route)

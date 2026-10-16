@@ -36,7 +36,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 .errors(&[404, 500]),
         )
         .post("/v1/mcp/servers/{id}/test", test_route)
-        .doc(RouteDoc::new("Test an MCP server and list its tools").errors(&[404]))
+        .doc(
+            RouteDoc::new("Test an MCP server and list its tools")
+                .outbound()
+                .errors(&[404]),
+        )
         .post("/v1/mcp/servers/{id}/start", start_route)
         .doc(RouteDoc::new("Start an MCP server").errors(&[404]))
         .post("/v1/mcp/servers/{id}/stop", stop_route)

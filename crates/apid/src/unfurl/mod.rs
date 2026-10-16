@@ -543,9 +543,13 @@ struct Batch {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/v1/unfurl", |app, req, _| batch_route(app, req))
-        .doc(RouteDoc::new("Get cards for a batch of references"))
+        .doc(RouteDoc::new("Get cards for a batch of references").outbound())
         .get("/v1/unfurl", |app, req, _| one_route(app, req))
-        .doc(RouteDoc::new("Get the card for one URL").errors(&[422]))
+        .doc(
+            RouteDoc::new("Get the card for one URL")
+                .outbound()
+                .errors(&[422]),
+        )
 }
 
 fn batch_route(app: &App, req: &Request) -> Response {
