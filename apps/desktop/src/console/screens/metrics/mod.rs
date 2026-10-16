@@ -751,7 +751,7 @@ fn reload(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let mut tasks = vec![task(move || client.get::<View>(&path), Msg::Loaded)];
     if state.scopes_at.is_none_or(|at| at.elapsed() > SCOPES_TTL) {
         state.scopes_at = Some(Instant::now());
-        tasks.push(fetch_scopes(ctx));
+        tasks.push(fetch_scopes(ctx, state.q.fixture));
     }
     Task::batch(tasks)
 }
@@ -774,12 +774,15 @@ fn with_query(state: &mut State, ctx: &Ctx, change: impl FnOnce(&mut Query)) -> 
     navigate(state, next, ctx)
 }
 
-fn fetch_scopes(ctx: &Ctx) -> Task<Msg> {
+/// Fetches the scope tree; the fixture flag keeps the request on the fixture data like the view request.
+fn fetch_scopes(ctx: &Ctx, fixture: bool) -> Task<Msg> {
     let client = ctx.client.clone();
-    task(
-        move || client.get::<Vec<ScopeNode>>("/v1/metrics/scopes"),
-        Msg::Scopes,
-    )
+    let path = if fixture {
+        "/v1/metrics/scopes?fixture=1"
+    } else {
+        "/v1/metrics/scopes"
+    };
+    task(move || client.get::<Vec<ScopeNode>>(path), Msg::Scopes)
 }
 
 fn fetch_saved(ctx: &Ctx) -> Task<Msg> {

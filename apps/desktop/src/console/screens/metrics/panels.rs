@@ -8,8 +8,8 @@ use apz_metrics_view::{
     Row as TableRow, SplitRow, StatLine, Table, Tile, XAxis,
 };
 use iced::alignment::Horizontal;
-use iced::widget::{Space, button, column, container, row, text};
-use iced::{Alignment, Border, Color, Element, Length, Theme};
+use iced::widget::{Space, button, column, container, responsive, row, text};
+use iced::{Alignment, Border, Color, Element, Length, Size, Theme};
 
 use super::{Msg, State, charts, figures, panels_ops, status, tone};
 use crate::console::ui::{self, Kind};
@@ -270,10 +270,18 @@ fn change_line<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
 fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
     let pal = palette();
     row(items.iter().map(|item| {
+        let color = status(item.status);
         let dot = container(Space::new())
             .width(Length::Fixed(8.0))
             .height(Length::Fixed(8.0))
-            .style(fill(status(item.status)));
+            .style(move |_: &Theme| container::Style {
+                background: Some(color.into()),
+                border: Border {
+                    radius: 4.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
         let label = row![
             dot,
             text(item.area.as_str())
@@ -283,45 +291,71 @@ fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
         ]
         .spacing(7)
         .align_y(Alignment::Center);
-        let content = column![label, meta(item.text.as_str(), pal.ink_3)].spacing(4);
-        button(content)
+        let content = column![label, meta(item.text.as_str(), pal.ink_3)]
+            .spacing(4)
+            .width(Length::Fill);
+        let cell = button(content)
             .width(Length::Fill)
             .padding([10.0, 12.0])
             .style(boxed)
-            .on_press(Msg::Tab(item.tab.clone()))
-            .into()
+            .on_press(Msg::Tab(item.tab.clone()));
+        container(cell).width(Length::FillPortion(1)).into()
     }))
     .spacing(8)
     .width(Length::Fill)
     .into()
 }
 
-/// The tiles row: label, big value, change and a sparkline. A tile with a tab opens it on a press.
+/// The tiles, sharing each row equally. Under 1000 px the row holds three tiles, so the tiles wrap; the last row is
+/// padded with empty space so the columns stay aligned.
 fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg> {
-    let pal = palette();
-    row(tiles.iter().map(|t| {
-        let lines: Vec<Element<'a, Msg>> = vec![
-            meta(t.label.as_str(), pal.ink_3).into(),
-            text(t.value.as_str())
-                .font(SANS_SEMIBOLD)
-                .size(22.0)
-                .color(pal.ink)
-                .into(),
-            change_line(t, compare),
-            figures::spark(&t.spark, t.tone, 200.0, 26.0),
-        ];
-        let tile = button(column(lines).spacing(4))
-            .width(Length::Fill)
-            .padding([10.0, 12.0])
-            .style(boxed);
-        match &t.tab {
-            Some(tab) => tile.on_press(Msg::Tab(tab.clone())).into(),
-            None => tile.into(),
+    responsive(move |size: Size| {
+        let per_row = if size.width < 1000.0 {
+            3
+        } else {
+            tiles.len().max(1)
+        };
+        let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+        for chunk in tiles.chunks(per_row) {
+            let mut cells: Vec<Element<'a, Msg>> = chunk.iter().map(|t| tile(t, compare)).collect();
+            while cells.len() < per_row {
+                cells.push(Space::new().width(Length::FillPortion(1)).into());
+            }
+            rows.push(row(cells).spacing(8).width(Length::Fill).into());
         }
-    }))
-    .spacing(8)
+        column(rows).spacing(8).width(Length::Fill).into()
+    })
     .width(Length::Fill)
+    .height(Length::Shrink)
     .into()
+}
+
+/// One tile: label, big value, change and a sparkline that takes the tile's width. A tile with a tab opens it on a
+/// press.
+fn tile<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
+    let pal = palette();
+    let spark = responsive(move |size: Size| figures::spark(&t.spark, t.tone, size.width, 26.0))
+        .width(Length::Fill)
+        .height(Length::Fixed(26.0));
+    let lines: Vec<Element<'a, Msg>> = vec![
+        meta(t.label.as_str(), pal.ink_3).into(),
+        text(t.value.as_str())
+            .font(SANS_SEMIBOLD)
+            .size(22.0)
+            .color(pal.ink)
+            .into(),
+        change_line(t, compare),
+        spark.into(),
+    ];
+    let body = button(column(lines).spacing(4).width(Length::Fill))
+        .width(Length::Fill)
+        .padding([10.0, 12.0])
+        .style(boxed);
+    let tile: Element<'a, Msg> = match &t.tab {
+        Some(tab) => body.on_press(Msg::Tab(tab.clone())).into(),
+        None => body.into(),
+    };
+    container(tile).width(Length::FillPortion(1)).into()
 }
 
 /// One table cell's content, by its kind.

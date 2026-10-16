@@ -68,13 +68,15 @@ fn head<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let left = column![title, crumbs(state)].spacing(6);
-    let head_row = row![container(left).width(Length::Fill), controls(state)]
-        .spacing(16)
-        .align_y(Alignment::End);
-    column![head_row, tier(state), ui::hairline::<Msg>()]
-        .spacing(8)
-        .into()
+    column![
+        title,
+        crumbs(state),
+        controls(state),
+        tier(state),
+        ui::hairline::<Msg>()
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// The breadcrumb of the scope's path (the last one bold), and the sibling switcher when there are siblings.
@@ -168,6 +170,7 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
     let group = pick_list(group_options, group_selected, |choice: Choice| {
         Msg::Group(choice.value)
     })
+    .text_size(TYPE_UI)
     .style(crate::theme::pick_list);
 
     let compare_key = if state.q.compare.starts_with("scope:") {
@@ -204,6 +207,7 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
             Msg::Compare(choice.value)
         }
     })
+    .text_size(TYPE_UI)
     .style(crate::theme::pick_list);
 
     let annotations = ui::btn_sm(
@@ -220,20 +224,18 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
     );
     let settings = ui::btn_sm("Settings", None, ui::Kind::Ghost, Some(Msg::OpenSettings));
 
-    row![
-        find,
-        shift,
-        range,
-        live,
-        group,
-        compare,
-        annotations,
-        export,
-        settings,
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
+    let items: Vec<Element<'a, Msg>> = vec![
+        find.into(),
+        shift.into(),
+        range.into(),
+        live.into(),
+        group.into(),
+        compare.into(),
+        annotations.into(),
+        export.into(),
+        settings.into(),
+    ];
+    row(items).spacing(8).wrap().vertical_spacing(8).into()
 }
 
 /// The tier line: the window's end, the storage tier the hub read, the live text, then the zoom and compare
@@ -602,10 +604,11 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
             } else {
                 tab.group.to_uppercase()
             };
+            // The label sits on the tabs' text line: the tab's top padding (8) plus half the difference in line height.
             cells.push(
-                container(ui::sans(label, 10.0, ink_3).font(SANS_MEDIUM))
+                container(ui::sans(label, TYPE_BADGE, ink_3).font(SANS_MEDIUM))
                     .padding(Padding {
-                        top: 11.0,
+                        top: 9.0,
                         right: 4.0,
                         bottom: 0.0,
                         left: 12.0,
@@ -670,11 +673,8 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
                 .into(),
         );
     }
-    column![
-        ui::scroll_x(row(cells).align_y(Alignment::End)),
-        ui::hairline::<Msg>(),
-    ]
-    .into()
+    let tab_row: Element<'a, Msg> = row(cells).wrap().vertical_spacing(4).into();
+    column![tab_row, ui::hairline::<Msg>()].into()
 }
 
 /// The panels in rows whose spans add to twelve, each panel a portion of its row. In full screen, the one panel at
