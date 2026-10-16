@@ -300,12 +300,12 @@ impl Dot {
     }
 }
 
-/// The dot for an agent from the hub's status (`working`, `idle`, `asleep`, `offline`) and the outcome of its last work
-/// (`done`, `failed`, `error`, or none when the transcript does not say).
+/// The dot for an agent from the hub's status (`working`, `idle`, `asleep`, `dozing`, `offline`) and the outcome of its
+/// last work (`done`, `failed`, `error`, or none when the transcript does not say).
 pub fn dot(status: &str, last_outcome: Option<&str>) -> Dot {
     match status {
         "working" => Dot::Working,
-        "offline" | "asleep" => Dot::Sleeping,
+        "offline" | "asleep" | "dozing" => Dot::Sleeping,
         _ => match last_outcome {
             Some("failed" | "error") => Dot::Failed,
             Some("done") => Dot::Done,
@@ -798,6 +798,13 @@ pub fn filter(labels: &[String], query: &str) -> Vec<usize> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_dozing_agent_has_the_sleeping_dot() {
+        assert!(matches!(dot("dozing", None), Dot::Sleeping));
+        assert!(matches!(dot("asleep", None), Dot::Sleeping));
+        assert!(matches!(dot("idle", None), Dot::Idle));
+    }
 
     /// A code_engine call as the plaza records it: a request, a check held for approval, the engine's stream,
     /// then its result and a closing message.
