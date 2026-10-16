@@ -280,6 +280,13 @@ def _case_density(suite: Suite, ctx, agents: int, seconds: float) -> None:
         time.sleep(seconds)
         rss_end, ticks_end = lab.rss(), lab.cpu_ticks()
         threads_end, switches_end = lab.threads(), _voluntary_switches(lab)
+        # The doze tier: every VM paused and paged out (noded `.../doze`), then the host cost again. A noded
+        # without the route (a build before the doze tier) skips this part.
+        dozed = _doze_all(lab)
+        rss_dozed = None
+        if dozed:
+            time.sleep(5)
+            rss_dozed = lab.rss()
     mib = 1024 * 1024
     clk_tck = os.sysconf("SC_CLK_TCK")
     rss_mib_per_agent = rss_end / agents / mib
@@ -295,6 +302,8 @@ def _case_density(suite: Suite, ctx, agents: int, seconds: float) -> None:
         "threads_start": threads_start,
         "threads_per_agent": round(threads_per_agent, 3),
         "wakeups_per_s_per_agent": round(wakeups_per_s_per_agent, 3),
+        "dozed": dozed,
+        "rss_mib_per_agent_dozing": None if rss_dozed is None else round(rss_dozed / agents / mib, 3),
     }
     case.note(
         f"{agents} agents idle {seconds:.0f}s: rss {rss_mib_per_agent:.2f} MiB/agent; "
@@ -302,6 +311,22 @@ def _case_density(suite: Suite, ctx, agents: int, seconds: float) -> None:
         f"{wakeups_per_s_per_agent:.2f} voluntary context switches/s/agent"
     )
     case.invariant("the measurements were taken", True, "")
+
+
+def _doze_all(lab: Lab) -> int:
+    """Dozes every VM of the lab's role fleet; how many dozed (0 when noded has no doze route)."""
+    run_id = _fleet_run(lab)
+    if run_id is None:
+        return 0
+    runs = lab.api_get("/v1/runs").json.get("runs", [])
+    vms = [vm for run in runs if run.get("id") == run_id for vm in run.get("vms", [])]
+    dozed = 0
+    for vm in vms:
+        reply = lab.api_post(f"/v1/runs/{run_id}/vms/{vm['id']}/doze", {})
+        if reply.status != 200:
+            return dozed
+        dozed += 1
+    return dozed
 
 
 def run(ctx, soak: int = 0, soak_seconds: float = 60.0) -> Suite:
