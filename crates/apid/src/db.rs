@@ -843,6 +843,7 @@ fn wire_violations(app: &App) {
                 detail: v.detail.clone(),
             });
             if let Some(app) = me.upgrade() {
+                crate::laws::count_infraction(&app.metrics.registry, cid, &v.law);
                 crate::sanctions::on_violation(&app, cid, v, tool);
             }
         },

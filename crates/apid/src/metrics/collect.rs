@@ -40,6 +40,7 @@ static AGENT_STATES: LazyLock<Mutex<HashMap<u64, (String, u64)>>> =
 /// Starts the tick thread (every [`super::SCRAPE_MS`], or [`super::LIVE_SCRAPE_MS`] while a lease is active):
 /// scrape, ingest, alert checks, live frames, governor, store flush; and once an hour: retention, store sizes.
 pub fn spawn(app: Arc<App>) {
+    crate::events::instrument_bus(&app);
     let _ = PG.set(app.metrics.registry.hist(SeriesKey::new(
         "hub.pg_ms",
         EntityKind::Hub,

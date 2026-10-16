@@ -98,16 +98,6 @@ impl Metrics {
             store,
         }
     }
-
-    /// Records an event (lifecycle, compaction, scale …): stored, and counted into the histograms it carries.
-    pub fn event(&self, e: Event) {
-        ingest::record_event(self, e, "");
-    }
-
-    /// Scrapes the registry into the rollup, writes closed windows, and checks alert rules on what changed.
-    pub fn tick(&self, app: &App, now_ms: u64) {
-        collect::tick(self, app, now_ms);
-    }
 }
 
 /// Locks a mutex, ignoring poisoning (a panicked holder leaves usable data here).

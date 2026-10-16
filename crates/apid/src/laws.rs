@@ -948,8 +948,6 @@ impl Laws {
 
 /// Counts one infraction of `law` by agent `cid` on the `law.infractions` counter. The laws hold no
 /// handle on the metrics registry, so the caller that has one passes it in.
-// The call site is not wired yet: the infraction sink has no registry in reach.
-#[allow(dead_code)]
 pub fn count_infraction(registry: &Registry, cid: u64, law: &str) {
     registry
         .counter(
