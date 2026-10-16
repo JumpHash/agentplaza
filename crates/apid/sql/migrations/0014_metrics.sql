@@ -1,8 +1,8 @@
 -- 0014 metrics: the metrics tables (crates/apid/src/metrics/pg.rs). Every table but metric_kv is partitioned by day
 -- (day = the UTC date of the row's time); the store creates each day's partition on demand and retention drops
 -- whole partitions. metric_chunk_10s holds one row per series per 10 minutes, the points chunk-encoded
--- (apz_metrics::chunk). metric_1m and metric_1h hold one row per series per hour and per day, the windows as
--- deflate-compressed JSON. metric_events, model_calls and trace_spans hold one row per record, the whole record
+-- (apz_metrics::chunk). metric_1m holds one row per series per 10 minutes and metric_1h one per series per day,
+-- the windows as deflate-compressed JSON. metric_events, model_calls and trace_spans hold one row per record, the whole record
 -- as jsonb, with the columns the readers filter and order by. metric_kv holds the small saved values.
 CREATE TABLE metric_chunk_10s (
     day date NOT NULL,
@@ -15,9 +15,9 @@ CREATE TABLE metric_chunk_10s (
 CREATE TABLE metric_1m (
     day date NOT NULL,
     series text NOT NULL,
-    hour_ms bigint NOT NULL,
+    start_ms bigint NOT NULL,
     aggs bytea NOT NULL,
-    PRIMARY KEY (day, series, hour_ms)
+    PRIMARY KEY (day, series, start_ms)
 ) PARTITION BY RANGE (day);
 
 CREATE TABLE metric_1h (

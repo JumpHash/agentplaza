@@ -99,7 +99,7 @@ writes never wait behind the hub's state writes (`crates/apid/src/metrics/pg.rs`
 | Table | Contents | Default retention |
 |---|---|---|
 | `metric_chunk_10s` | One row per series per 10 minutes. Points are Gorilla-style compressed (delta-of-delta times, XOR'd values). Histograms are not kept at 10 s. | 48 h |
-| `metric_1m` | One row per series per hour: the hour's 1-minute aggregates as JSON, deflate-compressed. | 14 days |
+| `metric_1m` | The 1-minute aggregates as JSON, deflate-compressed: a row per series per 10 minutes, written once, and folded into one row per series per hour once the hour is complete. | 14 days |
 | `metric_1h` | One row per series per day: the same, for 1-hour aggregates. | 400 days |
 | `metric_events` | Lifecycle, alert and other events, with duration and entity. | 90 days |
 | `model_calls` | One row per model call: tokens, cost, timings, provider, model, agent, role, run and node. | 90 days |
@@ -228,6 +228,15 @@ The metrics system measures its own cost (`collect.rs` records it with the hub's
 simulated node of 50 VMs over ten simulated minutes, as an ordinary test. A heartbeat travels as deflated, base64
 JSON (`metrics_z`); the hub still accepts the plain `metrics` field from older nodes. The CPU and memory targets are
 not measured by a test; the hub's own numbers (`self.*`) show them, and the governor acts on them.
+
+**At scale.** `crates/apz-metrics/tests/scale.rs` (run on demand: `cargo test --release -p apz-metrics --test scale
+-- --ignored --nocapture`) simulates an hour of a plaza of 1000 agents on 10 nodes of 100 VMs, a quarter of them
+working, through the real registry, rollup, chunk encoding, wire format and the Postgres store's write cadence. On
+this machine it measured: 24 hub series per agent (24,000) plus 10,000 VM series; 0.27 % of one core for the hub's
+10 s tick; about 160 MiB of hub memory; per day 296 MiB of 10 s chunks (2.4 B a point), 337 MiB of 1-minute rows and
+7 MiB of 1-hour rows, about 8 GB kept at the default retention; 886 MiB of Postgres writes a day; and 3.8 KiB/s of
+heartbeats into the hub. Model-call rows, events and traces come on top and grow with the calls made. The registry's
+cap per entity kind (100,000 series) leaves room for a few thousand agents.
 
 The **collection level** (`crates/apz-metrics/src/level.rs`) is the owner's choice in Settings:
 

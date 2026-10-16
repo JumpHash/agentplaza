@@ -17,8 +17,9 @@ use std::sync::{Arc, Mutex};
 
 /// The entity of the overflow series.
 pub const OTHER: &str = "other";
-/// Default series cap per entity kind.
-pub const DEFAULT_CAP: usize = 4_000;
+/// Default series cap per entity kind: room for a plaza of a few thousand agents (about 24 series each on the hub,
+/// measured by `tests/scale.rs`), while a runaway label still cannot grow memory without bound.
+pub const DEFAULT_CAP: usize = 100_000;
 
 /// A running total that may be fractional (spend in USD). Stored as f64 bits; adds use compare-and-swap.
 #[derive(Clone, Debug, Default)]

@@ -4,9 +4,12 @@
 //! * `metric_chunk_10s (day, series, start_ms, points bytea)` — one row per series per 10 minutes, the points
 //!   `apz_metrics::chunk`-encoded (value = a counter's increase or a gauge's last reading; histograms are not
 //!   kept at 10 s). The open 10-minute chunk of each series is held in memory and written when it closes.
-//! * `metric_1m (day, series, hour_ms, aggs bytea)` — one row per series per hour: the hour's 1-minute
-//!   aggregates as JSON, deflate-compressed; upserted every 10 minutes and when the hour closes.
-//! * `metric_1h (day, series, day_ms, aggs bytea)` — one row per series per day, the same way.
+//! * `metric_1m (day, series, start_ms, aggs bytea)` — the 1-minute aggregates as JSON, deflate-compressed: a row
+//!   per series per 10 minutes, written once when its last window can no longer arrive late and then dropped from
+//!   memory (reads merge the windows not yet written); once an hour is complete, its six rows of a series are
+//!   folded into one row at the hour's start. Readers take either shape: every window carries its own start.
+//! * `metric_1h (day, series, day_ms, aggs bytea)` — one row per series per day: the day's 1-hour aggregates,
+//!   upserted every hour and when the day closes.
 //! * `metric_events`, `model_calls`, `trace_spans` (one row per kept trace, spans as jsonb), `metric_kv`.
 //!
 //! Every table except `metric_kv` is partitioned by day (`day` = UTC date); partitions are made on demand and
@@ -28,6 +31,14 @@ use super::settings::Retention;
 use super::store::{CallRecord, Store};
 
 const CHUNK_MS: u64 = 600_000;
+/// The span of a `metric_1m` row: ten 1-minute windows of one series.
+const MINUTE_ROW_MS: u64 = 600_000;
+/// How long after its block ends a minute row waits to be written: a 1-minute window closes up to the rollup's
+/// lateness allowance (2 min) after its minute, and a flush comes every 10 s.
+const MINUTE_SETTLE_MS: u64 = 200_000;
+/// The open day's 1-hour rows are written this often (a closed day's at once): a row is rewritten whole, so
+/// writing it on every flush would rewrite every series' row each time. Reads merge what is pending.
+const HOURS_EVERY_MS: u64 = 3_600_000;
 const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 86_400_000;
 /// Rows fetched per page by the readers that filter in Rust.
@@ -46,9 +57,12 @@ const TABLES: [&str; 7] = [
 const SQL_CHUNKS: &str = "INSERT INTO metric_chunk_10s (day, series, start_ms, points) \
     SELECT r.d::date, r.s, r.st, r.p FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bytea[]) AS r(d, s, st, p) \
     ON CONFLICT (day, series, start_ms) DO UPDATE SET points = EXCLUDED.points";
-const SQL_MINUTES: &str = "INSERT INTO metric_1m (day, series, hour_ms, aggs) \
+const SQL_MINUTES: &str = "INSERT INTO metric_1m (day, series, start_ms, aggs) \
     SELECT r.d::date, r.s, r.h, r.a FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bytea[]) AS r(d, s, h, a) \
-    ON CONFLICT (day, series, hour_ms) DO UPDATE SET aggs = EXCLUDED.aggs";
+    ON CONFLICT (day, series, start_ms) DO UPDATE SET aggs = EXCLUDED.aggs";
+const SQL_MINUTES_DELETE: &str = "DELETE FROM metric_1m m \
+    USING unnest($1::text[], $2::text[], $3::bigint[]) AS r(d, s, st) \
+    WHERE m.day = r.d::date AND m.series = r.s AND m.start_ms = r.st";
 const SQL_HOURS: &str = "INSERT INTO metric_1h (day, series, day_ms, aggs) \
     SELECT r.d::date, r.s, r.h, r.a FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bytea[]) AS r(d, s, h, a) \
     ON CONFLICT (day, series, day_ms) DO UPDATE SET aggs = EXCLUDED.aggs";
@@ -65,12 +79,17 @@ struct Pending {
     chunks: HashMap<SeriesKey, (u64, Vec<Point>)>,
     /// Closed chunks waiting to be written.
     chunks_out: Vec<(SeriesKey, u64, Vec<Point>)>,
-    /// The 1-minute windows of each series by (series, hour start), re-upserted whole on flush.
+    /// The 1-minute windows of each series by (series, 10-minute block start), until the block is written.
     minutes: HashMap<(SeriesKey, u64), Vec<(u64, Agg)>>,
     /// The 1-hour windows of each series by (series, day start), re-upserted whole on flush.
     hours: HashMap<(SeriesKey, u64), Vec<(u64, Agg)>>,
-    dirty_minutes: Vec<(SeriesKey, u64)>,
     dirty_hours: Vec<(SeriesKey, u64)>,
+    /// The end of the minute blocks written so far: a later window of an earlier block is dropped.
+    minutes_written_upto: u64,
+    /// When the open day's hour rows were last written (see [`HOURS_EVERY_MS`]).
+    hours_written_ms: u64,
+    /// The end of the hours whose minute rows are folded (0 until the first flush sets it to the hour before).
+    folded_upto: u64,
     events: Vec<Event>,
     calls: Vec<CallRecord>,
     traces: Vec<Trace>,
@@ -84,7 +103,6 @@ struct Batch {
     events: Vec<Event>,
     calls: Vec<CallRecord>,
     traces: Vec<Trace>,
-    dirty_minutes: Vec<(SeriesKey, u64)>,
     dirty_hours: Vec<(SeriesKey, u64)>,
 }
 
@@ -229,18 +247,32 @@ impl PgStore {
     }
 
     /// Takes everything a flush writes out of the pending state.
-    fn take_batch(&self) -> Batch {
+    fn take_batch(&self, now: u64) -> Batch {
         let mut p = guard(&self.pending);
-        let dirty_minutes = take_dirty(&mut p.dirty_minutes);
-        let dirty_hours = take_dirty(&mut p.dirty_hours);
-        let minutes = dirty_minutes
-            .iter()
-            .filter_map(|(k, h)| {
-                p.minutes
-                    .get(&(k.clone(), *h))
-                    .map(|ws| (k.clone(), *h, ws.clone()))
-            })
+        let day = now - now % DAY_MS;
+        let all_hours = now.saturating_sub(p.hours_written_ms) >= HOURS_EVERY_MS;
+        if all_hours {
+            p.hours_written_ms = now;
+        }
+        let dirty_hours = take_due(&mut p.dirty_hours, |start| all_hours || start < day);
+        // Minute blocks whose windows have all arrived leave memory with this batch.
+        let settled: Vec<(SeriesKey, u64)> = p
+            .minutes
+            .keys()
+            .filter(|(_, block)| block + MINUTE_ROW_MS + MINUTE_SETTLE_MS <= now)
+            .cloned()
             .collect();
+        let minutes: Vec<(SeriesKey, u64, Vec<(u64, Agg)>)> = settled
+            .into_iter()
+            .filter_map(|id| p.minutes.remove(&id).map(|ws| (id.0, id.1, ws)))
+            .collect();
+        if let Some(end) = minutes
+            .iter()
+            .map(|(_, block, _)| block + MINUTE_ROW_MS)
+            .max()
+        {
+            p.minutes_written_upto = p.minutes_written_upto.max(end);
+        }
         let hours = dirty_hours
             .iter()
             .filter_map(|(k, d)| {
@@ -256,7 +288,6 @@ impl PgStore {
             events: mem::take(&mut p.events),
             calls: mem::take(&mut p.calls),
             traces: mem::take(&mut p.traces),
-            dirty_minutes,
             dirty_hours,
         }
     }
@@ -268,7 +299,12 @@ impl PgStore {
         prepend(&mut p.events, batch.events);
         prepend(&mut p.calls, batch.calls);
         prepend(&mut p.traces, batch.traces);
-        p.dirty_minutes.extend(batch.dirty_minutes);
+        for (key, block, windows) in batch.minutes {
+            let entry = p.minutes.entry((key, block)).or_default();
+            for (start, agg) in windows {
+                upsert_window(entry, start, &agg);
+            }
+        }
         p.dirty_hours.extend(batch.dirty_hours);
     }
 
@@ -277,8 +313,8 @@ impl PgStore {
         for (_, start, _) in &b.chunks {
             self.ensure("metric_chunk_10s", day_of(*start))?;
         }
-        for (_, hour, _) in &b.minutes {
-            self.ensure("metric_1m", day_of(*hour))?;
+        for (_, block, _) in &b.minutes {
+            self.ensure("metric_1m", day_of(*block))?;
         }
         for (_, day, _) in &b.hours {
             self.ensure("metric_1h", day_of(*day))?;
@@ -434,13 +470,11 @@ impl PgStore {
         })
     }
 
-    /// Drops the in-memory minute and hour windows of periods that are over, once they are written. An entry
-    /// that is dirty again stays, as does a period of the current hour or day.
+    /// Drops the in-memory hour windows of days that are over, once they are written (minute blocks leave memory
+    /// as they are written). An entry that is dirty again stays, as does the current day.
     fn drop_old_windows(&self, now: u64) {
-        let (hour, day) = (now - now % HOUR_MS, now - now % DAY_MS);
+        let day = now - now % DAY_MS;
         let mut p = guard(&self.pending);
-        let dirty: HashSet<(SeriesKey, u64)> = p.dirty_minutes.iter().cloned().collect();
-        p.minutes.retain(|id, _| id.1 >= hour || dirty.contains(id));
         let dirty: HashSet<(SeriesKey, u64)> = p.dirty_hours.iter().cloned().collect();
         p.hours.retain(|id, _| id.1 >= day || dirty.contains(id));
     }
@@ -542,10 +576,93 @@ fn over_cap(mut days: Vec<(i64, u64)>, cap: u64) -> Vec<i64> {
     drop
 }
 
+impl PgStore {
+    /// Folds the minute rows of every hour that is complete (its last block written) and not folded yet. The
+    /// first call only notes the hour before; earlier hours keep their 10-minute rows, which readers take as well.
+    fn fold_due_hours(&self, now: u64) {
+        let complete = now.saturating_sub(MINUTE_ROW_MS + MINUTE_SETTLE_MS + 60_000);
+        let upto = complete - complete % HOUR_MS;
+        let from = {
+            let mut p = guard(&self.pending);
+            if p.folded_upto == 0 {
+                p.folded_upto = upto.saturating_sub(HOUR_MS);
+            }
+            p.folded_upto
+        };
+        let mut hour = from;
+        while hour < upto {
+            if let Err(e) = self.fold_hour(hour) {
+                eprintln!(
+                    "metrics: folding the minute rows of an hour failed ({e}); tried again at the next flush"
+                );
+                return;
+            }
+            hour += HOUR_MS;
+            guard(&self.pending).folded_upto = hour;
+        }
+    }
+
+    /// Folds the 10-minute rows of `hour` into one row per series at the hour's start, in one transaction.
+    fn fold_hour(&self, hour: u64) -> Result<(), String> {
+        let day = date_text(day_of(hour));
+        let (lo, hi) = (hour as i64, (hour + HOUR_MS) as i64);
+        let rows = self.run(|c| {
+            c.query(
+                "SELECT series, start_ms, aggs FROM metric_1m WHERE day = $1::text::date \
+                 AND start_ms >= $2 AND start_ms < $3",
+                &[&day, &lo, &hi],
+            )
+        })?;
+        let mut by_series: BTreeMap<String, Vec<(i64, Vec<u8>)>> = BTreeMap::new();
+        for row in &rows {
+            by_series
+                .entry(row.get::<_, String>(0))
+                .or_default()
+                .push((row.get::<_, i64>(1), row.get::<_, Vec<u8>>(2)));
+        }
+        let (mut series, mut aggs) = (Vec::new(), Vec::new());
+        let (mut gone_series, mut gone_starts) = (Vec::new(), Vec::new());
+        for (name, blocks) in by_series {
+            if blocks.len() == 1 && blocks[0].0 == lo {
+                continue;
+            }
+            let mut windows: Vec<(u64, Agg)> = Vec::new();
+            for (_, bytes) in &blocks {
+                for (start, agg) in unpack_windows(bytes).unwrap_or_default() {
+                    upsert_window(&mut windows, start, &agg);
+                }
+            }
+            for (start, _) in &blocks {
+                if *start != lo {
+                    gone_series.push(name.clone());
+                    gone_starts.push(*start);
+                }
+            }
+            aggs.push(pack_windows(&windows));
+            series.push(name);
+        }
+        if series.is_empty() {
+            return Ok(());
+        }
+        let days = vec![day.clone(); series.len()];
+        let starts = vec![lo; series.len()];
+        let gone_days = vec![day; gone_series.len()];
+        self.run(|c| {
+            let mut tx = c.transaction()?;
+            tx.execute(SQL_MINUTES, &[&days, &series, &starts, &aggs])?;
+            tx.execute(
+                SQL_MINUTES_DELETE,
+                &[&gone_days, &gone_series, &gone_starts],
+            )?;
+            tx.commit()
+        })
+    }
+}
+
 impl Store for PgStore {
     fn put(&self, closed: &[Closed]) {
         let now = now_ms();
-        let (now_hour, now_day) = (now - now % HOUR_MS, now - now % DAY_MS);
+        let now_day = now - now % DAY_MS;
         let mut p = guard(&self.pending);
         for window in closed {
             let key = &window.key;
@@ -570,19 +687,18 @@ impl Store for PgStore {
                     }
                 }
                 Tier::Min1 => {
-                    let hour = window.start_ms - window.start_ms % HOUR_MS;
-                    let id = (key.clone(), hour);
-                    // An hour that is over with no entry left would be written as a row of its late windows
-                    // only, replacing the stored row. Such a window is dropped.
-                    if hour < now_hour && !p.minutes.contains_key(&id) {
+                    let block = window.start_ms - window.start_ms % MINUTE_ROW_MS;
+                    let id = (key.clone(), block);
+                    // A block already written would be replaced by a row of its late windows only. Such a
+                    // window is dropped.
+                    if block < p.minutes_written_upto && !p.minutes.contains_key(&id) {
                         continue;
                     }
                     upsert_window(
-                        p.minutes.entry(id.clone()).or_default(),
+                        p.minutes.entry(id).or_default(),
                         window.start_ms,
                         &window.agg,
                     );
-                    p.dirty_minutes.push(id);
                 }
                 Tier::Hour1 => {
                     let day = window.start_ms - window.start_ms % DAY_MS;
@@ -641,20 +757,16 @@ impl Store for PgStore {
                 // Points not yet written: the closed chunks waiting for a flush and the open chunks.
                 let pending: Vec<(SeriesKey, Vec<Point>)> = {
                     let p = guard(&self.pending);
+                    // Only this metric's series are copied out of the lock.
                     p.chunks
                         .iter()
-                        .map(|(k, (_, points))| (k.clone(), points.clone()))
-                        .chain(
-                            p.chunks_out
-                                .iter()
-                                .map(|(k, _, points)| (k.clone(), points.clone())),
-                        )
+                        .map(|(k, (_, points))| (k, points))
+                        .chain(p.chunks_out.iter().map(|(k, _, points)| (k, points)))
+                        .filter(|(k, _)| k.metric == metric && keep(k))
+                        .map(|(k, points)| (k.clone(), points.clone()))
                         .collect()
                 };
                 for (key, points) in pending {
-                    if key.metric != metric || !keep(&key) {
-                        continue;
-                    }
                     for (t, v) in points {
                         if inside(t) {
                             found
@@ -667,7 +779,8 @@ impl Store for PgStore {
             }
             Tier::Min1 | Tier::Hour1 => {
                 let (table, col, span) = if tier == Tier::Min1 {
-                    ("metric_1m", "hour_ms", HOUR_MS)
+                    // A folded row starts at its hour, a block row at its 10 minutes: the hour is the wider.
+                    ("metric_1m", "start_ms", HOUR_MS)
                 } else {
                     ("metric_1h", "day_ms", DAY_MS)
                 };
@@ -695,13 +808,11 @@ impl Store for PgStore {
                         &p.hours
                     };
                     map.iter()
+                        .filter(|((k, _), _)| k.metric == metric && keep(k))
                         .map(|((k, _), ws)| (k.clone(), ws.clone()))
                         .collect()
                 };
                 for (key, windows) in pending {
-                    if key.metric != metric || !keep(&key) {
-                        continue;
-                    }
                     for (start, agg) in windows {
                         if inside(start) {
                             found.entry(key.clone()).or_default().insert(start, agg);
@@ -875,13 +986,14 @@ impl Store for PgStore {
 
     fn flush(&self) {
         let now = now_ms();
-        let batch = self.take_batch();
+        let batch = self.take_batch(now);
         if let Err(e) = self.write(&batch) {
             eprintln!("metrics: flush failed ({e}); the rows wait for the next flush");
             self.restore(batch);
             return;
         }
         self.drop_old_windows(now);
+        self.fold_due_hours(now);
     }
 
     fn kind(&self) -> &'static str {
@@ -993,9 +1105,12 @@ fn unpack_windows(bytes: &[u8]) -> Option<Vec<(u64, Agg)>> {
     serde_json::from_slice(&json).ok()
 }
 
-/// Takes the dirty keys out, sorted and without repeats.
-fn take_dirty(keys: &mut Vec<(SeriesKey, u64)>) -> Vec<(SeriesKey, u64)> {
-    let mut taken = mem::take(keys);
+/// The dirty rows that are due (`due` of the row's hour or day start), deduplicated; the rest stay dirty.
+fn take_due(keys: &mut Vec<(SeriesKey, u64)>, due: impl Fn(u64) -> bool) -> Vec<(SeriesKey, u64)> {
+    let (mut taken, kept): (Vec<_>, Vec<_>) = mem::take(keys)
+        .into_iter()
+        .partition(|(_, start)| due(*start));
+    *keys = kept;
     taken.sort();
     taken.dedup();
     taken
@@ -1010,6 +1125,85 @@ fn prepend<T>(queue: &mut Vec<T>, mut older: Vec<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Six 10-minute rows of an hour, written as the store writes them, fold into one row at the hour's start,
+    /// and a read of the hour sees the same sixty windows before and after. Skipped without
+    /// APZ_TEST_DATABASE_URL (a throwaway server; never the live database).
+    #[test]
+    fn an_hours_minute_rows_fold_into_one_and_read_the_same() {
+        let Some(url) = crate::db::test_database("metrics_fold") else {
+            return;
+        };
+        let mut client = postgres::Client::connect(&url, postgres::NoTls).expect("connect");
+        crate::db::migrate::migrate(&mut client).expect("migrate");
+        let store = PgStore::connect(&url).expect("the store connects");
+        let key = SeriesKey::new("vm.cpu_pct", apz_metrics::EntityKind::Vm, "r1/0");
+        let hour = 1_800_000_000_000 - 1_800_000_000_000 % HOUR_MS;
+        let agg = |v: f64| Agg {
+            min: v,
+            max: v,
+            sum: v,
+            count: 1,
+            last: v,
+            ..Agg::default()
+        };
+        let minutes: Vec<(SeriesKey, u64, Vec<(u64, Agg)>)> = (0..6)
+            .map(|b| {
+                let block = hour + b * MINUTE_ROW_MS;
+                let windows = (0..10)
+                    .map(|m| (block + m * 60_000, agg((b * 10 + m) as f64)))
+                    .collect();
+                (key.clone(), block, windows)
+            })
+            .collect();
+        let batch = Batch {
+            chunks: Vec::new(),
+            minutes,
+            hours: Vec::new(),
+            events: Vec::new(),
+            calls: Vec::new(),
+            traces: Vec::new(),
+            dirty_hours: Vec::new(),
+        };
+        store.write(&batch).expect("the blocks are written");
+        let read = |store: &PgStore| -> Vec<f64> {
+            store
+                .rows(Tier::Min1, "vm.cpu_pct", hour, hour + HOUR_MS, &|_| true)
+                .into_iter()
+                .flat_map(|(_, windows)| windows.into_iter().map(|(_, a)| a.last))
+                .collect()
+        };
+        let before = read(&store);
+        assert_eq!(before.len(), 60);
+        store.fold_hour(hour).expect("the hour folds");
+        let count: i64 = client
+            .query_one("SELECT count(*) FROM metric_1m", &[])
+            .expect("count")
+            .get(0);
+        assert_eq!(count, 1, "one row is left for the hour");
+        assert_eq!(read(&store), before, "the hour reads the same");
+        // A second fold finds nothing to do.
+        store.fold_hour(hour).expect("folding again is a no-op");
+    }
+
+    #[test]
+    fn open_hour_rows_wait_for_their_turn_and_closed_ones_go_at_once() {
+        let key = SeriesKey::new("vm.cpu_pct", apz_metrics::EntityKind::Vm, "r1/0");
+        let hour = 10 * HOUR_MS;
+        let mut dirty = vec![
+            (key.clone(), hour),
+            (key.clone(), hour),
+            (key.clone(), hour - HOUR_MS),
+        ];
+        // Within the 10 minutes: only the closed hour's row is written; the open one stays dirty, once.
+        let taken = take_due(&mut dirty, |start| start < hour);
+        assert_eq!(taken, vec![(key.clone(), hour - HOUR_MS)]);
+        assert_eq!(dirty, vec![(key.clone(), hour), (key.clone(), hour)]);
+        // When the 10 minutes are up, every dirty row goes, deduplicated.
+        let taken = take_due(&mut dirty, |_| true);
+        assert_eq!(taken, vec![(key, hour)]);
+        assert!(dirty.is_empty());
+    }
 
     #[test]
     fn kept_traces_over_their_cap_lose_the_oldest_days_but_never_today() {

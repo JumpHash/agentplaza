@@ -12,6 +12,7 @@ use super::sql;
 
 /// One migration: its version (1, 2, … contiguous), its name (the file's part after `NNNN_`),
 /// and its SQL.
+#[derive(Clone, Copy)]
 pub struct Migration {
     pub version: i32,
     pub name: &'static str,
@@ -201,6 +202,11 @@ mod tests {
 
     use super::*;
 
+    /// Every version this build ships, in order (what a fresh database applies).
+    fn every_version() -> Vec<i32> {
+        MIGRATIONS.iter().map(|m| m.version).collect()
+    }
+
     /// The schema the apid db module ran before migrations existed.
     const LEGACY_SCHEMA: &str = include_str!("../../sql/test/legacy_schema.sql");
     /// One text row describing a database's structure (test only).
@@ -339,31 +345,12 @@ mod tests {
             .collect()
     }
 
-    /// The three rows a fresh run records: 0001, 0002 and 0003.
+    /// The rows a fresh run records: one per migration this build ships.
     fn both_applied() -> Vec<(i32, String, String)> {
-        vec![
-            (1, "init".to_string(), checksum(MIGRATIONS[0].sql)),
-            (2, "common".to_string(), checksum(MIGRATIONS[1].sql)),
-            (3, "agents".to_string(), checksum(MIGRATIONS[2].sql)),
-            (4, "hub_mcp".to_string(), checksum(MIGRATIONS[3].sql)),
-            (5, "hub_mcp_modes".to_string(), checksum(MIGRATIONS[4].sql)),
-            (6, "prompts".to_string(), checksum(MIGRATIONS[5].sql)),
-            (7, "skills".to_string(), checksum(MIGRATIONS[6].sql)),
-            (8, "ide_audit".to_string(), checksum(MIGRATIONS[7].sql)),
-            (9, "unfurl_cache".to_string(), checksum(MIGRATIONS[8].sql)),
-            (10, "station_audit".to_string(), checksum(MIGRATIONS[9].sql)),
-            (
-                11,
-                "station_recordings".to_string(),
-                checksum(MIGRATIONS[10].sql),
-            ),
-            (12, "station_sync".to_string(), checksum(MIGRATIONS[11].sql)),
-            (
-                13,
-                "station_recording_frames".to_string(),
-                checksum(MIGRATIONS[12].sql),
-            ),
-        ]
+        MIGRATIONS
+            .iter()
+            .map(|m| (m.version, m.name.to_string(), checksum(m.sql)))
+            .collect()
     }
 
     #[test]
@@ -372,10 +359,7 @@ mod tests {
             return;
         };
         let mut client = connect(&url);
-        assert_eq!(
-            migrate(&mut client),
-            Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-        );
+        assert_eq!(migrate(&mut client), Ok(every_version()));
         assert_eq!(applied(&mut client), both_applied());
         assert!(describe(&mut client).is_some_and(|d| d.contains("column plaza_state.component")));
     }
@@ -384,10 +368,7 @@ mod tests {
     fn rerunning_is_a_no_op() {
         let Some(url) = fresh("rerun") else { return };
         let mut client = connect(&url);
-        assert_eq!(
-            migrate(&mut client),
-            Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-        );
+        assert_eq!(migrate(&mut client), Ok(every_version()));
         let before = describe(&mut client);
         assert_eq!(migrate(&mut client), Ok(vec![]));
         assert_eq!(migrate(&mut client), Ok(vec![]));
@@ -418,7 +399,7 @@ mod tests {
 
         assert_eq!(
             migrate(&mut legacy),
-            Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]),
+            Ok(every_version()),
             "0001 records as applied over the legacy tables"
         );
         assert_eq!(applied(&mut legacy), both_applied());
@@ -445,78 +426,11 @@ mod tests {
     fn a_changed_applied_migration_refuses() {
         let Some(url) = fresh("tampered") else { return };
         let mut client = connect(&url);
-        assert_eq!(
-            migrate(&mut client),
-            Ok(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-        );
+        assert_eq!(migrate(&mut client), Ok(every_version()));
 
-        let edited = [
-            Migration {
-                version: 1,
-                name: "init",
-                sql: "-- edited after it was applied\n",
-            },
-            Migration {
-                version: 2,
-                name: "common",
-                sql: MIGRATIONS[1].sql,
-            },
-            Migration {
-                version: 3,
-                name: "agents",
-                sql: MIGRATIONS[2].sql,
-            },
-            Migration {
-                version: 4,
-                name: "hub_mcp",
-                sql: MIGRATIONS[3].sql,
-            },
-            Migration {
-                version: 5,
-                name: "hub_mcp_modes",
-                sql: MIGRATIONS[4].sql,
-            },
-            Migration {
-                version: 6,
-                name: "prompts",
-                sql: MIGRATIONS[5].sql,
-            },
-            Migration {
-                version: 7,
-                name: "skills",
-                sql: MIGRATIONS[6].sql,
-            },
-            Migration {
-                version: 8,
-                name: "ide_audit",
-                sql: MIGRATIONS[7].sql,
-            },
-            Migration {
-                version: 9,
-                name: "unfurl_cache",
-                sql: MIGRATIONS[8].sql,
-            },
-            Migration {
-                version: 10,
-                name: "station_audit",
-                sql: MIGRATIONS[9].sql,
-            },
-            Migration {
-                version: 11,
-                name: "station_recordings",
-                sql: MIGRATIONS[10].sql,
-            },
-            Migration {
-                version: 12,
-                name: "station_sync",
-                sql: MIGRATIONS[11].sql,
-            },
-            Migration {
-                version: 13,
-                name: "station_recording_frames",
-                sql: MIGRATIONS[12].sql,
-            },
-        ];
+        // Every migration as shipped, but the first edited after it was applied.
+        let mut edited: Vec<Migration> = MIGRATIONS.to_vec();
+        edited[0].sql = "-- edited after it was applied\n";
         let error = migrate_with(&mut client, &edited)
             .expect_err("a changed applied migration must refuse");
         assert!(error.contains("0001_init.sql"), "{error}");
@@ -579,7 +493,7 @@ mod tests {
             .collect();
         assert_eq!(
             total,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            every_version(),
             "exactly one runner applies every migration"
         );
         assert_eq!(applied(&mut connect(&url)).len(), MIGRATIONS.len());
