@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use serde::Serialize;
 use serde_json::json;
 
@@ -528,6 +528,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(_) => Response::error(400, "bad cid"),
             }
         })
+        .doc(RouteDoc::new("List an agent's memory notes"))
         .get("/v1/agents/{cid}/memory/{slug}", |app, _, p| {
             match p
                 .get("cid")
@@ -539,6 +540,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 None => Response::error(404, "not found"),
             }
         })
+        .doc(RouteDoc::new("Get one of an agent's memory notes").errors(&[404]))
 }
 
 #[cfg(test)]

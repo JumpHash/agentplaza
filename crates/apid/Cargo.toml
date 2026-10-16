@@ -24,6 +24,8 @@ apz-rich = { path = "../apz-rich" }
 apz-metrics-view = { path = "../apz-metrics-view" }
 serde.workspace = true
 serde_json.workspace = true
+# The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
+schemars = "1"
 ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true

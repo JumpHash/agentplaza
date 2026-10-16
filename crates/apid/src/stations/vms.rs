@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_station::{Facts, Form};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -641,19 +641,28 @@ pub fn views(app: &App) -> Vec<VmView> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/v1/stations/vms", |app, req, _| create_route(app, req))
+        .doc(
+            RouteDoc::new("Create a workstation VM")
+                .status(201)
+                .errors(&[400, 404, 409, 500, 502]),
+        )
         .get("/v1/stations/vms", |app, _, _| {
             Response::json(200, &views(app))
         })
+        .doc(RouteDoc::new("List the workstation VMs"))
         .delete("/v1/stations/vms/{id}", |app, _, p| {
             remove_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Remove a workstation VM").errors(&[404, 409, 502]))
         // A plaza VM sleeps with its memory kept, and wakes from it in a fraction of a second.
         .post("/v1/stations/vms/{id}/sleep", |app, _, p| {
             power_route(app, p.get("id"), Power::Sleep)
         })
+        .doc(RouteDoc::new("Put a workstation VM to sleep").errors(&[404, 409, 502]))
         .post("/v1/stations/vms/{id}/wake", |app, _, p| {
             power_route(app, p.get("id"), Power::Wake)
         })
+        .doc(RouteDoc::new("Wake a workstation VM").errors(&[404, 409, 502]))
 }
 
 /// What the owner asks of a workstation VM's power.

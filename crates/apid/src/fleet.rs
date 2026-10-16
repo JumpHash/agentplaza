@@ -3,7 +3,7 @@
 //! reached through its command queue (`nodes::Store::enqueue`), which its apz-link long-polls.
 //! An agent lives on the node whose CID range holds its CID.
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::agents::Status;
@@ -407,16 +407,21 @@ fn stats_of(body: Option<&Value>) -> Value {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/fleet", |app, _, _| Response::json(200, &fleet(app)))
+        .doc(RouteDoc::new("List the machines and the agents on them"))
         .get("/v1/nodes/{id}/machine", |app, _, p| {
             respond(noded(app, p.get("id"), "GET", "/v1/machine", None))
         })
+        .doc(RouteDoc::new("Read a machine's summary").errors(&[502]))
         .get("/v1/nodes/{id}/stats", |app, _, p| {
             respond(noded(app, p.get("id"), "GET", "/v1/machine/stats", None))
         })
+        .doc(RouteDoc::new("Read a machine's live stats").errors(&[502]))
         .get("/v1/nodes/{id}/runs", |app, _, p| {
             respond(noded(app, p.get("id"), "GET", "/v1/runs", None))
         })
+        .doc(RouteDoc::new("List a machine's runs").errors(&[502]))
         .post("/v1/nodes/{id}/runs", spawn_on)
+        .doc(RouteDoc::new("Start a run on a machine").errors(&[400, 502]))
 }
 
 /// `POST /v1/nodes/{id}/runs`: a raw run on that node (the console's machine view).

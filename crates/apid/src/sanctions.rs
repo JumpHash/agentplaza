@@ -27,7 +27,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::treasury::Treasury;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -865,7 +865,9 @@ pub fn decided(
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/sanctions", list_route)
+        .doc(RouteDoc::new("List the sanctions and suspensions"))
         .post("/v1/sanctions/{id}/lift", lift_route)
+        .doc(RouteDoc::new("Lift an active suspension").errors(&[404, 409]))
 }
 
 /// `GET /v1/sanctions?cid=&law=&limit=&active=1`: the sanctions and the suspensions, newest first.

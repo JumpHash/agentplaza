@@ -37,7 +37,7 @@ use std::time::Duration;
 use apz_acp::rpc::Peer;
 use apz_acp::types;
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::events::Slots;
@@ -114,9 +114,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 },
             )
         })
+        .doc(RouteDoc::new("Open an editor's ACP socket").errors(&[403, 409, 429]))
         .get("/v1/acp/sessions", |app, req, _| {
             Response::json(200, &app.acp_sessions.list(req.query_param("cwd")))
         })
+        .doc(RouteDoc::new("List the editor (ACP) sessions"))
 }
 
 /// Who may open an editor's socket. The owner (see `hub_auth::is_owner`) acts as the owner. Anyone else

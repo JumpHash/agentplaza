@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_plaza::ConnectedAgent;
 use apz_plaza::agora::{self, Agora};
 use apz_plaza::council::{self, Council, DecideRequest, ProposeRequest, VoteRequest};
@@ -77,65 +77,109 @@ impl Plaza {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/tasks", |app, _, _| list_tasks(app))
+        .doc(RouteDoc::new("List the tasks"))
         .post("/v1/tasks", |app, req, _| create_task(app, &req.body))
+        .doc(
+            RouteDoc::new("Create a task")
+                .status(201)
+                .errors(&[400, 404, 409]),
+        )
         .get("/v1/tasks/{id}", |app, _, p| get_task(app, p.get("id")))
+        .doc(RouteDoc::new("Get a task").errors(&[404]))
         .delete("/v1/tasks/{id}", |app, _, p| {
             withdraw_task(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Withdraw an open task").errors(&[404]))
         .post("/v1/tasks/{id}/claim", |app, req, p| {
             claim_task(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Claim a task for a connected agent").errors(&[400, 404, 409]))
         .post("/v1/tasks/{id}/finish", |app, req, p| {
             finish_task(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Finish a claimed task").errors(&[400, 404]))
         .post("/v1/tasks/{id}/bid", |app, req, p| {
             bid_task(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Bid on a task's call").errors(&[400, 404, 409]))
         .post("/v1/tasks/{id}/award", |app, req, p| {
             award_task(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Award a task's call to a bidder").errors(&[400, 404, 409]))
         .get("/v1/treasury", |app, _, _| treasury_view(app))
+        .doc(RouteDoc::new("Show the treasury balances"))
         .get("/v1/treasury/journal", |app, req, _| {
             treasury_journal(app, req)
         })
+        .doc(RouteDoc::new("List the treasury journal").errors(&[400]))
         .get("/v1/treasury/series", |app, req, _| {
             treasury_series(app, req)
         })
+        .doc(RouteDoc::new("Show the treasury over time").errors(&[400]))
         .post("/v1/treasury/mint", |app, req, _| {
             treasury_mint(app, &req.body)
         })
+        .doc(RouteDoc::new("Mint credits into the plaza budget").errors(&[400]))
         .post("/v1/treasury/fine", |app, req, _| {
             treasury_fine(app, &req.body)
         })
+        .doc(RouteDoc::new("Fine an agent's wallet").errors(&[400]))
         .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
+        .doc(RouteDoc::new("List the agent wallets"))
         .get("/v1/agora", |app, _, _| agora_view(app))
+        .doc(RouteDoc::new("Show the agora's calls"))
         .get("/v1/board", |app, req, _| board_view(app, req))
+        .doc(RouteDoc::new("Read the board").errors(&[400]))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
+        .doc(
+            RouteDoc::new("Post to the board")
+                .status(201)
+                .errors(&[400, 404, 409]),
+        )
         .post("/v1/board/{id}/comments", |app, req, p| {
             board_comment(app, p.get("id"), &req.body)
         })
+        .doc(
+            RouteDoc::new("Comment on a board post")
+                .status(201)
+                .errors(&[400]),
+        )
         .post("/v1/board/read", |app, req, _| board_read(app, &req.body))
+        .doc(RouteDoc::new("Mark the board read up to a point").errors(&[400, 404, 409]))
         .get("/v1/conversations", |app, req, _| {
             conversations_view(app, req)
         })
+        .doc(RouteDoc::new("List the conversations").errors(&[400]))
         .get("/v1/conversations/{a}/{b}", |app, req, p| {
             conversation_thread(app, p.get("a"), p.get("b"), req)
         })
+        .doc(RouteDoc::new("Read a thread between two agents").errors(&[400]))
         .get("/v1/motions", |app, _, _| motions_view(app))
+        .doc(RouteDoc::new("List the motions"))
         .post("/v1/motions", |app, req, _| motion_propose(app, &req.body))
+        .doc(
+            RouteDoc::new("Propose a motion")
+                .status(201)
+                .errors(&[400, 404, 409]),
+        )
         .get("/v1/motions/{id}", |app, _, p| motion_get(app, p.get("id")))
+        .doc(RouteDoc::new("Get a motion").errors(&[404]))
         .post("/v1/motions/{id}/vote", |app, req, p| {
             motion_vote(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Vote on a motion").errors(&[400, 404, 409]))
         .post("/v1/motions/{id}/decide", |app, req, p| {
             motion_decide(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Decide a motion").errors(&[400]))
         .get("/v1/agents/{cid}/contacts", |app, _, p| {
             agent_contacts(app, p.get("cid"))
         })
+        .doc(RouteDoc::new("List an agent's contacts"))
         .post("/v1/agents/{cid}/contacts", |app, req, p| {
             agent_contact_add(app, p.get("cid"), &req.body)
         })
+        .doc(RouteDoc::new("Add a contact between two agents").errors(&[400, 404, 409]))
 }
 
 /// Parses a JSON body into `T`, or answers 400 naming the request kind.

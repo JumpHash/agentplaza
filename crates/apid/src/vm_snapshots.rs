@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -71,13 +71,18 @@ struct ForkReply {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/agents/{cid}/vm-checkpoints", list_route)
+        .doc(RouteDoc::new("List an agent's VM checkpoints").errors(&[502]))
         .post("/v1/agents/{cid}/vm-checkpoints", create_route)
+        .doc(RouteDoc::new("Take a checkpoint of an agent's VM").errors(&[400, 502]))
         .post(
             "/v1/agents/{cid}/vm-checkpoints/{name}/restore",
             restore_route,
         )
+        .doc(RouteDoc::new("Roll an agent's VM back to a checkpoint").errors(&[400, 502]))
         .delete("/v1/agents/{cid}/vm-checkpoints/{name}", delete_route)
+        .doc(RouteDoc::new("Delete a VM checkpoint").errors(&[400, 502]))
         .post("/v1/agents/{cid}/fork", fork_route)
+        .doc(RouteDoc::new("Fork an agent's VM into new agents").errors(&[400, 404, 502]))
 }
 
 /// Takes a checkpoint of `cid`'s VM before the risky tool call `tool` runs, when automatic

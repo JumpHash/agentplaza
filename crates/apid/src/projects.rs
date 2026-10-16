@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -885,9 +885,13 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/projects", |app, _, _| {
             Response::json(200, &app.projects.list())
         })
+        .doc(RouteDoc::new("List the projects"))
         .get("/v1/projects/{id}", get_route)
+        .doc(RouteDoc::new("Get a project").errors(&[404]))
         .post("/v1/projects/{id}/approve", approve_route)
+        .doc(RouteDoc::new("Approve a project's current stage").errors(&[409]))
         .post("/v1/projects/{id}/veto", veto_route)
+        .doc(RouteDoc::new("Veto a project at a stage").errors(&[409]))
 }
 
 fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {

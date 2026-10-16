@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::db::Infraction;
@@ -25,17 +25,31 @@ const MAX_LIMIT: i64 = 10_000;
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/laws", laws_route)
+        .doc(RouteDoc::new(
+            "List the laws and how often each refused a call",
+        ))
         .get("/v1/laws/rules", rules_list_route)
+        .doc(RouteDoc::new("List the owner's rules and overrides"))
         .post("/v1/laws/rules", rule_create_route)
+        .doc(RouteDoc::new("Add a rule").status(201).errors(&[400]))
         .route("PUT", "/v1/laws/rules/{id}", rule_update_route)
+        .doc(RouteDoc::new("Edit a rule").errors(&[400, 404]))
         .post("/v1/laws/rules/{id}/enable", rule_enable_route)
+        .doc(RouteDoc::new("Enable a rule").errors(&[404]))
         .post("/v1/laws/rules/{id}/disable", rule_disable_route)
+        .doc(RouteDoc::new("Disable a rule").errors(&[404]))
         .route("DELETE", "/v1/laws/rules/{id}", rule_delete_route)
+        .doc(RouteDoc::new("Delete a rule").errors(&[404]))
         .post("/v1/laws/check", check_route)
+        .doc(RouteDoc::new("Test a rule source without applying it").errors(&[400]))
         .route("PUT", "/v1/laws/overrides/{law}", override_route)
+        .doc(RouteDoc::new("Switch a built-in law on or off").errors(&[400, 404, 409]))
         .get("/v1/laws/violations", violations_route)
+        .doc(RouteDoc::new("List the recorded refusals of a law"))
         .get("/v1/infractions", infractions_route)
+        .doc(RouteDoc::new("List the recent infractions"))
         .get("/v1/agents/{cid}/infractions", agent_infractions_route)
+        .doc(RouteDoc::new("List one agent's infractions"))
 }
 
 /// The owner's rules and overrides, whether permits are strict, the constitutional laws switched off,

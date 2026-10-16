@@ -12,7 +12,7 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::WorkKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -301,8 +301,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/agent-proposals", |app, _, _| {
             Response::json(200, &app.agent_proposals.list())
         })
+        .doc(RouteDoc::new("List the agent proposals"))
         .post("/v1/agent-proposals/{id}/approve", approve_route)
+        .doc(RouteDoc::new("Approve an agent proposal, spawning its agents").errors(&[400, 409]))
         .post("/v1/agent-proposals/{id}/reject", reject_route)
+        .doc(RouteDoc::new("Reject an agent proposal").errors(&[409]))
 }
 
 fn approve_route(app: &App, req: &Request, params: &Params<'_>) -> Response {

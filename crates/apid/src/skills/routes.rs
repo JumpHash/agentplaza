@@ -4,7 +4,7 @@
 //! Each route closure parses the request and calls a plain handler that takes `&Skills` and typed bodies, so the
 //! tests call the handlers without an `App`.
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_skill::{FileInfo, RULES_VERSION, Report};
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
@@ -25,58 +25,80 @@ pub fn routes(router: Router<App>) -> Router<App> {
     // `check` and `rules` are registered before the `{id}` routes.
     router
         .post("/v1/skills/check", |_, req, _| with_body(req, check))
+        .doc(RouteDoc::new("Check a skill's SKILL.md and files against the rules").errors(&[400]))
         .get("/v1/skills/rules", |_, _, _| {
             Response::json(200, &rules_body())
         })
+        .doc(RouteDoc::new("List the skill rules and the template"))
         .get("/v1/skills", |app, req, _| {
             reply(list(
                 &app.skills,
                 req.query_param("archived") == Some("true"),
             ))
         })
+        .doc(RouteDoc::new("List the skills, or the archived ones"))
         .post("/v1/skills", |app, req, _| {
             with_body(req, |b: CreateBody| create(&app.skills, &app.bus, b))
         })
+        .doc(
+            RouteDoc::new("Create a skill")
+                .status(201)
+                .errors(&[400, 409, 422]),
+        )
         .get("/v1/skills/{id}", |app, _, p| {
             reply(detail(&app.skills, p.get("id")))
         })
+        .doc(RouteDoc::new("Get a skill with its versions").errors(&[404]))
         .route("PUT", "/v1/skills/{id}", |app, req, p| {
             with_body(req, |b: MetaBody| {
                 set_meta(&app.skills, &app.bus, p.get("id"), b)
             })
         })
+        .doc(RouteDoc::new("Update a skill's title and tags").errors(&[400, 422]))
         .route("PUT", "/v1/skills/{id}/bindings", |app, req, p| {
             with_body(req, |b: BindingsBody| {
                 set_bindings(&app.skills, &app.bus, p.get("id"), b)
             })
         })
+        .doc(RouteDoc::new("Set the consumers a skill is bound to").errors(&[400, 422]))
         .get("/v1/skills/{id}/versions/{v}", |app, _, p| {
             reply(version(&app.skills, p.get("id"), p.get("v")))
         })
+        .doc(RouteDoc::new("Get one version of a skill").errors(&[404]))
         // `{path..}` takes the rest of the path, so a file in a folder keeps its slashes.
         .get(
             "/v1/skills/{id}/versions/{v}/files/{path..}",
             |app, _, p| reply(file(&app.skills, p.get("id"), p.get("v"), p.get("path"))),
         )
+        .doc(RouteDoc::new("Download one file of a skill version").errors(&[404]))
         .post("/v1/skills/{id}/versions", |app, req, p| {
             with_body(req, |b: VersionBody| {
                 add_version(&app.skills, &app.bus, p.get("id"), b)
             })
         })
+        .doc(
+            RouteDoc::new("Add a version of a skill")
+                .status(201)
+                .errors(&[400, 404, 409, 422]),
+        )
         .post("/v1/skills/{id}/publish", |app, req, p| {
             with_body(req, |b: PublishBody| {
                 publish(&app.skills, &app.bus, p.get("id"), b)
             })
         })
+        .doc(RouteDoc::new("Publish a version as the live one").errors(&[400, 404, 422]))
         .post("/v1/skills/{id}/unpublish", |app, _, p| {
             reply(unpublish(&app.skills, &app.bus, p.get("id")))
         })
+        .doc(RouteDoc::new("Unpublish a skill"))
         .post("/v1/skills/{id}/archive", |app, _, p| {
             reply(archive(&app.skills, &app.bus, p.get("id"), true))
         })
+        .doc(RouteDoc::new("Archive a skill"))
         .post("/v1/skills/{id}/restore", |app, _, p| {
             reply(archive(&app.skills, &app.bus, p.get("id"), false))
         })
+        .doc(RouteDoc::new("Restore an archived skill"))
         .get("/v1/skills/{id}/diff", |app, req, p| {
             reply(diff_versions(
                 &app.skills,
@@ -85,9 +107,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 req.query_param("to"),
             ))
         })
+        .doc(RouteDoc::new("Compare two versions of a skill").errors(&[404, 422]))
         .get("/v1/skills/{id}/history", |app, _, p| {
             reply(history(&app.skills, p.get("id")))
         })
+        .doc(RouteDoc::new("List a skill's history").errors(&[404]))
 }
 
 #[derive(Debug, Deserialize)]

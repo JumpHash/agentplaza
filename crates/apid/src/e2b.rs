@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -2040,6 +2040,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/e2b/keys", |app, _, _| {
             Response::json(200, &json!({"keys": keys(app).list()}))
         })
+        .doc(RouteDoc::new("List the E2B API keys"))
         .post("/v1/e2b/keys", |app, req, _| match json_body::<KeyBody>(req) {
             Ok(body) => match keys(app).create(&body.label, apz_plaza::now_ms()) {
                 Ok((view, key)) => Response::json(
@@ -2050,12 +2051,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
             },
             Err(refused) => refuse(refused),
         })
+        .doc(RouteDoc::new("Create an E2B API key (shown once)"))
         .delete("/v1/e2b/keys/{id}", |app, _, p| {
             match keys(app).remove(p.get("id")) {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(refused) => refuse(refused),
             }
         })
+        .doc(RouteDoc::new("Revoke an E2B API key"))
         // The owner's view of the sandboxes (the console): every one, running or paused, with its
         // VM's CID and run; never its envd token. Ending, pausing and resuming act as the owner.
         .get("/v1/e2b/sandboxes", |app, _, _| {
@@ -2074,77 +2077,101 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 .collect();
             Response::json(200, &json!({ "sandboxes": rows }))
         })
+        .doc(RouteDoc::new("List all sandboxes for the owner's console"))
         .delete("/v1/e2b/sandboxes/{id}", |app, _, p| {
             kill(app, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
+        .doc(RouteDoc::new("End a sandbox as the owner").status(204).errors(&[502]))
         .post("/v1/e2b/sandboxes/{id}/pause", |app, req, p| {
             pause(app, req, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
+        .doc(RouteDoc::new("Pause a sandbox as the owner").status(204))
         .post("/v1/e2b/sandboxes/{id}/resume", |app, req, p| {
             resume(app, req, p.get("id"), OWNER).unwrap_or_else(refuse)
         })
+        .doc(RouteDoc::new("Resume a paused sandbox as the owner").status(201).errors(&[409, 503]))
         .post("/e2b/sandboxes", |app, req, _| {
             guard(app, req, |key| create(app, req, key))
         })
+        .doc(RouteDoc::new("Create a sandbox").status(201).errors(&[409, 500, 503]))
         .get("/e2b/sandboxes", |app, req, _| {
             guard(app, req, |_| list(app, req))
         })
+        .doc(RouteDoc::new("List the running sandboxes"))
         .get("/e2b/v2/sandboxes", |app, req, _| {
             guard(app, req, |_| list_v2(app, req))
         })
+        .doc(RouteDoc::new("List sandboxes by state"))
         .get("/e2b/sandboxes/{id}", |app, req, p| {
             guard(app, req, |_| detail(app, p.get("id")))
         })
+        .doc(RouteDoc::new("Get a sandbox's details"))
         .delete("/e2b/sandboxes/{id}", |app, req, p| {
             guard(app, req, |key| kill(app, p.get("id"), key))
         })
+        .doc(RouteDoc::new("End a sandbox").status(204).errors(&[502]))
         .post("/e2b/sandboxes/{id}/timeout", |app, req, p| {
             guard(app, req, |_| set_timeout(app, req, p.get("id")))
         })
+        .doc(RouteDoc::new("Set when a sandbox will end").status(204))
         .post("/e2b/sandboxes/{id}/refreshes", |app, req, p| {
             guard(app, req, |_| refresh(app, req, p.get("id")))
         })
+        .doc(RouteDoc::new("Extend a sandbox's lifetime").status(204))
         .post("/e2b/sandboxes/{id}/pause", |app, req, p| {
             guard(app, req, |key| pause(app, req, p.get("id"), key))
         })
+        .doc(RouteDoc::new("Pause a sandbox").status(204))
         .post("/e2b/sandboxes/{id}/resume", |app, req, p| {
             guard(app, req, |key| resume(app, req, p.get("id"), key))
         })
+        .doc(RouteDoc::new("Resume a paused sandbox").status(201).errors(&[409, 503]))
         .post("/e2b/sandboxes/{id}/connect", |app, req, p| {
             guard(app, req, |key| connect(app, req, p.get("id"), key, false))
         })
+        .doc(RouteDoc::new("Connect to a sandbox, waking it if paused").errors(&[503]))
         // The v2 routes the current SDKs call: create (`NewSandboxV2`, always secured) and connect.
         .post("/e2b/v2/sandboxes", |app, req, _| {
             guard(app, req, |key| create(app, req, key))
         })
+        .doc(RouteDoc::new("Create a sandbox").status(201).errors(&[409, 500, 503]))
         .post("/e2b/v2/sandboxes/{id}/connect", |app, req, p| {
             guard(app, req, |key| connect(app, req, p.get("id"), key, true))
         })
+        .doc(RouteDoc::new("Connect to a sandbox, waking it if paused").errors(&[503]))
         // Metrics are not sampled for sandboxes: the list is empty, as for a sandbox that just started.
         .get("/e2b/sandboxes/{id}/metrics", |app, req, p| {
             guard(app, req, |_| metrics(app, p.get("id")))
         })
+        .doc(RouteDoc::new("Get a sandbox's current metrics").errors(&[502]))
         .get("/e2b/sandboxes/metrics", |app, req, _| {
             guard(app, req, |_| metrics_many(app, req))
         })
+        .doc(RouteDoc::new("Get the metrics of several sandboxes"))
         .get("/e2b/v2/sandboxes/{id}/logs", |app, req, p| {
             guard(app, req, |_| logs(app, req, p.get("id"), true))
         })
+        .doc(RouteDoc::new("Read a sandbox's logs").errors(&[502]))
         .get("/e2b/sandboxes/{id}/logs", |app, req, p| {
             guard(app, req, |_| logs(app, req, p.get("id"), false))
         })
+        .doc(RouteDoc::new("Read a sandbox's logs").errors(&[502]))
         .route("PUT", "/e2b/sandboxes/{id}/network", |app, req, p| {
             guard(app, req, |key| network(app, req, p.get("id"), key))
         })
+        .doc(RouteDoc::new("Replace a sandbox's network rules").status(204).errors(&[502]))
         .post("/e2b/sandboxes/{id}/snapshots", |app, req, p| {
             guard(app, req, |key| snapshot(app, req, p.get("id"), key))
         })
+        .doc(RouteDoc::new("Take a snapshot of a sandbox").status(201))
         .get("/e2b/snapshots", |app, req, _| {
             guard(app, req, |_| Ok(snapshots_list(app)))
         })
+        .doc(RouteDoc::new("List the snapshots"))
         .post("/e2b/sandboxes/{id}/fork", |app, req, p| {
             guard(app, req, |key| fork(app, req, p.get("id"), key))
         })
+        .doc(RouteDoc::new("Fork a sandbox into new sandboxes").status(201).errors(&[500]))
         // E2B deletes a snapshot as the template it is; a built template is deleted with its builds.
         .delete("/e2b/templates/{id}", |app, req, p| {
             guard(app, req, |key| match crate::e2b_tpl::delete(app, p.get("id"), key) {
@@ -2152,6 +2179,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 None => delete_snapshot(app, p.get("id"), key),
             })
         })
+        .doc(RouteDoc::new("Delete a template or snapshot").errors(&[502]))
 }
 
 #[cfg(test)]

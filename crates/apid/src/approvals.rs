@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, SeriesKey};
 use apz_proto::wire::HostMessage;
 use serde::{Deserialize, Serialize};
@@ -401,9 +401,13 @@ fn detail_cid(detail: &Value) -> u64 {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/approvals", list)
+        .doc(RouteDoc::new("List the approvals, pending and decided"))
         .post("/v1/approvals/{id}", decide)
+        .doc(RouteDoc::new("Approve or reject a pending approval").errors(&[400, 404, 409]))
         .get("/v1/agents/{cid}/permissions", get_mode)
+        .doc(RouteDoc::new("Show an agent's permission mode"))
         .route("PUT", "/v1/agents/{cid}/permissions", put_mode)
+        .doc(RouteDoc::new("Set an agent's permission mode").errors(&[400, 500]))
 }
 
 #[derive(Deserialize)]

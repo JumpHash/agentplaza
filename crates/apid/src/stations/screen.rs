@@ -24,7 +24,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_station::{Event, ImageFormat, Op, SessionId, SessionKind};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -438,9 +438,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/stations/{id}/screen", |app, req, p| {
             screen_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("Open a live view of a station's screen").errors(&[404, 409, 429]))
         .get("/v1/stations/{id}/thumbnail", |app, req, p| {
             thumbnail_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("Get a station's screen thumbnail"))
 }
 
 fn screen_route(app: &App, req: &Request, id: &str) -> Response {
