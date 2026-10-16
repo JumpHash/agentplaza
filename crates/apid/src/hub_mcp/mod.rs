@@ -23,7 +23,7 @@ pub mod tools;
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use apz_http::{Request, Response, Router};
 use serde_json::{Value, json};
@@ -525,6 +525,17 @@ fn descriptor(tool: &dyn Tool) -> Value {
     })
 }
 
+/// Called after every `tools/call` with the tool's name, its duration in ms and whether it succeeded (the metrics
+/// module sets it at start).
+type Observer = Box<dyn Fn(&str, f64, bool) + Send + Sync>;
+
+static OBSERVER: OnceLock<Observer> = OnceLock::new();
+
+/// Sets the observer of tool calls (once; later calls are ignored).
+pub fn observe_calls(observer: Observer) {
+    let _ = OBSERVER.set(observer);
+}
+
 /// `tools/call`: checks the tool and the rate limit, runs it, and audits the call either way.
 fn call_tool(
     hub: &HubMcp,
@@ -594,8 +605,10 @@ fn call_tool(
             }
         },
     };
-    // No metrics here: `tool_call` needs the `App` and the agent's `cid`, and a hub MCP caller is a
-    // token, not an agent. The call is kept in the audit log below.
+    let duration_ms = hub.now().saturating_sub(now);
+    if let Some(observe) = OBSERVER.get() {
+        observe(name, duration_ms as f64, ok);
+    }
     hub.audit.record(CallRecord {
         at_ms: now,
         token_id: (!caller.anonymous).then(|| token.id.clone()),
@@ -608,7 +621,7 @@ fn call_tool(
         args_sha256: digest,
         ok,
         error: error.map(str::to_string),
-        duration_ms: hub.now().saturating_sub(now),
+        duration_ms,
     });
     reply
 }

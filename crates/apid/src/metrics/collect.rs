@@ -41,6 +41,10 @@ static AGENT_STATES: LazyLock<Mutex<HashMap<u64, (String, u64)>>> =
 /// scrape, ingest, alert checks, live frames, governor, store flush; and once an hour: retention, store sizes.
 pub fn spawn(app: Arc<App>) {
     crate::events::instrument_bus(&app);
+    let observed = Arc::clone(&app);
+    crate::hub_mcp::observe_calls(Box::new(move |tool, ms, ok| {
+        hub_tool_call(&observed, tool, ms, ok)
+    }));
     let _ = PG.set(app.metrics.registry.hist(SeriesKey::new(
         "hub.pg_ms",
         EntityKind::Hub,
@@ -376,6 +380,24 @@ pub fn model_call(app: &App, c: &ModelCall) {
 fn output_speed(tokens_out: u64, duration_ms: f64, ttft_ms: f64) -> Option<f64> {
     let generating_ms = duration_ms - ttft_ms;
     (generating_ms > 0.0).then(|| tokens_out as f64 / (generating_ms / 1000.0))
+}
+
+/// Records a call to the hub's MCP server from an outside client (a token, not an agent): `tool.*` under `hub.<tool>`,
+/// the name agents' calls of the same tools carry.
+fn hub_tool_call(app: &App, tool: &str, ms: f64, ok: bool) {
+    let registry = &app.metrics.registry;
+    let tool = format!("hub.{}", tool.chars().take(64).collect::<String>());
+    registry
+        .hist(SeriesKey::new("tool.duration_ms", EntityKind::Tool, &tool))
+        .record(ms);
+    registry
+        .counter(SeriesKey::new("tool.calls", EntityKind::Tool, &tool))
+        .inc();
+    if !ok {
+        registry
+            .counter(SeriesKey::new("tool.errors", EntityKind::Tool, &tool))
+            .inc();
+    }
 }
 
 /// Records a tool or MCP call: `tool.*` and a Tool (or HubMcp, for `hub.` tools) span.
