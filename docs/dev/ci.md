@@ -75,9 +75,11 @@ whatever depends on them:
 - **Not the runner fleet's sccache.** Windows and macOS clear the fleet's `RUSTC_WRAPPER`, because its
   server died mid-build. Their persistent build directory keeps unchanged crates built.
 - **Prune.** `build-cache.py prune` runs at the end of each build job. It reports the build
-  directory's size and the disk's free space. Over 80 GB, or with less than 25 GB free, it removes
-  the units no build has used for 14, then 7, 3 and 1 days. It empties the directory only if the
-  disk is still short.
+  directory's size and the disk's free space.
+  - **The limits:** the directory's budget is 80 GB or 60% of the disk, whichever is less. The disk
+    counts as short below 25 GB free or 10% of the disk, whichever is less.
+  - **What it removes:** over budget or short, it removes the units no build has used for 14, then
+    7, 3 and 1 days. It empties the directory only if the disk is still short.
 - **Pinned Rust**: 1.99.0 everywhere (`.github/ci/Dockerfile`, `windows.yml`, `macos.yml`). A Rust
   release does not rebuild everything on the day it ships; bumping it is a deliberate change.
 

@@ -11,10 +11,12 @@
 
   build-cache.py prune <target-dir> [--max-gb N] [--min-free-gb N]
       Run at the end of a job. Reports the build directory's size and the disk's free space and,
-      when the directory is over --max-gb or the disk has less than --min-free-gb free, removes the
-      build units no build has used for 14, then 7, 3 and 1 days (a unit's last use is when cargo
-      last read or wrote its fingerprint). Only when the disk is still short does it empty the
-      directory. Units in use are kept, so the next run does not start cold.
+      when the directory is over its budget or the disk is short, removes the build units no build
+      has used for 14, then 7, 3 and 1 days (a unit's last use is when cargo last read or wrote its
+      fingerprint). Only when the disk is still short does it empty the directory. Units in use are
+      kept, so the next run does not start cold. The budget is --max-gb (80) or 60% of the disk,
+      whichever is less; short is less free than --min-free-gb (25) or 10% of the disk, whichever is
+      less, so a small disk is not short all the time.
 """
 
 import argparse
@@ -156,12 +158,16 @@ def prune(target, max_gb, min_free_gb):
     if not os.path.isdir(target):
         print(f"prune: no build directory at {target}")
         return
+    disk = shutil.disk_usage(target).total
+    max_gb = min(max_gb, 0.6 * disk / GB)
+    min_free_gb = min(min_free_gb, 0.1 * disk / GB)
     def measure():
         return size(target), shutil.disk_usage(target).free
     parts = {e.name: size(e.path) for e in os.scandir(target) if e.is_dir(follow_symlinks=False)}
     used, free = sum(parts.values()), shutil.disk_usage(target).free
     listing = ", ".join(f"{name} {n / GB:.1f}" for name, n in sorted(parts.items()))
-    print(f"prune: build directory {used / GB:.1f} GB ({listing}); disk {free / GB:.1f} GB free")
+    print(f"prune: build directory {used / GB:.1f} GB ({listing}); disk {free / GB:.1f} GB free of "
+          f"{disk / GB:.0f}; budget {max_gb:.0f} GB, short under {min_free_gb:.1f} GB free")
     for days in (14, 7, 3, 1):
         if used <= max_gb * GB and free >= min_free_gb * GB:
             return
