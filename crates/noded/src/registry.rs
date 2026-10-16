@@ -1075,15 +1075,10 @@ fn thaw(state: VmState, handle: &VmHandle) -> VmState {
     }
 }
 
-/// Writes a snapshot of a VM into `dir` (created). A VM restored from a snapshot always writes a
-/// diff, over the memory it was restored from, so that memory is copied into `dir` first: `base` is
-/// the directory holding it. `kind` is what the VM is asked for (see [`SnapshotKind::is_durable`]).
-fn write_snapshot(
-    handle: &VmHandle,
-    base: Option<&Path>,
-    dir: &Path,
-    kind: SnapshotKind,
-) -> Result<SnapshotInfo, VmOpError> {
+/// Copies the memory a VM was restored from into `dir` (created), where a snapshot of it is written.
+/// A VM restored from a snapshot always writes a diff, over that memory; `base` is the directory
+/// holding it.
+fn stage_base_memory(base: Option<&Path>, dir: &Path) -> Result<(), VmOpError> {
     if let Some(base) = base {
         snapshots::private_dir(dir)
             .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))?;
@@ -1097,9 +1092,30 @@ fn write_snapshot(
             ))
         })?;
     }
+    Ok(())
+}
+
+/// Writes a snapshot of a VM into `dir` (created), with the memory staged as [`stage_base_memory`]
+/// does. `kind` is what the VM is asked for (see [`SnapshotKind::is_durable`]).
+fn write_snapshot(
+    handle: &VmHandle,
+    base: Option<&Path>,
+    dir: &Path,
+    kind: SnapshotKind,
+) -> Result<SnapshotInfo, VmOpError> {
+    stage_base_memory(base, dir)?;
     handle
         .snapshot(dir, kind)
         .map_err(|err| VmOpError::Failed(format!("the VM did not snapshot: {err}")))
+}
+
+/// A checkpoint whose directory is written, except (when `captured`) the VM's memory and state file,
+/// which wait in RAM until [`Registry::finish_checkpoint`] writes them.
+struct PendingCheckpoint {
+    name: String,
+    /// How long the VM was paused for the capture, in milliseconds.
+    paused_ms: u64,
+    captured: bool,
 }
 
 /// Boots a VM from the checkpoint directory `snapshot`, with its workspace copied back from it, and
@@ -2111,23 +2127,28 @@ impl Registry {
         keep_memory: bool,
     ) -> Result<SnapshotView, VmOpError> {
         let mut phases = apz_metrics::Phases::start("checkpoint", format!("{run}/{vm}"));
-        let result = self.checkpoint_vm_inner(run, vm, label, keep_memory);
-        phases.mark("snapshot");
+        let result = self.checkpoint_vm_inner(run, vm, label, keep_memory, &mut phases);
         let ok = result.is_ok();
+        let paused_ms = result.as_ref().map_or(0, |view| view.paused_ms);
         phases.finish(
             if ok {
                 Some(&crate::metrics::CHECKPOINT)
             } else {
                 None
             },
-            &[("memory", &keep_memory), ("ok", &ok)],
+            &[
+                ("memory", &keep_memory),
+                ("ok", &ok),
+                ("paused_ms", &paused_ms),
+            ],
         );
         result
     }
 
     /// Takes checkpoint `label` of VM `vm` of run `run`: a copy of its memory and its workspace, from
-    /// which the VM can be restored or forked. The VM is paused for the copy and runs on after it.
-    /// With `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
+    /// which the VM can be restored or forked. The VM is paused for the capture of its memory and the
+    /// copy of its workspace, and runs on after them; the memory is written while it runs. With
+    /// `keep_memory == false` only the workspace is copied (a disk-only checkpoint): a restore
     /// or a fork of it boots cold from that disk. A VM with no workspace volume has no disk to keep.
     /// noded does not flush the guest's page cache: a caller taking a disk-only checkpoint of a
     /// running VM flushes the guest first (apid's E2B does it with the daemon's `POST /sync`).
@@ -2137,6 +2158,7 @@ impl Registry {
         vm: u32,
         label: &str,
         keep_memory: bool,
+        phases: &mut apz_metrics::Phases,
     ) -> Result<SnapshotView, VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
@@ -2147,9 +2169,12 @@ impl Registry {
         } else {
             Self::checkpoint_disk(store, cid, &held, label)
         };
+        phases.mark("capture");
         let state = thaw(held.state, &held.handle);
+        let view = taken.and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken));
+        phases.mark("write");
         run.return_vm_in(vm, held.handle, state);
-        let view = taken?;
+        let view = view?;
         store.prune(cid);
         Ok(view)
     }
@@ -2161,7 +2186,7 @@ impl Registry {
         cid: u64,
         held: &Held,
         label: &str,
-    ) -> Result<SnapshotView, VmOpError> {
+    ) -> Result<PendingCheckpoint, VmOpError> {
         let Some(workspace) = &held.spec.workspace else {
             return Err(VmOpError::Invalid(
                 "this VM has no workspace volume, so there is no disk to keep".to_string(),
@@ -2188,9 +2213,36 @@ impl Registry {
                 "cannot copy the workspace into checkpoint {name}: {err}"
             )));
         }
-        store
-            .view(cid, &name)
-            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))
+        Ok(PendingCheckpoint {
+            name,
+            paused_ms: 0,
+            captured: false,
+        })
+    }
+
+    /// Completes a checkpoint: writes the memory its capture kept in RAM, from `handle` (the VM it was
+    /// taken from, running or paused), then returns the checkpoint's view. A failed write removes the
+    /// checkpoint, as a failed snapshot does.
+    fn finish_checkpoint(
+        store: &SnapshotStore,
+        cid: u64,
+        handle: &VmHandle,
+        taken: PendingCheckpoint,
+    ) -> Result<SnapshotView, VmOpError> {
+        if taken.captured {
+            if let Err(err) = handle.write_captured() {
+                let _ = fs::remove_dir_all(store.dir(cid, &taken.name));
+                return Err(VmOpError::Failed(format!(
+                    "cannot write the VM's memory into checkpoint {}: {err}",
+                    taken.name
+                )));
+            }
+        }
+        let mut view = store.view(cid, &taken.name).ok_or_else(|| {
+            VmOpError::Failed(format!("checkpoint {} cannot be read back", taken.name))
+        })?;
+        view.paused_ms = taken.paused_ms;
+        Ok(view)
     }
 
     /// The checkpoints of VM `vm` of run `run`, newest first.
@@ -2231,8 +2283,12 @@ impl Registry {
             return Err(VmOpError::UnknownCheckpoint(name.to_string()));
         }
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
+        // The VM is killed next, and a capture's memory lives in the VM's process, so it is written
+        // here, while the VM is still paused.
         let safety =
-            match Self::checkpoint_held(store, cid, &held, "before-restore", SnapshotKind::Diff) {
+            match Self::checkpoint_held(store, cid, &held, "before-restore", SnapshotKind::Diff)
+                .and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken))
+            {
                 Ok(view) => view,
                 Err(err) => {
                     let state = thaw(held.state, &held.handle);
@@ -2296,16 +2352,19 @@ impl Registry {
         from: Option<&str>,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
         let mut phases = apz_metrics::Phases::start("fork", format!("{run}/{vm}"));
-        let result = self.fork_vm_inner(run, vm, n, from);
+        let result = self.fork_vm_inner(run, vm, n, from, &mut phases);
         phases.mark("boot");
         let ok = result.is_ok();
+        let paused_ms = result
+            .as_ref()
+            .map_or(0, |(checkpoint, _)| checkpoint.paused_ms);
         phases.finish(
             if ok {
                 Some(&crate::metrics::FORK)
             } else {
                 None
             },
-            &[("copies", &n), ("ok", &ok)],
+            &[("copies", &n), ("ok", &ok), ("paused_ms", &paused_ms)],
         );
         result
     }
@@ -2320,6 +2379,7 @@ impl Registry {
         vm: u32,
         n: u32,
         from: Option<&str>,
+        phases: &mut apz_metrics::Phases,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
         if !(1..=MAX_FORKS).contains(&n) {
             return Err(VmOpError::Invalid(format!(
@@ -2350,9 +2410,14 @@ impl Registry {
                 // it is written without the fsyncs.
                 let taken =
                     Self::checkpoint_held(store, cid, &held, "fork", SnapshotKind::DiffUnsynced);
+                phases.mark("capture");
                 let state = thaw(held.state, &held.handle);
+                // The copies boot from the checkpoint, so its memory is written before they do.
+                let checkpoint = taken
+                    .and_then(|taken| Self::finish_checkpoint(store, cid, &held.handle, taken));
+                phases.mark("write");
                 source.return_vm_in(vm, held.handle, state);
-                let checkpoint = taken?;
+                let checkpoint = checkpoint?;
                 store.prune(cid);
                 (checkpoint, meta, has_workspace)
             }
@@ -2603,40 +2668,54 @@ impl Registry {
         }
     }
 
-    /// Takes a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
-    /// workspace. `kind` is the snapshot kind asked for. The VM is left paused; the caller resumes it.
+    /// Captures a checkpoint of a held VM: its memory (a diff, when it was restored) and a copy of its
+    /// workspace, both taken while the VM is paused. `kind` is the snapshot kind asked for. The memory
+    /// waits in RAM for [`Registry::finish_checkpoint`]. The VM is left paused; the caller resumes it.
     fn checkpoint_held(
         store: &SnapshotStore,
         cid: u64,
         held: &Held,
         label: &str,
         kind: SnapshotKind,
-    ) -> Result<SnapshotView, VmOpError> {
+    ) -> Result<PendingCheckpoint, VmOpError> {
         store.prepare(cid).map_err(|err| {
             VmOpError::Failed(format!("cannot create the snapshot directory: {err}"))
         })?;
         let name = SnapshotStore::checkpoint_name(label, now_ms());
         let dir = store.dir(cid, &name);
-        let info = match write_snapshot(&held.handle, held.restored_from.as_deref(), &dir, kind) {
-            Ok(info) => info,
+        // Everything that can fail is done before the capture: a capture left unwritten would refuse
+        // the VM's next one.
+        let copied = snapshots::private_dir(&dir)
+            .map_err(|err| VmOpError::Failed(format!("cannot create {}: {err}", dir.display())))
+            .and_then(|()| stage_base_memory(held.restored_from.as_deref(), &dir))
+            .and_then(|()| match &held.spec.workspace {
+                Some(workspace) => clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE))
+                    .map(|_| ())
+                    .map_err(|err| {
+                        VmOpError::Failed(format!(
+                            "cannot copy the workspace into checkpoint {name}: {err}"
+                        ))
+                    }),
+                None => Ok(()),
+            });
+        if let Err(err) = copied {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+        match held.handle.capture(&dir, kind) {
+            Ok(info) => Ok(PendingCheckpoint {
+                name,
+                paused_ms: info.paused_ms,
+                captured: true,
+            }),
             Err(err) => {
+                // A capture that failed after keeping the memory (a reply lost in transit) would
+                // refuse the VM's next capture: its memory is written out, and discarded with the dir.
+                let _ = held.handle.write_captured();
                 let _ = fs::remove_dir_all(&dir);
-                return Err(err);
-            }
-        };
-        if let Some(workspace) = &held.spec.workspace {
-            if let Err(err) = clone_file(workspace, &dir.join(snapshots::WORKSPACE_FILE)) {
-                let _ = fs::remove_dir_all(&dir);
-                return Err(VmOpError::Failed(format!(
-                    "cannot copy the workspace into checkpoint {name}: {err}"
-                )));
+                Err(VmOpError::Failed(format!("the VM did not snapshot: {err}")))
             }
         }
-        let mut view = store
-            .view(cid, &name)
-            .ok_or_else(|| VmOpError::Failed(format!("checkpoint {name} cannot be read back")))?;
-        view.paused_ms = info.paused_ms;
-        Ok(view)
     }
 
     /// Boots one fork of the checkpoint at `snapshot`: a single-VM run with a CID of its own and, when
