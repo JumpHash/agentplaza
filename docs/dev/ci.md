@@ -78,6 +78,13 @@ whatever depends on them:
     counts as short below 25 GB free or 10% of the disk, whichever is less.
   - **What it removes:** over budget or short, it removes the units no build has used for 14, then
     7, 3 and 1 days. It empties the directory only if the disk is still short.
+- **Checked, incremental test builds off the reference platform.**
+  - **Linux x86_64** tests the `release` build that ships, and is the only platform where the timing
+    budgets are enforced.
+  - **Windows, macOS and Linux arm64** test with the `checked` profile (`Cargo.toml`): release
+    optimisation, compiled incrementally, with debug assertions and overflow checks in our own
+    crates. A change recompiles only what it touches, even in the big crates downstream of it.
+  - **The packages** build with `release` everywhere.
 - **Pinned Rust**: 1.99.0 everywhere (`.github/ci/Dockerfile`, `windows.yml`, `macos.yml`). A Rust
   release does not rebuild everything on the day it ships; bumping it is a deliberate change.
 
