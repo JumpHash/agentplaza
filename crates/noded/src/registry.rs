@@ -33,9 +33,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -1075,6 +1075,66 @@ fn thaw(state: VmState, handle: &VmHandle) -> VmState {
     }
 }
 
+/// Where the lifecycle events of VMs go (boot, pause, resume, sleep, wake, snapshot, exit). The node sets it once at
+/// start-up to its metrics (`NodeMetrics::event`); without a sink the events are dropped.
+static EVENT_SINK: OnceLock<Box<dyn Fn(apz_metrics::Event) + Send + Sync>> = OnceLock::new();
+
+/// Sets the sink that lifecycle events are recorded into. Only the first call takes effect.
+pub fn set_events(sink: Box<dyn Fn(apz_metrics::Event) + Send + Sync>) {
+    let _ = EVENT_SINK.set(sink);
+}
+
+/// Records one lifecycle event of VM `vm` of run `run`. `duration` is how long the work took, when that is the point
+/// of the event; `detail` is the line for people; `parts` are the named numbers that go with it.
+fn record_vm_event(
+    run: &str,
+    vm: u32,
+    kind: &str,
+    duration: Option<Duration>,
+    detail: String,
+    parts: Vec<(String, f64)>,
+) {
+    let Some(sink) = EVENT_SINK.get() else {
+        return;
+    };
+    sink(apz_metrics::Event {
+        t_ms: now_ms(),
+        kind: kind.to_string(),
+        entity_kind: apz_metrics::EntityKind::Vm,
+        entity: format!("{run}/{vm}"),
+        duration_ms: duration.map(|d| d.as_secs_f64() * 1000.0),
+        detail,
+        parts,
+    });
+}
+
+/// Records a wake of VM `vm`. `restore` is the snapshot restore time, when the VM woke from its sleep snapshot.
+fn record_wake(run: &Run, vm: u32, started: Instant, restore: Option<Duration>) {
+    let total = started.elapsed();
+    let (detail, parts) = match restore {
+        Some(restore) => (
+            format!(
+                "woke in {} ms (restore {} ms)",
+                total.as_millis(),
+                restore.as_millis()
+            ),
+            vec![("restore_ms".to_string(), restore.as_secs_f64() * 1000.0)],
+        ),
+        None => (format!("woke cold in {} ms", total.as_millis()), Vec::new()),
+    };
+    record_vm_event(&run.id, vm, "wake", Some(total), detail, parts);
+}
+
+/// A snapshot size for a detail line: GiB with one decimal from 1 GiB up, MiB below that.
+fn size_text(bytes: u64) -> String {
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    if mib >= 1024.0 {
+        format!("{:.1} GiB", mib / 1024.0)
+    } else {
+        format!("{mib:.0} MiB")
+    }
+}
+
 /// Creates `dir` for a snapshot of a VM. A VM restored from a snapshot writes a diff over the memory
 /// it was restored from; the VMM copies that memory into `dir` itself, through the descriptor it keeps
 /// (which also works inside a jail), so nothing is copied here: a second copy cost a full read and write
@@ -1720,11 +1780,13 @@ impl Registry {
         // `spawn_each` calls this exactly `vms` times with the ids `0..vms`, and
         // `specs` has `vms` entries: the index is in range. A VM with a template start is restored
         // from it; the spec kept in its slot stays the cold one, so a restart boots it as usual.
+        let booting = Instant::now();
         let boot = spawner::spawn_each(vms, |i| {
             let mut spec = specs[i as usize].clone();
             spec.restore = starts[i as usize].clone();
             spec
         });
+        let ready = booting.elapsed();
         match boot {
             Ok(handles) => {
                 let mut inner = run.lock();
@@ -1780,6 +1842,14 @@ impl Registry {
                         vm: slot.id,
                         state: VmState::Running.as_str(),
                     });
+                    record_vm_event(
+                        &run.id,
+                        slot.id,
+                        "boot",
+                        Some(ready),
+                        format!("ready in {} ms", ready.as_millis()),
+                        Vec::new(),
+                    );
                 }
                 drop(inner);
                 watch(Arc::clone(&run));
@@ -1848,6 +1918,7 @@ impl Registry {
     /// Pauses VM `vm` of run `run`: its vCPUs and devices stop, its process stays. Only a running VM
     /// pauses; [`Registry::resume_vm`] lets it run again.
     pub fn pause_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let started = Instant::now();
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let held = run.take_vm(vm, &[VmState::Running])?;
         if let Err(err) = held.handle.pause() {
@@ -1855,11 +1926,21 @@ impl Registry {
             return Err(VmOpError::Refused(err.to_string()));
         }
         run.return_vm_in(vm, held.handle, VmState::Paused);
+        let took = started.elapsed();
+        record_vm_event(
+            &run.id,
+            vm,
+            "pause",
+            Some(took),
+            format!("paused in {} ms", took.as_millis()),
+            Vec::new(),
+        );
         Ok(run)
     }
 
     /// Lets paused VM `vm` of run `run` run again.
     pub fn resume_vm(&self, run: &str, vm: u32) -> Result<Arc<Run>, VmOpError> {
+        let started = Instant::now();
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let held = run.take_vm(vm, &[VmState::Paused])?;
         if let Err(err) = held.handle.resume() {
@@ -1867,6 +1948,15 @@ impl Registry {
             return Err(VmOpError::Refused(err.to_string()));
         }
         run.return_vm_in(vm, held.handle, VmState::Running);
+        let took = started.elapsed();
+        record_vm_event(
+            &run.id,
+            vm,
+            "resume",
+            Some(took),
+            format!("resumed in {} ms", took.as_millis()),
+            Vec::new(),
+        );
         Ok(run)
     }
 
@@ -1874,7 +1964,7 @@ impl Registry {
     /// (`VmHandle::reclaim`). The VM stays paused, and [`Registry::resume_vm`] wakes it. A reclaim that
     /// fails leaves the VM paused and is refused. Returns the run and the bytes advised.
     pub fn doze_vm(&self, run: &str, vm: u32) -> Result<(Arc<Run>, u64), VmOpError> {
-        let mut phases = apz_metrics::Phases::start("doze", format!("{run}/{vm}"));
+        let mut phases = apz_metrics::prom::Phases::start("doze", format!("{run}/{vm}"));
         let result = self.doze_vm_timed(run, vm, &mut phases);
         let ok = result.is_ok();
         let reclaimed = result.as_ref().map_or(0, |(_, bytes)| *bytes);
@@ -1894,7 +1984,7 @@ impl Registry {
         &self,
         run: &str,
         vm: u32,
-        phases: &mut apz_metrics::Phases,
+        phases: &mut apz_metrics::prom::Phases,
     ) -> Result<(Arc<Run>, u64), VmOpError> {
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let held = run.take_vm(vm, &[VmState::Running, VmState::Paused])?;
@@ -1921,7 +2011,7 @@ impl Registry {
         vm: u32,
         keep_memory: bool,
     ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
-        let mut phases = apz_metrics::Phases::start("sleep", format!("{run}/{vm}"));
+        let mut phases = apz_metrics::prom::Phases::start("sleep", format!("{run}/{vm}"));
         let result = self.sleep_vm_inner(run, vm, keep_memory);
         phases.mark("snapshot_and_stop");
         let ok = result.is_ok();
@@ -1948,6 +2038,7 @@ impl Registry {
         vm: u32,
         keep_memory: bool,
     ) -> Result<(Arc<Run>, Option<SnapshotView>), VmOpError> {
+        let started = Instant::now();
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
@@ -1973,6 +2064,14 @@ impl Registry {
                 }
             }
             run.return_vm_in(vm, handle, VmState::Asleep);
+            record_vm_event(
+                &run.id,
+                vm,
+                "sleep",
+                Some(started.elapsed()),
+                "stopped without memory".to_string(),
+                Vec::new(),
+            );
             return Ok((run, None));
         }
         let partial = store.dir(cid, snapshots::SLEEP_PARTIAL);
@@ -2010,14 +2109,39 @@ impl Registry {
             )));
         };
         view.paused_ms = info.paused_ms;
+        record_vm_event(
+            &run.id,
+            vm,
+            "sleep",
+            Some(started.elapsed()),
+            format!(
+                "snapshot {}, paused {} ms",
+                size_text(view.memory_written),
+                info.paused_ms
+            ),
+            vec![
+                (
+                    "snapshot_mib".to_string(),
+                    view.memory_written as f64 / (1024.0 * 1024.0),
+                ),
+                ("paused_ms".to_string(), info.paused_ms as f64),
+            ],
+        );
         Ok((run, Some(view)))
     }
 
     /// Wakes VM `vm` of run `run` (see `wake_vm_inner`), timed: one `timing op=wake` line and
     /// `crate::metrics::WAKE`. The bool is true when the warm restore failed and the VM booted cold instead.
     pub fn wake_vm(&self, run: &str, vm: u32, cold: bool) -> Result<(Arc<Run>, bool), VmOpError> {
-        let mut phases = apz_metrics::Phases::start("wake", format!("{run}/{vm}"));
-        let result = self.wake_vm_inner(run, vm, cold);
+        let started = Instant::now();
+        let mut phases = apz_metrics::prom::Phases::start("wake", format!("{run}/{vm}"));
+        let result = self
+            .wake_vm_inner(run, vm, cold)
+            .map(|(woken, fallback, restore)| {
+                // The wake's lifecycle event, for the Metrics view (restore time split out when it restored).
+                record_wake(&woken, vm, started, restore);
+                (woken, fallback)
+            });
         phases.mark("spawn");
         let fallback = matches!(result, Ok((_, true)));
         let ok = result.is_ok();
@@ -2038,8 +2162,15 @@ impl Registry {
     /// Wakes asleep VM `vm` of run `run` from its sleep snapshot: it runs again with the CID and
     /// workspace it slept with. A snapshot that will not restore is not fatal: the VM boots cold from
     /// its spec, so an agent is never lost to a bad snapshot (the cause is logged).
-    /// The bool is true only when that cold boot after a failed warm restore happened.
-    fn wake_vm_inner(&self, run: &str, vm: u32, cold: bool) -> Result<(Arc<Run>, bool), VmOpError> {
+    /// The bool is true only when that cold boot after a failed warm restore happened; the duration is the restore's,
+    /// when the VM woke from its snapshot.
+    #[allow(clippy::type_complexity)]
+    fn wake_vm_inner(
+        &self,
+        run: &str,
+        vm: u32,
+        cold: bool,
+    ) -> Result<(Arc<Run>, bool, Option<Duration>), VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
         let cid = run.vm_cid(vm)?;
@@ -2050,13 +2181,15 @@ impl Registry {
         // A VM that arrived asleep from another node has never run here: there is no old handle to
         // swap out, only its spec.
         if let Some(spec) = run.take_unbooted(vm)? {
+            let restoring = Instant::now();
             return match spawn_timed(VmSpec {
                 restore: warm.clone(),
                 ..spec.clone()
             }) {
                 Ok(fresh) => {
+                    let restore = warm.as_ref().map(|_| restoring.elapsed());
                     run.seat_first(vm, spec, fresh, warm);
-                    Ok((run, false))
+                    Ok((run, false, restore))
                 }
                 Err(err) => {
                     run.untake_unbooted(vm, spec);
@@ -2081,12 +2214,17 @@ impl Registry {
                 None => format!("VM {vm} did not boot ({cold})"),
             })),
         };
+        let restoring = Instant::now();
+        let mut restore = None;
         let woken = match warm {
             Some(base) => match spawn_timed(VmSpec {
                 restore: Some(base.clone()),
                 ..spec.clone()
             }) {
-                Ok(fresh) => Ok((fresh, Some(base), false)),
+                Ok(fresh) => {
+                    restore = Some(restoring.elapsed());
+                    Ok((fresh, Some(base), false))
+                }
                 Err(err) => {
                     eprintln!(
                         "noded: run {}: VM {vm} did not wake from its sleep snapshot ({err}); booting it cold",
@@ -2100,7 +2238,7 @@ impl Registry {
         match woken {
             Ok((fresh, base, fallback)) => {
                 run.seat_vm(vm, killed, fresh, base);
-                Ok((run, fallback))
+                Ok((run, fallback, restore))
             }
             Err(err) => {
                 run.return_vm(vm, killed);
@@ -2118,7 +2256,7 @@ impl Registry {
         label: &str,
         keep_memory: bool,
     ) -> Result<SnapshotView, VmOpError> {
-        let mut phases = apz_metrics::Phases::start("checkpoint", format!("{run}/{vm}"));
+        let mut phases = apz_metrics::prom::Phases::start("checkpoint", format!("{run}/{vm}"));
         let result = self.checkpoint_vm_inner(run, vm, label, keep_memory, &mut phases);
         let ok = result.is_ok();
         let paused_ms = result.as_ref().map_or(0, |view| view.paused_ms);
@@ -2150,7 +2288,7 @@ impl Registry {
         vm: u32,
         label: &str,
         keep_memory: bool,
-        phases: &mut apz_metrics::Phases,
+        phases: &mut apz_metrics::prom::Phases,
     ) -> Result<SnapshotView, VmOpError> {
         let store = self.snapshot_store()?;
         let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
@@ -2168,6 +2306,36 @@ impl Registry {
         run.return_vm_in(vm, held.handle, state);
         let view = view?;
         store.prune(cid);
+        let (detail, parts) = if keep_memory {
+            let mut parts = vec![(
+                "snapshot_mib".to_string(),
+                view.memory_written as f64 / (1024.0 * 1024.0),
+            )];
+            if view.paused_ms > 0 {
+                parts.push(("paused_ms".to_string(), view.paused_ms as f64));
+            }
+            (
+                format!(
+                    "snapshot {}, paused {} ms",
+                    size_text(view.memory_written),
+                    view.paused_ms
+                ),
+                parts,
+            )
+        } else {
+            (
+                format!("disk checkpoint {}", size_text(view.disk_bytes)),
+                Vec::new(),
+            )
+        };
+        record_vm_event(
+            &run.id,
+            vm,
+            "snapshot",
+            Some(phases.elapsed()),
+            detail,
+            parts,
+        );
         Ok(view)
     }
 
@@ -2343,7 +2511,7 @@ impl Registry {
         n: u32,
         from: Option<&str>,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
-        let mut phases = apz_metrics::Phases::start("fork", format!("{run}/{vm}"));
+        let mut phases = apz_metrics::prom::Phases::start("fork", format!("{run}/{vm}"));
         let result = self.fork_vm_inner(run, vm, n, from, &mut phases);
         phases.mark("boot");
         let ok = result.is_ok();
@@ -2371,7 +2539,7 @@ impl Registry {
         vm: u32,
         n: u32,
         from: Option<&str>,
-        phases: &mut apz_metrics::Phases,
+        phases: &mut apz_metrics::prom::Phases,
     ) -> Result<(SnapshotView, Vec<(Arc<Run>, u64)>), VmOpError> {
         if !(1..=MAX_FORKS).contains(&n) {
             return Err(VmOpError::Invalid(format!(
@@ -3256,6 +3424,18 @@ impl Run {
             .collect()
     }
 
+    /// The disk and vsock totals of each running VM of the run that reports them, as `(VM index, totals)`. A VM in
+    /// process-less form, or mid-kill, has none.
+    pub fn io_stats(&self) -> Vec<(u32, vmm::spawner::IoStats)> {
+        let inner = self.lock();
+        inner
+            .vms
+            .iter()
+            .filter(|slot| slot.state == VmState::Running)
+            .filter_map(|slot| Some((slot.id, slot.handle.as_ref()?.io_stats()?)))
+            .collect()
+    }
+
     /// The run as the API reports it.
     pub fn view(&self, detail: Detail) -> RunView<'_> {
         let inner = self.lock();
@@ -3833,6 +4013,19 @@ fn watch_run(run: &Arc<Run>) {
                                 vm: slot.id,
                                 state: slot.state.as_str(),
                             });
+                            let detail = match exit {
+                                VmExit::GuestExited { reset: true } => "guest reset",
+                                VmExit::GuestExited { reset: false } => "guest shut down",
+                                VmExit::Killed => "killed by the host",
+                            };
+                            record_vm_event(
+                                &run.id,
+                                slot.id,
+                                "exit",
+                                None,
+                                detail.to_string(),
+                                Vec::new(),
+                            );
                         }
                     },
                     Ok(None) => {}

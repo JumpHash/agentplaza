@@ -1382,6 +1382,8 @@ fn steps(
         workdir: BUILD_HOME.into(),
         env: BTreeMap::new(),
     };
+    // The time the base sandbox took to fork from a template snapshot (none when it boots a base image).
+    let mut forked_ms: Option<f64> = None;
     let (run, cid) = match &plan.base {
         Base::Image(image) => {
             log(
@@ -1405,12 +1407,30 @@ fn steps(
             cursor.env = source.env_vars.clone();
             cursor.user = user.clone();
             cursor.workdir = workdir.clone();
-            e2b::fork_runs(app, &source, Some(&snap.checkpoint), 1)
+            let forking = Instant::now();
+            let forked = e2b::fork_runs(app, &source, Some(&snap.checkpoint), 1)
                 .map_err(|r| fail("base", r.message()))?
-                .remove(0)
+                .remove(0);
+            forked_ms = Some(forking.elapsed().as_secs_f64() * 1000.0);
+            forked
         }
     };
     let started = e2b::admit(app, &spec, run, cid, key).map_err(|r| fail("base", r.message()))?;
+    if let Some(ms) = forked_ms {
+        crate::metrics::ingest::record_event(
+            &app.metrics,
+            apz_metrics::Event {
+                t_ms: apz_plaza::now_ms(),
+                kind: "fork".to_string(),
+                entity_kind: apz_metrics::EntityKind::Sandbox,
+                entity: started.id.clone(),
+                duration_ms: Some(ms),
+                detail: format!("forked from a template snapshot in {ms:.0} ms"),
+                parts: Vec::new(),
+            },
+            "",
+        );
+    }
     log(
         build_id,
         "info",

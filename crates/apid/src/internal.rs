@@ -2,16 +2,21 @@
 //!
 //! OWNER: slice "loop". `handle` is the agent loop's host half.
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use apz_gateway::Caller;
 use apz_http::{Request, Response, Router};
-use apz_proto::chat::{ChatRequest, Message, Role};
-use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, cap_output};
+use apz_metrics::{EntityKind, Event, SeriesKey};
+use apz_proto::chat::{Block, ChatRequest, Message, Role};
+use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, WorkStatus, cap_output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, model_of, profile};
 use crate::approvals;
 use crate::laws::Laws;
+use crate::metrics::collect::{self, ModelCall};
 use crate::settings::tier_of;
 use crate::state::App;
 use crate::tools::{Runs, run_host, runs};
@@ -22,6 +27,161 @@ const LAST_USER_CHARS: usize = 2_000;
 const DECISION_OUTPUT_BYTES: usize = 4_000;
 /// How much of a tool report's output the transcript keeps, in bytes.
 const REPORT_OUTPUT_BYTES: usize = 16_000;
+/// The head the harness writes at the top of a compaction summary (`SUMMARY_HEAD` in agent-harness).
+const SUMMARY_HEAD: &str = "Summary of the work so far (earlier turns were compressed):";
+/// The context parts of a model call, in the order the metrics show them.
+const CONTEXT_PARTS: [&str; 6] = [
+    "system",
+    "tools",
+    "history",
+    "tool_results",
+    "attachments",
+    "summary",
+];
+/// Bytes per token in the context split (a rough, provider-neutral rule of thumb).
+const BYTES_PER_TOKEN: u64 = 4;
+
+/// The tool name of each call a guest asked for and has not reported yet, by agent and call id. A tool
+/// report carries only the call id, so this is how the metrics name the tool. Cleared when the agent's
+/// work ends, since a denied call is never reported.
+static PENDING_TOOLS: Mutex<BTreeMap<(u64, String), String>> = Mutex::new(BTreeMap::new());
+
+fn remember_tool(cid: u64, call: &str, name: &str) {
+    let mut pending = PENDING_TOOLS.lock().unwrap_or_else(|e| e.into_inner());
+    pending.insert((cid, call.to_string()), name.to_string());
+}
+
+fn take_tool(cid: u64, call: &str) -> String {
+    let mut pending = PENDING_TOOLS.lock().unwrap_or_else(|e| e.into_inner());
+    pending
+        .remove(&(cid, call.to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn forget_tools(cid: u64) {
+    let mut pending = PENDING_TOOLS.lock().unwrap_or_else(|e| e.into_inner());
+    pending.retain(|(owner, _), _| *owner != cid);
+}
+
+/// Splits a request's context into the [`CONTEXT_PARTS`], sized in tokens. Each part weighs its serialized
+/// bytes; the weights are scaled to `input_tokens` so the shares add up to it exactly. A tool result
+/// counts as `tool_results`, a compaction summary message as `summary`, other content as `history`.
+/// `attachments` stays 0: the chat model has no image or file block.
+pub(crate) fn context_split(request: &ChatRequest, input_tokens: u64) -> Vec<(String, u64)> {
+    let mut bytes = [0u64; 6];
+    bytes[0] = request.system.as_ref().map_or(0, |s| s.len() as u64);
+    bytes[1] = serde_json::to_vec(&request.tools).map_or(0, |v| v.len() as u64);
+    for message in &request.messages {
+        let is_summary = message
+            .content
+            .iter()
+            .any(|block| matches!(block, Block::Text { text } if text.starts_with(SUMMARY_HEAD)));
+        for block in &message.content {
+            let size = serde_json::to_vec(block).map_or(0, |v| v.len() as u64);
+            let part = if is_summary {
+                5
+            } else if matches!(block, Block::ToolResult { .. }) {
+                3
+            } else {
+                2
+            };
+            bytes[part] += size;
+        }
+    }
+    let shares = scale_to_tokens(&bytes, input_tokens);
+    CONTEXT_PARTS
+        .iter()
+        .zip(shares)
+        .map(|(name, tokens)| (name.to_string(), tokens))
+        .collect()
+}
+
+/// Divides `total` tokens over `weights` in proportion, largest remainder first, so the result sums to `total`.
+fn scale_to_tokens(weights: &[u64; 6], total: u64) -> [u64; 6] {
+    let sum: u128 = weights.iter().map(|&w| w as u128).sum();
+    let mut shares = [0u64; 6];
+    if sum == 0 {
+        // Nothing to weigh: the whole input is the history.
+        shares[2] = total;
+        return shares;
+    }
+    let mut remainders = Vec::with_capacity(6);
+    for (i, &weight) in weights.iter().enumerate() {
+        let exact = weight as u128 * total as u128;
+        shares[i] = (exact / sum) as u64;
+        remainders.push((exact % sum, i));
+    }
+    let assigned: u64 = shares.iter().sum();
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(_, i) in remainders.iter().take((total - assigned) as usize) {
+        shares[i] += 1;
+    }
+    shares
+}
+
+/// Records one finished compaction of agent `cid`'s conversation: sizes in bytes, shown as tokens.
+fn record_compaction(app: &App, cid: u64, before: u64, after: u64) {
+    let (before, after) = (before / BYTES_PER_TOKEN, after / BYTES_PER_TOKEN);
+    let event = Event {
+        t_ms: apz_plaza::now_ms(),
+        kind: "compaction".to_string(),
+        entity_kind: EntityKind::Agent,
+        entity: cid.to_string(),
+        duration_ms: None,
+        detail: format!(
+            "freed {} tokens ({before} → {after})",
+            before.saturating_sub(after)
+        ),
+        parts: vec![
+            ("before".to_string(), before as f64),
+            ("after".to_string(), after as f64),
+        ],
+    };
+    crate::metrics::ingest::record_event(&app.metrics, event, "");
+}
+
+/// Records one stats report of agent `cid`'s VM: its `/workspace` use and size as gauges, and its busiest
+/// processes as rows of the node's `top_processes` report, in place of the VM's previous rows.
+fn record_stats(app: &App, cid: u64, used_mib: u64, size_mib: u64, top: Vec<(String, f64, f64)>) {
+    let Some(agent) = app.agents.get(cid) else {
+        return;
+    };
+    let run = agent.run.clone().filter(|run| !run.is_empty());
+    let (Some(run), Some(index)) = (run, agent.vm) else {
+        return;
+    };
+    let vm = format!("{run}/{index}");
+    let registry = &app.metrics.registry;
+    registry
+        .gauge(SeriesKey::new("vm.workspace_used_mib", EntityKind::Vm, &vm))
+        .set(used_mib as f64);
+    registry
+        .gauge(SeriesKey::new("vm.workspace_size_mib", EntityKind::Vm, &vm))
+        .set(size_mib as f64);
+
+    let node = crate::fleet::node_of(app, cid);
+    let mut links = crate::metrics::lock(&app.metrics.links);
+    let link = links.entry(node).or_default();
+    let mut rows: Vec<Value> = link
+        .reports
+        .get("top_processes")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.get(1).and_then(Value::as_str) != Some(vm.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.extend(
+        top.into_iter()
+            .map(|(name, cpu, rss)| json!([name, vm, cpu, rss])),
+    );
+    if !link.reports.is_object() {
+        link.reports = json!({});
+    }
+    link.reports["top_processes"] = Value::Array(rows);
+}
 
 #[derive(Deserialize)]
 struct Hello {
@@ -367,7 +527,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             call,
             name,
             input,
-        } => Some(tool_request(app, cid, &agent, work, call, &name, &input)),
+        } => {
+            remember_tool(cid, &call, &name);
+            Some(tool_request(app, cid, &agent, work, call, &name, &input))
+        }
         GuestMessage::ToolReport {
             work,
             call,
@@ -376,6 +539,8 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
+            // A report carries no duration of its own, so the tool's time is recorded as 0.
+            collect::tool_call(app, cid, &take_tool(cid, &call), 0.0, ok);
             if crate::library::take_package_call(cid, &call) && ok {
                 if let Err(err) = crate::library::accept(app, cid, &output) {
                     app.transcripts.record(
@@ -431,6 +596,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         } => {
             // The agent's journal: one line per finished piece of work (episodic memory, AP-062).
             if let Some(item) = app.work.current(cid).filter(|item| item.id == work) {
+                let ms = item.started_ms.map_or(0.0, |started| {
+                    apz_plaza::now_ms().saturating_sub(started) as f64
+                });
+                collect::turn_end(app, cid, ms, matches!(status, WorkStatus::Done));
                 let clip = |text: &str, n: usize| -> String {
                     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
                     if one.chars().count() > n {
@@ -456,6 +625,8 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
+            forget_tools(cid);
+            collect::agent_state(app, cid, "idle");
             None
         }
         GuestMessage::Compressed {
@@ -472,6 +643,15 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 "compressed",
                 json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
             );
+            record_compaction(app, cid, before, after);
+            None
+        }
+        GuestMessage::Stats {
+            workspace_used_mib,
+            workspace_size_mib,
+            top,
+        } => {
+            record_stats(app, cid, workspace_used_mib, workspace_size_mib, top);
             None
         }
         _ => None,
@@ -532,9 +712,13 @@ fn model_call(
         cid,
         node: crate::vault::node_for_cid(&app.nodes.list(), cid),
     };
+    collect::agent_state(app, cid, "first_token");
+    let started = std::time::Instant::now();
+    let mut first_delta_ms: Option<f64> = None;
     let result = gateway.complete_for(
         &request,
         &mut |delta| {
+            first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
             app.bus.publish(
                 "delta",
                 &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
@@ -542,6 +726,8 @@ fn model_call(
         },
         &caller,
     );
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    collect::agent_state(app, cid, "tools");
     match result {
         Ok(resp) => {
             let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
@@ -555,7 +741,37 @@ fn model_call(
                 cache_read: usage.cache_read_tokens,
                 cache_write: usage.cache_write_tokens,
             };
-            crate::usage::meter(app, cid, &model, tokens, None, task, "harness");
+            // The same estimate the usage meter records for this call.
+            let cost_usd = app
+                .prices
+                .lookup(&model, &settings.prices)
+                .map_or(0.0, |priced| {
+                    crate::prices::estimate(&priced.price, &tokens)
+                });
+            crate::usage::meter(app, cid, &model, tokens, None, task.clone(), "harness");
+            let context_tokens =
+                usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+            collect::model_call(
+                app,
+                &ModelCall {
+                    cid,
+                    provider: crate::usage::provider_of(&model).to_string(),
+                    model: model.clone(),
+                    engine: "plaza harness".to_string(),
+                    tokens_in: usage.input_tokens,
+                    cache_read: usage.cache_read_tokens,
+                    cache_write: usage.cache_write_tokens,
+                    tokens_out: usage.output_tokens,
+                    cost_usd,
+                    ttft_ms: first_delta_ms,
+                    duration_ms: Some(duration_ms),
+                    status: 200,
+                    retries: 0,
+                    task,
+                    context: context_split(&request, context_tokens),
+                    ratelimit: (None, None),
+                },
+            );
             let tokens = settings
                 .prices
                 .get(&model)
@@ -919,6 +1135,76 @@ mod tests {
 mod egress_check_tests {
     use super::*;
     use crate::laws::{LAW_FILES, Laws};
+
+    fn request_of(system: Option<&str>, messages: Vec<Message>) -> ChatRequest {
+        ChatRequest {
+            model: String::new(),
+            system: system.map(str::to_string),
+            messages,
+            tools: Vec::new(),
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn the_context_split_sums_to_the_input_tokens() {
+        let request = request_of(
+            Some("You are the harness."),
+            vec![
+                Message::user_text("Hello there, what is the plan for today?"),
+                Message::assistant(vec![Block::Text {
+                    text: "Let me look at the queue first.".to_string(),
+                }]),
+            ],
+        );
+        for input in [0u64, 1, 7, 1_000, 123_457] {
+            let total: u64 = context_split(&request, input)
+                .iter()
+                .map(|(_, tokens)| tokens)
+                .sum();
+            assert_eq!(total, input);
+        }
+    }
+
+    #[test]
+    fn a_tool_result_counts_as_tool_results_and_a_summary_as_summary() {
+        let summary = format!("{SUMMARY_HEAD}\n{}", "earlier work ".repeat(20));
+        let request = request_of(
+            None,
+            vec![
+                Message::user_text(summary),
+                Message::assistant(vec![Block::Text {
+                    text: "ok".to_string(),
+                }]),
+                Message {
+                    role: Role::User,
+                    content: vec![Block::ToolResult {
+                        tool_use_id: "call-1".to_string(),
+                        content: "line of output\n".repeat(30),
+                        is_error: false,
+                    }],
+                },
+            ],
+        );
+        let split = context_split(&request, 10_000);
+        let part = |name: &str| split.iter().find(|(n, _)| n == name).map_or(0, |(_, t)| *t);
+        assert!(part("tool_results") > part("history"));
+        assert!(part("summary") > part("history"));
+        assert_eq!(part("system"), 0);
+        assert_eq!(part("attachments"), 0);
+    }
+
+    #[test]
+    fn a_tool_report_is_named_by_the_request_it_answers_and_forgotten_after_its_work() {
+        remember_tool(9_001, "call-a", "read");
+        assert_eq!(take_tool(9_001, "call-a"), "read");
+        assert_eq!(take_tool(9_001, "call-a"), "unknown");
+        remember_tool(9_001, "call-b", "bash");
+        forget_tools(9_001);
+        assert_eq!(take_tool(9_001, "call-b"), "unknown");
+    }
 
     fn list(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|entry| entry.to_string()).collect()

@@ -80,3 +80,28 @@ where
 {
     iced::Task::perform(async move { f() }, map)
 }
+
+/// Percent-encodes a query or path value (model ids carry slashes).
+pub fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enc;
+
+    #[test]
+    fn enc_escapes_model_ids() {
+        assert_eq!(
+            enc("anthropic/claude-haiku-5-5"),
+            "anthropic%2Fclaude-haiku-5-5"
+        );
+    }
+}

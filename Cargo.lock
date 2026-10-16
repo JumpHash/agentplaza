@@ -83,6 +83,8 @@ version = "0.1.0"
 dependencies = [
  "apz-http",
  "apz-ide",
+ "apz-metrics",
+ "apz-metrics-view",
  "apz-os",
  "apz-rich",
  "apz-setup",
@@ -108,6 +110,8 @@ dependencies = [
  "apz-engine",
  "apz-http",
  "apz-ide",
+ "apz-metrics",
+ "apz-metrics-view",
  "apz-os",
  "apz-plaza",
  "apz-prompt",
@@ -307,6 +311,7 @@ dependencies = [
  "apz-http",
  "apz-ide",
  "apz-metrics",
+ "apz-metrics-view",
  "apz-os",
  "apz-plaza",
  "apz-prompt",
@@ -514,6 +519,8 @@ dependencies = [
  "apz-http",
  "apz-os",
  "apz-trust",
+ "base64 0.22.1",
+ "flate2",
  "rcgen",
  "serde",
  "serde_json",
@@ -522,6 +529,21 @@ dependencies = [
 [[package]]
 name = "apz-metrics"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apz-metrics-view"
+version = "0.1.0"
+dependencies = [
+ "apz-metrics",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "apz-ops"
@@ -4808,6 +4830,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sysinfo",
  "vmm",
 ]
 

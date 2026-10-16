@@ -80,6 +80,9 @@ enum Command {
     /// Model usage: what the calls cost over a window, the series, the call log, and the prices.
     #[command(subcommand)]
     Usage(cmd::usage::Cmd),
+    /// Metrics: the groups with the largest values, a metric's series, the overview as it changes, and the alerts.
+    #[command(subcommand)]
+    Metrics(cmd::metrics::Cmd),
     /// The plaza's laws.
     #[command(subcommand)]
     Rules(cmd::rules::Cmd),
@@ -213,6 +216,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Council(c) => cmd::council::run(&ctx, c),
         Command::Treasury(c) => cmd::treasury::run(&ctx, c),
         Command::Usage(c) => cmd::usage::run(&ctx, c),
+        Command::Metrics(c) => cmd::metrics::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
         Command::Sanctions(c) => cmd::sanctions::run(&ctx, c),
         Command::Vault(c) => cmd::vault::run(&ctx, c),

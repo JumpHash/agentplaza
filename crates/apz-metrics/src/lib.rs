@@ -1,341 +1,283 @@
-//! Process-wide counters, gauges and latency histograms for the daemons (apid, noded, vsockd), rendered in the
-//! Prometheus text format for their `/v1/metrics` routes, and one-line timing records on stderr.
+//! The plaza's metrics core, shared by the hub (apid), the node daemon (noded), the node link (apz-link), the
+//! guest harness and the CLI. Pure data and maths: no I/O, no threads, no clocks (callers pass `now_ms`), except
+//! [`prom`].
 //!
-//! Every metric is a `static`: `Counter::new`, `Gauge::new` and `Histogram::new` are `const`, so a module declares
-//! `static WAKES: Counter = Counter::new("apz_wakes_total", "Agent wakes started");` and a route renders the ones it
-//! owns with [`render`]. Nothing allocates on the hot path: a record is a few relaxed atomic adds.
-//!
-//! A timing record is one stderr line, `timing op=<op> id=<id> total_ms=<n> <phase>_ms=<n> ...`, written by
-//! [`Phases::finish`]. The lifecycle benchmark (`vmctl bench`) and an operator reading the logs join records of one
-//! operation across daemons by `op` and `id`.
+//! * [`catalog`] — every metric the plaza records: id, unit, kind, collection level, scopes, labels, text.
+//! * [`hist`] — fixed log-scale histograms (±2 %), atomic for recording, sparse snapshots that merge exactly.
+//! * [`registry`] — handles registered once (counter, gauge, histogram); recording is one atomic operation;
+//!   a hard cap per entity kind folds the overflow into an `other` series.
+//! * [`chunk`] — Gorilla-style compression of `(t, v)` points (delta-of-delta times, XOR'd floats).
+//! * [`agg`] — window aggregates (min, max, sum, count, last, histogram) and the in-memory rollup that closes
+//!   10 s, 1 min and 1 h windows as samples arrive.
+//! * [`query`] — tier choice, bucketing, reducers (sum, avg, rate, percentiles) and LTTB downsampling.
+//! * [`wire`] — the node → hub batch: delta-encoded columns with skips for unchanged values.
+//! * [`alerts`] — rules, the ok → pending → firing → resolved tracker, service levels.
+//! * [`forecast`] — least-squares projections with a p10–p90 band, crossing times, month-end spend.
+//! * [`trace`] — spans, the per-agent ring buffer and the tail sampler.
+//! * [`movers`] — "what moved most" between two windows.
+//! * [`openmetrics`] — the OpenMetrics text exposition of aggregates (catalog labels only).
+//! * [`level`] — collection levels and the budget governor that steps them down and back up.
+//! * [`prom`] — the daemons' static counters, gauges and latency histograms in the Prometheus text format (their
+//!   `GET /v1/metrics`), and the one-line `timing op=…` records on stderr. It keeps its own clock and writes.
 
-use std::fmt::{Display, Write as _};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+#![forbid(unsafe_code)]
 
-/// The upper bounds, in milliseconds, of a [`Histogram`]'s buckets. A last, implicit bucket holds everything above.
-pub const BUCKETS_MS: [u64; 14] = [
-    1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000,
+pub mod agg;
+pub mod alerts;
+pub mod catalog;
+pub mod chunk;
+pub mod forecast;
+pub mod hist;
+pub mod level;
+pub mod movers;
+pub mod openmetrics;
+pub mod prom;
+pub mod query;
+pub mod registry;
+pub mod trace;
+pub mod wire;
+
+use serde::{Deserialize, Serialize};
+
+pub use agg::{Agg, Closed, Rollup, Tier};
+pub use catalog::{CATALOG, MetricDef, MetricKind, Unit};
+pub use hist::{AtomicHist, HistSnapshot};
+pub use level::Level;
+pub use registry::{Counter, Gauge, Hist, Registry, Sample, Value};
+
+/// A point: milliseconds since the Unix epoch, and a value.
+pub type Point = (u64, f64);
+
+/// What a series is about. The hub resolves a scope (a node, a role, a provider…) into the entities under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityKind {
+    Global,
+    Node,
+    Run,
+    Vm,
+    Workstation,
+    Sandbox,
+    Agent,
+    Role,
+    Provider,
+    Model,
+    Tool,
+    Route,
+    Service,
+    Volume,
+    Engine,
+    Hub,
+}
+
+impl EntityKind {
+    /// The scope-id prefix of this kind (`node:n1`, `vm:r12/3`, `agent:4417` …); `global` has no id part.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            EntityKind::Global => "global",
+            EntityKind::Node => "node",
+            EntityKind::Run => "run",
+            EntityKind::Vm => "vm",
+            EntityKind::Workstation => "ws",
+            EntityKind::Sandbox => "sb",
+            EntityKind::Agent => "agent",
+            EntityKind::Role => "role",
+            EntityKind::Provider => "provider",
+            EntityKind::Model => "model",
+            EntityKind::Tool => "tool",
+            EntityKind::Route => "route",
+            EntityKind::Service => "service",
+            EntityKind::Volume => "volume",
+            EntityKind::Engine => "engine",
+            EntityKind::Hub => "hub",
+        }
+    }
+
+    /// The kind of a scope-id prefix, the inverse of [`EntityKind::prefix`].
+    pub fn from_prefix(p: &str) -> Option<EntityKind> {
+        ALL_KINDS.iter().copied().find(|k| k.prefix() == p)
+    }
+}
+
+/// Every kind, in declaration order.
+pub const ALL_KINDS: [EntityKind; 16] = [
+    EntityKind::Global,
+    EntityKind::Node,
+    EntityKind::Run,
+    EntityKind::Vm,
+    EntityKind::Workstation,
+    EntityKind::Sandbox,
+    EntityKind::Agent,
+    EntityKind::Role,
+    EntityKind::Provider,
+    EntityKind::Model,
+    EntityKind::Tool,
+    EntityKind::Route,
+    EntityKind::Service,
+    EntityKind::Volume,
+    EntityKind::Engine,
+    EntityKind::Hub,
 ];
 
-/// Something [`render`] can write.
-pub trait Metric: Sync {
-    /// Appends this metric in the Prometheus text exposition format: `# HELP`, `# TYPE`, then its samples.
-    fn render(&self, out: &mut String);
+/// The most labels a series may carry. Labels come from the catalog, never from request text.
+pub const MAX_LABELS: usize = 2;
+
+/// One series: a metric about one entity, with at most [`MAX_LABELS`] catalog labels (sorted by name).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SeriesKey {
+    pub metric: String,
+    pub kind: EntityKind,
+    pub entity: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<(String, String)>,
 }
 
-/// A monotonically increasing count.
-pub struct Counter {
-    name: &'static str,
-    help: &'static str,
-    value: AtomicU64,
-}
-
-impl Counter {
-    pub const fn new(name: &'static str, help: &'static str) -> Self {
-        Self {
-            name,
-            help,
-            value: AtomicU64::new(0),
+impl SeriesKey {
+    pub fn new(metric: &str, kind: EntityKind, entity: &str) -> SeriesKey {
+        SeriesKey {
+            metric: metric.to_string(),
+            kind,
+            entity: entity.to_string(),
+            labels: Vec::new(),
         }
     }
 
-    pub fn inc(&self) {
-        self.add(1);
-    }
-
-    pub fn add(&self, n: u64) {
-        self.value.fetch_add(n, Ordering::Relaxed);
-    }
-
-    pub fn get(&self) -> u64 {
-        self.value.load(Ordering::Relaxed)
-    }
-}
-
-impl Metric for Counter {
-    fn render(&self, out: &mut String) {
-        let _ = writeln!(out, "# HELP {} {}", self.name, self.help);
-        let _ = writeln!(out, "# TYPE {} counter", self.name);
-        let _ = writeln!(out, "{} {}", self.name, self.get());
-    }
-}
-
-/// A value that goes up and down (sessions open, wakes in flight, spawn queue depth).
-pub struct Gauge {
-    name: &'static str,
-    help: &'static str,
-    value: AtomicI64,
-}
-
-impl Gauge {
-    pub const fn new(name: &'static str, help: &'static str) -> Self {
-        Self {
-            name,
-            help,
-            value: AtomicI64::new(0),
+    /// Adds a label, keeping labels sorted by name; a label past [`MAX_LABELS`] is ignored and an existing
+    /// name is replaced.
+    pub fn label(mut self, name: &str, value: &str) -> SeriesKey {
+        if let Some(l) = self.labels.iter_mut().find(|l| l.0 == name) {
+            l.1 = value.to_string();
+        } else if self.labels.len() < MAX_LABELS {
+            self.labels.push((name.to_string(), value.to_string()));
+            self.labels.sort();
         }
+        self
     }
 
-    pub fn set(&self, v: i64) {
-        self.value.store(v, Ordering::Relaxed);
-    }
-
-    pub fn add(&self, delta: i64) {
-        self.value.fetch_add(delta, Ordering::Relaxed);
-    }
-
-    pub fn get(&self) -> i64 {
-        self.value.load(Ordering::Relaxed)
-    }
-}
-
-impl Metric for Gauge {
-    fn render(&self, out: &mut String) {
-        let _ = writeln!(out, "# HELP {} {}", self.name, self.help);
-        let _ = writeln!(out, "# TYPE {} gauge", self.name);
-        let _ = writeln!(out, "{} {}", self.name, self.get());
-    }
-}
-
-/// A latency histogram in milliseconds over [`BUCKETS_MS`], with a sum and a count, so p50/p95 can be estimated.
-pub struct Histogram {
-    name: &'static str,
-    help: &'static str,
-    /// One count per bucket of `BUCKETS_MS`, plus the overflow bucket last (not cumulative).
-    counts: [AtomicU64; 15],
-    /// The sum of every observation, in microseconds.
-    sum_us: AtomicU64,
-}
-
-impl Histogram {
-    pub const fn new(name: &'static str, help: &'static str) -> Self {
-        Self {
-            name,
-            help,
-            counts: [const { AtomicU64::new(0) }; 15],
-            sum_us: AtomicU64::new(0),
-        }
-    }
-
-    /// Records one observation.
-    pub fn observe(&self, elapsed: Duration) {
-        let ms = elapsed.as_secs_f64() * 1000.0;
-        let index = BUCKETS_MS
+    /// The value of a label, if set.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.labels
             .iter()
-            .position(|&bound| ms <= bound as f64)
-            .unwrap_or(BUCKETS_MS.len());
-        self.counts[index].fetch_add(1, Ordering::Relaxed);
-        let us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        self.sum_us.fetch_add(us, Ordering::Relaxed);
+            .find(|l| l.0 == name)
+            .map(|l| l.1.as_str())
     }
 
-    /// How many observations were recorded.
-    pub fn count(&self) -> u64 {
-        self.counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+    /// The scope id of the entity (`node:n1`, `agent:4417`, `global`).
+    pub fn scope(&self) -> String {
+        match self.kind {
+            EntityKind::Global => "global".to_string(),
+            k => format!("{}:{}", k.prefix(), self.entity),
+        }
     }
 
-    /// An estimate of quantile `q` (0.0..=1.0) in milliseconds: the upper bound of the bucket the quantile falls in
-    /// (the overflow bucket reports its lower bound). None with no observations.
-    pub fn quantile_ms(&self, q: f64) -> Option<u64> {
-        let total = self.count();
-        if total == 0 {
-            return None;
+    /// A stable one-line text form, used as the storage key: `metric|kind|entity|name=value,name=value`.
+    pub fn id(&self) -> String {
+        let labels: Vec<String> = self
+            .labels
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        format!(
+            "{}|{}|{}|{}",
+            self.metric,
+            self.kind.prefix(),
+            self.entity,
+            labels.join(",")
+        )
+    }
+
+    /// Parses [`SeriesKey::id`].
+    pub fn parse(id: &str) -> Option<SeriesKey> {
+        let mut parts = id.splitn(4, '|');
+        let metric = parts.next()?;
+        let kind = EntityKind::from_prefix(parts.next()?)?;
+        let entity = parts.next()?;
+        let mut key = SeriesKey::new(metric, kind, entity);
+        for pair in parts
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter(|s| !s.is_empty())
+        {
+            let (k, v) = pair.split_once('=')?;
+            key = key.label(k, v);
         }
-        let q = q.clamp(0.0, 1.0);
-        let target = ((q * total as f64).ceil() as u64).max(1);
-        let mut running = 0u64;
-        for (i, count) in self.counts.iter().enumerate() {
-            running += count.load(Ordering::Relaxed);
-            if running >= target {
-                return Some(BUCKETS_MS[i.min(BUCKETS_MS.len() - 1)]);
-            }
-        }
-        Some(BUCKETS_MS[BUCKETS_MS.len() - 1])
+        Some(key)
     }
 }
 
-impl Metric for Histogram {
-    fn render(&self, out: &mut String) {
-        let name = self.name;
-        let counts: [u64; 15] = std::array::from_fn(|i| self.counts[i].load(Ordering::Relaxed));
-        let _ = writeln!(out, "# HELP {} {}", name, self.help);
-        let _ = writeln!(out, "# TYPE {name} histogram");
-        let mut cumulative = 0u64;
-        for (bound, count) in BUCKETS_MS.iter().zip(counts.iter()) {
-            cumulative += *count;
-            let le = *bound as f64 / 1000.0;
-            let _ = writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}");
-        }
-        let total: u64 = counts.iter().sum();
-        let sum_s = self.sum_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {total}");
-        let _ = writeln!(out, "{name}_sum {sum_s}");
-        let _ = writeln!(out, "{name}_count {total}");
+/// Something that happened, with how long it took when that is the point of it: a VM boot, a wake (with its
+/// restore and harness-ready parts), a compaction, a scaling decision, an alert change, a release.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    pub t_ms: u64,
+    /// One of [`EVENT_KINDS`].
+    pub kind: String,
+    pub entity_kind: EntityKind,
+    pub entity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    /// One plain line for people: "ready in 412 ms (restore 160 ms)".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    /// Named parts of the duration or numbers that go with it: `restore_ms`, `ready_ms`, `before`, `after`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<(String, f64)>,
+}
+
+impl Event {
+    pub fn part(&self, name: &str) -> Option<f64> {
+        self.parts.iter().find(|p| p.0 == name).map(|p| p.1)
     }
 }
 
-/// Renders `metrics` in order, in the Prometheus text exposition format (version 0.0.4).
-pub fn render(metrics: &[&dyn Metric]) -> String {
-    let mut out = String::new();
-    for metric in metrics {
-        metric.render(&mut out);
-    }
-    out
-}
+/// The event kinds. Lifecycle: boot, resume, wake, sleep, pause, snapshot, fork, sandbox_create, move, exit.
+/// Work: compaction, error, scale, law, approval. Alerts: alert. Annotations: release, law_change, model_switch,
+/// setting.
+pub const EVENT_KINDS: &[&str] = &[
+    "boot",
+    "resume",
+    "wake",
+    "sleep",
+    "pause",
+    "snapshot",
+    "fork",
+    "sandbox_create",
+    "move",
+    "exit",
+    "compaction",
+    "error",
+    "scale",
+    "law",
+    "approval",
+    "alert",
+    "release",
+    "law_change",
+    "model_switch",
+    "setting",
+];
 
-/// The phases of one operation (a wake, a sleep, a fork), timed from its start. [`Phases::finish`] writes them as
-/// one `timing` line on stderr and, when given, records the total in a histogram.
-pub struct Phases {
-    op: &'static str,
-    id: String,
-    start: Instant,
-    last: Instant,
-    marks: Vec<(&'static str, Duration)>,
-}
-
-impl Phases {
-    /// Starts timing operation `op` (`wake`, `sleep`, `fork`, ...) on `id` (a CID, a run and VM, ...).
-    pub fn start(op: &'static str, id: impl Display) -> Self {
-        let now = Instant::now();
-        Self {
-            op,
-            id: id.to_string(),
-            start: now,
-            last: now,
-            marks: Vec::new(),
-        }
-    }
-
-    /// Ends the current phase as `name`: its time is from the previous mark (or the start) to now.
-    pub fn mark(&mut self, name: &'static str) {
-        let now = Instant::now();
-        self.marks.push((name, now - self.last));
-        self.last = now;
-    }
-
-    /// The time since the start.
-    pub fn elapsed(&self) -> Duration {
-        self.start.elapsed()
-    }
-
-    /// The line [`finish`](Self::finish) writes, without writing it: `timing op=<op> id=<id> total_ms=<t>` then
-    /// `<phase>_ms=<n>` for each mark in order, then each `extra` as `key=value`. Milliseconds have one decimal.
-    pub fn line(&self, extra: &[(&str, &dyn Display)]) -> String {
-        let mut line = format!(
-            "timing op={} id={} total_ms={:.1}",
-            self.op,
-            self.id,
-            millis(self.elapsed())
-        );
-        for (name, duration) in &self.marks {
-            let _ = write!(line, " {name}_ms={:.1}", millis(*duration));
-        }
-        for (key, value) in extra {
-            let _ = write!(line, " {key}={value}");
-        }
-        line
-    }
-
-    /// Writes [`line`](Self::line) to stderr and records the total in `total` when given.
-    pub fn finish(self, total: Option<&Histogram>, extra: &[(&str, &dyn Display)]) {
-        eprintln!("{}", self.line(extra));
-        if let Some(total) = total {
-            total.observe(self.elapsed());
-        }
-    }
-}
-
-fn millis(d: Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
-}
+/// The event kinds drawn as annotations on every time chart.
+pub const ANNOTATION_KINDS: &[&str] = &["release", "law_change", "model_switch", "setting"];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn render_one(metric: &dyn Metric) -> String {
-        let mut out = String::new();
-        metric.render(&mut out);
-        out
-    }
-
     #[test]
-    fn counter_renders_exactly() {
-        let c = Counter::new("apz_wakes_total", "Agent wakes started");
-        c.inc();
-        c.add(2);
-        assert_eq!(c.get(), 3);
+    fn a_series_key_round_trips_through_its_id_and_keeps_two_sorted_labels() {
+        let k = SeriesKey::new("llm.ttft_ms", EntityKind::Agent, "4417")
+            .label("provider", "anthropic")
+            .label("model", "opus")
+            .label("extra", "ignored");
         assert_eq!(
-            render_one(&c),
-            "# HELP apz_wakes_total Agent wakes started\n# TYPE apz_wakes_total counter\napz_wakes_total 3\n"
+            k.labels,
+            vec![
+                ("model".into(), "opus".into()),
+                ("provider".into(), "anthropic".into())
+            ]
         );
-    }
-
-    #[test]
-    fn gauge_renders_exactly() {
-        let g = Gauge::new("apz_sessions", "Open sessions");
-        g.set(5);
-        g.add(-2);
-        assert_eq!(g.get(), 3);
-        assert_eq!(
-            render_one(&g),
-            "# HELP apz_sessions Open sessions\n# TYPE apz_sessions gauge\napz_sessions 3\n"
-        );
-    }
-
-    #[test]
-    fn histogram_places_observation_in_its_bucket() {
-        let h = Histogram::new("apz_wake_seconds", "Wake latency");
-        h.observe(Duration::from_millis(3));
-        assert_eq!(h.count(), 1);
-        let text = render_one(&h);
-        assert!(text.starts_with(
-            "# HELP apz_wake_seconds Wake latency\n# TYPE apz_wake_seconds histogram\n"
-        ));
-        // Cumulative: nothing at or below 2 ms, the observation from le=0.005 (5 ms) on.
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"0.001\"} 0\n"));
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"0.002\"} 0\n"));
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"0.005\"} 1\n"));
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"0.01\"} 1\n"));
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"30\"} 1\n"));
-        assert!(text.contains("apz_wake_seconds_bucket{le=\"+Inf\"} 1\n"));
-        assert!(text.contains("apz_wake_seconds_sum 0.003\n"));
-        assert!(text.contains("apz_wake_seconds_count 1\n"));
-    }
-
-    #[test]
-    fn histogram_overflow_counts_only_in_inf() {
-        let h = Histogram::new("apz_slow_seconds", "Slow");
-        h.observe(Duration::from_secs(60));
-        let text = render_one(&h);
-        assert!(text.contains("apz_slow_seconds_bucket{le=\"30\"} 0\n"));
-        assert!(text.contains("apz_slow_seconds_bucket{le=\"+Inf\"} 1\n"));
-        assert!(text.contains("apz_slow_seconds_count 1\n"));
-    }
-
-    #[test]
-    fn quantiles_follow_bucket_bounds() {
-        let h = Histogram::new("apz_q_seconds", "Quantiles");
-        assert_eq!(h.quantile_ms(0.5), None);
-        for _ in 0..100 {
-            h.observe(Duration::from_millis(4));
-        }
-        h.observe(Duration::from_millis(900));
-        assert_eq!(h.count(), 101);
-        assert_eq!(h.quantile_ms(0.5), Some(5));
-        assert!(h.quantile_ms(0.99).unwrap() <= 1000);
-        assert_eq!(h.quantile_ms(1.0), Some(1000));
-    }
-
-    #[test]
-    fn timing_line_has_marks_and_extras() {
-        let mut p = Phases::start("wake", 7);
-        p.mark("spawn");
-        let extra: [(&str, &dyn Display); 1] = [("cold", &false)];
-        let line = p.line(&extra);
-        assert!(line.starts_with("timing op=wake id=7 total_ms="), "{line}");
-        assert!(line.contains("spawn_ms="), "{line}");
-        assert!(line.contains("cold=false"), "{line}");
+        assert_eq!(SeriesKey::parse(&k.id()), Some(k.clone()));
+        assert_eq!(k.scope(), "agent:4417");
     }
 }

@@ -253,6 +253,8 @@ fn guest_cmdline(
 struct InProcessBalloon {
     shared: crate::devices::virtio::balloon::SharedBalloon,
     max_mib: u32,
+    /// The block counters of the VM's volumes (the workspace and the data volumes), summed into its I/O totals.
+    block_counters: Vec<Arc<crate::devices::virtio::block::device::BlockCounters>>,
 }
 
 impl crate::spawner::MemoryControl for InProcessBalloon {
@@ -271,6 +273,20 @@ impl crate::spawner::MemoryControl for InProcessBalloon {
             free_mib: stats.free_mib,
             available_mib: stats.available_mib,
         }
+    }
+
+    fn io_stats(&self) -> Option<crate::spawner::IoStats> {
+        let mut io = crate::spawner::IoStats::default();
+        for counters in &self.block_counters {
+            let totals = counters.totals();
+            io.blk_read_bytes += totals.read_bytes;
+            io.blk_write_bytes += totals.write_bytes;
+            io.blk_ops += totals.requests;
+        }
+        let (rx, tx) = crate::devices::virtio::vsock::metrics::byte_totals();
+        io.vsock_rx_bytes = rx;
+        io.vsock_tx_bytes = tx;
+        Some(io)
     }
 }
 
@@ -1235,6 +1251,7 @@ mod x86_64 {
         // port (invariant 3). The device opens the image read-write here, so a
         // path that does not exist (or is not writable) fails the boot with the
         // path in the error, before the guest is started.
+        let mut block_counters = Vec::new();
         let workspace = match &spec.workspace {
             Some(image) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
@@ -1243,6 +1260,7 @@ mod x86_64 {
                 let device = VirtioBlock::new(image)
                     .map_err(VirtioError::from)
                     .map_err(BootError::Virtio)?;
+                block_counters.push(device.counters());
                 let transport = Arc::new(Mutex::new(super::transport(
                     Box::new(BlockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
@@ -1268,6 +1286,7 @@ mod x86_64 {
             let device = VirtioBlock::new_read_only(&volume.image, &volume.name)
                 .map_err(VirtioError::from)
                 .map_err(BootError::Virtio)?;
+            block_counters.push(device.counters());
             let transport = Arc::new(Mutex::new(super::transport(
                 Box::new(BlockMmioDevice::new(device)),
                 vm.guest_memory().clone(),
@@ -1303,7 +1322,11 @@ mod x86_64 {
                     .insert(transport.clone(), BALLOON_MMIO_START, MMIO_LEN)?;
                 let max_mib = u32::try_from(spec.memory_mib).unwrap_or(u32::MAX);
                 shared.set_usable_mib(max_mib, usable);
-                runtime.set_memory_control(Arc::new(super::InProcessBalloon { shared, max_mib }));
+                runtime.set_memory_control(Arc::new(super::InProcessBalloon {
+                    shared,
+                    max_mib,
+                    block_counters: block_counters.clone(),
+                }));
                 Some(transport)
             }
             None => None,
@@ -1770,6 +1793,7 @@ mod aarch64 {
         // behind it — the only writable queue in this port (invariant 3). The
         // device opens the image read-write here, so a path that does not exist
         // (or is not writable) fails the boot with the path in the error.
+        let mut block_counters = Vec::new();
         let workspace = match &spec.workspace {
             Some(image) => {
                 let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
@@ -1778,6 +1802,7 @@ mod aarch64 {
                 let device = VirtioBlock::new(image)
                     .map_err(VirtioError::from)
                     .map_err(BootError::Virtio)?;
+                block_counters.push(device.counters());
                 let transport = Arc::new(Mutex::new(super::transport(
                     Box::new(BlockMmioDevice::new(device)),
                     vm.guest_memory().clone(),
@@ -1803,6 +1828,7 @@ mod aarch64 {
             let device = VirtioBlock::new_read_only(&volume.image, &volume.name)
                 .map_err(VirtioError::from)
                 .map_err(BootError::Virtio)?;
+            block_counters.push(device.counters());
             let transport = Arc::new(Mutex::new(super::transport(
                 Box::new(BlockMmioDevice::new(device)),
                 vm.guest_memory().clone(),

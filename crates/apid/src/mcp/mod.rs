@@ -28,6 +28,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
+use apz_metrics::{EntityKind, SeriesKey};
 use apz_proto::chat::ToolSpec;
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
@@ -358,6 +359,7 @@ pub fn call_for_agent(
         Ok(output) => output,
         Err(why) => {
             record(false, why.len());
+            observe(app, agent.cid, &entry.server, &entry.tool, ms as f64, false);
             return Err(why);
         }
     };
@@ -365,6 +367,14 @@ pub fn call_for_agent(
         app.mcp.store.set_tools(&entry.server, tools.clone());
     }
     record(!output.is_error, output.text.len());
+    observe(
+        app,
+        agent.cid,
+        &entry.server,
+        &entry.tool,
+        ms as f64,
+        !output.is_error,
+    );
     let author = if agent.name.is_empty() {
         agent.role.clone()
     } else {
@@ -388,6 +398,26 @@ pub fn call_for_agent(
         text.push_str(&format!("\nSaved as file {}. Fetch it into your VM with download from http://plaza.gateway/files/{}", stored.id, stored.id));
     }
     if output.is_error { Err(text) } else { Ok(text) }
+}
+
+/// Records one MCP call: the tool's span and `tool.*` series (as `mcp:<server>.<tool>`), and the
+/// server's `ext.latency_ms`, with `ext.errors` when the call failed.
+fn observe(app: &App, cid: u64, server: &str, tool: &str, ms: f64, ok: bool) {
+    let registry = &app.metrics.registry;
+    let entity = format!("MCP: {server}");
+    registry
+        .hist(SeriesKey::new(
+            "ext.latency_ms",
+            EntityKind::Service,
+            &entity,
+        ))
+        .record(ms);
+    if !ok {
+        registry
+            .counter(SeriesKey::new("ext.errors", EntityKind::Service, &entity))
+            .inc();
+    }
+    crate::metrics::collect::tool_call(app, cid, &format!("mcp:{server}.{tool}"), ms, ok);
 }
 
 /// A file extension for the image and audio types MCP servers return.

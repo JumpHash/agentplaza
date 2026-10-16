@@ -1,0 +1,12 @@
+[package]
+name = "apz-metrics-view"
+description = "The Metrics view model: the panels the hub composes for a scope and tab, and the formatting rules both consoles use. The desktop deserializes these types; the web mirrors them (apps/web/src/metrics/model.ts) and checks its formatter against tests/format_golden.json."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-metrics = { path = "../apz-metrics" }
+serde.workspace = true
+serde_json.workspace = true

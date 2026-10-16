@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
+use apz_metrics::{EntityKind, Registry, SeriesKey};
 use apz_plaza::council;
 use jhrl::Program;
 use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
@@ -943,6 +944,17 @@ impl Laws {
             }
         }
     }
+}
+
+/// Counts one infraction of `law` by agent `cid` on the `law.infractions` counter. The laws hold no
+/// handle on the metrics registry, so the caller that has one passes it in.
+pub fn count_infraction(registry: &Registry, cid: u64, law: &str) {
+    registry
+        .counter(
+            SeriesKey::new("law.infractions", EntityKind::Agent, &cid.to_string())
+                .label("law", law),
+        )
+        .inc();
 }
 
 /// Locks a mutex, ignoring poisoning: the guarded data is always left whole by its writers.

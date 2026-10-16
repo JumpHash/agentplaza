@@ -18,7 +18,7 @@ use iced::{
 use serde_json::{Value, json};
 
 use super::Id;
-use super::usage::usd;
+use crate::console::ui::usd;
 use crate::console::{
     Ctx, chart,
     client::{self, Client},
@@ -142,6 +142,8 @@ pub struct State {
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
+    /// Opens Metrics on Tokens & spend, where model costs are.
+    GoMetricsTokens,
     Loaded(Result<Snapshot, String>),
     Range(Range),
     Mode(Mode),
@@ -324,6 +326,10 @@ pub struct JournalFilter {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::GoMetricsTokens => {
+            super::metrics::ask_tab("tokens");
+            Some(Id::Metrics)
+        }
         _ => None,
     }
 }
@@ -432,7 +438,7 @@ pub fn journal_path(filter: &JournalFilter, before: Option<i64>) -> String {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::GoMetricsTokens => Task::none(),
         Msg::Frame => {
             let now = Instant::now();
             state
@@ -798,7 +804,7 @@ fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
             "Real model cost",
             usd(cost),
             format!("≈ {} credits metered", money(cost / CREDIT_USD)),
-            Some(Msg::Go(Id::Usage)),
+            Some(Msg::GoMetricsTokens),
         ),
         (
             "Treasury",

@@ -26,6 +26,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::pal::eventfd::EventFd;
 use vm_memory::GuestMemoryBackend;
@@ -151,6 +153,37 @@ impl ConfigSpace {
     }
 }
 
+/// What a volume's guest has moved through its device, counted as the requests are served. The VM's memory
+/// control shares these, so the node can read them while the VM runs.
+#[derive(Debug, Default)]
+pub struct BlockCounters {
+    read_bytes: AtomicU64,
+    write_bytes: AtomicU64,
+    requests: AtomicU64,
+}
+
+/// A snapshot of a [`BlockCounters`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BlockTotals {
+    /// Bytes the guest read from the volume.
+    pub read_bytes: u64,
+    /// Bytes the guest wrote to the volume.
+    pub write_bytes: u64,
+    /// Requests the driver made, including flushes and `GET_ID`.
+    pub requests: u64,
+}
+
+impl BlockCounters {
+    /// The totals so far.
+    pub fn totals(&self) -> BlockTotals {
+        BlockTotals {
+            read_bytes: self.read_bytes.load(Ordering::Relaxed),
+            write_bytes: self.write_bytes.load(Ordering::Relaxed),
+            requests: self.requests.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// The device's backing file and the properties the driver is told about.
 #[derive(Debug)]
 pub struct DiskProperties {
@@ -170,6 +203,8 @@ pub struct DiskProperties {
     /// design (plaza invariant 2: nothing about the host or the node reaches a
     /// guest that the operator did not deliberately put there).
     image_id: [u8; VIRTIO_BLK_ID_BYTES as usize],
+    /// What the guest has moved through this volume (see [`BlockCounters`]).
+    counters: Arc<BlockCounters>,
 }
 
 impl DiskProperties {
@@ -208,6 +243,7 @@ impl DiskProperties {
             nsectors: size >> SECTOR_SHIFT,
             read_only,
             image_id,
+            counters: Arc::new(BlockCounters::default()),
         })
     }
 
@@ -256,6 +292,9 @@ impl DiskProperties {
             self.file.read_exact(&mut buffer)?;
             slice.copy_from(&buffer);
         }
+        self.counters
+            .read_bytes
+            .fetch_add(u64::from(count), Ordering::Relaxed);
         Ok(count)
     }
 
@@ -280,6 +319,9 @@ impl DiskProperties {
             slice.copy_to(&mut buffer[..]);
             self.file.write_all(&buffer)?;
         }
+        self.counters
+            .write_bytes
+            .fetch_add(u64::from(count), Ordering::Relaxed);
         Ok(count)
     }
 
@@ -360,6 +402,11 @@ impl VirtioBlock {
     /// restore can refuse another volume (see [`DiskProperties::image_id`]).
     pub(super) fn image_id(&self) -> &[u8; VIRTIO_BLK_ID_BYTES as usize] {
         self.disk.image_id()
+    }
+
+    /// The counters of what the guest has moved through this device (see [`BlockCounters`]).
+    pub fn counters(&self) -> Arc<BlockCounters> {
+        Arc::clone(&self.disk.counters)
     }
 
     /// Builds the device over an opened volume, offering `avail_features`.
@@ -478,7 +525,10 @@ impl VirtioBlock {
         let mut used_any = false;
         while let Some(head) = queue.pop_or_enable_notification()? {
             let finished = match Request::parse(&head, guest_mem, disk.nsectors()) {
-                Ok(request) => request.process(disk, head.index, guest_mem),
+                Ok(request) => {
+                    disk.counters.requests.fetch_add(1, Ordering::Relaxed);
+                    request.process(disk, head.index, guest_mem)
+                }
                 Err(err) => {
                     eprintln!(
                         "warning: virtio-block: rejecting the driver's descriptor chain: {err}"
@@ -627,6 +677,60 @@ mod tests {
             vq.used_elem(0),
             (0, 1024 + 1),
             "the used length is the data plus the status byte"
+        );
+    }
+
+    /// A read request moves the read counters by the bytes it returned, and counts as one request.
+    #[test]
+    fn a_read_request_moves_the_block_read_counters() {
+        let (_file, mut block) = volume(&[9u8; 4096]);
+        let counters = block.counters();
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queue = vq.create_queue();
+        activate(&mut block, &mem);
+
+        let chain = RequestDescriptorChain::new(&vq);
+        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_IN, 0));
+        chain.set_data_len(1024);
+        chain.publish();
+        block.process_queue().expect("a well-formed ring drains");
+
+        assert_eq!(
+            counters.totals(),
+            BlockTotals {
+                read_bytes: 1024,
+                write_bytes: 0,
+                requests: 1,
+            }
+        );
+    }
+
+    /// A write request moves the write counters by the bytes it stored, and counts as one request.
+    #[test]
+    fn a_write_request_moves_the_block_write_counters() {
+        let (_file, mut block) = volume(&[0u8; 4096]);
+        let counters = block.counters();
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queue = vq.create_queue();
+        activate(&mut block, &mem);
+
+        let chain = RequestDescriptorChain::new(&vq);
+        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_OUT, 2));
+        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+        chain.set_data_len(512);
+        chain.write_data(&[5u8; 512]);
+        chain.publish();
+        block.process_queue().expect("a well-formed ring drains");
+
+        assert_eq!(
+            counters.totals(),
+            BlockTotals {
+                read_bytes: 0,
+                write_bytes: 512,
+                requests: 1,
+            }
         );
     }
 

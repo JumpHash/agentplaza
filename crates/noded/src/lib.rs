@@ -20,6 +20,7 @@
 //! one long-lived, harnessed VM per role. The plaza itself (agents, tasks,
 //! models) lives in `apid`.
 
+mod collect;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
@@ -155,6 +156,8 @@ pub struct Node {
     registry: Registry,
     started_at_ms: u64,
     stats: Arc<stats::Stats>,
+    /// What this node records for the hub (metrics.rs), filled by the collectors (collect.rs).
+    pub metrics: metrics::NodeMetrics,
     probed: Probed,
     /// The fabric addresses and when they were read (see `cached_fabric`).
     fabric: Mutex<Option<(Instant, Vec<String>)>>,
@@ -235,6 +238,7 @@ impl Node {
                 .with_run_cids(config.run_cids),
             started_at_ms: epoch_ms(),
             stats: Arc::new(stats::Stats::new()),
+            metrics: metrics::NodeMetrics::new(),
             probed: probe_host(&apz_os::dirs::state()),
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
@@ -1673,8 +1677,17 @@ impl Server {
         if !internal_token.enabled() {
             println!("noded: no --internal-token-file: the HTTP API takes no token");
         }
+        let vsockd_port = std::env::var("APZ_VSOCKD_HTTP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(19080);
+        collect::point_at_vsockd(vsockd_port, internal_token.header());
         let node = Arc::new(Node::new(config));
         stats::spawn(Arc::clone(&node.stats))?;
+        spawn_metrics(Arc::clone(&node));
+        // VM lifecycle events (boot, wake, sleep, snapshot …) go into the node's metrics for the hub.
+        let events = Arc::clone(&node);
+        registry::set_events(Box::new(move |e| events.metrics.event(e)));
         let (router, serving) = (router(), Arc::clone(&node));
         let http =
             server.spawn(internal_token.guard(move |request| router.handle(&serving, request)))?;
@@ -1736,6 +1749,14 @@ fn router() -> Router<Node> {
             )
         })
         .get("/v1/machine/stats", |node, _, _| machine_stats(node))
+        // Metrics for the hub (crates/noded/src/metrics.rs): the batch the node link takes, and live requests.
+        .get("/v1/metrics/batch", |node, request, _| {
+            metrics_batch(node, request)
+        })
+        .post("/v1/metrics/live", |node, request, _| {
+            metrics_live(node, request)
+        })
+        // The node's Prometheus metrics (fixed statics for scraping and the lifecycle benchmark).
         .get("/v1/metrics", |_, _, _| {
             Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
         })
@@ -3032,5 +3053,53 @@ mod accelerator_tests {
             ("hello", "err")
         );
         assert!(command_within("sh", &["-c", "sleep 5"], Duration::from_millis(100)).is_none());
+    }
+}
+
+/// Runs the collectors and scrapes the node's metrics every 10 s (2 s while the hub streams this node live).
+fn spawn_metrics(node: Arc<Node>) {
+    let _ = std::thread::Builder::new()
+        .name("noded-metrics".into())
+        .spawn(move || {
+            loop {
+                let now = metrics_now_ms();
+                collect::sample(&node, &node.metrics, now);
+                node.metrics.tick(now);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    node.metrics.interval_ms(now),
+                ));
+            }
+        });
+}
+
+fn metrics_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `GET /v1/metrics/batch[?live=1]`: what was collected since the last batch; with `live=1`, 204 unless the hub is
+/// streaming this node.
+fn metrics_batch(node: &Node, request: &apz_http::Request) -> Response {
+    let now = metrics_now_ms();
+    if request.query_param("live") == Some("1") && !node.metrics.is_live(now) {
+        return Response::new(204, "text/plain", String::new());
+    }
+    Response::json(200, &node.metrics.batch(now))
+}
+
+/// `POST /v1/metrics/live {"until_ms": …}`: stream until then.
+fn metrics_live(node: &Node, request: &apz_http::Request) -> Response {
+    match request
+        .json::<serde_json::Value>()
+        .ok()
+        .and_then(|v| v["until_ms"].as_u64())
+    {
+        Some(until) => {
+            node.metrics.live(until);
+            Response::json(200, &serde_json::json!({ "ok": true }))
+        }
+        None => Response::error(400, "until_ms is required"),
     }
 }

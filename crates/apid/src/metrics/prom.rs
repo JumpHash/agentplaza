@@ -1,9 +1,10 @@
-//! The hub's metrics, on `GET /v1/metrics` in the Prometheus text format (behind the owner's auth, like every route).
+//! The hub's Prometheus metrics, on `GET /v1/metrics` in the Prometheus text format (behind the owner's auth, like
+//! every route): fixed statics for scraping and the lifecycle benchmark, beside the series the Metrics view reads.
 //! Wakes and sleeps are timed end to end here; the node times its own part (noded's `/v1/metrics`), and each wake also
 //! writes one `timing op=wake` line on stderr (see `crate::sleep`).
 
 use apz_http::{Response, Router};
-use apz_metrics::{Counter, Gauge, Histogram, Metric};
+use apz_metrics::prom::{self, Counter, Gauge, Histogram, Metric};
 
 use crate::agents::Status;
 use crate::state::App;
@@ -51,7 +52,7 @@ pub static UNDOZE: Histogram = Histogram::new(
 /// `GET /v1/metrics`.
 pub fn routes(router: Router<App>) -> Router<App> {
     router.get("/v1/metrics", |app, _, _| {
-        let mut text = apz_metrics::render(&[
+        let mut text = prom::render(&[
             &WAKES as &dyn Metric,
             &WAKES_REFUSED,
             &WAKES_IN_FLIGHT,

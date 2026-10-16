@@ -1,0 +1,57 @@
+/* The chart palette and the chart classes of ui/chart.ts, which draws the console's charts (Metrics, Treasury, the
+   Lab). The Metrics view's own charts use the same palette. */
+:root {
+  --chart-1: #2d5f8a;
+  --chart-2: #2e6a40;
+  --chart-3: #85640e;
+  --chart-4: #6b4a8a;
+  --chart-5: #1f7a7a;
+  --chart-6: #7a5c3a;
+  --chart-7: #4c544d;
+  --chart-8: #a3182b;
+  --chart-other: #9aa39a;
+  --chart-bg: #f4f6f1;
+  --chart-grid: rgba(21, 25, 22, 0.12);
+  --chart-axis: #7d867e;
+}
+:root:not([data-theme="light"]) {
+  --chart-1: #6cc8ff;
+  --chart-2: #5fe0a0;
+  --chart-3: #e2bd5a;
+  --chart-4: #b79cf0;
+  --chart-5: #5ad6d6;
+  --chart-6: #d9a877;
+  --chart-7: #a3adc4;
+  --chart-8: #ff7c86;
+  --chart-other: #6c7790;
+  --chart-bg: #111726;
+  --chart-grid: rgba(227, 232, 244, 0.1);
+  --chart-axis: #6c7790;
+}
+:root[data-theme="dark"] {
+  --chart-1: #6cc8ff;
+  --chart-2: #5fe0a0;
+  --chart-3: #e2bd5a;
+  --chart-4: #b79cf0;
+  --chart-5: #5ad6d6;
+  --chart-6: #d9a877;
+  --chart-7: #a3adc4;
+  --chart-8: #ff7c86;
+  --chart-other: #6c7790;
+  --chart-bg: #111726;
+  --chart-grid: rgba(227, 232, 244, 0.1);
+  --chart-axis: #6c7790;
+}
+.chart { position: relative; font: 11px var(--sans); }
+.chart .chart-svg { display: block; width: 100%; overflow: visible; }
+.chart text { font: 11px var(--sans); fill: var(--ink-3); }
+.chart-cross { stroke: var(--ink-2); stroke-width: 1px; stroke-dasharray: 3 3; }
+.chart-tip {
+  position: absolute; top: 0; left: 0; z-index: 2; pointer-events: none; background: var(--sheet);
+  border: 1px solid var(--ink); box-shadow: var(--print); padding: 8px 10px; min-width: 180px; max-width: 280px;
+  font: 500 12px var(--sans); color: var(--ink);
+}
+.chart-tip strong { display: block; margin-bottom: 4px; font-weight: 700; }
+@media (prefers-reduced-motion: reduce) {
+  .chart-tip { transition: none; }
+}

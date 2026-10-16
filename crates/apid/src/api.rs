@@ -94,7 +94,7 @@ pub fn router() -> Router<App> {
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
     let router = crate::sleep::routes(router);
-    let router = crate::metrics::routes(router);
+    let router = crate::metrics::prom::routes(router);
     let router = crate::placement::routes(router);
     let router = crate::vm_snapshots::routes(router);
     let router = crate::e2b::routes(router);
@@ -105,6 +105,7 @@ pub fn router() -> Router<App> {
     let router = crate::stations::routes(router);
     let router = crate::prices::routes(router);
     let router = crate::usage::routes(router);
+    let router = crate::metrics::routes::routes(router);
     let router = crate::fleet::routes(router);
     let router = crate::node_link::routes(router);
     let router = crate::hub_auth::routes(router);

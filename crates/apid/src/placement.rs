@@ -503,6 +503,19 @@ pub fn move_agent(app: &App, cid: u64, target: &str) -> Result<Moved, Response> 
             &format!("moved to {target} but the agent did not wake there: {err}"),
         ));
     }
+    crate::metrics::ingest::record_event(
+        &app.metrics,
+        apz_metrics::Event {
+            t_ms: apz_plaza::now_ms(),
+            kind: "move".to_string(),
+            entity_kind: apz_metrics::EntityKind::Agent,
+            entity: cid.to_string(),
+            duration_ms: Some(ms as f64),
+            detail: format!("moved {from} → {target} in {ms} ms"),
+            parts: Vec::new(),
+        },
+        target,
+    );
     app.transcripts.record(
         &app.bus,
         cid,

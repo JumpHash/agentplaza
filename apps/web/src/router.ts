@@ -19,7 +19,15 @@ export function go(screen: string, ...params: (string | number)[]): void {
   location.hash = href(screen, ...params);
 }
 
+/** Screens that moved: an old hash is rewritten to its new place before the screen mounts. */
+const MOVED: Record<string, string> = { usage: '#/metrics?tab=tokens' };
+
 export function onRoute(fn: (route: Route) => void): void {
-  window.addEventListener('hashchange', () => fn(parse(location.hash)));
-  fn(parse(location.hash));
+  const route = (): void => {
+    const to = MOVED[parse(location.hash).screen];
+    if (to) history.replaceState(null, '', to);
+    fn(parse(location.hash));
+  };
+  window.addEventListener('hashchange', route);
+  route();
 }

@@ -3,6 +3,7 @@
 
 import type { FileChange, Stats, TreePage, WorkspaceKind } from './ide/types';
 import type { Ref } from './ui/rich';
+import type { Around as MetricsAround, LiveLease, MetricDef, MetricsSettings, Rule as MetricsRule, Saved as MetricsSaved, ScopeNode as MetricsScopeNode, Table as MetricsTable, View as MetricsView, ViewQuery as MetricsQuery } from './metrics/model';
 
 export class ApiError extends Error {
   /** The response's JSON body when it had one (a 409 carries the server's `current_hash`). */
@@ -847,22 +848,33 @@ export const api = {
 
   /** The model-call ledger, totalled per model, agent, role and provider over [from, to) unix ms (default: the last 30 days). */
   usageSummary: (from?: number, to?: number) => get<UsageSummary>(`/v1/usage/summary${query({ from, to })}`),
-  /** Buckets of the window, empty ones included. `by` picks the grouping key. */
-  usageSeries: (from: number, to: number, bucket: UsageBucket, by: UsageGroup) => get<UsageSeries>(`/v1/usage/series${query({ from, to, bucket, by })}`),
-  /** Calls newest first. Pass the previous page's `next_before` to load older calls. */
-  usageCalls: (q: { before?: number; limit?: number; model?: string; cid?: number }) => get<UsageCallsPage>(`/v1/usage/calls${query({ ...q })}`),
-  /** Every known model price (USD per million tokens). Large: prefer `price` for the few models in use. */
-  prices: () => get<PricesView>('/v1/prices'),
+  // Metrics (crates/apid/src/metrics/routes.rs): composed views, the scope tree, what changed, live leases, the owner's
+  // pins and settings, alert rules. The types are in metrics/model.ts.
+  metricsView: (q: MetricsQuery) => get<MetricsView>(`/v1/metrics/view${metricsQuery(q)}`),
+  metricsAround: (q: MetricsQuery, t: number) => get<MetricsAround>(`/v1/metrics/around${metricsQuery(q)}&t=${t}`),
+  metricsScopes: (fixture = false) => get<MetricsScopeNode[]>(`/v1/metrics/scopes${fixture ? '?fixture=1' : ''}`),
+  metricsCatalog: () => get<MetricDef[]>('/v1/metrics/catalog'),
+  metricsLive: (lease: LiveLease) => post<{ ok: boolean }>('/v1/metrics/live', lease),
+  metricsOpen: (cid: number) => post<{ ok: boolean }>(`/v1/metrics/open/${cid}`),
+  metricsSaved: () => get<MetricsSaved>('/v1/metrics/dashboards'),
+  metricsSave: (s: MetricsSaved) => put<MetricsSaved>('/v1/metrics/dashboards', s),
+  metricsSettings: () => get<MetricsSettings>('/v1/metrics/settings'),
+  metricsPutSettings: (s: MetricsSettings) => put<MetricsSettings & { openmetrics_token?: string }>('/v1/metrics/settings', s),
+  metricsPutRule: (r: MetricsRule) => put<MetricsRule>('/v1/metrics/alerts/rules', r),
+  metricsDeleteRule: (id: string) => del<{ ok: boolean }>(`/v1/metrics/alerts/rules/${encodeURIComponent(id)}`),
+  metricsMute: (id: string, until_ms: number) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/mute`, { until_ms }),
+  metricsRuleOn: (id: string, on: boolean) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/on`, { on }),
+  metricsAck: (id: string, subject: string) => post<{ ok: boolean }>(`/v1/metrics/alerts/${encodeURIComponent(id)}/ack`, { subject }),
+  metricsExportUrl: (q: MetricsQuery) => `/v1/metrics/export${metricsQuery(q)}`,
+  /** A panel head button's route (`PanelAction.post`): a POST with no body. */
+  metricsAction: (path: string) => post<unknown>(path),
+  /** The next page of a table (`Table.more`), as a table of rows. */
+  metricsPage: (path: string) => get<MetricsTable>(path),
   /** One model's price. Rejects with an ApiError (404) when no source prices the model. */
   price: (model: string) => get<ModelPrice>(`/v1/prices/${encodeURIComponent(model)}`),
-  /** Fetches the price sources again now. */
-  refreshPrices: () => post<unknown>('/v1/prices/refresh'),
 };
 
 // ---- Usage ledger ----------------------------------------------------------
-
-export type UsageBucket = 'hour' | 'day';
-export type UsageGroup = 'model' | 'agent' | 'role' | 'provider';
 
 /** Token counts and money for a set of calls. `usd` is the provider-reported cost where known, else `est_usd`. */
 export interface UsageTotals {
@@ -876,22 +888,12 @@ export interface UsageSummary {
   /** Models that were called but have no price, so their estimate is zero. */
   unpriced: string[];
 }
-export interface UsagePoint { at_ms: number; groups: Record<string, UsageTotals>; totals: UsageTotals }
-export interface UsageSeries { from_ms: number; to_ms: number; bucket_ms: number; by: UsageGroup; points: UsagePoint[] }
-export interface UsageCall {
-  id: number; at_ms: number; cid: number; role: string; model: string; provider: string;
-  input: number; output: number; cache_read: number; cache_write: number;
-  cost_usd: number | null; est_usd: number; task: string | null; via: string;
-}
-export interface UsageCallsPage { calls: UsageCall[]; total: number; next_before: number | null }
 
 // ---- Prices ----------------------------------------------------------------
 
 /** USD per million tokens. `cache_read`/`cache_write` are null when the source does not price them. */
 export interface PriceRates { input: number; output: number; cache_read: number | null; cache_write: number | null; source: string }
 export interface ModelPrice { model: string; price: PriceRates }
-export interface PriceSource { name: string; url: string; models: number; ok: boolean; error?: string }
-export interface PricesView { fetched_at_ms: number; sources: PriceSource[]; models: ModelPrice[] }
 
 /** This hub as a node of another network. `cids` is the CID range its agents hold there, "first-last" (null until joined); `pid` is set while `running`. */
 export interface NodeLink { joined: boolean; hub: string | null; node_id: string | null; cids: string | null; running: boolean; pid: number | null }
@@ -1552,3 +1554,17 @@ export const ideApi = {
   runPoll: (id: string, run: string, offset: number) => get<IdeRunPoll>(`${ideWs(id)}/runs/${encodeURIComponent(run)}${query({ offset })}`),
   runStop: (id: string, run: string) => post<IdeRunStop>(`${ideWs(id)}/runs/${encodeURIComponent(run)}/stop`),
 };
+
+// The Metrics view's types live with the view (metrics/model.ts); re-exported here under api names.
+export type { MetricsAround, MetricsQuery, MetricsRule, MetricsSaved, MetricsScopeNode, MetricsView };
+
+/** The query string of a Metrics view request. */
+function metricsQuery(q: MetricsQuery): string {
+  const p = new URLSearchParams({ tab: q.tab, scope: q.scope, range: q.range, compare: q.compare, group: q.group, width: String(q.width), tz: String(q.tz) });
+  if (q.shift) p.set('shift', String(q.shift));
+  if (q.zoom) p.set('zoom', `${q.zoom[0]},${q.zoom[1]}`);
+  if (q.trace) p.set('trace', q.trace);
+  if (q.filter) p.set('filter', q.filter);
+  if (q.fixture) p.set('fixture', '1');
+  return `?${p.toString()}`;
+}

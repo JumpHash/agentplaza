@@ -10,6 +10,8 @@ publish = false
 apz-http = { path = "../apz-http" }
 apz-os = { path = "../apz-os" }
 apz-trust = { path = "../apz-trust" }
+base64.workspace = true
+flate2 = "1.1"
 serde.workspace = true
 serde_json.workspace = true
 

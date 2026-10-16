@@ -15,7 +15,9 @@
 //! the same beat runs beside, so a slow tool does not silence the session.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
@@ -132,6 +134,111 @@ struct Agent<'a, 'l, S, W> {
     /// A stop that arrived while a local tool ran. The loop takes it at its next wait, as it
     /// would have taken the line had it arrived then.
     stopping: Option<String>,
+    /// When the next stats report is due.
+    next_stats: Instant,
+    /// Each process's CPU ticks at the last stats report, by pid, and when that report was taken.
+    ticks: HashMap<u32, u64>,
+    ticked_at: Instant,
+}
+
+/// How often the harness sends the host a stats report: the workspace's use and the busiest processes.
+const STATS_EVERY: Duration = Duration::from_secs(60);
+
+/// How many processes a stats report names.
+const TOP_PROCESSES: usize = 5;
+
+/// The process table the stats are read from.
+const PROC_DIR: &str = "/proc";
+
+/// The CPU ticks `/proc` counts in a second (USER_HZ), which is 100 on every Linux ABI.
+const CLOCK_TICKS_PER_SECOND: f64 = 100.0;
+
+/// One process as `/proc` showed it: its pid, its name, its CPU ticks so far and its resident memory.
+#[derive(Debug, Clone, PartialEq)]
+struct ProcSample {
+    pid: u32,
+    name: String,
+    ticks: u64,
+    rss_mib: f64,
+}
+
+/// The name and CPU ticks (user plus system) of a `/proc/<pid>/stat` line. The name is in
+/// parentheses and may hold spaces or parentheses, so the fields are read after the last `)`.
+fn parse_stat(stat: &str) -> Option<(String, u64)> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    let name = stat.get(open + 1..close)?.to_string();
+    let fields: Vec<&str> = stat.get(close + 1..)?.split_whitespace().collect();
+    // The state is field 3, the first after the name, so utime (field 14) is the 12th and stime the 13th.
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some((name, utime + stime))
+}
+
+/// The resident memory in KiB from a `/proc/<pid>/status` file's `VmRSS` line, if it has one.
+fn parse_rss_kib(status: &str) -> Option<u64> {
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?;
+    line.split_whitespace().next()?.parse().ok()
+}
+
+/// Every process under `proc_dir` that could be read; one that exits mid-read is skipped.
+fn sample_processes(proc_dir: &Path) -> Vec<ProcSample> {
+    let Ok(entries) = fs::read_dir(proc_dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = fs::read_to_string(entry.path().join("stat")).ok()?;
+            let (name, ticks) = parse_stat(&stat)?;
+            let status = fs::read_to_string(entry.path().join("status")).unwrap_or_default();
+            let rss_kib = parse_rss_kib(&status).unwrap_or(0);
+            Some(ProcSample {
+                pid,
+                name,
+                ticks,
+                rss_mib: rss_kib as f64 / 1024.0,
+            })
+        })
+        .collect()
+}
+
+/// The `count` busiest processes as (name, CPU %, RSS MiB), by CPU since the previous report. CPU is
+/// the ticks a process gained over `elapsed_secs`; one new since then counts all its ticks.
+fn busiest(
+    previous: &HashMap<u32, u64>,
+    now: &[ProcSample],
+    elapsed_secs: f64,
+    count: usize,
+) -> Vec<(String, f64, f64)> {
+    let mut rows: Vec<(String, f64, f64)> = now
+        .iter()
+        .map(|process| {
+            let before = previous.get(&process.pid).copied().unwrap_or(0);
+            let gained = process.ticks.saturating_sub(before) as f64;
+            let cpu = if elapsed_secs > 0.0 {
+                gained / CLOCK_TICKS_PER_SECOND / elapsed_secs * 100.0
+            } else {
+                0.0
+            };
+            (process.name.clone(), cpu, process.rss_mib)
+        })
+        .collect();
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.total_cmp(&a.2)));
+    rows.truncate(count);
+    rows
+}
+
+/// The MiB in use and the MiB in all on the filesystem at `path`, from `statvfs`.
+fn workspace_use(path: &Path) -> Option<(u64, u64)> {
+    const MIB: u64 = 1 << 20;
+    let stat = rustix::fs::statvfs(path).ok()?;
+    let size = stat.f_blocks * stat.f_frsize;
+    let used = stat.f_blocks.saturating_sub(stat.f_bfree) * stat.f_frsize;
+    Some((used / MIB, size / MIB))
 }
 
 /// Serves one keepalive connection's agent loop until the host's `stop`, then
@@ -149,6 +256,8 @@ pub fn serve<S: Duplex, W: Write + Send>(
 ) -> Result<u64, SessionError> {
     let writer = Lines::new(lines.get_ref().duplicate()?);
     let shared = Shared::new(writer, log);
+    // The first stats report measures CPU from here, so the baseline is taken now.
+    let baseline = sample_processes(Path::new(PROC_DIR));
     let (inbox_tx, inbox_rx) = mpsc::channel();
     let (operator_tx, operator_rx) = mpsc::channel();
     let shared_ref = &shared;
@@ -180,6 +289,9 @@ pub fn serve<S: Duplex, W: Write + Send>(
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
             stopping: None,
+            next_stats: Instant::now() + STATS_EVERY,
+            ticks: baseline.iter().map(|p| (p.pid, p.ticks)).collect(),
+            ticked_at: Instant::now(),
         };
         agent.clock = agent
             .threads
@@ -274,6 +386,27 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         Ok(())
     }
 
+    /// Sends a stats report: the workspace's use and the busiest processes since the last report.
+    /// It goes out only while the harness runs, so it never keeps the VM awake.
+    fn report_stats(&mut self) -> Result<(), SessionError> {
+        let now = Instant::now();
+        let samples = sample_processes(Path::new(PROC_DIR));
+        let elapsed = now.saturating_duration_since(self.ticked_at).as_secs_f64();
+        let top = busiest(&self.ticks, &samples, elapsed, TOP_PROCESSES);
+        self.ticks = samples.iter().map(|p| (p.pid, p.ticks)).collect();
+        self.ticked_at = now;
+        self.next_stats = now + STATS_EVERY;
+        // A workspace that cannot be measured is left out rather than reported as empty.
+        if let Some((used_mib, size_mib)) = workspace_use(Path::new(files::WORKSPACE_ROOT)) {
+            self.say(&GuestMessage::Stats {
+                workspace_used_mib: used_mib,
+                workspace_size_mib: size_mib,
+                top,
+            })?;
+        }
+        Ok(())
+    }
+
     /// Takes the next message from the reader lane, or beats when the beat came
     /// due. The messages the loop owns are acted on here; anything else is returned
     /// for a waiting caller.
@@ -281,7 +414,10 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         if let Some(reason) = self.stopping.take() {
             return Ok(Incoming::Stop(reason));
         }
-        let wait = self.next_beat.saturating_duration_since(Instant::now());
+        let wait = self
+            .next_beat
+            .min(self.next_stats)
+            .saturating_duration_since(Instant::now());
         let message = match self.inbox.recv_timeout(wait) {
             Ok(Inbound::Message(message)) => message,
             Ok(Inbound::Closed) | Err(RecvTimeoutError::Disconnected) => {
@@ -289,7 +425,13 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             }
             Ok(Inbound::Failed(err)) => return Err(SessionError::Io(err)),
             Err(RecvTimeoutError::Timeout) => {
-                self.beat()?;
+                // The stats report and the beat come due at their own times; one that is not due
+                // waits for the next wait, which is a moment away at most.
+                if Instant::now() >= self.next_stats {
+                    self.report_stats()?;
+                } else {
+                    self.beat()?;
+                }
                 return Ok(Incoming::Beat);
             }
         };
@@ -378,6 +520,9 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             while !handle.is_finished() {
                 if Instant::now() >= self.next_beat {
                     self.beat()?;
+                }
+                if Instant::now() >= self.next_stats {
+                    self.report_stats()?;
                 }
                 self.hear_during_tool()?;
                 thread::sleep(LOCAL_POLL);
@@ -1851,6 +1996,78 @@ mod tests {
             edit_args(&json!({"path": "a.txt", "old": "x"}))
                 .unwrap_err()
                 .starts_with("invalid input:")
+        );
+    }
+
+    /// A `/proc/<pid>/stat` line as the kernel writes it, with a name that holds a space and a bracket.
+    const STAT: &str = "4242 (my (worker) 2) S 1 4242 4242 0 -1 4194560 1200 0 0 0 730 270 0 0 20 0 3 0 99 0 0 0 0";
+
+    /// The `VmRSS` line of a `/proc/<pid>/status` file, between the lines a real one has.
+    const STATUS: &str = "Name:\tworker\nState:\tS (sleeping)\nVmPeak:\t  300000 kB\nVmRSS:\t  204800 kB\nThreads:\t3\n";
+
+    #[test]
+    fn a_stat_line_with_spaces_and_brackets_in_its_name_gives_the_name_and_the_cpu_ticks() {
+        assert_eq!(parse_stat(STAT), Some(("my (worker) 2".to_string(), 1000)));
+        assert_eq!(parse_stat("4242 (short) S 1"), None);
+    }
+
+    #[test]
+    fn the_resident_memory_is_read_from_the_vm_rss_line_in_kib() {
+        assert_eq!(parse_rss_kib(STATUS), Some(204_800));
+        assert_eq!(parse_rss_kib("Name:\tkthreadd\nState:\tS\n"), None);
+    }
+
+    #[test]
+    fn the_busiest_processes_rank_by_cpu_since_the_last_report() {
+        let process = |pid: u32, name: &str, ticks: u64, rss_mib: f64| ProcSample {
+            pid,
+            name: name.to_string(),
+            ticks,
+            rss_mib,
+        };
+        let previous = HashMap::from([(1, 100), (2, 500), (3, 0)]);
+        let now = [
+            // 300 ticks over 60 s is 5 %.
+            process(1, "idle", 400, 10.0),
+            // 1500 ticks over 60 s is 25 %.
+            process(2, "busy", 2000, 80.0),
+            // A new process: all its 3000 ticks count, 50 %.
+            process(4, "new", 3000, 5.0),
+        ];
+        let top = busiest(&previous, &now, 60.0, 2);
+        assert_eq!(
+            top,
+            vec![
+                ("new".to_string(), 50.0, 5.0),
+                ("busy".to_string(), 25.0, 80.0),
+            ]
+        );
+        assert!(
+            busiest(&previous, &now, 0.0, 5)
+                .iter()
+                .all(|row| row.1 == 0.0)
+        );
+    }
+
+    #[test]
+    fn a_stats_report_reads_the_process_table_it_is_given() {
+        let dir = std::env::temp_dir().join(format!("apz-proc-{}", std::process::id()));
+        let worker = dir.join("4242");
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(worker.join("stat"), STAT).unwrap();
+        fs::write(worker.join("status"), STATUS).unwrap();
+        fs::create_dir_all(dir.join("not-a-pid")).unwrap();
+
+        let samples = sample_processes(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            samples,
+            vec![ProcSample {
+                pid: 4242,
+                name: "my (worker) 2".to_string(),
+                ticks: 1000,
+                rss_mib: 200.0,
+            }]
         );
     }
 }

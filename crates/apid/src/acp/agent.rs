@@ -74,6 +74,10 @@ pub trait Hub: Sync {
     ) -> Result<String, String>;
     /// The model agent `cid` runs now, and the models its tier allows.
     fn models(&self, cid: u64) -> (String, Vec<String>);
+    /// The context window of agent `cid`'s model, in tokens; None when it is not known.
+    fn context_window(&self, _cid: u64) -> Option<u64> {
+        None
+    }
     /// Sets agent `cid`'s model, when its tier allows it.
     fn set_model(&self, cid: u64, model: &str) -> Result<(), String>;
     /// The open pull request of repository `name` whose head branch is `head`, with its changed text
@@ -898,14 +902,15 @@ fn slash_command(text: &str) -> Option<(&str, &str)> {
         .then_some((name, arg.trim()))
 }
 
-/// Tells the editor the work's tokens, when it made any model call. `size` is 0: the plaza does
-/// not know the model's context window here. v1 only: a v2 turn reports its usage on its idle state.
+/// Tells the editor the work's tokens, when it made any model call. `size` is the model's context
+/// window, or 0 when the hub does not know it. v1 only: a v2 turn reports its usage on its idle state.
 fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u64) {
     let Some(usage) = hub.usage(cid, work) else {
         return;
     };
     let input = usage["input_tokens"].as_u64().unwrap_or(0);
     let output = usage["output_tokens"].as_u64().unwrap_or(0);
+    let window = hub.context_window(cid);
     // `used` counts both parts; the engine part (the gateway's calls) is reported apart as well.
     notify_update(
         peer,
@@ -914,7 +919,7 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
         json!({
             "sessionUpdate": "usage_update",
             "used": input + output,
-            "size": 0,
+            "size": window.unwrap_or(0),
             "_meta": {"agentplaza": {
                 "input_tokens": input,
                 "output_tokens": output,
@@ -1653,6 +1658,7 @@ mod tests {
     fn work_end() -> Frame {
         Frame {
             kind: "transcript".to_string(),
+            queued: std::time::Instant::now(),
             data: json!({
                 "cid": 7,
                 "work": 42,
@@ -2469,6 +2475,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2918,6 +2925,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2973,6 +2981,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,

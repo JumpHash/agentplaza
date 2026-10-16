@@ -31,7 +31,7 @@ import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
-import { mount as usage } from './usage';
+import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
 import { mount as workstations } from './workstations';
 import { lazyMount } from './lazy';
@@ -60,6 +60,7 @@ export const SCREENS: Screen[] = [
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
   { key: 'floor', label: 'Floor', icon: 'floor', section: 'Plaza', mount: floor },
+  { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
   { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
   { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },
   { key: 'board', label: 'Board', icon: 'boardpin', section: 'Social', mount: board },
@@ -68,7 +69,6 @@ export const SCREENS: Screen[] = [
   { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'lab', label: 'Lab', icon: 'brain', section: 'Lab', mount: lab },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
-  { key: 'usage', label: 'Usage', icon: 'zap', section: 'Setup', mount: usage },
   { key: 'tools', label: 'Tools', icon: 'wrench', section: 'Setup', mount: tools },
   { key: 'mcp', label: 'MCP', icon: 'terminal', section: 'Setup', mount: mcp },
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },

@@ -25,7 +25,9 @@ the loopback `Host` guard), `apz-gateway` (model providers), `apz-plaza` (the
 plaza's domain: pure state machines, no I/O), `apz-station` (the hub-to-workstation
 link protocol), `apz-uds` (Unix sockets on every platform), `apz-trust` (join
 tokens, node keys, pinned TLS, owner tokens), `apz-os` (platform differences),
-`apz-setup` (first-run checks), `jhrl` (the law language), `acpi-tables`.
+`apz-setup` (first-run checks), `apz-metrics` (the metrics core: series, histograms, rollups, alert rules, traces; no
+I/O), `apz-metrics-view` (the Metrics view's model, composed by the hub and drawn by both consoles), `jhrl` (the law
+language), `acpi-tables`.
 
 All daemons bind loopback only and reject a non-loopback `Host` header. The node daemons' own HTTP APIs
 (`noded`, and `vsockd`'s except `GET /healthz`) also require the machine's internal token in `x-apz-internal`
@@ -648,6 +650,17 @@ neither refuses snapshot operations), one directory per guest CID, plus the warm
 Directories are 0700 and files 0600. See [`design/vm-snapshots.md`](design/vm-snapshots.md). The egress credentials are
 described in [`design/egress-credentials.md`](design/egress-credentials.md), and the E2B API in
 [`design/e2b.md`](design/e2b.md).
+
+## Metrics
+
+The plaza measures itself. `apz-metrics` is the core: series, histograms, compressed points, rollups, queries, alert
+rules, forecasts and traces, with no I/O. `apz-metrics-view` is the Metrics view's model. The hub composes every tab
+as a list of typed panels, and both consoles draw the same panels, so neither decides what a tab shows. `apid`
+(`crates/apid/src/metrics`) records the hub's own numbers, ingests the nodes' batches, stores them in day-partitioned
+Postgres tables, raises alerts and serves `/v1/metrics/*`. `noded` (`crates/noded/src/metrics.rs`) samples its machine
+and its VMs and sends each batch with the node's heartbeat. Only the owner reads metrics, and agents never reach them.
+The scopes, the tables and their retention, the API, the budgets, the alerts, the traces and the outside endpoints are
+in [`design/metrics.md`](design/metrics.md).
 
 ## Build hygiene
 

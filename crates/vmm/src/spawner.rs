@@ -685,6 +685,22 @@ pub struct MemoryStats {
     pub available_mib: Option<u64>,
 }
 
+/// A VM's disk and vsock totals since it booted: what its volumes and its vsock device have moved. The reader takes
+/// the difference between two reads for a rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IoStats {
+    /// Bytes the guest read from its volumes (the workspace and the data volumes).
+    pub blk_read_bytes: u64,
+    /// Bytes the guest wrote to its volumes.
+    pub blk_write_bytes: u64,
+    /// Disk requests the guest made.
+    pub blk_ops: u64,
+    /// Bytes the hub sent the guest over vsock.
+    pub vsock_rx_bytes: u64,
+    /// Bytes the guest sent the hub over vsock.
+    pub vsock_tx_bytes: u64,
+}
+
 /// How the host resizes a running VM's memory: in-process, the balloon device
 /// itself; for a VM in its own process, a request over that process's control
 /// socket.
@@ -693,6 +709,10 @@ pub trait MemoryControl: Send + Sync {
     fn set_usable_mib(&self, mib: u32) -> Result<(), SpawnError>;
     /// The latest counters.
     fn stats(&self) -> MemoryStats;
+    /// The VM's disk and vsock totals, `None` when the VM does not report them.
+    fn io_stats(&self) -> Option<IoStats> {
+        None
+    }
 }
 
 /// State shared between the spawner, the VM handle and the active backend.
@@ -1119,6 +1139,14 @@ impl VmHandle {
     /// has no balloon.
     pub fn memory_stats(&self) -> Option<MemoryStats> {
         self.runtime.memory_control().map(|control| control.stats())
+    }
+
+    /// The VM's disk and vsock totals (see [`IoStats`]), `None` when the VM has no memory control to read them
+    /// through (the control socket serves both).
+    pub fn io_stats(&self) -> Option<IoStats> {
+        self.runtime
+            .memory_control()
+            .and_then(|control| control.io_stats())
     }
 
     /// Pauses the VM (see [`VmControl::pause`]).

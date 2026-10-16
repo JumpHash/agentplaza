@@ -2,7 +2,7 @@
 //! but `/healthz`). `apz_vsockd_session_wakeups_total` counts how often keepalive sessions wake: divided by the open
 //! sessions it is the idle cost per agent, which the event-driven wait keeps near one wake per heartbeat.
 
-use apz_metrics::{Counter, Gauge, Histogram, Metric};
+use apz_metrics::prom::{self, Counter, Gauge, Histogram, Metric};
 
 /// Keepalive and one-shot sessions open now.
 pub static SESSIONS: Gauge = Gauge::new("apz_vsockd_sessions", "Guest sessions open");
@@ -24,7 +24,7 @@ pub static HELLO: Histogram = Histogram::new(
 
 /// The Prometheus text of every vsockd metric.
 pub fn render() -> String {
-    apz_metrics::render(&[
+    prom::render(&[
         &SESSIONS as &dyn Metric,
         &SESSIONS_REFUSED,
         &SESSION_WAKEUPS,

@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::Id;
-use super::usage::enc;
-use crate::console::client::{self, Client};
+use crate::console::client::{self, Client, enc};
 use crate::console::ui::{Kind, Tone};
 use crate::console::{Ctx, ui};
 use crate::theme::{self, SANS};

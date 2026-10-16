@@ -1239,6 +1239,29 @@ pub fn ellipsize(s: &str, max_chars: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// Dollars to the cent with separators; a non-zero amount under a cent reads as "<$0.01".
+pub fn usd(v: f64) -> String {
+    if v != 0.0 && v.abs() < 0.005 {
+        return "<$0.01".to_string();
+    }
+    let sign = if v < 0.0 { "-" } else { "" };
+    let s = format!("{:.2}", v.abs());
+    let (int, frac) = s.split_once('.').unwrap_or((&s, "00"));
+    format!("{sign}${}.{frac}", commas(int))
+}
+
+/// Digits with thousands separators.
+fn commas(digits: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A sidebar section heading: Inter 600 at the badge size, in ink-3 (the web's `.nav-section`).
 pub fn section<'a>(content: &str) -> text::Text<'a> {
     text(content.to_string())
@@ -1382,7 +1405,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod open_url_tests {
-    use super::openable;
+    use super::{commas, openable, usd};
 
     #[test]
     fn openable_accepts_https_links_and_refuses_every_other_url() {
@@ -1411,5 +1434,14 @@ mod open_url_tests {
         ] {
             assert_eq!(openable(url), want, "openable({url:?})");
         }
+    }
+
+    #[test]
+    fn money_reads_to_the_cent_with_separators() {
+        assert_eq!(usd(1234.5), "$1,234.50");
+        assert_eq!(usd(0.0), "$0.00");
+        assert_eq!(usd(0.004), "<$0.01");
+        assert_eq!(usd(-12.0), "-$12.00");
+        assert_eq!(commas("1234567"), "1,234,567");
     }
 }

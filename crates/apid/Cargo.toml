@@ -20,6 +20,8 @@ apz-ide = { path = "../apz-ide" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
 apz-station = { path = "../apz-station" }
 apz-rich = { path = "../apz-rich" }
+# The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
+apz-metrics-view = { path = "../apz-metrics-view" }
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true

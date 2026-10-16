@@ -696,7 +696,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     note(tiles.paid.sub, [`≈ ${usd(creditsUsd(f.paid))}`, `${money(f.spent)} spent`]);
     if (usage) {
       countTo(tiles.cost.fig, usage.totals.usd, usd);
-      note(tiles.cost.sub, [`≈ ${money(creditsOf(usage.totals.usd))} credits metered`, h('a', { href: href('usage') }, 'see usage')]);
+      note(tiles.cost.sub, [`≈ ${money(creditsOf(usage.totals.usd))} credits metered`, h('a', { href: '#/metrics?tab=tokens' }, 'see usage')]);
     } else {
       tiles.cost.fig.textContent = '—';
       note(tiles.cost.sub, ['usage unavailable']);

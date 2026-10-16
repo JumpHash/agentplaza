@@ -18,15 +18,22 @@
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
 //!   POST   /v1/nodes/{id}/results            (signed) {command, ok, status, body}
-//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine}
+//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine, status, runs, metrics_z?}
+//!   POST   /v1/nodes/{id}/metrics            (signed) {z} with a deflated, base64 metrics batch, or a bare batch
+//!                                            (`apz_metrics::wire::Batch`)
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, Router};
+use apz_metrics::wire::Batch;
+use apz_metrics::{EntityKind, SeriesKey};
 use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
+use base64::Engine as _;
+use flate2::read::DeflateDecoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,6 +51,8 @@ pub const JOIN_RATE_PER_MINUTE: u32 = 5;
 pub const JOIN_TRIES_PER_CODE: u32 = 3;
 /// A node is offline when it has not polled for this long.
 pub const OFFLINE_AFTER_MS: u64 = 60_000;
+/// A node beats every 15 seconds; a beat that comes later than that is lag (`link.beat_lag_ms`).
+const BEAT_MS: u64 = 15_000;
 
 /// The one message every failed redemption gets, so a caller learns nothing about the code.
 pub(crate) const INVALID_CODE: &str = "this join code is not valid";
@@ -431,6 +440,13 @@ impl Store {
         admit_join(&self.join_attempts, source, now_ms)
     }
 
+    /// How many commands are waiting for the node to take them.
+    pub fn queued(&self, node: &str) -> usize {
+        self.queues
+            .lock()
+            .map_or(0, |queues| queues.get(node).map_or(0, VecDeque::len))
+    }
+
     pub fn enqueue(
         &self,
         node: &str,
@@ -634,6 +650,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/nodes/{id}/commands", commands_route)
         .post("/v1/nodes/{id}/results", results_route)
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
+        .post("/v1/nodes/{id}/metrics", metrics_route)
 }
 
 /// `n0`, the hub's own machine, as a node record: never stored (it is always there), online while
@@ -889,8 +906,36 @@ struct Heartbeat {
     /// The node's noded `GET /v1/runs`.
     #[serde(default)]
     runs: Value,
+    /// The node's noded `GET /v1/metrics/batch`, deflated and base64 encoded; absent when it has none.
+    #[serde(default)]
+    metrics_z: Option<String>,
+    /// The node's noded `GET /v1/metrics/batch` as plain JSON, from nodes that predate `metrics_z`.
+    #[serde(default)]
+    metrics: Value,
 }
 
+/// The most a metrics batch may hold once it is inflated.
+const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reads a metrics batch sent deflated and base64 encoded, refusing one that inflates past [`MAX_BATCH_BYTES`].
+fn inflate_batch(encoded: &str) -> Result<Batch, String> {
+    let deflated = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| e.to_string())?;
+    let mut json = Vec::new();
+    // One byte past the limit is read, so an oversized batch is seen without inflating all of it.
+    DeflateDecoder::new(deflated.as_slice())
+        .take(MAX_BATCH_BYTES as u64 + 1)
+        .read_to_end(&mut json)
+        .map_err(|e| e.to_string())?;
+    if json.len() > MAX_BATCH_BYTES {
+        return Err("the metrics batch inflates past 4 MB".to_string());
+    }
+    serde_json::from_slice(&json).map_err(|e| e.to_string())
+}
+
+/// A beat takes the node's machine, status and runs, and its metrics batch when it carries one. A
+/// metrics body this hub cannot read is dropped; the beat itself still counts.
 fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let node = match signed_node(app, req, p) {
         Ok(n) => n,
@@ -901,15 +946,122 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Err(_) => return Response::error(400, "bad heartbeat"),
     };
     app.nodes.set_report(&node.id, beat.status, beat.runs);
-    match app.nodes.set_machine(&node.id, beat.machine) {
-        Ok(()) => Response::json(200, &serde_json::json!({"ok": true})),
-        Err(e) => Response::error(404, &e),
+    if let Err(e) = app.nodes.set_machine(&node.id, beat.machine) {
+        return Response::error(404, &e);
     }
+    let now = apz_plaza::now_ms();
+    // Read before the batch is ingested, which moves the node's last beat to now.
+    let previous_beat = crate::metrics::lock(&app.metrics.links)
+        .get(&node.id)
+        .map_or(0, |link| link.last_beat_ms);
+    app.metrics
+        .registry
+        .gauge(SeriesKey::new(
+            "link.commands_queued",
+            EntityKind::Node,
+            &node.id,
+        ))
+        .set(app.nodes.queued(&node.id) as f64);
+    // A beat without a batch carries neither field, or a null `metrics`, and skips this.
+    let batch = match beat.metrics_z {
+        Some(encoded) => inflate_batch(&encoded).ok(),
+        None => serde_json::from_value::<Batch>(beat.metrics).ok(),
+    };
+    if let Some(batch) = batch {
+        if previous_beat > 0 {
+            let late = now.saturating_sub(previous_beat).saturating_sub(BEAT_MS);
+            app.metrics
+                .registry
+                .hist(SeriesKey::new(
+                    "link.beat_lag_ms",
+                    EntityKind::Node,
+                    &node.id,
+                ))
+                .record(late as f64);
+        }
+        crate::metrics::ingest::batch(&app.metrics, &node.id, batch, now);
+    }
+    Response::json(200, &serde_json::json!({"ok": true}))
+}
+
+/// A signed node's metrics batch, posted on its own: the live batch (every 2 seconds while a scope
+/// on the node is watched) or one too big for a beat. It is ingested as a beat's batch is. The body is
+/// `{"z": …}` with the deflated, base64 encoded batch, or the bare batch.
+fn metrics_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let body: Value = match req.json() {
+        Ok(v) => v,
+        Err(_) => return Response::error(400, "bad metrics batch"),
+    };
+    let parsed = match body.get("z").and_then(Value::as_str) {
+        Some(encoded) => inflate_batch(encoded),
+        None => serde_json::from_value::<Batch>(body).map_err(|e| e.to_string()),
+    };
+    let batch = match parsed {
+        Ok(b) => b,
+        Err(_) => return Response::error(400, "bad metrics batch"),
+    };
+    crate::metrics::ingest::batch(&app.metrics, &node.id, batch, apz_plaza::now_ms());
+    Response::json(200, &serde_json::json!({"ok": true}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body as a node sends it: the JSON deflated, then base64 encoded.
+    fn deflated(json: &[u8]) -> String {
+        use base64::Engine as _;
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+        encoder.write_all(json).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(encoder.finish().unwrap())
+    }
+
+    #[test]
+    fn a_deflated_metrics_batch_inflates_to_the_batch_it_was_sent_as() {
+        let batch = Batch {
+            node: "n1".to_string(),
+            sent_ms: 9,
+            ..Batch::default()
+        };
+        let encoded = deflated(&serde_json::to_vec(&batch).unwrap());
+        assert_eq!(inflate_batch(&encoded).unwrap(), batch);
+        assert!(inflate_batch("not base64!").is_err());
+    }
+
+    #[test]
+    fn a_batch_that_inflates_past_four_megabytes_is_refused() {
+        // Valid JSON, so only the size limit can refuse it.
+        let mut json = br#"{"node":"n1","sent_ms":1,"pad":""#.to_vec();
+        json.extend(std::iter::repeat_n(b' ', MAX_BATCH_BYTES));
+        json.extend_from_slice(br#""}"#);
+        let error = inflate_batch(&deflated(&json)).unwrap_err();
+        assert!(error.contains("4 MB"), "{error}");
+    }
+
+    #[test]
+    fn a_heartbeat_deserializes_with_or_without_a_metrics_batch() {
+        let bare: Heartbeat = serde_json::from_value(serde_json::json!({
+            "machine": {"name": "n1"},
+            "status": {},
+            "runs": []
+        }))
+        .unwrap();
+        assert!(bare.metrics.is_null());
+
+        let with: Heartbeat = serde_json::from_value(serde_json::json!({
+            "machine": {},
+            "metrics": {"node": "n1", "sent_ms": 5}
+        }))
+        .unwrap();
+        let batch: Batch = serde_json::from_value(with.metrics).unwrap();
+        assert_eq!(batch.sent_ms, 5);
+    }
 
     const NOW: u64 = 1_000_000_000;
     const TTL_MS: u64 = 15 * 60_000;

@@ -1074,6 +1074,14 @@ impl Catalog {
         }
     }
 
+    /// When the lists were fetched and how each fetch went, without copying the lists.
+    pub fn fetched(&self) -> (u64, Vec<SourceStatus>) {
+        self.state
+            .read()
+            .map(|s| (s.fetched_at_ms, s.sources.clone()))
+            .unwrap_or_default()
+    }
+
     pub fn state(&self) -> CatalogState {
         self.state.read().map(|s| s.clone()).unwrap_or_default()
     }

@@ -142,8 +142,8 @@ use std::thread;
 use std::time::Duration;
 
 use super::{
-    CHILD_BOOT_TIMEOUT, CHILD_READY, MemoryControl, MemoryStats, SnapshotInfo, SnapshotKind,
-    SpawnError, VmControl, VmRuntime, VmSpec,
+    CHILD_BOOT_TIMEOUT, CHILD_READY, IoStats, MemoryControl, MemoryStats, SnapshotInfo,
+    SnapshotKind, SpawnError, VmControl, VmRuntime, VmSpec,
 };
 
 /// How many lines of the child's stderr log are kept, so a failed boot's error
@@ -687,6 +687,8 @@ enum Reply {
     Err(String),
     /// `stats …`: the balloon's counters.
     Stats(MemoryStats),
+    /// `io …`: the VM's disk and vsock totals.
+    Io(IoStats),
 }
 
 /// Parses one reply line: `ok`, `ok <bytes>` (a reclaim, a `write_captured`), `ok <kind>
@@ -704,6 +706,7 @@ fn parse_reply(line: &str) -> Result<Reply, String> {
         "ok" => parse_snapshot(rest),
         "err" => Ok(Reply::Err(rest.to_string())),
         "stats" => parse_stats(rest).map(Reply::Stats),
+        "io" => parse_io(rest).map(Reply::Io),
         _ => Err(format!(
             "the control socket answered {line:?}, which is not a reply"
         )),
@@ -728,6 +731,26 @@ fn parse_snapshot(fields: &str) -> Result<Reply, String> {
         kind,
         memory_written: number(memory_written, "memory written")?,
         paused_ms: number(paused_ms, "pause")?,
+    })
+}
+
+/// The five fields of an `io` reply: the disk bytes read and written, the disk requests, then the vsock bytes
+/// received and sent.
+fn parse_io(fields: &str) -> Result<IoStats, String> {
+    fn number(text: &str, name: &str) -> Result<u64, String> {
+        text.parse()
+            .map_err(|_| format!("the io reply's {name} {text:?} is not a number"))
+    }
+    let words: Vec<&str> = fields.split(' ').collect();
+    let [read, write, ops, rx, tx] = words.as_slice() else {
+        return Err(format!("the io reply {fields:?} does not have five fields"));
+    };
+    Ok(IoStats {
+        blk_read_bytes: number(read, "disk read")?,
+        blk_write_bytes: number(write, "disk write")?,
+        blk_ops: number(ops, "disk requests")?,
+        vsock_rx_bytes: number(rx, "vsock in")?,
+        vsock_tx_bytes: number(tx, "vsock out")?,
     })
 }
 
@@ -833,6 +856,14 @@ impl MemoryControl for ChildMemory {
                 free_mib: None,
                 available_mib: None,
             },
+        }
+    }
+
+    fn io_stats(&self) -> Option<IoStats> {
+        match exchange(&self.path, "io", CONTROL_TIMEOUT).and_then(|line| parse_reply(&line)) {
+            Ok(Reply::Io(io)) => Some(io),
+            // A child that cannot be asked reports no reading, never zeros that would look like a quiet disk.
+            _ => None,
         }
     }
 }
@@ -1100,6 +1131,16 @@ mod tests {
                 held_mib: 200,
                 free_mib: None,
                 available_mib: Some(180),
+            }))
+        );
+        assert_eq!(
+            parse_reply("io 1024 512 3 40 20"),
+            Ok(Reply::Io(IoStats {
+                blk_read_bytes: 1024,
+                blk_write_bytes: 512,
+                blk_ops: 3,
+                vsock_rx_bytes: 40,
+                vsock_tx_bytes: 20,
             }))
         );
         assert_eq!(

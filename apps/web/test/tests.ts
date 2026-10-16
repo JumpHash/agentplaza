@@ -11,9 +11,8 @@ import type { LawInfo, Settings } from '../src/api';
 import { approvalPath } from '../src/api';
 import { checkRetention, clampQuery, mergeNewest, mergeOlder, spanOf } from '../src/views/conversations';
 import { level, membersOf, parentOf, trailOf } from '../src/views/society';
-import type { Bond, Conversation, PriceRates, SocietyAgent, UsageCall } from '../src/api';
+import type { Bond, Conversation, SocietyAgent } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
-import { cacheSaving, fixtureCalls, ledgerSeries, ledgerSummary, mergeCalls, pageCalls, rankGroups, areaData, totalsOf, windowOf } from '../src/views/usage';
 import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,6 +44,15 @@ import { movableNodes, moveText } from '../src/views/agent-detail';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
 import type { Entry as TreeEntry } from '../src/ide/types';
+import { format, nice, timeLabel } from '../src/metrics/format';
+import type { Unit } from '../src/metrics/model';
+import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
+import { splitTreemap } from '../src/metrics/figures';
+import type { TreeItem } from '../src/metrics/model';
+import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
+import { appendPage } from '../src/metrics/bodies';
+import { DEFAULT_STATE, LeaseKeeper, narrowTileColumns, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
+import type { LiveLease, Saved } from '../src/metrics/model';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -218,54 +226,6 @@ eq(resample([4], 2), [4, 4], 'resample: one value repeats');
 eq(tweenArray([0, 10], [10, 0], 0.5), [5, 5], 'tween: halfway between aligned arrays');
 eq(tweenArray([1], [1, 3], 1), [1, 3], 'tween: a missing entry counts as zero');
 eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
-
-// Usage: the ledger's sums, the series buckets, the paging rule and the cache saving.
-const call = (id: number, at: number, over: Partial<UsageCall> = {}): UsageCall => ({
-  id, at_ms: at, cid: 1, role: 'builder', model: 'm/a', provider: 'p', input: 100, output: 10, cache_read: 0, cache_write: 0,
-  cost_usd: null, est_usd: 0.5, task: null, via: 'task', ...over,
-});
-const HR = 3_600_000;
-const sample = [call(1, 0.5 * HR, { cost_usd: 0.2 }), call(2, 1.5 * HR, { model: 'm/b', cid: 2, cache_read: 300 }), call(3, 2.5 * HR, { cache_read: 100 })];
-const sum = totalsOf(sample);
-eq([sum.calls, sum.input, sum.usd, sum.cost_usd, sum.est_usd], [3, 300, 0.2 + 0.5 + 0.5, 0.2, 1.5], 'totals: usd is reported where known, else the estimate');
-eq(totalsOf([call(1, 0, { input: 0, cache_read: 0 })]).cache_hit_rate, 0, 'hit rate: no input is zero, not NaN');
-eq(windowOf('24h', 1e9), { from: 1e9 - 24 * HR, to: 1e9, bucket: 'hour' }, 'window: 24 h ends now, hourly buckets');
-eq(windowOf('90d', 1e9).bucket, 'day', 'window: 90 d uses daily buckets');
-
-const series = ledgerSeries(sample, 0, 3 * HR, 'hour', 'model');
-eq(series.points.map((p) => p.totals.calls), [1, 1, 1], 'series: one bucket per hour, each call in its own');
-eq(Object.keys(series.points[1]?.groups ?? {}), ['m/b'], 'series: the group key is the chosen grouping');
-eq(ledgerSeries([], 0, 2 * HR, 'hour', 'agent').points.length, 2, 'series: empty buckets are kept');
-eq(ledgerSummary(sample, 0, 3 * HR).by_model.map((m) => m.key), ['m/a', 'm/b'], 'summary: groups sort by spend');
-eq(ledgerSummary(sample, 0, 3 * HR).unpriced, [], 'summary: priced calls are not listed as unpriced');
-
-const ranked = rankGroups(series, 'usd');
-eq(ranked.length, 2, 'ranking: every group that spent');
-const many = ledgerSeries(Array.from({ length: 8 }, (_, i) => call(`g${i}`, 0.5 * HR, { model: `m/${i}`, est_usd: 8 - i })), 0, HR, 'hour', 'model');
-const manyRanked = rankGroups(many, 'usd');
-const area = areaData(many, manyRanked, new Set([manyRanked[0] ?? '']), 'usd', (k) => k);
-eq(area.layers.map((l) => l.key), [...manyRanked.slice(1, 7), '~other'], 'area: six groups, the rest in Other, hidden groups out');
-eq(area.layers.at(-1)?.values, [manyRanked.slice(7).reduce((s, k) => s + (many.points[0]?.groups[k]?.usd ?? 0), 0)], 'area: Other sums the rest');
-eq(area.labels.length, 1, 'area: one label per bucket');
-
-const prices = new Map<string, PriceRates | null>([['m/a', { input: 3, output: 15, cache_read: 0.3, cache_write: null, source: 'litellm' }]]);
-const saving = cacheSaving([{ key: 'm/a', totals: totalsOf([call(1, 0, { cache_read: 1_000_000 })]) }], prices);
-eq(saving, { usd: 2.7, complete: true }, 'cache saving: cache reads times the input-minus-read price gap');
-eq(cacheSaving([{ key: 'm/z', totals: totalsOf([call(1, 0, { cache_read: 5 })]) }], prices).complete, false, 'cache saving: an unpriced model makes it partial');
-
-const merged = mergeCalls([call(1, 5 * HR)], [call(1, 5 * HR), call(2, 9 * HR)]);
-eq(merged.map((c) => c.id), [2, 1], 'merge: newest first, no repeats');
-
-const many5 = [call(5, 5), call(4, 4), call(3, 3), call(2, 2), call(1, 1)];
-const page1 = pageCalls(many5, { limit: 2 });
-eq([page1.calls.map((c) => c.id), page1.total, page1.next_before], [[5, 4], 5, 4], 'paging: the first page and its cursor');
-const page2 = pageCalls(many5, { limit: 2, before: page1.next_before ?? undefined });
-eq([page2.calls.map((c) => c.id), page2.next_before], [[3, 2], 2], 'paging: the next page is strictly older');
-eq(pageCalls(many5, { limit: 9, model: 'nope' }).calls, [], 'paging: a filter with no match is empty');
-
-const fx = fixtureCalls(1e12, 2);
-eq(fx.length > 0 && fx.every((c, i) => i === 0 || (fx[i - 1]?.at_ms ?? 0) >= c.at_ms), true, 'fixture: calls are newest first');
-eq(JSON.stringify(fixtureCalls(1e12, 2).slice(0, 5)), JSON.stringify(fx.slice(0, 5)), 'fixture: deterministic');
 
 // Hardware models (assets/hardware): every file validates, the index lists every file, the loader builds them.
 eq(parse('#/hardware-lab?model=exterior/workstation&gpus=1'), { screen: 'hardware-lab', params: [] }, 'a query is not part of the route');
@@ -1637,7 +1597,129 @@ sectionEnd('sleep and checkpoint tests: ok');
 }
 sectionEnd('egress credentials and e2b tests: ok');
 
+// Metrics formatting: every case of the golden file the Rust formatter is checked against, and the dash for a value
+// that is not there.
+{
+  for (const [unit, v, text] of formatGolden.format as [Unit, number, string][]) {
+    eq(format(unit, v), text, `metrics format: ${unit} ${v} prints ${text}`);
+  }
+  for (const [max, expected] of formatGolden.nice as [number, number][]) {
+    eq(nice(max), expected, `metrics nice: ${max} gives ${expected}`);
+  }
+  for (const [t, step, offset, text] of formatGolden.time as [number, number, number, string][]) {
+    eq(timeLabel(t, step, offset), text, `metrics time label: ${t} at step ${step} and offset ${offset} reads ${text}`);
+  }
+  eq(format('usd', Infinity), '—', 'metrics format: an infinite value is a dash');
+  eq(format('usd', NaN), '—', 'metrics format: NaN is a dash');
+  eq(format('usd', null), '—', 'metrics format: no value is a dash');
+  eq(format('usd', undefined), '—', 'metrics format: an undefined value is a dash');
+}
+sectionEnd('metrics format, nice and time labels: ok');
+// The Metrics treemap's split (figures.ts): every item keeps a cell, the cells tile the box, and each cell is its share.
+{
+  const items: TreeItem[] = [
+    { name: 'a', value: 50, tone: 'chart-1' },
+    { name: 'b', value: 30, tone: 'chart-2' },
+    { name: 'c', value: 15, tone: 'chart-3' },
+    { name: 'd', value: 5, tone: 'chart-4' },
+    { name: 'e', value: 0, tone: 'chart-5' },
+  ];
+  const cells = splitTreemap(items);
+  eq(cells.map((c) => c.item.name).sort(), ['a', 'b', 'c', 'd', 'e'], 'treemap: every item keeps a cell, zero items included');
+  const area = cells.reduce((s, c) => s + c.w * c.h, 0);
+  eq(Math.round(area) / 100, 100, 'treemap: the cells tile the whole box (areas sum to 100 %)');
+  const share = (name: string): number => {
+    const cell = cells.find((c) => c.item.name === name);
+    return Math.round(((cell?.w ?? 0) * (cell?.h ?? 0)) / 100);
+  };
+  eq([share('a'), share('b'), share('c'), share('d')], [50, 30, 15, 5], 'treemap: each cell is its value share of the box');
+  sectionEnd('treemap split tests: ok');
+}
+// ---- Metrics charts: the thinning of long series and the x-axis label placement (src/metrics/charts.ts) ----
+eq([thin([1, 5, 2, null, 3, 4], bucketStarts(6, 3)), thin([null, null, 1], bucketStarts(3, 2)), thin([3, 1, 2], [0], 'min')], [[5, 2, 4], [null, 1], [1]], 'metrics charts: a long series keeps the largest value of each pixel bucket, and a bucket with no value stays null');
+eq([xLabelIndexes(10, 400), xLabelIndexes(10, 600), xLabelIndexes(1, 600)], [[0, 5, 9], [0, 2, 5, 7, 9], [0]], 'metrics charts: three x labels under 460 px and five above, the first and last always labelled, one point labelled once');
+sectionEnd('metrics charts tests: ok');
+
+// ---- Metrics tables: "Load older" appends a page under the rows read (src/metrics/bodies.ts) ----
+{
+  const pageRow = (scope: string) => ({ cells: [], scope, selected: false });
+  const cols = [{ head: 'Call', num: false }];
+  const first = { columns: cols, rows: [pageRow('a'), pageRow('b')], empty: '', more: '/v1/metrics/calls?before=1' };
+  const older = appendPage(first, { columns: cols, rows: [pageRow('c')], empty: '', more: '/v1/metrics/calls?before=2' });
+  eq(older.rows.map((r) => r.scope), ['a', 'b', 'c'], 'a page of older rows goes under the rows already read');
+  eq(older.more, '/v1/metrics/calls?before=2', 'the page\'s own more replaces the table\'s');
+  eq(first.rows.length, 2, 'appending a page leaves the table it was given as it was');
+  eq(appendPage(older, { columns: cols, rows: [], empty: '' }).more, null, 'a last page with no more ends the paging');
+  sectionEnd('metrics table paging tests: ok');
+}
+
+// ---- Metrics view state: the URL hash, the request, the saved pins and scopes, the live lease (src/metrics/state.ts) ----
+{
+  const full: MetricsState = {
+    tab: 'latency',
+    scope: 'node:n1',
+    range: '6h',
+    shift: -2,
+    zoom: [0.25, 0.75],
+    compare: 'scope:node:n2',
+    group: 'model',
+    trace: 'abc 123',
+    filter: 'status=error',
+    fixture: true,
+    live: DEFAULT_STATE.live,
+    annotations: DEFAULT_STATE.annotations,
+    compact: DEFAULT_STATE.compact,
+  };
+  eq(toHash(full), '#/metrics?tab=latency&scope=node%3An1&range=6h&shift=-2&zoom=0.250%2C0.750&compare=scope%3Anode%3An2&group=model&trace=abc+123&filter=status%3Derror&fixture=1', 'metrics state: a full state writes every non-default field in the fixed order');
+  eq(parseHash(toHash(full)), full, 'metrics state: a full state survives the round trip through the hash');
+  eq(toHash(DEFAULT_STATE), '#/metrics', 'metrics state: the defaults write a bare route');
+  eq(parseHash('#/metrics'), DEFAULT_STATE, 'metrics state: a bare route reads as the defaults');
+  eq(parseHash('#/metrics?range=2y&zoom=0.8,0.2&shift=3&fixture=yes'), DEFAULT_STATE, 'metrics state: a bad range, zoom, shift or fixture falls back to the defaults');
+  eq([parseHash('#/metrics?zoom=0.5,1.5').zoom, parseHash('#/metrics?zoom=0.1,0.9').zoom, parseHash('#/metrics?range=7d').range], [null, [0.1, 0.9], '7d'], 'metrics state: a zoom outside 0 to 1 is dropped, a valid one is read, a known range is read');
+  eq(parseHash('#/metrics?compact=1').compact, false, 'metrics state: compact is a preference and is not read from the URL');
+  eq(queryOf(full, 800, 120), { tab: 'latency', scope: 'node:n1', range: '6h', shift: -2, compare: 'scope:node:n2', group: 'model', width: 800, tz: 120, fixture: true, zoom: [0.25, 0.75], trace: 'abc 123', filter: 'status=error' }, 'metrics state: the hub query carries the zoom tuple, trace and filter when set');
+  eq(queryOf(DEFAULT_STATE, 600, 0), { tab: 'overview', scope: 'global', range: '24h', shift: 0, compare: 'prev', group: 'provider', width: 600, tz: 0, fixture: false }, 'metrics state: the default hub query leaves out zoom, trace and filter');
+
+  const none: Saved = { scopes: [], pins: [], recent: [], starter: true };
+  const six: Saved = { ...none, recent: ['a', 'b', 'c', 'd', 'e', 'f'] };
+  eq(visit(six, 'g').recent, ['g', 'a', 'b', 'c', 'd', 'e'], 'metrics state: a new scope goes first and the oldest drops off, so recent keeps six');
+  eq(visit(six, 'c').recent, ['c', 'a', 'b', 'd', 'e', 'f'], 'metrics state: a visited scope moves to the front without a duplicate');
+  eq(six.recent, ['a', 'b', 'c', 'd', 'e', 'f'], 'metrics state: visiting returns a new object and leaves the saved one as it was');
+  eq(togglePinnedScope(togglePinnedScope(none, 'node:n1'), 'node:n1').scopes, [], 'metrics state: a pinned scope unpins on the second toggle');
+
+  const pin = { tab: 'latency', scope: 'global', panel: 'p-p95' };
+  const pinned = togglePin(none, pin);
+  eq(pinned.pins, [pin], 'metrics state: a panel pin is added');
+  eq(pinned.starter, false, 'metrics state: the first pin clears the starter flag');
+  eq(togglePin(pinned, pin).pins, [], 'metrics state: the same pin again removes it');
+  eq(togglePin(pinned, { ...pin, scope: 'node:n1' }).pins.length, 2, 'metrics state: the same panel on another scope is a different pin');
+
+  const sent: LiveLease[] = [];
+  const lease: LiveLease = { scope: 'global', tab: 'overview', group: 'provider', range: '15m' };
+  let current: LiveLease | null = lease;
+  const keeper = new LeaseKeeper(async (l) => { sent.push(l); }, () => current);
+  keeper.poke();
+  keeper.poke();
+  eq(sent.length, 1, 'metrics state: a lease is sent once and not again on a poke within 10 s');
+  current = { ...lease, range: '1h' };
+  keeper.poke();
+  eq(sent.length, 2, 'metrics state: a changed lease is sent at once');
+  current = null;
+  keeper.poke();
+  current = lease;
+  keeper.poke();
+  eq(sent.length, 3, 'metrics state: a lease is sent again after the view stopped holding one');
+  keeper.stop();
+}
+sectionEnd('metrics state tests: ok');
+
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);
   process.exit(1);
+}
+
+// ---- metrics tile rows ------------------------------------------------------
+{
+  eq([1, 3, 4, 5, 6, 7, 8, 9].map(narrowTileColumns), [1, 3, 4, 5, 3, 4, 4, 3], 'tiles: narrow rows are even, as the desktop wraps them');
+  console.log('metrics tile rows tests: ok');
 }

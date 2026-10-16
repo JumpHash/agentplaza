@@ -1,6 +1,8 @@
 // Hand-built SVG charts: stacked area, vertical bars, sparkline, and a number tween.
 // No dependencies. Colours are CSS strings applied through element style (var() works there).
 
+import '../styles/chart.css';
+
 export interface ChartLayer { key: string; label: string; color: string; values: number[] }
 export interface AreaData { labels: string[]; layers: ChartLayer[] }
 export interface AreaOptions {

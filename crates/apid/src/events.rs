@@ -7,15 +7,19 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use apz_http::client::Target;
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
 use apz_http::{Response, Router};
+use apz_metrics::{Counter, EntityKind, Gauge, Hist, SeriesKey};
 use serde::{Deserialize, Serialize};
 
 use crate::state::App;
+
+/// The entity of the hub-wide `hub.*` series.
+const HUB_ENTITY: &str = "hub";
 
 /// The subprotocol a console asks for.
 const PROTOCOL: &str = "apz.events.v1";
@@ -32,11 +36,13 @@ const POLL: Duration = Duration::from_millis(250);
 /// How long the relay waits for noded to answer the handshake.
 const CONNECT: Duration = Duration::from_secs(10);
 
-/// One event on the bus: its kind and its one-line JSON data.
+/// One event on the bus: its kind, its one-line JSON data, and when it was published (a socket
+/// measures its queue wait from this).
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub kind: String,
     pub data: String,
+    pub queued: Instant,
 }
 
 impl Frame {
@@ -55,9 +61,33 @@ impl Frame {
 #[derive(Default)]
 pub struct Bus {
     subscribers: Mutex<Vec<SyncSender<Frame>>>,
+    instruments: OnceLock<Instruments>,
+}
+
+/// The bus's own series, handed over by [`instrument_bus`].
+struct Instruments {
+    events: Counter,
+    clients: Gauge,
+    lag: Hist,
 }
 
 impl Bus {
+    /// Sets the handles the bus records into: `hub.events` for each publish, `hub.ws_clients` for the
+    /// subscriber count, and `hub.bus_lag_ms` for how long an event waits before its socket writes it.
+    /// Only the first call takes effect.
+    pub fn instrument(&self, events: Counter, clients: Gauge, lag: Hist) {
+        let _ = self.instruments.set(Instruments {
+            events,
+            clients,
+            lag,
+        });
+    }
+
+    /// The lag histogram, once [`Bus::instrument`] has run.
+    fn lag(&self) -> Option<Hist> {
+        self.instruments.get().map(|i| i.lag.clone())
+    }
+
     pub fn publish(&self, kind: &str, data: &impl Serialize) {
         let data = serde_json::to_string(data).unwrap_or_else(|_| "null".into());
         self.publish_raw(kind, data);
@@ -68,22 +98,53 @@ impl Bus {
         let frame = Frame {
             kind: kind.to_string(),
             data,
+            queued: Instant::now(),
         };
-        self.subscribers
+        if let Some(instruments) = self.instruments.get() {
+            instruments.events.inc();
+        }
+        let mut subscribers = self
+            .subscribers
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|s| s.try_send(frame.clone()).is_ok());
+            .unwrap_or_else(PoisonError::into_inner);
+        subscribers.retain(|s| s.try_send(frame.clone()).is_ok());
+        if let Some(instruments) = self.instruments.get() {
+            instruments.clients.set(subscribers.len() as f64);
+        }
     }
 
     /// A subscription with a queue of [`QUEUE`] events.
     pub fn subscribe(&self) -> Receiver<Frame> {
         let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE);
-        self.subscribers
+        let mut subscribers = self
+            .subscribers
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(tx);
+            .unwrap_or_else(PoisonError::into_inner);
+        subscribers.push(tx);
+        if let Some(instruments) = self.instruments.get() {
+            instruments.clients.set(subscribers.len() as f64);
+        }
         rx
     }
+}
+
+/// Gives the bus its `hub.*` series from the hub's registry. Called once at startup, from
+/// `metrics::collect::spawn`.
+pub fn instrument_bus(app: &App) {
+    let registry = &app.metrics.registry;
+    app.bus.instrument(
+        registry.counter(SeriesKey::new("hub.events", EntityKind::Hub, HUB_ENTITY)),
+        registry.gauge(SeriesKey::new(
+            "hub.ws_clients",
+            EntityKind::Hub,
+            HUB_ENTITY,
+        )),
+        registry.hist(SeriesKey::new(
+            "hub.bus_lag_ms",
+            EntityKind::Hub,
+            HUB_ENTITY,
+        )),
+    );
 }
 
 /// The sockets open now, per peer and in all. A [`Slot`] holds one place until it drops.
@@ -164,6 +225,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             return Response::error(429, "too many open event sockets; close one first");
         };
         let events = app.bus.subscribe();
+        let lag = app.bus.lag();
         ws::accept(
             req,
             Origins::SameHost,
@@ -171,19 +233,23 @@ pub fn routes(router: Router<App>) -> Router<App> {
             Limits::default(),
             move |socket| {
                 let _slot = slot;
-                serve(socket, events);
+                serve(socket, events, lag);
             },
         )
     })
 }
 
 /// Forwards the bus's events to `socket` until it ends: a client message closes it (read-only,
-/// 1008), a queue that overflowed closes it (too slow, 1013), and a dead connection just ends.
-fn serve(mut socket: Socket, events: Receiver<Frame>) {
+/// 1008), a queue that overflowed closes it (too slow, 1013), and a dead connection just ends. Each
+/// event's wait since it was published goes into `lag` when one is given.
+fn serve(mut socket: Socket, events: Receiver<Frame>, lag: Option<Hist>) {
     loop {
         loop {
             match events.try_recv() {
                 Ok(frame) => {
+                    if let Some(lag) = &lag {
+                        lag.record(frame.queued.elapsed().as_secs_f64() * 1000.0);
+                    }
                     if socket.send(&Message::Text(frame.wire())).is_err() {
                         return;
                     }
@@ -333,6 +399,30 @@ mod tests {
             frame.wire(),
             r#"{"event":"run","data":{"id":"r1","state":"running"}}"#
         );
+    }
+
+    #[test]
+    fn a_publish_counts_into_hub_events_and_sets_the_client_count() {
+        let registry = apz_metrics::Registry::new(64);
+        let events = registry.counter(SeriesKey::new("hub.events", EntityKind::Hub, HUB_ENTITY));
+        let clients = registry.gauge(SeriesKey::new(
+            "hub.ws_clients",
+            EntityKind::Hub,
+            HUB_ENTITY,
+        ));
+        let lag = registry.hist(SeriesKey::new(
+            "hub.bus_lag_ms",
+            EntityKind::Hub,
+            HUB_ENTITY,
+        ));
+        let bus = Bus::default();
+        bus.instrument(events.clone(), clients.clone(), lag);
+        let _first = bus.subscribe();
+        let _second = bus.subscribe();
+        assert_eq!(clients.get(), 2.0, "each subscription counts as a client");
+        bus.publish_raw("run", "null".to_string());
+        bus.publish_raw("run", "null".to_string());
+        assert_eq!(events.total(), 2.0, "each publish counts once");
     }
 
     #[test]

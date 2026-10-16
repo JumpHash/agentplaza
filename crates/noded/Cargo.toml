@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 apz-http.workspace = true
+# What the node records for the hub (metrics.rs), the batch it sends (apz_metrics::wire), and its Prometheus
+# metrics and timing lines (apz_metrics::prom).
 apz-metrics.workspace = true
 apz-os = { path = "../apz-os" }
 apz-station = { path = "../apz-station" }
@@ -18,6 +20,8 @@ serde_json.workspace = true
 # Warm templates are keyed by the SHA-256 of their images and shape (`templates`).
 sha2.workspace = true
 vmm = { path = "../vmm" }
+# Volume sizes everywhere; on hosts other than Linux, the host stats too (Linux reads `/proc`).
+sysinfo = "0.33"
 
 [lib]
 name = "noded"

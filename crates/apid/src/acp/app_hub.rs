@@ -246,6 +246,12 @@ impl Hub for AppHub<'_> {
         (current, models)
     }
 
+    fn context_window(&self, cid: u64) -> Option<u64> {
+        let agent = self.app.agents.get(cid)?;
+        let model = crate::agents::model_of(self.app, &agent);
+        crate::providers::context_window(self.app, &model)
+    }
+
     fn set_model(&self, cid: u64, model: &str) -> Result<(), String> {
         let agent = self
             .app

@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::internal::authorized;
+use crate::metrics::collect::{self, ModelCall};
 use crate::payments::{charge_model_call, paying_from};
 use crate::prices::{Tokens, USD_PER_CREDIT};
 use crate::settings::{ModelPolicy, Tier, tier_of};
@@ -371,11 +372,67 @@ pub fn tokens_in_sse(text: &str) -> Option<Metered> {
     finish(acc)
 }
 
+/// How a relayed HTTP model call went on the wire, carried with its usage to [`record_usage`]: the
+/// provider, the time to the first event (for a buffered body, to the response's headers), the whole
+/// call's duration, the upstream status and the percent of the rate-limit window left.
+#[derive(Clone, Debug)]
+struct CallTiming {
+    provider: String,
+    ttft_ms: Option<f64>,
+    duration_ms: f64,
+    status: u16,
+    ratelimit: (Option<f64>, Option<f64>),
+}
+
+/// Milliseconds from `from` to `to`.
+fn ms_between(from: Instant, to: Instant) -> f64 {
+    to.duration_since(from).as_secs_f64() * 1000.0
+}
+
+/// The text of a response header, or `None` when it is absent or not text.
+fn header_text(resp: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
+    resp.headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// The percent left of one rate-limit window (`what` is `requests` or `tokens`), from the headers
+/// `header` reads. Anthropic's `anthropic-ratelimit-*` names are tried first, then the `x-ratelimit-*`
+/// names that OpenAI-style providers send. `None` when neither pair is present or the limit is not positive.
+fn percent_left(header: &impl Fn(&str) -> Option<String>, what: &str) -> Option<f64> {
+    let names = [
+        (
+            format!("anthropic-ratelimit-{what}-remaining"),
+            format!("anthropic-ratelimit-{what}-limit"),
+        ),
+        (
+            format!("x-ratelimit-remaining-{what}"),
+            format!("x-ratelimit-limit-{what}"),
+        ),
+    ];
+    names.iter().find_map(|(remaining, limit)| {
+        let remaining: f64 = header(remaining.as_str())?.trim().parse().ok()?;
+        let limit: f64 = header(limit.as_str())?.trim().parse().ok()?;
+        (remaining.is_finite() && limit.is_finite() && limit > 0.0)
+            .then(|| (remaining * 100.0 / limit).clamp(0.0, 100.0))
+    })
+}
+
+/// The percent left of the requests and of the tokens in a provider's rate-limit window, from the
+/// headers `header` reads (`None` for each that the response does not give).
+fn ratelimit_left(header: impl Fn(&str) -> Option<String>) -> (Option<f64>, Option<f64>) {
+    (
+        percent_left(&header, "requests"),
+        percent_left(&header, "tokens"),
+    )
+}
+
 /// Usage read from streams and sockets, waiting to be recorded: the stream writer has no
 /// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]). Each
 /// entry carries the charge the call started under (its task and work item), read when the call
 /// started: the usage is recorded only after the call ends, by which time the agent may have moved on.
-type PendingUsage = Vec<(u64, Charge, String, Metered)>;
+type PendingUsage = Vec<(u64, Charge, String, Metered, Option<CallTiming>)>;
 
 fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingUsage>> =
@@ -383,11 +440,19 @@ fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     PENDING.get_or_init(Default::default)
 }
 
-fn defer_usage(cid: u64, charge: Charge, model: String, metered: Metered) {
+/// Queues one call's usage for [`drain_usage`]. `timing` is `None` for a socket relay, which does not time
+/// its calls: such a call's usage is metered, but it is not reported to the metrics.
+fn defer_usage(
+    cid: u64,
+    charge: Charge,
+    model: String,
+    metered: Metered,
+    timing: Option<CallTiming>,
+) {
     pending_usage()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((cid, charge, model, metered));
+        .push((cid, charge, model, metered, timing));
 }
 
 /// The usage of one Gemini `usageMetadata` object. Gemini's prompt count includes the cached part
@@ -453,16 +518,23 @@ pub fn drain_usage(app: &App) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (cid, charge, model, metered) in done {
-        record_usage(app, cid, charge, &model, metered);
+    for (cid, charge, model, metered, timing) in done {
+        record_usage(app, cid, charge, &model, metered, timing);
     }
 }
 
 /// Adds one call's usage to the agent's usage, records it in the transcript and meters it into
 /// the usage ledger, charged to the task and work item the call started under (`charge`, read when
 /// it started). The transcript entry stays under no work: a work's transcript is the agent's own
-/// text, and the feed would show these calls as that.
-fn record_usage(app: &App, cid: u64, charge: Charge, model: &str, metered: Metered) {
+/// text, and the feed would show these calls as that. A timed call is also reported to the metrics.
+fn record_usage(
+    app: &App,
+    cid: u64,
+    charge: Charge,
+    model: &str,
+    metered: Metered,
+    timing: Option<CallTiming>,
+) {
     let t = metered.tokens;
     let usage = serde_json::from_value(json!({
         "input_tokens": t.input,
@@ -491,6 +563,48 @@ fn record_usage(app: &App, cid: u64, charge: Charge, model: &str, metered: Meter
     );
     bill_call(app, cid, charge.task.as_deref(), model, t, metered.cost_usd);
     crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
+    if let Some(timing) = timing {
+        report_model_call(app, cid, model, t, metered.cost_usd, &timing);
+    }
+}
+
+/// Reports one timed HTTP model call to the metrics. Its cost is the provider's when it reported one,
+/// else the price table's estimate, as the usage ledger charges it.
+fn report_model_call(
+    app: &App,
+    cid: u64,
+    model: &str,
+    tokens: Tokens,
+    cost_usd: Option<f64>,
+    timing: &CallTiming,
+) {
+    let cost_usd = cost_usd.unwrap_or_else(|| {
+        let settings = app.settings.get();
+        app.prices
+            .lookup(model, &settings.prices)
+            .map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens))
+    });
+    collect::model_call(
+        app,
+        &ModelCall {
+            cid,
+            provider: timing.provider.clone(),
+            model: model.to_string(),
+            engine: "ACP engine".to_string(),
+            tokens_in: tokens.input,
+            cache_read: tokens.cache_read,
+            cache_write: tokens.cache_write,
+            tokens_out: tokens.output,
+            cost_usd,
+            ttft_ms: timing.ttft_ms,
+            duration_ms: Some(timing.duration_ms),
+            status: timing.status,
+            retries: 0,
+            task: None,
+            context: Vec::new(),
+            ratelimit: timing.ratelimit,
+        },
+    );
 }
 
 /// The task agent `cid` is working on, if any: the one its usage is charged to.
@@ -801,19 +915,45 @@ fn relay(
     }
     let (base, key) = provider_upstream(app, provider, cid)?;
     let headers = upstream_headers(app, req, provider, path);
-    let resp = upstream_post(provider, &base, &key, path, &headers, &body)
-        .map_err(|e| Response::error(502, &e))?;
+    let started = Instant::now();
+    let resp = upstream_post(provider, &base, &key, path, &headers, &body).map_err(|e| {
+        // No response came back: the call counts as a failed one, with no tokens.
+        let timing = CallTiming {
+            provider: provider.to_string(),
+            ttft_ms: None,
+            duration_ms: ms_between(started, Instant::now()),
+            status: 502,
+            ratelimit: (None, None),
+        };
+        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+        Response::error(502, &e)
+    })?;
 
     let status = resp.status().as_u16();
     let ok = (200..300).contains(&status);
     let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
+    // A buffered body arrives whole, so its first byte is the response's headers.
+    let headers_ms = ms_between(started, Instant::now());
+    let ratelimit = ratelimit_left(|name| header_text(&resp, name));
     let mut reader = resp.into_body().into_reader();
     if streaming && ok {
+        let provider = provider.to_string();
         return Ok(Response::sse(move |sse| {
-            // The stream's tail carries its usage; it is metered once the stream ends.
-            let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
+            // The stream's tail carries its usage; it is metered once the stream ends, with the time
+            // its first data line arrived.
+            let mut first_data = None;
+            let tail = read_sse(BufReader::new(reader), &mut first_data, |kind, data| {
+                sse.event(kind, data)
+            })?;
             if let Some(tokens) = tokens_in_sse(&tail) {
-                defer_usage(cid, charge, model, tokens);
+                let timing = CallTiming {
+                    provider,
+                    ttft_ms: first_data.map(|at| ms_between(started, at)),
+                    duration_ms: ms_between(started, Instant::now()),
+                    status,
+                    ratelimit,
+                };
+                defer_usage(cid, charge, model, tokens, Some(timing));
             }
             Ok(())
         }));
@@ -823,11 +963,21 @@ fn relay(
     reader
         .read_to_end(&mut bytes)
         .map_err(|e| Response::error(502, &format!("upstream: {e}")))?;
+    let timing = CallTiming {
+        provider: provider.to_string(),
+        ttft_ms: Some(headers_ms),
+        duration_ms: ms_between(started, Instant::now()),
+        status,
+        ratelimit,
+    };
+    if !ok {
+        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+    }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in(&value) {
-            record_usage(app, cid, charge, &model, tokens);
+            record_usage(app, cid, charge, &model, tokens, Some(timing));
         }
     }
     Ok(Response::json(status, &value))
@@ -901,18 +1051,43 @@ fn relay_gemini(
     if event_stream {
         path.push_str("?alt=sse");
     }
-    let resp = upstream_post("gemini", &base, &key, &path, &[], &body)
-        .map_err(|e| Response::error(502, &e))?;
+    let started = Instant::now();
+    let resp = upstream_post("gemini", &base, &key, &path, &[], &body).map_err(|e| {
+        // No response came back: the call counts as a failed one, with no tokens.
+        let timing = CallTiming {
+            provider: "gemini".to_string(),
+            ttft_ms: None,
+            duration_ms: ms_between(started, Instant::now()),
+            status: 502,
+            ratelimit: (None, None),
+        };
+        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+        Response::error(502, &e)
+    })?;
 
     let status = resp.status().as_u16();
     let ok = (200..300).contains(&status);
+    // A buffered body arrives whole, so its first byte is the response's headers.
+    let headers_ms = ms_between(started, Instant::now());
+    let ratelimit = ratelimit_left(|name| header_text(&resp, name));
     let mut reader = resp.into_body().into_reader();
     if event_stream && ok {
         return Ok(Response::sse(move |sse| {
-            // The stream's last event carries the usage; it is metered once the stream ends.
-            let tail = read_sse(BufReader::new(reader), |kind, data| sse.event(kind, data))?;
+            // The stream's last event carries the usage; it is metered once the stream ends, with the
+            // time its first data line arrived.
+            let mut first_data = None;
+            let tail = read_sse(BufReader::new(reader), &mut first_data, |kind, data| {
+                sse.event(kind, data)
+            })?;
             if let Some(tokens) = tokens_in_gemini_sse(&tail) {
-                defer_usage(cid, charge, model, tokens);
+                let timing = CallTiming {
+                    provider: "gemini".to_string(),
+                    ttft_ms: first_data.map(|at| ms_between(started, at)),
+                    duration_ms: ms_between(started, Instant::now()),
+                    status,
+                    ratelimit,
+                };
+                defer_usage(cid, charge, model, tokens, Some(timing));
             }
             Ok(())
         }));
@@ -922,20 +1097,32 @@ fn relay_gemini(
     reader
         .read_to_end(&mut bytes)
         .map_err(|e| Response::error(502, &format!("upstream: {e}")))?;
+    let timing = CallTiming {
+        provider: "gemini".to_string(),
+        ttft_ms: Some(headers_ms),
+        duration_ms: ms_between(started, Instant::now()),
+        status,
+        ratelimit,
+    };
+    if !ok {
+        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+    }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
     if ok {
         if let Some(tokens) = tokens_in_gemini(&value) {
-            record_usage(app, cid, charge, &model, tokens);
+            record_usage(app, cid, charge, &model, tokens, Some(timing));
         }
     }
     Ok(Response::json(status, &value))
 }
 
 /// Reads an SSE body, handing each event (its name, `message` when unnamed, and its data) to
-/// `on_event`. Returns the stream's tail, for metering.
+/// `on_event`. Returns the stream's tail, for metering. `first_data` is set to the time the first
+/// data line arrived, and left alone once it is set.
 fn read_sse(
     reader: impl BufRead,
+    first_data: &mut Option<Instant>,
     mut on_event: impl FnMut(&str, &str) -> io::Result<()>,
 ) -> io::Result<String> {
     let mut event = String::new();
@@ -957,6 +1144,7 @@ fn read_sse(
         } else if let Some(name) = line.strip_prefix("event:") {
             event = name.trim().to_string();
         } else if let Some(text) = line.strip_prefix("data:") {
+            first_data.get_or_insert_with(Instant::now);
             if !data.is_empty() {
                 data.push('\n');
             }
@@ -1097,7 +1285,7 @@ fn meter_responses(cid: u64, charge: &Charge, model: &str, frame: &str) {
         return;
     }
     if let Some(tokens) = tokens_in(&event) {
-        defer_usage(cid, charge.clone(), model.to_string(), tokens);
+        defer_usage(cid, charge.clone(), model.to_string(), tokens, None);
     }
 }
 
@@ -1293,12 +1481,12 @@ fn stream_messages(
             .map_err(|e| e.to_string())?;
         return Err(format!("upstream answered {status}: {body}"));
     }
-    let tail = read_sse(BufReader::new(reader), |kind, data| {
+    let tail = read_sse(BufReader::new(reader), &mut None, |kind, data| {
         client.send(&text_frame(id, kind, data))
     })
     .map_err(|e| e.to_string())?;
     if let Some(tokens) = tokens_in_sse(&tail) {
-        defer_usage(grant.cid, charge, model, tokens);
+        defer_usage(grant.cid, charge, model, tokens, None);
     }
     Ok(())
 }
@@ -1360,6 +1548,56 @@ fn list_gemini_models(app: &App, cid: u64) -> Result<Response, Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header lookup over fixed name and value pairs, as a response's headers read.
+    fn headers_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn anthropic_ratelimit_headers_give_the_percent_left_of_requests_and_tokens() {
+        let headers = [
+            ("anthropic-ratelimit-requests-limit", "50"),
+            ("anthropic-ratelimit-requests-remaining", "10"),
+            ("anthropic-ratelimit-tokens-limit", "100000"),
+            ("anthropic-ratelimit-tokens-remaining", "25000"),
+        ];
+        assert_eq!(
+            ratelimit_left(headers_of(&headers)),
+            (Some(20.0), Some(25.0))
+        );
+    }
+
+    #[test]
+    fn openai_style_ratelimit_headers_give_the_percent_left_of_requests_and_tokens() {
+        let headers = [
+            ("x-ratelimit-limit-requests", "3000"),
+            ("x-ratelimit-remaining-requests", "1500"),
+            ("x-ratelimit-limit-tokens", "100000"),
+            ("x-ratelimit-remaining-tokens", "90000"),
+        ];
+        assert_eq!(
+            ratelimit_left(headers_of(&headers)),
+            (Some(50.0), Some(90.0))
+        );
+    }
+
+    #[test]
+    fn a_response_without_ratelimit_headers_gives_no_percent() {
+        assert_eq!(ratelimit_left(headers_of(&[])), (None, None));
+        // A remaining count without its limit, or a zero limit, gives nothing either.
+        let partial = [
+            ("anthropic-ratelimit-requests-remaining", "10"),
+            ("x-ratelimit-limit-tokens", "0"),
+            ("x-ratelimit-remaining-tokens", "5"),
+        ];
+        assert_eq!(ratelimit_left(headers_of(&partial)), (None, None));
+    }
 
     #[test]
     fn a_sealed_vault_refuses_the_upstream_call_with_503_and_no_key() {
@@ -1497,6 +1735,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
                 tokens,
                 cost_usd: None,
             },
+            None,
         );
         let mut pending = pending_usage()
             .lock()
@@ -1507,7 +1746,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         *pending = rest;
         drop(pending);
         assert_eq!(mine.len(), 1);
-        let (_, charge, model, metered) = &mine[0];
+        let (_, charge, model, metered, _) = &mine[0];
         // The task is the one the call started under, not whatever the agent works on when it drains.
         assert_eq!(charge, &started);
         assert_eq!(model, "anthropic/x");

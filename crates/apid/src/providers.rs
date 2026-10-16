@@ -536,6 +536,11 @@ impl Store {
         Ok(view)
     }
 
+    /// The last `all_models` answer, however old, without asking any provider (None before the first).
+    fn cached_models(&self) -> Option<Value> {
+        lock(&self.models).as_ref().map(|(_, v)| v.clone())
+    }
+
     /// `GET /v1/models`: every provider's models, cached for [`MODEL_CACHE`].
     fn all_models(&self) -> Value {
         let cached = lock(&self.models)
@@ -680,11 +685,57 @@ fn all_models_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     Response::json(200, &app.providers.all_models())
 }
 
-/// One `/v1/models` entry: the model, its provider, the provider's group, and whether the model is a
-/// contributor model that trains its provider's future models on what it is sent (`trains_on_data`).
+/// One `/v1/models` entry: the model, its provider, the provider's group, whether the model is a
+/// contributor model that trains its provider's future models on what it is sent (`trains_on_data`),
+/// and its context window in tokens (`context`, null when the provider's listing does not say).
 fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
     let trains_on_data = apz_gateway::lists_training_model(&p.options, &m.id);
-    json!({ "provider": p.id, "group": p.kind.group(), "id": m.id, "name": m.name, "trains_on_data": trains_on_data })
+    json!({ "provider": p.id, "group": p.kind.group(), "id": m.id, "name": m.name, "context": m.context, "trains_on_data": trains_on_data })
+}
+
+/// The context window of `model` (`provider/model`, or a bare model id) in tokens: the window the
+/// provider's listing states for it, else the window of its known model family (see [`known_window`]).
+/// None when neither knows it, as for a local model.
+/// Reads only the cached listing: metrics compose this every few seconds and must never wait on a provider.
+pub fn context_window(app: &App, model: &str) -> Option<u64> {
+    app.providers
+        .cached_models()
+        .and_then(|listed| listed_window(&listed["models"], model))
+        .or_else(|| known_window(model))
+}
+
+/// The window the `/v1/models` entries (`models`, the array `all_models` answers with) state for
+/// `model`. A `provider/id` match is preferred over a bare `id` match; the first match that states a
+/// window answers.
+fn listed_window(models: &Value, model: &str) -> Option<u64> {
+    let entries = models.as_array()?;
+    let qualified = entries.iter().filter(|e| {
+        let provider = e["provider"].as_str().unwrap_or_default();
+        let id = e["id"].as_str().unwrap_or_default();
+        format!("{provider}/{id}") == model
+    });
+    let bare = entries.iter().filter(|e| e["id"].as_str() == Some(model));
+    qualified.chain(bare).find_map(|e| e["context"].as_u64())
+}
+
+/// The context windows of the model families the plaza knows, by the prefix of the model's id. Used
+/// when a provider's listing does not state a window for a model.
+const KNOWN_WINDOWS: &[(&str, u64)] = &[
+    ("claude-opus", 200_000),
+    ("claude-sonnet", 200_000),
+    ("claude-haiku", 200_000),
+    ("gpt-5", 400_000),
+    ("deepseek", 128_000),
+];
+
+/// The known window of `model`, matched on the id after its last `/` (so a `provider/` prefix, or
+/// the `openrouter/anthropic/…` form, does not hide the family). None for a family not in the table.
+fn known_window(model: &str) -> Option<u64> {
+    let id = model.rsplit('/').next().unwrap_or(model);
+    KNOWN_WINDOWS
+        .iter()
+        .find(|(prefix, _)| id.starts_with(prefix))
+        .map(|(_, window)| *window)
 }
 
 /// `text` with `key` replaced by [`REDACTED`] when it carries it: an upstream error may echo a key.
@@ -1884,5 +1935,39 @@ mod tests {
             assert_eq!(merged.auth, Auth::Command("echo fresh".to_string()));
             assert_eq!(merged.extra_body, stored.extra_body);
         }
+    }
+
+    #[test]
+    fn a_listed_window_is_found_with_or_without_the_provider_prefix() {
+        let models = json!([
+            {"provider": "openrouter", "id": "anthropic/claude-x", "context": 1_000_000},
+            {"provider": "anthropic", "id": "claude-sonnet-4-5", "context": 300_000},
+            {"provider": "local", "id": "llama", "context": null},
+        ]);
+        assert_eq!(
+            listed_window(&models, "anthropic/claude-sonnet-4-5"),
+            Some(300_000)
+        );
+        assert_eq!(listed_window(&models, "claude-sonnet-4-5"), Some(300_000));
+        assert_eq!(
+            listed_window(&models, "openrouter/anthropic/claude-x"),
+            Some(1_000_000)
+        );
+        assert_eq!(listed_window(&models, "local/llama"), None);
+        assert_eq!(listed_window(&models, "missing/model"), None);
+    }
+
+    #[test]
+    fn a_known_family_gives_its_window_and_a_model_outside_the_table_none() {
+        assert_eq!(known_window("anthropic/claude-opus-5-5"), Some(200_000));
+        assert_eq!(known_window("claude-haiku-5-5"), Some(200_000));
+        assert_eq!(
+            known_window("openrouter/anthropic/claude-sonnet-4-5"),
+            Some(200_000)
+        );
+        assert_eq!(known_window("openai/gpt-5-mini"), Some(400_000));
+        assert_eq!(known_window("deepseek/deepseek-chat"), Some(128_000));
+        assert_eq!(known_window("ollama/llama3"), None);
+        assert_eq!(known_window("local/qwen2.5-coder"), None);
     }
 }
