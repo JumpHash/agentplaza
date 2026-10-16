@@ -18,10 +18,12 @@
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
 //!   POST   /v1/nodes/{id}/results            (signed) {command, ok, status, body}
-//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine, status, runs, metrics?}
-//!   POST   /v1/nodes/{id}/metrics            (signed) a metrics batch (`apz_metrics::wire::Batch`)
+//!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine, status, runs, metrics_z?}
+//!   POST   /v1/nodes/{id}/metrics            (signed) {z} with a deflated, base64 metrics batch, or a bare batch
+//!                                            (`apz_metrics::wire::Batch`)
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -30,6 +32,8 @@ use apz_http::{Params, Request, Response, Router};
 use apz_metrics::wire::Batch;
 use apz_metrics::{EntityKind, SeriesKey};
 use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
+use base64::Engine as _;
+use flate2::read::DeflateDecoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -898,9 +902,32 @@ struct Heartbeat {
     /// The node's noded `GET /v1/runs`.
     #[serde(default)]
     runs: Value,
-    /// The node's noded `GET /v1/metrics/batch`, when it has one; null otherwise.
+    /// The node's noded `GET /v1/metrics/batch`, deflated and base64 encoded; absent when it has none.
+    #[serde(default)]
+    metrics_z: Option<String>,
+    /// The node's noded `GET /v1/metrics/batch` as plain JSON, from nodes that predate `metrics_z`.
     #[serde(default)]
     metrics: Value,
+}
+
+/// The most a metrics batch may hold once it is inflated.
+const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reads a metrics batch sent deflated and base64 encoded, refusing one that inflates past [`MAX_BATCH_BYTES`].
+fn inflate_batch(encoded: &str) -> Result<Batch, String> {
+    let deflated = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| e.to_string())?;
+    let mut json = Vec::new();
+    // One byte past the limit is read, so an oversized batch is seen without inflating all of it.
+    DeflateDecoder::new(deflated.as_slice())
+        .take(MAX_BATCH_BYTES as u64 + 1)
+        .read_to_end(&mut json)
+        .map_err(|e| e.to_string())?;
+    if json.len() > MAX_BATCH_BYTES {
+        return Err("the metrics batch inflates past 4 MB".to_string());
+    }
+    serde_json::from_slice(&json).map_err(|e| e.to_string())
 }
 
 /// A beat takes the node's machine, status and runs, and its metrics batch when it carries one. A
@@ -931,8 +958,12 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             &node.id,
         ))
         .set(app.nodes.queued(&node.id) as f64);
-    // A null metrics field does not decode as a batch, so a beat without one skips this.
-    if let Ok(batch) = serde_json::from_value::<Batch>(beat.metrics) {
+    // A beat without a batch carries neither field, or a null `metrics`, and skips this.
+    let batch = match beat.metrics_z {
+        Some(encoded) => inflate_batch(&encoded).ok(),
+        None => serde_json::from_value::<Batch>(beat.metrics).ok(),
+    };
+    if let Some(batch) = batch {
         if previous_beat > 0 {
             let late = now.saturating_sub(previous_beat).saturating_sub(BEAT_MS);
             app.metrics
@@ -950,13 +981,22 @@ fn heartbeat_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 /// A signed node's metrics batch, posted on its own: the live batch (every 2 seconds while a scope
-/// on the node is watched) or one too big for a beat. It is ingested as a beat's batch is.
+/// on the node is watched) or one too big for a beat. It is ingested as a beat's batch is. The body is
+/// `{"z": …}` with the deflated, base64 encoded batch, or the bare batch.
 fn metrics_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let node = match signed_node(app, req, p) {
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let batch: Batch = match req.json() {
+    let body: Value = match req.json() {
+        Ok(v) => v,
+        Err(_) => return Response::error(400, "bad metrics batch"),
+    };
+    let parsed = match body.get("z").and_then(Value::as_str) {
+        Some(encoded) => inflate_batch(encoded),
+        None => serde_json::from_value::<Batch>(body).map_err(|e| e.to_string()),
+    };
+    let batch = match parsed {
         Ok(b) => b,
         Err(_) => return Response::error(400, "bad metrics batch"),
     };
@@ -967,6 +1007,38 @@ fn metrics_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A body as a node sends it: the JSON deflated, then base64 encoded.
+    fn deflated(json: &[u8]) -> String {
+        use base64::Engine as _;
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+        encoder.write_all(json).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(encoder.finish().unwrap())
+    }
+
+    #[test]
+    fn a_deflated_metrics_batch_inflates_to_the_batch_it_was_sent_as() {
+        let batch = Batch {
+            node: "n1".to_string(),
+            sent_ms: 9,
+            ..Batch::default()
+        };
+        let encoded = deflated(&serde_json::to_vec(&batch).unwrap());
+        assert_eq!(inflate_batch(&encoded).unwrap(), batch);
+        assert!(inflate_batch("not base64!").is_err());
+    }
+
+    #[test]
+    fn a_batch_that_inflates_past_four_megabytes_is_refused() {
+        // Valid JSON, so only the size limit can refuse it.
+        let mut json = br#"{"node":"n1","sent_ms":1,"pad":""#.to_vec();
+        json.extend(std::iter::repeat_n(b' ', MAX_BATCH_BYTES));
+        json.extend_from_slice(br#""}"#);
+        let error = inflate_batch(&deflated(&json)).unwrap_err();
+        assert!(error.contains("4 MB"), "{error}");
+    }
 
     #[test]
     fn a_heartbeat_deserializes_with_or_without_a_metrics_batch() {

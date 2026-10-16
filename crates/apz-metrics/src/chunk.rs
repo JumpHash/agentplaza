@@ -75,6 +75,18 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Point>, ChunkError> {
     Ok(points)
 }
 
+/// Keeps a value's sign, exponent and the top twelve bits of its mantissa, and clears the rest. A stored value is
+/// quantized first, so its low bits are zero and neighbouring values XOR to short runs. The error is under 0.025 %
+/// relative for a normal value; a value that is not finite is returned unchanged.
+pub fn quantize(v: f64) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    // A double has 52 mantissa bits; the low 40 are cleared, leaving 12.
+    const LOW_BITS: u64 = (1 << 40) - 1;
+    f64::from_bits(v.to_bits() & !LOW_BITS)
+}
+
 /// Appends `value` as an unsigned LEB128 varint.
 fn write_varint(mut value: u64, out: &mut Vec<u8>) {
     while value >= 0x80 {
@@ -344,6 +356,22 @@ mod tests {
             as_bits(&decode(&encode(&random)).unwrap()),
             as_bits(&random)
         );
+    }
+
+    #[test]
+    fn a_quantized_value_keeps_its_sign_exponent_and_twelve_mantissa_bits() {
+        for v in [37.2, -0.0001234, 1.0, 123_456.789, 1e300, -2.5e-200] {
+            let q = quantize(v);
+            assert_eq!(q.is_sign_negative(), v.is_sign_negative(), "{v}");
+            assert_eq!(q.abs().log2().floor(), v.abs().log2().floor(), "{v}");
+            assert!(
+                ((q - v) / v).abs() < 0.000_25,
+                "{v} quantized to {q}, over 0.025 %"
+            );
+            assert_eq!(quantize(q), q, "quantizing twice changes nothing");
+        }
+        assert_eq!(quantize(f64::INFINITY), f64::INFINITY);
+        assert!(quantize(f64::NAN).is_nan());
     }
 
     #[test]

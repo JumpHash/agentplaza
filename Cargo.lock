@@ -519,6 +519,8 @@ dependencies = [
  "apz-http",
  "apz-os",
  "apz-trust",
+ "base64 0.22.1",
+ "flate2",
  "rcgen",
  "serde",
  "serde_json",
@@ -528,6 +530,8 @@ dependencies = [
 name = "apz-metrics"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "serde",
  "serde_json",
 ]

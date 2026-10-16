@@ -300,8 +300,16 @@ impl PgStore {
             .collect();
         let chunk_series: Vec<String> = b.chunks.iter().map(|(k, _, _)| k.id()).collect();
         let chunk_starts: Vec<i64> = b.chunks.iter().map(|(_, s, _)| *s as i64).collect();
-        let chunk_points: Vec<Vec<u8>> =
-            b.chunks.iter().map(|(_, _, p)| chunk::encode(p)).collect();
+        // The values are quantized first, as the chunk format is built for: the low mantissa bits are dropped.
+        let chunk_points: Vec<Vec<u8>> = b
+            .chunks
+            .iter()
+            .map(|(_, _, p)| {
+                let quantized: Vec<(u64, f64)> =
+                    p.iter().map(|&(t, v)| (t, chunk::quantize(v))).collect();
+                chunk::encode(&quantized)
+            })
+            .collect();
 
         let minute_days: Vec<String> = b
             .minutes

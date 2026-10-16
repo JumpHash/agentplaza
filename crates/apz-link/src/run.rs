@@ -7,7 +7,7 @@
 //!   runs}` (the local vsockd's `GET /v1/status`, noded's `GET /v1/runs`; Null when down).
 //! - A refused signature (403) stops the loop with an error: the node was revoked.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
@@ -16,6 +16,9 @@ use std::time::Duration;
 use apz_http::auth::InternalToken;
 use apz_http::client;
 use apz_trust::node::NodeKey;
+use base64::Engine as _;
+use flate2::Compression;
+use flate2::write::DeflateEncoder;
 use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
@@ -265,14 +268,30 @@ mod machine_tests {
     }
 }
 
+/// Deflates a metrics body and base64 encodes it: the form a node sends a batch in. A body that cannot be
+/// deflated comes back empty, which the hub refuses.
+fn deflated_base64(bytes: &[u8]) -> String {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(6));
+    let deflated = encoder
+        .write_all(bytes)
+        .and_then(|()| encoder.finish())
+        .unwrap_or_default();
+    base64::engine::general_purpose::STANDARD.encode(deflated)
+}
+
 fn heartbeat_once(identity: &Identity, key: &NodeKey, local: &Local) {
     let path = format!("/v1/nodes/{}/heartbeat", identity.node_id);
-    let body = json!({
+    let mut body = json!({
         "machine": machine_report(local),
         "status": local_json(local, local.vsockd, "/v1/status"),
         "runs": local_json(local, local.noded, "/v1/runs"),
-        "metrics": local_json(local, local.noded, "/v1/metrics/batch"),
     });
+    // The batch travels as `metrics_z`; a node with no batch sends no field.
+    let metrics = local_json(local, local.noded, "/v1/metrics/batch");
+    if !metrics.is_null() {
+        let json = serde_json::to_vec(&metrics).unwrap_or_default();
+        body["metrics_z"] = json!(deflated_base64(&json));
+    }
     let bytes = serde_json::to_vec(&body).unwrap_or_default();
     // A failed beat is not reported here: the command loop reports the hub's state.
     let _ = hub_request(
@@ -309,13 +328,14 @@ fn live_once(identity: &Identity, key: &NodeKey, local: &Local) {
         return;
     }
     let path = format!("/v1/nodes/{}/metrics", identity.node_id);
+    let body = json!({ "z": deflated_base64(&reply.body) }).to_string();
     // A failed post is dropped: the next live batch replaces it.
     let _ = hub_request(
         identity,
         key,
         "POST",
         &path,
-        Some(reply.body.as_slice()),
+        Some(body.as_bytes()),
         HUB_TIMEOUT,
     );
 }
