@@ -1,0 +1,52 @@
+# Publishes the CI image (.github/ci/Dockerfile) for each runner architecture to GitHub's container
+# registry, tagged by the Dockerfile's hash and the architecture. A runner without the image (a new
+# one, or after the runner fleet's storage guard deleted every image) then pulls it in about a minute
+# instead of building it in six (.github/ci/image.sh). Each architecture builds natively on its own
+# runners. Runs when main's Dockerfile changes, and by hand.
+name: ci image
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/ci/Dockerfile, .github/ci/image.sh, .github/workflows/ci-image.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: '["self-hosted","Linux","X64","hetzner"]' }
+          - { arch: arm64, runner: '["self-hosted","Linux","ARM64","hetzner"]' }
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        run: |
+          hash=$(sha256sum .github/ci/Dockerfile | cut -c1-16)
+          owner=$(printf %s "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          ref="ghcr.io/$owner/agentplaza-ci:$hash-${{ matrix.arch }}"
+          # The source label links the package to this repository.
+          docker build -t "$ref" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" .github/ci
+          docker tag "$ref" "agentplaza-ci:$hash"
+          echo "REF=$ref" >> "$GITHUB_ENV"
+      - name: Publish
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push -q "$REF"
+      - name: Log out
+        if: always()
+        run: docker logout ghcr.io || true
