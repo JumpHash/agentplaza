@@ -475,6 +475,60 @@ impl PgStore {
     }
 }
 
+impl PgStore {
+    /// Drops the oldest days of kept traces while all of them together are larger than `cap` bytes; today's
+    /// partition is always kept.
+    fn cap_traces(&self, cap: u64) {
+        let rows = match self.run(|c| {
+            c.query(
+                "SELECT c.relname::text, pg_total_relation_size(c.oid)::bigint FROM pg_inherits i \
+                 JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_class p ON p.oid = i.inhparent \
+                 WHERE p.relname::text = 'trace_spans'",
+                &[],
+            )
+        }) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("metrics: sizing trace_spans partitions failed ({e})");
+                return;
+            }
+        };
+        let days: Vec<(i64, u64)> = rows
+            .iter()
+            .filter_map(|row| {
+                let name: String = row.get(0);
+                let day = name.strip_prefix("trace_spans_")?.parse::<i64>().ok()?;
+                Some((day, row.get::<_, i64>(1).max(0) as u64))
+            })
+            .collect();
+        for day in over_cap(days, cap) {
+            let name = format!("trace_spans_{day}");
+            if let Err(e) = self.run(|c| c.batch_execute(&format!("DROP TABLE IF EXISTS {name}"))) {
+                eprintln!("metrics: dropping {name} failed ({e})");
+                continue;
+            }
+            let text = format!("{:04}-{:02}-{:02}", day / 10_000, day / 100 % 100, day % 100);
+            guard(&self.partitions).retain(|(t, d)| t != "trace_spans" || *d != text);
+        }
+    }
+}
+
+/// The days (`YYYYMMDD`) to drop, oldest first, so that the remaining partitions fit in `cap` bytes; the newest is
+/// never dropped.
+fn over_cap(mut days: Vec<(i64, u64)>, cap: u64) -> Vec<i64> {
+    days.sort_unstable();
+    let mut total: u64 = days.iter().map(|(_, bytes)| bytes).sum();
+    let mut drop = Vec::new();
+    for &(day, bytes) in days.iter().take(days.len().saturating_sub(1)) {
+        if total <= cap {
+            break;
+        }
+        total -= bytes;
+        drop.push(day);
+    }
+    drop
+}
+
 impl Store for PgStore {
     fn put(&self, closed: &[Closed]) {
         let now = now_ms();
@@ -779,6 +833,7 @@ impl Store for PgStore {
         for (table, cutoff) in cutoffs {
             self.drop_partitions_before(table, cutoff);
         }
+        self.cap_traces(u64::from(retention.traces_cap_mb) * 1024 * 1024);
     }
 
     fn sizes(&self) -> Vec<(String, u64)> {
@@ -942,6 +997,16 @@ fn prepend<T>(queue: &mut Vec<T>, mut older: Vec<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kept_traces_over_their_cap_lose_the_oldest_days_but_never_today() {
+        let days = vec![(20261016, 300), (20261014, 500), (20261015, 400)];
+        assert_eq!(over_cap(days.clone(), 1_200), Vec::<i64>::new());
+        assert_eq!(over_cap(days.clone(), 800), vec![20261014]);
+        assert_eq!(over_cap(days.clone(), 300), vec![20261014, 20261015]);
+        // Even a cap today alone exceeds keeps today.
+        assert_eq!(over_cap(days, 10), vec![20261014, 20261015]);
+    }
 
     fn window(count: u64, value: f64) -> Agg {
         Agg {
