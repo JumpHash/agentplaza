@@ -152,9 +152,19 @@ fn latest_value(m: &Metrics, metric: &str) -> Option<f64> {
 
 /// The route family of a request path, for `hub.http_*`: ids and numbers become `{id}`, and only the first four
 /// segments are kept (`/v1/agents/4417/transcript` → `/v1/agents/{id}/transcript`); the method is prefixed
-/// (`GET /v1/agents/{id}/transcript`).
-pub fn route_family(method: &str, path: &str) -> String {
+/// (`GET /v1/agents/{id}/transcript`). The console's files are one family (their names change with every build),
+/// and so is every request no route matched (`status` 404), so neither grows the series without bound.
+pub fn route_family(method: &str, path: &str, status: u16) -> String {
     let path = path.split('?').next().unwrap_or("");
+    if status == 404 {
+        return format!("{method} unmatched");
+    }
+    let api = ["/v1/", "/internal/", "/mcp", "/metrics"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix));
+    if !api {
+        return format!("{method} console files");
+    }
     let segments: Vec<&str> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -177,7 +187,7 @@ pub fn request(app: &App, method: &str, path: &str, status: u16, ms: f64) {
     if path.starts_with("/v1/ws") || path.starts_with("/v1/metrics/live") {
         return;
     }
-    let family = route_family(method, path);
+    let family = route_family(method, path, status);
     let registry = &app.metrics.registry;
     let mut routes = super::lock(&ROUTES);
     let (latency, requests, errors) = routes.entry(family.clone()).or_insert_with(|| {
@@ -499,9 +509,21 @@ mod tests {
     #[test]
     fn a_route_with_an_id_and_a_query_becomes_its_family() {
         assert_eq!(
-            route_family("GET", "/v1/agents/4417/transcript?x=1"),
+            route_family("GET", "/v1/agents/4417/transcript?x=1", 200),
             "GET /v1/agents/{id}/transcript"
         );
+    }
+
+    #[test]
+    fn console_files_and_unmatched_paths_are_one_family_each() {
+        assert_eq!(
+            route_family("GET", "/main-3A33JYFC.css", 200),
+            "GET console files"
+        );
+        assert_eq!(route_family("GET", "/", 200), "GET console files");
+        assert_eq!(route_family("GET", "/wp-login.php", 404), "GET unmatched");
+        assert_eq!(route_family("POST", "/v1/nope/x", 404), "POST unmatched");
+        assert_eq!(route_family("GET", "/metrics", 200), "GET /metrics");
     }
 
     #[test]
