@@ -396,7 +396,7 @@ fn panel_menu<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
             items.push(menu_item(
                 "Open at its source",
                 None,
-                Msg::Scope(pin.scope.clone()),
+                Msg::Open(Some(pin.scope.clone()), Some(pin.tab.clone()), None),
             ));
         }
     }
@@ -645,7 +645,7 @@ fn mover_row<'a>(mover: &'a MoverRow) -> Element<'a, Msg> {
             .width(Length::Fill)
             .padding(pad(4.0, 0.0, 4.0, 0.0))
             .into(),
-        Msg::Tab(mover.tab.clone()),
+        Msg::Open(mover.scope.clone(), Some(mover.tab.clone()), None),
     )
 }
 

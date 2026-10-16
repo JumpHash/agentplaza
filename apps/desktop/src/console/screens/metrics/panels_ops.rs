@@ -155,7 +155,7 @@ fn alert_row<'a>(r: &'a AlertRow) -> Element<'a, Msg> {
             "Open",
             None,
             ui::Kind::Secondary,
-            Some(Msg::Scope(r.scope.clone()))
+            Some(Msg::Open(Some(r.scope.clone()), Some(r.tab.clone()), None))
         ),
         ui::btn_sm(
             "Mute 1 h",

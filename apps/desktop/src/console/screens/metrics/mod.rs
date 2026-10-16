@@ -167,6 +167,8 @@ pub enum Msg {
     Scope(String),
     Tab(String),
     Trace(String),
+    /// Narrow to a scope and/or open a tab and/or a trace, in one step (rows, flags, alerts, movers, pins).
+    Open(Option<String>, Option<String>, Option<String>),
     Range(String),
     Shift(i32),
     ResetZoom,
@@ -328,6 +330,28 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 next.trace = None;
             }
             next.scope = scope;
+            tasks.push(navigate(state, next, ctx));
+            Task::batch(tasks)
+        }
+        Msg::Open(scope, tab, trace) => {
+            let mut next = state.q.clone();
+            let mut tasks = Vec::new();
+            if let Some(scope) = scope
+                && scope != next.scope
+            {
+                visit(&mut state.saved, &scope);
+                tasks.push(save_dashboards(state, ctx));
+                next.zoom = None;
+                next.trace = None;
+                next.scope = scope;
+            }
+            if let Some(tab) = tab {
+                next.tab = tab;
+            }
+            if let Some(trace) = trace {
+                next.tab = "traces".into();
+                next.trace = Some(trace);
+            }
             tasks.push(navigate(state, next, ctx));
             Task::batch(tasks)
         }

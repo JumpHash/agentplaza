@@ -188,15 +188,16 @@ fn quiet_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style
     move |_: &Theme, st: button::Status| surface(false, selected || hovered(st))
 }
 
-/// The message a clicked row or flag sends: its trace, else its tab, else its scope.
+/// The message a clicked row or flag sends: its scope, tab and trace together (as the web's `go`).
 fn target(scope: Option<&str>, tab: Option<&str>, trace: Option<&str>) -> Option<Msg> {
-    if let Some(t) = trace {
-        return Some(Msg::Trace(t.to_string()));
+    if scope.is_none() && tab.is_none() && trace.is_none() {
+        return None;
     }
-    if let Some(t) = tab {
-        return Some(Msg::Tab(t.to_string()));
-    }
-    scope.map(|s| Msg::Scope(s.to_string()))
+    Some(Msg::Open(
+        scope.map(String::from),
+        tab.map(String::from),
+        trace.map(String::from),
+    ))
 }
 
 /// A share in 0 to 1 as thousandths of a track.
