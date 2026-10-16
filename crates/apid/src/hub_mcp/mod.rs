@@ -594,6 +594,8 @@ fn call_tool(
             }
         },
     };
+    // No metrics here: `tool_call` needs the `App` and the agent's `cid`, and a hub MCP caller is a
+    // token, not an agent. The call is kept in the audit log below.
     hub.audit.record(CallRecord {
         at_ms: now,
         token_id: (!caller.anonymous).then(|| token.id.clone()),

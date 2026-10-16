@@ -307,11 +307,18 @@ impl Db {
             .as_ref()
             .ok_or_else(|| "no database".to_string())?;
         let mut client = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        match op(&mut *client) {
+        // Each call of `op` is one database round trip, timed into `hub.pg_ms`.
+        let mut timed = |client: &mut postgres::Client| {
+            let started = Instant::now();
+            let result = op(client);
+            crate::metrics::collect::database(started.elapsed().as_secs_f64() * 1000.0);
+            result
+        };
+        match timed(&mut *client) {
             Ok(value) => Ok(value),
             Err(e) if e.is_closed() => {
                 *client = connect_raw(&self.url).map_err(|e| format!("reconnect failed: {e}"))?;
-                op(&mut *client).map_err(|e| e.to_string())
+                timed(&mut *client).map_err(|e| e.to_string())
             }
             Err(e) => Err(e.to_string()),
         }

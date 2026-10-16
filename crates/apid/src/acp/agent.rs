@@ -907,6 +907,9 @@ fn report_usage(hub: &dyn Hub, peer: &Peer, session_id: &str, cid: u64, work: u6
     let input = usage["input_tokens"].as_u64().unwrap_or(0);
     let output = usage["output_tokens"].as_u64().unwrap_or(0);
     // `used` counts both parts; the engine part (the gateway's calls) is reported apart as well.
+    // `size` stays 0: the context window would come from `crate::metrics::scope::agent(app, cid)`, but
+    // this function only reaches the `Hub` trait, which does not expose the `App`. Passing the window
+    // through the trait is a change to `acp::app_hub`, so it is left for later.
     notify_update(
         peer,
         session_id,
@@ -1653,6 +1656,7 @@ mod tests {
     fn work_end() -> Frame {
         Frame {
             kind: "transcript".to_string(),
+            queued: std::time::Instant::now(),
             data: json!({
                 "cid": 7,
                 "work": 42,
@@ -2491,6 +2495,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2940,6 +2945,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2995,6 +3001,7 @@ mod tests {
         h.frames
             .send(Frame {
                 kind: "transcript".to_string(),
+                queued: std::time::Instant::now(),
                 data: json!({
                     "cid": 7,
                     "work": 42,
