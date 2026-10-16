@@ -192,8 +192,7 @@ pub fn agent(app: &App, cid: u64) -> Option<AgentInfo> {
         node: fleet::node_of(app, cid),
         provider: provider_of(&model).to_string(),
         model: model_name(&model).to_string(),
-        // The model's context window is not kept by the hub yet.
-        window: None,
+        window: crate::providers::context_window(app, &model),
         status: status_word(agent.status).to_string(),
     })
 }
