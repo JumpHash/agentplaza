@@ -7,11 +7,9 @@
 # Where: the org's self-hosted Windows runner (x64). arm64 is cross-compiled there: its tests are
 # built, not run, and its MSI is not installed. That needs LLVM (ring builds its arm64 code with
 # clang) and Visual Studio's "MSVC v143 ARM64 build tools" on the runner, so the arm64 leg runs
-# only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64.
-# Speed: cargo's build directory persists on the runner (only changed crates compile), and the
-# checkout keeps the mtimes this runner last built with (.github/ci/build-cache.py); the tests build
-# with the incremental `ci` profile, the packages with release; rust-lld; nextest; a pull request
-# tests only what it changes (`only`).
+# only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64. Speed: cargo's build directory persists on the
+# runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest; the checkout keeps the mtimes
+# this runner last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
 name: windows
 
 on:
@@ -51,7 +49,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Not incremental (the packages' release build); the tests' profile `ci` is, so their steps say 1.
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
@@ -140,15 +137,15 @@ jobs:
         with: { tool: nextest }
       - name: Test (the guest harness runs only inside Linux VMs)
         if: matrix.arch == 'x64' && inputs.tests
-        run: CARGO_INCREMENTAL=1 cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile ci --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (arm64 cannot run here)
         if: matrix.arch != 'x64' && inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
         run: |
           if [ "${{ inputs.link }}" = true ]; then
-            CARGO_INCREMENTAL=1 cargo test --workspace --exclude agent-harness --locked --profile ci --target ${{ env.TRIPLE }} --no-run
+            cargo test --workspace --exclude agent-harness --locked --profile release --target ${{ env.TRIPLE }} --no-run
           else
-            CARGO_INCREMENTAL=1 cargo check --workspace --exclude agent-harness --locked --profile ci --target ${{ env.TRIPLE }} --all-targets
+            cargo check --workspace --exclude agent-harness --locked --profile release --target ${{ env.TRIPLE }} --all-targets
           fi
       - name: Build the binaries
         if: inputs.package

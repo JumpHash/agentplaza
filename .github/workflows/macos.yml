@@ -7,10 +7,9 @@
 #
 # The runner's labels come from the repository variable MACOS_RUNNER (a JSON list; default
 # ["self-hosted","macOS","X64"]); APZ_MACOS=off skips macOS, and a release then ships without it.
-# Speed: cargo's build directory persists on the runner (only changed crates compile), and the
-# checkout keeps the mtimes this runner last built with (.github/ci/build-cache.py); the tests build
-# with the incremental `ci` profile, the packages with release; nextest; a pull request tests only
-# what it changes (`only`).
+# Speed: cargo's build directory persists on the runner (only changed crates compile), one release
+# build per architecture for tests and packages, nextest; the checkout keeps the mtimes this runner
+# last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
 name: macos
 
 on:
@@ -50,7 +49,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Not incremental (the packages' release build); the tests' profile `ci` is, so their steps say 1.
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
@@ -125,15 +123,15 @@ jobs:
         with: { tool: nextest }
       - name: Test (Intel; the guest harness runs only inside Linux VMs)
         if: inputs.tests
-        run: CARGO_INCREMENTAL=1 cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile ci --profile ci --target x86_64-apple-darwin ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target x86_64-apple-darwin ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (Apple Silicon cannot run here)
         if: inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
         run: |
           if [ "${{ inputs.link }}" = true ]; then
-            CARGO_INCREMENTAL=1 cargo test --workspace --exclude agent-harness --locked --profile ci --target aarch64-apple-darwin --no-run
+            cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
           else
-            CARGO_INCREMENTAL=1 cargo check --workspace --exclude agent-harness --locked --profile ci --target aarch64-apple-darwin --all-targets
+            cargo check --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --all-targets
           fi
       - name: Build the binaries
         if: inputs.package
