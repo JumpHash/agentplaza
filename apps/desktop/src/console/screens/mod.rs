@@ -341,6 +341,10 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
         }
         _ => {}
     }
+    // Metrics loads when opened, but is not polled (see `poll`).
+    if id == Id::Metrics {
+        return metrics::load(&mut screens.metrics, ctx).map(Msg::Metrics);
+    }
     refresh(screens, &id, ctx)
 }
 
@@ -388,7 +392,10 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Treasury => treasury::load(&mut screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::load(&mut screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::load(&mut screens.models, ctx).map(Msg::Models),
-        Id::Metrics => metrics::load(&mut screens.metrics, ctx).map(Msg::Metrics),
+        // Metrics is not polled: it loads when opened (`open`), live frames keep the watched panels current (as on
+        // the web), and a reload every few seconds would recompose the whole tab on the hub and drop the older rows a
+        // reader loaded.
+        Id::Metrics => Task::none(),
         Id::Tools => tools::load(&mut screens.tools, ctx).map(Msg::Tools),
         Id::Mcp => mcp::load(&mut screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
