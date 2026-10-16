@@ -49,6 +49,11 @@ from apz import (
 #: The ports a hostile guest would try besides the frozen one.
 PROBE_PORTS = (80, 22, 1337)
 
+#: vsockd's egress proxy, on by default (`--egress on`): every guest reaches it on CID 2 at this port, and
+#: every connection through it is checked against the hub's egress policy. It is a designed wire, so the
+#: suite names it rather than treating it as a stray listener.
+EGRESS_PORT = 5001
+
 #: A CID the suite never serves, to prove nothing answers for it either.
 FOREIGN_CID = 99
 
@@ -77,6 +82,8 @@ INJECTION_WINDOW_S = 10.0
 VIRTIO_TRANSPORT_DEVICES = (
     ("vsock", ("VsockMmioDevice::new", "VsockUnixBackend::new")),
     ("block (the workspace volume)", ("BlockMmioDevice::new",)),
+    # The memory balloon: it moves guest pages, never bytes off the host.
+    ("balloon", ("SharedBalloon::new", "VirtioBalloon::new")),
 )
 
 #: The network-interface signatures a booted guest's kernel log and console must
@@ -137,6 +144,13 @@ def _call_device(lines: list[str], number: int) -> str:
         if text.rstrip().endswith(";"):
             break
     joined = "\n".join(statement)
+    # A device passed as a variable (`Box::new(shared.clone())`) is named by its `let` binding, a few lines up in
+    # the same block: that binding is read too. A variable with no binding found stays unknown (fail-closed).
+    for variable in re.findall(r"Box::new\(\s*([a-z_][a-z0-9_]*)", joined):
+        for text in reversed(lines[max(0, number - 15) : number]):
+            if re.search(rf"\blet\s+(mut\s+)?{variable}\b\s*=", text):
+                joined += "\n" + text
+                break
     for name, constructors in VIRTIO_TRANSPORT_DEVICES:
         if any(constructor in joined for constructor in constructors):
             return name
@@ -277,7 +291,9 @@ def _case_only_wire(suite: Suite, ctx) -> None:
         vector="guest dials CID 2 ports 5000/80/22/1337; only the frozen port has a service",
     )
     with Lab(ctx, list(SERVED), "redteam-wire") as lab:
-        expected_idle = sorted(f"vm{cid}_{VSOCK_PORT}" for cid in SERVED)
+        expected_idle = sorted(
+            [f"vm{cid}_{VSOCK_PORT}" for cid in SERVED] + [f"vm{cid}_{EGRESS_PORT}" for cid in SERVED]
+        )
         case.invariant(
             "with no VM up the UDS dir holds exactly the suite's listeners",
             lab.uds_entries() == expected_idle,
