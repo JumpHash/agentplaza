@@ -146,32 +146,13 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
         .map(|cid| agent_series(&registry, cid))
         .collect();
     let agent_series_count = registry.len();
-    let vm_keys: Vec<Vec<SeriesKey>> = (0..AGENTS)
-        .map(|vm| {
-            let entity = format!(
-                "n{}:r{}/{}",
-                vm / VMS_PER_NODE,
-                vm / VMS_PER_NODE,
-                vm % VMS_PER_NODE
-            );
-            VM_GAUGES
-                .iter()
-                .map(|id| SeriesKey::new(id, EntityKind::Vm, &entity))
-                .collect()
-        })
-        .collect();
-    let mut levels: Vec<Vec<f64>> = (0..AGENTS)
-        .map(|vm| {
-            VM_GAUGES
-                .iter()
-                .enumerate()
-                .map(|(i, _)| 10.0 + ((vm * 7 + i) % 90) as f64)
-                .collect()
-        })
-        .collect();
+    let (vm_keys, mut levels) = build_vms();
 
     let mut rollup = Rollup::new();
-    let mut store = StoreModel::default();
+    let mut store = StoreModel {
+        account: true,
+        ..StoreModel::default()
+    };
     let mut rng = Lcg(42);
     let mut tick_time = Duration::ZERO;
     let mut record_time = Duration::ZERO;
@@ -182,56 +163,10 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
         let now = tick * TICK_MS;
         // What the hub records as it serves agents (the hot path).
         let started = Instant::now();
-        for (cid, a) in agents.iter().enumerate() {
-            let busy = (cid + tick as usize / 30) % BUSY_EVERY == 0;
-            if busy {
-                let tokens = 20_000.0 + 30_000.0 * rng.unit();
-                a.calls.inc();
-                a.tokens_in.add(tokens * 0.3);
-                a.cache_read.add(tokens * 0.7);
-                a.cache_write.add(500.0);
-                a.tokens_out.add(400.0 + 600.0 * rng.unit());
-                a.spend.add(0.01 + 0.03 * rng.unit());
-                a.ttft.record(800.0 + 2_000.0 * rng.unit());
-                a.duration.record(3_000.0 + 9_000.0 * rng.unit());
-                if tick % 2 == 0 {
-                    a.tool.record(50.0 + 900.0 * rng.unit());
-                }
-                if tick % 6 == 0 {
-                    a.turn.record(20_000.0 + 60_000.0 * rng.unit());
-                    for (i, part) in a.parts.iter().enumerate() {
-                        part.set((tokens * (i + 1) as f64 / 21.0).round());
-                    }
-                    a.fill.set((tokens / 2_000.0).round());
-                }
-                a.states[0].add(10.0);
-            } else {
-                a.states[if cid % 3 == 0 { 3 } else { 1 }].add(10.0);
-            }
-            if tick % 360 == cid as u64 % 360 && cid % 20 == 0 {
-                a.compactions.inc();
-                a.infractions.inc();
-            }
-        }
+        record_load(&agents, tick, &mut rng);
         record_time += started.elapsed();
-
         // The node batches' samples: busy VMs every tick, idle VMs every minute.
-        let mut vm_samples: Vec<Sample> = Vec::new();
-        for (vm, keys) in vm_keys.iter().enumerate() {
-            let busy = (vm + tick as usize / 30) % BUSY_EVERY == 0;
-            if busy || tick % 6 == 0 {
-                for (i, key) in keys.iter().enumerate() {
-                    if busy {
-                        levels[vm][i] *= 1.0 + 0.01 * (rng.unit() - 0.5);
-                    }
-                    vm_samples.push(Sample {
-                        key: key.clone(),
-                        t_ms: now,
-                        value: Value::Gauge((levels[vm][i] * 10.0).round() / 10.0),
-                    });
-                }
-            }
-        }
+        let vm_samples = vm_samples(&vm_keys, &mut levels, tick, now, &mut rng);
 
         // The hub's tick: scrape its own series, ingest them and the nodes' samples, close due windows.
         let started = Instant::now();
@@ -350,11 +285,171 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
     );
 }
 
+/// One tick of what the hub records as it serves the agents: a quarter working (a model call each, a tool call every
+/// other tick, a turn every minute), the rest idle or asleep.
+fn record_load(agents: &[AgentSeries], tick: u64, rng: &mut Lcg) {
+    for (cid, a) in agents.iter().enumerate() {
+        let busy = (cid + tick as usize / 30) % BUSY_EVERY == 0;
+        if busy {
+            let tokens = 20_000.0 + 30_000.0 * rng.unit();
+            a.calls.inc();
+            a.tokens_in.add(tokens * 0.3);
+            a.cache_read.add(tokens * 0.7);
+            a.cache_write.add(500.0);
+            a.tokens_out.add(400.0 + 600.0 * rng.unit());
+            a.spend.add(0.01 + 0.03 * rng.unit());
+            a.ttft.record(800.0 + 2_000.0 * rng.unit());
+            a.duration.record(3_000.0 + 9_000.0 * rng.unit());
+            if tick % 2 == 0 {
+                a.tool.record(50.0 + 900.0 * rng.unit());
+            }
+            if tick % 6 == 0 {
+                a.turn.record(20_000.0 + 60_000.0 * rng.unit());
+                for (i, part) in a.parts.iter().enumerate() {
+                    part.set((tokens * (i + 1) as f64 / 21.0).round());
+                }
+                a.fill.set((tokens / 2_000.0).round());
+            }
+            a.states[0].add(10.0);
+        } else {
+            a.states[if cid % 3 == 0 { 3 } else { 1 }].add(10.0);
+        }
+        if tick % 360 == cid as u64 % 360 && cid % 20 == 0 {
+            a.compactions.inc();
+            a.infractions.inc();
+        }
+    }
+}
+
+/// One tick of the nodes' VM samples: a busy VM's gauges every tick, an idle VM's every minute.
+fn vm_samples(
+    vm_keys: &[Vec<SeriesKey>],
+    levels: &mut [Vec<f64>],
+    tick: u64,
+    now: u64,
+    rng: &mut Lcg,
+) -> Vec<Sample> {
+    let mut out = Vec::new();
+    for (vm, keys) in vm_keys.iter().enumerate() {
+        let busy = (vm + tick as usize / 30) % BUSY_EVERY == 0;
+        if busy || tick % 6 == 0 {
+            for (i, key) in keys.iter().enumerate() {
+                if busy {
+                    levels[vm][i] *= 1.0 + 0.01 * (rng.unit() - 0.5);
+                }
+                out.push(Sample {
+                    key: key.clone(),
+                    t_ms: now,
+                    value: Value::Gauge((levels[vm][i] * 10.0).round() / 10.0),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The VMs' series keys (10 nodes of 100 VMs) and their starting levels.
+fn build_vms() -> (Vec<Vec<SeriesKey>>, Vec<Vec<f64>>) {
+    let keys = (0..AGENTS)
+        .map(|vm| {
+            let entity = format!(
+                "n{}:r{}/{}",
+                vm / VMS_PER_NODE,
+                vm / VMS_PER_NODE,
+                vm % VMS_PER_NODE
+            );
+            VM_GAUGES
+                .iter()
+                .map(|id| SeriesKey::new(id, EntityKind::Vm, &entity))
+                .collect()
+        })
+        .collect();
+    let levels = (0..AGENTS)
+        .map(|vm| {
+            VM_GAUGES
+                .iter()
+                .enumerate()
+                .map(|(i, _)| 10.0 + ((vm * 7 + i) % 90) as f64)
+                .collect()
+        })
+        .collect();
+    (keys, levels)
+}
+
+#[test]
+#[ignore = "a measurement, not a check: run it with --release --ignored --nocapture"]
+fn the_metrics_core_holds_steady_over_hours() {
+    let hours: u64 = std::env::var("SCALE_HOURS")
+        .ok()
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(6);
+    let rss_start = rss_bytes();
+    let registry = Registry::new(1_000_000);
+    let agents: Vec<AgentSeries> = (0..AGENTS)
+        .map(|cid| agent_series(&registry, cid))
+        .collect();
+    let (vm_keys, mut levels) = build_vms();
+    let mut rollup = Rollup::new();
+    let mut store = StoreModel {
+        account: false,
+        ..StoreModel::default()
+    };
+    let mut rng = Lcg(42);
+    let mut per_hour: Vec<f64> = Vec::new();
+    let started = Instant::now();
+    for tick in 1..=hours * (HOUR_MS / TICK_MS) {
+        let now = tick * TICK_MS;
+        record_load(&agents, tick, &mut rng);
+        let mut samples = registry.scrape(now, false);
+        samples.extend(vm_samples(&vm_keys, &mut levels, tick, now, &mut rng));
+        let mut closed: Vec<Closed> = Vec::new();
+        for s in &samples {
+            closed.extend(rollup.ingest(s));
+        }
+        closed.extend(rollup.flush_due(now));
+        store.put(&closed);
+        store.flush(now, false);
+        if now % HOUR_MS == 0 {
+            // The store keeps one day of hour windows per series; a simulated day boundary drops the day before.
+            if now % 86_400_000 == 0 {
+                store.hours.clear();
+            }
+            let mib = rss_bytes().saturating_sub(rss_start) as f64 / (1024.0 * 1024.0);
+            println!(
+                "hour {:>2}: {mib:>6.0} MiB over the start, {} series, {} open chunks, {} unwritten minute blocks",
+                now / HOUR_MS,
+                registry.len(),
+                store.chunks.len(),
+                store.minutes.len()
+            );
+            per_hour.push(mib);
+        }
+    }
+    println!(
+        "{hours} simulated hours in {:.0} s",
+        started.elapsed().as_secs_f64()
+    );
+    // After the first hour fills the windows, memory must level off: the last hour within 15 % of the second, the
+    // growth of a day of hour windows aside (1 window per series per hour, about 1 MiB an hour here).
+    if per_hour.len() >= 3 {
+        let (second, last) = (per_hour[1], per_hour[per_hour.len() - 1]);
+        let allowance = second * 0.15 + (per_hour.len() as f64) * 2.0;
+        assert!(
+            last <= second + allowance,
+            "memory keeps growing: {second:.0} MiB at hour 2, {last:.0} MiB at hour {}",
+            per_hour.len()
+        );
+    }
+}
+
 /// The Postgres store's buffering and write cadence (crates/apid/src/metrics/pg.rs), counting bytes instead of
 /// writing: the open 10-minute chunk of each series, the open hour's 1-minute windows and the open day's 1-hour
 /// windows per series; a minute row (ten windows of a series) written once when its windows have all arrived.
 #[derive(Default)]
 struct StoreModel {
+    /// Whether the store keeps the sampled windows that size the hourly fold (the benchmark), or only what the
+    /// real store holds (the soak).
+    account: bool,
     chunks: HashMap<SeriesKey, (u64, Vec<(u64, f64)>)>,
     minutes: HashMap<(SeriesKey, u64), Vec<(u64, Agg)>>,
     hours: HashMap<SeriesKey, Vec<(u64, Agg)>>,
@@ -397,7 +492,7 @@ impl StoreModel {
                         .push(point);
                 }
                 Tier::Min1 => {
-                    if w.key.id().len() % 10 == 0 {
+                    if self.account && w.key.id().len() % 10 == 0 {
                         self.sampled
                             .entry(w.key.clone())
                             .or_default()

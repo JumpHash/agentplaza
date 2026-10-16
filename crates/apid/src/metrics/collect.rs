@@ -37,6 +37,10 @@ static LAST_HOURLY: Mutex<u64> = Mutex::new(0);
 static AGENT_STATES: LazyLock<Mutex<HashMap<u64, (String, u64)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Agents that no longer exist, whose series the registry releases after the next scrape (so their last values,
+/// the booked state time among them, are scraped first).
+static FORGET: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
 /// Starts the tick thread (every [`super::SCRAPE_MS`], or [`super::LIVE_SCRAPE_MS`] while a lease is active):
 /// scrape, ingest, alert checks, live frames, governor, store flush; and once an hour: retention, store sizes.
 pub fn spawn(app: Arc<App>) {
@@ -96,6 +100,10 @@ pub fn tick(m: &Metrics, app: &App, now_ms: u64) {
 
     let samples = m.registry.scrape(now_ms, false);
     ingest::samples(m, &samples, now_ms);
+    // The agents deleted before this scrape: their series are scraped, so the registry lets them go.
+    for cid in std::mem::take(&mut *super::lock(&FORGET)) {
+        m.registry.forget(EntityKind::Agent, &cid.to_string());
+    }
 
     if let Ok((_, body)) = app.noded.get("/v1/metrics/batch")
         && let Ok(batch) = serde_json::from_value::<Batch>(body)
@@ -132,6 +140,7 @@ fn prune_agent_states(m: &Metrics, app: &App, now_ms: u64) {
                     .label("state", &state),
             )
             .add(ms as f64);
+        super::lock(&FORGET).push(cid);
     }
 }
 
