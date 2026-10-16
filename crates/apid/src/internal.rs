@@ -718,6 +718,10 @@ fn model_call(
     let result = gateway.complete_for(
         &request,
         &mut |delta| {
+            if first_delta_ms.is_none() {
+                // The first token is in: the agent waits on the model's stream from here.
+                collect::agent_state(app, cid, "streaming");
+            }
             first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
             app.bus.publish(
                 "delta",

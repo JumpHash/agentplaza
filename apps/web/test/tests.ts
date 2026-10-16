@@ -49,7 +49,7 @@ import type { Unit } from '../src/metrics/model';
 import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
-import { bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
+import { bandPath, bucketStarts, thin, xLabelIndexes } from '../src/metrics/charts';
 import { appendPage } from '../src/metrics/bodies';
 import { DEFAULT_STATE, LeaseKeeper, narrowTileColumns, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
 import type { LiveLease, Saved } from '../src/metrics/model';
@@ -1722,4 +1722,12 @@ if (failedSections.length) {
 {
   eq([1, 3, 4, 5, 6, 7, 8, 9].map(narrowTileColumns), [1, 3, 4, 5, 3, 4, 4, 3], 'tiles: narrow rows are even, as the desktop wraps them');
   console.log('metrics tile rows tests: ok');
+}
+
+// ---- metrics band outline ---------------------------------------------------
+{
+  // A band from 10–12 at x 0 to 30–36 at x 1: the low edge comes back with its own values, not mirrored.
+  const d = bandPath([12, 36], [10, 30], (j) => j * 100, (v) => v);
+  eq(d, 'M0.0,12.0L100.0,36.0L100.0,30.0L0.0,10.0Z', 'band: the low edge returns right to left with its own values');
+  console.log('metrics band tests: ok');
 }
