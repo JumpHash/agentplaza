@@ -61,6 +61,8 @@ jobs:
       DEB: ${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
       TARGET_ARG: ${{ matrix.arch == 'aarch64' && '--target aarch64-unknown-linux-gnu' || '' }}
       OUT: ${{ matrix.arch == 'aarch64' && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
+      # The tests' time budgets (APZ_PERF_SLACK): arm64 runs emulated, 15 to 50 times slower.
+      APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && '25' || '' }}
     steps:
       - uses: actions/checkout@v5
       - name: CI image
