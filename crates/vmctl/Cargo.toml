@@ -1,5 +1,6 @@
 [package]
 name = "vmctl"
+publish = false
 description = "Spawn N AgentPlaza microVMs from the command line"
 version.workspace = true
 edition.workspace = true

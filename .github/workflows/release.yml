@@ -1,17 +1,22 @@
-# The release pipeline: every push to main is a release. It picks the next version
+# The release pipeline: every push to main that changes code is a release (.github/ci/changes.sh
+# decides; a push of only Markdown, docs, .gitignore and the like builds nothing and releases
+# nothing). It picks the next version
 # (packaging/scripts/next-version.sh: automatic, 0.0.9 → 0.1.0 … 0.9.9 → 1.0.0, unless a merged
 # change raised the VERSION file or a manual run names one), runs the four platform workflows with
 # packaging on (their tests gate everything), and publishes GitHub Release v<version>: the tag, the
-# changelog and every deliverable (packaging/README.md lists them) with SHA256SUMS. The tags record
+# changelog and every deliverable (packaging/README.md lists them) with SHA256SUMS. The platform
+# workflows only build and package here: the merge queue tested this exact commit (pr.yml), and
+# nightly.yml tests every platform. The tags record
 # the released versions; main is protected (pull requests only), so nothing is written back to it.
 name: release
 
 on:
   push:
     branches: [main]
-    # A push that changes only VERSION (CI writing a release back, or a merge that brings just
-    # that in) is no release of its own; a change that sets VERSION along with others still is.
-    paths-ignore: ["docs/**", "**/*.md", "VERSION"]
+    # A push with no code in it starts no run at all; the version job's check (changes.sh) is
+    # the full rule and also catches what this filter can't express. A change that sets VERSION
+    # along with code still releases.
+    paths-ignore: ["docs/**", "**/*.md", "VERSION", "**/.gitignore", ".github/CODEOWNERS"]
   workflow_dispatch:
     inputs:
       version:
@@ -36,37 +41,50 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 3
     outputs:
+      release: ${{ steps.changes.outputs.release }}
       version: ${{ steps.next.outputs.version }}
       previous: ${{ steps.next.outputs.previous }}
       source: ${{ steps.next.outputs.source }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
+      # A hand run always releases.
+      - id: changes
+        env:
+          BEFORE: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: .github/ci/changes.sh "$BEFORE" HEAD
       - id: next
+        if: steps.changes.outputs.release == 'true'
         env:
           OVERRIDE: ${{ inputs.version }}
         run: packaging/scripts/next-version.sh
 
   guest:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/guest.yml
   relay:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/relay.yml
   console:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/console.yml
   linux:
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/linux.yml
-    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   macos:
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/macos.yml
-    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   windows:
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/windows.yml
-    with: { version: "${{ needs.version.outputs.version }}", package: true }
+    with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   # Made from the Linux arm64 build.
   raspberry-pi:

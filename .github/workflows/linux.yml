@@ -1,15 +1,16 @@
 # Linux (x86_64, arm64): one job per architecture tests and, with `package`, builds the deb
 # (Ubuntu, Debian), rpm (Fedora), pacman (Arch, Arch Linux ARM) packages and tarballs from the same
 # optimised build, then installs and runs them in Ubuntu, Debian, Fedora and Arch containers.
-# CI runs on main only: release.yml calls this with `package: true` on every push to main (no pull
-# request builds); it also runs by hand.
+# Callers: pr.yml tests every pull request and merge-queue entry (x86_64; arm64 too when platform
+# code changes), release.yml packages main without testing again (`tests: false`: the queue
+# tested that commit), nightly.yml tests both architectures. It also runs by hand.
 #
 # Where: the org's self-hosted Linux runner (an x86_64 Ubuntu host with Docker). Every build runs
 # inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on every
 # distribution as new or newer), built on the runner and kept there until its Dockerfile changes.
 # arm64 is cross-compiled and its tests run under qemu. Speed: cargo's build directory and
 # registry persist on the runner (.github/ci/in-image.sh), so only changed crates compile; tests
-# and packages share one release build; nextest runs the tests in parallel and kills a hang.
+# and packages use the same release profile; nextest runs the tests in parallel and kills a hang.
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
 # packages go to the cache under this run's id for release.yml's publish job.
 name: linux
@@ -19,10 +20,16 @@ on:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
+      arches: { type: string, default: '["x86_64","aarch64"]' }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
+      tests: { type: boolean, default: true }
+      trusted: { type: boolean, default: true }
+      arches: { type: string, default: '["x86_64","aarch64"]' }
 
 concurrency:
   group: ${{ github.workflow }}-linux-${{ github.ref }}
@@ -36,14 +43,11 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && 'test and package' || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # `target`: cargo's --target (none for the host, so tests and binaries share one build).
-          - { arch: x86_64, triple: x86_64-unknown-linux-gnu, deb: amd64, target: "", out: /ci-target/release }
-          - { arch: aarch64, triple: aarch64-unknown-linux-gnu, deb: arm64, target: "--target aarch64-unknown-linux-gnu", out: /ci-target/aarch64-unknown-linux-gnu/release }
+        arch: ${{ fromJSON(inputs.arches) }}
     runs-on: [self-hosted, Linux, X64, hetzner]
     # A cold build directory (a new runner, a new Rust or a dependency update) compiles everything
     # once on the runner's 4 cores; after that a run rebuilds only what changed. A hung test is
@@ -51,12 +55,22 @@ jobs:
     timeout-minutes: 90
     env:
       NET: apz-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+      # Per architecture: cargo's --target (none for the host, so tests and binaries share one
+      # build) and where the release build lands.
+      TRIPLE: ${{ matrix.arch == 'aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}
+      DEB: ${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
+      TARGET_ARG: ${{ matrix.arch == 'aarch64' && '--target aarch64-unknown-linux-gnu' || '' }}
+      OUT: ${{ matrix.arch == 'aarch64' && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
     steps:
       - uses: actions/checkout@v5
       - name: CI image
         run: .github/ci/image.sh
+      # A pull request from a fork builds in its own cache directory, never in the one releases use.
+      - name: Untrusted build cache
+        if: ${{ !inputs.trusted }}
+        run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
       - name: Postgres for the tests (x86_64)
-        if: matrix.arch == 'x86_64'
+        if: matrix.arch == 'x86_64' && inputs.tests
         run: |
           docker network create "$NET"
           docker run -d --rm --name "$NET-pg" --network "$NET" \
@@ -65,11 +79,12 @@ jobs:
           echo "APZ_CI_NETWORK=$NET" >> "$GITHUB_ENV"
           echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
       - name: Test
-        run: .github/ci/in-image.sh "cargo nextest run --workspace --locked --cargo-profile release --profile ci ${{ matrix.target }}"
+        if: inputs.tests
+        run: .github/ci/in-image.sh "cargo nextest run --workspace --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }}"
       - name: Build the binaries
         if: inputs.package
         run: >-
-          .github/ci/in-image.sh "cargo build --release --locked ${{ matrix.target }}
+          .github/ci/in-image.sh "cargo build --release --locked ${{ env.TARGET_ARG }}
           -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl"
       - name: The guest (cached by guest.yml)
         if: inputs.package
@@ -94,7 +109,7 @@ jobs:
       - name: Stage and package
         if: inputs.package
         run: |
-          .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh ${{ matrix.triple }} ${{ matrix.out }} stage \"\$VERSION\" &&
+          .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh ${{ env.TRIPLE }} ${{ env.OUT }} stage \"\$VERSION\" &&
             packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
           mkdir -p stage-out && tar -czf stage-out/stage-linux-${{ matrix.arch }}.tgz stage
       - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch; the AppImage on Ubuntu 22.04
@@ -113,8 +128,8 @@ jobs:
             docker run --rm --platform "$plat" -v "$out:/pkgs:ro" "$1" sh -c "$script" > "install-$3.log" 2>&1 \
               && echo "ok   $3" || { echo "FAIL $3"; tail -30 "install-$3.log"; return 1; }
           }
-          run ubuntu:24.04 "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ matrix.deb }}.deb" ubuntu & a=$!
-          run debian:bookworm "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ matrix.deb }}.deb" debian & b=$!
+          run ubuntu:24.04 "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ env.DEB }}.deb" ubuntu & a=$!
+          run debian:bookworm "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ env.DEB }}.deb" debian & b=$!
           run fedora:42 "dnf install -y -q /pkgs/agentplaza-*.${{ matrix.arch }}.rpm" fedora & c=$!
           # The AppImage on the oldest glibc it supports, without FUSE (unpacked to run): the desktop
           # app by default, the command line tool through a link named agentplaza.
@@ -137,7 +152,7 @@ jobs:
           docker rm -f "$NET-pg" >/dev/null 2>&1 || true
           docker network rm "$NET" >/dev/null 2>&1 || true
           # Keep the runner's build directory under 60 GB: past that, start it afresh.
-          cache="$HOME/.cache/agentplaza-ci/target"
+          cache="${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
           if [ "$(du -s --block-size=1G "$cache" 2>/dev/null | cut -f1)" -gt 60 ] 2>/dev/null; then
             docker run --rm -v "$cache:/t" alpine sh -c 'rm -rf /t/*'
           fi

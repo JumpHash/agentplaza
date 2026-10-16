@@ -1,5 +1,6 @@
 [package]
 name = "dispatchd"
+publish = false
 description = "AgentPlaza fleet dispatcher: claims the ledger's open roled tasks for connected agents, drives them by script, and finishes them with the artifacts their workspace now holds"
 version.workspace = true
 edition.workspace = true

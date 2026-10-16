@@ -1,0 +1,129 @@
+# The pull request gate: every pull request to main, and every merge-queue entry (the exact commit
+# that will land), runs this. `ci-ok` sums it up and is the one check the main ruleset requires.
+#
+#   changes     what the change touches (.github/ci/changes.sh): a change with no code in it
+#               (Markdown, docs, .gitignore and the like) builds and tests nothing
+#   lint        rustfmt, clippy with warnings as errors, cargo deny (advisories, licences, sources)
+#   migrations  applied migrations unchanged, new ones numbered in order (scripts/check-migrations.sh)
+#   console     the web console's type-check, build and tests (console.yml)
+#   linux       the Linux tests (linux.yml): x86_64 always, arm64 when platform code changes
+#   windows     the Windows tests (windows.yml), when platform code changes
+#   macos       the macOS tests (macos.yml), when platform code changes
+#
+# Safety: this is a public repository whose jobs run on the org's self-hosted runners. Workflows of
+# outside contributors run only after an owner approves them (repository setting), no job here gets
+# a secret, the token is read-only, and a pull request from a fork builds in its own cache
+# directory on the runners (`trusted: false`), never in the one releases build from.
+# Main itself only builds and packages (release.yml): its commits were tested here, in the queue.
+# A nightly full run (nightly.yml) catches what the path filter lets through.
+name: pr
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+# A newer push to a pull request cancels the older run; merge-queue runs are never cancelled.
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.diff.outputs.build }}
+      web: ${{ steps.diff.outputs.web }}
+      platform: ${{ steps.diff.outputs.platform }}
+      trusted: ${{ steps.diff.outputs.trusted }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # A pull request from a fork is untrusted; a branch of this repository and the merge
+          # queue (which holds only approved changes) are trusted.
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: .github/ci/changes.sh "$BASE" HEAD
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Untrusted build cache
+        if: needs.changes.outputs.trusted != 'true'
+        run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: rustfmt
+        run: .github/ci/in-image.sh 'cargo fmt --all -- --check'
+      - name: clippy (warnings fail)
+        run: .github/ci/in-image.sh 'cargo clippy --workspace --all-targets --locked -- -D warnings'
+      - name: cargo deny (advisories, licences, sources)
+        run: .github/ci/in-image.sh 'cargo deny --locked check'
+
+  migrations:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - name: applied migrations are immutable, new ones numbered in order
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: scripts/check-migrations.sh "$BASE"
+
+  console:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    uses: ./.github/workflows/console.yml
+    with:
+      trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+
+  linux:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    uses: ./.github/workflows/linux.yml
+    with:
+      arches: ${{ needs.changes.outputs.platform == 'true' && '["x86_64","aarch64"]' || '["x86_64"]' }}
+      trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+
+  windows:
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    uses: ./.github/workflows/windows.yml
+    with:
+      trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+
+  macos:
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    uses: ./.github/workflows/macos.yml
+    with:
+      trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+
+  # The one required check. A job skipped because the change does not touch it counts as passed.
+  ci-ok:
+    needs: [changes, lint, migrations, console, linux, windows, macos]
+    if: always()
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.value.result)\t\(.key)"'
+          bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
+          if [ -n "$bad" ]; then echo "::error::not passed: $bad"; exit 1; fi
+          # `changes` decides what runs; if it did not succeed, nothing was checked.
+          [ "$(echo "$RESULTS" | jq -r .changes.result)" = success ]

@@ -1,5 +1,6 @@
 [package]
 name = "vsockd"
+publish = false
 description = "AgentPlaza orchestrator stand-in: the host end of the vsock orchestration loop"
 version.workspace = true
 edition.workspace = true

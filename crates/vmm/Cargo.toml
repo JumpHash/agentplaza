@@ -1,5 +1,6 @@
 [package]
 name = "vmm"
+publish = false
 description = "Multi-microVM monitor for AgentPlaza's node daemon: derived from Firecracker"
 version.workspace = true
 edition.workspace = true

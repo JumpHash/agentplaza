@@ -1,5 +1,6 @@
 [package]
 name = "noded"
+publish = false
 description = "AgentPlaza node daemon v0: run lifecycle and VM control over localhost HTTP"
 version.workspace = true
 edition.workspace = true

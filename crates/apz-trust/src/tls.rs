@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::crypto::ring::default_provider;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig, SignatureScheme};
 
@@ -27,7 +28,7 @@ pub fn self_signed(names: &[String]) -> Result<CertPair, String> {
 /// The first certificate in `cert_pem`, as DER.
 fn first_cert(cert_pem: &str) -> Result<CertificateDer<'static>, String> {
     let mut rd = cert_pem.as_bytes();
-    rustls_pemfile::certs(&mut rd)
+    CertificateDer::pem_reader_iter(&mut rd)
         .next()
         .ok_or_else(|| "no certificate in PEM".to_string())?
         .map_err(|e| e.to_string())
@@ -41,16 +42,18 @@ pub fn fingerprint(cert_pem: &str) -> Result<[u8; 32], String> {
 /// A rustls server config serving `pair`.
 pub fn server_config(pair: &CertPair) -> Result<Arc<ServerConfig>, String> {
     let mut cert_rd = pair.cert_pem.as_bytes();
-    let chain = rustls_pemfile::certs(&mut cert_rd)
+    let chain = CertificateDer::pem_reader_iter(&mut cert_rd)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     if chain.is_empty() {
         return Err("no certificate in PEM".into());
     }
     let mut key_rd = pair.key_pem.as_bytes();
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_rd)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "no private key in PEM".to_string())?;
+    let key: PrivateKeyDer<'static> =
+        PrivateKeyDer::from_pem_reader(&mut key_rd).map_err(|e| match e {
+            rustls::pki_types::pem::Error::NoItemsFound => "no private key in PEM".to_string(),
+            e => e.to_string(),
+        })?;
     let config = ServerConfig::builder_with_provider(Arc::new(default_provider()))
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?

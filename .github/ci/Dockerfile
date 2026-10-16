@@ -4,8 +4,8 @@
 # (glibc 2.35, so the packages run on every distribution as new or newer) with everything a job
 # needs already installed: the build tools, the desktop app's headers, the guest kernel's
 # toolchain, the arm64 cross toolchain (gcc, libc, Rust target, an arm64 busybox for its guest,
-# qemu to run its tests), the packagers (fpm for deb/rpm/pacman), Rust, cargo-nextest, the gh CLI
-# and Node.js — so a job spends its time compiling, not installing.
+# qemu to run its tests), the packagers (fpm for deb/rpm/pacman), Rust (with clippy and rustfmt),
+# cargo-nextest, cargo-deny, the gh CLI and Node.js — so a job spends its time compiling, not installing.
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,8 +67,11 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 # aarch64 binary the kernel hands to binfmt's qemu without -L, so it could not find /lib/ld-linux-aarch64.so.1
 # and died at once. qemu reads the same prefix from this variable, which every child inherits.
 ENV QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
+# Rust is pinned, so clippy's lints (the pull request gate fails on warnings) change only when this
+# line does. cargo-deny checks advisories, licences and sources (deny.toml).
+ENV RUST_VERSION=1.99.0 CARGO_DENY_VERSION=0.20.2
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path \
+      | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --component clippy,rustfmt --no-modify-path \
  && arch="$(uname -m)" \
  && curl -LsSf "https://get.nexte.st/latest/linux$( [ "$arch" = aarch64 ] && echo -arm )" | tar zxf - -C "$CARGO_HOME/bin" \
  && rustup target add aarch64-unknown-linux-gnu wasm32-unknown-unknown \
@@ -76,6 +79,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-$arch-unknown-linux-musl.tar.gz" \
       | tar -xz -C "$CARGO_HOME/bin" --strip-components=1 "sccache-v0.18.0-$arch-unknown-linux-musl/sccache" \
  && sccache --version \
+ && curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl.tar.gz" \
+      | tar -xz -C "$CARGO_HOME/bin" --strip-components=1 "cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl/cargo-deny" \
+ && cargo deny --version \
  && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
 # Node.js: the web console's build, and JavaScript actions under a local runner (Forgejo / act).
