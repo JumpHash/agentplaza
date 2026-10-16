@@ -43,6 +43,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
+  # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
+  # instead"), and the build directory kept on the runner already keeps unchanged crates built.
+  RUSTC_WRAPPER: ""
   # LLVM's linker instead of link.exe: much faster on large binaries.
   CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
   CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER: rust-lld
@@ -74,6 +77,9 @@ jobs:
     steps:
       # Check out with LF line endings, as on Linux: hashFiles() then gives the guest the same
       # cache key guest.yml saved it under, and the shell scripts run as written.
+      # The fleet may set its wrapper for the job (GITHUB_ENV, which outranks env above): unset it here too.
+      - name: No fleet sccache
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs

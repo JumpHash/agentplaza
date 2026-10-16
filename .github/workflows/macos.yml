@@ -43,6 +43,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
+  # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
+  # instead"), and the build directory kept on the runner already keeps unchanged crates built.
+  RUSTC_WRAPPER: ""
   # The oldest macOS the app supports (Info.plist's LSMinimumSystemVersion): C code and Rust agree.
   MACOSX_DEPLOYMENT_TARGET: "12.0"
   VERSION: ${{ inputs.version || '0.0.0-ci' }}
@@ -60,6 +63,9 @@ jobs:
     # A hung test is killed by nextest after 2 minutes.
     timeout-minutes: 90
     steps:
+      # The fleet may set its wrapper for the job (GITHUB_ENV, which outranks env above): unset it here too.
+      - name: No fleet sccache
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
       # save theirs (the aarch64 guest) with zstd; without it here they are not found, and what
