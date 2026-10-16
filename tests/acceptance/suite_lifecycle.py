@@ -329,7 +329,113 @@ def _doze_all(lab: Lab) -> int:
     return dozed
 
 
-def run(ctx, soak: int = 0, soak_seconds: float = 60.0) -> Suite:
+def _case_sessions(suite: Suite, ctx, sessions: int, seconds: float) -> None:
+    """One vsockd serving `sessions` CIDs, each with a connected keepalive guest stood in by a socket that says hello and
+    heartbeats every 5 s (no VMs: this measures the gateway alone). Records vsockd's CPU, threads and RSS while it holds
+    them, and that none was refused, dropped or reaped, in suite.data["sessions"]."""
+    import selectors
+    import socket
+    import subprocess
+
+    case = suite.case(
+        f"connected sessions: one vsockd holds {sessions} keepalive guests for {seconds:.0f}s",
+        vector=f"vsockd --cids <{sessions}> --max-sessions {max(4096, sessions)}; a hello and a heartbeat every 5 s per CID",
+    )
+    work = ctx.new_dir(f"lifecycle-sessions-{sessions}")
+    uds = work / "uds"
+    uds.mkdir(mode=0o700)
+    cids = list(range(1000, 1000 + sessions))
+    http = apz._free_port()
+    log_path = work / "vsockd.log"
+    with open(log_path, "w") as log:
+        daemon = subprocess.Popen(
+            [
+                str(ctx.bin("vsockd")), "--uds-dir", str(uds), "--cids", ",".join(map(str, cids)),
+                "--port", str(apz.VSOCK_PORT), "--http-port", str(http),
+                "--apid", f"http://127.0.0.1:{apz._free_port()}", "--max-sessions", str(max(4096, sessions)),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    conns: list[socket.socket] = []
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if sum(1 for name in os.listdir(uds) if name.endswith(f"_{apz.VSOCK_PORT}")) >= sessions:
+                break
+            time.sleep(0.5)
+        selector = selectors.DefaultSelector()
+        welcomed: set[int] = set()
+        for cid in cids:
+            conn = socket.socket(socket.AF_UNIX)
+            conn.connect(str(uds / f"vm{cid}_{apz.VSOCK_PORT}"))
+            hello = {"type": "hello", "vm": 0, "guest_cid": cid, "role": "soak", "keepalive": True}
+            conn.sendall((json.dumps(hello) + "\n").encode())
+            conn.setblocking(False)
+            selector.register(conn, selectors.EVENT_READ, cid)
+            conns.append(conn)
+        deadline = time.monotonic() + 60
+        while len(welcomed) < sessions and time.monotonic() < deadline:
+            for key, _ in selector.select(1):
+                try:
+                    if b"welcome" in key.fileobj.recv(65536):
+                        welcomed.add(key.data)
+                except BlockingIOError:
+                    pass
+        if not case.invariant("every guest was welcomed", len(welcomed) == sessions, f"{len(welcomed)} of {sessions}"):
+            return
+
+        def sample() -> tuple[int, int, int]:
+            fields = Path(f"/proc/{daemon.pid}/stat").read_text().split(")")[1].split()
+            rss_kib = next(
+                int(line.split()[1])
+                for line in Path(f"/proc/{daemon.pid}/status").read_text().splitlines()
+                if line.startswith("VmRSS:")
+            )
+            return int(fields[11]) + int(fields[12]), len(os.listdir(f"/proc/{daemon.pid}/task")), rss_kib
+
+        time.sleep(3)
+        ticks_start, _, _ = sample()
+        start = time.monotonic()
+        next_beat = start
+        seq = 0
+        while time.monotonic() - start < seconds:
+            if time.monotonic() >= next_beat:
+                seq += 1
+                beat = (json.dumps({"type": "heartbeat", "seq": seq}) + "\n").encode()
+                for conn in conns:
+                    try:
+                        conn.sendall(beat)
+                    except BlockingIOError:
+                        pass
+                next_beat += 5
+            for key, _ in selector.select(0.5):
+                try:
+                    key.fileobj.recv(65536)
+                except BlockingIOError:
+                    pass
+        ticks_end, threads, rss_kib = sample()
+        cpu = (ticks_end - ticks_start) / os.sysconf("SC_CLK_TCK") / seconds * 100
+        lost = sum(
+            1 for line in log_path.read_text().splitlines() if "dropped" in line or "reaped" in line or "refusing" in line
+        )
+        suite.data["sessions"] = {
+            "sessions": sessions,
+            "seconds": seconds,
+            "cpu_pct_one_core": round(cpu, 3),
+            "threads": threads,
+            "rss_mib": round(rss_kib / 1024, 1),
+        }
+        case.invariant("no session was refused, dropped or reaped", lost == 0, f"{lost} such lines in vsockd.log")
+        case.note(f"{sessions} sessions for {seconds:.0f}s: cpu {cpu:.2f}% of one core, {threads} threads, rss {rss_kib // 1024} MiB")
+    finally:
+        for conn in conns:
+            conn.close()
+        daemon.terminate()
+        daemon.wait(timeout=20)
+
+
+def run(ctx, soak: int = 0, soak_seconds: float = 60.0, soak_sessions: int = 0) -> Suite:
     suite = Suite(
         "lifecycle",
         "sleep, wake, checkpoint and fork measured end to end (until the guest's hello), and the idle cost per agent "
@@ -344,4 +450,6 @@ def run(ctx, soak: int = 0, soak_seconds: float = 60.0) -> Suite:
     _case_checkpoint_fork(suite, ctx)
     if soak > 0:
         _case_density(suite, ctx, soak, soak_seconds)
+    if soak_sessions > 0:
+        _case_sessions(suite, ctx, soak_sessions, soak_seconds)
     return suite

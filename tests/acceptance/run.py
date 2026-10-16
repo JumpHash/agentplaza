@@ -118,6 +118,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--soak-seconds", type=float, default=60.0, help="how long the lifecycle soak holds its agents"
     )
     parser.add_argument(
+        "--soak-sessions",
+        type=int,
+        default=0,
+        help="the lifecycle suite's session case: one vsockd holds this many connected keepalive guests (no VMs; 0 skips it)",
+    )
+    parser.add_argument(
         "--timeout-scale",
         type=float,
         default=1.0,
@@ -244,7 +250,9 @@ def main(argv: list[str]) -> int:
         if name == "budgets":
             suite = module.run(ctx, boot_p95_ms=args.boot_p95_ms)
         elif name == "lifecycle":
-            suite = module.run(ctx, soak=args.soak, soak_seconds=args.soak_seconds)
+            suite = module.run(
+                ctx, soak=args.soak, soak_seconds=args.soak_seconds, soak_sessions=args.soak_sessions
+            )
         else:
             suite = module.run(ctx)
         suite.duration_s = time.monotonic() - started
