@@ -118,14 +118,14 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
     );
 
     let shift_later = if state.q.shift < 0 {
-        Some(Msg::Shift(1))
+        Some(Msg::Shift(state.q.shift + 1))
     } else {
         None
     };
     let shift = strip(vec![
         ghost(
             text("‹").font(SANS_MEDIUM).size(TYPE_META),
-            Some(Msg::Shift(-1)),
+            Some(Msg::Shift(state.q.shift - 1)),
         ),
         ghost(text("›").font(SANS_MEDIUM).size(TYPE_META), shift_later),
     ]);

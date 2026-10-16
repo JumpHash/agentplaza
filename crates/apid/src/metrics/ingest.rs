@@ -164,7 +164,7 @@ pub fn batch(m: &Metrics, node: &str, b: Batch, hub_now_ms: u64) {
                 Value::Gauge(v)
             };
             out.push(Sample {
-                key: c.key.clone(),
+                key: owned_by(&c.key, node),
                 t_ms: corrected(t_ms, shift),
                 value,
             });
@@ -172,7 +172,7 @@ pub fn batch(m: &Metrics, node: &str, b: Batch, hub_now_ms: u64) {
     }
     for h in hists {
         out.push(Sample {
-            key: h.key,
+            key: owned_by(&h.key, node),
             t_ms: corrected(h.t_ms, shift),
             value: Value::Hist(h.hist),
         });
@@ -194,6 +194,23 @@ pub fn batch(m: &Metrics, node: &str, b: Batch, hub_now_ms: u64) {
     m.registry
         .hist(SeriesKey::new("link.payload_bytes", EntityKind::Node, node))
         .record(payload_bytes as f64);
+}
+
+/// A node's series keyed by what the hub knows it as: a node keys its own series `node` (it does not know its id),
+/// and its volumes and services by their names; the hub keys them by the node's id (`n1`, `n1:/var/lib/plaza`,
+/// `n1:noded`).
+fn owned_by(key: &SeriesKey, node: &str) -> SeriesKey {
+    let mut key = key.clone();
+    match key.kind {
+        EntityKind::Node if key.entity.is_empty() || key.entity == "node" => {
+            key.entity = node.to_string()
+        }
+        EntityKind::Volume | EntityKind::Service if !key.entity.contains(':') => {
+            key.entity = format!("{node}:{}", key.entity);
+        }
+        _ => {}
+    }
+    key
 }
 
 /// A node time moved to the hub's clock: the node's clock is `shift` ms ahead of the hub's.
