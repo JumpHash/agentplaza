@@ -206,11 +206,14 @@ const ROUTES: &[(&str, f64)] = &[
 ];
 const ENGINES: &[(&str, f64)] = &[("claude", 0.70), ("codex", 0.25), ("local", 0.05)];
 const LAWS: &[(&str, f64)] = &[("secret-scan", 0.5), ("budget", 0.3), ("scope", 0.2)];
+/// The states the hub books agent time to (crates/apid/src/metrics/collect.rs `agent_state`), with their shares.
 const AGENT_STATES: &[(&str, f64)] = &[
-    ("working", 0.30),
-    ("idle", 0.50),
-    ("waiting", 0.12),
-    ("asleep", 0.08),
+    ("streaming", 0.16),
+    ("first_token", 0.05),
+    ("tools", 0.13),
+    ("approval", 0.03),
+    ("idle", 0.48),
+    ("asleep", 0.15),
 ];
 const PARTS: &[(&str, f64)] = &[
     ("system", 0.10),

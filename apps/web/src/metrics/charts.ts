@@ -72,6 +72,24 @@ export function thin(values: readonly (number | null | undefined)[], starts: rea
   });
 }
 
+/** The outline of a percentile band: the high edge left to right, then the low edge right to left (each point with
+ * its own value), closed. A gap counts as 0, as on the desktop. */
+export function bandPath(
+  hi: readonly (number | null)[],
+  lo: readonly (number | null)[],
+  x: (j: number) => number,
+  y: (v: number) => number,
+): string {
+  const top = hi.map((v, j) => `${j ? 'L' : 'M'}${x(j).toFixed(1)},${y(v ?? 0).toFixed(1)}`).join('');
+  const bottom = lo
+    .map((_, q) => {
+      const j = lo.length - 1 - q;
+      return `L${x(j).toFixed(1)},${y(lo[j] ?? 0).toFixed(1)}`;
+    })
+    .join('');
+  return top + bottom + 'Z';
+}
+
 /** The indexes of the x-axis labels: the first, the last and evenly spaced between them (three labels under 460 px, five from there). */
 export function xLabelIndexes(n: number, width: number): number[] {
   if (n <= 0) return [];
@@ -280,14 +298,7 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
 
     // The percentile band: the high edge forward, the low edge back.
     if (band && starts.length) {
-      const hi = band.hi.map((v, j) => `${j ? 'L' : 'M'}${xAt(j).toFixed(1)},${Y(v ?? 0).toFixed(1)}`).join('');
-      const lo = band.lo
-        .map((v, q) => {
-          const j = band.lo.length - 1 - q;
-          return `L${xAt(j).toFixed(1)},${Y(v ?? 0).toFixed(1)}`;
-        })
-        .join('');
-      root.append(svgNode('path', { d: hi + lo + 'Z', opacity: 0.18 }, { fill: toneVar(band.tone) }));
+      root.append(svgNode('path', { d: bandPath(band.hi, band.lo, xAt, Y), opacity: 0.18 }, { fill: toneVar(band.tone) }));
     }
 
     if (cur.stacked) {
