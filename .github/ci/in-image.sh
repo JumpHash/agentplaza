@@ -22,15 +22,26 @@ set -eu
 cache="${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
 mkdir -p "$cache/registry" "$cache/git" "$cache/target" "$cache/sccache" "$cache/npm"
 
+# The build runs as the runner's user, so what it writes to the workspace and the caches is the
+# runner's. Where Docker maps users (the arm64 runners), that takes a different flag: rootless Docker
+# maps the container's root to the runner's user, so the build runs as root inside; a daemon with
+# userns-remap maps every uid to a range of its own, so this container opts out (--userns=host) and
+# runs as the runner's uid, no more than the runner itself may do.
+user="$(id -u):$(id -g)" userns=""
+case " $(docker info --format '{{join .SecurityOptions " "}}' 2>/dev/null) " in
+  *" name=rootless"*) user="0:0" ;;
+  *" name=userns"*) userns="--userns=host" ;;
+esac
+
 target_args=""
 if [ "${APZ_CI_TARGET:-shared}" != workspace ]; then
   target_args="-v $cache/target:/ci-target -e CARGO_TARGET_DIR=/ci-target"
 fi
 
-# shellcheck disable=SC2086 # target_args is a list of words
+# shellcheck disable=SC2086 # target_args is a list of words, userns one or none
 exec docker run --rm \
   ${APZ_CI_NETWORK:+--network "$APZ_CI_NETWORK"} \
-  -u "$(id -u):$(id -g)" -e HOME=/tmp --ulimit nofile=65536:65536 \
+  $userns -u "$user" -e HOME=/tmp --ulimit nofile=65536:65536 \
   -v "$PWD:$PWD" -w "$PWD" \
   -v "$cache/registry:/usr/local/cargo/registry" -v "$cache/git:/usr/local/cargo/git" \
   $target_args \
