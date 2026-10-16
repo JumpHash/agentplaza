@@ -877,6 +877,16 @@ mod tests {
     }
 
     #[test]
+    fn charts_and_tiles_ride_live_frames_and_tables_do_not() {
+        let view = compose_tokens("none");
+        let live = |id: &str| view.panels.iter().find(|p| p.id == id).unwrap().live;
+        assert!(live("tiles"));
+        assert!(live("tokens-by-group"));
+        assert!(!live("calls"));
+        assert!(!live("prices"));
+    }
+
+    #[test]
     fn the_call_log_pages_older_calls_and_the_prices_panel_can_refresh() {
         let view = compose_tokens("none");
         let calls = view.panels.iter().find(|p| p.id == "calls").unwrap();

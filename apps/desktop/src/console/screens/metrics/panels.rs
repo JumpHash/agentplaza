@@ -425,9 +425,9 @@ fn cell_content<'a>(cell: &'a Cell) -> Element<'a, Msg> {
 }
 
 /// A cell in a grid row: its content, aligned right when the column (or the cell) is numeric.
-fn cell<'a>(content: Element<'a, Msg>, numeric: bool) -> Element<'a, Msg> {
+fn cell<'a>(content: Element<'a, Msg>, numeric: bool, portion: u16) -> Element<'a, Msg> {
     container(content)
-        .width(Length::Fill)
+        .width(Length::FillPortion(portion))
         .align_x(if numeric {
             Horizontal::Right
         } else {
@@ -437,20 +437,57 @@ fn cell<'a>(content: Element<'a, Msg>, numeric: bool) -> Element<'a, Msg> {
 }
 
 /// A row of cells, each with its numeric flag.
-fn cells_row<'a>(cells: Vec<(Element<'a, Msg>, bool)>) -> Element<'a, Msg> {
+/// `portions` are the columns' shares of the width (equal when empty).
+fn cells_row<'a>(cells: Vec<(Element<'a, Msg>, bool)>, portions: &[u16]) -> Element<'a, Msg> {
     row(cells
         .into_iter()
-        .map(|(content, numeric)| cell(content, numeric)))
+        .enumerate()
+        .map(|(i, (content, numeric))| {
+            cell(content, numeric, portions.get(i).copied().unwrap_or(1))
+        }))
     .spacing(12)
     .width(Length::Fill)
     .into()
 }
 
 /// A grid: the header row, then the rows.
-fn grid<'a>(head: Vec<(Element<'a, Msg>, bool)>, rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut lines = vec![cells_row(head)];
+fn grid<'a>(
+    head: Vec<(Element<'a, Msg>, bool)>,
+    rows: Vec<Element<'a, Msg>>,
+    portions: &[u16],
+) -> Element<'a, Msg> {
+    let mut lines = vec![cells_row(head, portions)];
     lines.extend(rows);
     column(lines).spacing(6).width(Length::Fill).into()
+}
+
+/// Each column's share of a table's width: its longest text (head or cell) in characters, between 3 and 32, so
+/// columns size to their content as the web's tables do. Sparks and bars count as 12.
+fn column_portions(t: &Table) -> Vec<u16> {
+    t.columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let longest = t
+                .rows
+                .iter()
+                .filter_map(|r| r.cells.get(i))
+                .map(|cell| match cell {
+                    Cell::Text { text }
+                    | Cell::Mono { text }
+                    | Cell::Num { text }
+                    | Cell::Status { text, .. }
+                    | Cell::Pill { text, .. }
+                    | Cell::Muted { text } => text.chars().count(),
+                    Cell::Named { name, id } => name.chars().count() + 1 + id.chars().count(),
+                    Cell::Spark { .. } | Cell::Bar { .. } => 12,
+                })
+                .max()
+                .unwrap_or(0)
+                .max(c.head.chars().count());
+            longest.clamp(3, 32) as u16
+        })
+        .collect()
 }
 
 /// A table of rows. A row that names a scope, tab or trace is a button that opens it. When the table has older
@@ -469,8 +506,13 @@ fn table<'a>(panel: &'a str, t: &'a Table) -> Element<'a, Msg> {
             .iter()
             .map(|c| (meta(c.head.as_str(), pal.ink_3).into(), c.num))
             .collect();
-        let rows: Vec<Element<'a, Msg>> = t.rows.iter().map(|r| table_row(r, &t.columns)).collect();
-        grid(head, rows)
+        let portions = column_portions(t);
+        let rows: Vec<Element<'a, Msg>> = t
+            .rows
+            .iter()
+            .map(|r| table_row(r, &t.columns, &portions))
+            .collect();
+        grid(head, rows, &portions)
     };
     let Some(path) = &t.more else {
         return content;
@@ -490,7 +532,11 @@ fn table<'a>(panel: &'a str, t: &'a Table) -> Element<'a, Msg> {
         .into()
 }
 
-fn table_row<'a>(r: &'a TableRow, columns: &'a [TableColumn]) -> Element<'a, Msg> {
+fn table_row<'a>(
+    r: &'a TableRow,
+    columns: &'a [TableColumn],
+    portions: &[u16],
+) -> Element<'a, Msg> {
     let cells: Vec<(Element<'a, Msg>, bool)> = r
         .cells
         .iter()
@@ -501,7 +547,7 @@ fn table_row<'a>(r: &'a TableRow, columns: &'a [TableColumn]) -> Element<'a, Msg
             (cell_content(c), numeric)
         })
         .collect();
-    let line = cells_row(cells);
+    let line = cells_row(cells, portions);
     match target(r.scope.as_deref(), r.tab.as_deref(), r.trace.as_deref()) {
         Some(msg) => button(line)
             .width(Length::Fill)
@@ -546,10 +592,10 @@ fn chart_table<'a>(c: &'a Chart, tz: i32) -> Element<'a, Msg> {
                 };
                 cells.push((text(value).size(TYPE_UI).color(pal.ink).into(), true));
             }
-            cells_row(cells)
+            cells_row(cells, &[])
         })
         .collect();
-    ui::scroll(grid(head, rows))
+    ui::scroll(grid(head, rows, &[]))
         .height(Length::Fixed(360.0))
         .into()
 }
@@ -566,16 +612,23 @@ fn flags<'a>(list: &'a [Flag]) -> Element<'a, Msg> {
             .width(Length::Fixed(3.0))
             .height(Length::Fill)
             .style(fill(status(f.status)));
-        let words = column![
-            text(f.text.as_str()).size(TYPE_UI).color(pal.ink),
+        // The text and its time on one line, the time at the right, as the web's `.mx-flag`.
+        let words = row![
+            text(f.text.as_str())
+                .size(TYPE_UI)
+                .color(pal.ink)
+                .width(Length::Fill),
             meta(f.when.as_str(), pal.ink_3)
         ]
-        .spacing(2);
+        .spacing(10)
+        .align_y(Alignment::Center);
+        // Shrink: the strip fills the flag's height, not the card's.
         let content = row![
             strip,
-            container(words).padding([8.0, 10.0]).width(Length::Fill)
+            container(words).padding([6.0, 8.0]).width(Length::Fill)
         ]
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .height(Length::Shrink);
         let flag = button(content)
             .width(Length::Fill)
             .padding(0.0)

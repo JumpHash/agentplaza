@@ -141,7 +141,10 @@ canvas.mx-hm { display: block; width: 100%; }
 .mx-tablewrap { overflow-x: auto; }
 table.mx-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.mx-t th { text-align: left; font: 500 11px var(--sans); color: var(--ink-3); padding: 4px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; position: sticky; top: 0; background: var(--sheet); }
-table.mx-t td { padding: 5px 8px; border-bottom: 1px solid var(--rule-faint); white-space: nowrap; }
+/* Text cells wrap, as the desktop's table cells do, so a wide table keeps every column in view; numbers and times
+   stay on one line. */
+table.mx-t td { padding: 5px 8px; border-bottom: 1px solid var(--rule-faint); white-space: normal; }
+table.mx-t td.mx-r { white-space: nowrap; }
 table.mx-t td.mx-r, table.mx-t th.mx-r { text-align: right; }
 table.mx-t tr.mx-click:hover td { background: var(--hover); cursor: pointer; }
 table.mx-t tr.mx-sel td { background: var(--hover); }
@@ -279,7 +282,8 @@ table.mx-t tr.mx-sel td { background: var(--hover); }
   .mx-c3 { grid-column: span 6; }
 }
 
-@container mx (max-width: 1100px) {
+/* A narrow grid drops the alert rows' value and trend (the desktop's alerts body does the same). */
+@container mxg (max-width: 800px) {
   .mx-alert-row { grid-template-columns: 4px 1fr auto; }
   .mx-alert-row .mx-spk, .mx-alert-row .mx-val { display: none; }
 }

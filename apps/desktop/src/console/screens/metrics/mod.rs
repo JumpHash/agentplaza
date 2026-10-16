@@ -1438,6 +1438,189 @@ pub const TOAST: Duration = Duration::from_millis(2400);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apz_metrics_view::ViewQuery;
+
+    /// A one-thread hub for the Tokens tab's two actions: a page of older calls composed from the fixture, and the
+    /// prices refresh (counted). Returns its base URL and the count of refreshes.
+    fn serve_tokens_hub() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the test hub");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let refreshes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&refreshes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = stream.read(&mut chunk) {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if n == 0 || buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
+                let line = head.lines().next().unwrap_or_default().to_string();
+                let body = if line.starts_with("POST /v1/prices/refresh") {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    "{}".to_string()
+                } else if let Some(rest) = line.strip_prefix("GET /v1/metrics/calls/page?") {
+                    let before: u64 = rest
+                        .split(['&', ' '])
+                        .find_map(|pair| pair.strip_prefix("before="))
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(u64::MAX);
+                    let fixture = apz_metrics_view::fixture::Fixture::new(FIXTURE_NOW);
+                    let mut q = ViewQuery::new("tokens", "global", "24h");
+                    q.fixture = true;
+                    serde_json::to_string(&apz_metrics_view::compose::tokens::calls_page(
+                        &q, &fixture, before,
+                    ))
+                    .expect("a table serializes")
+                } else {
+                    r#"{"error":"not here"}"#.to_string()
+                };
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (url, refreshes)
+    }
+
+    /// The fixture's clock for the actions test.
+    const FIXTURE_NOW: u64 = 1_792_100_000_000;
+
+    /// Presses the first match of `selector` in the screen and returns the messages it produced.
+    fn press(state: &State, ctx: &Ctx, label: &str) -> Vec<Msg> {
+        let mut ui = iced_test::simulator(view(state, ctx));
+        ui.click(label)
+            .unwrap_or_else(|_| panic!("{label} is in the view and visible"));
+        ui.into_messages().collect()
+    }
+
+    #[test]
+    fn a_live_frame_for_the_screen_replaces_its_panels_and_others_are_ignored() {
+        let fixture = apz_metrics_view::fixture::Fixture::new(FIXTURE_NOW);
+        let mut q = ViewQuery::new("overview", "global", "15m");
+        q.fixture = true;
+        let view = apz_metrics_view::compose::compose(&q, &fixture);
+        let mut state = State::default();
+        state.q.range = "15m".into();
+        state.view = Some(view.clone());
+        let mut panel = view
+            .panels
+            .iter()
+            .find(|p| p.live)
+            .expect("the overview has live panels")
+            .clone();
+        panel.title = "new".into();
+        let frame = |scope: &str, p: &apz_metrics_view::Panel| LiveFrame {
+            scope: scope.into(),
+            tab: "overview".into(),
+            group: "provider".into(),
+            range: "15m".into(),
+            t_ms: FIXTURE_NOW,
+            panels: vec![p.clone()],
+        };
+        let title = |state: &State| {
+            state
+                .view
+                .as_ref()
+                .unwrap()
+                .panels
+                .iter()
+                .find(|p| p.id == panel.id)
+                .unwrap()
+                .title
+                .clone()
+        };
+        // Another scope's frame changes nothing.
+        apply_frame(&mut state, frame("node:n1", &panel));
+        assert_ne!(title(&state), "new");
+        // The screen's frame replaces the panel and stamps the freshness.
+        apply_frame(&mut state, frame("global", &panel));
+        assert_eq!(title(&state), "new");
+        assert!(state.fresh_at.is_some());
+        // With live off, frames are not applied.
+        state.live = false;
+        panel.title = "newer".into();
+        apply_frame(&mut state, frame("global", &panel));
+        assert_eq!(title(&state), "new");
+    }
+
+    #[test]
+    fn load_older_and_refresh_prices_work_from_their_buttons() {
+        use std::sync::atomic::Ordering;
+        let (url, refreshes) = serve_tokens_hub();
+        let ctx = Ctx {
+            client: crate::console::client::Client::new(&url, None, None),
+        };
+        let fixture = apz_metrics_view::fixture::Fixture::new(FIXTURE_NOW);
+        let mut q = ViewQuery::new("tokens", "global", "24h");
+        q.fixture = true;
+        let mut state = State::default();
+        state.q.tab = "tokens".into();
+        state.q.fixture = true;
+        state.view = Some(apz_metrics_view::compose::compose(&q, &fixture));
+        let calls = |state: &State| match &state
+            .view
+            .as_ref()
+            .and_then(|v| v.panels.iter().find(|p| p.id == "calls"))
+            .map(|p| &p.body)
+        {
+            Some(Body::Table(t)) => (t.rows.len(), t.more.clone()),
+            _ => panic!("the call log is a table"),
+        };
+        let (before, more) = calls(&state);
+        assert!(more.is_some(), "a full first page offers older calls");
+
+        // Load older, with the call log in full screen so its button is on screen: the button asks for the hub's
+        // page, and the page lands under the rows.
+        let _ = update(&mut state, Msg::Full(Some("calls".into())), &ctx);
+        let pressed = press(&state, &ctx, "Load older");
+        let Some(Msg::More { panel, path }) = pressed.into_iter().next() else {
+            panic!("Load older sends More");
+        };
+        assert_eq!(Some(path.clone()), more);
+        let _ = update(
+            &mut state,
+            Msg::More {
+                panel: panel.clone(),
+                path: path.clone(),
+            },
+            &ctx,
+        );
+        let page = ctx.client.get::<Table>(&path);
+        let _ = update(&mut state, Msg::MoreLoaded(panel, page), &ctx);
+        let (after, _) = calls(&state);
+        assert!(
+            after > before,
+            "older calls were appended ({before} → {after})"
+        );
+
+        // Refresh prices: the head button posts the hub's route, then toasts what the panel says.
+        let _ = update(&mut state, Msg::Full(Some("prices".into())), &ctx);
+        let pressed = press(&state, &ctx, "Refresh prices");
+        let Some(Msg::Action { post, done }) = pressed.into_iter().next() else {
+            panic!("Refresh prices sends Action");
+        };
+        assert_eq!(post, "/v1/prices/refresh");
+        let result = ctx.client.post::<Value>(&post, &json!({}));
+        let _ = update(&mut state, action_done(result, Some(done.as_str())), &ctx);
+        assert_eq!(
+            refreshes.load(Ordering::SeqCst),
+            1,
+            "the hub was asked once"
+        );
+        assert_eq!(
+            state.toast.as_ref().map(|(text, _)| text.as_str()),
+            Some("Prices refreshed")
+        );
+    }
 
     #[test]
     fn preferences_start_live_with_annotations_and_keep_what_was_saved() {

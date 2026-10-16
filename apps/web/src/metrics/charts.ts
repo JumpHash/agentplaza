@@ -244,9 +244,12 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
     let max = cur.stacked ? peak(totals) : Math.max(0, ...series.map(({ vals }) => peak(vals)));
     for (const { vals } of ghosts) max = Math.max(max, peak(vals));
     if (band) max = Math.max(max, peak(band.hi));
-    if (cur.y_max != null) max = Math.max(max, cur.y_max);
+    // A chart with a ceiling (shares, percentages) ends its axis exactly there while the data fits under it.
+    // (A stacked total of shares can land a rounding error above its ceiling.)
+    const capped = cur.y_max != null && max <= cur.y_max * 1.001 && !(cur.limit && cur.limit.value > cur.y_max);
+    if (cur.y_max != null) max = capped ? cur.y_max : Math.max(max, cur.y_max);
     if (cur.limit) max = Math.max(max, cur.limit.value);
-    const tk = ticks(max);
+    const tk = capped ? [0, max / 4, max / 2, (max * 3) / 4, max] : ticks(max);
     const ym = tk[4] ?? 1;
     const Y = (v: number): number => PAD_T + ih - (v / ym) * ih;
 

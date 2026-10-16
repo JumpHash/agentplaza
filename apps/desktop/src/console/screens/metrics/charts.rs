@@ -215,13 +215,22 @@ impl LineChart<'_> {
         if let Some((_, _, hi)) = &band {
             max = max.max(peak(hi));
         }
+        // A chart with a ceiling (shares, percentages) ends its axis exactly there while the data fits under it.
+        // (A stacked total of shares can land a rounding error above its ceiling.)
+        let capped = c.y_max.is_some_and(|y| {
+            max <= y * 1.001 && !c.limit.as_ref().is_some_and(|limit| limit.value > y)
+        });
         if let Some(y) = c.y_max {
-            max = max.max(y);
+            max = if capped { y } else { max.max(y) };
         }
         if let Some(limit) = &c.limit {
             max = max.max(limit.value);
         }
-        let tk = ticks(max);
+        let tk = if capped {
+            [0.0, max / 4.0, max / 2.0, max * 3.0 / 4.0, max]
+        } else {
+            ticks(max)
+        };
         let scale = Scale {
             plot,
             n,

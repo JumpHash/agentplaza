@@ -435,6 +435,24 @@ fn parent_of(tree: &[ScopeNode], i: usize) -> Option<String> {
 }
 
 /// Composes a tab.
+/// Marks the panels a live frame carries: every chart, tile row, health strip and gauge set reads the newest points, so
+/// it moves while the scope is watched live (the forecasts of the Capacity tab do not). The hub recomposes the whole
+/// tab for each frame anyway; this only decides what the frame sends.
+fn mark_live(tab: &str, mut panels: Vec<Panel>) -> Vec<Panel> {
+    if tab == "capacity" {
+        return panels;
+    }
+    for p in &mut panels {
+        if matches!(
+            p.body,
+            Body::Chart(_) | Body::Tiles { .. } | Body::Health { .. } | Body::Gauges { .. }
+        ) {
+            p.live = true;
+        }
+    }
+    panels
+}
+
 pub fn compose(q: &ViewQuery, src: &dyn Source) -> View {
     let ctx = Ctx::new(q, src);
     let tab = if crate::tabs::applies(&q.tab, &ctx.kind, &ctx.scope.id) {
@@ -458,6 +476,7 @@ pub fn compose(q: &ViewQuery, src: &dyn Source) -> View {
         "dash" => dash::panels(&ctx, src),
         _ => overview::panels(&ctx, src),
     };
+    let panels = mark_live(tab, panels);
     let firing = src
         .alerts()
         .subjects

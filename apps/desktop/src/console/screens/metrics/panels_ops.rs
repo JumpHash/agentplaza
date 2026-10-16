@@ -6,8 +6,8 @@ use apz_metrics_view::{
     AlertRow, EventRow, LegendItem, RuleRow, SpanRow, Status, Tone, TraceDetail, TraceRow,
     TracesBody, Unit,
 };
-use iced::widget::{Space, button, checkbox, column, container, row, text};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Theme};
+use iced::widget::{Space, button, checkbox, column, container, responsive, row, text};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Size, Theme};
 
 use super::figures::spark;
 use super::{Msg, State, status, tone};
@@ -23,10 +23,25 @@ pub fn alerts<'a>(rows: &'a [AlertRow]) -> Element<'a, Msg> {
     if rows.is_empty() {
         return empty_line("Nothing firing. Muted rules are listed below.");
     }
-    column(rows.iter().map(alert_row).collect::<Vec<_>>())
+    // A narrow grid drops each row's value and trend, as the web's `@container mxg (max-width: 800px)` does (the
+    // firing panel spans the grid, less its 28 px of padding).
+    responsive(move |size: Size| {
+        let narrow = size.width < NARROW_ALERTS;
+        column(
+            rows.iter()
+                .map(|r| alert_row(r, narrow))
+                .collect::<Vec<_>>(),
+        )
         .width(Length::Fill)
         .into()
+    })
+    .width(Length::Fill)
+    .height(Length::Shrink)
+    .into()
 }
+
+/// The firing panel's body width under which the rows drop their value and trend.
+const NARROW_ALERTS: f32 = 772.0;
 
 /// The rules table, with a New rule button above it. Turning a rule on or off reports the new state.
 pub fn rules<'a>(rows: &'a [RuleRow]) -> Element<'a, Msg> {
@@ -127,7 +142,7 @@ pub fn events<'a>(kinds: &'a [String], rows: &'a [EventRow], state: &'a State) -
 
 /// One firing rule: the severity bar, the name over its condition line, the current value, the spark line and
 /// the three actions. Acknowledge is disabled once the alert is acknowledged.
-fn alert_row<'a>(r: &'a AlertRow) -> Element<'a, Msg> {
+fn alert_row<'a>(r: &'a AlertRow, narrow: bool) -> Element<'a, Msg> {
     let p = crate::theme::palette();
     let bar = block(Length::Fixed(4.0), Length::Fill, status(r.severity));
     let name = text(r.name.clone())
@@ -176,16 +191,22 @@ fn alert_row<'a>(r: &'a AlertRow) -> Element<'a, Msg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let content = row![info, value, trend, actions]
-        .spacing(16)
-        .align_y(Alignment::Center);
+    let content = if narrow {
+        row![info, actions]
+    } else {
+        row![info, value, trend, actions]
+    }
+    .spacing(16)
+    .align_y(Alignment::Center);
     column![
+        // Shrink: the bar fills the row's height, not the scroll's, which would collapse the card.
         row![
             bar,
             container(content)
                 .padding(Padding::from([10.0, 12.0]))
                 .width(Length::Fill),
-        ],
+        ]
+        .height(Length::Shrink),
         ui::hairline::<Msg>(),
     ]
     .into()
