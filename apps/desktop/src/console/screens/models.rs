@@ -365,7 +365,7 @@ fn default_idle_sleep_min() -> i64 {
 }
 
 fn default_doze_idle_s() -> i64 {
-    60
+    0
 }
 
 fn default_sleep_never_roles() -> Vec<String> {
@@ -2932,7 +2932,7 @@ mod tests {
         let bare = json!({"default_model": "a/b", "orchestrator_model": "a/c"});
         let settings: Settings = serde_json::from_value(bare).unwrap();
         assert_eq!(settings.idle_sleep_min, 10);
-        assert_eq!(settings.doze_idle_s, 60);
+        assert_eq!(settings.doze_idle_s, 0);
         assert_eq!(settings.sleep_never_roles, vec!["orchestrator".to_string()]);
         assert!(settings.vm_auto_checkpoints);
     }

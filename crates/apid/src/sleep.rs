@@ -7,7 +7,7 @@
 //! unless its role is in `sleep_never_roles`. Sleeping is a snapshot of its VM and a stop
 //! (noded `POST /v1/runs/{run}/vms/{vm}/sleep`); the agent shows as `asleep`, its memory is free.
 //!
-//! A shorter idle dozes first (`doze_idle_s`, 60 s; 0 = never): the VM is paused and its memory paged
+//! A shorter idle dozes first (`doze_idle_s`; off (0) by default, 60 s is the value it is meant for): the VM is paused and its memory paged
 //! out (noded `.../doze`, ~0.4 s), and the agent shows as `dozing`. Its session stays up: the gateway
 //! keeps it while quiet (vsockd `POST /v1/agents/{cid}/quiet`), so an undoze (noded `.../resume`, ~1 ms,
 //! then quiet off) needs no reconnect and no hello. A dozing agent that reaches `idle_sleep_min` sleeps.

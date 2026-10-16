@@ -110,7 +110,7 @@ waits on, and its workstation leases. It must also have been idle for `idle_slee
 |---|---|---|
 | `idle_sleep_min` | 10 | Minutes an idle agent waits before its VM sleeps. `0` means agents never sleep on their own. The most is 1440. |
 | `sleep_never_roles` | `["orchestrator"]` | Roles whose agents never sleep on their own, so the owner can talk to the orchestrator at any time. |
-| `doze_idle_s` | 60 | Seconds an idle agent waits before it dozes. `0` means agents never doze. The most is 86400. |
+| `doze_idle_s` | 0 | Seconds an idle agent waits before it dozes. `0`, the default until the doze tier has passed a soak on a real node, means agents never doze; 60 is the value it is meant for. The most is 86400. |
 
 Sleeping is a snapshot of the VM followed by a stop (`POST /v1/runs/{run}/vms/{vm}/sleep`). The agent shows as
 `asleep`, and its memory is freed.

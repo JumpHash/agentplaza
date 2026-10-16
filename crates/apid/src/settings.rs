@@ -187,8 +187,9 @@ pub const DEFAULT_IDLE_SLEEP_MIN: u32 = 10;
 /// The most `idle_sleep_min` may be: a day.
 pub const MAX_IDLE_SLEEP_MIN: u32 = 1440;
 
-/// The default for `doze_idle_s`: a minute.
-pub const DEFAULT_DOZE_IDLE_S: u32 = 60;
+/// The default for `doze_idle_s`: 0, no doze. The doze tier is behind this setting until a soak has
+/// passed on a real node; 60 (a minute) is the value it is meant for.
+pub const DEFAULT_DOZE_IDLE_S: u32 = 0;
 
 /// The most `doze_idle_s` may be: a day.
 pub const MAX_DOZE_IDLE_S: u32 = 86_400;
@@ -1714,7 +1715,7 @@ mod tests {
         let d = Settings::default();
         assert_eq!(d.idle_sleep_min, 10);
         assert_eq!(d.sleep_never_roles, vec!["orchestrator".to_string()]);
-        assert_eq!(d.doze_idle_s, 60);
+        assert_eq!(d.doze_idle_s, 0);
 
         let dir = temp_dir("idle-sleep");
         let store = Store::load(&dir, false).unwrap();
