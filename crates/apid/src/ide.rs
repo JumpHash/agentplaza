@@ -456,6 +456,7 @@ fn status_name(status: Status) -> &'static str {
         Status::Idle => "idle",
         Status::Working => "working",
         Status::Asleep => "asleep",
+        Status::Dozing => "dozing",
     }
 }
 

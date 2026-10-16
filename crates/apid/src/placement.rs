@@ -12,7 +12,7 @@
 //! Routes (owner):
 //!   POST /v1/agents/{cid}/move  {node} → {ok, from, to, bytes, ms}
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -26,13 +26,17 @@ use crate::nodes::{Node, OFFLINE_AFTER_MS};
 use crate::sleep;
 use crate::state::App;
 
-/// Memory an agent's VM is spawned with (the payload `agents::spawn_agents` sends noded).
-pub const AGENT_MIB: u64 = 1024;
+/// A node needs at least this much free memory (less what is reserved) to take a new agent: VMs boot
+/// with a small usable memory and grow through their balloon.
+pub const ADMIT_MIB: u64 = 256;
+/// Memory set aside on the chosen node for a new agent until its VM shows up in the node's measured
+/// use.
+pub const RESERVE_MIB: u64 = 256;
 /// A warm template for the role saves a cold boot: it counts as this much free memory when placing.
 pub const WARM_BONUS_MIB: i64 = 1024;
-/// Each VM a node already runs counts this much against it when placing, so new agents spread out
-/// over the nodes instead of filling one.
-pub const VM_PENALTY_MIB: i64 = 512;
+/// A spreading weight per VM a node already runs, in MiB of score: the measured used memory already
+/// counts the VMs themselves, so this only nudges new agents toward the emptier nodes.
+pub const VM_PENALTY_MIB: i64 = 64;
 /// Bytes per export read (noded serves at most 4 MiB at a time).
 pub const CHUNK: u64 = 4 * 1024 * 1024;
 /// Decoded bytes per import write: noded takes at most 512 KiB per call (its body limit is 1 MiB),
@@ -40,6 +44,15 @@ pub const CHUNK: u64 = 4 * 1024 * 1024;
 pub const WRITE_CHUNK: usize = 512 * 1024;
 /// How long a move waits for the agent to be back after its wake.
 const WAKE_WAIT: Duration = Duration::from_secs(60);
+/// How long a reservation holds its memory back on a node (see [`reserved_mib`]).
+const RESERVE_FOR: Duration = Duration::from_secs(60);
+/// How long a node's template list is reused before it is asked again (see [`templates_of`]).
+const TEMPLATES_FRESH: Duration = Duration::from_secs(30);
+
+/// Recent placements: the node each new agent went to, and when.
+static RESERVED: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
+/// Each node's template list, and when it was fetched.
+static TEMPLATES: Mutex<BTreeMap<String, (Instant, Value)>> = Mutex::new(BTreeMap::new());
 
 /// One node's standing for a placement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,14 +74,14 @@ pub fn score(candidate: &Candidate) -> i64 {
     free - vms.saturating_mul(VM_PENALTY_MIB) + bonus
 }
 
-/// The node a new agent goes to, from the candidates (pure). Only a node with room for one agent is
-/// eligible. The highest score wins; a tie goes to `n0`, then to the earlier candidate. With no
-/// eligible candidate the agent goes to `n0`, where noded says whether it fits.
+/// The node a new agent goes to, from the candidates (pure). Only a node with at least [`ADMIT_MIB`]
+/// free is eligible. The highest score wins; a tie goes to `n0`, then to the earlier candidate. With
+/// no eligible candidate the agent goes to `n0`, where noded says whether it fits.
 pub fn choose(candidates: &[Candidate]) -> String {
     let mut best: Option<(i64, &Candidate)> = None;
     for candidate in candidates
         .iter()
-        .filter(|candidate| candidate.free_mib >= AGENT_MIB)
+        .filter(|candidate| candidate.free_mib >= ADMIT_MIB)
     {
         let s = score(candidate);
         let better = match best {
@@ -88,7 +101,9 @@ pub fn choose(candidates: &[Candidate]) -> String {
 }
 
 /// The node a new agent of `role` goes to: among the nodes that report and are not draining (`n0`
-/// included), the best by [`choose`]. A node whose machine stats did not answer is left out.
+/// included), the best by [`choose`], with the memory reserved on each node (see [`reserved_mib`])
+/// taken off its free memory. The chosen node is then reserved for the new agent. A node whose
+/// machine stats did not answer is left out.
 pub fn choose_node(app: &App, role: &str) -> String {
     let draining: BTreeSet<String> = app
         .nodes
@@ -97,20 +112,37 @@ pub fn choose_node(app: &App, role: &str) -> String {
         .filter(|node| node.draining)
         .map(|node| node.id)
         .collect();
+    let now = Instant::now();
     let candidates: Vec<Candidate> = fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !draining.contains(node))
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
             Some(Candidate {
-                free_mib: total.saturating_sub(used),
+                free_mib: total
+                    .saturating_sub(used)
+                    .saturating_sub(reserved_mib(&node, now)),
                 running_vms: running_vms(&runs),
                 warm: warm_for(&templates_of(app, &node), role),
                 node,
             })
         })
         .collect();
-    choose(&candidates)
+    let chosen = choose(&candidates);
+    RESERVED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((chosen.clone(), now));
+    chosen
+}
+
+/// Memory reserved on `node` at `now`: [`RESERVE_MIB`] for each agent placed there less than
+/// [`RESERVE_FOR`] ago. Older reservations are dropped.
+fn reserved_mib(node: &str, now: Instant) -> u64 {
+    let mut reserved = RESERVED.lock().unwrap_or_else(PoisonError::into_inner);
+    reserved.retain(|(_, when)| now.saturating_duration_since(*when) <= RESERVE_FOR);
+    let held = reserved.iter().filter(|(held, _)| held == node).count();
+    RESERVE_MIB * u64::try_from(held).unwrap_or(u64::MAX)
 }
 
 /// A node's memory as (total, used) in MiB: `n0`'s stats asked now, a joined node's from its last
@@ -144,10 +176,26 @@ fn running_vms(runs: &Value) -> u64 {
         .sum()
 }
 
-/// A node's template list (its `GET /v1/templates`); Null when it did not answer.
+/// A node's template list (its `GET /v1/templates`); Null when it did not answer. A list fetched
+/// less than [`TEMPLATES_FRESH`] ago is reused; only a successful answer is kept.
 fn templates_of(app: &App, node: &str) -> Value {
+    let fresh = TEMPLATES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(node)
+        .filter(|(at, _)| at.elapsed() < TEMPLATES_FRESH)
+        .map(|(_, value)| value.clone());
+    if let Some(value) = fresh {
+        return value;
+    }
     match fleet::noded(app, node, "GET", "/v1/templates", None) {
-        Ok((200, body)) => body,
+        Ok((200, body)) => {
+            TEMPLATES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(node.to_string(), (Instant::now(), body.clone()));
+            body
+        }
         _ => Value::Null,
     }
 }
@@ -201,7 +249,9 @@ pub fn status_refusal(cid: u64, status: Status) -> Option<(u16, String)> {
             409,
             format!("agent {cid} is offline; it has no running VM to move"),
         )),
-        Status::Idle | Status::Asleep => None,
+        // A dozing agent moves like an idle one: the move's first step is `sleep::put_to_sleep`, which
+        // noded takes from a paused VM too (`take_vm` accepts Running or Paused).
+        Status::Idle | Status::Asleep | Status::Dozing => None,
     }
 }
 
@@ -697,19 +747,21 @@ pub fn spawn_drain(app: &App, node: &str) {
     };
     let node = node.to_string();
     std::thread::spawn(move || {
-        for agent in hub.agents.list() {
-            if fleet::node_of(&hub, agent.cid) != node || agent.status == Status::Offline {
+        let agents = hub
+            .agents
+            .select(|a| (a.status != Status::Offline).then(|| (a.cid, a.role.clone())));
+        for (cid, role) in agents {
+            if fleet::node_of(&hub, cid) != node {
                 continue;
             }
-            let target = choose_node(&hub, &agent.role);
-            match move_agent(&hub, agent.cid, &target) {
+            let target = choose_node(&hub, &role);
+            match move_agent(&hub, cid, &target) {
                 Ok(moved) => eprintln!(
-                    "apid: drain of {node}: agent {} moved to {} ({} bytes, {} ms)",
-                    agent.cid, moved.to, moved.bytes, moved.ms
+                    "apid: drain of {node}: agent {cid} moved to {} ({} bytes, {} ms)",
+                    moved.to, moved.bytes, moved.ms
                 ),
                 Err(resp) => eprintln!(
-                    "apid: drain of {node}: agent {} stays: {}",
-                    agent.cid,
+                    "apid: drain of {node}: agent {cid} stays: {}",
                     body_text(&resp)
                 ),
             }
@@ -817,7 +869,7 @@ mod tests {
             (
                 "the VMs a node runs count against it",
                 vec![
-                    candidate("n0", 4096, 4, false),
+                    candidate("n0", 3200, 4, false),
                     candidate("n1", 3000, 0, false),
                 ],
                 "n1",
@@ -833,20 +885,55 @@ mod tests {
             (
                 "a node without room for an agent is skipped",
                 vec![
-                    candidate("n0", 512, 0, false),
+                    candidate("n0", 128, 0, false),
                     candidate("n1", 2048, 0, false),
                 ],
                 "n1",
             ),
             (
                 "a node without room alone means n0",
-                vec![candidate("n1", 512, 0, true)],
+                vec![candidate("n1", 128, 0, true)],
                 "n0",
             ),
             ("no node at all means n0", vec![], "n0"),
         ] {
             assert_eq!(choose(&nodes), want, "{case}");
         }
+    }
+
+    #[test]
+    fn choose_admits_a_node_with_admit_mib_free_and_no_more() {
+        assert_eq!(choose(&[candidate("n1", 300, 0, false)]), "n1");
+        assert_eq!(choose(&[candidate("n1", 200, 0, false)]), LOCAL);
+        assert_eq!(
+            choose(&[
+                candidate("n1", 200, 0, false),
+                candidate("n2", 300, 0, false),
+            ]),
+            "n2"
+        );
+    }
+
+    #[test]
+    fn a_reservation_counts_against_its_node_until_it_expires() {
+        let now = Instant::now();
+        let reserved = || RESERVED.lock().unwrap_or_else(PoisonError::into_inner);
+        reserved().clear();
+        assert_eq!(reserved_mib("n1", now), 0);
+        for placed in 1..=2 {
+            reserved().push(("n1".to_string(), now));
+            assert_eq!(reserved_mib("n1", now), RESERVE_MIB * placed);
+            assert_eq!(reserved_mib("n2", now), 0, "another node holds none");
+        }
+        if let Some(old) = now.checked_sub(RESERVE_FOR + Duration::from_secs(1)) {
+            reserved().push(("n2".to_string(), old));
+            assert_eq!(
+                reserved_mib("n2", now),
+                0,
+                "an expired reservation is dropped"
+            );
+        }
+        reserved().clear();
     }
 
     #[test]
@@ -890,6 +977,11 @@ mod tests {
         assert_eq!(status_refusal(7, Status::Offline).map(|r| r.0), Some(409));
         assert_eq!(status_refusal(7, Status::Idle), None);
         assert_eq!(status_refusal(7, Status::Asleep), None);
+        assert_eq!(
+            status_refusal(7, Status::Dozing),
+            None,
+            "a dozing agent moves like an idle one"
+        );
     }
 
     #[test]

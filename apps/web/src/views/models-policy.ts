@@ -287,6 +287,9 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     const idle = numeric('idle_sleep_min', 0, 1440, copy.idle_sleep_min, (n) => {
       copy.idle_sleep_min = n;
     });
+    const doze = numeric('doze_idle_s', 0, 86400, copy.doze_idle_s, (n) => {
+      copy.doze_idle_s = n;
+    });
     const roles = input({ placeholder: 'coder, reviewer', spellcheck: 'false', value: copy.sleep_never_roles.join(', ') });
     roles.addEventListener('input', () => {
       copy.sleep_never_roles = sleepRoles(roles.value);
@@ -304,6 +307,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         'div.stack',
         null,
         field('Sleep after idle (minutes, 0 = never)', idle),
+        field('Doze after (seconds idle, 0 = never)', doze),
         field('Roles that never sleep (comma-separated)', roles),
         h('div.stack', null, h('label', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' }, auto, h('span', null, 'Checkpoint before irreversible actions')), h('p.faint', null, "A checkpoint of the agent's VM is taken before each irreversible tool call.")),
       ),

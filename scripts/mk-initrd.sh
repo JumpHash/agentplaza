@@ -396,7 +396,7 @@ cat > "$out_dir/init.c" <<'EOF'
 // Minimal static PID 1 for the AgentPlaza guest (x86_64 and aarch64). Public domain.
 //
 // Mounts the pseudo-filesystems, beats a heartbeat to the serial console every
-// 5 s, serves the serial command loop and - when the kernel command line says
+// 5 s (a keepalive guest only once), serves the serial command loop and - when the kernel command line says
 // `plaza.harness=1` - loads the guest's virtio modules and runs the AgentPlaza
 // agent harness, which prints its whole session to this same console.
 //
@@ -1088,7 +1088,14 @@ static int prepare_sysroot(void)
         put_file(SYSROOT "/etc/group", "agent:x:1000:\n", 1);
     }
     mkdir(SYSROOT "/usr/local/bin", 0755);
-    if (!copy_file("/agent-harness", SYSROOT "/usr/local/bin/agent-harness", 0755)) {
+    // The harness runs from the initramfs's own copy, bound into the Alpine root: that copy is in RAM
+    // already and is never evicted, while a copy on the volume is page cache that a guest held to a
+    // small balloon reclaims and reads back over and over (a restored guest's reconnect then thrashes
+    // on the harness's own code for seconds). The copy is the fallback when the bind is refused.
+    const char *harness = SYSROOT "/usr/local/bin/agent-harness";
+    int bound = put_file(harness, "", 0) && chmod(harness, 0755) == 0
+                && mount("/agent-harness", harness, NULL, MS_BIND, NULL) == 0;
+    if (!bound && !copy_file("/agent-harness", harness, 0755)) {
         put("plaza guest: cannot install the harness in the Alpine root\n");
         return 0;
     }
@@ -1316,10 +1323,15 @@ int main(void)
         reap_harness(&harness_pid, (int)keepalive);
 
         char line[160];
-        int len = snprintf(line, sizeof line,
+        int len;
+        // A keepalive guest says it is alive once: the harness's own session is its liveness, and a line
+        // every 5 s from each of a host's idle guests is console traffic (a VM exit per byte) for nothing.
+        if (beat == 1 || !keepalive || beats > 0) {
+            len = snprintf(line, sizeof line,
                            "plaza guest alive: heartbeat %lu uptime~%lus\n",
                            beat, (beat - 1) * 5);
-        write_all(1, line, (size_t)len);
+            write_all(1, line, (size_t)len);
+        }
         if (beats > 0 && beat >= beats) {
             len = snprintf(line, sizeof line,
                            "plaza guest: %lu beats done, rebooting\n", beats);

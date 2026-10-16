@@ -69,10 +69,8 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
     app.control.set(state.clone());
     // Every E2B sandbox ends too; the hold just set refuses new ones (see e2b).
     crate::e2b::stop_all(app);
-    for agent in app.agents.list() {
-        if app.work.current(agent.cid).is_some()
-            && app.work.cancel(app, agent.cid, "STOP ALL by the owner")
-        {
+    for cid in app.agents.select(|a| Some(a.cid)) {
+        if app.work.current(cid).is_some() && app.work.cancel(app, cid, "STOP ALL by the owner") {
             state.cancelled += 1;
         }
     }

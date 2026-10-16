@@ -1514,6 +1514,7 @@ sectionEnd('ide files paint tests: ok');
   // The roster's status pill: asleep reads as its own word, in the muted tone the offline agents use.
   eq(statusPill('asleep'), { tone: 'muted', word: 'Asleep' }, 'status pill: asleep is muted and says so');
   eq(statusPill('offline'), { tone: 'muted', word: null }, 'status pill: offline needs no word');
+  eq(statusPill('dozing'), { tone: 'muted', word: 'Asleep (light)' }, 'status pill: a dozing agent is asleep, light');
   eq([statusPill('working').tone, statusPill('idle').tone], ['info', 'ok'], 'status pill: working and idle keep their tones');
   // The sleep settings' validation, as the policy form reads its fields: whole numbers in range, blanks refused.
   eq([wholeInRange('0', 0, 1440), wholeInRange('1440', 0, 1440), wholeInRange(' 30 ', 0, 1440)], [0, 1440, 30], 'wholeInRange: the bounds and a padded whole number are accepted');

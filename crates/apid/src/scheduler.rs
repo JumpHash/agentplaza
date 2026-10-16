@@ -7,9 +7,9 @@
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
@@ -495,7 +495,10 @@ impl Queues {
         if record.state() != TaskState::AwaitingReview.as_str() {
             return false;
         }
-        let Some(reviewer) = next_reviewer(&app.agents.list(), worker) else {
+        let reviewers = app
+            .agents
+            .select(|a| (a.role == REVIEWER_ROLE && a.status == Status::Idle).then(|| a.clone()));
+        let Some(reviewer) = next_reviewer(&reviewers, worker) else {
             return false;
         };
         let worker_name = app
@@ -700,12 +703,9 @@ impl Queues {
     /// Starts the next item for every idle, connected agent that has queued work and nothing
     /// in flight — after a restart (restored queues) or anything else that left work waiting.
     pub fn dispatch_idle(&self, app: &App) {
-        for agent in app.agents.list() {
-            if agent.status == Status::Idle
-                && self.current(agent.cid).is_none()
-                && !self.queued(agent.cid).is_empty()
-            {
-                self.dispatch(app, agent.cid);
+        for cid in app.agents.cids_with(Status::Idle) {
+            if self.current(cid).is_none() && !self.queued(cid).is_empty() {
+                self.dispatch(app, cid);
             }
         }
     }
@@ -717,7 +717,7 @@ impl Queues {
         match dispatch_step(status, app.control.paused()) {
             DispatchStep::Hold => return,
             DispatchStep::Wake => {
-                crate::sleep::wake(app, cid);
+                crate::sleep::wake_with(app, cid, crate::sleep::WakePriority::Background);
                 return;
             }
             DispatchStep::Send => {}
@@ -735,7 +735,7 @@ impl Queues {
         let sent = crate::fleet::send(app, cid, &json!({ "message": message }));
         if !matches!(sent, Ok((code, _)) if (200..300).contains(&code)) {
             self.locked().requeue_front(item);
-            app.agents.update(cid, |a| a.status = Status::Idle);
+            app.agents.update_quietly(cid, |a| a.status = Status::Idle);
             return;
         }
         app.transcripts.record(
@@ -773,7 +773,7 @@ fn dispatch_step(status: Option<Status>, paused: bool) -> DispatchStep {
     match status {
         _ if paused => DispatchStep::Hold,
         None | Some(Status::Offline) => DispatchStep::Hold,
-        Some(Status::Asleep) => DispatchStep::Wake,
+        Some(Status::Asleep | Status::Dozing) => DispatchStep::Wake,
         Some(Status::Idle | Status::Working) => DispatchStep::Send,
     }
 }
@@ -949,6 +949,28 @@ pub fn review_decided(app: &App, item: &Approval, approve: bool) -> Result<(), S
         .map(|_| ())
 }
 
+/// Set when work may be able to start now (an agent turned idle); see `kick`.
+static KICK: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+/// Asks the scheduler to start queued work now, rather than at its next full pass: an agent turned idle, so
+/// it may take its next item. A kick runs only `Queues::dispatch_idle`; the full pass still runs every 2 s.
+/// Kicks that arrive before the scheduler looks coalesce into one.
+pub fn kick() {
+    let (kicked, wake) = &KICK;
+    *kicked.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    wake.notify_one();
+}
+
+/// Waits at most `timeout` for a kick; true when one came (it is consumed).
+fn await_kick(timeout: Duration) -> bool {
+    let (kicked, wake) = &KICK;
+    let guard = kicked.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut guard, _) = wake
+        .wait_timeout_while(guard, timeout, |kicked| !*kicked)
+        .unwrap_or_else(PoisonError::into_inner);
+    std::mem::take(&mut *guard)
+}
+
 /// The scheduler thread (every 2 s).
 pub fn spawn(app: Arc<App>) {
     // contract
@@ -969,7 +991,15 @@ pub fn spawn(app: Arc<App>) {
                 crate::llm_proxy::drain_usage(&app);
                 crate::plaza::retain(&app);
                 crate::usage::retain(&app);
-                thread::sleep(Duration::from_secs(2));
+                // The 2 s until the next pass: each kick in it starts the queued work of the idle agents.
+                let next_pass = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let left = next_pass.saturating_duration_since(Instant::now());
+                    if left.is_zero() || !await_kick(left) {
+                        break;
+                    }
+                    app.work.dispatch_idle(&app);
+                }
             }
         });
     if let Err(err) = spawned {
@@ -980,19 +1010,18 @@ pub fn spawn(app: Arc<App>) {
 /// Asks each unnamed agent, once and only after its session settled, to name itself.
 fn ask_names(app: &App) {
     let now = apz_plaza::now_ms();
-    for agent in app.agents.list() {
+    let unnamed = app.agents.select(|agent| {
         let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        if agent.name.is_empty()
-            && agent.status == crate::agents::Status::Idle
-            && settled
-            && app.names.first_ask(agent.cid)
-        {
+        (agent.name.is_empty() && agent.status == Status::Idle && settled).then_some(agent.cid)
+    });
+    for cid in unnamed {
+        if app.names.first_ask(cid) {
             let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
             app.work.enqueue(
                 app,
-                agent.cid,
+                cid,
                 WorkKind::Chat,
-                format!("op-{}", agent.cid),
+                format!("op-{cid}"),
                 prompt.to_owned(),
                 Origin::default(),
             );
@@ -1011,11 +1040,16 @@ fn assign_tasks(app: &App) {
             continue;
         }
         let role = task.role().map(str::to_string);
-        let worker = app.agents.list().into_iter().find(|a| {
-            a.status == Status::Idle
-                && tier_of(&a.role) == Tier::Worker
-                && role.as_deref().is_none_or(|r| a.role == r)
-        });
+        let worker = app
+            .agents
+            .select(|a| {
+                (a.status == Status::Idle
+                    && tier_of(&a.role) == Tier::Worker
+                    && role.as_deref().is_none_or(|r| a.role == r))
+                .then_some(a.cid)
+            })
+            .first()
+            .and_then(|&cid| app.agents.get(cid));
         let Some(worker) = worker else {
             continue;
         };
@@ -1046,14 +1080,14 @@ fn assign_tasks(app: &App) {
 fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
     let view = app.plaza.council.motions(MOTION_SCAN_LIMIT);
     for motion in view.motions.iter().filter(|m| m.state == "open") {
-        for agent in app.agents.list() {
-            if agent.status == Status::Offline || !is_seated(&agent.role) {
+        let seated = app
+            .agents
+            .select(|a| (a.status != Status::Offline && is_seated(&a.role)).then_some(a.cid));
+        for cid in seated {
+            if motion.votes.iter().any(|v| v.agent_cid == cid) {
                 continue;
             }
-            if motion.votes.iter().any(|v| v.agent_cid == agent.cid) {
-                continue;
-            }
-            if !seen.insert((motion.id.clone(), agent.cid)) {
+            if !seen.insert((motion.id.clone(), cid)) {
                 continue;
             }
             let prompt = format!(
@@ -1066,7 +1100,7 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
             };
             app.work.enqueue(
                 app,
-                agent.cid,
+                cid,
                 WorkKind::Motion,
                 format!("motion-{}", motion.id),
                 prompt,
@@ -1325,6 +1359,15 @@ mod tests {
             DispatchStep::Hold,
             "STOP ALL holds even a wake"
         );
+        assert_eq!(
+            dispatch_step(Some(Status::Dozing), false),
+            DispatchStep::Wake,
+            "work for a dozing agent wakes it (an undoze), it is not sent to the paused VM"
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Dozing), true),
+            DispatchStep::Hold
+        );
         assert_eq!(dispatch_step(None, false), DispatchStep::Hold);
         assert_eq!(
             dispatch_step(Some(Status::Offline), false),
@@ -1492,5 +1535,17 @@ mod tests {
         assert!(fresh.restore("not json").is_err());
         assert_eq!(fresh.queued(7).len(), 2);
         assert_eq!(fresh.queued(8).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod kick_tests {
+    use super::*;
+
+    #[test]
+    fn a_kick_wakes_the_wait_once() {
+        // Other tests kick too (a roster change to Idle), so only the kick made here is asserted on.
+        kick();
+        assert!(await_kick(Duration::ZERO));
     }
 }

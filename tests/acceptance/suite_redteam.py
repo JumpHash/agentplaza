@@ -49,6 +49,11 @@ from apz import (
 #: The ports a hostile guest would try besides the frozen one.
 PROBE_PORTS = (80, 22, 1337)
 
+#: vsockd's egress proxy, on by default (`--egress on`): every guest reaches it on CID 2 at this port, and
+#: every connection through it is checked against the hub's egress policy. It is a designed wire, so the
+#: suite names it rather than treating it as a stray listener.
+EGRESS_PORT = 5001
+
 #: A CID the suite never serves, to prove nothing answers for it either.
 FOREIGN_CID = 99
 
@@ -77,6 +82,8 @@ INJECTION_WINDOW_S = 10.0
 VIRTIO_TRANSPORT_DEVICES = (
     ("vsock", ("VsockMmioDevice::new", "VsockUnixBackend::new")),
     ("block (the workspace volume)", ("BlockMmioDevice::new",)),
+    # The memory balloon: it moves guest pages, never bytes off the host.
+    ("balloon", ("SharedBalloon::new", "VirtioBalloon::new")),
 )
 
 #: The network-interface signatures a booted guest's kernel log and console must
@@ -119,6 +126,46 @@ def _transport_device(lines: list[str], number: int) -> str:
     return "unknown"
 
 
+#: The generic helper the boot path builds every virtio-mmio transport through
+#: (`builder.rs`: `fn transport(device, ...)`, whose body is the one
+#: `VirtioMmioTransport::new` that names no device). Its call sites carry the device.
+TRANSPORT_HELPER = "transport"
+
+
+def _call_device(lines: list[str], number: int) -> str:
+    """Which MVP device the ``transport(...)`` call at ``number`` serves: the constructor in its own statement.
+
+    Only the call's own statement is read (up to its terminating ``;``): a call's neighbours belong to other
+    transports, and attributing one of them here would name a device the call does not build.
+    """
+    statement: list[str] = []
+    for text in lines[number : number + 12]:
+        statement.append(text)
+        if text.rstrip().endswith(";"):
+            break
+    joined = "\n".join(statement)
+    # A device passed as a variable (`Box::new(shared.clone())`) is named by its `let` binding, a few lines up in
+    # the same block: that binding is read too. A variable with no binding found stays unknown (fail-closed).
+    for variable in re.findall(r"Box::new\(\s*([a-z_][a-z0-9_]*)", joined):
+        for text in reversed(lines[max(0, number - 15) : number]):
+            if re.search(rf"\blet\s+(mut\s+)?{variable}\b\s*=", text):
+                joined += "\n" + text
+                break
+    for name, constructors in VIRTIO_TRANSPORT_DEVICES:
+        if any(constructor in joined for constructor in constructors):
+            return name
+    return "unknown"
+
+
+def _inside_fn(lines: list[str], number: int, name: str) -> bool:
+    """Whether line ``number`` sits in the body of the nearest preceding ``fn`` called ``name``."""
+    for text in reversed(lines[:number]):
+        match = re.search(r"\bfn (\w+)", text)
+        if match:
+            return match.group(1) == name
+    return False
+
+
 def _vmm_source_scan() -> dict:
     """Read the VMM's device set: which virtio-mmio devices it builds.
 
@@ -135,13 +182,20 @@ def _vmm_source_scan() -> dict:
     lines = builder.read_text(errors="replace").splitlines()
     net_backed = re.compile(r"VirtioNet|NetDevice|virtio-net|virtio_net|TunTap|tap_device")
     transports: list[dict] = []
+    helper_call = re.compile(rf"(?<![\w:])(?:super::)?{TRANSPORT_HELPER}\(")
     for number, line in enumerate(lines):
-        if "VirtioMmioTransport::new" not in line or "fn " in line:
+        if "fn " in line:
+            continue
+        # A boot-path transport is either a direct `VirtioMmioTransport::new` or a call of the generic
+        # `transport(...)` helper, which wraps that constructor around whichever device its caller
+        # passes. The helper's own constructor line serves no device by itself, so it is not counted.
+        direct = "VirtioMmioTransport::new" in line and not _inside_fn(lines, number, TRANSPORT_HELPER)
+        if not (direct or helper_call.search(line)):
             continue
         transports.append(
             {
                 "at": f"builder.rs:{number + 1}",
-                "device": _transport_device(lines, number),
+                "device": _transport_device(lines, number) if direct else _call_device(lines, number),
                 "net_backed": bool(
                     net_backed.search("\n".join(lines[max(0, number - 30) : number + 8]))
                 ),
@@ -237,7 +291,9 @@ def _case_only_wire(suite: Suite, ctx) -> None:
         vector="guest dials CID 2 ports 5000/80/22/1337; only the frozen port has a service",
     )
     with Lab(ctx, list(SERVED), "redteam-wire") as lab:
-        expected_idle = sorted(f"vm{cid}_{VSOCK_PORT}" for cid in SERVED)
+        expected_idle = sorted(
+            [f"vm{cid}_{VSOCK_PORT}" for cid in SERVED] + [f"vm{cid}_{EGRESS_PORT}" for cid in SERVED]
+        )
         case.invariant(
             "with no VM up the UDS dir holds exactly the suite's listeners",
             lab.uds_entries() == expected_idle,

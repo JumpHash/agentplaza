@@ -598,12 +598,12 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn view(node: Node, agents: &[crate::agents::Agent], now_ms: u64) -> NodeView {
+fn view(node: Node, cids: &[u64], now_ms: u64) -> NodeView {
     let online = !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
     let end = node.cid_base + node.cid_count;
-    let count = agents
+    let count = cids
         .iter()
-        .filter(|a| a.cid >= node.cid_base && a.cid < end)
+        .filter(|&&cid| cid >= node.cid_base && cid < end)
         .count();
     NodeView {
         node,
@@ -613,7 +613,11 @@ fn view(node: Node, agents: &[crate::agents::Agent], now_ms: u64) -> NodeView {
 }
 
 fn view_of(app: &App, node: Node) -> NodeView {
-    view(node, &app.agents.list(), apz_plaza::now_ms())
+    view(
+        node,
+        &app.agents.select(|a| Some(a.cid)),
+        apz_plaza::now_ms(),
+    )
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -669,7 +673,7 @@ pub(crate) fn local_node(app: &App) -> Node {
 /// its noded answers), then every joined node.
 fn views(app: &App) -> Vec<NodeView> {
     let now = apz_plaza::now_ms();
-    let agents = app.agents.list();
+    let cids = app.agents.select(|a| Some(a.cid));
     let local_up = matches!(app.noded.get("/v1/machine"), Ok((200, _)));
     let local = Node {
         id: "n0".into(),
@@ -689,7 +693,7 @@ fn views(app: &App) -> Vec<NodeView> {
     };
     std::iter::once(local)
         .chain(app.nodes.list())
-        .map(|node| view(node, &agents, now))
+        .map(|node| view(node, &cids, now))
         .collect()
 }
 

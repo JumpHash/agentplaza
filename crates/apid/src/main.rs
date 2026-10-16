@@ -51,6 +51,7 @@ mod llm_proxy;
 mod looks;
 mod mcp;
 mod memory;
+mod metrics;
 mod node_link;
 mod nodes;
 mod owner_board;

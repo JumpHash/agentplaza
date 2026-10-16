@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use noded::fleet::Fleet;
 use noded::registry::{self, Detail};
-use noded::{Config, Server, workspace_image};
+use noded::{Config, Server, hostcheck, workspace_image};
 
 const USAGE: &str = "\
 usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
@@ -43,6 +43,9 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
                    else under the state directory)
   --no-snapshots   keep no VM snapshots: sleep, checkpoint, restore, fork and export are
                    refused, and no warm templates are kept either
+  --check-scale    print this host's scale-mode report (zswap, encrypted swap, reflinks in
+                   the snapshot directory, cgroups, KSM, APZ_VMM_SWAP), one line per item,
+                   and exit: 0 when every item is fit, 1 otherwise; the daemon does not start
   --no-warm-templates  boot new agent VMs cold instead of restoring a warm template
   --no-recover    leave a keepalive agent or sandbox that stops by itself exited, instead of
                   recovering it from its newest snapshot (or cold)
@@ -102,6 +105,13 @@ fn main() -> ExitCode {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|arg| arg == "--check-scale") {
+        let rest = args
+            .into_iter()
+            .filter(|arg| arg != "--check-scale")
+            .collect();
+        return check_scale(rest);
     }
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -201,6 +211,27 @@ fn run(args: Vec<String>) -> Result<(), String> {
         config.initrd.display()
     );
     server.wait().map_err(|err| format!("server error: {err}"))
+}
+
+/// `--check-scale`: prints this host's scale-mode report and returns 0 when every item is fit. The
+/// daemon does not start; the other flags name the snapshot directory the reflink item probes.
+fn check_scale(args: Vec<String>) -> ExitCode {
+    let config = match parse_args(args) {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("noded: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = hostcheck::report(config.snapshot_dir.as_deref());
+    for line in report.lines() {
+        println!("{line}");
+    }
+    if report.ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 /// A path for the start line, or `none`.

@@ -24,9 +24,13 @@ mod http;
 #[cfg(any(target_os = "linux", windows))]
 mod hub;
 #[cfg(any(target_os = "linux", windows))]
+mod metrics;
+#[cfg(any(target_os = "linux", windows))]
 mod serve;
 #[cfg(any(target_os = "linux", windows))]
 mod sys;
+#[cfg(any(target_os = "linux", windows))]
+mod waker;
 
 use std::process::ExitCode;
 
@@ -62,12 +66,26 @@ use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 const DEFAULT_PORT: u32 = 5000;
 #[cfg(any(target_os = "linux", windows))]
 const DEFAULT_HTTP_PORT: u16 = 19080;
-/// How often an accept loop checks for a stop request.
+/// How often the daemon's main thread checks for a stop request.
 #[cfg(any(target_os = "linux", windows))]
 const ACCEPT_POLL_MS: i32 = 200;
-/// Guest sessions served at once; the next connection is refused.
+
+/// The shutdown waker, created by `shutdown_waker`.
 #[cfg(any(target_os = "linux", windows))]
-const MAX_SESSIONS: usize = 64;
+static SHUTDOWN_WAKER: std::sync::OnceLock<crate::waker::Waker> = std::sync::OnceLock::new();
+
+/// Woken once when the daemon is asked to stop, so every accept thread returns at once. Never drained.
+#[cfg(any(target_os = "linux", windows))]
+fn shutdown_waker() -> &'static crate::waker::Waker {
+    SHUTDOWN_WAKER.get_or_init(|| {
+        let waker = crate::waker::Waker::new().expect("vsockd: cannot create the shutdown waker");
+        sys::set_shutdown_wake(waker.wake_handle());
+        waker
+    })
+}
+/// Guest sessions served at once by default; `--max-sessions` changes it.
+#[cfg(any(target_os = "linux", windows))]
+const DEFAULT_MAX_SESSIONS: usize = 4096;
 /// Probe/remove/bind rounds before `bind_listener` gives up on a racing path.
 #[cfg(any(target_os = "linux", windows))]
 const MAX_BIND_ATTEMPTS: u32 = 8;
@@ -81,11 +99,13 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
-/// How often a keepalive session wakes to take the relay's commands and apid's
-/// settled answers. Both wait at most one slice, so it is kept short: a hub
-/// command or a settled answer otherwise adds up to a full slice of latency.
+/// The read timeout on a keepalive session's guest socket, a safety net only: a keepalive session sleeps in
+/// `wait_ready` until its guest, a hub command or an apid answer wakes it.
 #[cfg(any(target_os = "linux", windows))]
 const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(20);
+/// The longest a keepalive session sleeps before it rechecks its deadlines.
+#[cfg(any(target_os = "linux", windows))]
+const KEEPALIVE_MAX_WAIT: Duration = Duration::from_secs(1);
 #[cfg(any(target_os = "linux", windows))]
 const MAX_TOOL_CALLS: u64 = 1024;
 
@@ -104,6 +124,11 @@ impl SessionLimiter {
             active: AtomicUsize::new(0),
             max,
         }
+    }
+
+    /// The most sessions served at once.
+    fn capacity(&self) -> usize {
+        self.max
     }
 
     fn try_acquire(self: &Arc<Self>) -> Option<SessionGuard> {
@@ -129,7 +154,7 @@ impl Drop for SessionGuard {
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
-              [--e2b-port P]
+              [--e2b-port P] [--max-sessions N]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
                     %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
@@ -152,6 +177,8 @@ usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid U
   --e2b-port P      the E2B gateway on 127.0.0.1:P (default off): the SDKs' sandbox
                     requests, relayed to the sandbox's port 49983 through its VM's
                     muxer; needs --internal-token-file, since apid names the sandbox
+  --max-sessions N  guest sessions served at once; the next connection is refused
+                    (default 4096; each takes three file descriptors)
   -h, --help        print this help
 
 Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
@@ -204,6 +231,7 @@ struct Config {
     egress: bool,
     egress_ports: Vec<u16>,
     e2b_port: Option<u16>,
+    max_sessions: usize,
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -219,6 +247,7 @@ impl Default for Config {
             egress: true,
             egress_ports: Vec::new(),
             e2b_port: None,
+            max_sessions: DEFAULT_MAX_SESSIONS,
         }
     }
 }
@@ -272,6 +301,15 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 }
                 config.e2b_port = Some(port);
             }
+            "--max-sessions" => {
+                let sessions: usize = value?
+                    .parse()
+                    .map_err(|err| format!("--max-sessions: {err}"))?;
+                if sessions == 0 {
+                    return Err("--max-sessions: at least one session is required".to_string());
+                }
+                config.max_sessions = sessions;
+            }
             "--port" => config.port = value?.parse().map_err(|err| format!("--port: {err}"))?,
             "--http-port" => {
                 config.http_port = value?
@@ -282,6 +320,24 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
         }
     }
     Ok(config)
+}
+
+/// Raises the descriptor limit so `max_sessions` guest sessions fit, and reports what it is now.
+#[cfg(target_os = "linux")]
+fn raise_fd_limit(max_sessions: usize) {
+    match sys::raise_fd_limit() {
+        Ok(limit) => {
+            println!("vsockd: file descriptor limit {limit}");
+            let needed = 3 * max_sessions as u64 + 64;
+            if limit < needed {
+                let sessions = limit.saturating_sub(64) / 3;
+                println!(
+                    "vsockd: warning: the file descriptor limit {limit} holds about {sessions} sessions, not {max_sessions}; raise it to {needed}"
+                );
+            }
+        }
+        Err(err) => eprintln!("vsockd: cannot raise the file descriptor limit: {err}"),
+    }
 }
 
 /// Creates the socket directory `0700` (and tightens an existing one): the
@@ -307,6 +363,8 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 /// Serves until a signal asks the daemon to stop.
 #[cfg(any(target_os = "linux", windows))]
 fn run(config: Config) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    raise_fd_limit(config.max_sessions);
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
     let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone())
         .map_err(|err| format!("--apid: {err}"))?;
@@ -314,6 +372,7 @@ fn run(config: Config) -> Result<(), String> {
         println!("vsockd: v3 agent loop forwarded to {}", config.apid);
     }
     sys::install_signal_handlers();
+    shutdown_waker();
     create_uds_dir(&config.uds_dir).map_err(|err| {
         format!(
             "cannot create the socket directory {}: {err}",
@@ -341,11 +400,12 @@ fn run(config: Config) -> Result<(), String> {
         config.port,
         egress_setup,
         Arc::clone(&hub),
+        config.max_sessions,
     ));
     let facts = http::NodeFacts {
         port: config.port,
         started: Instant::now(),
-        max_sessions: MAX_SESSIONS,
+        max_sessions: config.max_sessions,
         keepalive_idle_s: KEEPALIVE_IDLE_SECS,
     };
     let internal_token = match &config.internal_token_file {
@@ -432,6 +492,8 @@ struct Served {
     /// Present only when egress is on; it stops on the same request as the session loop.
     egress: Option<JoinHandle<()>>,
     paths: Vec<PathBuf>,
+    /// Wakes the accept loops out of their wait, so they see `stop` at once.
+    stop_waker: Arc<crate::waker::Waker>,
 }
 
 /// Listeners bound for one CID and not yet accepting.
@@ -457,13 +519,14 @@ impl Registry {
         port: u32,
         egress: Option<(Arc<egress::Policy>, apid::Apid)>,
         hub: Arc<Hub>,
+        max_sessions: usize,
     ) -> Self {
         Self {
             uds_dir,
             port,
             egress,
             hub,
-            limiter: Arc::new(SessionLimiter::new(MAX_SESSIONS)),
+            limiter: Arc::new(SessionLimiter::new(max_sessions)),
             served: Mutex::new(BTreeMap::new()),
         }
     }
@@ -535,22 +598,32 @@ impl Registry {
             egress,
         } = bound;
         let stop = Arc::new(AtomicBool::new(false));
+        let stop_waker =
+            Arc::new(crate::waker::Waker::new().expect("vsockd: cannot create a CID's stop waker"));
         let (session_path, session_listener) = session;
         let mut paths = vec![session_path];
         let session = {
-            let (stop, limiter, hub) = (
+            let (stop, limiter, hub, stop_waker) = (
                 Arc::clone(&stop),
                 Arc::clone(&self.limiter),
                 Arc::clone(&self.hub),
+                Arc::clone(&stop_waker),
             );
-            thread::spawn(move || accept_loop(cid, session_listener, stop, limiter, hub))
+            thread::spawn(move || {
+                accept_loop(cid, session_listener, stop, limiter, hub, stop_waker)
+            })
         };
         let mut egress_loop = None;
         if let (Some((path, listener)), Some((policy, apid))) = (egress, &self.egress) {
             paths.push(path);
-            let (policy, apid, stop) = (Arc::clone(policy), apid.clone(), Arc::clone(&stop));
+            let (policy, apid, stop, stop_waker) = (
+                Arc::clone(policy),
+                apid.clone(),
+                Arc::clone(&stop),
+                Arc::clone(&stop_waker),
+            );
             egress_loop = Some(thread::spawn(move || {
-                egress::accept_loop(cid, listener, policy, apid, stop)
+                egress::accept_loop(cid, listener, policy, apid, stop, stop_waker)
             }));
         }
         Served {
@@ -558,6 +631,7 @@ impl Registry {
             session,
             egress: egress_loop,
             paths,
+            stop_waker,
         }
     }
 
@@ -586,10 +660,11 @@ impl Registry {
 
 #[cfg(any(target_os = "linux", windows))]
 impl Served {
-    /// Stops the session accept loop and joins it; with `egress` also joins the egress loop, which
-    /// only returns once the daemon stops, so only at shutdown. Then removes the socket files.
+    /// Stops the accept loops and joins them: the stop flag is set and the stop waker woken, so both
+    /// return at once. Then removes the socket files.
     fn stop_and_join(self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.stop_waker.wake();
         let _ = self.session.join();
         if let Some(loop_) = self.egress {
             let _ = loop_.join();
@@ -689,16 +764,37 @@ fn accept_loop(
     stop: Arc<AtomicBool>,
     limiter: Arc<SessionLimiter>,
     hub: Arc<Hub>,
+    stop_waker: Arc<crate::waker::Waker>,
 ) {
+    #[cfg(unix)]
+    let listener_handle = {
+        use std::os::fd::AsRawFd;
+        listener.as_raw_fd()
+    };
+    #[cfg(windows)]
+    let listener_handle = {
+        use std::os::windows::io::AsRawSocket;
+        listener.as_raw_socket()
+    };
     while !stop.load(Ordering::SeqCst) && !sys::shutdown_requested() {
-        if let Err(err) = sys::poll_readable(&listener, ACCEPT_POLL_MS) {
+        let handles = [
+            listener_handle,
+            stop_waker.handle(),
+            shutdown_waker().handle(),
+        ];
+        if let Err(err) = sys::wait_readable(&handles, None) {
             eprintln!("vsockd: poll failed: {err}");
+            thread::sleep(Duration::from_millis(100));
         }
         match listener.accept() {
             Ok((stream, _)) => match limiter.try_acquire() {
-                None => println!(
-                    "vsockd: refusing a connection from cid {cid}: {MAX_SESSIONS} sessions are already running"
-                ),
+                None => {
+                    crate::metrics::SESSIONS_REFUSED.inc();
+                    println!(
+                        "vsockd: refusing a connection from cid {cid}: {} sessions are already running",
+                        limiter.capacity()
+                    );
+                }
                 Some(guard) => {
                     println!("vsockd: accepted a connection from cid {cid}");
                     let hub = Arc::clone(&hub);
@@ -709,14 +805,31 @@ fn accept_loop(
                 }
             },
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(err) => eprintln!("vsockd: accept failed: {err}"),
+            Err(err) => {
+                eprintln!("vsockd: accept failed: {err}");
+                // A broken listener or fd exhaustion must not spin the loop.
+                thread::sleep(Duration::from_millis(100));
+            }
         }
+    }
+}
+
+/// Counts a guest session in the open-sessions gauge until it ends, however it ends.
+#[cfg(any(target_os = "linux", windows))]
+struct OpenSession;
+
+#[cfg(any(target_os = "linux", windows))]
+impl Drop for OpenSession {
+    fn drop(&mut self) {
+        crate::metrics::SESSIONS.add(-1);
     }
 }
 
 /// Serves one guest session and logs how it ended.
 #[cfg(any(target_os = "linux", windows))]
 fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
+    crate::metrics::SESSIONS.add(1);
+    let _open = OpenSession;
     if let Err(err) = stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_read_timeout(Some(RECV_TIMEOUT)))
@@ -729,6 +842,7 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
         deadline: Instant::now().checked_add(SESSION_TIMEOUT),
         keepalive_idle: Some(Duration::from_secs(KEEPALIVE_IDLE_SECS)),
         keepalive_read_slice: KEEPALIVE_READ_SLICE,
+        keepalive_max_wait: KEEPALIVE_MAX_WAIT,
     };
     match handle_session(
         &mut Lines::new(stream),
@@ -827,6 +941,7 @@ mod tests {
             egress: false,
             egress_ports: vec![8080, 8443],
             e2b_port: Some(49990),
+            max_sessions: DEFAULT_MAX_SESSIONS,
         };
         assert_eq!(config, expected);
         assert!(
@@ -846,6 +961,17 @@ mod tests {
         ] {
             assert!(args(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn max_sessions_is_a_flag_and_zero_is_refused() {
+        assert_eq!(args(&["--max-sessions", "10"]).unwrap().max_sessions, 10);
+        assert_eq!(Config::default().max_sessions, DEFAULT_MAX_SESSIONS);
+        assert!(
+            args(&["--max-sessions", "0"]).is_err(),
+            "at least one session"
+        );
+        assert!(args(&["--max-sessions", "x"]).is_err());
     }
 
     #[test]
@@ -926,6 +1052,7 @@ mod tests {
             DEFAULT_PORT,
             None,
             Arc::new(crate::hub::tests::hub_with(None).1),
+            DEFAULT_MAX_SESSIONS,
         );
         assert_eq!(registry.serve(40), Ok(true));
         let path = dir.join(format!("vm40_{DEFAULT_PORT}"));
@@ -965,6 +1092,7 @@ mod tests {
             DEFAULT_PORT,
             None,
             Arc::new(crate::hub::tests::hub_with(None).1),
+            DEFAULT_MAX_SESSIONS,
         );
         let bound = registry.bind(3).expect("binds");
         registry.start(bound);

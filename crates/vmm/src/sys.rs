@@ -79,6 +79,58 @@ pub fn discard(host: *mut u8, len: usize) -> io::Result<()> {
     }
 }
 
+/// Pages `[host, host + len)` out of host RAM (`madvise(2)` with `MADV_PAGEOUT`): clean pages
+/// backed by a file are dropped, anonymous ones go to swap where the host has it. The pages stay
+/// mapped and fault back in on the next access, so the contents survive.
+///
+/// `madvise` never reads or writes through the pointer. A kernel older than 5.4 has no
+/// `MADV_PAGEOUT` and fails with `EINVAL`, which is returned here for the caller to report.
+pub fn page_out(host: *mut u8, len: usize) -> io::Result<()> {
+    // SAFETY: `madvise` takes an address and a length and touches no memory through them. The
+    // guest memory the reclaim passes is an anonymous or file-backed private mapping of this
+    // process, and any other range is rejected with an errno.
+    if unsafe { libc::madvise(host.cast(), len, libc::MADV_PAGEOUT) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Which pages of `[host, host + len)` are resident in host RAM (`mincore(2)`): one byte per page, its
+/// low bit set for a resident page. The pages are not touched, so reading residency does not fault
+/// any in. `host` must be page-aligned, as a mapping's start is.
+pub fn resident_pages(host: *mut u8, len: usize) -> io::Result<Vec<u8>> {
+    let page = crate::vstate::memory::host_page_size();
+    let mut vec = vec![0u8; len.div_ceil(page)];
+    // SAFETY: `mincore` reads the page state of the range and writes one byte per page of it into
+    // `vec`, which holds exactly `len` rounded up to whole pages. It reads or writes no byte of the
+    // range itself, and a range that is not a mapping of this process fails with an errno.
+    if unsafe { libc::mincore(host.cast(), len, vec.as_mut_ptr()) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(vec)
+    }
+}
+
+/// Asks the kernel to start reading `[offset, offset + len)` of `file` into the page cache
+/// (`posix_fadvise(2)` with `POSIX_FADV_WILLNEED`). The read is asynchronous: the call returns
+/// without waiting for it. The advice is a hint, so a caller may ignore its failure.
+#[cfg(target_os = "linux")]
+pub fn willneed(file: &std::fs::File, offset: u64, len: u64) -> io::Result<()> {
+    let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let len = libc::off_t::try_from(len).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: `posix_fadvise` takes a descriptor and a range and touches no memory through them. The
+    // descriptor is borrowed from a live `File` for the call. It returns the error number itself
+    // rather than setting `errno`.
+    let err =
+        unsafe { libc::posix_fadvise(file.as_raw_fd(), offset, len, libc::POSIX_FADV_WILLNEED) };
+    if err == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(err))
+    }
+}
+
 /// Makes `dst` share `src`'s extents (`ioctl(FICLONE)`): afterwards `dst` holds
 /// `src`'s bytes at no copy cost, and the two diverge block by block as either is
 /// written. The kernel refuses a filesystem that cannot share extents
@@ -204,4 +256,40 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     }
 
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_out;
+
+    /// `page_out` advises an anonymous mapping of this process and leaves its contents readable:
+    /// the pages stay mapped, and fault back in (from swap, or as they were) on the next read.
+    #[test]
+    fn page_out_advises_a_mapping_and_keeps_its_contents() {
+        let len = 1 << 16;
+        // SAFETY: an anonymous private mapping of `len` bytes, unmapped before the test returns.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(ptr, libc::MAP_FAILED, "the test mapping");
+        let host = ptr.cast::<u8>();
+        // SAFETY: `host` addresses `len` writable bytes of the mapping above.
+        unsafe { std::ptr::write_bytes(host, 0xAB, len) };
+
+        let advised = page_out(host, len);
+        // SAFETY: the mapping is still live, and its pages are readable after a page-out.
+        let (first, last) = unsafe { (*host, *host.add(len - 1)) };
+        // SAFETY: `ptr` and `len` are the mapping made above, unmapped exactly once.
+        unsafe { libc::munmap(ptr, len) };
+
+        advised.expect("MADV_PAGEOUT is accepted (Linux 5.4 or later)");
+        assert_eq!((first, last), (0xAB, 0xAB));
+    }
 }

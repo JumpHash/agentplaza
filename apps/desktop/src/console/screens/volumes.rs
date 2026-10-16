@@ -662,9 +662,10 @@ mod tests {
 
     #[test]
     fn volumes_settings_keep_the_other_fields_and_roles() {
-        let settings = json!({"idle_sleep_min": 10, "role_volumes": {"dev": ["x"], "ops": ["y"]}});
+        let settings = json!({"idle_sleep_min": 10, "doze_idle_s": 60, "role_volumes": {"dev": ["x"], "ops": ["y"]}});
         let set = role_settings(&settings, "dev", "z, w").unwrap();
         assert_eq!(set["idle_sleep_min"], json!(10));
+        assert_eq!(set["doze_idle_s"], json!(60));
         assert_eq!(
             set["role_volumes"],
             json!({"dev": ["z", "w"], "ops": ["y"]})

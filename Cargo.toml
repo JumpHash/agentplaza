@@ -27,6 +27,7 @@ acpi_tables = { path = "crates/acpi-tables" }
 apz-proto = { path = "crates/apz-proto" }
 apz-http = { path = "crates/apz-http" }
 apz-uds = { path = "crates/apz-uds" }
+apz-metrics = { path = "crates/apz-metrics" }
 windows-sys = "0.61"
 ureq = { version = "3", features = ["json"] }
 sha2 = "0.10"

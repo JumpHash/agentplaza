@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -249,6 +249,16 @@ pub enum SnapshotKind {
     /// memory it was restored from (the caller places that copy; see
     /// [`crate::vstate::snapshot_memory`]). For a VM that was booted, not restored, the same as `Full`.
     Diff,
+    /// `Diff` without the fsyncs: for a snapshot that only has to outlive the restores made from it on
+    /// this host (a fork's), not a crash. Written and recorded exactly as `Diff` is.
+    DiffUnsynced,
+}
+
+impl SnapshotKind {
+    /// Whether the snapshot's files are fsynced before the snapshot returns.
+    pub fn is_durable(self) -> bool {
+        !matches!(self, SnapshotKind::DiffUnsynced)
+    }
 }
 
 /// A snapshot [`VmHandle::snapshot`] wrote.
@@ -273,6 +283,24 @@ pub trait VmControl: Send + Sync {
     /// Pauses the VM (if it is running), writes a snapshot into `dir`, and leaves it **paused**: the
     /// caller resumes it, or stops it (to sleep or move it).
     fn snapshot(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError>;
+    /// Like `snapshot`, but may keep the memory and the state file in RAM instead of writing them:
+    /// the VM is left paused, and `write_captured` (callable after a resume) completes the files. The
+    /// default writes everything now.
+    fn capture(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.snapshot(dir, kind)
+    }
+    /// Writes what the last `capture` kept in RAM: the memory pages, then the state file. Returns
+    /// the guest memory bytes written. Nothing to do after a `snapshot` or a capture that wrote at
+    /// once, so the default is `0`.
+    fn write_captured(&self) -> Result<u64, SpawnError> {
+        Ok(0)
+    }
+    /// Pages a paused VM's guest memory out of host RAM (`MADV_PAGEOUT` on every guest region):
+    /// the guest is not touched, and its next accesses fault the pages back. Refused while the VM
+    /// runs. Returns the bytes advised; 0 where the backend cannot page out.
+    fn reclaim(&self) -> Result<u64, SpawnError> {
+        Ok(0)
+    }
 }
 
 /// How a VM stopped.
@@ -683,6 +711,8 @@ pub struct VmRuntime {
     /// [`SpawnMode::Process`] the child's console stream is appended here by
     /// the mode's reader thread, so callers see the same growing capture.
     pub serial: Arc<Mutex<Vec<u8>>>,
+    /// Signalled after the UART appends to `serial`; pairs with `serial`'s mutex.
+    pub serial_ready: Arc<Condvar>,
     /// The pid of the VM's per-VM process, when the VM runs in one (`0` = the
     /// VM is this process's threads, the v0 shape).
     child_pid: AtomicU32,
@@ -743,6 +773,7 @@ impl VmRuntime {
         Self {
             id,
             serial: Arc::new(Mutex::new(Vec::new())),
+            serial_ready: Arc::new(Condvar::new()),
             child_pid: AtomicU32::new(0),
             process_log: Arc::new(Mutex::new(Vec::new())),
             stop: Mutex::new(None),
@@ -1039,6 +1070,12 @@ impl VmHandle {
         Arc::clone(&self.runtime.serial)
     }
 
+    /// The condition variable the UART signals after each append to
+    /// [`VmHandle::serial_sink`]'s capture.
+    pub fn serial_ready(&self) -> Arc<Condvar> {
+        Arc::clone(&self.runtime.serial_ready)
+    }
+
     /// Forwards `data` to the guest's serial console: the host's console
     /// input, the counterpart of [`VmHandle::serial`]'s captured output.
     ///
@@ -1106,6 +1143,30 @@ impl VmHandle {
             .vm_control()
             .ok_or(SpawnError::NoSnapshots)?
             .snapshot(dir, kind)
+    }
+
+    /// Captures a snapshot of the VM into `dir` and leaves it paused (see [`VmControl::capture`]).
+    pub fn capture(&self, dir: &Path, kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .capture(dir, kind)
+    }
+
+    /// Writes the snapshot the last capture kept in RAM (see [`VmControl::write_captured`]).
+    pub fn write_captured(&self) -> Result<u64, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .write_captured()
+    }
+
+    /// Pages a paused VM's guest memory out of host RAM (see [`VmControl::reclaim`]).
+    pub fn reclaim(&self) -> Result<u64, SpawnError> {
+        self.runtime
+            .vm_control()
+            .ok_or(SpawnError::NoSnapshots)?
+            .reclaim()
     }
 }
 
@@ -1321,8 +1382,10 @@ pub fn copy_sparse_open(src: &std::fs::File, dst: &std::fs::File) -> std::io::Re
 }
 
 /// Copies the data extents of `src` into `dst`, found with `SEEK_DATA` and
-/// `SEEK_HOLE`. `Ok(false)` means the filesystem cannot report holes (`EINVAL`):
-/// the caller falls back and rewrites what was copied, identically.
+/// `SEEK_HOLE`. Each extent moves in the kernel with `copy_file_range`; one the
+/// kernel refuses is copied through `buf` instead. `Ok(false)` means the
+/// filesystem cannot report holes (`EINVAL`): the caller falls back and rewrites
+/// what was copied, identically.
 #[cfg(target_os = "linux")]
 fn copy_data_extents(
     src: &std::fs::File,
@@ -1349,8 +1412,55 @@ fn copy_data_extents(
                 "SEEK_HOLE did not move past the data it followed",
             ));
         }
-        copy_range(src, dst, start, end, buf)?;
+        if !copy_extent_in_kernel(src, dst, start, end - start)? {
+            copy_range(src, dst, start, end, buf)?;
+        }
         at = end;
+    }
+    Ok(true)
+}
+
+/// Copies `len` bytes at `offset` from `src` to the same offset in `dst` with `copy_file_range(2)`, in the
+/// kernel. `Ok(false)` when the kernel or filesystem cannot (ENOSYS, EXDEV, EINVAL, EOPNOTSUPP): the caller
+/// copies that extent through its buffer instead.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // copy_file_range is not wrapped by std; the offsets are explicit, so no file position moves
+fn copy_extent_in_kernel(
+    src: &std::fs::File,
+    dst: &std::fs::File,
+    offset: u64,
+    len: u64,
+) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let (src_fd, dst_fd) = (src.as_raw_fd(), dst.as_raw_fd());
+    let mut off_in = offset as libc::loff_t;
+    let mut off_out = offset as libc::loff_t;
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = remaining.min(1 << 30) as usize;
+        // SAFETY: both descriptors belong to the caller's live `File`s and stay open for the call. The offsets
+        // are local variables the kernel advances, so the descriptors' own file positions are not touched.
+        let n =
+            unsafe { libc::copy_file_range(src_fd, &mut off_in, dst_fd, &mut off_out, chunk, 0) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            let refused = matches!(
+                err.raw_os_error(),
+                Some(libc::ENOSYS | libc::EXDEV | libc::EINVAL | libc::EOPNOTSUPP)
+            );
+            return if refused && remaining == len {
+                Ok(false)
+            } else {
+                Err(err)
+            };
+        }
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the source ended inside a data extent",
+            ));
+        }
+        remaining -= n as u64;
     }
     Ok(true)
 }
@@ -1682,6 +1792,34 @@ mod tests {
             .expect("the fallback");
         drop(dst);
         assert_eq!(std::fs::read(&fallback).expect("the fallback copy"), want);
+
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A sparse copy moves each data extent to its own offset: data at 0, a 1 MiB
+    /// hole, then data at 1 MiB + 4096 copies to the same bytes.
+    #[cfg(unix)]
+    #[test]
+    fn a_sparse_copy_moves_each_extent_to_the_same_offsets() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = scratch("extents");
+        let base = dir.join("extents.img");
+        {
+            let mut file = std::fs::File::create(&base).expect("the extent base");
+            file.write_all(&[0x5Au8; 4096]).expect("a data extent at 0");
+            file.seek(SeekFrom::Start((1 << 20) + 4096))
+                .expect("seek past the 1 MiB hole");
+            file.write_all(&[0xC3u8; 8192])
+                .expect("a data extent at 1 MiB + 4096");
+        }
+        let want = std::fs::read(&base).expect("the base");
+
+        let copy = dir.join("extents-copy.img");
+        assert_eq!(
+            copy_sparse(&base, &copy).expect("a sparse copy"),
+            want.len() as u64
+        );
+        assert_eq!(std::fs::read(&copy).expect("the copy"), want);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }

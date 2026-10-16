@@ -384,7 +384,10 @@ fn run(
     // The devices: COM1, the i8042 (its reset line), the PM1 control and reset
     // ports, the I/O APIC, and the vsock transport. The buses hold weak
     // references; the strong ones go to the exit watcher, the VM's last thread.
-    let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+    let serial_out = SerialOut::shared(
+        Arc::clone(&runtime.serial),
+        Arc::clone(&runtime.serial_ready),
+    );
     let serial = Arc::new(Mutex::new(match restored {
         Some(snapshot) => SerialDevice::from_registers(&snapshot.serial, serial_out)
             .map_err(BootError::Snapshot)?,

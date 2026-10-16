@@ -21,6 +21,7 @@ import { attempt, button, toast } from '../ui/components';
 import type { EmbedContext } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
+import { prewake } from '../prewake';
 
 export interface ChatPane {
   el: HTMLElement;
@@ -172,6 +173,7 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     input.style.height = `${Math.min(input.scrollHeight, INPUT_MAX_PX)}px`;
   };
   input.addEventListener('input', resize);
+  input.addEventListener('input', () => prewake(opts.cid));
   input.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();

@@ -797,7 +797,12 @@ mod tests {
         use crate::vstate::snapshot::SerialRegisters;
         use std::sync::{Arc, Mutex};
 
-        let out = || SerialOut::shared(Arc::new(Mutex::new(Vec::new())));
+        let out = || {
+            SerialOut::shared(
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(std::sync::Condvar::new()),
+            )
+        };
         let mut serial = SerialDevice::new(out()).expect("a serial console");
         serial.serial.raw_input(b"abc").expect("input");
         let state = serial.serial.state();
@@ -1052,6 +1057,9 @@ mod x86_64 {
         let memory = super::open_memory(dir)?;
         let guest_regions =
             map_private(&memory, &snapshot.meta.regions).map_err(BootError::from)?;
+        // Before the jail: the snapshot directory is read here, and the advice needs no syscall the
+        // jail allows.
+        crate::vstate::snapshot_memory::read_ahead(dir, &memory);
 
         let kvm = Kvm::new().map_err(BootError::from)?;
         let mut vm = KvmVm::new(kvm).map_err(BootError::from)?;
@@ -1111,7 +1119,10 @@ mod x86_64 {
         // The guest's only legacy devices: the serial console and the i8042
         // controller (which emulates just enough to reset the machine). There is
         // no network device by design.
-        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial_out = SerialOut::shared(
+            Arc::clone(&runtime.serial),
+            Arc::clone(&runtime.serial_ready),
+        );
         let serial = Arc::new(Mutex::new(match restored {
             Some(states) => super::restore_serial(&states.serial, serial_out)?,
             None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,
@@ -1155,6 +1166,12 @@ mod x86_64 {
             let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
             vm.register_irq(serial.serial.interrupt_evt(), COM1_GSI)
                 .map_err(BootError::Irq)?;
+            // A restored console's interrupt the guest had not taken is raised again on the new line.
+            if restored.is_some() {
+                serial
+                    .raise_pending_interrupt()
+                    .map_err(BootError::EventFd)?;
+            }
         }
         {
             let i8042 = i8042.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1601,6 +1618,8 @@ mod aarch64 {
 
         let memory = super::open_memory(dir)?;
         let guest_regions = map_private(&memory, &snapshot.meta.regions)?;
+        // Before the jail, as on the x86_64 path: the snapshot directory is read here.
+        crate::vstate::snapshot_memory::read_ahead(dir, &memory);
 
         let kvm = Kvm::new()?;
         let mut vm = KvmVm::new(kvm)?;
@@ -1675,7 +1694,10 @@ mod aarch64 {
     ) -> Result<Devices, BootError> {
         // The guest's only legacy device: the serial console, on the MMIO bus
         // (there is no network device by design).
-        let serial_out = SerialOut::shared(Arc::clone(&runtime.serial));
+        let serial_out = SerialOut::shared(
+            Arc::clone(&runtime.serial),
+            Arc::clone(&runtime.serial_ready),
+        );
         let serial = Arc::new(Mutex::new(match restored {
             Some(states) => super::restore_serial(&states.serial, serial_out)?,
             None => SerialDevice::new(serial_out).map_err(BootError::Serial)?,
@@ -1687,6 +1709,12 @@ mod aarch64 {
             let serial = serial.lock().unwrap_or_else(PoisonError::into_inner);
             vm.register_irq(serial.serial.interrupt_evt(), SERIAL_GSI)
                 .map_err(BootError::Irq)?;
+            // A restored console's interrupt the guest had not taken is raised again on the new line.
+            if restored.is_some() {
+                serial
+                    .raise_pending_interrupt()
+                    .map_err(BootError::EventFd)?;
+            }
         }
 
         // The vsock device, when the caller configured one: the transport sits on

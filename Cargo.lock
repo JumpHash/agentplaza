@@ -306,6 +306,7 @@ dependencies = [
  "apz-gateway",
  "apz-http",
  "apz-ide",
+ "apz-metrics",
  "apz-os",
  "apz-plaza",
  "apz-prompt",
@@ -517,6 +518,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "apz-metrics"
+version = "0.1.0"
 
 [[package]]
 name = "apz-ops"
@@ -4795,6 +4800,7 @@ name = "noded"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-metrics",
  "apz-os",
  "apz-station",
  "apz-uds",
@@ -8441,6 +8447,7 @@ name = "vsockd"
 version = "0.1.0"
 dependencies = [
  "apz-http",
+ "apz-metrics",
  "apz-os",
  "apz-proto",
  "apz-uds",

@@ -89,6 +89,9 @@ pub fn serve(
 
 fn router() -> Router<Surface> {
     Router::<Surface>::new()
+        .get("/v1/metrics", |_, _, _| {
+            Response::new(200, "text/plain; version=0.0.4", crate::metrics::render())
+        })
         .get("/v1/status", |surface, _, _| {
             Response::new(
                 200,
@@ -125,6 +128,11 @@ fn router() -> Router<Surface> {
         .post("/v1/agents/{cid}/stop", |surface, request, params| {
             with_cid(surface, params.get("cid"), |cid| {
                 stop(surface, cid, request)
+            })
+        })
+        .post("/v1/agents/{cid}/quiet", |surface, request, params| {
+            with_cid(surface, params.get("cid"), |cid| {
+                quiet(surface, cid, request)
             })
         })
 }
@@ -336,6 +344,25 @@ fn stop(surface: &Surface, cid: u32, request: &Request) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+struct QuietRequest {
+    quiet: bool,
+}
+
+/// Marks a connected agent quiet (a dozing VM, not reaped for its silence) or loud again. Only a
+/// connected session can be quiet: the flag ends with the session.
+fn quiet(surface: &Surface, cid: u32, request: &Request) -> Response {
+    let QuietRequest { quiet } = match request.json() {
+        Ok(quiet) => quiet,
+        Err(err) => return Response::error(400, &format!("invalid quiet request: {err}")),
+    };
+    if surface.hub.set_quiet(cid, quiet) {
+        Response::json(200, &serde_json::json!({ "cid": cid, "quiet": quiet }))
+    } else {
+        not_connected(cid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,7 +389,13 @@ mod tests {
     /// A surface whose registry serves CIDs 10 and 11 (egress off).
     fn surface(hub: Hub) -> Surface {
         let hub = Arc::new(hub);
-        let registry = Arc::new(Registry::new(socket_dir(), 5000, None, Arc::clone(&hub)));
+        let registry = Arc::new(Registry::new(
+            socket_dir(),
+            5000,
+            None,
+            Arc::clone(&hub),
+            crate::DEFAULT_MAX_SESSIONS,
+        ));
         for cid in [10, 11] {
             registry.serve(cid).expect("binds");
         }
@@ -403,7 +436,8 @@ mod tests {
         let surface = surface(Hub::started_at(log, Apid::off(), anchor, 1_700_000_000_000));
         surface
             .hub
-            .connect(10, "builder", anchor + Duration::from_millis(250));
+            .connect(10, "builder", anchor + Duration::from_millis(250))
+            .unwrap();
         surface.hub.note_calls(10, 2);
         assert_eq!(
             status_json(&surface, 42),
@@ -457,9 +491,39 @@ mod tests {
     }
 
     #[test]
+    fn quiet_is_set_on_a_connected_agent_and_refused_otherwise() {
+        let surface = surface(hub_with(None).1);
+        for (path, body, status) in [
+            ("/v1/agents/12/quiet", r#"{"quiet":true}"#, 404),
+            ("/v1/agents/10/quiet", r#"{"quiet":true}"#, 409),
+            ("/v1/agents/10/quiet", "", 400),
+            ("/v1/agents/10/quiet", "{}", 400),
+            ("/v1/agents/10/quiet", r#"{"quiet":"yes"}"#, 400),
+            ("/v1/agents/10/quiet", "not json", 400),
+        ] {
+            assert_eq!(post(&surface, path, body).0, status, "{path} {body:.60}");
+        }
+        let (token, _steering, _waker) =
+            surface.hub.connect(10, "builder", Instant::now()).unwrap();
+        assert_eq!(
+            post(&surface, "/v1/agents/10/quiet", r#"{"quiet":true}"#),
+            (200, serde_json::json!({ "cid": 10, "quiet": true }))
+        );
+        assert!(surface.hub.is_quiet(10, token));
+        assert_eq!(
+            post(&surface, "/v1/agents/10/quiet", r#"{"quiet":false}"#),
+            (200, serde_json::json!({ "cid": 10, "quiet": false }))
+        );
+        assert!(!surface.hub.is_quiet(10, token));
+    }
+
+    #[test]
     fn a_tell_is_trusted_and_its_tool_is_dispatched_with_its_args_and_answer_returned() {
         let surface = surface(hub_with(None).1);
-        let (_token, steering) = surface.hub.connect(10, "librarian", Instant::now());
+        let (_token, steering, _waker) = surface
+            .hub
+            .connect(10, "librarian", Instant::now())
+            .unwrap();
         let agent = thread::spawn(move || {
             let mut dispatched = Vec::new();
             while let Ok(Command::Call { name, args, reply }) =
@@ -548,6 +612,7 @@ mod tests {
             5000,
             Some((policy, Apid::off())),
             Arc::clone(&hub),
+            crate::DEFAULT_MAX_SESSIONS,
         ));
         let surface = Surface {
             hub,

@@ -268,6 +268,9 @@ pub struct Settings {
     /// Minutes an idle agent waits before it sleeps; 0 keeps every agent awake (apid's `idle_sleep_min`).
     #[serde(default = "default_idle_sleep_min")]
     pub idle_sleep_min: i64,
+    /// Seconds an idle agent waits before it dozes (its VM paused and paged out); 0 never dozes (apid's `doze_idle_s`).
+    #[serde(default = "default_doze_idle_s")]
+    pub doze_idle_s: i64,
     /// The roles that never sleep (apid's `sleep_never_roles`).
     #[serde(default = "default_sleep_never_roles")]
     pub sleep_never_roles: Vec<String>,
@@ -361,6 +364,10 @@ fn default_idle_sleep_min() -> i64 {
     10
 }
 
+fn default_doze_idle_s() -> i64 {
+    0
+}
+
 fn default_sleep_never_roles() -> Vec<String> {
     vec!["orchestrator".to_string()]
 }
@@ -396,6 +403,7 @@ pub enum Num {
     MaxTurns,
     MaxTokens,
     IdleSleep,
+    DozeIdle,
     Price(String, Side),
 }
 
@@ -1100,6 +1108,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Num::MaxTurns => "max_turns".to_string(),
                 Num::MaxTokens => "max_tokens".to_string(),
                 Num::IdleSleep => "idle_sleep_min".to_string(),
+                Num::DozeIdle => "doze_idle_s".to_string(),
                 Num::Price(k, side) => price_key(k, *side),
             };
             let ok = match &num {
@@ -1120,6 +1129,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Num::IdleSleep => match idle_minutes(&text) {
                     Some(n) => {
                         p.copy.idle_sleep_min = n;
+                        true
+                    }
+                    None => false,
+                },
+                Num::DozeIdle => match doze_seconds(&text) {
+                    Some(n) => {
+                        p.copy.doze_idle_s = n;
                         true
                     }
                     None => false,
@@ -1516,6 +1532,14 @@ fn idle_minutes(text: &str) -> Option<i64> {
         .parse::<i64>()
         .ok()
         .filter(|n| (0..=1440).contains(n))
+}
+
+/// A doze time in whole seconds, 0 to a day; 0 never dozes.
+fn doze_seconds(text: &str) -> Option<i64> {
+    text.trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|n| (0..=86400).contains(n))
 }
 
 /// The roles that never sleep: comma-separated, each one name with no blanks or inner spaces. An empty field keeps
@@ -2685,6 +2709,13 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     .on_input(|v| Msg::PolicyNumber(Num::IdleSleep, v))
     .padding(8)
     .into();
+    let doze: Element<'a, Msg> = text_input(
+        "0–86400",
+        &p.shown("doze_idle_s", s.doze_idle_s.to_string()),
+    )
+    .on_input(|v| Msg::PolicyNumber(Num::DozeIdle, v))
+    .padding(8)
+    .into();
     let roles: Element<'a, Msg> = text_input(
         "orchestrator, dev",
         &p.shown("sleep_never_roles", s.sleep_never_roles.join(", ")),
@@ -2700,6 +2731,7 @@ fn limits_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
         labelled("Max turns", turns),
         labelled("Max tokens (0 = provider default)", tokens),
         labelled("Sleep an idle agent after (minutes, 0 = never)", idle),
+        labelled("Doze after (seconds idle, 0 = never)", doze),
         labelled("Roles that never sleep (comma-separated)", roles),
         checkpoints,
         labelled("Effort", effort),
@@ -2900,6 +2932,7 @@ mod tests {
         let bare = json!({"default_model": "a/b", "orchestrator_model": "a/c"});
         let settings: Settings = serde_json::from_value(bare).unwrap();
         assert_eq!(settings.idle_sleep_min, 10);
+        assert_eq!(settings.doze_idle_s, 0);
         assert_eq!(settings.sleep_never_roles, vec!["orchestrator".to_string()]);
         assert!(settings.vm_auto_checkpoints);
     }
@@ -2908,15 +2941,27 @@ mod tests {
     fn the_sleep_fields_are_read_and_kept_for_the_save() {
         let saved = json!({
             "default_model": "a/b", "orchestrator_model": "a/c",
-            "idle_sleep_min": 0, "sleep_never_roles": ["orchestrator", "dev"],
+            "idle_sleep_min": 0, "doze_idle_s": 0, "sleep_never_roles": ["orchestrator", "dev"],
             "vm_auto_checkpoints": false
         });
         let settings: Settings = serde_json::from_value(saved).unwrap();
         assert_eq!(settings.idle_sleep_min, 0);
+        assert_eq!(settings.doze_idle_s, 0);
         assert_eq!(settings.sleep_never_roles.len(), 2);
         assert!(!settings.vm_auto_checkpoints);
         let back = serde_json::to_value(&settings).unwrap();
         assert_eq!(back["idle_sleep_min"], json!(0));
+        assert_eq!(back["doze_idle_s"], json!(0));
         assert_eq!(back["vm_auto_checkpoints"], json!(false));
+    }
+
+    #[test]
+    fn a_doze_time_is_whole_seconds_up_to_a_day() {
+        assert_eq!(doze_seconds("0"), Some(0));
+        assert_eq!(doze_seconds(" 86400 "), Some(86400));
+        assert_eq!(doze_seconds("86401"), None);
+        assert_eq!(doze_seconds("-1"), None);
+        assert_eq!(doze_seconds("2.5"), None);
+        assert_eq!(doze_seconds(""), None);
     }
 }

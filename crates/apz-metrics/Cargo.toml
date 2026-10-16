@@ -1,0 +1,9 @@
+[package]
+name = "apz-metrics"
+description = "Process-wide counters, gauges and latency histograms in the Prometheus text format, and one-line timing records"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

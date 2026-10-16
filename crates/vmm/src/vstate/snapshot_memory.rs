@@ -18,11 +18,21 @@
 //! ([`crate::clonefile::clone_file`]), so the result is a complete memory file at the cost of the
 //! changed pages.
 //!
+//! **Capturing.** [`capture_memory`] makes the same selection but copies the pages into RAM, so the
+//! VM can resume before they are written; [`write_captured`] writes them to the file afterwards.
+//!
 //! **Layout.** [`layout`] places the regions back to back in guest-address order, each at a
 //! page-aligned offset.
+//!
+//! **Working set.** Before a snapshot writes anything, the kernel is asked which pages of each region
+//! are resident ([`crate::sys::resident_pages`]), and [`resident_runs`] turns them into runs of
+//! memory-file offsets: the snapshot's working-set hint ([`crate::vstate::snapshot::WORKING_SET_FILE`]).
+//! A restore reads the hint ahead ([`read_ahead`]), so the guest's first touches of those pages come
+//! from the page cache rather than the disk.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+use std::path::Path;
 
 use vm_memory::GuestMemoryBackend;
 
@@ -31,7 +41,7 @@ use crate::vstate::memory::{
     Address, Bytes, GuestMemoryMmap, GuestMemoryRegion, GuestRegionMmapExt, MemoryRegionAddress,
     host_page_size, u64_to_usize, usize_to_u64,
 };
-use crate::vstate::snapshot::{RegionMeta, SnapshotError};
+use crate::vstate::snapshot::{RegionMeta, Run, SnapshotError, read_working_set};
 
 /// The kernel's per-page state, one 8-byte entry per host page of this process's address space.
 const PAGEMAP: &str = "/proc/self/pagemap";
@@ -91,6 +101,27 @@ pub fn layout(mem: &GuestMemoryMmap) -> Vec<RegionMeta> {
         .collect()
 }
 
+/// Checks that `regions` (from [`layout`]) describe `mem`: one region per guest region.
+fn check_layout(mem: &GuestMemoryMmap, regions: &[RegionMeta]) -> Result<(), SnapshotError> {
+    let in_memory = mem.iter().count();
+    if regions.len() != in_memory {
+        return Err(SnapshotError::Mismatch(format!(
+            "the layout has {} regions and the memory has {in_memory}",
+            regions.len()
+        )));
+    }
+    Ok(())
+}
+
+/// The memory file's length once every region of `regions` is written.
+fn layout_end(regions: &[RegionMeta]) -> u64 {
+    regions
+        .iter()
+        .map(|meta| meta.offset + meta.len)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Writes the guest memory of `mem` into `file` at the offsets of `regions` (from [`layout`]),
 /// setting the file's length to cover the whole layout. Returns the bytes of memory written.
 /// Called with the VM paused and its devices locked, so nothing writes guest memory meanwhile.
@@ -100,14 +131,103 @@ pub fn write_memory(
     file: &File,
     kind: SnapshotKind,
 ) -> Result<u64, SnapshotError> {
-    let page = usize_to_u64(host_page_size());
-    let in_memory = mem.iter().count();
-    if regions.len() != in_memory {
-        return Err(SnapshotError::Mismatch(format!(
-            "the layout has {} regions and the memory has {in_memory}",
-            regions.len()
-        )));
+    check_layout(mem, regions)?;
+    // A full snapshot's file holds the touched pages and holes everywhere else, so content left in
+    // a reused file from an earlier snapshot must not survive. A diff keeps its base copy.
+    if matches!(kind, SnapshotKind::Full) {
+        file.set_len(0)
+            .map_err(|source| io_error(MEMORY_FILE, source))?;
     }
+    let written = walk(mem, regions, kind, &mut Sink::File(file))?;
+    file.set_len(layout_end(regions))
+        .map_err(|source| io_error(MEMORY_FILE, source))?;
+    Ok(written)
+}
+
+/// The guest memory a capture keeps in RAM: the selected pages, copied, each with its offset in the
+/// memory file. [`write_captured`] writes it to the file.
+pub struct CapturedMemory {
+    pieces: Vec<(u64, Vec<u8>)>,
+    /// The bytes of memory captured.
+    pub bytes: u64,
+    /// The memory file's length once written (the end of the layout).
+    len: u64,
+}
+
+/// Copies the pages [`write_memory`] would write into RAM, returning `None` instead when they would
+/// pass `limit` bytes: the caller then writes the file at once. Called with the VM paused, like
+/// [`write_memory`]; the copy is the only part of a capture that the pause covers.
+pub fn capture_memory(
+    mem: &GuestMemoryMmap,
+    regions: &[RegionMeta],
+    kind: SnapshotKind,
+    limit: u64,
+) -> Result<Option<CapturedMemory>, SnapshotError> {
+    check_layout(mem, regions)?;
+    let mut sink = Sink::Ram {
+        pieces: Vec::new(),
+        kept: 0,
+        limit,
+        over: false,
+    };
+    let bytes = walk(mem, regions, kind, &mut sink)?;
+    Ok(match sink {
+        Sink::Ram {
+            pieces,
+            over: false,
+            ..
+        } => Some(CapturedMemory {
+            pieces,
+            bytes,
+            len: layout_end(regions),
+        }),
+        _ => None,
+    })
+}
+
+/// Writes what [`capture_memory`] kept into `file`: a full snapshot's file is emptied first, each
+/// piece goes to its offset, and the file's length is set last. Returns the bytes of memory written.
+pub fn write_captured(
+    captured: &CapturedMemory,
+    file: &File,
+    kind: SnapshotKind,
+) -> Result<u64, SnapshotError> {
+    if matches!(kind, SnapshotKind::Full) {
+        file.set_len(0)
+            .map_err(|source| io_error(MEMORY_FILE, source))?;
+    }
+    for (offset, bytes) in &captured.pieces {
+        file.write_all_at(bytes, *offset)
+            .map_err(|source| io_error(MEMORY_FILE, source))?;
+    }
+    file.set_len(captured.len)
+        .map_err(|source| io_error(MEMORY_FILE, source))?;
+    Ok(captured.bytes)
+}
+
+/// Where the pages a walk selects go.
+enum Sink<'a> {
+    /// The memory file, at the pages' offsets.
+    File(&'a File),
+    /// RAM. Pages are copied until they would pass `limit` bytes; from then on nothing is copied and
+    /// the walk only counts, so `over` is set and the pieces are dropped.
+    Ram {
+        pieces: Vec<(u64, Vec<u8>)>,
+        kept: u64,
+        limit: u64,
+        over: bool,
+    },
+}
+
+/// Walks `/proc/self/pagemap` over every region of `mem` and sends the pages `kind` selects to
+/// `sink`. Returns the bytes selected, whatever the sink did with them.
+fn walk(
+    mem: &GuestMemoryMmap,
+    regions: &[RegionMeta],
+    kind: SnapshotKind,
+    sink: &mut Sink,
+) -> Result<u64, SnapshotError> {
+    let page = usize_to_u64(host_page_size());
     let opened;
     let pagemap = match EARLY_PAGEMAP.get() {
         Some(file) => file,
@@ -116,14 +236,7 @@ pub fn write_memory(
             &opened
         }
     };
-    // A full snapshot's file holds the touched pages and holes everywhere else, so content left in
-    // a reused file from an earlier snapshot must not survive. A diff keeps its base copy.
-    if matches!(kind, SnapshotKind::Full) {
-        file.set_len(0)
-            .map_err(|source| io_error(MEMORY_FILE, source))?;
-    }
     let mut written = 0;
-    let mut end = 0;
     let mut buf = Vec::new();
     for meta in regions {
         let region = mem
@@ -141,21 +254,18 @@ pub fn write_memory(
                 meta.guest_addr
             )));
         }
-        written += write_region(region, meta, &pagemap, file, kind, &mut buf)?;
-        end = end.max(meta.offset + meta.len);
+        written += write_region(region, meta, pagemap, sink, kind, &mut buf)?;
     }
-    file.set_len(end)
-        .map_err(|source| io_error(MEMORY_FILE, source))?;
     Ok(written)
 }
 
-/// Writes the selected pages of one region: the pagemap is read in batches, and each run of
-/// adjacent selected pages is written in one go.
+/// Sends the selected pages of one region to `sink`: the pagemap is read in batches, and each run
+/// of adjacent selected pages goes in one piece.
 fn write_region(
     region: &GuestRegionMmapExt,
     meta: &RegionMeta,
     pagemap: &File,
-    file: &File,
+    sink: &mut Sink,
     kind: SnapshotKind,
     buf: &mut Vec<u8>,
 ) -> Result<u64, SnapshotError> {
@@ -194,40 +304,40 @@ fn write_region(
                         run = Some((start, count + 1));
                     }
                     _ => {
-                        written += flush_run(&mut run, region, meta, file, buf)?;
+                        written += flush_run(&mut run, region, meta, sink, buf)?;
                         run = Some((page_index, 1));
                     }
                 }
             } else {
-                written += flush_run(&mut run, region, meta, file, buf)?;
+                written += flush_run(&mut run, region, meta, sink, buf)?;
             }
         }
         done += batch;
     }
-    written += flush_run(&mut run, region, meta, file, buf)?;
+    written += flush_run(&mut run, region, meta, sink, buf)?;
     Ok(written)
 }
 
-/// Writes the pending run of pages, if there is one, and returns the bytes written.
+/// Sends the pending run of pages to `sink`, if there is one, and returns the bytes selected.
 fn flush_run(
     run: &mut Option<(u64, u64)>,
     region: &GuestRegionMmapExt,
     meta: &RegionMeta,
-    file: &File,
+    sink: &mut Sink,
     buf: &mut Vec<u8>,
 ) -> Result<u64, SnapshotError> {
     match run.take() {
-        Some((start, count)) => write_pages(region, meta, file, start, count, buf),
+        Some((start, count)) => send_pages(region, meta, sink, start, count, buf),
         None => Ok(0),
     }
 }
 
-/// Writes `count` pages of `region` from its page `start` to the memory file, at the region's
-/// offset in the file, in writes of at most [`MAX_WRITE_BYTES`].
-fn write_pages(
+/// Sends `count` pages of `region` from its page `start` to `sink`, at the region's offset in the
+/// memory file, in pieces of at most [`MAX_WRITE_BYTES`].
+fn send_pages(
     region: &GuestRegionMmapExt,
     meta: &RegionMeta,
-    file: &File,
+    sink: &mut Sink,
     start: u64,
     count: u64,
     buf: &mut Vec<u8>,
@@ -238,12 +348,39 @@ fn write_pages(
     while done < count {
         let n = (count - done).min(max_pages);
         let guest_offset = (start + done) * page;
-        buf.resize(u64_to_usize(n * page), 0);
-        region
-            .read_slice(buf.as_mut_slice(), MemoryRegionAddress(guest_offset))
-            .map_err(|e| SnapshotError::State(format!("cannot read guest memory: {e}")))?;
-        file.write_all_at(buf.as_slice(), meta.offset + guest_offset)
-            .map_err(|source| io_error(MEMORY_FILE, source))?;
+        let file_offset = meta.offset + guest_offset;
+        match sink {
+            Sink::File(file) => {
+                buf.resize(u64_to_usize(n * page), 0);
+                region
+                    .read_slice(buf.as_mut_slice(), MemoryRegionAddress(guest_offset))
+                    .map_err(|e| SnapshotError::State(format!("cannot read guest memory: {e}")))?;
+                file.write_all_at(buf.as_slice(), file_offset)
+                    .map_err(|source| io_error(MEMORY_FILE, source))?;
+            }
+            Sink::Ram {
+                pieces,
+                kept,
+                limit,
+                over,
+            } => {
+                if !*over && *kept + n * page > *limit {
+                    *over = true;
+                    *kept = 0;
+                    pieces.clear();
+                }
+                if !*over {
+                    let mut piece = vec![0u8; u64_to_usize(n * page)];
+                    region
+                        .read_slice(piece.as_mut_slice(), MemoryRegionAddress(guest_offset))
+                        .map_err(|e| {
+                            SnapshotError::State(format!("cannot read guest memory: {e}"))
+                        })?;
+                    pieces.push((file_offset, piece));
+                    *kept += n * page;
+                }
+            }
+        }
         done += n;
     }
     Ok(count * page)
@@ -259,7 +396,7 @@ fn selected(entry: u64, kind: SnapshotKind) -> bool {
         SnapshotKind::Full => present || swapped,
         // A swapped page is always saved. A present page is saved only when it is anonymous: a
         // file page is still the base file's content, which the diff's reflinked copy already holds.
-        SnapshotKind::Diff => swapped || (present && !file_backed),
+        SnapshotKind::Diff | SnapshotKind::DiffUnsynced => swapped || (present && !file_backed),
     }
 }
 
@@ -275,6 +412,57 @@ fn io_error(path: &str, source: std::io::Error) -> SnapshotError {
     SnapshotError::Io {
         path: path.to_string(),
         source,
+    }
+}
+
+/// The most bytes of the memory file a restore asks the kernel to read ahead. The hint is bounded, so a
+/// large working set cannot queue more I/O than the VM is likely to need soon.
+const PREFETCH_BYTES: u64 = 2 << 30;
+
+/// The memory-file runs of a region's resident pages, from its `mincore` vector (see
+/// [`crate::sys::resident_pages`]): one byte per page of the region, its low bit set for a resident
+/// page. `region_offset` is where the region starts in the memory file and `page` is the host page
+/// size. Adjacent resident pages become one run.
+pub fn resident_runs(vec: &[u8], region_offset: u64, page: u64) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for (index, state) in vec.iter().enumerate() {
+        if state & 1 == 0 {
+            continue;
+        }
+        let offset = region_offset.saturating_add(index as u64 * page);
+        match runs.last_mut() {
+            Some(last) if last.0.saturating_add(last.1) == offset => last.1 += page,
+            _ => runs.push((offset, page)),
+        }
+    }
+    runs
+}
+
+/// The leading part of `runs` that fits in `budget` bytes, with the last run cut to fit. The order of
+/// `runs` is kept.
+pub fn prefetch_ranges(runs: &[Run], budget: u64) -> Vec<Run> {
+    let mut left = budget;
+    let mut ranges = Vec::new();
+    for &(offset, len) in runs {
+        if left == 0 {
+            break;
+        }
+        let len = len.min(left);
+        ranges.push((offset, len));
+        left -= len;
+    }
+    ranges
+}
+
+/// Starts reading the working set of the snapshot in `dir` into the page cache, for the memory file
+/// `memory` that a restore has just mapped: `posix_fadvise(WILLNEED)` on each hinted range, up to
+/// [`PREFETCH_BYTES`]. The advice returns without waiting for the I/O. A missing or malformed hint
+/// means no read-ahead, and a failed advice stops the rest silently: the hint only saves time.
+pub fn read_ahead(dir: &Path, memory: &File) {
+    for (offset, len) in prefetch_ranges(&read_working_set(dir), PREFETCH_BYTES) {
+        if crate::sys::willneed(memory, offset, len).is_err() {
+            break;
+        }
     }
 }
 
@@ -486,6 +674,107 @@ mod tests {
             map_private(&file, &unaligned),
             Err(MemoryError::UnalignedFileRegion { .. })
         ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Residency bits become memory-file runs: adjacent resident pages merge, a gap splits them, and
+    /// only the low bit counts.
+    #[test]
+    fn resident_pages_become_runs_of_file_offsets() {
+        let page = 4096;
+        let base = 8 * page;
+        // Pages 0 and 1, then 3 to 5, then 8; the byte 2 has its low bit clear, 3 has it set.
+        let vec = [1u8, 1, 2, 3, 1, 1, 0, 0, 1];
+        assert_eq!(
+            resident_runs(&vec, base, page),
+            vec![
+                (base, 2 * page),
+                (base + 3 * page, 3 * page),
+                (base + 8 * page, page)
+            ]
+        );
+        assert_eq!(resident_runs(&[0u8; 4], base, page), Vec::<Run>::new());
+        assert_eq!(resident_runs(&[], base, page), Vec::<Run>::new());
+    }
+
+    /// The read-ahead is cut at its budget, and the last run is shortened to fit it.
+    #[test]
+    fn prefetch_ranges_stay_within_the_budget() {
+        let runs = [(0, 4096), (8192, 8192), (65536, 4096)];
+        assert_eq!(prefetch_ranges(&runs, 1 << 20), runs.to_vec());
+        assert_eq!(prefetch_ranges(&runs, 6000), vec![(0, 4096), (8192, 1904)]);
+        assert_eq!(prefetch_ranges(&runs, 0), Vec::<Run>::new());
+    }
+
+    /// A restore reads a working-set hint ahead, and a missing or malformed one is no error: the
+    /// memory file it names is left alone.
+    #[test]
+    fn read_ahead_tolerates_a_missing_or_malformed_hint() {
+        let dir = scratch("read-ahead");
+        let memory_path = dir.join("memory.img");
+        let memory = create(&memory_path);
+        memory.set_len(1 << 16).unwrap();
+        read_ahead(&dir, &memory);
+        fs::write(
+            dir.join(crate::vstate::snapshot::WORKING_SET_FILE),
+            [7u8; 20],
+        )
+        .unwrap();
+        read_ahead(&dir, &memory);
+        fs::write(
+            dir.join(crate::vstate::snapshot::WORKING_SET_FILE),
+            crate::vstate::snapshot::encode_runs(&[(0, 4096), (8192, 4096)]),
+        )
+        .unwrap();
+        read_ahead(&dir, &memory);
+        assert_eq!(fs::metadata(&memory_path).unwrap().len(), 1 << 16);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A capture holds the pages `write_memory` would write, copied at the time of the capture: the
+    /// file [`write_captured`] writes from it is the file `write_memory` writes, even after the
+    /// memory changed. A capture past its limit holds nothing, so the caller writes the file itself.
+    #[test]
+    fn a_capture_writes_the_file_write_memory_would_and_refuses_past_its_limit() {
+        let mem = memory(8);
+        let page = host_page_size();
+        for index in [1, 2, 6] {
+            fill_page(&mem, index, 0xCD);
+        }
+        let regions = layout(&mem);
+        let dir = scratch("capture");
+
+        let direct = dir.join("direct");
+        let written = write_memory(&mem, &regions, &create(&direct), SnapshotKind::Full).unwrap();
+
+        let captured = capture_memory(&mem, &regions, SnapshotKind::Full, 1 << 20)
+            .unwrap()
+            .expect("the pages fit the limit");
+        assert_eq!(captured.bytes, written);
+        // The guest writes on after the capture: the captured pages do not change with it.
+        fill_page(&mem, 1, 0xEE);
+        let via_capture = dir.join("via-capture");
+        assert_eq!(
+            write_captured(&captured, &create(&via_capture), SnapshotKind::Full).unwrap(),
+            written
+        );
+        assert_eq!(
+            fs::read(&via_capture).unwrap(),
+            fs::read(&direct).unwrap(),
+            "the captured file matches the direct one"
+        );
+
+        assert!(
+            capture_memory(
+                &mem,
+                &regions,
+                SnapshotKind::Full,
+                usize_to_u64(2 * page) - 1
+            )
+            .unwrap()
+            .is_none(),
+            "three pages do not fit in a limit of two pages"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

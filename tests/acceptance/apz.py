@@ -473,6 +473,13 @@ def reconstruct_console(serial: str) -> str:
 # ------------------------------------------------------------------ the daemons
 
 
+def _free_port() -> int:
+    """A localhost TCP port nothing listens on now (bound and released)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 class LabError(RuntimeError):
     """A lab could not be brought up or driven."""
 
@@ -558,6 +565,7 @@ class Lab:
         agents: Path | None = None,
         agents_cid_base: int | None = None,
         hub_status: str | None = None,
+        noded_args: list[str] | None = None,
         hub_admin: str | None = None,
     ):
         self.ctx = ctx
@@ -581,15 +589,17 @@ class Lab:
         # The base image of every run's writable workspace volume, or `None`
         # for a daemon that boots no block device (`noded --workspace`).
         self.workspace = Path(workspace) if workspace is not None else None
-        # The hub's read-only status surface (`vsockd --status-port`), when the
-        # caller asks for it: `0` binds an ephemeral port, whose real number is
-        # parsed from the daemon's log line (`self.status_bound`).
+        # vsockd no longer has a separate status or admin port (its flags
+        # `--status-port` and `--admin-port` are gone): one HTTP surface,
+        # `--http-port`, serves the read-only `GET /v1/status` and `/healthz`
+        # and the agent calls `POST /v1/agents/{cid}/tell|stop`. The lab binds
+        # it on a free port of its own (`self.http_port`). A caller that asks
+        # for a status or admin surface gets that same port as its
+        # `status_bound` / `admin_bound`.
         self.status_port = status_port
-        self.status_bound: int | None = None
-        # The hub's admin surface (`vsockd --admin-port`), when the caller asks
-        # for it: `0` binds an ephemeral port, whose real number is parsed from
-        # the daemon's log line (`self.admin_bound`).
         self.admin_port = admin_port
+        self.http_port: int | None = None
+        self.status_bound: int | None = None
         self.admin_bound: int | None = None
         # The roles manifest the hub enforces the codex's tool grants from
         # (`vsockd --roles`), or `None` for a daemon with no policy.
@@ -605,6 +615,8 @@ class Lab:
         # the literal `HOST:PORT`, the sentinel `"self"` for this lab's own
         # vsockd status port, or `None` to leave the flag off.
         self.hub_status = hub_status
+        # Extra `noded` flags (e.g. `--snapshot-dir`), appended last.
+        self.noded_args = list(noded_args or [])
         # Where `noded` drives the hub's admin surface (`--hub-admin`): the
         # literal `HOST:PORT`, the sentinel `"self"` for this lab's own vsockd
         # admin port, or `None` to leave the flag off.
@@ -628,6 +640,21 @@ class Lab:
     def __exit__(self, *_exc) -> None:
         self.stop()
     def start(self) -> "Lab":
+        # noded no longer takes `--hub-status` or `--hub-admin`, and its
+        # `/api/v0/hub` proxy is gone, so there is no daemon-side proxy for a
+        # lab to point at a hub. `off` (and `None`) need no flag; the agent
+        # calls go to the lab's own vsockd HTTP surface (`admin_tell`,
+        # `admin_stop`) and the registry to `status()`.
+        if self.hub_status not in (None, "off"):
+            raise LabError(
+                f"hub_status={self.hub_status!r}: noded has no /api/v0/hub proxy any more "
+                "(its --hub-status flag is gone); read the hub at lab.status() instead"
+            )
+        if self.hub_admin not in (None, "off", "self"):
+            raise LabError(
+                f"hub_admin={self.hub_admin!r}: noded has no admin proxy any more "
+                "(its --hub-admin flag is gone); call the hub with lab.admin_tell() instead"
+            )
         argv_noded = [
             str(self.ctx.bin("noded")),
             "--port",
@@ -643,7 +670,14 @@ class Lab:
             # The daemon gives every VM of every run its own copy of this base
             # image and boots it as the guest's writable `/workspace` volume.
             argv_noded += ["--workspace", str(self.workspace)]
+        else:
+            # noded now defaults to a workspace volume (`workspace.ext4` under a
+            # persist directory in the user's data dir, made with mkfs.ext4).
+            # A lab that did not ask for one boots no block device and keeps
+            # nothing outside its own work directory, as the labs always did.
+            argv_noded += ["--no-workspace"]
         if self.cids:
+            self.http_port = _free_port()
             argv_vsockd = [
                 str(self.ctx.bin("vsockd")),
                 "--uds-dir",
@@ -652,15 +686,13 @@ class Lab:
                 ",".join(str(cid) for cid in self.cids),
                 "--port",
                 str(VSOCK_PORT),
+                # A lab is hermetic: its HTTP surface on a free port (the host's own vsockd holds the
+                # default), and an apid address nothing listens on, so no hello reaches a real hub.
+                "--http-port",
+                str(self.http_port),
+                "--apid",
+                f"http://127.0.0.1:{_free_port()}",
             ]
-            if self.status_port is not None:
-                # The read-only registry surface, on an ephemeral port by
-                # default (`--status-port 0`).
-                argv_vsockd += ["--status-port", str(self.status_port)]
-            if self.admin_port is not None:
-                # The control plane's admin surface (`POST /tell`,
-                # `POST /stop`), ephemeral by default (`--admin-port 0`).
-                argv_vsockd += ["--admin-port", str(self.admin_port)]
             if self.roles is not None:
                 # The codex's per-role tool grants, enforced on every
                 # `/tell` the admin surface accepts.
@@ -671,10 +703,12 @@ class Lab:
             # every one of them: a probe or a UDS enumeration before the last
             # bind would see a half-started daemon.
             self._await_listeners()
+            # The HTTP surface's port is known up front (`--http-port`), so the
+            # status and admin helpers need no log line to find it.
             if self.status_port is not None:
-                self._await_status_port()
+                self.status_bound = self.http_port
             if self.admin_port is not None:
-                self._await_admin_port()
+                self.admin_bound = self.http_port
         if self.agents is not None:
             # The daemon boots its initial role fleet from this manifest before
             # it serves, one long-lived keepalive VM per role.
@@ -684,29 +718,7 @@ class Lab:
                 # index when the manifest has no slots), so the caller knows which
                 # CID a role's guest connects as.
                 argv_noded += ["--agents-cid-base", str(self.agents_cid_base)]
-        if self.hub_status is not None:
-            # `noded --hub-status` points the daemon's `/api/v0/hub` proxy at
-            # the hub's status surface: the sentinel `"self"` resolves to this
-            # lab's own vsockd, anything else is passed through (`off`, or a
-            # literal HOST:PORT — a closed port exercises the 502 path).
-            if self.hub_status == "self":
-                if self.status_bound is None:
-                    raise LabError("hub_status='self' needs the lab's own status_port")
-                argv_noded += ["--hub-status", f"127.0.0.1:{self.status_bound}"]
-            else:
-                argv_noded += ["--hub-status", str(self.hub_status)]
-        if self.hub_admin is not None:
-            # `noded --hub-admin` points the daemon's
-            # `/api/v0/agents/{cid}/tell` and `/api/v0/tasks/{id}/artifact` at
-            # the hub's admin surface. The sentinel `"self"` resolves to this
-            # lab's own vsockd admin port; anything else is passed through
-            # (`off`, or a literal HOST:PORT).
-            if self.hub_admin == "self":
-                if self.admin_bound is None:
-                    raise LabError("hub_admin='self' needs the lab's own admin_port")
-                argv_noded += ["--hub-admin", f"127.0.0.1:{self.admin_bound}"]
-            else:
-                argv_noded += ["--hub-admin", str(self.hub_admin)]
+        argv_noded += self.noded_args
         self.noded = self._spawn("noded", argv_noded, self.noded_log)
         line = self._await_line(self.noded_log, "listening on")
         match = re.search(r"127\.0\.0\.1:(\d+)", line)
@@ -763,32 +775,8 @@ class Lab:
         missing = sorted(expected - set(self.uds_entries()))
         raise LabError(f"vsockd never bound {missing}")
 
-    def _await_status_port(self) -> None:
-        """Wait for the daemon's status line and record the port it bound.
-
-        ``--status-port 0`` binds an ephemeral port, so the real number is only
-        known once the daemon prints it.
-        """
-        line = self._await_line(self.vsockd_log, "status on http")
-        match = re.search(r"127\.0\.0\.1:(\d+)", line)
-        if not match:
-            raise LabError(f"vsockd did not report a status port: {line!r}")
-        self.status_bound = int(match.group(1))
-
-    def _await_admin_port(self) -> None:
-        """Wait for the daemon's admin line and record the port it bound.
-
-        ``--admin-port 0`` binds an ephemeral port, so the real number is only
-        known once the daemon prints it (``vsockd: admin on http://...``).
-        """
-        line = self._await_line(self.vsockd_log, "admin on http")
-        match = re.search(r"127\.0\.0\.1:(\d+)", line)
-        if not match:
-            raise LabError(f"vsockd did not report an admin port: {line!r}")
-        self.admin_bound = int(match.group(1))
-
     def _await_line(self, log: Path, needle: str) -> str:
-        deadline = now() + START_DEADLINE_S
+        deadline = now() + getattr(self, "start_deadline_s", START_DEADLINE_S)
         while now() < deadline:
             text = log.read_text(errors="replace") if log.exists() else ""
             for line in text.splitlines():
@@ -815,7 +803,7 @@ class Lab:
         except urllib.error.HTTPError as err:
             return Result(err.code, err.read().decode(), now() - started)
     def machine(self) -> dict:
-        return self._request("GET", "/api/v0/machine").json
+        return self._request("GET", "/v1/machine").json
     def api_request(self, method: str, path: str, body: dict | None = None, timeout: float = 300.0) -> "Result":
         """One request to ``noded``'s own HTTP API (the raw reply)."""
         return self._request(method, path, body, timeout)
@@ -830,12 +818,12 @@ class Lab:
         return self.api_request("DELETE", path)
     # -- the hub's admin surface -------------------------------------------
     def admin_request(self, method: str, path: str, body: dict | None = None, timeout: float = 20.0) -> "Result":
-        """One request to the hub's admin surface (``POST /tell``, ``POST /stop``)."""
+        """One request to the hub's HTTP surface (``vsockd --http-port``), e.g. ``POST /v1/agents/{cid}/tell``."""
         if self.admin_bound is None:
             raise LabError("this lab has no admin surface (start it with admin_port=...)")
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(
-            f"http://127.0.0.1:{self.admin_bound}{path}", method=method, data=data
+            f"http://127.0.0.1:{self.http_port}{path}", method=method, data=data
         )
         if data is not None:
             request.add_header("Content-Type", "application/json")
@@ -846,19 +834,19 @@ class Lab:
         except urllib.error.HTTPError as err:
             return Result(err.code, err.read().decode(), now() - started)
     def admin_tell(self, cid: int, name: str, args: dict | None = None, timeout_ms: int | None = None) -> "Result":
-        """``POST /tell``: drive one tool call on the agent connected as ``cid``."""
-        body: dict = {"cid": cid, "name": name}
+        """``POST /v1/agents/{cid}/tell``: drive one tool call on the agent connected as ``cid``."""
+        body: dict = {"name": name}
         if args is not None:
             body["args"] = args
         if timeout_ms is not None:
             body["timeout_ms"] = timeout_ms
-        return self.admin_request("POST", "/tell", body)
+        return self.admin_request("POST", f"/v1/agents/{cid}/tell", body)
     def admin_stop(self, cid: int, reason: str | None = None) -> "Result":
-        """``POST /stop``: ask the agent connected as ``cid`` to end its session."""
-        body: dict = {"cid": cid}
+        """``POST /v1/agents/{cid}/stop``: ask the agent connected as ``cid`` to end its session."""
+        body: dict = {}
         if reason is not None:
             body["reason"] = reason
-        return self.admin_request("POST", "/stop", body)
+        return self.admin_request("POST", f"/v1/agents/{cid}/stop", body)
     # -- the hub's read-only status surface --------------------------------
     def status(self) -> dict:
         """``GET /status`` — the hub's registry, from its read-only surface."""
@@ -867,10 +855,14 @@ class Lab:
         """``GET /healthz`` — the status surface's liveness probe."""
         return self.status_get("/healthz")
     def status_get(self, path: str, timeout: float = 5.0) -> "Result":
-        """One request to the hub's read-only status surface (``/status`` + ``/healthz``)."""
+        """One request to the hub's read-only status surface (``/status`` + ``/healthz``).
+
+        The status route is ``GET /v1/status`` on the hub's HTTP surface; ``/status`` is accepted as its name.
+        """
         if self.status_bound is None:
             raise LabError("this lab has no status surface (start it with status_port=...)")
-        request = urllib.request.Request(f"http://127.0.0.1:{self.status_bound}{path}")
+        route = "/v1/status" if path == "/status" else path
+        request = urllib.request.Request(f"http://127.0.0.1:{self.http_port}{route}")
         started = now()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as reply:
@@ -880,7 +872,7 @@ class Lab:
     def ping(self) -> bool:
         """Whether the daemon is still answering its API."""
         try:
-            return self._request("GET", "/api/v0/machine").status == 200
+            return self._request("GET", "/v1/machine").status == 200
         except (OSError, ValueError):
             return False
     def stream_events(self, seconds: float, sink: list[str] | None = None) -> list[str]:
@@ -918,18 +910,18 @@ class Lab:
         connection.close()
         return lines
     def list_runs(self) -> list[dict]:
-        return self._request("GET", "/api/v0/runs").json["runs"]
+        return self._request("GET", "/v1/runs").json["runs"]
     def create(self, **spec) -> tuple[Result, dict]:
-        reply = self._request("POST", "/api/v0/runs", spec)
+        reply = self._request("POST", "/v1/runs", spec)
         if reply.status != 201:
-            raise LabError(f"POST /api/v0/runs refused: {reply.status} {reply.body}")
+            raise LabError(f"POST /v1/runs refused: {reply.status} {reply.body}")
         return reply, reply.json
     def get(self, run_id: str) -> dict:
-        return self._request("GET", f"/api/v0/runs/{run_id}").json
+        return self._request("GET", f"/v1/runs/{run_id}").json
     def delete(self, run_id: str) -> Result:
-        return self._request("DELETE", f"/api/v0/runs/{run_id}")
+        return self._request("DELETE", f"/v1/runs/{run_id}")
     def input(self, run_id: str, vm: int, data: str) -> Result:
-        return self._request("POST", f"/api/v0/runs/{run_id}/input", {"data": data, "vm": vm})
+        return self._request("POST", f"/v1/runs/{run_id}/input", {"data": data, "vm": vm})
     def await_state(self, run_id: str, states: set[str], deadline: float) -> tuple[dict, float]:
         while True:
             view = self.get(run_id)

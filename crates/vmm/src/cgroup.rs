@@ -39,6 +39,12 @@ const CGROUP_MOUNT: &str = "/sys/fs/cgroup";
 /// it from `/proc/self/cgroup`.
 pub const ROOT_ENV: &str = "APZ_VMM_CGROUP_ROOT";
 
+/// The environment variable that opts VM cgroups into swap: `ram` lets a VM
+/// swap up to its guest RAM, so cold guest pages can be compressed (zswap) or
+/// written out (encrypted swap) instead of the VM being killed. Unset, `0` or
+/// anything else keeps swap off.
+pub const SWAP_ENV: &str = "APZ_VMM_SWAP";
+
 /// The slice the VMs' cgroups are created under, beneath the user manager.
 pub const SLICE: &str = "agentplaza.slice";
 
@@ -62,6 +68,25 @@ const MEMORY_HIGH_PERCENT: u64 = 95;
 const CPU_PERIOD_US: u64 = 100_000;
 
 const MIB: u64 = 1024 * 1024;
+
+/// Whether a VM's cgroup may swap, and how much.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapPolicy {
+    /// No swap: `memory.swap.max` is `0`. The default.
+    Off,
+    /// Swap up to the guest's RAM: `memory.swap.max` is the RAM in bytes.
+    GuestRam,
+}
+
+/// The swap policy an `APZ_VMM_SWAP` value asks for. Only `ram` (ignoring
+/// surrounding whitespace) turns swap on; unset, `0` and any other value mean
+/// [`SwapPolicy::Off`]. Pure.
+pub fn swap_policy_from(value: Option<&str>) -> SwapPolicy {
+    match value.map(str::trim) {
+        Some("ram") => SwapPolicy::GuestRam,
+        _ => SwapPolicy::Off,
+    }
+}
 
 /// How long [`VmCgroup::remove`] waits for a killed cgroup's processes to
 /// leave it before `rmdir` (which refuses a populated cgroup) is tried anyway.
@@ -151,7 +176,8 @@ impl CgroupRoot {
             path,
             removed: false,
         };
-        for (file, value) in limit_files(limits) {
+        let swap = swap_policy_from(std::env::var(SWAP_ENV).ok().as_deref());
+        for (file, value) in limit_files(limits, swap) {
             let target = cgroup.path.join(file);
             if !target.exists() {
                 eprintln!(
@@ -256,17 +282,23 @@ fn kill_pid(_pid: i32) -> io::Result<()> {
 /// are written. Pure, so the arithmetic is tested without a kernel.
 ///
 /// `memory.max` is the guest RAM plus [`VMM_OVERHEAD_MIB`]; `memory.high` is
-/// [`MEMORY_HIGH_PERCENT`] of it; swap is off; `cpu.max` is one period's quota
-/// per vCPU; `pids.max` is [`PIDS_MAX`].
-pub fn limit_files(limits: VmLimits) -> Vec<(&'static str, String)> {
+/// [`MEMORY_HIGH_PERCENT`] of it; `memory.swap.max` is `0` under
+/// [`SwapPolicy::Off`] and the guest RAM in bytes under
+/// [`SwapPolicy::GuestRam`]; `cpu.max` is one period's quota per vCPU;
+/// `pids.max` is [`PIDS_MAX`].
+pub fn limit_files(limits: VmLimits, swap: SwapPolicy) -> Vec<(&'static str, String)> {
     let ram_mib = u64::try_from(limits.memory_mib).unwrap_or(u64::MAX);
     let max = ram_mib.saturating_add(VMM_OVERHEAD_MIB).saturating_mul(MIB);
     let high = max / 100 * MEMORY_HIGH_PERCENT;
+    let swap_max = match swap {
+        SwapPolicy::Off => 0,
+        SwapPolicy::GuestRam => ram_mib.saturating_mul(MIB),
+    };
     let quota = u64::from(limits.vcpus) * CPU_PERIOD_US;
     vec![
         ("memory.max", max.to_string()),
         ("memory.high", high.to_string()),
-        ("memory.swap.max", "0".to_string()),
+        ("memory.swap.max", swap_max.to_string()),
         ("cpu.max", format!("{quota} {CPU_PERIOD_US}")),
         ("pids.max", PIDS_MAX.to_string()),
     ]
@@ -376,10 +408,13 @@ mod tests {
         // The limits a 2 vCPU, 512 MiB VM gets, and those of a single vCPU VM.
         {
             // 512 MiB of RAM plus 64 MiB of overhead is 576 MiB.
-            let files = limit_files(VmLimits {
-                vcpus: 2,
-                memory_mib: 512,
-            });
+            let files = limit_files(
+                VmLimits {
+                    vcpus: 2,
+                    memory_mib: 512,
+                },
+                SwapPolicy::Off,
+            );
             assert_eq!(value(&files, "memory.max"), "603979776");
             // 95% of 603979776, rounded down to a whole 1/100 of the cap first.
             assert_eq!(value(&files, "memory.high"), "573780715");
@@ -389,13 +424,43 @@ mod tests {
         }
         // A single vCPU is one full period.
         {
-            let files = limit_files(VmLimits {
-                vcpus: 1,
-                memory_mib: 0,
-            });
+            let files = limit_files(
+                VmLimits {
+                    vcpus: 1,
+                    memory_mib: 0,
+                },
+                SwapPolicy::Off,
+            );
             assert_eq!(value(&files, "cpu.max"), "100000 100000");
             assert_eq!(value(&files, "memory.max"), "67108864");
         }
+    }
+
+    #[test]
+    fn swap_is_the_guest_ram_only_when_asked_for() {
+        let limits = VmLimits {
+            vcpus: 1,
+            memory_mib: 512,
+        };
+        // Off: no swap at all, as before the knob existed.
+        assert_eq!(
+            value(&limit_files(limits, SwapPolicy::Off), "memory.swap.max"),
+            "0"
+        );
+        // GuestRam: swap up to the guest's RAM in bytes; memory.max is unchanged.
+        let files = limit_files(limits, SwapPolicy::GuestRam);
+        assert_eq!(value(&files, "memory.swap.max"), "536870912");
+        assert_eq!(value(&files, "memory.max"), "603979776");
+    }
+
+    #[test]
+    fn only_ram_turns_swap_on() {
+        assert_eq!(swap_policy_from(None), SwapPolicy::Off);
+        assert_eq!(swap_policy_from(Some("0")), SwapPolicy::Off);
+        assert_eq!(swap_policy_from(Some("")), SwapPolicy::Off);
+        assert_eq!(swap_policy_from(Some("disk")), SwapPolicy::Off);
+        assert_eq!(swap_policy_from(Some("ram")), SwapPolicy::GuestRam);
+        assert_eq!(swap_policy_from(Some(" ram\n")), SwapPolicy::GuestRam);
     }
 
     #[test]

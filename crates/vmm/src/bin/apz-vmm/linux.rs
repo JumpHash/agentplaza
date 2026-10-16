@@ -59,8 +59,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -103,7 +103,8 @@ serves it:
   --control PATH     a Unix socket (mode 0600) the parent drives the VM through:
                      one request line per connection, one reply line back.
                      `usable N` and `stats` (a balloon), `pause`, `resume`,
-                     and `snapshot full|diff DIR` (DIR under --snapshot-root).
+                     `snapshot full|diff DIR` and `capture full|diff DIR` (DIR
+                     under --snapshot-root), and `write_captured`.
   --restore DIR      restore the VM from the snapshot in DIR instead of booting
                      the kernel (DIR is bound read-only in the jail)
   --snapshot-root DIR
@@ -113,9 +114,6 @@ serves it:
 
 The exit status is the VM's: 0 the guest shut down, 3 the guest reset, 1 a
 failure, 2 a refused command line.";
-
-/// How often the serial stream is drained from the capture to stdout.
-const SERIAL_POLL: Duration = Duration::from_millis(5);
 
 /// How many bytes one console-input read takes from stdin: the UART's input
 /// queue is 64 bytes and `serial_input` refuses a slice it cannot take whole.
@@ -434,12 +432,14 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
     eprintln!("{CHILD_READY}");
 
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = handle.serial_ready();
     let serial = {
         let stop = Arc::clone(&stop);
+        let ready = Arc::clone(&ready);
         let sink = handle.serial_sink();
         thread::Builder::new()
             .name("apz_vmm_console_out".to_string())
-            .spawn(move || stream_serial(sink, stop))
+            .spawn(move || stream_serial(sink, ready, stop))
             .map_err(|err| format!("cannot start the serial stream: {err}"))?
     };
     // The console-input thread is deliberately not joined: it sits in a
@@ -457,8 +457,17 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
 
     let exit = handle.wait().map_err(|err| err.to_string())?;
     // The VM stopped: let the serial stream drain what is left, then report the
-    // exit the guest asked for.
-    stop.store(true, Ordering::SeqCst);
+    // exit the guest asked for. The flag is set under the serial sink's lock, so
+    // the serial thread cannot sit between its check and its wait when the
+    // notify goes out (that would lose the wakeup until its 1 s timeout).
+    {
+        let sink = handle.serial_sink();
+        let _guard = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        stop.store(true, Ordering::SeqCst);
+    }
+    ready.notify_all();
     let _ = serial.join();
     match exit {
         VmExit::GuestExited { reset } => {
@@ -564,15 +573,24 @@ fn serve_one(stream: &UnixStream, controls: &Controls) {
 ///   `stats <max> <usable> <held> <free|-> <available|->`;
 /// * `pause` and `resume` answer `ok` once the VM's vCPUs have stopped or
 ///   started;
+/// * `reclaim` pages a paused VM's guest memory out of host RAM and answers
+///   `ok <bytes>` with the bytes advised;
 /// * `snapshot full|diff DIR` writes a snapshot under the snapshot root and
-///   answers `ok <kind> <memory_written> <paused_ms>`, leaving the VM paused.
+///   answers `ok <kind> <memory_written> <paused_ms>`, leaving the VM paused;
+/// * `capture full|diff DIR` takes the same snapshot with its memory and state
+///   kept in RAM, and answers the same way;
+/// * `write_captured` writes the capture the VM holds and answers `ok <bytes>`,
+///   the guest memory bytes written (`ok 0` when there is no capture).
 ///
 /// Anything else, and any request the VM cannot carry out, is `err <why>`.
 /// Never a guess: an error is one line, and a snapshot directory that is not
 /// under the snapshot root (or has a `..` in it) is refused before any write.
 fn answer(request: &str, controls: &Controls) -> String {
     if let Some(rest) = request.strip_prefix("snapshot ") {
-        return snapshot_reply(rest, controls);
+        return snapshot_reply(rest, controls, |vm, dir, kind| vm.snapshot(dir, kind));
+    }
+    if let Some(rest) = request.strip_prefix("capture ") {
+        return snapshot_reply(rest, controls, |vm, dir, kind| vm.capture(dir, kind));
     }
     let mut words = request.split_whitespace();
     match (words.next(), words.next(), words.next()) {
@@ -602,13 +620,26 @@ fn answer(request: &str, controls: &Controls) -> String {
         },
         (Some("pause"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.pause()),
         (Some("resume"), None, None) => acknowledge(controls.vm.as_deref(), |vm| vm.resume()),
+        (Some("reclaim"), None, None) => reclaim_reply(controls.vm.as_deref()),
+        (Some("write_captured"), None, None) => {
+            bytes_reply(controls.vm.as_deref(), |vm| vm.write_captured())
+        }
         _ => format!("err {request:?} is not a request this control socket takes"),
     }
 }
 
-/// The reply to `snapshot <kind> <dir>` (`rest` is the line after `snapshot `).
-/// The directory is the rest of the line, so it may contain spaces.
-fn snapshot_reply(rest: &str, controls: &Controls) -> String {
+/// The reply to `snapshot <kind> <dir>` or `capture <kind> <dir>` (`rest` is the line after the
+/// verb), with `take` the call it makes. The directory is the rest of the line, so it may contain
+/// spaces.
+fn snapshot_reply(
+    rest: &str,
+    controls: &Controls,
+    take: impl FnOnce(
+        &dyn VmControl,
+        &Path,
+        vmm::spawner::SnapshotKind,
+    ) -> Result<vmm::spawner::SnapshotInfo, SpawnError>,
+) -> String {
     let Some((word, dir)) = rest.split_once(' ') else {
         return "err snapshot takes a kind (full or diff) and a directory".to_string();
     };
@@ -633,7 +664,7 @@ fn snapshot_reply(rest: &str, controls: &Controls) -> String {
         );
     }
     match controls.vm.as_deref() {
-        Some(vm) => match vm.snapshot(dir, kind) {
+        Some(vm) => match take(vm, dir, kind) {
             Ok(info) => format!(
                 "ok {} {} {}",
                 snapshot_kind_word(info.kind),
@@ -660,6 +691,26 @@ fn acknowledge(
     }
 }
 
+/// The reply to `reclaim`: `ok <bytes>`, the guest memory the VM advised out of host RAM, or
+/// why it could not (the VM must be paused).
+fn reclaim_reply(vm: Option<&dyn VmControl>) -> String {
+    bytes_reply(vm, |vm| vm.reclaim())
+}
+
+/// The reply to a call that answers the bytes it moved: `ok <bytes>`, or why it could not.
+fn bytes_reply(
+    vm: Option<&dyn VmControl>,
+    call: impl FnOnce(&dyn VmControl) -> Result<u64, SpawnError>,
+) -> String {
+    match vm {
+        Some(vm) => match call(vm) {
+            Ok(bytes) => format!("ok {bytes}"),
+            Err(err) => err_line(err),
+        },
+        None => NO_SNAPSHOTS.to_string(),
+    }
+}
+
 /// The reply that carries an error: one line, so its message never breaks the
 /// framing.
 fn err_line(err: impl std::fmt::Display) -> String {
@@ -676,8 +727,9 @@ fn field<T: std::fmt::Display>(value: Option<T>) -> String {
 }
 
 /// Writes the guest's console to stdout as it is produced, until `stop` is set
-/// and the capture is drained.
-fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, stop: Arc<AtomicBool>) {
+/// and the capture is drained. Waits on `ready`, which the UART signals after
+/// each append, instead of polling the capture.
+fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, ready: Arc<Condvar>, stop: Arc<AtomicBool>) {
     let mut stdout = std::io::stdout();
     let mut printed = 0usize;
     loop {
@@ -706,7 +758,18 @@ fn stream_serial(sink: Arc<Mutex<Vec<u8>>>, stop: Arc<AtomicBool>) {
             }
             // Nothing to print and the VM has stopped: the capture is drained.
             None if stop.load(Ordering::SeqCst) => return,
-            None => thread::sleep(SERIAL_POLL),
+            // Nothing new yet: wait for the UART's next append. The timeout only
+            // bounds how long a stop request can go unnoticed.
+            None => {
+                let buffer = sink
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ = ready
+                    .wait_timeout_while(buffer, Duration::from_secs(1), |buffer| {
+                        buffer.len() <= printed && !stop.load(Ordering::SeqCst)
+                    })
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
     }
 }
@@ -934,6 +997,21 @@ mod tests {
                 paused_ms: 3,
             })
         }
+        fn capture(
+            &self,
+            dir: &Path,
+            kind: vmm::spawner::SnapshotKind,
+        ) -> Result<vmm::spawner::SnapshotInfo, SpawnError> {
+            Ok(vmm::spawner::SnapshotInfo {
+                dir: dir.to_path_buf(),
+                kind,
+                memory_written: 8192,
+                paused_ms: 2,
+            })
+        }
+        fn write_captured(&self) -> Result<u64, SpawnError> {
+            Ok(8192)
+        }
     }
 
     /// The control answers each request in the shape the parent parses, refuses a
@@ -953,6 +1031,7 @@ mod tests {
             assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
             assert_eq!(answer("pause", &controls), "ok");
             assert_eq!(answer("resume", &controls), "ok");
+            assert_eq!(answer("reclaim", &controls), "ok 0");
             assert_eq!(
                 answer("snapshot full /srv/snaps/a", &controls),
                 "ok full 4096 3"
@@ -961,6 +1040,14 @@ mod tests {
                 answer("snapshot diff /srv/snaps/with space", &controls),
                 "ok diff 4096 3"
             );
+            // A capture answers like a snapshot (its own sizes here); its write answers the bytes.
+            assert_eq!(
+                answer("capture full /srv/snaps/a", &controls),
+                "ok full 8192 2"
+            );
+            assert_eq!(answer("write_captured", &controls), "ok 8192");
+            assert!(answer("capture sparse /srv/snaps/a", &controls).starts_with("err "));
+            assert!(answer("capture full /etc/passwd", &controls).starts_with("err "));
         }
 
         // Original a_snapshot_outside_the_root_is_refused: refused before any write unless
@@ -1003,10 +1090,13 @@ mod tests {
             };
             assert_eq!(answer("pause", &controls), NO_SNAPSHOTS);
             assert_eq!(answer("resume", &controls), NO_SNAPSHOTS);
+            assert_eq!(answer("reclaim", &controls), NO_SNAPSHOTS);
+            assert_eq!(answer("write_captured", &controls), NO_SNAPSHOTS);
             assert_eq!(
                 answer("snapshot full /srv/snaps/a", &controls),
                 NO_SNAPSHOTS
             );
+            assert_eq!(answer("capture full /srv/snaps/a", &controls), NO_SNAPSHOTS);
             assert_eq!(answer("stats", &controls), "stats 512 256 200 - 180");
         }
     }
