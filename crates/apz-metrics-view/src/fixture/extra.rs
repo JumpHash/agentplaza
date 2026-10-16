@@ -1061,8 +1061,9 @@ pub fn budgets() -> Vec<Budget> {
     ]
 }
 
+/// The report of a node, by its id (`n1`) or its scope id (`node:n1`).
 pub fn report(node: &str) -> serde_json::Value {
-    match node {
+    match node.strip_prefix("node:").unwrap_or(node) {
         "n1" => json!({
             "top_processes": [
                 ["rustc", "r12/1", 92, 1400],

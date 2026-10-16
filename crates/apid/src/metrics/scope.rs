@@ -411,6 +411,10 @@ enum Scope {
         provider: String,
         model: String,
     },
+    Volume(String),
+    Service(String),
+    Tool(String),
+    Route(String),
     /// An id this module does not resolve (a malformed or unknown prefix).
     Other,
 }
@@ -431,6 +435,10 @@ fn parse_scope(scope: &str) -> Scope {
         "agent" => Scope::Agent(id.to_string()),
         "role" => Scope::Role(id.to_string()),
         "provider" => Scope::Provider(id.to_string()),
+        "volume" => Scope::Volume(id.to_string()),
+        "service" => Scope::Service(id.to_string()),
+        "tool" => Scope::Tool(id.to_string()),
+        "route" => Scope::Route(id.to_string()),
         "model" => match id.split_once('/') {
             Some((provider, model)) => Scope::Model {
                 provider: provider.to_string(),
@@ -507,6 +515,10 @@ fn covers(
         Scope::Agent(cid) => kind == EntityKind::Agent && entity == cid.as_str(),
         Scope::Workstation(id) => kind == EntityKind::Workstation && entity == id.as_str(),
         Scope::Sandbox(id) => kind == EntityKind::Sandbox && entity == id.as_str(),
+        Scope::Volume(id) => kind == EntityKind::Volume && entity == id.as_str(),
+        Scope::Service(id) => kind == EntityKind::Service && entity == id.as_str(),
+        Scope::Tool(id) => kind == EntityKind::Tool && entity == id.as_str(),
+        Scope::Route(id) => kind == EntityKind::Route && entity == id.as_str(),
         Scope::Other => false,
     }
 }
@@ -622,14 +634,9 @@ fn kind_of(kind: &str) -> Option<EntityKind> {
     }
 }
 
-/// The scope id of an entity of a kind. Volumes, services, tools and routes have no scope id: their entity is it.
+/// The scope id of an entity of a kind: the kind's prefix and the entity (`volume:n1:/var/lib/plaza`, `tool:bash`).
 fn scope_id(kind: EntityKind, entity: &str) -> String {
-    match kind {
-        EntityKind::Volume | EntityKind::Service | EntityKind::Tool | EntityKind::Route => {
-            entity.to_string()
-        }
-        _ => format!("{}:{entity}", kind.prefix()),
-    }
+    format!("{}:{entity}", kind.prefix())
 }
 
 /// The distinct entities of a kind that the metrics system has a latest point for.
@@ -802,5 +809,18 @@ mod tests {
         assert!(keeps("anthropic", "opus-5.5"));
         assert!(!keeps("anthropic", "haiku-5.5"));
         assert!(!keeps("openrouter", "opus-5.5"));
+    }
+
+    #[test]
+    fn a_tool_scope_keeps_only_the_series_of_that_tool() {
+        let facts = Facts::default();
+        let scope = parse_scope("tool:bash");
+        let keeps = |kind: EntityKind, entity: &str| {
+            let key = SeriesKey::new("tool.calls", kind, entity);
+            covers(&facts, &scope, key.kind, &key.entity, &key.labels)
+        };
+        assert!(keeps(EntityKind::Tool, "bash"));
+        assert!(!keeps(EntityKind::Tool, "edit_file"));
+        assert!(!keeps(EntityKind::Route, "bash"));
     }
 }

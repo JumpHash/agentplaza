@@ -124,7 +124,10 @@ impl Source for Fixture {
         extra::links()
     }
     fn saved(&self) -> Saved {
-        Saved::default()
+        Saved {
+            starter: true,
+            ..Saved::default()
+        }
     }
     fn basis_days(&self) -> u32 {
         14

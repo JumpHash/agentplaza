@@ -149,12 +149,45 @@ const VOLUMES: &[(&str, &str, &str, f64)] = &[
     ("n0:postgres", "n0 postgres", "n0", 38.0),
     ("n0:garage", "n0 garage", "n0", 46.0),
 ];
-/// (id, label, node).
+/// (id, label, node). The stores of the hub's node are services too; their ids are `store:<label>`.
 const SERVICES: &[(&str, &str, &str)] = &[
     ("n0:apid", "apid (hub)", "n0"),
     ("n0:forgejo", "forgejo (hub)", "n0"),
     ("n1:noded", "noded (n1)", "n1"),
     ("n2:noded", "noded (n2)", "n2"),
+    ("store:garage (objects)", "garage (objects)", "n0"),
+    ("store:forgejo (git)", "forgejo (git)", "n0"),
+    ("store:postgres · plaza", "postgres · plaza", "n0"),
+    (
+        "store:postgres · metrics chunks",
+        "postgres · metrics chunks",
+        "n0",
+    ),
+    ("store:postgres · metrics 1m", "postgres · metrics 1m", "n0"),
+    ("store:postgres · metrics 1h", "postgres · metrics 1h", "n0"),
+    (
+        "store:postgres · model_calls",
+        "postgres · model_calls",
+        "n0",
+    ),
+    (
+        "store:postgres · trace_spans",
+        "postgres · trace_spans",
+        "n0",
+    ),
+];
+const GIB: f64 = 1_073_741_824.0;
+const MB: f64 = 1_000_000.0;
+/// (id, bytes held) of each store.
+const STORES: &[(&str, f64)] = &[
+    ("store:garage (objects)", 180.0 * GIB),
+    ("store:forgejo (git)", 6.0 * GIB),
+    ("store:postgres · plaza", 850.0 * MB),
+    ("store:postgres · metrics chunks", 640.0 * MB),
+    ("store:postgres · metrics 1m", 210.0 * MB),
+    ("store:postgres · metrics 1h", 34.0 * MB),
+    ("store:postgres · model_calls", 96.0 * MB),
+    ("store:postgres · trace_spans", 380.0 * MB),
 ];
 const TOOLS: &[(&str, f64)] = &[
     ("bash", 0.35),
@@ -552,7 +585,6 @@ fn base_level(id: &str) -> f64 {
         "link.payload_bytes" => 2_000.0,
         "ext.latency_ms" => 180.0,
         "ext.errors" => 0.1,
-        "store.bytes" => 4e9,
         "self.cpu_pct" => 1.8,
         "self.mem_mb" => 240.0,
         "self.points_in" => 3_000.0,
@@ -569,7 +601,7 @@ fn base_level(id: &str) -> f64 {
 fn amplitude(id: &str) -> f64 {
     match id {
         "vm.count" | "vm.guest_total_mib" | "host.mem_total_mib" | "ctx.window"
-        | "volume.size_bytes" => 0.0,
+        | "volume.size_bytes" | "store.bytes" => 0.0,
         "volume.used_pct" | "volume.used_bytes" => 0.2,
         _ => 1.0,
     }
@@ -578,6 +610,9 @@ fn amplitude(id: &str) -> f64 {
 /// The level of one leaf at a moment: the base times the leaf's weight, with the daily swing, the noise and the
 /// occasional spike (a noise draw above 0.97 is 1.8 times the level). Percentages stay within 0 to 100.
 fn level(metric: &MetricDef, leaf: &Leaf, t_ms: u64) -> f64 {
+    if metric.id == "ctx.fill_pct" {
+        return fill_level(leaf, t_ms);
+    }
     let amp = amplitude(metric.id);
     let factor = if amp == 0.0 {
         1.0
@@ -590,11 +625,35 @@ fn level(metric: &MetricDef, leaf: &Leaf, t_ms: u64) -> f64 {
         }
         factor
     };
-    let value = base_level(metric.id) * leaf.weight * factor;
+    let value = base_level(metric.id) * leaf.weight * factor * growth(metric.id, t_ms);
     if matches!(metric.unit, Unit::Percent) {
         value.clamp(0.0, 100.0)
     } else {
         value
+    }
+}
+
+/// A context fill: the agent's fill, with a swing of up to 4 points over the day and a little noise. It stays
+/// between 0 and 99, so a window never reads as full.
+fn fill_level(leaf: &Leaf, t_ms: u64) -> f64 {
+    let n = noise(&format!("ctx.fill_pct|{}", leaf.key), t_ms / MINUTE_MS);
+    let phase = 2.0 * PI * (t_ms as f64 / DAY_MS as f64);
+    (leaf.weight + 4.0 * (0.8 * phase.sin() + 0.2 * (2.0 * n - 1.0))).clamp(0.0, 99.0)
+}
+
+/// The instant a store's growth is counted from. Fixed, so a read repeated gives the same numbers.
+const STORE_GROWTH_ORIGIN_MS: u64 = 1_700_000_000_000;
+/// How much a store grows each day, as a fraction of its size.
+const STORE_GROWTH_PER_DAY: f64 = 0.0002;
+
+/// The growth of a level by the moment: a store holds a little more each day. Other metrics do not grow.
+fn growth(id: &str, t_ms: u64) -> f64 {
+    match id {
+        "store.bytes" => {
+            let days = t_ms.saturating_sub(STORE_GROWTH_ORIGIN_MS) as f64 / DAY_MS as f64;
+            1.0 + STORE_GROWTH_PER_DAY * days
+        }
+        _ => 1.0,
     }
 }
 
@@ -839,13 +898,14 @@ fn leaf_weight(metric: &MetricDef, m: &Member) -> f64 {
         "host.load1" => node_weight(&m.id, [0.6, 1.2, 1.6]),
         "volume.used_pct" => volume_pct(&m.id),
         "volume.used_bytes" => volume_pct(&m.id) / 100.0,
+        "store.bytes" => store_bytes(&m.id),
         _ => match m.kind {
             "agent" => agent_by_id(&m.id).map_or(1.0, |a| a.share),
             "vm" if m.state == "running" => 0.6 + 0.1 * vm_index(&m.id),
             "vm" => 0.0,
             "service" => service_weight(&m.id),
-            "tool" => share_of(TOOLS, &m.id),
-            "route" => share_of(ROUTES, &m.id),
+            "tool" => share_of(TOOLS, entity_of(&m.id, "tool")),
+            "route" => share_of(ROUTES, entity_of(&m.id, "route")),
             "engine" => share_of(ENGINES, &m.id),
             _ => 1.0,
         },
@@ -862,11 +922,17 @@ fn node_weight(id: &str, weights: [f64; 3]) -> f64 {
 }
 
 fn volume_pct(id: &str) -> f64 {
-    VOLUMES.iter().find(|v| v.0 == id).map_or(40.0, |v| v.3)
+    let entity = entity_of(id, "volume");
+    VOLUMES.iter().find(|v| v.0 == entity).map_or(40.0, |v| v.3)
+}
+
+fn store_bytes(id: &str) -> f64 {
+    let entity = entity_of(id, "service");
+    STORES.iter().find(|s| s.0 == entity).map_or(0.0, |s| s.1)
 }
 
 fn service_weight(id: &str) -> f64 {
-    match id {
+    match entity_of(id, "service") {
         "n0:apid" => 1.0,
         "n0:forgejo" => 0.6,
         _ => 0.8,
@@ -1076,28 +1142,44 @@ fn members(scope: &str, kind: &str) -> Vec<Member> {
             .collect(),
         "volume" => {
             let nodes = nodes_of(scope);
+            let only = scoped_entity(scope, "volume");
             VOLUMES
                 .iter()
-                .filter(|v| nodes.contains(&v.2))
-                .map(|v| Member::new("volume", v.0, v.1).with("node", v.2))
+                .filter(|v| match only {
+                    Some(entity) => v.0 == entity,
+                    None => nodes.contains(&v.2),
+                })
+                .map(|v| Member::new("volume", &format!("volume:{}", v.0), v.1).with("node", v.2))
                 .collect()
         }
         "service" => {
             let nodes = nodes_of(scope);
+            let only = scoped_entity(scope, "service");
             SERVICES
                 .iter()
-                .filter(|s| nodes.contains(&s.2))
-                .map(|s| Member::new("service", s.0, s.1).with("node", s.2))
+                .filter(|s| match only {
+                    Some(entity) => s.0 == entity,
+                    None => nodes.contains(&s.2),
+                })
+                .map(|s| Member::new("service", &format!("service:{}", s.0), s.1).with("node", s.2))
                 .collect()
         }
-        "tool" => TOOLS
-            .iter()
-            .map(|t| Member::new("tool", t.0, t.0))
-            .collect(),
-        "route" => ROUTES
-            .iter()
-            .map(|r| Member::new("route", r.0, r.0))
-            .collect(),
+        "tool" => {
+            let only = scoped_entity(scope, "tool");
+            TOOLS
+                .iter()
+                .filter(|t| only.is_none_or(|entity| t.0 == entity))
+                .map(|t| Member::new("tool", &format!("tool:{}", t.0), t.0))
+                .collect()
+        }
+        "route" => {
+            let only = scoped_entity(scope, "route");
+            ROUTES
+                .iter()
+                .filter(|r| only.is_none_or(|entity| r.0 == entity))
+                .map(|r| Member::new("route", &format!("route:{}", r.0), r.0))
+                .collect()
+        }
         "engine" => ENGINES
             .iter()
             .map(|e| Member::new("engine", e.0, e.0).with("engine", e.0))
@@ -1130,6 +1212,17 @@ fn entity_name(kind: EntityKind) -> &'static str {
 /// Splits a scope id into its kind and its rest: `node:n1` is `("node", "n1")`, `global` is `("global", "")`.
 fn split(scope: &str) -> (&str, &str) {
     scope.split_once(':').unwrap_or((scope, ""))
+}
+
+/// The entity a scope id names when the scope is of `kind`: `volume:n1:/var/lib/plaza` is `n1:/var/lib/plaza` for
+/// `volume`, and `global` is nothing.
+fn scoped_entity<'a>(scope: &'a str, kind: &str) -> Option<&'a str> {
+    scope.strip_prefix(kind)?.strip_prefix(':')
+}
+
+/// The entity of an id of `kind`, with its prefix taken off if it has one: a bare entity is its own.
+fn entity_of<'a>(id: &'a str, kind: &str) -> &'a str {
+    scoped_entity(id, kind).unwrap_or(id)
 }
 
 fn unique<T: PartialEq>(items: Vec<T>) -> Vec<T> {
@@ -1346,5 +1439,25 @@ mod tests {
         assert!(gaps("node:n2") > 0);
         assert_eq!(gaps("node:n1"), 0);
         assert_eq!(gaps("node:n0"), 0);
+    }
+
+    #[test]
+    fn a_volume_scope_reads_its_own_volume_and_the_volumes_have_scope_ids() {
+        let f = Fixture::new(NOW);
+        let volumes = entities("global", "volume");
+        assert!(!volumes.is_empty());
+        assert!(volumes.iter().all(|v| v.id.starts_with("volume:")));
+        let own = entities("volume:n2:/var/lib/plaza", "volume");
+        assert_eq!(own.len(), 1);
+        let used = scalar(
+            &f,
+            "volume.used_pct",
+            "volume:n2:/var/lib/plaza",
+            NOW - HOUR,
+            NOW,
+            AggFn::Last,
+        )
+        .expect("the volume has a level");
+        assert!((used - 91.0).abs() < 6.0, "the volume is at {used}");
     }
 }
