@@ -311,7 +311,9 @@ impl Ctx {
 
     /// A time in the console's zone: "14:20" (or "Oct 16 14:20" when not today).
     pub fn time(&self, t_ms: u64) -> String {
-        let same_day = t_ms / 86_400_000 == self.now_ms / 86_400_000;
+        let shift = i64::from(self.q.tz) * 60_000;
+        let day = |t: u64| (t as i64 + shift).div_euclid(86_400_000);
+        let same_day = day(t_ms) == day(self.now_ms);
         time_label(t_ms, if same_day { 60_000 } else { 3_600_000 }, self.q.tz)
     }
 }

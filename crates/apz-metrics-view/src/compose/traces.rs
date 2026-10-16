@@ -98,9 +98,8 @@ fn detail(t: &Trace, agent: Option<&AgentInfo>) -> TraceDetail {
         .iter()
         .map(|s| {
             let offset = s.start_ms as f64 - t.start_ms as f64;
-            let mut attrs = s.attrs.clone();
-            attrs.push(("start".into(), format(Unit::Ms, offset)));
-            attrs.push(("duration".into(), format(Unit::Ms, s.dur_ms)));
+            // The consoles print the span's name, start and duration before these.
+            let attrs = s.attrs.clone();
             SpanRow {
                 name: s.name.clone(),
                 depth: if s.parent.is_some() { 1 } else { 0 },
