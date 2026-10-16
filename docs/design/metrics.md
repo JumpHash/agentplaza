@@ -224,7 +224,10 @@ The metrics system measures its own cost (`collect.rs` records it with the hub's
 | Postgres | under 100 MB per day at the estimate above |
 | Console | under 2 percent CPU while visible and live, nothing while hidden |
 
-These are targets. The benchmark that would check them in CI is not in the tree yet.
+`crates/apz-metrics/tests/budget.rs` checks the heartbeat, the stored bytes per point and the hot-path cost on a
+simulated node of 50 VMs over ten simulated minutes, as an ordinary test. A heartbeat travels as deflated, base64
+JSON (`metrics_z`); the hub still accepts the plain `metrics` field from older nodes. The CPU and memory targets are
+not measured by a test; the hub's own numbers (`self.*`) show them, and the governor acts on them.
 
 The **collection level** (`crates/apz-metrics/src/level.rs`) is the owner's choice in Settings:
 
@@ -286,6 +289,3 @@ design review and for the composers' tests, and it never reads the store.
 
 The `/v1/usage/*` routes are unchanged.
 
-## Not yet built
-
-- The CI benchmark that runs a fake node with 50 VMs and checks the budgets above.
