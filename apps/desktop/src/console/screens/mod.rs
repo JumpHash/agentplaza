@@ -59,7 +59,6 @@ pub mod society;
 pub mod tasks;
 pub mod tools;
 pub mod treasury;
-pub mod usage;
 pub mod vault;
 pub mod volumes;
 pub mod wizard;
@@ -93,7 +92,6 @@ pub enum Id {
     Treasury,
     Rules,
     Models,
-    Usage,
     Metrics,
     Tools,
     Mcp,
@@ -159,7 +157,6 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Rules, "Rules", "Social", "rules"),
     (Id::Lab, "Lab", "Lab", "brain"),
     (Id::Models, "Models", "Setup", "models"),
-    (Id::Usage, "Usage", "Setup", "zap"),
     (Id::Tools, "Tools", "Setup", "wrench"),
     (Id::Mcp, "MCP", "Setup", "terminal"),
     (Id::Vault, "Vault", "Setup", "key"),
@@ -192,7 +189,6 @@ pub struct Screens {
     pub treasury: treasury::State,
     pub rules: rules::State,
     pub models: models::State,
-    pub usage: usage::State,
     pub metrics: metrics::State,
     pub tools: tools::State,
     pub mcp: mcp::State,
@@ -236,7 +232,6 @@ pub enum Msg {
     Treasury(treasury::Msg),
     Rules(rules::Msg),
     Models(models::Msg),
-    Usage(usage::Msg),
     Metrics(metrics::Msg),
     Tools(tools::Msg),
     Mcp(mcp::Msg),
@@ -281,7 +276,6 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Treasury(m) => treasury::go(m),
         Msg::Rules(m) => rules::go(m),
         Msg::Models(m) => models::go(m),
-        Msg::Usage(m) => usage::go(m),
         Msg::Metrics(m) => metrics::go(m),
         Msg::Tools(m) => tools::go(m),
         Msg::Mcp(m) => mcp::go(m),
@@ -394,7 +388,6 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Treasury => treasury::load(&mut screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::load(&mut screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::load(&mut screens.models, ctx).map(Msg::Models),
-        Id::Usage => usage::load(&mut screens.usage, ctx).map(Msg::Usage),
         Id::Metrics => metrics::load(&mut screens.metrics, ctx).map(Msg::Metrics),
         Id::Tools => tools::load(&mut screens.tools, ctx).map(Msg::Tools),
         Id::Mcp => mcp::load(&mut screens.mcp, ctx).map(Msg::Mcp),
@@ -449,7 +442,6 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Treasury(m) => treasury::update(&mut screens.treasury, m, ctx).map(Msg::Treasury),
         Msg::Rules(m) => rules::update(&mut screens.rules, m, ctx).map(Msg::Rules),
         Msg::Models(m) => models::update(&mut screens.models, m, ctx).map(Msg::Models),
-        Msg::Usage(m) => usage::update(&mut screens.usage, m, ctx).map(Msg::Usage),
         Msg::Metrics(m) => metrics::update(&mut screens.metrics, m, ctx).map(Msg::Metrics),
         Msg::Tools(m) => tools::update(&mut screens.tools, m, ctx).map(Msg::Tools),
         Msg::Mcp(m) => mcp::update(&mut screens.mcp, m, ctx).map(Msg::Mcp),
@@ -506,7 +498,6 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Workstations => {
             workstations::subscription(&screens.workstations, ctx).map(Msg::Workstations)
         }
-        Id::Usage => usage::subscription(&screens.usage).map(Msg::Usage),
         Id::Metrics => metrics::subscription(&screens.metrics, ctx).map(Msg::Metrics),
         Id::E2b => e2b::subscription().map(Msg::E2b),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
@@ -563,7 +554,6 @@ pub fn view<'a>(
         Id::Treasury => treasury::view(&screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::view(&screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::view(&screens.models, ctx).map(Msg::Models),
-        Id::Usage => usage::view(&screens.usage, ctx).map(Msg::Usage),
         Id::Metrics => metrics::view(&screens.metrics, ctx).map(Msg::Metrics),
         Id::Tools => tools::view(&screens.tools, ctx).map(Msg::Tools),
         Id::Mcp => mcp::view(&screens.mcp, ctx).map(Msg::Mcp),

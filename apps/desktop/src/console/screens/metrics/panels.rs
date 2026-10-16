@@ -37,6 +37,17 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
             head.push(stamp);
         }
     }
+    for action in &p.actions {
+        head.push(ui::btn_sm(
+            action.label.as_str(),
+            None,
+            Kind::Secondary,
+            Some(Msg::Action {
+                post: action.post.clone(),
+                done: action.done.clone(),
+            }),
+        ));
+    }
     head.push(ui::btn_sm(
         "⋯",
         None,
@@ -95,7 +106,7 @@ fn body<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
         Body::Heatmap(h) => figures::heatmap(&p.id, h, state.compact, tz),
         Body::Treemap { unit, items } => figures::treemap(*unit, items),
         Body::Gauges { gauges } => figures::gauges(gauges),
-        Body::Table(t) => table(t),
+        Body::Table(t) => table(&p.id, t),
         Body::Flags { flags: list } => flags(list),
         Body::Bars { rows, note } => bars(rows, note),
         Body::Split { rows, legend } => split(rows, legend),
@@ -430,23 +441,41 @@ fn grid<'a>(head: Vec<(Element<'a, Msg>, bool)>, rows: Vec<Element<'a, Msg>>) ->
     column(lines).spacing(6).width(Length::Fill).into()
 }
 
-/// A table of rows. A row that names a scope, tab or trace is a button that opens it.
-fn table<'a>(t: &'a Table) -> Element<'a, Msg> {
-    if t.rows.is_empty() {
-        return empty_line(if t.empty.is_empty() {
+/// A table of rows. A row that names a scope, tab or trace is a button that opens it. When the table has older
+/// rows (`more`), a "Load older" button sits under them.
+fn table<'a>(panel: &'a str, t: &'a Table) -> Element<'a, Msg> {
+    let content = if t.rows.is_empty() {
+        empty_line(if t.empty.is_empty() {
             "Nothing here yet."
         } else {
             t.empty.as_str()
-        });
-    }
-    let pal = palette();
-    let head: Vec<(Element<'a, Msg>, bool)> = t
-        .columns
-        .iter()
-        .map(|c| (meta(c.head.as_str(), pal.ink_3).into(), c.num))
-        .collect();
-    let rows: Vec<Element<'a, Msg>> = t.rows.iter().map(|r| table_row(r, &t.columns)).collect();
-    grid(head, rows)
+        })
+    } else {
+        let pal = palette();
+        let head: Vec<(Element<'a, Msg>, bool)> = t
+            .columns
+            .iter()
+            .map(|c| (meta(c.head.as_str(), pal.ink_3).into(), c.num))
+            .collect();
+        let rows: Vec<Element<'a, Msg>> = t.rows.iter().map(|r| table_row(r, &t.columns)).collect();
+        grid(head, rows)
+    };
+    let Some(path) = &t.more else {
+        return content;
+    };
+    let older = ui::btn_sm(
+        "Load older",
+        None,
+        Kind::Secondary,
+        Some(Msg::More {
+            panel: panel.to_string(),
+            path: path.clone(),
+        }),
+    );
+    column(vec![content, older])
+        .spacing(8)
+        .width(Length::Fill)
+        .into()
 }
 
 fn table_row<'a>(r: &'a TableRow, columns: &'a [TableColumn]) -> Element<'a, Msg> {

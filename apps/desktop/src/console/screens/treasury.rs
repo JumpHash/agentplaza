@@ -18,7 +18,7 @@ use iced::{
 use serde_json::{Value, json};
 
 use super::Id;
-use super::usage::usd;
+use crate::console::ui::usd;
 use crate::console::{
     Ctx, chart,
     client::{self, Client},
@@ -798,7 +798,7 @@ fn tallies<'a>(d: &Data, state: &State, now: Instant) -> Element<'a, Msg> {
             "Real model cost",
             usd(cost),
             format!("≈ {} credits metered", money(cost / CREDIT_USD)),
-            Some(Msg::Go(Id::Usage)),
+            Some(Msg::Go(Id::Metrics)),
         ),
         (
             "Treasury",

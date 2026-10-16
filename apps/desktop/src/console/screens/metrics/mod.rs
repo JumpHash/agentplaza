@@ -16,7 +16,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use apz_metrics_view::{Around, LiveFrame, MetricInfo, Pin, Saved, ScopeNode, Status, Tone, View};
+use apz_metrics_view::{
+    Around, Body, LiveFrame, MetricInfo, Pin, Saved, ScopeNode, Status, Table, Tone, View,
+};
 use iced::{Color, Element, Subscription, Task};
 use serde_json::{Value, json};
 
@@ -146,6 +148,8 @@ pub struct State {
     pub toast: Option<(String, Instant)>,
     /// Scopes fetched at.
     pub scopes_at: Option<Instant>,
+    /// Panels whose older rows are on their way (one request at a time per panel).
+    pub loading_more: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +203,18 @@ pub enum Msg {
     About(String),
     CopyLink(String),
     ExportCsv(String),
+    /// A button in a panel's head: posts `post` with an empty body, then toasts `done` and loads the view again.
+    Action {
+        post: String,
+        done: String,
+    },
+    /// "Load older" under a table: fetches the page at `path` (a `Table`) for the panel.
+    More {
+        panel: String,
+        path: String,
+    },
+    /// The older rows of a panel's table (or why they did not load).
+    MoreLoaded(String, Result<Table, String>),
     // Alerts
     Mute(String),
     Ack(String, String),
@@ -530,6 +546,37 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let text = format!("{}/{}", ctx.client.base(), route_hash(&state.q));
             show_toast(state, "Link copied");
             iced::clipboard::write(text)
+        }
+        Msg::Action { post, done } => {
+            let client = ctx.client.clone();
+            let body = json!({});
+            task(
+                move || client.post::<Value>(&post, &body),
+                move |result| action_done(result, (!done.is_empty()).then_some(done.as_str())),
+            )
+        }
+        Msg::More { panel, path } => {
+            if !state.loading_more.insert(panel.clone()) {
+                return Task::none();
+            }
+            let client = ctx.client.clone();
+            task(
+                move || client.get::<Table>(&path),
+                move |result| Msg::MoreLoaded(panel.clone(), result),
+            )
+        }
+        Msg::MoreLoaded(panel, result) => {
+            state.loading_more.remove(&panel);
+            match result {
+                Ok(page) => {
+                    if let Some(table) = state.view.as_mut().and_then(|view| table_of(view, &panel))
+                    {
+                        append_page(table, page);
+                    }
+                }
+                Err(error) => show_toast(state, error),
+            }
+            Task::none()
         }
         Msg::ExportCsv(_) => {
             let path = format!(
@@ -1049,6 +1096,22 @@ fn show_toast(state: &mut State, text: impl Into<String>) {
     state.toast = Some((text.into(), Instant::now()));
 }
 
+/// The table body of a panel in the view, when the panel is a table.
+fn table_of<'a>(view: &'a mut View, panel: &str) -> Option<&'a mut Table> {
+    let panel = view.panels.iter_mut().find(|p| p.id == panel)?;
+    match &mut panel.body {
+        Body::Table(table) => Some(table),
+        _ => None,
+    }
+}
+
+/// Appends an older page under the rows already shown. The page's own `more` (the next page, if any) replaces
+/// the table's, so "Load older" keeps going until the hub has no older rows.
+pub fn append_page(table: &mut Table, page: Table) {
+    table.rows.extend(page.rows);
+    table.more = page.more;
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1303,5 +1366,24 @@ mod tests {
         // The second half of the range, then its first half of that window (fractions in either order).
         assert_eq!(zoom_window(Some((0.5, 1.0)), 0.5, 0.0), Some((0.5, 0.75)));
         assert_eq!(zoom_window(None, 0.4, 0.4), None);
+    }
+
+    #[test]
+    fn an_older_page_goes_under_the_rows_shown_and_brings_its_own_more() {
+        let mut table: Table = serde_json::from_value(json!({
+            "columns": [{ "head": "When" }],
+            "rows": [{ "cells": [] }, { "cells": [] }],
+            "more": "/v1/metrics/calls?before=1"
+        }))
+        .unwrap();
+        let page: Table = serde_json::from_value(json!({
+            "columns": [{ "head": "When" }],
+            "rows": [{ "cells": [] }],
+            "more": null
+        }))
+        .unwrap();
+        append_page(&mut table, page);
+        assert_eq!(table.rows.len(), 3);
+        assert_eq!(table.more, None);
     }
 }

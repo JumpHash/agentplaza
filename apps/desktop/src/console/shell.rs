@@ -511,7 +511,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Board
             | Id::Treasury
             | Id::Rules
-            | Id::Usage
             | Id::Tools
             | Id::Mcp
             | Id::Agent(_)
