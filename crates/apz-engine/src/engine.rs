@@ -11,6 +11,7 @@ use web_time::{Duration, Instant};
 
 use crate::fleet::FleetResponse;
 use crate::input::{self, Action, Pointer};
+use crate::machine_stage::View;
 use crate::render;
 use crate::scene::{Camera, Frame};
 use crate::stage::{Motion, Stage, machine_at};
@@ -203,16 +204,18 @@ impl Thumbnail {
 }
 
 impl Renderer {
-    /// Renders one machine's stage pose offscreen at `w` by `h` (each capped at [`THUMB_MAX`]) and starts the readback.
-    /// The pixels come from [`Thumbnail::pixels`].
+    /// Renders one machine in `view` offscreen at `w` by `h` (each capped at [`THUMB_MAX`]) and starts the readback:
+    /// [`View::Iso`] is the stage's start pose, the others its flat views (`MachineStage::view_frame`). The pixels come
+    /// from [`Thumbnail::pixels`].
     pub fn thumbnail_begin(
         &mut self,
         machine: &crate::machine_stage::MachineStage,
+        view: View,
         w: u32,
         h: u32,
     ) -> Result<Thumbnail, String> {
         let (w, h) = (w.clamp(1, THUMB_MAX), h.clamp(1, THUMB_MAX));
-        self.draw_offscreen(machine.thumbnail_frame(w as f32 / h as f32), w, h)
+        self.draw_offscreen(machine.view_frame(view, w as f32 / h as f32), w, h)
     }
 
     /// An agent's robot portrait ([`crate::portrait`]) offscreen at `w` by `h` (each capped at [`THUMB_MAX`]). The pixels
@@ -354,15 +357,16 @@ impl Renderer {
         })
     }
 
-    /// One machine's thumbnail as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
+    /// One machine in `view` as RGBA8 bytes, natively: the device is polled until the pixels are mapped.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn thumbnail(
         &mut self,
         machine: &crate::machine_stage::MachineStage,
+        view: View,
         w: u32,
         h: u32,
     ) -> Result<Vec<u8>, String> {
-        let thumb = self.thumbnail_begin(machine, w, h)?;
+        let thumb = self.thumbnail_begin(machine, view, w, h)?;
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|e| format!("{e:?}"))?;
@@ -620,9 +624,15 @@ impl Engine {
         out
     }
 
-    /// Starts the thumbnail of one machine of the feed, rendered offscreen at `w` by `h` ([`Renderer::thumbnail_begin`]).
-    /// Err when there is no GPU, the feed has no such machine, or the render fails.
-    pub fn thumbnail_begin(&mut self, id: &str, w: u32, h: u32) -> Result<Thumbnail, String> {
+    /// Starts the picture of one machine of the feed in `view`, rendered offscreen at `w` by `h`
+    /// ([`Renderer::thumbnail_begin`]). Err when there is no GPU, the feed has no such machine, or the render fails.
+    pub fn thumbnail_begin(
+        &mut self,
+        id: &str,
+        view: View,
+        w: u32,
+        h: u32,
+    ) -> Result<Thumbnail, String> {
         let machine = self
             .stage
             .machine_stage_for(id)
@@ -631,7 +641,7 @@ impl Engine {
             .gpu
             .as_mut()
             .ok_or_else(|| "the engine has no GPU".to_string())?;
-        gpu.thumbnail_begin(&machine, w, h)
+        gpu.thumbnail_begin(&machine, view, w, h)
     }
 
     /// Starts an agent's robot portrait, offscreen at `w` by `h` ([`Renderer::portrait_begin`]). Err when there is no GPU.
