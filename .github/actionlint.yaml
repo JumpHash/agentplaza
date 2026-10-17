@@ -1,3 +1,4 @@
-# The org's self-hosted runners carry a `hetzner` label besides GitHub's own.
+# The org's self-hosted runners carry a `hetzner` label besides GitHub's own; the light runner (one
+# vCPU, for jobs of seconds) carries `light`.
 self-hosted-runner:
-  labels: [hetzner]
+  labels: [hetzner, light]

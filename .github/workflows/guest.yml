@@ -4,7 +4,7 @@
 # cross-compiled, with an arm64 busybox) and saves them.
 # The package jobs restore them from the cache (no artifact storage). release.yml calls this once
 # per release, before the platform workflows; it also runs by hand.
-name: guest
+name: Agent guest
 
 on:
   workflow_call:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check:
-    name: cached guests
+    name: Find cached guests
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 3
     outputs:
@@ -39,7 +39,7 @@ jobs:
           lookup-only: true
 
   build:
-    name: build the guest (${{ matrix.arch }})
+    name: Build the guest (${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }})
     needs: check
     strategy:
       matrix:

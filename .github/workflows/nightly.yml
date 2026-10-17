@@ -1,9 +1,11 @@
 # The nightly safety net: every platform's tests on main, both Linux architectures, Windows and
-# macOS. The pull request gate (pr.yml) runs Windows, macOS and Linux arm64 only for changes it sees
-# as platform code, and main itself no longer tests (release.yml), so a shared-crate change that
-# breaks one platform shows up here by the next morning. Nothing runs on a night after a day with
-# no code changes (.github/ci/changes.sh against main as it was 24 hours earlier).
-name: nightly
+# macOS. The pull request gate (pr.yml) runs Windows and macOS only for changes it sees as platform
+# code and a pull request's tests only for the packages it changes, and main itself no longer tests
+# (release.yml), so a shared-crate change that breaks one platform shows up here by the next
+# morning. Nothing runs on a night after a day with no code changes (.github/ci/changes.sh against
+# main as it was 24 hours earlier).
+name: Nightly tests
+run-name: "Nightly: every platform"
 
 on:
   schedule:
@@ -19,7 +21,9 @@ permissions:
 
 jobs:
   changes:
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    name: What changed
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 5
     outputs:
       build: ${{ steps.diff.outputs.build }}
@@ -36,18 +40,22 @@ jobs:
           .github/ci/changes.sh "$base" HEAD
 
   console:
+    name: Web console
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/console.yml
   linux:
+    name: Linux
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/linux.yml
   windows:
+    name: Windows
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/windows.yml
   macos:
+    name: macOS
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/macos.yml

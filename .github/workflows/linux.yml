@@ -1,19 +1,26 @@
 # Linux (x86_64, arm64): one job per architecture tests and, with `package`, builds the deb
 # (Ubuntu, Debian), rpm (Fedora), pacman (Arch, Arch Linux ARM) packages and tarballs from the same
 # optimised build, then installs and runs them in Ubuntu, Debian, Fedora and Arch containers.
-# Callers: pr.yml tests every pull request and merge-queue entry (x86_64; arm64 too when platform
-# code changes), release.yml packages main without testing again (`tests: false`: the queue
-# tested that commit), nightly.yml tests both architectures. It also runs by hand.
+# Callers: pr.yml tests every pull request and merge-queue entry on both architectures,
+# release.yml packages main without testing again (`tests: false`: the queue tested that commit),
+# nightly.yml tests both architectures. It also runs by hand.
 #
-# Where: the org's self-hosted Linux runner (an x86_64 Ubuntu host with Docker). Every build runs
-# inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on every
-# distribution as new or newer), built on the runner and kept there until its Dockerfile changes.
-# arm64 is cross-compiled and its tests run under qemu. Speed: cargo's build directory and
-# registry persist on the runner (.github/ci/in-image.sh), so only changed crates compile; tests
-# and packages use the same release profile; nextest runs the tests in parallel and kills a hang.
+# Where: the org's self-hosted Linux runners, x86_64 and arm64 Ubuntu hosts with Docker. Every
+# build runs inside the CI image (.github/ci: Ubuntu 22.04, so glibc 2.35 and the packages run on
+# every distribution as new or newer), built on each runner for its own architecture and kept there
+# until its Dockerfile changes. A pull request tests arm64 natively on the arm64 runners, for the
+# packages whose code differs there (their 20 GB disks do not hold the whole workspace's build);
+# nightly tests arm64's full suite cross-compiled on x86_64, under qemu (`arm64`). arm64 packages are
+# cross-compiled on x86_64 too, where the AppImage tooling is. Speed: cargo's build directory and
+# registry persist on the runner (.github/ci/in-image.sh), and the checkout keeps the mtimes this
+# runner last built with (.github/ci/build-cache.py), so only changed crates compile; tests and
+# packages use the same release profile; nextest runs the tests in parallel
+# and kills a hang; a pull request runs only the tests of the packages it changes and of those that
+# depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
 # packages go to the cache under this run's id for release.yml's publish job.
-name: linux
+name: Linux
+run-name: "${{ format('Linux by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -23,6 +30,13 @@ on:
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
       arches: { type: string, default: '["x86_64","aarch64"]' }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
+      # arm64's tests: `full`, the whole workspace cross-compiled on x86_64 and run under qemu (its
+      # disks hold that build); `native`, the packages whose code differs on arm64 (PACKAGES below),
+      # natively on the arm64 runners, whose 20 GB disks hold that and not the whole workspace.
+      arm64: { type: string, default: full }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
@@ -30,6 +44,13 @@ on:
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
       arches: { type: string, default: '["x86_64","aarch64"]' }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
+      # arm64's tests: `full`, the whole workspace cross-compiled on x86_64 and run under qemu (its
+      # disks hold that build); `native`, the packages whose code differs on arm64 (PACKAGES below),
+      # natively on the arm64 runners, whose 20 GB disks hold that and not the whole workspace.
+      arm64: { type: string, default: full }
 
 concurrency:
   group: ${{ github.workflow }}-linux-${{ github.ref }}
@@ -43,26 +64,35 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }} (${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
         arch: ${{ fromJSON(inputs.arches) }}
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # arm64 runs on the arm64 runners when it tests natively; packaging, and the full suite, are
+    # cross-compiled on x86_64 (see above).
+    runs-on: ${{ fromJSON(matrix.arch == 'aarch64' && !inputs.package && inputs.arm64 == 'native' && '["self-hosted","Linux","ARM64","hetzner"]' || '["self-hosted","Linux","X64","hetzner"]') }}
     # A cold build directory (a new runner, a new Rust or a dependency update) compiles everything
-    # once on the runner's 4 cores; after that a run rebuilds only what changed. A hung test is
-    # killed by nextest after 2 minutes.
+    # once; after that a run rebuilds only what changed. A hung test is killed by nextest after 2
+    # minutes.
     timeout-minutes: 90
     env:
       NET: apz-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-      # Per architecture: cargo's --target (none for the host, so tests and binaries share one
-      # build) and where the release build lands.
+      # Per architecture: cargo's --target (none on the runner's own architecture, so tests and
+      # binaries share one build; aarch64 when x86_64 cross-compiles it) and where the release
+      # build lands.
       TRIPLE: ${{ matrix.arch == 'aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}
       DEB: ${{ matrix.arch == 'aarch64' && 'arm64' || 'amd64' }}
-      TARGET_ARG: ${{ matrix.arch == 'aarch64' && '--target aarch64-unknown-linux-gnu' || '' }}
-      OUT: ${{ matrix.arch == 'aarch64' && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
-      # The tests' time budgets (APZ_PERF_SLACK): arm64 runs emulated, 15 to 50 times slower.
-      APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && '25' || '' }}
+      TARGET_ARG: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '--target aarch64-unknown-linux-gnu' || '' }}
+      OUT: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
+      # What the tests build: the workspace, but natively on arm64 only the packages whose code
+      # differs there (cfg(target_arch), or the VM node and its devices): the rest is the same code
+      # x86_64 tests, and the full arm64 suite runs nightly (arm64: full). Not agent-harness: no
+      # arch-specific code, and its tests assume a non-root user, which rootless Docker's builds are not.
+      PACKAGES: ${{ matrix.arch == 'aarch64' && !(matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')) && '-p vmm -p vmctl -p noded -p vsockd -p apz-setup -p acpi_tables' || '--workspace' }}
+      # The tests' time budgets (APZ_PERF_SLACK): arm64 cross-compiled on x86_64 runs its tests
+      # emulated, 15 to 50 times slower (natively it needs no more than x86_64).
+      APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '25' || '' }}
     steps:
       - uses: actions/checkout@v5
       - name: CI image
@@ -71,8 +101,19 @@ jobs:
       - name: Untrusted build cache
         if: ${{ !inputs.trusted }}
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
-      - name: Postgres for the tests (x86_64)
-        if: matrix.arch == 'x86_64' && inputs.tests
+      # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      - name: Which tests
+        if: inputs.tests && inputs.only != ''
+        env: { ONLY: "${{ inputs.only }}" }
+        run: |
+          filter=""
+          for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
+          echo "the tests of $ONLY and of what depends on them: $filter"
+          echo "NEXTEST_FILTER=-E '$filter' --no-tests=warn" >> "$GITHUB_ENV"
+      - name: Postgres for the tests
+        if: inputs.tests
         run: |
           docker network create "$NET"
           docker run -d --rm --name "$NET-pg" --network "$NET" \
@@ -82,7 +123,7 @@ jobs:
           echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
       - name: Test
         if: inputs.tests
-        run: .github/ci/in-image.sh "cargo nextest run --workspace --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }}"
+        run: .github/ci/in-image.sh "cargo nextest run ${{ env.PACKAGES }} --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
       - name: Build the binaries
         if: inputs.package
         run: >-
@@ -153,8 +194,10 @@ jobs:
         run: |
           docker rm -f "$NET-pg" >/dev/null 2>&1 || true
           docker network rm "$NET" >/dev/null 2>&1 || true
-          # Keep the runner's build directory under 60 GB: past that, start it afresh.
-          cache="${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target"
-          if [ "$(du -s --block-size=1G "$cache" 2>/dev/null | cut -f1)" -gt 60 ] 2>/dev/null; then
-            docker run --rm -v "$cache:/t" alpine sh -c 'rm -rf /t/*'
+          # Units no build has used for days go first; the directory is emptied only if the disk is short.
+          # (Not when the job ended before its checkout.)
+          # 40 GB: the runner fleet's storage guard wipes ~/.cache, and every Docker image, when the
+          # host's disk passes its limit, so the build directory stays well inside it.
+          if [ -f .github/ci/build-cache.py ]; then
+            python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target" --max-gb 40
           fi
