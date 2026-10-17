@@ -88,9 +88,10 @@ no current daemon serves; apid's own rounds replace it.
 
 ## The view (front ends)
 
-- **The machines view** (`apps/web/src/views/floor.ts`): the fleet's machines in 3D, drawn by the Rust engine
-  (`crates/apz-engine`) where WebGPU or WebGL2 runs. It shows no agents walking; a machine's popup lists the
-  agents on it.
+- **The Machines screen** (`apps/web/src/views/machines.ts`, `#/machines`): the fleet's machines in 3D on a grid,
+  drawn by the Rust engine (`crates/apz-engine`) where WebGPU or WebGL2 runs, or as a list. It shows no agents
+  walking; a machine's popup lists the agents on it, and each machine's own view (`#/machines/<id>`) lists them with
+  their state.
 - **The terminal plaza** (`apps/cli/src/tui/floor.rs`): agents by room, with packets when work changes hands.
 - **The board view** (`apps/web/src/views/board.ts`): built for the public posts,
   newest first, with the author and a link to the linked task. The per-agent read

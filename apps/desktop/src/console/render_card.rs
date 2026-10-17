@@ -38,7 +38,8 @@ pub(crate) const PORTRAIT_SLOTS: usize = 32;
 /// stale statics.
 static BUILDS: AtomicU64 = AtomicU64::new(1);
 
-/// A card redraws about 30 times a second, for its status lamp and fans; its pose holds still (the thumbnail's start pose).
+/// On a software adapter a card redraws about 30 times a second, for its status lamp and fans; on a GPU it redraws on
+/// every window frame. Its pose holds still (the thumbnail's start pose).
 const CARD_FRAME: Duration = Duration::from_millis(33);
 
 /// One slot's renderer: the floor's own pipeline, held apart per slot and per pool (iced keeps one pipeline per type).
@@ -146,7 +147,11 @@ impl<const N: usize, M> shader::Program<M> for Card<N> {
         let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
         stage.step(dt, aspect, false);
         st.frame = Some(Arc::new(stage.view_frame(self.view, aspect)));
-        Some(shader::Action::request_redraw_at(*now + CARD_FRAME))
+        if crate::console::engine::render::light() {
+            Some(shader::Action::request_redraw_at(*now + CARD_FRAME))
+        } else {
+            Some(shader::Action::request_redraw())
+        }
     }
 
     fn draw(

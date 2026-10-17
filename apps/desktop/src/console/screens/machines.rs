@@ -362,11 +362,11 @@ pub fn subscription(state: &State) -> Subscription<Msg> {
         return floor::subscription(&state.grid).map(Msg::Grid);
     }
     match state.stage.as_ref().map(|s| s.motion) {
-        Some(Motion::Active) if crate::console::engine::render::light() => {
+        // The machine stage turns on every window frame (the display's rate); a software adapter draws 30 a second.
+        Some(Motion::Active | Motion::Ambient) if crate::console::engine::render::light() => {
             iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame)
         }
-        Some(Motion::Active) => iced::window::frames().map(Msg::StageFrame),
-        Some(Motion::Ambient) => iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame),
+        Some(Motion::Active | Motion::Ambient) => iced::window::frames().map(Msg::StageFrame),
         _ => Subscription::none(),
     }
 }

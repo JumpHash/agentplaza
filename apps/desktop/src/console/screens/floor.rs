@@ -110,17 +110,15 @@ pub enum Msg {
 }
 
 /// Animation frames from the window, the fleet poll and Esc, while the grid is the shown view. The frames follow
-/// the last frame's motion: every frame while something is active, 12 a second while only the decoration turns,
-/// none at rest (a change or input brings them back on the next update).
+/// the last frame's motion: every window frame (the display's rate, 120 Hz and up) while anything moves, none at rest
+/// (a change or input brings them back on the next update).
 pub fn subscription(state: &State) -> Subscription<Msg> {
     let frames = match state.1 {
         // On a software adapter, 30 frames a second: every frame costs the CPU the whole picture.
-        Motion::Active if crate::console::engine::render::light() => {
+        Motion::Active | Motion::Ambient if crate::console::engine::render::light() => {
             iced::time::every(Duration::from_millis(33)).map(Msg::Frame)
         }
-        Motion::Active => iced::window::frames().map(Msg::Frame),
-        // The idle fleet at 30 frames a second, as the web draws it (12 read as stutter).
-        Motion::Ambient => iced::time::every(Duration::from_millis(33)).map(Msg::Frame),
+        Motion::Active | Motion::Ambient => iced::window::frames().map(Msg::Frame),
         Motion::Rest => Subscription::none(),
     };
     let poll = iced::time::every(FLEET_EVERY).map(|_| Msg::FleetTick);

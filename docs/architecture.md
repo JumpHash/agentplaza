@@ -44,8 +44,8 @@ without the flag (tests, development) keeps an open API and says so in its log.
 | desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the containers for Postgres 17 and Forgejo 11. |
 | CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
 
-All three use the same `apid` API. The **Floor**, the 3D view of the plaza, is
-`crates/apz-engine` (wgpu, platform-agnostic) on the web as WebAssembly
+All three use the same `apid` API. The **Machines** screen's 3D (the grid of machines and each machine's own view)
+is `crates/apz-engine` (wgpu, platform-agnostic) on the web as WebAssembly
 (`crates/apz-engine-web`, built by `tools/apz-pack` with the `wasm-release`
 profile) and in the desktop app. The web console has no separate 3D stack.
 
