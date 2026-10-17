@@ -39,8 +39,13 @@ A newer push to a pull request cancels its older run; merge-queue runs are never
 
 **Only what changed.** A pull request runs the tests of the packages it changes and of every package
 that depends on them (`changes.sh` → `tests`). A change outside a package's own directory, such as
-`Cargo.lock`, a root manifest, `.github/`, `sql/`, `assets/` or `apps/web`, runs every test. The
-merge queue always runs every test, on the exact commit that will land.
+`Cargo.lock`, a root manifest, `.github/`, `sql/`, `assets/` or `apps/web`, runs every test.
+
+**The merge queue tests only what is new.** It tests the exact commit that will land, because main may
+have moved since the pull request's last run, or other entries may be ahead of it. That run is the
+full gate, every test included. When the commit has exactly the files of the pull request's last
+commit, and the gate passed there, nothing in it is untested, so nothing builds and the run passes in a
+minute. That happens when the pull request was up to date with main and alone in the queue.
 
 **Compile what can't run.** Windows arm64 and Apple Silicon tests can't run on our x64 runners.
 On a pull request, `cargo check` only checks that they compile. The merge queue, nightly and

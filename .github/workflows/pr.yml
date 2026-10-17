@@ -16,7 +16,8 @@
 # Speed: every build job starts from the runner's warm build directory and rebuilds only the crates
 # the change touches (.github/ci/build-cache.py, in-image.sh). A pull request runs only the tests of
 # the packages it changes and of every package that depends on them (changes.sh `tests`); the merge
-# queue runs them all on the exact commit that lands.
+# queue runs them all on the exact commit that lands, unless that commit has exactly the files the
+# pull request's last run passed with (the "Already tested?" step).
 #
 # Safety: this is a public repository whose jobs run on the org's self-hosted runners. Workflows of
 # outside contributors run only after an owner approves them (repository setting), no job here gets
@@ -39,6 +40,9 @@ concurrency:
 
 permissions:
   contents: read
+  # Read-only, for the merge queue's "already tested?" check below.
+  pull-requests: read
+  checks: read
 
 jobs:
   changes:
@@ -47,15 +51,45 @@ jobs:
     runs-on: [self-hosted, light]
     timeout-minutes: 5
     outputs:
-      build: ${{ steps.diff.outputs.build }}
-      web: ${{ steps.diff.outputs.web }}
-      platform: ${{ steps.diff.outputs.platform }}
+      # Nothing builds when the merge queue's commit was already tested (below).
+      build: ${{ steps.tested.outputs.skip == 'true' && 'false' || steps.diff.outputs.build }}
+      web: ${{ steps.tested.outputs.skip == 'true' && 'false' || steps.diff.outputs.web }}
+      platform: ${{ steps.tested.outputs.skip == 'true' && 'false' || steps.diff.outputs.platform }}
       # On a pull request, the packages whose tests run (and their dependents'); the queue runs all.
       only: ${{ github.event_name == 'pull_request' && steps.diff.outputs.tests != 'all' && steps.diff.outputs.tests || '' }}
       trusted: ${{ steps.diff.outputs.trusted }}
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
+      # The merge queue tests the commit that will land, because main may have moved since the pull
+      # request's last run, or other entries may be ahead of it. When that commit has exactly the files
+      # of the pull request's last commit, and this gate passed there, nothing in it is untested: the
+      # full suite passed on main in main's own queue run, and the pull request's run tested every
+      # package it changes and what depends on them. Then nothing builds here, and the run passes.
+      - name: Already tested?
+        id: tested
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          pr=$(printf %s "$QUEUE_REF" | sed -n 's|^refs/heads/gh-readonly-queue/[^/]*/pr-\([0-9][0-9]*\)-.*|\1|p')
+          [ -n "$pr" ] || { echo "$QUEUE_REF: not one pull request's entry, so the gate runs"; exit 0; }
+          head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)
+          git fetch -q origin "$head"
+          if [ "$(git rev-parse "$head^{tree}")" != "$(git rev-parse "HEAD^{tree}")" ]; then
+            echo "#$pr: what lands differs from its last commit ($head; main moved, or an entry is ahead of it), so the gate runs"
+            exit 0
+          fi
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head/check-runs?check_name=All%20checks%20passed" \
+            --jq '[.check_runs[] | select(.conclusion == "success")] | length')
+          if [ "$passed" -gt 0 ]; then
+            echo "#$pr: what lands has exactly the files of $head, which passed this gate: nothing new to test"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "#$pr: $head has not passed this gate, so the gate runs"
+          fi
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
