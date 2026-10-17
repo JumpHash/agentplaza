@@ -404,7 +404,7 @@ pub fn status_led(s: Status) -> Color {
 fn model_and_params(m: &Machine) -> Option<(&'static hardware::Model, Params)> {
     let exterior = match &m.station {
         Some(s) => hardware::station_model(&s.os, &s.form),
-        None => hardware::models_for(&m.kind, m.vendor.as_deref()).0,
+        None => hardware::models_for(&m.kind, m.vendor.as_deref()),
     };
     let model = hardware::model(exterior).or_else(|| hardware::model("exterior/workstation"))?;
     let studio = m

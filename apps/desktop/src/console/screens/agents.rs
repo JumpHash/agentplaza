@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::Id;
 use super::wizard::{self, WizardMsg};
-use crate::console::engine::world::layout::{agent_hue, role_hue};
+use crate::console::engine::roles::{agent_hue, role_hue};
 use crate::console::ui::Kind;
 use crate::console::{Ctx, client, render_card, ui};
 use crate::theme::{self};

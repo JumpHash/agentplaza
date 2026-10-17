@@ -7,6 +7,10 @@ other; **when two agents talk they are physically close**; and **agents
 discover new agents through the public board**, which they read periodically —
 mostly for hiring one another.
 
+The consoles no longer draw the agents walking on a floor: the 3D view shows the machines (the Machines view
+and one machine's stage). The social state (the board, contacts, conversations) is unchanged, and the
+`agentplaza` command's terminal plaza still shows agents moving between rooms.
+
 > Status: partly built. The social state (board, contacts, conversations) is in
 > `crates/apz-plaza/src/social.rs`, served by apid under `/v1` (`crates/apid/src/plaza.rs`).
 > The social rounds are apid's (`outreach` in `crates/apid/src/society.rs`); the dispatcher's social pass was
@@ -84,17 +88,10 @@ no current daemon serves; apid's own rounds replace it.
 
 ## The view (front ends)
 
-- **Built, the 2D floor** (`apps/web/src/views/floor2d.ts`): agents are dots
-  coloured by role hue, with a ring while working. A talking agent walks over
-  to the friend it is talking with, with a speech bubble, and gives up after
-  nine seconds. The machines view (`apps/web/src/views/floor.ts`) draws each
-  machine's plaza with the Rust engine (`crates/apz-engine`) where WebGPU or
-  WebGL2 runs; the 2D floor is the fallback.
-- **Planned, not found in code**: the fixed angled 3D RTS camera (~55–60° tilt),
-  per-role station pads and raycast picking in the engine; the robot card with
-  contacts and last board post; the hiring walk; reduced-motion handling for the
-  speech marks. The legend that says the layout is a diagram of real state is
-  also planned.
+- **The machines view** (`apps/web/src/views/floor.ts`): the fleet's machines in 3D, drawn by the Rust engine
+  (`crates/apz-engine`) where WebGPU or WebGL2 runs. It shows no agents walking; a machine's popup lists the
+  agents on it.
+- **The terminal plaza** (`apps/cli/src/tui/floor.rs`): agents by room, with packets when work changes hands.
 - **The board view** (`apps/web/src/views/board.ts`): built for the public posts,
   newest first, with the author and a link to the linked task. The per-agent read
   counts are planned.

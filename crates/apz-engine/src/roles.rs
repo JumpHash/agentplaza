@@ -47,3 +47,24 @@ pub fn role_label(role: &str) -> String {
     };
     label.to_string()
 }
+
+/// The hues the roles take, by their name's hash (degrees).
+const HUES: [f32; 10] = [
+    8.0, 28.0, 46.0, 88.0, 140.0, 172.0, 198.0, 222.0, 262.0, 340.0,
+];
+
+/// An agent's own hue (degrees), spread by the golden angle so neighbouring cids differ.
+pub fn agent_hue(cid: u64) -> f32 {
+    ((cid as f64 * 137.508 + 20.0) % 360.0) as f32
+}
+
+/// A role's hue (degrees): one of [`HUES`], by the role name's hash (the web's `roleHue`).
+pub fn role_hue(role: &str) -> f32 {
+    let mut hash: u32 = 0;
+    let mut buf = [0u16; 2];
+    for ch in role.chars() {
+        let code = ch.encode_utf16(&mut buf)[0] as u32;
+        hash = hash.wrapping_mul(31).wrapping_add(code);
+    }
+    HUES[(hash % HUES.len() as u32) as usize]
+}

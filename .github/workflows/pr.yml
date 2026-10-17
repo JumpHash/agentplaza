@@ -1,5 +1,6 @@
-# The pull request gate: every pull request to main, and every merge-queue entry (the exact commit
-# that will land), runs this. "All checks passed" (job ci-ok) sums it up and is the one check the
+# The pull request gate: every pull request, and every merge-queue entry (the exact commit that will
+# land), runs this. A pull request in a stack (based on the branch of the one below it, not on main)
+# runs it too, against its own base, so each layer of the stack is tested on its own. "All checks passed" (job ci-ok) sums it up and is the one check the
 # main ruleset requires: a check is named by its job's name, so renaming that job means changing the
 # ruleset's required check with it.
 #
@@ -30,7 +31,6 @@ run-name: "${{ github.event_name == 'merge_group' && format('Merge queue: {0}', 
 
 on:
   pull_request:
-    branches: [main]
   merge_group:
 
 # A newer push to a pull request cancels the older run; merge-queue runs are never cancelled.

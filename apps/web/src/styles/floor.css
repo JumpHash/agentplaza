@@ -42,9 +42,6 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .floor-key.online { background: var(--ok); }
 .floor-key.draining { background: var(--warn); }
 .floor-key.revoked { background: var(--crit); }
-/* The plaza's breadcrumb in the header: Machines › name. */
-.floor-crumb { display: inline-flex; align-items: center; gap: 6px; font: 400 11px/1.4 var(--sans); color: var(--ink-3); }
-.floor-crumb a { color: var(--ink-2); }
 /* The loading card of an arrival that waits for its build (floor.ts updateLoading): a thin bar fed by the build's progress. */
 .floor-loading {
   position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%); width: 300px; max-width: calc(100% - 28px);

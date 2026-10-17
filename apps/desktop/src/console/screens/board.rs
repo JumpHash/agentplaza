@@ -1286,7 +1286,7 @@ pub fn panel<'a>(state: &'a State, keep: impl Fn(u64, Option<&str>) -> bool) -> 
         }
         let total = posts.len();
         for (i, post) in posts.into_iter().enumerate() {
-            let hue = crate::console::engine::world::layout::agent_hue(post.agent_cid);
+            let hue = crate::console::engine::roles::agent_hue(post.agent_cid);
             let colour = ui::hsl(hue, 0.55, 0.62);
             let bar = container(
                 iced::widget::Space::new()

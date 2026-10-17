@@ -28,31 +28,29 @@ use super::toon::outline;
 // "board/…"); `PARTS` holds the reusable part files (keys "parts/…"), each as its key and its JSON.
 include!(concat!(env!("OUT_DIR"), "/hardware_models.rs"));
 
-/// The exterior and board model names for a machine kind and vendor. Apple is its own family:
-/// its laptops and desktops share one SoC board. Unknown kinds fall back to `workstation`.
-pub fn models_for(kind: &str, vendor: Option<&str>) -> (&'static str, &'static str) {
+/// The exterior model name for a machine kind and vendor. Apple is its own family (a laptop, else the desktop).
+/// Unknown kinds fall back to `workstation`.
+pub fn models_for(kind: &str, vendor: Option<&str>) -> &'static str {
     if vendor == Some("apple") {
-        let exterior = if kind == "laptop" {
+        return if kind == "laptop" {
             "exterior/apple-laptop"
         } else {
             "exterior/apple-desktop"
         };
-        return (exterior, "board/apple-soc");
     }
     match kind {
-        "laptop" => ("exterior/laptop", "board/laptop"),
-        "edge" => ("exterior/edge", "board/edge"),
-        "phone" => ("exterior/phone", "board/phone"),
-        "server" => ("exterior/server", "board/server"),
-        _ => ("exterior/workstation", "board/workstation"),
+        "laptop" => "exterior/laptop",
+        "edge" => "exterior/edge",
+        "phone" => "exterior/phone",
+        "server" => "exterior/server",
+        _ => "exterior/workstation",
     }
 }
 
 /// The exterior of a workstation (a station the agents operate through the hub) by its OS family and form
 /// (`os`: `macos`, `windows`, `linux`; `form`: `laptop`, `desktop`, `mini`, `server`, `vm`). A VM is a rack unit
 /// whatever its guest OS. A MacBook-class laptop is the Apple laptop; other Macs are the Mac mini; a Windows or
-/// Linux laptop is the open laptop; every other desktop is the tower with its monitor. Its board is the
-/// workstation's (the station's insides are not drawn).
+/// Linux laptop is the open laptop; every other desktop is the tower with its monitor.
 pub fn station_model(os: &str, form: &str) -> &'static str {
     match (os, form) {
         (_, "vm") => "workstation/vm-rack",
@@ -2503,90 +2501,6 @@ mod tests {
                             term[c]
                         );
                     }
-                }
-            }
-        }
-    }
-
-    /// The web's colours for the workstation's GPU bar and a DIMM, from the old three.js code (hardware.ts makeMaterial and
-    /// attach, the lab's model board/workstation with two GPUs). The bar is the `gpu-accent` palette entry, #76b900 with
-    /// emissive #3d6000 and glow 0.5, tagged `activity`: attach() blinks only its emissive (glow 0.5 while busy in the first
-    /// 0.4 s of each 0.8 s, 0.5 x 0.1 = 0.05 otherwise) and never sets its colour, so it stays #76b900 (bright green). A DIMM
-    /// is the `dimm` palette entry, #16351f with no emissive (dark green). The engine's GPU path (vs_machine) keeps the
-    /// bar's colour too, with the same emissive term.
-    #[test]
-    fn the_gpu_bar_and_dimm_keep_the_web_colours() {
-        let m = model("board/workstation").unwrap();
-        let mut built = build(m, &Params::default().with("gpus", 2.0));
-        let bar = built.parts.get("logo-strip").expect("the GPU bar").clone();
-        let dimm = built.parts.get("dimm_1").expect("the DIMM").clone();
-        let material = |o: &Obj| match &o.get().kind {
-            Kind::Mesh { mat, .. } => {
-                let m = mat.get();
-                (m.color, m.emissive, m.emissive_intensity)
-            }
-            _ => panic!("a part is a mesh"),
-        };
-        let bar_rgb = crate::fleet::rgba(Color::hex(0x76b900));
-        let emit_rgb = crate::fleet::rgba(Color::hex(0x3d6000));
-        let (dt, mut clock) = (1.0 / 60.0_f32, 0.0_f32);
-        for activity in [0.0_f32, 1.0] {
-            for _ in 0..120 {
-                let at = clock;
-                built.update(
-                    dt,
-                    at,
-                    &State {
-                        status: Status::Online,
-                        activity,
-                        open: 0.0,
-                    },
-                );
-                clock += dt;
-                let (c, e, glow) = material(&bar);
-                assert_eq!(
-                    c,
-                    Color::hex(0x76b900),
-                    "the GPU bar's colour is not #76b900 at activity {activity}, t {at}"
-                );
-                assert_eq!(
-                    e,
-                    Color::hex(0x3d6000),
-                    "the GPU bar's emissive is not #3d6000"
-                );
-                let lit = activity > 0.0 && (at % 0.8) < 0.4;
-                let want = if lit { 0.5 } else { 0.05 };
-                assert!(
-                    (glow - want).abs() < 1e-6,
-                    "the GPU bar's glow {glow} is not {want} at t {at}"
-                );
-                assert_eq!(
-                    material(&dimm).0,
-                    Color::hex(0x16351f),
-                    "the DIMM is not #16351f"
-                );
-
-                // The GPU path: the bar's colour is kept and its emissive term is #3d6000 x its factor.
-                let row = [if activity > 0.0 { 1.0 } else { 0.0 }, activity, 0.0, 0.0];
-                let (color, term) = machine_led_shader(
-                    scene::MachineLed::Activity,
-                    0.5,
-                    bar_rgb,
-                    emit_rgb,
-                    row,
-                    bar_rgb,
-                    at,
-                );
-                assert_eq!(
-                    color,
-                    [bar_rgb[0], bar_rgb[1], bar_rgb[2]],
-                    "the GPU bar's colour moved"
-                );
-                for ch in 0..3 {
-                    assert!(
-                        (term[ch] - emit_rgb[ch] * want).abs() < 1e-5,
-                        "the GPU bar's emissive term {term:?} at t {at}"
-                    );
                 }
             }
         }

@@ -1,4 +1,4 @@
-//! The engine's asset lists, built at compile time: every `assets/hardware/{exterior,board,parts}/*.json`
+//! The engine's asset lists, built at compile time: every `assets/hardware/{exterior,parts,workstation}/*.json`
 //! is listed into `OUT_DIR/hardware_models.rs`, and every `assets/robots/**/*.json` into
 //! `OUT_DIR/robot_files.rs`, so a new model or robot file needs no Rust edit. (Moved here from
 //! `apps/desktop/build.rs` with the renderer.)
@@ -66,7 +66,7 @@ fn collect_json(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// Lists the hardware model files: `exterior/*`, `board/*` and `workstation/*` (the workstations' exteriors, one per
+/// Lists the hardware model files: `exterior/*` and `workstation/*` (the workstations' exteriors, one per
 /// OS family and form) as models, `parts/*` as part files. The keys are the file names with their folder
 /// (`parts/gpu-pcie`, `workstation/mac-mini`).
 fn hardware_models(manifest_dir: &Path) {
@@ -74,7 +74,7 @@ fn hardware_models(manifest_dir: &Path) {
     println!("cargo:rerun-if-changed={}", assets.display());
     let mut models = String::new();
     let mut parts = String::new();
-    for folder in ["exterior", "board", "parts", "workstation"] {
+    for folder in ["exterior", "parts", "workstation"] {
         let dir = assets.join(folder);
         println!("cargo:rerun-if-changed={}", dir.display());
         let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {

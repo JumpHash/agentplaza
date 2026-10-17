@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use apz_engine::fleet::FleetResponse;
 use apz_engine::input::{Button, Event};
 use apz_engine::render::MESH_UPLOAD_BYTES;
-use apz_engine::{Cmd, Engine, Feed, agent_list};
+use apz_engine::{Engine, Feed, agent_list};
 
 const W: u32 = 1280;
 const H: u32 = 800;
@@ -76,7 +76,7 @@ fn main() {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    // APZ_BENCH_AGENTS=path: the hub's agent list (or a fixture holding one under "agents") seats robots on the boards.
+    // APZ_BENCH_AGENTS=path: the hub's agent list (or a fixture holding one under "agents"), as the hosts feed it.
     let agents = std::env::var("APZ_BENCH_AGENTS").ok().map(|p| {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(p).expect("the agents file reads"))
@@ -92,7 +92,6 @@ fn main() {
             agents: agents.clone(),
             ..Feed::default()
         });
-        engine.command(Cmd::ShowMachines);
         let build = t_build.elapsed().as_secs_f64() * 1e3;
         let t0 = Instant::now();
         let (mut step, mut whole) = (Vec::new(), Vec::new());

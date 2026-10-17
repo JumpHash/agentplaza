@@ -54,32 +54,16 @@ function packWeb(subcommand) {
 let engineJsName = null;
 let engineWasmName = null;
 let engineSizes = null;
-let layoutWorkerName = null;
 if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
   const engine = packWeb('web-engine');
   engineJsName = engine.js;
   engineWasmName = engine.wasm;
   engineSizes = { bytes: engine.bytes, gzip: engine.gzip, brotli: engine.brotli, wasmOpt: engine.wasm_opt };
-  // The layout worker: the same glue in a module worker, computing the shared board layouts off the page's thread
-  // (engine-mount.ts). A file of its own, since the hub's CSP (script-src 'self') refuses a blob worker.
-  const workerSrc = [
-    `import init, { shared_layout } from './${engineJsName}';`,
-    'const ready = init();',
-    'onmessage = async (e) => {',
-    '  await ready;',
-    '  let answer;',
-    '  try { answer = shared_layout(e.data); } catch (err) { answer = JSON.stringify({ err: String(err) }); }',
-    '  postMessage({ key: e.data, answer });',
-    '};',
-    '',
-  ].join('\n');
-  layoutWorkerName = `layout-worker-${createHash('sha256').update(workerSrc).digest('hex').slice(0, 8)}.js`;
-  writeFileSync(join(dist, layoutWorkerName), workerSrc);
 } else {
   console.log('engine: crates/apz-engine-web is not there yet, skipped');
 }
 // CI sets APZ_REQUIRE_ENGINE=1: a console without the engine ships with no 3D, so that build must fail.
-if (process.env.APZ_REQUIRE_ENGINE === '1' && !(engineJsName && engineWasmName && layoutWorkerName)) {
+if (process.env.APZ_REQUIRE_ENGINE === '1' && !(engineJsName && engineWasmName)) {
   throw new Error('build: APZ_REQUIRE_ENGINE=1 but the wasm engine is not in dist (crates/apz-engine-web missing or not built)');
 }
 
@@ -129,7 +113,6 @@ const result = await esbuild.build({
   define: {
     __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
     __APZ_ENGINE_WASM__: JSON.stringify(engineWasmName),
-    __APZ_LAYOUT_WORKER__: JSON.stringify(layoutWorkerName),
     __APZ_IDE_JS__: JSON.stringify(ideJsName),
   },
   entryNames: '[name]-[hash]',
