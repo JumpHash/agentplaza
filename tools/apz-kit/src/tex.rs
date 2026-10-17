@@ -64,8 +64,8 @@ fn wrap(d: f32, period: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn texels(img: &Image) -> impl Iterator<Item = &[u8]> {
-        img.rgba.chunks_exact(4)
+    fn texels(img: &Image) -> impl Iterator<Item = &[u8; 4]> {
+        img.rgba.as_chunks::<4>().0.iter()
     }
 
     #[test]

@@ -46,7 +46,7 @@ impl Mesh {
             .collect();
         let mut indices = self.indices.clone();
         if flip {
-            for tri in indices.chunks_exact_mut(3) {
+            for tri in indices.as_chunks_mut::<3>().0 {
                 tri.swap(1, 2);
             }
         }
@@ -397,7 +397,7 @@ mod tests {
 
     /// Every triangle faces away from the origin, which lies inside these convex solids.
     fn assert_outward(name: &str, m: &Mesh) {
-        for t in m.indices.chunks_exact(3) {
+        for t in m.indices.as_chunks::<3>().0 {
             let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from_array(m.positions[i as usize]));
             let n = (b - a).cross(c - a);
             let centroid = (a + b + c) / 3.0;
