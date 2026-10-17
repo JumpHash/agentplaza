@@ -7,7 +7,8 @@
 #   ci        the build itself changed (.github/workflows, .github/ci): the gate runs to test it
 #   build     code or ci: the pull request gate builds, lints and tests
 #   release   main should release: code changed, or a workflow the release runs (not pr.yml,
-#             nightly.yml or ci-image.yml)
+#             nightly.yml, ci-image.yml, or the pull-request reporting: api-report.yml,
+#             check-results.yml)
 #   web       the web console or what it compiles from (apps/web, the wasm crates, the engine)
 #   platform  code that differs per OS: the platform crates, `#[cfg]`-gated Rust, packaging, the
 #             lockfile and toolchain. Windows and macOS test only then.
@@ -57,7 +58,8 @@ for f in "${files[@]}"; do
     docs/agents/* | docs/api/*) code=true release=true ;;
     *.md | docs/* | .claude/* | LICENSE* | VERSION | .github/CODEOWNERS | .github/actionlint.yaml) continue ;;
     .gitignore | */.gitignore | .gitattributes | */.gitattributes | .editorconfig | */.editorconfig) continue ;;
-    .github/workflows/pr.yml | .github/workflows/nightly.yml | .github/workflows/ci-image.yml | .github/ci/changes.sh) ci=true; continue ;;
+    .github/workflows/pr.yml | .github/workflows/nightly.yml | .github/workflows/ci-image.yml | \
+    .github/workflows/api-report.yml | .github/workflows/check-results.yml | .github/ci/changes.sh) ci=true; continue ;;
     .github/workflows/* | .github/ci/*) ci=true release=true ;;
     *) code=true release=true ;;
   esac

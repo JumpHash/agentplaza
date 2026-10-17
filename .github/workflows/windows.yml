@@ -138,10 +138,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: inputs.tests
         with: { tool: nextest }
+      # The build directory persists: a report from an earlier run must not pass for this one's.
+      - name: Clear the last test report
+        if: inputs.tests
+        run: rm -f "$CARGO_TARGET_DIR/nextest/ci/junit.xml"
       - name: Test (the guest harness runs only inside Linux VMs)
+        id: test
         if: matrix.arch == 'x64' && inputs.tests
         run: CARGO_INCREMENTAL=1 cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (arm64 cannot run here)
+        id: build_tests
         if: matrix.arch != 'x64' && inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
         run: |
@@ -150,6 +156,19 @@ jobs:
           else
             CARGO_INCREMENTAL=1 cargo check --workspace --exclude agent-harness --locked --profile checked --target ${{ env.TRIPLE }} --all-targets
           fi
+      # The pull request's Tests comment (check-results.yml) is made from these.
+      - name: Results for the pull request
+        if: always() && inputs.tests
+        run: |
+          py=python3; $py -c '' 2>/dev/null || py=python
+          if [ ${{ matrix.arch }} = x64 ]; then
+            $py .github/ci/results.py results tests "Windows x64" --junit "$CARGO_TARGET_DIR/nextest/ci/junit.xml" --part "tests=${{ steps.test.outcome }}"
+          else
+            $py .github/ci/results.py results tests "Windows arm64" --part "Windows arm64: build only (cannot run here)=${{ steps.build_tests.outcome }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.tests
+        with: { name: "results-windows-${{ matrix.arch }}", path: results, retention-days: 7 }
       - name: Build the binaries
         if: inputs.package
         run: cargo build --release --locked --target ${{ env.TRIPLE }} ${{ env.BINS }}

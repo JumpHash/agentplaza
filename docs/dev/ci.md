@@ -103,8 +103,8 @@ no second copy of compiled crates (sccache) is kept beside it.
 
 Workflows carry plain names: **Checks** (the gate) and **Release**, **Nightly tests**, and the
 platforms and parts they call (**Linux**, **Windows**, **macOS**, **Web console**, **Agent guest**,
-**MCP relay**, **Raspberry Pi**, **Trainer**), and **API report** and **API report cleanup**,
-which publish and remove the hub API report. A run is titled by what it tests or ships:
+**MCP relay**, **Raspberry Pi**, **Trainer**), and **Check results** and **API report**, which
+report on pull requests. A run is titled by what it tests or ships:
 
 - `#35 CI: warm builds…` for a pull request;
 - `Merge queue: <commit>` for a merge-queue entry;
@@ -113,6 +113,27 @@ which publish and remove the hub API report. A run is titled by what it tests or
 
 A job reads as part and step, such as `Linux / Test (arm64)`, `Release / Publish to GitHub` or
 `Checks / All checks passed`.
+
+## Results on the pull request
+
+After each gate run, the pull request gets one comment per kind of check, updated in place on the next
+run:
+
+- **Tests:** every platform's tests in one table (passed, failed, time), with each failure's output.
+  Windows arm64 and Apple Silicon only build, and say so.
+- **Lint:** rustfmt, clippy, cargo deny and the migrations check, with a failed check's last output.
+- **Web console:** type-check, build with the wasm engine, tests.
+- **Hub API (Bruno):** requests passing, operations covered, fuzzing findings, and a link to the full
+  report on Pages (below).
+
+Each gate job records its results as data (`.github/ci/results.py`, nextest's JUnit report for tests)
+in a `results-*` artifact. `check-results.yml` then runs from main with write access, renders them with
+main's `.github/ci/check-comments.py` and posts the comments. Everything in the results is treated
+as untrusted, because a pull request may come from a fork:
+- names and output go into code spans and blocks, capped in length;
+- the pull request is found from the run's commit.
+
+To post a past run's comments again: `gh workflow run check-results.yml -f run-id=<the Checks run>`.
 
 ## The hub API report
 
@@ -128,9 +149,10 @@ the page with main's `api-tests/report/build.mjs`, and publishes it to GitHub Pa
 - `api/pr/<n>/` for a pull request, linked in a comment on it;
 - `api/main/` for the merge queue's run, which is the baseline the timings compare against.
 
-`api-report-cleanup.yml` removes a pull request's report when it closes. The publishing never runs or
-serves anything from the pull request: the artifact holds only data, and the builder escapes it and
-scrubs tokens and secrets from it.
+A pull request's report stays 30 days after its last run, so the link in its comment keeps working once
+it is merged. The publishing never runs or serves anything from the pull request: the artifact holds only
+data, and the builder escapes it and scrubs tokens and secrets from it. To publish a past run's report
+again: `gh workflow run api-report.yml -f run-id=<the Checks run>`.
 
 Locally: `BRU=bru ST=st api-tests/run.sh target/debug/apid api-out`, with `APZ_API_FUZZ=0` to skip the
 fuzzing. Then open `api-out/site/index.html`.
@@ -141,8 +163,8 @@ fuzzing. Then open `api-out/site/index.html`.
 |---|---|---|
 | `pr.yml` | pull requests to main, merge-queue entries | The gate, above |
 | `release.yml` | pushes to main with code in them, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), builds and packages every platform (no tests: the queue tested the commit), and publishes the GitHub Release |
-| `api-report.yml` | after each `pr.yml` run (from main) | Builds the hub API report from the run's results and publishes it to Pages; links it on the pull request |
-| `api-report-cleanup.yml` | a pull request closing | Removes its API report from Pages |
+| `check-results.yml` | after each `pr.yml` run (from main), or by hand | Comments on the pull request with the run's results: Tests, Lint, Web console |
+| `api-report.yml` | after each `pr.yml` run (from main), or by hand | Builds the hub API report from the run's results and publishes it to Pages; comments on the pull request with it |
 | `nightly.yml` | every night after a day with code changes, or by hand | Every platform's tests: Linux x86_64 and arm64, Windows, macOS, the console |
 | `linux.yml` | from the above, or by hand | Tests with nextest (`tests`) and, with `package`, builds the packages for x86_64 and arm64 and installs them in Ubuntu, Debian, Fedora and Arch containers |
 | `macos.yml` | from the above, or by hand | Tests on the Intel Mac; with `package`, the Intel and Apple silicon DMGs |

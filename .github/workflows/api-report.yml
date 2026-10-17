@@ -1,7 +1,8 @@
 # Publishes the hub API report (api-tests/) to GitHub Pages after each gate run (pr.yml), and links
 # it from the pull request:
 #
-#   a pull request      https://jumphash.github.io/agentplaza/api/pr/<n>/   (removed when it closes)
+#   a pull request      https://jumphash.github.io/agentplaza/api/pr/<n>/   (kept 30 days after its
+#                       last run, so the link in its comment keeps working once it is merged)
 #   a merge-queue run   https://jumphash.github.io/agentplaza/api/main/     (the baseline; its timings
 #                       also go into api/main/history/ for the trend)
 #
@@ -9,13 +10,21 @@
 # serves anything from that run: the artifact holds only result data (JSON and JUnit), which main's
 # own report builder (api-tests/report/build.mjs) reads, escapes and scrubs into the page. The pull
 # request is found from the run's commit, not from anything in the artifact.
+#
+# A past run's report can be published again by hand (run-id), to bring one back.
 name: API report
-run-name: "API report: ${{ github.event.workflow_run.display_title }}"
+run-name: "API report: ${{ github.event.workflow_run.display_title || format('run {0}, by hand', inputs.run-id) }}"
 
 on:
   workflow_run:
     workflows: [Checks]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: "The gate run (Checks) whose report to publish again"
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -29,17 +38,32 @@ concurrency:
 jobs:
   publish:
     name: Publish to Pages
-    if: github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped')
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      RUN_URL: ${{ github.event.workflow_run.html_url }}
-      EVENT: ${{ github.event.workflow_run.event }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
     steps:
+      - name: The gate run
+        env:
+          DISPATCHED: ${{ inputs.run-id }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          WR_URL: ${{ github.event.workflow_run.html_url }}
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DISPATCHED" ]; then
+            case "$DISPATCHED" in *[!0-9]*) echo "::error::run-id is a number"; exit 1 ;; esac
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DISPATCHED" \
+              --jq '"RUN_ID=\(.id)\nRUN_URL=\(.html_url)\nEVENT=\(.event)\nHEAD_SHA=\(.head_sha)\nCONCLUSION=\(.conclusion)"' >> "$GITHUB_ENV"
+          else
+            printf 'RUN_ID=%s\nRUN_URL=%s\nEVENT=%s\nHEAD_SHA=%s\nCONCLUSION=%s\n' \
+              "$WR_ID" "$WR_URL" "$WR_EVENT" "$WR_SHA" "$WR_CONCLUSION" >> "$GITHUB_ENV"
+          fi
       # Main's code: the report builder, the console's tokens and faces.
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.repository.default_branch }}", path: trusted }
@@ -54,9 +78,10 @@ jobs:
         run: |
           case "$EVENT" in
             pull_request)
-              pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --search "$HEAD_SHA" --json number,headRefOid \
+              # Closed ones too, so a past run's report can be published again.
+              pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --search "$HEAD_SHA" --json number,headRefOid \
                 --jq "[.[] | select(.headRefOid == \"$HEAD_SHA\")][0].number // empty")
-              [ -n "$pr" ] || { echo "no open pull request has head $HEAD_SHA: nothing to publish"; exit 0; }
+              [ -n "$pr" ] || { echo "no pull request has head $HEAD_SHA: nothing to publish"; exit 0; }
               echo "dir=api/pr/$pr" >> "$GITHUB_OUTPUT"; echo "pr=$pr" >> "$GITHUB_OUTPUT" ;;
             merge_group)
               [ "$CONCLUSION" = success ] || { echo "the queue run failed: main keeps its baseline"; exit 0; }
@@ -94,6 +119,14 @@ jobs:
             ls pages/api/main/history | sort | head -n -60 | sed 's|^|pages/api/main/history/|' | xargs -r rm -f
           fi
           cd pages
+          # A pull request's report stays 30 days after its last run (by gh-pages' history).
+          for dir in api/pr/*/; do
+            [ -d "$dir" ] || continue
+            last=$(git log -1 --format=%ct -- "$dir" 2>/dev/null || echo 0)
+            if [ -n "$last" ] && [ "$last" -gt 0 ] && [ "$last" -lt "$(( $(date +%s) - 30 * 86400 ))" ]; then
+              git rm -rq "$dir" && echo "pruned $dir"
+            fi
+          done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
@@ -107,9 +140,10 @@ jobs:
           set -euo pipefail
           owner="${GITHUB_REPOSITORY%/*}"; repo="${GITHUB_REPOSITORY#*/}"
           url="https://${owner,,}.github.io/${repo}/api/pr/${PR}/"
-          summary=$(node -e 'const s=require(process.argv[1]); console.log(`${s.passed}/${s.requests} API requests pass · ${s.tested}/${s.operations} operations tested · ${Object.values(s.findings).reduce((a,b)=>a+b,0)} fuzzing findings`)' \
+          # The same shape as the Tests, Lint and Web console comments (check-results.yml).
+          summary=$(node -e 'const s=require(process.argv[1]); const f=Object.values(s.findings).reduce((a,b)=>a+b,0); console.log(`### Hub API (Bruno): ${s.passed === s.requests ? "passed" : "failed"}\n\n${s.passed}/${s.requests} API requests pass · ${s.tested}/${s.operations} operations tested · ${f} fuzzing findings (reported, they do not fail the pull request)`)' \
             "$GITHUB_WORKSPACE/pages/api/pr/$PR/summary.json")
-          body=$(printf '<!-- api-report -->\n**Hub API report** for %s: %s\n\n%s' "${HEAD_SHA:0:10}" "$url" "$summary")
+          body=$(printf '<!-- api-report -->\n%s\n\n[The report](%s)\n\n<sub>Commit %s · [the run](%s)</sub>' "$summary" "$url" "${HEAD_SHA:0:10}" "$RUN_URL")
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
             --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- api-report -->")))][0].id // empty')
           if [ -n "$id" ]; then
