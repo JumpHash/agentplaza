@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use apz_engine::input::{Button, Event};
-use apz_engine::world::view::Label;
 use apz_engine::{Cmd, Engine, Motion, Pick};
 use js_sys::{Array, Float32Array, Function, Object, Promise, Reflect, Uint8Array, Uint32Array};
 use wasm_bindgen::JsCast;
@@ -90,12 +89,7 @@ struct Inner {
     raf: Option<i32>,
     /// Where the last pointerdown on the canvas was (logical px), for the click test. None after a non-click.
     down: Option<(f32, f32)>,
-    /// The labels' text as last sent to the host (their cid, name, role and line).
-    text: Vec<Label>,
-    /// The flat [cid, x, y, visible] per label of the last frame.
-    positions: Vec<f32>,
     on_pick: Option<Function>,
-    on_labels: Option<Function>,
     queue: wgpu::Queue,
     /// Frames submitted and not yet done on the GPU (counted down by the queue's completion callbacks).
     in_flight: Arc<AtomicU32>,
@@ -126,31 +120,16 @@ pub struct WebEngine {
     hooks: RefCell<Option<Hooks>>,
 }
 
-/// A shared board layout (`apz_board::layout::layout` for a `SharedKey` given as JSON), computed on the caller's thread:
-/// the page's web worker runs it, so the page's own thread never waits on a layout. Answers `{"ok": layout}` or
-/// `{"err": reason}`.
-#[wasm_bindgen]
-pub fn shared_layout(key_json: &str) -> String {
-    let outcome = serde_json::from_str::<apz_engine::world::board_layout::SharedKey>(key_json)
-        .map_err(|e| e.to_string())
-        .and_then(|key| apz_engine::world::board_layout::shared_layout_of(&key));
-    let answer = match outcome {
-        Ok(layout) => serde_json::json!({ "ok": layout }),
-        Err(reason) => serde_json::json!({ "err": reason }),
-    };
-    answer.to_string()
-}
+/// The option that shows the navigation overlay (`APZ_NAV_OVERLAY`), read when the stage is built.
+const NAV_OPTIONS: [(&str, &str); 1] = [("nav", "APZ_NAV_OVERLAY")];
 
-/// The option that shows the navigation overlay (`APZ_NAV_OVERLAY`), read when the board's nav is built.
 /// The labs' option lists as JSON, from what the engine embeds (`apz_engine::lab_catalog`): the robot species, clips,
-/// tools, carried items, props and effects; the room roles; the hardware models and each model's params. The labs list
+/// tools, carried items, props and effects; the hardware models and each model's params. The labs list
 /// their controls from it, so the page loads none of the asset files.
 #[wasm_bindgen]
 pub fn lab_catalog() -> String {
     apz_engine::lab_catalog::catalog_json()
 }
-
-const NAV_OPTIONS: [(&str, &str); 1] = [("nav", "APZ_NAV_OVERLAY")];
 
 /// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2', nav?: boolean }`; a missing backend is 'auto'.
 /// The labs call this too: their own overrides stay set, since `nav` is only set when the options name it.
@@ -208,10 +187,7 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
         tick_fn: None,
         raf: None,
         down: None,
-        text: Vec::new(),
-        positions: Vec::new(),
         on_pick: None,
-        on_labels: None,
         queue: gpu.queue,
         in_flight: Arc::new(AtomicU32::new(0)),
     }));
@@ -261,18 +237,6 @@ fn lab_env(opts: &JsValue, names: &[(&str, &str)]) -> BTreeMap<String, String> {
     vars
 }
 
-/// The room lab's options and the `APZ_ROOM_*` name each one sets (read by `rooms::lab` when the stage builds). `role` is
-/// the APZ_ROOM_LAB (a role id or `all`); `size` is `WxD` in units (APZ_ROOM_SIZE).
-const ROOM_LAB_OPTIONS: [(&str, &str); 7] = [
-    ("role", "APZ_ROOM_LAB"),
-    ("size", "APZ_ROOM_SIZE"),
-    ("seed", "APZ_ROOM_SEED"),
-    ("door", "APZ_ROOM_DOOR"),
-    ("grid", "APZ_ROOM_GRID"),
-    ("cam", "APZ_ROOM_CAM"),
-    ("debug", "APZ_ROOM_DEBUG"),
-];
-
 /// Starts the engine as the robot lab: `opts` is `{ backend?, species?, clip?, tool?, carry?, state?, hue?, orch?, cam?, t?, bg? }`
 /// (a missing species is `all`; a boolean `orch` is 1 or 0). The options are set as env names only while the stage builds.
 #[wasm_bindgen]
@@ -282,25 +246,6 @@ pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEn
         .or_insert_with(|| "all".to_string());
     // The lab is built when the first fleet arrives (Stage::apply_fleet), after `start` resolves, so the options stay
     // set for the lab engine's life; `destroy` clears them. One engine per page, so nothing else reads them meanwhile.
-    apz_engine::set_env_overrides(vars);
-    let started = start(canvas, opts).await;
-    if started.is_err() {
-        apz_engine::set_env_overrides(BTreeMap::new());
-    }
-    started
-}
-
-/// Starts the engine as the room lab: `opts` is `{ backend?, role?, size?, seed?, door?, grid? }`, the room lab's route
-/// options as the web reads them: `role` a role id or `all` (APZ_ROOM_LAB, default `orchestrator`), `size` `WxD` in units
-/// (APZ_ROOM_SIZE), `seed` a u32, `door` n | e | s | w, `grid` 1 or 0 (a boolean is 1 or 0). Set as `start_lab` sets its own.
-#[wasm_bindgen]
-pub async fn start_room_lab(
-    canvas: HtmlCanvasElement,
-    opts: JsValue,
-) -> Result<WebEngine, JsValue> {
-    let mut vars = lab_env(&opts, &ROOM_LAB_OPTIONS);
-    vars.entry("APZ_ROOM_LAB".to_string())
-        .or_insert_with(|| "orchestrator".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
     if started.is_err() {
@@ -390,43 +335,6 @@ impl WebEngine {
         backend_name(self.shared.borrow().backend).to_string()
     }
 
-    /// One event from the console's stream, as the desktop forwards it (`Floor::on_event`): `kind` is the channel
-    /// ("transcript", "delta", "conversation", "project", "file", "work") and `json` its data. A parse error is thrown.
-    pub fn event(&self, kind: &str, json: &str) -> Result<(), JsValue> {
-        let data: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let mut inner = self.shared.borrow_mut();
-        inner.engine.stage.floor.on_event(kind, &data);
-        inner.engine.touch();
-        Ok(())
-    }
-
-    /// The shared board layouts the floors asked for since the last call, as a JSON array of keys: the page computes
-    /// each in its worker (`shared_layout`) and hands it back with `provide_layout`.
-    pub fn layout_requests(&self) -> String {
-        serde_json::to_string(&apz_engine::world::board_layout::take_wanted_shared())
-            .unwrap_or_else(|_| "[]".to_string())
-    }
-
-    /// A shared board layout the page's worker computed: its key and the worker's answer, as `shared_layout` gave them.
-    /// The floor adopts it on its next step.
-    pub fn provide_layout(&self, key_json: &str, answer_json: &str) -> Result<(), JsValue> {
-        let key = serde_json::from_str(key_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let answer: serde_json::Value =
-            serde_json::from_str(answer_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let outcome = match answer.get("ok") {
-            Some(layout) => serde_json::from_value(layout.clone()).map_err(|e| e.to_string()),
-            None => Err(answer
-                .get("err")
-                .and_then(|e| e.as_str())
-                .unwrap_or("the worker gave no layout")
-                .to_string()),
-        };
-        apz_engine::world::board_layout::provide_shared(key, outcome);
-        self.shared.borrow_mut().engine.touch();
-        Ok(())
-    }
-
     /// Hands the engine a feed: the JSON that `apz_engine::feed_from_json` reads. A parse error is thrown as text.
     pub fn set_feed(&self, json: &str) -> Result<(), JsValue> {
         let feed = apz_engine::feed_from_json(json).map_err(|e| JsValue::from_str(&e))?;
@@ -434,19 +342,14 @@ impl WebEngine {
         Ok(())
     }
 
-    /// Runs a host command: 'machines', 'select' (arg: machine id), 'enter' (arg: machine id), 'back', 'reset',
-    /// 'popup' (arg: machine id, or none or empty to close). Unknown names, and a missing id, are ignored.
+    /// Runs a host command: 'reset', 'popup' (arg: machine id, or none or empty to close), 'show_machine' (arg: machine
+    /// id), 'leave_machine'. Unknown names, and a missing id, are ignored.
     pub fn command(&self, name: &str, arg: Option<String>) {
         let cmd = match (name, arg) {
-            ("machines", _) => Cmd::ShowMachines,
-            ("select", Some(id)) => Cmd::SelectMachine(id),
-            ("enter", Some(id)) => Cmd::Enter(id),
-            ("back", _) => Cmd::Back,
             ("reset", _) => Cmd::ResetView,
             ("popup", arg) => Cmd::OpenPopup(arg.filter(|id| !id.is_empty())),
             ("show_machine", Some(id)) => Cmd::ShowMachine { id },
             ("leave_machine", _) => Cmd::LeaveMachine,
-            ("robot", arg) => Cmd::SelectRobot(arg.and_then(|cid| cid.parse().ok())),
             _ => return,
         };
         self.shared.borrow_mut().engine.command(cmd);
@@ -464,42 +367,23 @@ impl WebEngine {
             .look_at([x, y, z], Some(eye));
     }
 
-    /// Registers `cb(kind, id)`, called on each click in the scene: kind 'machine', 'robot' or 'none', and id the
-    /// machine id, the robot's cid as a string, or ''.
+    /// Registers `cb(kind, id)`, called on each click in the scene: kind 'machine' or 'none', and id the machine id,
+    /// or ''.
     pub fn on_pick(&self, cb: Function) {
         self.shared.borrow_mut().on_pick = Some(cb);
     }
 
-    /// Registers `cb(labels)`, called when the label text changes. `labels` is an array of
-    /// `{ cid, name, role, line, hue }`, in the same order as `label_positions`.
-    pub fn on_labels(&self, cb: Function) {
-        let mut s = self.shared.borrow_mut();
-        s.on_labels = Some(cb);
-        s.text.clear();
-    }
-
-    /// The flat `[cid, x, y, visible]` per label of the last frame, in logical px (visible is 0 or 1). A view onto the
-    /// engine's own buffer, not a copy: it is invalid after the next call that writes the labels (the next frame) or
-    /// after wasm memory grows, so the host reads it at once.
-    pub fn label_positions(&self) -> Float32Array {
-        let s = self.shared.borrow();
-        // SAFETY: the view borrows `s.positions`, which only `frame_tick` writes, and never while this call runs; the
-        // host reads the view before the next engine call, as the doc above says.
-        unsafe { Float32Array::view(&s.positions) }
-    }
-
-    /// The screen point of a machine's label ('machine', its id) or a robot's label ('robot', its cid as text), as
-    /// [x, y] in logical px from the canvas's top-left. Empty when it is not on screen, or the kind or id is unknown.
+    /// The screen point of a machine ('machine', its id), as [x, y] in logical px from the canvas's top-left. Empty
+    /// when it is not on screen, or the kind or id is unknown.
     pub fn screen_of(&self, kind: &str, id: &str) -> Float32Array {
-        let pick = match kind {
-            "machine" => Pick::Machine(id.to_string()),
-            "robot" => match id.parse::<u64>() {
-                Ok(cid) => Pick::Robot(cid),
-                Err(_) => return Float32Array::new_with_length(0),
-            },
-            _ => return Float32Array::new_with_length(0),
-        };
-        let at = self.shared.borrow().engine.screen_of(&pick);
+        if kind != "machine" {
+            return Float32Array::new_with_length(0);
+        }
+        let at = self
+            .shared
+            .borrow()
+            .engine
+            .screen_of(&Pick::Machine(id.to_string()));
         match at {
             Some((x, y)) => Float32Array::from(&[x, y][..]),
             None => Float32Array::new_with_length(0),
@@ -516,20 +400,14 @@ impl WebEngine {
         self.shared.borrow_mut().engine.stage.scene_json()
     }
 
-    /// The shown view's name (`machines` or `floor`), as `__apzPerf` reports it.
+    /// The shown view's name, as `__apzPerf` reports it.
     pub fn view_name(&self) -> String {
         self.shared.borrow().engine.stage.view_name()
     }
 
-    /// The shown view's camera as JSON (`__apzCamera`): `{ view, eye, target, fov, roomsTop }` (the board's built rooms'
-    /// top, which the default view frames up to). For developers and the parity checks.
+    /// The shown view's camera as JSON (`__apzCamera`), for developers and the parity checks.
     pub fn camera_json(&self) -> String {
         self.shared.borrow_mut().engine.stage.camera_json()
-    }
-
-    /// Seconds since the ENTER sequence began, or undefined when none runs (the debug hook's entry clock).
-    pub fn entry_time(&self) -> Option<f64> {
-        self.shared.borrow().engine.entry_time()
     }
 
     /// The frames drawn with the GPU so far.
@@ -548,8 +426,7 @@ impl WebEngine {
         Uint32Array::from(&self.shared.borrow().engine.draw_breakdown()[..])
     }
 
-    /// The lab's readout as JSON (`Stage::lab_info`): the room lab's violations and rooms, or the hardware lab's model
-    /// validation; `{}` when no lab runs. Read by the page after the engine starts.
+    /// The lab's readout as JSON (`Stage::lab_info`), or `{}` when no lab runs. Read by the page after the engine starts.
     pub fn lab_info(&self) -> String {
         self.shared.borrow().engine.stage.lab_info()
     }
@@ -568,50 +445,6 @@ impl WebEngine {
             Some(counts) => serde_json::to_string(&counts).unwrap_or_else(|_| "{}".to_string()),
             None => "{}".to_string(),
         }
-    }
-
-    /// The floor's robots as the web's `__apzBots` reads them, JSON (see `apz_engine::debug`).
-    pub fn bots_json(&self) -> String {
-        self.shared.borrow().engine.stage.bots_json()
-    }
-
-    /// The nav grid's cell at (x, z), JSON or "null" (`__apzNavCell`).
-    pub fn nav_cell(&self, x: f64, z: f64) -> String {
-        self.shared.borrow().engine.stage.nav_cell_json(x, z)
-    }
-
-    /// The grounding audit of the board, JSON `{items, findings}` or "null" (`__apzGroundAudit`).
-    pub fn ground_audit(&self) -> String {
-        self.shared.borrow().engine.stage.ground_audit_json()
-    }
-
-    /// The board's ground audit, JSON or "null" (`__apzNavAudit`).
-    pub fn nav_audit(&self) -> String {
-        self.shared.borrow().engine.stage.nav_audit_json()
-    }
-
-    /// The board's lifts, JSON (`__apzLifts`). Takes the lift controllers mutably to read their state.
-    pub fn lifts(&self) -> String {
-        self.shared.borrow_mut().engine.stage.lifts_json()
-    }
-
-    /// Sends the `n` robots nearest lift `index` on a real trip through it (`__apzLiftRide`): JSON `{ok, goal, robots}`
-    /// or `{ok: false, reason}` (see `apz_engine::debug`).
-    pub fn lift_ride(&self, index: i32, n: i32) -> String {
-        self.shared
-            .borrow_mut()
-            .engine
-            .stage
-            .lift_ride_json(i64::from(index), i64::from(n))
-    }
-
-    /// Moves an agent's robot to (x, z) on the board (`__apzShove`). False without a board or a robot for the agent.
-    pub fn shove(&self, cid: f64, x: f64, z: f64) -> bool {
-        self.shared
-            .borrow_mut()
-            .engine
-            .stage
-            .shove(cid as u64, x, z)
     }
 
     /// Stops the loop, disconnects the observers, removes every listener and drops the surface.
@@ -636,7 +469,6 @@ impl WebEngine {
             }
             s.surface = None;
             s.on_pick = None;
-            s.on_labels = None;
             s.tick_fn = None;
             (s.window.clone(), s.canvas.clone())
         };
@@ -728,10 +560,11 @@ async fn open_gpu(canvas: &HtmlCanvasElement, window: &Window, mode: Mode) -> Re
                 .unwrap_or(false);
             // A canvas bound to a WebGPU context cannot later take a WebGL2 one, so ask for an adapter before any
             // surface exists: no adapter leaves the canvas free for WebGL2.
-            if has_webgpu && webgpu_adapter_exists().await {
-                if let Some(gpu) = open_backend(canvas, wgpu::Backends::BROWSER_WEBGPU).await? {
-                    return Ok(gpu);
-                }
+            if has_webgpu
+                && webgpu_adapter_exists().await
+                && let Some(gpu) = open_backend(canvas, wgpu::Backends::BROWSER_WEBGPU).await?
+            {
+                return Ok(gpu);
             }
             open_backend(canvas, wgpu::Backends::GL)
                 .await?
@@ -886,7 +719,6 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
 fn pick_pair(pick: Option<Pick>) -> (&'static str, String) {
     match pick {
         Some(Pick::Machine(id)) => ("machine", id),
-        Some(Pick::Robot(cid)) => ("robot", cid.to_string()),
         None => ("none", String::new()),
     }
 }
@@ -899,31 +731,6 @@ fn emit_pick(cb: &Function, kind: &str, id: &str) {
     ) {
         web_sys::console::error_1(&e);
     }
-}
-
-fn same_text(a: &[Label], b: &[Label]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(x, y)| {
-            x.cid == y.cid && x.name == y.name && x.role == y.role && x.line == y.line
-        })
-}
-
-fn set(object: &Object, key: &str, value: JsValue) {
-    let _ = Reflect::set(object, &JsValue::from_str(key), &value);
-}
-
-fn label_array(labels: &[Label]) -> Array {
-    let array = Array::new();
-    for label in labels {
-        let object = Object::new();
-        set(&object, "cid", JsValue::from_f64(label.cid as f64));
-        set(&object, "name", JsValue::from_str(&label.name));
-        set(&object, "role", JsValue::from_str(&label.role));
-        set(&object, "line", JsValue::from_str(&label.line));
-        set(&object, "hue", JsValue::from_f64(label.hue as f64));
-        array.push(&object);
-    }
-    array
 }
 
 /// Wires the canvas, window and observers to the shared state.
@@ -1018,12 +825,11 @@ fn install(
             }
             let mut guard = shared.borrow_mut();
             let s = &mut *guard;
-            let cmd = if s.engine.stage.popup.is_some() {
-                Cmd::OpenPopup(None)
-            } else {
-                Cmd::Back
-            };
-            s.engine.command(cmd);
+            if s.engine.stage.popup.is_some() {
+                s.engine.command(Cmd::OpenPopup(None));
+            } else if s.engine.stage.machine.is_some() {
+                s.engine.command(Cmd::LeaveMachine);
+            }
         })
     };
     canvas.add_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref())?;
@@ -1065,7 +871,7 @@ fn install(
                 let last = entries
                     .iter()
                     .filter_map(|entry| entry.dyn_into::<IntersectionObserverEntry>().ok())
-                    .last();
+                    .next_back();
                 if let Some(entry) = last {
                     shared.borrow_mut().visible = entry.is_intersecting();
                 }
@@ -1172,23 +978,4 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
 
     s.last_motion = out.motion;
     s.last_draw = Some(now);
-    s.positions.clear();
-    for label in &out.labels {
-        let visible = if label.is_shown() { 1.0 } else { 0.0 };
-        s.positions
-            .extend_from_slice(&[label.cid as f32, label.x, label.y, visible]);
-    }
-    let mut labels_call = None;
-    if !same_text(&s.text, &out.labels) {
-        s.text = out.labels;
-        if let Some(cb) = &s.on_labels {
-            labels_call = Some((cb.clone(), label_array(&s.text)));
-        }
-    }
-    drop(guard);
-    if let Some((cb, array)) = labels_call {
-        if let Err(e) = cb.call1(&JsValue::NULL, &array) {
-            web_sys::console::error_1(&e);
-        }
-    }
 }
