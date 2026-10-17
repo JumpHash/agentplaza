@@ -1,7 +1,7 @@
 // The Machines popup of the Floor and its pure helpers, for the engine's mount (engine-mount.ts) and the console's lists.
 import type { FleetMachine } from '../api';
 import { href } from '../router';
-import { ago, button } from '../ui/components';
+import { ago } from '../ui/components';
 import { h } from '../ui/dom';
 import { roleLabel } from '../roles';
 
@@ -64,13 +64,12 @@ export function agentTally(total: number, working: number, status: FleetMachine[
 }
 
 /**
- * The popup's children: the head, the facts (with the live "Last seen" value, returned as `seen`), the agents and the
- * ENTER footer. The caller puts them in its card and keeps `seen` to update it.
+ * The popup's children: the head, the facts (with the live "Last seen" value, returned as `seen`) and the agents. The
+ * caller puts them in its card and keeps `seen` to update it.
  */
 export function machineCard(
   m: FleetMachine,
   nameOf: (cid: number) => string,
-  onEnter: () => void,
   now: number,
 ): { children: HTMLElement[]; seen: HTMLElement } {
   const facts = machineFacts(m);
@@ -98,7 +97,6 @@ export function machineCard(
         names.length > FLEET_CARD_AGENTS ? h('span', null, `+${names.length - FLEET_CARD_AGENTS} more`) : null,
       ),
     ),
-    h('footer.machine-card-foot', null, button('ENTER', onEnter, { kind: 'primary' })),
   ];
   return { children, seen };
 }
