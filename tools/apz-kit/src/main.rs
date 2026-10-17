@@ -2,6 +2,9 @@
 //! the textures as KTX2 and `manifest.json` (each model's file, kind, size and triangles per level of detail).
 //! `apz-kit check [dir]`: rebuilds the kit in memory and fails when a file in `dir` differs from it (CI keeps the
 //! committed kit in step with this code).
+//!
+//! Write and check the kit on an x86_64 machine: ARM's fused multiply-adds (glam's NEON code) round the last bit of
+//! some vertices differently, so a kit written there differs byte for byte (and looks the same).
 
 use std::path::PathBuf;
 use std::process::ExitCode;

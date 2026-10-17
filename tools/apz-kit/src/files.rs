@@ -48,7 +48,13 @@ mod tests {
     use super::*;
 
     /// The committed kit is what this code builds: a change to a model or a texture comes with `apz-kit build`'s output.
+    /// The kit is written on x86_64, and only there are the bytes the same: on ARM, glam's NEON matrix code fuses
+    /// multiply-adds and rounds the last bit differently (the trig is already the same everywhere: `crate::math`).
     #[test]
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        ignore = "the kit is written on x86_64; ARM's fused multiply-adds round differently"
+    )]
     fn the_committed_kit_is_up_to_date() {
         let dir = default_dir();
         let stale: Vec<String> = files()
