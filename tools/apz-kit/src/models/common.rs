@@ -6,6 +6,7 @@ use glam::{Mat4, Quat, Vec3};
 use serde_json::json;
 
 use crate::glb::{Material, Node, Scene};
+use crate::math;
 use crate::mesh::{self, Mesh};
 
 /// The kit's materials, in the order of [`materials`]: `M::Graphite as usize` is its index.
@@ -86,7 +87,7 @@ pub fn linear(hex: u32) -> [f32; 3] {
         if c <= 0.04045 {
             c / 12.92
         } else {
-            ((c + 0.055) / 1.055).powf(2.4)
+            math::powf((c + 0.055) / 1.055, 2.4)
         }
     };
     [channel(hex >> 16), channel(hex >> 8), channel(hex)]
@@ -115,7 +116,7 @@ pub fn cyl(r_top: f32, r_bottom: f32, h: f32, segments: u32, x: f32, y: f32, z: 
 /// A cylinder along z (a knob, a screw head or a port seen from the front) centred at (`x`, `y`, `z`).
 pub fn cyl_z(r: f32, h: f32, segments: u32, x: f32, y: f32, z: f32) -> Mesh {
     mesh::cylinder(r, r, h, segments)
-        .rotated(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+        .rotated(math::rot_x(std::f32::consts::FRAC_PI_2))
         .translated(Vec3::new(x, y, z))
 }
 
@@ -134,16 +135,14 @@ pub fn fan(name: &str, r: f32, x: f32, y: f32, z: f32, face_x: bool) -> Node {
     let mut rotor = Mesh::default();
     for i in 0..7 {
         let blade = mesh::cuboid(r * 0.62, r * 0.26, 0.012)
-            .rotated(Quat::from_rotation_x(0.55))
+            .rotated(math::rot_x(0.55))
             .translated(Vec3::new(r * 0.5, 0.0, 0.0))
-            .rotated(Quat::from_rotation_z(
-                i as f32 / 7.0 * std::f32::consts::TAU,
-            ));
+            .rotated(math::rot_z(i as f32 / 7.0 * std::f32::consts::TAU));
         rotor.append(&blade);
     }
     let hub = cyl_z(r * 0.2, 0.06, 24, 0.0, 0.0, 0.0);
     let rotation = if face_x {
-        Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
+        math::rot_y(std::f32::consts::FRAC_PI_2)
     } else {
         Quat::IDENTITY
     };

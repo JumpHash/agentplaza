@@ -6,6 +6,7 @@ use glam::{Mat4, Vec3};
 
 use super::common::*;
 use crate::glb::{Node, Scene};
+use crate::math;
 use crate::mesh::Mesh;
 
 /// A round status light on a front face: an emissive dot the engine lights by the machine's status.
@@ -77,9 +78,9 @@ pub fn studio() -> Scene {
                     0.035,
                     0.01,
                     10,
-                    a.cos() * 0.85,
+                    math::cos(a) * 0.85,
                     0.085,
-                    a.sin() * 0.85,
+                    math::sin(a) * 0.85,
                 ));
             }
             v.push(part("foot_vent", vents, M::Interior));
@@ -121,7 +122,7 @@ pub fn studio() -> Scene {
 pub fn laptop() -> Scene {
     let size = [3.2, 2.26, 2.87];
     // The lid is a group at (0, 0.14, -0.8) turned about x by -1.83; its parts are baked into that frame.
-    let lid = Mat4::from_translation(Vec3::new(0.0, 0.14, -0.8)) * Mat4::from_rotation_x(-1.83);
+    let lid = Mat4::from_translation(Vec3::new(0.0, 0.14, -0.8)) * math::mat_rot_x(-1.83);
     let model = |full: bool| {
         let mut v = vec![
             part(
@@ -157,8 +158,7 @@ pub fn laptop() -> Scene {
             }
             v.push(part("key", keys, M::Polymer));
             let hinge = cyl(0.07, 0.07, 2.6, 20, 0.0, 0.0, 0.0).transformed(
-                Mat4::from_translation(Vec3::new(0.0, 0.14, -0.8))
-                    * Mat4::from_rotation_z(FRAC_PI_2),
+                Mat4::from_translation(Vec3::new(0.0, 0.14, -0.8)) * math::mat_rot_z(FRAC_PI_2),
             );
             v.push(part("hinge", hinge, M::AluminiumDark));
         }
@@ -175,8 +175,7 @@ pub fn laptop() -> Scene {
         v.push(screen(
             2.86,
             1.8,
-            lid * Mat4::from_translation(Vec3::new(0.0, -0.006, 1.12))
-                * Mat4::from_rotation_x(FRAC_PI_2),
+            lid * Mat4::from_translation(Vec3::new(0.0, -0.006, 1.12)) * math::mat_rot_x(FRAC_PI_2),
         ));
         v
     };
@@ -192,7 +191,7 @@ pub fn laptop() -> Scene {
 pub fn phone() -> Scene {
     let size = [1.5, 2.2, 1.2];
     // The upright slab and its screen sit in a group at (0, 0.25, 0.05) turned about x by -0.22; they are baked into it.
-    let frame = Mat4::from_translation(Vec3::new(0.0, 0.25, 0.05)) * Mat4::from_rotation_x(-0.22);
+    let frame = Mat4::from_translation(Vec3::new(0.0, 0.25, 0.05)) * math::mat_rot_x(-0.22);
     let model = |full: bool| {
         let mut v = vec![part(
             "base",
@@ -206,8 +205,7 @@ pub fn phone() -> Scene {
                 M::Bezel,
             ));
         }
-        let slab =
-            Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)) * Mat4::from_rotation_x(FRAC_PI_2);
+        let slab = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)) * math::mat_rot_x(FRAC_PI_2);
         v.push(part(
             "body",
             rbox(0.95, 0.09, 2.0, 0.16, 0.03, 0.0, 0.0, 0.0).transformed(frame * slab),

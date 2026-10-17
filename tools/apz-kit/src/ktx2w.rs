@@ -1,6 +1,7 @@
 //! RGBA8 images, their mip chains, and KTX2 files with zstd supercompression (what the engine loads with the `ktx2`
 //! and `ruzstd` crates).
 
+use crate::math;
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 
 /// An RGBA8 image, rows top to bottom.
@@ -70,7 +71,7 @@ fn srgb_to_linear(v: u8) -> f32 {
     if c <= 0.04045 {
         c / 12.92
     } else {
-        ((c + 0.055) / 1.055).powf(2.4)
+        math::powf((c + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -78,7 +79,7 @@ fn linear_to_srgb(l: f32) -> u8 {
     let c = if l <= 0.003_130_8 {
         12.92 * l
     } else {
-        1.055 * l.powf(1.0 / 2.4) - 0.055
+        1.055 * math::powf(l, 1.0 / 2.4) - 0.055
     };
     (c * 255.0).round().clamp(0.0, 255.0) as u8
 }

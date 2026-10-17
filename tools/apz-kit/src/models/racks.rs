@@ -3,12 +3,13 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
 
 use super::common::{
     M, anchor, block, cube, cyl, cyl_z, part, plate, rbox, scene, slot_light, status_strip,
 };
 use crate::glb::{Node, Scene};
+use crate::math;
 use crate::mesh;
 
 /// The hub's bounding box (w, h, d).
@@ -208,7 +209,7 @@ fn rack_parts(full: bool) -> Vec<Node> {
         ));
         // A caster: a cylinder turned onto its side, so the wheel runs along x.
         let wheel = mesh::cylinder(0.1, 0.1, 0.08, 18)
-            .rotated(Quat::from_rotation_z(FRAC_PI_2))
+            .rotated(math::rot_z(FRAC_PI_2))
             .translated(Vec3::new(px * 1.1, 0.08, pz * 1.0));
         g.push(part("wheel", wheel, M::Rubber));
     }

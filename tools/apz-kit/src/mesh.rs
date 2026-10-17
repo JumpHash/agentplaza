@@ -1,5 +1,6 @@
 //! Mesh primitives for the kit: indexed triangles with normals and uvs, y up, right-handed (as glTF).
 
+use crate::math;
 use glam::{Mat4, Quat, Vec3};
 use std::f32::consts::{PI, TAU};
 
@@ -131,7 +132,7 @@ fn footprint_ring(hw: f32, hd: f32, r: f32, o: f32) -> Vec<([f32; 2], [f32; 2])>
         let (cx, cz) = (sx * (ew - rr), sz * (ed - rr));
         for j in 0..=CORNER_SEGMENTS {
             let theta = (90.0 * (corner as f32 + j as f32 / CORNER_SEGMENTS as f32)).to_radians();
-            let (s, c) = theta.sin_cos();
+            let (s, c) = math::sin_cos(theta);
             out.push(([cx + rr * c, cz + rr * s], [c, s]));
         }
     }
@@ -153,12 +154,22 @@ pub fn rounded_box(w: f32, h: f32, d: f32, r: f32, bevel: f32) -> Mesh {
         // Bottom quarter round: centre (-b, -hh + b), from the bottom cap edge up to the wall.
         for j in 0..=3 {
             let a = (-90.0 + 30.0 * j as f32).to_radians();
-            profile.push((-b + b * a.cos(), -hh + b + b * a.sin(), a.cos(), a.sin()));
+            profile.push((
+                -b + b * math::cos(a),
+                -hh + b + b * math::sin(a),
+                math::cos(a),
+                math::sin(a),
+            ));
         }
         // Top quarter round: centre (-b, hh - b), from the wall up to the top cap edge.
         for j in 0..=3 {
             let a = (30.0 * j as f32).to_radians();
-            profile.push((-b + b * a.cos(), hh - b + b * a.sin(), a.cos(), a.sin()));
+            profile.push((
+                -b + b * math::cos(a),
+                hh - b + b * math::sin(a),
+                math::cos(a),
+                math::sin(a),
+            ));
         }
     } else {
         profile.push((0.0, -hh, 1.0, 0.0));
@@ -227,7 +238,7 @@ pub fn cylinder(r_top: f32, r_bottom: f32, h: f32, segments: u32) -> Mesh {
     // Side: a top and a bottom vertex per segment (the last column repeats the first for the uv seam).
     for i in 0..=segments {
         let t = i as f32 / segments as f32;
-        let (s, c) = (t * TAU).sin_cos();
+        let (s, c) = math::sin_cos(t * TAU);
         let n = Vec3::new(s, slope, c).normalize_or_zero().to_array();
         m.positions.push([r_top * s, hh, r_top * c]);
         m.normals.push(n);
@@ -252,7 +263,7 @@ pub fn cylinder(r_top: f32, r_bottom: f32, h: f32, segments: u32) -> Mesh {
         m.uvs.push([0.5, 0.5]);
         let first = m.positions.len() as u32;
         for i in 0..=segments {
-            let (s, c) = (i as f32 / segments as f32 * TAU).sin_cos();
+            let (s, c) = math::sin_cos(i as f32 / segments as f32 * TAU);
             m.positions.push([r * s, y, r * c]);
             m.normals.push([0.0, ny, 0.0]);
             m.uvs.push([0.5 + 0.5 * s, 0.5 + 0.5 * c]);
@@ -275,10 +286,10 @@ pub fn torus(r: f32, tube: f32, radial: u32, tubular: u32) -> Mesh {
     let mut m = Mesh::default();
     for j in 0..=radial {
         let v = j as f32 / radial as f32 * TAU;
-        let (sv, cv) = v.sin_cos();
+        let (sv, cv) = math::sin_cos(v);
         for i in 0..=tubular {
             let u = i as f32 / tubular as f32 * TAU;
-            let (su, cu) = u.sin_cos();
+            let (su, cu) = math::sin_cos(u);
             let rho = r + tube * cv;
             m.positions.push([rho * cu, rho * su, tube * sv]);
             m.normals.push([cu * cv, su * cv, sv]);
@@ -308,7 +319,7 @@ pub fn ring(r_in: f32, r_out: f32, segments: u32) -> Mesh {
         [0.5 + k * c, 0.5 + k * s]
     };
     for i in 0..=segments {
-        let (s, c) = (i as f32 / segments as f32 * TAU).sin_cos();
+        let (s, c) = math::sin_cos(i as f32 / segments as f32 * TAU);
         m.positions.push([r_in * c, r_in * s, 0.0]);
         m.normals.push([0.0, 0.0, 1.0]);
         m.uvs.push(uv(r_in, c, s));
@@ -347,10 +358,10 @@ pub fn sphere(r: f32, width_segments: u32, height_segments: u32) -> Mesh {
     let mut m = Mesh::default();
     for iy in 0..=hs {
         let theta = iy as f32 / hs as f32 * PI;
-        let (st, ct) = theta.sin_cos();
+        let (st, ct) = math::sin_cos(theta);
         for ix in 0..=ws {
             let phi = ix as f32 / ws as f32 * TAU;
-            let (sp, cp) = phi.sin_cos();
+            let (sp, cp) = math::sin_cos(phi);
             let n = Vec3::new(st * cp, ct, st * sp);
             m.positions.push((n * r).to_array());
             m.normals.push(n.to_array());

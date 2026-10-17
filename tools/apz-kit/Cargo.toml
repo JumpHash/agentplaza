@@ -8,6 +8,7 @@ description = "Builds the AgentPlaza machine model kit: the ten machines as glTF
 
 [dependencies]
 glam = "0.30"
+libm = "0.2"
 serde_json.workspace = true
 ruzstd = "0.9"
 

@@ -25,6 +25,7 @@
 pub mod files;
 pub mod glb;
 pub mod ktx2w;
+pub mod math;
 pub mod mesh;
 pub mod models;
 pub mod tex;
