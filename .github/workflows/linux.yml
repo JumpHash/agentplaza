@@ -14,7 +14,8 @@
 # cross-compiled on x86_64 too, where the AppImage tooling is. Speed: cargo's build directory and
 # registry persist on the runner (.github/ci/in-image.sh), and the checkout keeps the mtimes this
 # runner last built with (.github/ci/build-cache.py), so only changed crates compile; tests and
-# packages use the same release profile; nextest runs the tests in parallel
+# packages use the same release profile on x86_64, the reference platform; arm64 tests with the
+# `checked` profile (Cargo.toml: incremental, with debug assertions); nextest runs the tests in parallel
 # and kills a hang; a pull request runs only the tests of the packages it changes and of those that
 # depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
@@ -123,7 +124,7 @@ jobs:
           echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
       - name: Test
         if: inputs.tests
-        run: .github/ci/in-image.sh "cargo nextest run ${{ env.PACKAGES }} --locked --cargo-profile release --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
+        run: .github/ci/in-image.sh "cargo nextest run ${{ env.PACKAGES }} --locked --cargo-profile ${{ matrix.arch == 'x86_64' && 'release' || 'checked' }} --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
       - name: Build the binaries
         if: inputs.package
         run: >-

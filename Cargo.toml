@@ -58,6 +58,22 @@ strip = "debuginfo"
 # double that for little speed at run time.
 lto = false
 
+# The tests off the reference platform (Windows, macOS and Linux arm64; .github/workflows): release
+# optimisation, compiled incrementally, with debug assertions and overflow checks in the workspace's
+# own crates. Incremental compilation recompiles only what a change touches, above all in the big
+# crates downstream of a changed one; the checks catch more than a release build. Its own build
+# directory. Linux x86_64 tests the release profile itself, what ships, and holds the timing budgets
+# (not asserted with debug assertions on).
+[profile.checked]
+inherits = "release"
+incremental = true
+debug-assertions = true
+overflow-checks = true
+
+[profile.checked.package."*"]
+debug-assertions = false
+overflow-checks = false
+
 # The web engine (crates/apz-engine-web) ships to every browser that opens the console: built for size, with the
 # whole program optimised at link time. Only apps/web/build.mjs uses this profile.
 [profile.wasm-release]

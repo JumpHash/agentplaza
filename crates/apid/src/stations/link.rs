@@ -719,6 +719,13 @@ pub(crate) mod tests {
             error: None,
         });
         assert!(push.join().unwrap().is_ok());
+        // A draining link closes once nothing is in flight, so one request stays open while the freeze
+        // goes out (without it the link could close before the freeze was sent).
+        let asker = Arc::clone(&link);
+        let ask = thread::spawn(move || asker.request(Op::Facts, Duration::from_secs(5)));
+        let HubFrame::Request { id: held, .. } = daemon.hears() else {
+            panic!("a request")
+        };
         link.set_draining(true);
         let freezer = Arc::clone(&link);
         let freeze =
@@ -734,6 +741,14 @@ pub(crate) mod tests {
             error: None,
         });
         assert!(freeze.join().unwrap().is_ok());
-        let _ = handle.join();
+        daemon.say(&StationFrame::Response {
+            id: held,
+            ok: true,
+            result: Some(Value::Null),
+            error: None,
+        });
+        assert!(ask.join().unwrap().is_ok());
+        assert_eq!(daemon.ended.recv().unwrap(), (1000, "drained".to_string()));
+        assert!(handle.join().unwrap().is_ok());
     }
 }
