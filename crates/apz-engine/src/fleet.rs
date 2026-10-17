@@ -298,6 +298,16 @@ pub fn zone_of(m: &Machine) -> Zone {
     }
 }
 
+/// The kit's level of detail for a fleet of `count` machines: full detail up to 32 machines, the simple level up to 96,
+/// and the block beyond, so a large fleet's grid stays inside the frame budget (`tests/machines_budget.rs`).
+pub fn lod_for(count: usize) -> usize {
+    match count {
+        0..=32 => 0,
+        33..=96 => 1,
+        _ => 2,
+    }
+}
+
 /// The kit model a machine draws as (see `assets/hardware/kit`).
 pub fn kit_model_of(m: &Machine) -> &'static str {
     if m.role == "hub" {
@@ -597,6 +607,7 @@ impl FleetScene {
             v
         };
         let (cells, zones) = grid_layout(&ordered);
+        let lod = lod_for(ordered.len());
         for z in &zones {
             let (w, d) = (z.max[0] - z.min[0], z.max[1] - z.min[1]);
             let plate = with_edges(
@@ -649,7 +660,7 @@ impl FleetScene {
                 root.add(&fill);
                 fills.push(fill);
             }
-            let inst = model.instantiate(0, &self.palette);
+            let inst = model.instantiate(lod, &self.palette);
             if let Some(i) = slot {
                 kit::set_machine(&inst.root, i);
             }

@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use apz_engine::gpus::{GpuInput, card_summary};
 use apz_engine::input::Action;
+use apz_engine::style::Style;
 use apz_engine::{Cmd, Engine, Feed, Motion};
 
 use super::Id;
@@ -106,6 +107,8 @@ pub enum Msg {
     Grid(floor::Msg),
     /// The Grid | List switch.
     SetMode(Mode),
+    /// The machine style switch: Ink, Blueprint or Night.
+    SetStyle(Style),
     /// A machine's own view opens (from the grid's popup or a section's Open button).
     OpenMachine(String),
     /// The machine's view closes, back to the tab it came from.
@@ -393,6 +396,19 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             load(state, ctx)
         }
         Msg::Grid(m) => floor::update(&mut state.grid, m, ctx).map(Msg::Grid),
+        Msg::SetStyle(style) => {
+            crate::theme::set_machine_style(style);
+            let _ = crate::console::boot::save_setting(
+                "machine_style",
+                serde_json::json!(style.name()),
+            );
+            let dark = !crate::theme::is_light();
+            state.grid.0.set_style(style, dark);
+            if let Some(s) = state.stage.as_mut() {
+                s.engine.set_style(style, dark);
+            }
+            Task::none()
+        }
         Msg::SetMode(mode) => {
             if state.mode == mode {
                 Task::none()
@@ -582,9 +598,11 @@ fn stage_size(mode: &Mode) -> (f32, f32) {
 
 /// One machine's 3D view, not yet shown.
 fn new_stage(id: String) -> StageView {
+    let mut engine = Engine::detached();
+    engine.set_style(crate::theme::machine_style(), !crate::theme::is_light());
     StageView {
         id,
-        engine: Engine::detached(),
+        engine,
         shown: false,
         motion: Motion::Active,
     }
@@ -635,17 +653,26 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         tab,
         |t: Tab| Msg::SetMode(t.mode()),
     );
+    let styles = ui::seg(
+        &[
+            (Style::Ink, "Ink"),
+            (Style::Blueprint, "Blueprint"),
+            (Style::Night, "Night"),
+        ],
+        crate::theme::machine_style(),
+        Msg::SetStyle,
+    );
     match &state.mode {
         Mode::Grid => {
-            let actions = vec![floor::reset_button().map(Msg::Grid), switch];
+            let actions = vec![floor::reset_button().map(Msg::Grid), switch, styles];
             ui::sheet(
                 ui::view_head("Machines", actions),
                 floor::body(&state.grid).map(Msg::Grid),
             )
         }
-        Mode::List => ui::sheet(ui::view_head("Machines", vec![switch]), body(state)),
+        Mode::List => ui::sheet(ui::view_head("Machines", vec![switch, styles]), body(state)),
         Mode::Machine(id) => ui::sheet(
-            ui::view_head("Machines", vec![switch]),
+            ui::view_head("Machines", vec![switch, styles]),
             machine_body(state, id),
         ),
     }

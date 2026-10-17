@@ -103,7 +103,7 @@ impl<const PORTRAIT: bool, const N: usize> shader::Primitive for CardPrimitive<P
 /// hands the frame over.
 #[derive(Default)]
 pub(crate) struct CardState {
-    stage: Option<(MachineStage, bool)>,
+    stage: Option<(MachineStage, Style, bool)>,
     last: Option<Instant>,
     frame: Option<Arc<Frame>>,
 }
@@ -133,15 +133,16 @@ impl<const N: usize, M> shader::Program<M> for Card<N> {
             .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
         st.last = Some(*now);
         let dark = !crate::theme::is_light();
+        let style = crate::theme::machine_style();
         if st
             .stage
             .as_ref()
-            .is_none_or(|(_, built_dark)| *built_dark != dark)
+            .is_none_or(|(_, built_style, built_dark)| (*built_style, *built_dark) != (style, dark))
         {
-            let palette = Palette::of(Style::Ink, dark);
-            st.stage = Some((MachineStage::new(&self.machine, &palette)?, dark));
+            let palette = Palette::of(style, dark);
+            st.stage = Some((MachineStage::new(&self.machine, &palette)?, style, dark));
         }
-        let (stage, _) = st.stage.as_mut()?;
+        let (stage, _, _) = st.stage.as_mut()?;
         let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
         stage.step(dt, aspect, false);
         st.frame = Some(Arc::new(stage.view_frame(self.view, aspect)));

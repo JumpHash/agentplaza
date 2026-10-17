@@ -26,7 +26,9 @@ pub(crate) const TAG_H: f32 = 22.0;
 
 /// Logical px between a machine's tag and its label anchor (floor.ts translateY(-6px)).
 const TAG_GAP: f32 = 6.0;
-const TAG_CACHE_LIMIT: usize = 64;
+/// The tag cache's size: every machine slot's tag in each of its four lamp colours. A smaller cache than the fleet
+/// would be cleared and repainted on every frame (128 tags took 15 ms a frame against a cache of 64).
+const TAG_CACHE_LIMIT: usize = 4 * crate::fleet::MACHINE_SLOTS;
 
 /// The overlay tags over the machines: each machine's name and status square, above its label.
 /// `hovered` is the machine under the pointer (kept for the host's API: the three.js tags did not change on hover).

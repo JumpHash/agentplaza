@@ -5,6 +5,7 @@ import { button } from '../ui/components';
 import { h } from '../ui/dom';
 import type { Cleanup } from './index';
 import { machineCard } from './floor-popup';
+import { isDark, machineStyle, onMachineStyle } from './machine-style';
 
 /** The wasm glue's file name at the dist root: esbuild replaces this at build time (null when the wasm crate is missing). */
 declare const __APZ_ENGINE_JS__: string | null;
@@ -283,6 +284,20 @@ export interface EngineStage {
 }
 
 /**
+ * Calls `apply` on each change of the owner's machine style and of the console's theme (data-theme on the root).
+ * Returns the stop function, which the caller runs in its cleanup.
+ */
+export function followLook(apply: () => void): () => void {
+  const off = onMachineStyle(() => apply());
+  const watch = new MutationObserver(() => apply());
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  return () => {
+    off();
+    watch.disconnect();
+  };
+}
+
+/**
  * Starts the engine on `canvas`, fed the fleet like the Floor. With a `machineId`, shows that machine (`show_machine`)
  * once the fleet lists it; `onFirstFrame` (optional) runs once, when the engine has drawn its first frame. One engine
  * per page: the caller destroys it before it starts another.
@@ -294,6 +309,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
   let fleetError: string | null = null;
   let agents: Agent[] | null = null;
   let shown = false;
+  let stopLook: () => void = () => undefined; // the look is followed while the engine runs
   let raf = 0;
   const timers: number[] = [];
   let markFleet: () => void = () => undefined;
@@ -354,6 +370,8 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
       return;
     }
     engine = started;
+    started.set_style(machineStyle(), isDark());
+    stopLook = followLook(() => engine?.set_style(machineStyle(), isDark()));
     pushFeed();
     poll();
     timers.push(window.setInterval(poll, FLEET_POLL_MS));
@@ -380,6 +398,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
     gpuCards: (id) => whenReady((e) => parseGpuCards(e.gpu_cards(id))),
     destroy() {
       closed = true;
+      stopLook();
       stopNow();
       for (const t of timers) window.clearInterval(t);
       if (raf !== 0) cancelAnimationFrame(raf);
@@ -728,13 +747,13 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
       // the swatches keep their floor.css colours
     }
   };
-  // The console is dark unless the page says light: the engine draws in that theme and the legend follows it.
+  // The engine draws the machines in the owner's style and the console's theme; the legend follows them.
   const applyTheme = (started: WebEngine): void => {
-    started.set_style('ink', document.documentElement.dataset.theme !== 'light');
+    started.set_style(machineStyle(), isDark());
     paintLamps(started);
   };
-  // Watches the page's theme (data-theme on the root) while the engine runs; disconnected in the cleanup.
-  let themeObserver: MutationObserver | null = null;
+  // Follows the owner's style and the page's theme while the engine runs; stopped in the cleanup.
+  let stopLook: () => void = () => undefined;
 
   // Escape closes the popup here, before the engine's own handler.
   const onKey = (ev: KeyboardEvent): void => {
@@ -758,10 +777,9 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
     });
     engine = started;
     applyTheme(started);
-    themeObserver = new MutationObserver(() => {
+    stopLook = followLook(() => {
       if (engine !== null) applyTheme(engine);
     });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     // The engine's counters for the browser checks (this mount only: the flag is on the page's URL).
     (window as unknown as { apzEngine?: WebEngine }).apzEngine = started;
     removeDebug = installDebugHooks(started);
@@ -792,8 +810,8 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
     engine = null;
     removeDebug?.();
     removeDebug = null;
-    themeObserver?.disconnect();
-    themeObserver = null;
+    stopLook();
+    stopLook = () => undefined;
     e?.destroy();
     root.innerHTML = '';
   };

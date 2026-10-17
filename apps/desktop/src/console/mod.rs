@@ -72,6 +72,11 @@ fn boot() -> (Console, Task<Msg>) {
             .as_ref()
             .and_then(|value| value.as_str()),
     );
+    crate::theme::set_machine_style(crate::theme::saved_machine_style(
+        boot::saved_setting("machine_style")
+            .as_ref()
+            .and_then(|value| value.as_str()),
+    ));
     let (boot, task) = boot::init();
     if let Some(point) = snapshot_hover() {
         chart::set_snapshot_hover(point);

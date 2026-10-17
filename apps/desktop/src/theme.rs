@@ -3,12 +3,13 @@
 //! stamps — as far as iced's widgets carry it (no rotation, no dot leaders:
 //! the rules and the space between them stand in).
 
+use apz_engine::style::Style;
 use iced::widget::text::LineHeight;
 use iced::widget::{button, container, rule, text_input};
 use iced::{
     Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// The page behind everything: the console's night navy.
 pub const PAPER: Color = Color::from_rgb8(0x0a, 0x0e, 0x19);
@@ -514,5 +515,54 @@ pub fn choose_saved(value: Option<&str>) {
 pub fn follow_system(mode: iced::theme::Mode) {
     if !CHOSEN.load(Ordering::Relaxed) {
         LIGHT.store(matches!(mode, iced::theme::Mode::Light), Ordering::Relaxed);
+    }
+}
+
+/// The machines' style as an index: 0 Ink (the default), 1 Blueprint, 2 Night.
+static MACHINE_STYLE: AtomicU8 = AtomicU8::new(0);
+
+/// The style the machines are drawn in: the grid, the cards and a machine's own view.
+pub fn machine_style() -> Style {
+    match MACHINE_STYLE.load(Ordering::Relaxed) {
+        1 => Style::Blueprint,
+        2 => Style::Night,
+        _ => Style::Ink,
+    }
+}
+
+/// Sets the machines' style. The owner picks it on the Machines screen; it is kept for the run and saved.
+pub fn set_machine_style(style: Style) {
+    let index = match style {
+        Style::Ink => 0,
+        Style::Blueprint => 1,
+        Style::Night => 2,
+    };
+    MACHINE_STYLE.store(index, Ordering::Relaxed);
+}
+
+/// The style a saved name (`desktop.json`, key `machine_style`) names. Ink when none is saved or the name is unknown.
+pub fn saved_machine_style(value: Option<&str>) -> Style {
+    value.and_then(Style::parse).unwrap_or(Style::Ink)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_style_round_trips_through_set_and_get() {
+        for style in [Style::Ink, Style::Blueprint, Style::Night] {
+            set_machine_style(style);
+            assert_eq!(machine_style(), style);
+        }
+        set_machine_style(Style::Ink);
+    }
+
+    #[test]
+    fn saved_machine_style_falls_back_to_ink() {
+        assert_eq!(saved_machine_style(Some("night")), Style::Night);
+        assert_eq!(saved_machine_style(Some("Blueprint")), Style::Blueprint);
+        assert_eq!(saved_machine_style(Some("neon")), Style::Ink);
+        assert_eq!(saved_machine_style(None), Style::Ink);
     }
 }
