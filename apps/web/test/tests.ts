@@ -1,6 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, movedTo } from '../src/router';
 import { machinesRoute, viewHash } from '../src/views/machines';
+import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
 import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
 import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
@@ -1786,4 +1787,9 @@ eq(metricValues(cpuView as unknown as Parameters<typeof metricValues>[0], 'host.
 eq(latestValue([1, null, 3, null]), 3, 'the newest number is the latest');
 eq(latestValue([null, null]), null, 'no number, no latest');
 eq(finiteValues([1, null, 3]), [1, 3], 'finite values only');
+eq(parseStyle('blueprint'), 'blueprint', 'a stored style is read back');
+eq(parseStyle('night'), 'night', 'Night is a style');
+eq(parseStyle('neon'), 'ink', 'an unknown stored style is Ink');
+eq(parseStyle(null), 'ink', 'no stored style is Ink');
+eq(STYLES.map((s) => s.label), ['Ink', 'Blueprint', 'Night'], 'the three styles, labelled');
 sectionEnd('machine view helper tests: ok');

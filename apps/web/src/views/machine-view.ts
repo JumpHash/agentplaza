@@ -10,7 +10,8 @@ import { ago, badge, empty, type Tone } from '../ui/components';
 import { sparkline, type ChartHandle } from '../ui/chart';
 import { h, replace } from '../ui/dom';
 import { fallbackPicture, fillViews, isLive, KIND_LABEL, normalizeMachines, specOf, stateTone, viewsStrip } from './machine-list';
-import { engineWanted, startEngineStage, type EngineStage } from './engine-mount';
+import { engineWanted, followLook, startEngineStage, type EngineStage } from './engine-mount';
+import { styleSwitch } from './machine-style';
 import { agentLines, finiteValues, gpuCardLine, latestValue, metricValues, vmRows, type GpuCardInfo } from './machine-view-model';
 import type { Cleanup } from './index';
 
@@ -158,12 +159,14 @@ export function mountMachineView(root: HTMLElement, id: string): Cleanup {
   const titleEl = h('h1', null, id);
   const statusBox = h('span.mv-status');
   const subEl = h('div.mv-sub');
+  const lookSwitch = styleSwitch(); // the owner's machine style, in the header
   const head = h(
     'header.mv-head',
     null,
     h('a.mv-back', { href: href('machines') }, '‹ Machines'),
     h('div.mv-title', null, titleEl, statusBox),
     subEl,
+    lookSwitch.el,
   );
 
   const stageBox = h('div.mv-stage-box', null, stage ? canvas : empty('machine', 'Loading the 3D view'));
@@ -195,6 +198,8 @@ export function mountMachineView(root: HTMLElement, id: string): Cleanup {
   root.classList.add('machine-view-body');
   root.append(h('div.machine-view', null, head, grid, missing));
   if (stage) fillViews(strip, id, stage);
+  // A new style or theme: the views are drawn again in it (the stage engine follows the look on its own).
+  const stopLook = stage ? followLook(() => requestAnimationFrame(() => fillViews(strip, id, stage))) : (): void => undefined;
 
   // The machine's cards: the engine's GPU cards once, then each refresh's facts.
   stage?.gpuCards(id).then(
@@ -282,6 +287,8 @@ export function mountMachineView(root: HTMLElement, id: string): Cleanup {
     alive = false;
     if (timer !== undefined) clearInterval(timer);
     cpuSpark?.destroy();
+    stopLook();
+    lookSwitch.dispose();
     stage?.destroy();
     canvas.remove();
   };

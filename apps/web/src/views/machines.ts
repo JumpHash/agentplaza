@@ -5,6 +5,7 @@ import { button } from '../ui/components';
 import { h } from '../ui/dom';
 import { href, parse } from '../router';
 import { mountGrid } from './floor';
+import { styleSwitch } from './machine-style';
 import { mountList } from './machine';
 import { mountMachineView } from './machine-view';
 import type { Cleanup } from './index';
@@ -45,7 +46,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const resetBtn = button('Reset view', () => reset?.(), { icon: 'refresh' });
   resetBtn.hidden = true;
   const switchBox = h('div.machines-switch', { role: 'group', 'aria-label': 'View' }, gridBtn, listBtn);
-  const head = h('div.view-head', null, h('h1', null, 'Machines'), h('div.actions', null, switchBox, resetBtn));
+  const lookSwitch = styleSwitch(); // the machines' drawing style: the Grid, the List and the machine view draw in it
+  const head = h('div.view-head', null, h('h1', null, 'Machines'), h('div.actions', null, switchBox, lookSwitch.el, resetBtn));
   root.append(head, bodyBox);
 
   // The Reset view button belongs to the Grid, and shows while the Grid has an engine to reset.
@@ -82,6 +84,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   paint();
   return () => {
     window.removeEventListener('hashchange', onHash);
+    lookSwitch.dispose();
     body();
     body = () => undefined;
     root.classList.remove('floor-view');

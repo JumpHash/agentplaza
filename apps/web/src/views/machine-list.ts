@@ -13,7 +13,8 @@ import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook } from './station-machine';
 import { lookOfSpec, sizeLine, specKey, THUMB_H, THUMB_W, VIEWS, type PictureSpec } from './machine-picture';
-import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
+import { engineWanted, followLook, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
+import { styleKey } from './machine-style';
 import { href } from '../router';
 
 export type Stats = NonNullable<MachineNode['stats']>;
@@ -742,6 +743,8 @@ interface Anim {
 
 const DURATION_MS = 600;
 const thumbs = new Map<string, string | null>();
+/** A thumbnail's key: its picture's spec under the owner's style and the console's theme, so a change of either draws it anew. */
+const thumbKey = (spec: PictureSpec): string => specKey(spec) + '~' + styleKey();
 
 const pixelRatio = (): number => Math.min(2, Math.max(1, window.devicePixelRatio || 1));
 const reducedMotion = (): boolean => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
@@ -790,6 +793,7 @@ export function viewsStrip(): HTMLElement {
 
 /** Asks the engine for each view (at the device's pixel ratio, at most 512 a side) and for the machine's size caption. A rejected request leaves its canvas empty. */
 export function fillViews(strip: HTMLElement, machineId: string, stage: EngineStage): void {
+  strip.querySelectorAll('.machine-views-caption').forEach((c) => c.remove()); // a repaint in a new look replaces the caption
   const pr = pixelRatio();
   const w = Math.min(512, Math.round(THUMB_W * pr));
   const h2 = Math.min(512, Math.round(THUMB_H * pr));
@@ -899,7 +903,7 @@ export function machineList(): MachineList {
   function requestThumb(it: Item): void {
     const spec = it.row.spec;
     if (!spec) return;
-    const k = specKey(spec);
+    const k = thumbKey(spec);
     if (it.picKey === k) return;
     const pr = pixelRatio();
     const ck = `${k}@${pr}`;
@@ -922,7 +926,8 @@ export function machineList(): MachineList {
         (rgba) => {
           const url = pngOf(rgba, w, h);
           thumbs.set(ck, url);
-          showThumb(it, k, url);
+          if (thumbKey(spec) === k) showThumb(it, k, url);
+          else wantThumb(it); // the look changed while it drew: it is drawn again in the new one
         },
         (e: unknown) => {
           if (isEngineStopped(e)) {
@@ -961,7 +966,7 @@ export function machineList(): MachineList {
 
   const wantThumb = (it: Item): void => {
     const spec = it.row.spec;
-    if (!spec || it.queued || it.picKey === specKey(spec)) return;
+    if (!spec || it.queued || it.picKey === thumbKey(spec)) return;
     it.queued = true;
     queue.push(it);
     schedulePump();
@@ -1276,6 +1281,22 @@ export function machineList(): MachineList {
     }
   });
 
+  // The owner's style or the console's theme changed: the pictures are drawn again in the new look.
+  const restyle = (): void => {
+    if (destroyed) return;
+    for (const it of items.values()) {
+      it.picKey = null;
+      if (it.visible) wantThumb(it);
+    }
+    requestAnimationFrame(() => {
+      if (eng !== null && openKey !== null) {
+        const it = items.get(openKey);
+        if (it?.views && it.row.machineId !== null) fillViews(it.views, it.row.machineId, eng.stage);
+      }
+    });
+  };
+  const stopLook = followLook(restyle);
+
   return {
     el: root,
     setRows(rows, fb = null) {
@@ -1293,6 +1314,7 @@ export function machineList(): MachineList {
     },
     destroy() {
       destroyed = true;
+      stopLook();
       hardReset();
       stopThumbStage();
       if (raf) cancelAnimationFrame(raf);
