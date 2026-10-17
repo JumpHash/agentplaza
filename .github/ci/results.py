@@ -56,6 +56,9 @@ def main():
     if args.junit and os.path.isfile(args.junit):
         shutil.copyfile(args.junit, os.path.join(args.out, "junit.xml"))
         meta["junit"] = True
+    elif args.junit and any(p["name"] == "tests" and p["outcome"] in ("success", "failure") for p in parts):
+        # The tests ran but left no report: the comment would show no counts.
+        print(f"::warning::no JUnit report at {args.junit}: the Tests comment will have no counts")
     with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=1)
     print(f"results: {args.title}: " + ", ".join(f"{p['name']} {p['outcome'] or 'not run'}" for p in parts))
