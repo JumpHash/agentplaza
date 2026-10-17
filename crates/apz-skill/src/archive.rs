@@ -354,8 +354,11 @@ fn put(
     data: &[u8],
     executable: bool,
 ) -> Result<(), String> {
+    // Unix as the host system on every OS: zip records DOS on Windows otherwise, and a DOS entry
+    // carries no mode, so a skill exported there would lose its executable bits.
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
+        .system(zip::System::Unix)
         .unix_permissions(if executable { 0o755 } else { 0o644 });
     writer
         .start_file(path, options)
