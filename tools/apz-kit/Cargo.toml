@@ -9,7 +9,9 @@ description = "Builds the AgentPlaza machine model kit: the ten machines as glTF
 [dependencies]
 glam = "0.30"
 libm = "0.2"
-serde_json.workspace = true
+# preserve_order: the kit's JSON keeps its keys in the order written, whatever else the workspace build enables (the
+# workspace turns it on elsewhere; without it here, `-p apz-kit` alone would sort the keys and write other bytes).
+serde_json = { workspace = true, features = ["preserve_order"] }
 ruzstd = "0.9"
 
 [dev-dependencies]

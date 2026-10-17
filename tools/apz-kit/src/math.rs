@@ -1,7 +1,7 @@
-//! Platform-independent math. The kit's files are compared byte for byte (`files::tests`), and each platform's own libm
-//! rounds `sin`, `cos` and `powf` its own way (macOS differs from glibc), so every transcendental call in the kit goes
-//! through the `libm` crate, which computes the same bits everywhere. Rotations are built here from those values too,
-//! rather than with glam's, which call the platform's.
+//! Platform-independent math. The kit's files are compared byte for byte (`files::tests`), and the platforms' own
+//! libms need not round `sin`, `cos` and `powf` alike, so every transcendental call in the kit goes through the `libm`
+//! crate, which computes the same bits everywhere. Rotations are built here from those values too, rather than with
+//! glam's, which call the platform's.
 
 use glam::{Mat4, Quat};
 

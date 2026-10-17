@@ -1,8 +1,9 @@
 {
+  "schema": 1,
   "models": [
     {
-      "file": "hub.glb",
       "id": "hub",
+      "file": "hub.glb",
       "kind": "hub",
       "size": [
         2.4600000381469727,
@@ -16,8 +17,8 @@
       ]
     },
     {
-      "file": "server.glb",
       "id": "server",
+      "file": "server.glb",
       "kind": "server",
       "size": [
         3.5,
@@ -31,8 +32,8 @@
       ]
     },
     {
-      "file": "rack.glb",
       "id": "rack",
+      "file": "rack.glb",
       "kind": "rack",
       "size": [
         2.619999885559082,
@@ -46,8 +47,8 @@
       ]
     },
     {
-      "file": "gpu.glb",
       "id": "gpu",
+      "file": "gpu.glb",
       "kind": "gpu",
       "size": [
         3.4000000953674316,
@@ -61,8 +62,8 @@
       ]
     },
     {
-      "file": "tower.glb",
       "id": "tower",
+      "file": "tower.glb",
       "kind": "tower",
       "size": [
         1.5,
@@ -76,8 +77,8 @@
       ]
     },
     {
-      "file": "edge.glb",
       "id": "edge",
+      "file": "edge.glb",
       "kind": "edge",
       "size": [
         2.200000047683716,
@@ -91,8 +92,8 @@
       ]
     },
     {
-      "file": "mini.glb",
       "id": "mini",
+      "file": "mini.glb",
       "kind": "mini",
       "size": [
         2.4000000953674316,
@@ -106,8 +107,8 @@
       ]
     },
     {
-      "file": "studio.glb",
       "id": "studio",
+      "file": "studio.glb",
       "kind": "studio",
       "size": [
         2.4000000953674316,
@@ -121,8 +122,8 @@
       ]
     },
     {
-      "file": "laptop.glb",
       "id": "laptop",
+      "file": "laptop.glb",
       "kind": "laptop",
       "size": [
         3.200000047683716,
@@ -136,8 +137,8 @@
       ]
     },
     {
-      "file": "phone.glb",
       "id": "phone",
+      "file": "phone.glb",
       "kind": "phone",
       "size": [
         1.5,
@@ -151,7 +152,6 @@
       ]
     }
   ],
-  "schema": 1,
   "textures": [
     "grille.ktx2"
   ]

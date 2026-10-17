@@ -48,25 +48,40 @@ mod tests {
     use super::*;
 
     /// The committed kit is what this code builds: a change to a model or a texture comes with `apz-kit build`'s output.
-    /// The kit is written on x86_64, and only there are the bytes the same: on ARM, glam's NEON matrix code fuses
-    /// multiply-adds and rounds the last bit differently (the trig is already the same everywhere: `crate::math`).
     #[test]
-    #[cfg_attr(
-        not(target_arch = "x86_64"),
-        ignore = "the kit is written on x86_64; ARM's fused multiply-adds round differently"
-    )]
     fn the_committed_kit_is_up_to_date() {
         let dir = default_dir();
-        let stale: Vec<String> = files()
-            .into_iter()
-            .filter(|(name, bytes)| {
-                std::fs::read(dir.join(name)).ok().as_deref() != Some(bytes.as_slice())
-            })
-            .map(|(name, _)| name)
-            .collect();
+        let mut stale = Vec::new();
+        for (name, built) in files() {
+            let committed = std::fs::read(dir.join(&name)).unwrap_or_default();
+            if committed == built {
+                continue;
+            }
+            // Where the two first differ, so a failure on another machine says what changed.
+            let at = committed.iter().zip(&built).position(|(a, b)| a != b);
+            let around =
+                |v: &[u8], i: usize| v[i.saturating_sub(8)..(i + 24).min(v.len())].to_vec();
+            let detail = match at {
+                Some(i) => format!(
+                    "first differs at byte {i}: committed {:?}, built {:?}",
+                    around(&committed, i),
+                    around(&built, i)
+                ),
+                None => String::from("one is a prefix of the other"),
+            };
+            stale.push(format!(
+                "{name} ({} bytes committed, {} built; {detail})",
+                committed.len(),
+                built.len()
+            ));
+            if name.ends_with(".json") {
+                stale.push(format!("built {name}: {}", String::from_utf8_lossy(&built)));
+            }
+        }
         assert!(
             stale.is_empty(),
-            "out of date in assets/hardware/kit: {stale:?} (run `cargo run -p apz-kit -- build`)"
+            "out of date in assets/hardware/kit (run `cargo run -p apz-kit -- build`):\n{}",
+            stale.join("\n")
         );
     }
 }
