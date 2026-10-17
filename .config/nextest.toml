@@ -11,7 +11,8 @@ fail-fast = false
 failure-output = "immediate-final"
 
 # The results the pull request's Tests comment shows (.github/ci/results.py, check-results.yml):
-# <target-dir>/nextest/ci/junit.xml, with each failure's output.
+# target/nextest/ci/junit.xml in the workspace (nextest keeps its reports there, whatever the build
+# directory), with each failure's output.
 [profile.ci.junit]
 path = "junit.xml"
 store-success-output = false
