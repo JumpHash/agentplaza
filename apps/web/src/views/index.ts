@@ -16,7 +16,6 @@ import { mount as git } from './git';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
 import { mount as robotLab } from './robot-lab';
-import { mount as roomLab } from './room-lab';
 import { mount as machine } from './machine';
 import { mount as mcp } from './mcp';
 import { mount as models } from './models';
@@ -81,7 +80,6 @@ export const SCREENS: Screen[] = [
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
   { key: 'robot-lab', label: 'Robot lab', icon: 'wrench', section: 'Setup', mount: robotLab, hidden: true },
-  { key: 'room-lab', label: 'Room lab', icon: 'wrench', section: 'Setup', mount: roomLab, hidden: true },
   // The IDE is reached by its route and openIde (ide/open.ts), not the sidebar; its code loads on the first visit.
   { key: 'ide', label: 'IDE', icon: 'file', section: 'Plaza', mount: lazyMount(() => import('./ide'), (m) => m.mount), hidden: true },
 ];

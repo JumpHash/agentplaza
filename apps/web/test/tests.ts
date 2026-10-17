@@ -17,7 +17,7 @@ import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, mov
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
-import { agentTally, boardOf, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
+import { agentTally, gibText, machineFacts, machineSubtitle } from '../src/views/floor';
 import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snippets';
 import { DEFAULT_ENGINES, ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
@@ -272,12 +272,6 @@ eq(movesOf({ id: 1, kind: 'refund', amount: 500, created_at: 0, memo: '', posted
 eq(Math.abs(creditsUsd(1000) - 1) < 1e-9, true, 'a thousand credits are a dollar');
 eq(creditsOf(0.5), 500, 'half a dollar of model spend is five hundred credits');
 
-// The board plaza's machine mapping and room lookup (floor.ts).
-const wsBoard = boardOf({ kind: 'workstation', vendor: null, model: null, apple: null, gpus: [{}] });
-eq(wsBoard, { name: 'board/workstation', params: { gpus: 1, studio: 0 } }, 'board plaza: a workstation with one GPU shows the workstation board');
-const appleBoard = boardOf({ kind: 'laptop', vendor: 'apple', model: 'MacBook Pro', apple: { chip: 'M3', p_cores: 4, e_cores: 4, gpu_cores: 10, neural_cores: 16, unified_memory_gib: 16 }, gpus: [] });
-eq(appleBoard, { name: 'board/apple-soc', params: { gpus: 0, studio: 0, p_cores: 4, e_cores: 4, gpu_cores: 10, memory_gib: 16 } }, 'board plaza: an Apple laptop shows the Apple SoC with its cores and memory');
-eq(boardOf({ kind: 'workstation', vendor: 'apple', model: 'Mac Studio', apple: null, gpus: [] }).params.studio, 1, 'board plaza: a Studio is flagged');
 // The Machines view's pure parts (floor-popup.ts): the popup's text.
 eq(gibText(16384), '16 GiB', 'machines text: whole GiB');
 eq(gibText(16000), '15.6 GiB', 'machines text: one decimal when not whole');
