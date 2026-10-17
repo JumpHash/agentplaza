@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -603,14 +603,17 @@ pub fn routes(router: Router<App>) -> Router<App> {
             "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/info/refs",
             |app, req, p| internal(app, req, p, "info/refs"),
         )
+        .doc(RouteDoc::new("Relay an agent's git ref list").errors(&[502, 503]))
         .post(
             "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-upload-pack",
             |app, req, p| internal(app, req, p, "git-upload-pack"),
         )
+        .doc(RouteDoc::new("Relay an agent's git fetch to the forge").errors(&[411, 502, 503]))
         .post(
             "/internal/v1/agents/{cid}/gateway/git/{owner}/{repo}/git-receive-pack",
             |app, req, p| internal(app, req, p, "git-receive-pack"),
         )
+        .doc(RouteDoc::new("Relay an agent's git push to the forge").errors(&[403, 411, 502, 503]))
         // The console's git pages.
         .get("/v1/git", |app, _, _| {
             Response::json(
@@ -618,30 +621,60 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 &json!({ "configured": app.forge.configured(), "org": ORG }),
             )
         })
+        .doc(RouteDoc::new("Show whether the git host is configured"))
         .get("/v1/git/repos", repos_route)
+        .doc(RouteDoc::new("List the plaza's repositories").errors(&[502, 503]))
         .post("/v1/git/repos", create_repo_route)
+        .doc(
+            RouteDoc::new("Create a repository")
+                .status(201)
+                .errors(&[400, 502, 503]),
+        )
         .get("/v1/git/repos/{repo}", repo_route)
+        .doc(RouteDoc::new("Show a repository").errors(&[503]))
         .get("/v1/git/repos/{repo}/branches", branches_route)
+        .doc(RouteDoc::new("List a repository's branches").errors(&[503]))
         .get("/v1/git/repos/{repo}/commits", commits_route)
+        .doc(RouteDoc::new("List a repository's recent commits").errors(&[503]))
         .get("/v1/git/repos/{repo}/tree", tree_route)
+        .doc(RouteDoc::new("List a folder's files and subfolders").errors(&[503]))
         .get("/v1/git/repos/{repo}/file", file_route)
+        .doc(RouteDoc::new("Read a file from a repository").errors(&[400, 502, 503]))
         .get("/v1/git/repos/{repo}/pulls", pulls_route)
+        .doc(RouteDoc::new("List a repository's pull requests").errors(&[503]))
         .post("/v1/git/repos/{repo}/pulls", open_pr_route)
+        .doc(
+            RouteDoc::new("Open a pull request")
+                .status(201)
+                .errors(&[400, 503]),
+        )
         .get("/v1/git/repos/{repo}/pulls/{n}", pull_route)
+        .doc(RouteDoc::new("Show a pull request with its diff and reviews").errors(&[503]))
         .post("/v1/git/repos/{repo}/pulls/{n}/comments", comment_route)
+        .doc(
+            RouteDoc::new("Comment on a pull request")
+                .status(201)
+                .errors(&[400, 503]),
+        )
         .post("/v1/git/repos/{repo}/pulls/{n}/state", state_route)
+        .doc(RouteDoc::new("Close or reopen a pull request").errors(&[400, 503]))
         .post("/v1/git/repos/{repo}/pulls/{n}/review", review_route)
+        .doc(RouteDoc::new("Post a review on a pull request").errors(&[400, 503]))
         .post("/v1/git/repos/{repo}/pulls/{n}/merge", merge_route)
+        .doc(RouteDoc::new("Merge a pull request").errors(&[400, 503]))
         // The owner's git through the hub (behind its front door, as the other `/v1` routes).
         .get("/v1/git/smart/{repo}/info/refs", |app, req, p| {
             owner_relay(app, req, p.get("repo"), "info/refs")
         })
+        .doc(RouteDoc::new("Relay the owner's git ref list").errors(&[502, 503]))
         .post("/v1/git/smart/{repo}/git-upload-pack", |app, req, p| {
             owner_relay(app, req, p.get("repo"), "git-upload-pack")
         })
+        .doc(RouteDoc::new("Relay the owner's git fetch to the forge").errors(&[411, 502, 503]))
         .post("/v1/git/smart/{repo}/git-receive-pack", |app, req, p| {
             owner_relay(app, req, p.get("repo"), "git-receive-pack")
         })
+        .doc(RouteDoc::new("Relay the owner's git push to the forge").errors(&[411, 502, 503]))
 }
 
 /// Checks the internal token and the cid as the other gateway routes do, then relays.

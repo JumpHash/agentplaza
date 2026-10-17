@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_proto::chat::Usage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -873,12 +873,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 .collect();
             Response::json(200, &json!({ "models": models }))
         })
+        .doc(RouteDoc::new("List the foundry's models").errors(&[400]))
         .get("/v1/foundry/models/{id}", |app, _req, p| {
             match app.models.get(p.get("id")) {
                 Some(record) => Response::json(200, &view(&record)),
                 None => Response::error(404, "no such model"),
             }
         })
+        .doc(RouteDoc::new("Show a model").errors(&[404]))
         .post("/v1/foundry/models/import", |app, req, _p| {
             let body: ImportBody = match crate::agents::body(req) {
                 Ok(body) => body,
@@ -889,12 +891,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(e) => Response::error(400, &e),
             }
         })
+        .doc(RouteDoc::new("Register a model from a directory").errors(&[400]))
         .post("/v1/foundry/models/{id}/shadow", |app, _req, p| {
             outcome(app.models.shadow(p.get("id")))
         })
+        .doc(RouteDoc::new("Move a model to shadow").errors(&[404, 409]))
         .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
             outcome(app.models.promote(&app.agents, &app.looks, p.get("id")))
         })
+        .doc(RouteDoc::new("Promote a model to a model agent").errors(&[404, 409]))
         .post("/v1/foundry/models/{id}/invoke", |app, req, p| {
             let input: Value = match crate::agents::body(req) {
                 Ok(input) => input,
@@ -905,9 +910,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(e) => Response::error(400, &e),
             }
         })
+        .doc(RouteDoc::new("Run a model on an input").errors(&[400]))
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
             outcome(app.models.retire(&app.agents, &app.looks, p.get("id")))
         })
+        .doc(RouteDoc::new("Retire a model").errors(&[404, 409]))
 }
 
 /// An import's directory: an absolute path only (the upload route's rule, in its words).

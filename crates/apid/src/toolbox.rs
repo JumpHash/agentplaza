@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -385,8 +385,11 @@ impl Store {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/toolbox", list_route)
+        .doc(RouteDoc::new("List the toolbox discoveries"))
         .delete("/v1/toolbox/{id}", remove_route)
+        .doc(RouteDoc::new("Remove a toolbox discovery").errors(&[404]))
         .post("/v1/toolbox/{id}/flag", flag_route)
+        .doc(RouteDoc::new("Flag a toolbox discovery, or clear its flag").errors(&[400, 404]))
 }
 
 /// The owner's body for a flag: `{reason: string | null}`; null or blank clears the flag.

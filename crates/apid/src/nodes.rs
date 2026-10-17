@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::wire::Batch;
 use apz_metrics::{EntityKind, SeriesKey};
 use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
@@ -639,18 +639,37 @@ fn view_of(app: &App, node: Node) -> NodeView {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/nodes", |app, _, _| Response::json(200, &views(app)))
+        .doc(RouteDoc::new("List the plaza's machines"))
         .post("/v1/nodes/codes", issue_route)
+        .doc(
+            RouteDoc::new("Issue a join code for a new node")
+                .status(201)
+                .errors(&[400]),
+        )
         .get("/v1/nodes/codes", |app, _, _| {
             Response::json(200, &app.nodes.codes(apz_plaza::now_ms()))
         })
+        .doc(RouteDoc::new("List the join codes"))
         .delete("/v1/nodes/codes/{id}", revoke_code_route)
+        .doc(RouteDoc::new("Revoke an unused join code").errors(&[404]))
         .post("/v1/nodes/{id}/revoke", revoke_route)
+        .doc(RouteDoc::new("Revoke a node's access").errors(&[404]))
         .post("/v1/nodes/{id}/drain", drain_route)
+        .doc(RouteDoc::new("Start or stop draining a node").errors(&[400, 404]))
         .post("/v1/nodes/join", join_route)
+        .doc(
+            RouteDoc::new("Join a new node with a join code")
+                .status(201)
+                .errors(&[400, 403]),
+        )
         .get("/v1/nodes/{id}/commands", commands_route)
+        .doc(RouteDoc::new("Long-poll a node for its next commands"))
         .post("/v1/nodes/{id}/results", results_route)
+        .doc(RouteDoc::new("Report the result of a node's command").errors(&[400]))
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
+        .doc(RouteDoc::new("Record a node's heartbeat").errors(&[400, 404]))
         .post("/v1/nodes/{id}/metrics", metrics_route)
+        .doc(RouteDoc::new("Record a node's metrics batch").errors(&[400]))
 }
 
 /// `n0`, the hub's own machine, as a node record: never stored (it is always there), online while

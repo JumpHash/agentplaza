@@ -4,7 +4,7 @@
 //! Each route closure parses the request and calls a plain handler that takes `&Prompts` and typed bodies, so the
 //! tests call the handlers without an `App`.
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_prompt::{Finding, Kind, RULES_VERSION, Report, Stats};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -21,9 +21,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
     // `check` and `rules` are registered before the `{id}` routes.
     router
         .post("/v1/prompts/check", |_, req, _| with_body(req, check))
+        .doc(RouteDoc::new("Check a draft against the prompt rules").errors(&[422]))
         .get("/v1/prompts/rules", |_, _, _| {
             Response::json(200, &rules_body())
         })
+        .doc(RouteDoc::new("List the prompt rules and templates"))
         .get("/v1/prompts", |app, req, _| {
             reply(list(
                 &app.prompts,
@@ -31,42 +33,61 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 req.query_param("archived") == Some("true"),
             ))
         })
+        .doc(RouteDoc::new("List the prompts").errors(&[422]))
         .post("/v1/prompts", |app, req, _| {
             with_body(req, |b: CreateBody| create(&app.prompts, &app.bus, b))
         })
+        .doc(
+            RouteDoc::new("Create a prompt")
+                .status(201)
+                .errors(&[409, 422]),
+        )
         .get("/v1/prompts/{id}", |app, _, p| {
             reply(detail(&app.prompts, p.get("id")))
         })
+        .doc(RouteDoc::new("Show a prompt with its versions").errors(&[404]))
         .route("PUT", "/v1/prompts/{id}", |app, req, p| {
             with_body(req, |b: MetaBody| {
                 set_meta(&app.prompts, &app.bus, p.get("id"), b)
             })
         })
+        .doc(RouteDoc::new("Edit a prompt's details"))
         .get("/v1/prompts/{id}/versions/{v}", |app, _, p| {
             reply(version(&app.prompts, p.get("id"), p.get("v")))
         })
+        .doc(RouteDoc::new("Show one version of a prompt").errors(&[404]))
         .get("/v1/prompts/{id}/versions/{v}/raw", |app, _, p| {
             reply(raw(&app.prompts, p.get("id"), p.get("v")))
         })
+        .doc(RouteDoc::new("Download a prompt version as Markdown").errors(&[404]))
         .post("/v1/prompts/{id}/versions", |app, req, p| {
             with_body(req, |b: VersionBody| {
                 add_version(&app.prompts, &app.bus, p.get("id"), b)
             })
         })
+        .doc(
+            RouteDoc::new("Add a version to a prompt")
+                .status(201)
+                .errors(&[409]),
+        )
         .post("/v1/prompts/{id}/publish", |app, req, p| {
             with_body(req, |b: PublishBody| {
                 publish(&app.prompts, &app.bus, p.get("id"), b)
             })
         })
+        .doc(RouteDoc::new("Publish a version as the live one").errors(&[422]))
         .post("/v1/prompts/{id}/unpublish", |app, _, p| {
             reply(unpublish(&app.prompts, &app.bus, p.get("id")))
         })
+        .doc(RouteDoc::new("Unpublish a prompt"))
         .post("/v1/prompts/{id}/archive", |app, _, p| {
             reply(archive(&app.prompts, &app.bus, p.get("id"), true))
         })
+        .doc(RouteDoc::new("Archive a prompt"))
         .post("/v1/prompts/{id}/restore", |app, _, p| {
             reply(archive(&app.prompts, &app.bus, p.get("id"), false))
         })
+        .doc(RouteDoc::new("Restore an archived prompt"))
         .get("/v1/prompts/{id}/diff", |app, req, p| {
             reply(diff_versions(
                 &app.prompts,
@@ -75,9 +96,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 req.query_param("to"),
             ))
         })
+        .doc(RouteDoc::new("Compare two versions of a prompt").errors(&[404, 422]))
         .get("/v1/prompts/{id}/history", |app, _, p| {
             reply(history(&app.prompts, p.get("id")))
         })
+        .doc(RouteDoc::new("List a prompt's change history").errors(&[404]))
 }
 
 #[derive(Debug, Deserialize)]

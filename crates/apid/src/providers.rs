@@ -14,7 +14,7 @@ use apz_gateway::{
     Auth, Caller, Gateway, ModelInfo, ProviderConfig, ProviderKind, SecretRead, SecretReason,
     SecretSource, presets,
 };
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -571,15 +571,33 @@ impl Store {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/provider-kinds", kinds_route)
+        .doc(RouteDoc::new("List the provider kinds you can add"))
         .get("/v1/providers", list_route)
+        .doc(RouteDoc::new("List the providers"))
         .post("/v1/providers", create_route)
+        .doc(RouteDoc::new("Add a provider").status(201).errors(&[400]))
         .get("/v1/providers/{id}", get_route)
+        .doc(RouteDoc::new("Show a provider"))
         .route("PUT", "/v1/providers/{id}", replace_route)
+        .doc(RouteDoc::new("Replace a provider's settings").errors(&[400]))
         .delete("/v1/providers/{id}", delete_route)
+        .doc(RouteDoc::new("Delete a provider"))
         .route("PUT", "/v1/providers/{id}/secret", secret_route)
+        .doc(RouteDoc::new("Set a provider's API key").errors(&[400]))
         .post("/v1/providers/{id}/test", test_route)
+        .doc(
+            RouteDoc::new("Test a provider's connection")
+                .outbound()
+                .errors(&[502]),
+        )
         .get("/v1/providers/{id}/models", provider_models_route)
+        .doc(
+            RouteDoc::new("List a provider's models")
+                .outbound()
+                .errors(&[502]),
+        )
         .get("/v1/models", all_models_route)
+        .doc(RouteDoc::new("List the models of every provider").outbound())
 }
 
 fn kinds_route(_: &App, _: &Request, _: &Params<'_>) -> Response {

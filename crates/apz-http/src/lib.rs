@@ -3,7 +3,8 @@
 //! * [`Server`] — a threaded loopback server: one thread per connection, one
 //!   request per connection (`Connection: close`), bounded heads and bodies,
 //!   read/write timeouts, no chunked bodies.
-//! * [`Router`] — method + path-pattern dispatch (`/v1/agents/{cid}/tell`).
+//! * [`Router`] — method + path-pattern dispatch (`/v1/agents/{cid}/tell`), each route documented
+//!   for an OpenAPI spec with a [`RouteDoc`].
 //! * [`Response::sse`] / [`Sse`] — a server-sent event stream.
 //! * [`client`] — a blocking client for `127.0.0.1:port`, including an SSE
 //!   reader so one daemon can relay another's event stream.
@@ -17,11 +18,13 @@
 
 pub mod auth;
 pub mod client;
+mod doc;
 mod message;
 mod router;
 mod server;
 pub mod ws;
 
+pub use doc::{RouteDoc, RouteInfo, SchemaFn};
 pub use message::{Body, JSON, Limits, Request, Response, Sse, host_is_loopback};
 pub use router::{Params, Router};
 pub use server::{Handle, RELAY_PREFACE, Server};

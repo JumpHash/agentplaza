@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::fleet;
@@ -44,9 +44,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     .read(|s| s.recipes.values().cloned().collect::<Vec<_>>()),
             )
         })
+        .doc(RouteDoc::new("List the recipes"))
         .post("/v1/foundry/recipes/{id}/vet", |app, req, p| {
             vet(app, p.get("id"), &req.body)
         })
+        .doc(RouteDoc::new("Vet a recipe's commit").errors(&[400, 403, 404]))
         .get("/v1/foundry/datasets", |app, _, _| {
             Response::json(
                 200,
@@ -54,15 +56,31 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     .read(|s| s.datasets.values().cloned().collect::<Vec<_>>()),
             )
         })
+        .doc(RouteDoc::new("List the datasets"))
         .post("/v1/foundry/datasets", |app, req, _| export(app, &req.body))
+        .doc(
+            RouteDoc::new("Export a dataset from the plaza's records")
+                .status(201)
+                .errors(&[400]),
+        )
         .post("/v1/foundry/datasets/upload", |app, req, _| {
             upload(app, req)
         })
+        .doc(RouteDoc::new("Upload a dataset").status(201).errors(&[400]))
         .get("/v1/foundry/devices", |app, _, _| {
             Response::json(200, &devices_view(app))
         })
+        .doc(RouteDoc::new(
+            "List the accelerators and the jobs holding them",
+        ))
         .post("/v1/foundry/plan", |app, req, _| dry_run(app, &req.body))
+        .doc(RouteDoc::new("Plan a job without starting it").errors(&[400]))
         .post("/v1/foundry/jobs", |app, req, _| submit(app, &req.body))
+        .doc(
+            RouteDoc::new("Submit a training job")
+                .status(201)
+                .errors(&[400, 409, 422]),
+        )
         .get("/v1/foundry/jobs", |app, _, _| {
             Response::json(
                 200,
@@ -72,27 +90,34 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 ),
             )
         })
+        .doc(RouteDoc::new("List the jobs, newest first"))
         .get("/v1/foundry/jobs/{id}", |app, _, p| {
             match app.foundry.read(|s| s.jobs.get(p.get("id")).cloned()) {
                 Some(job) => Response::json(200, &job_view(&job)),
                 None => Response::error(404, "no such job"),
             }
         })
+        .doc(RouteDoc::new("Get one job").errors(&[404]))
         .get("/v1/foundry/jobs/{id}/events", |app, req, p| {
             events(app, req, p)
         })
+        .doc(RouteDoc::new("List a job's events after a sequence number").errors(&[404]))
         .post("/v1/foundry/jobs/{id}/hub/init", |app, req, p| {
             hub_call(app, req, p, HubCall::Init)
         })
+        .doc(RouteDoc::new("Initialize a loose job's hub").errors(&[400, 403, 404]))
         .get("/v1/foundry/jobs/{id}/hub/state", |app, req, p| {
             hub_call(app, req, p, HubCall::State)
         })
+        .doc(RouteDoc::new("Read a loose job's hub state").errors(&[403, 404]))
         .post("/v1/foundry/jobs/{id}/hub/round", |app, req, p| {
             hub_call(app, req, p, HubCall::Round)
         })
+        .doc(RouteDoc::new("Submit an island's round to the hub").errors(&[400, 403, 404, 409]))
         .get("/v1/foundry/jobs/{id}/hub/health", |app, req, p| {
             hub_call(app, req, p, HubCall::Health)
         })
+        .doc(RouteDoc::new("Check a loose job's hub").errors(&[403, 404]))
         .post(
             "/v1/foundry/jobs/{id}/cancel",
             |app, _, p| match jobs::cancel(
@@ -105,6 +130,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 None => Response::error(404, "no such job"),
             },
         )
+        .doc(RouteDoc::new("Cancel a job").errors(&[404]))
 }
 
 /// `POST /v1/foundry/recipes/{id}/vet` with `{commit}`: the owner vets a commit of a recipe.

@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -20,16 +20,35 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/mcp/catalog", |_, _, _| {
             Response::json(200, &super::catalog::PRESETS)
         })
+        .doc(RouteDoc::new("List the MCP server presets"))
         .get("/v1/mcp/servers", list_route)
+        .doc(RouteDoc::new("List the MCP servers"))
         .post("/v1/mcp/servers", create_route)
+        .doc(RouteDoc::new("Add an MCP server").errors(&[400, 404, 409]))
         .get("/v1/mcp/servers/{id}", get_route)
+        .doc(RouteDoc::new("Show an MCP server").errors(&[404]))
         .route("PATCH", "/v1/mcp/servers/{id}", patch_route)
+        .doc(RouteDoc::new("Change an MCP server's settings").errors(&[400, 404, 409]))
         .delete("/v1/mcp/servers/{id}", delete_route)
+        .doc(
+            RouteDoc::new("Delete an MCP server")
+                .status(204)
+                .errors(&[404, 500]),
+        )
         .post("/v1/mcp/servers/{id}/test", test_route)
+        .doc(
+            RouteDoc::new("Test an MCP server and list its tools")
+                .outbound()
+                .errors(&[404]),
+        )
         .post("/v1/mcp/servers/{id}/start", start_route)
+        .doc(RouteDoc::new("Start an MCP server").errors(&[404]))
         .post("/v1/mcp/servers/{id}/stop", stop_route)
+        .doc(RouteDoc::new("Stop an MCP server").errors(&[404]))
         .get("/v1/mcp/servers/{id}/tools", tools_route)
+        .doc(RouteDoc::new("List an MCP server's tools").errors(&[404]))
         .get("/v1/mcp/servers/{id}/logs", logs_route)
+        .doc(RouteDoc::new("Read an MCP server's recent logs").errors(&[404]))
 }
 
 /// A server as the console shows it: its config, and its status over its instances.

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use secrecy::SecretString;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -33,36 +33,57 @@ fn ctx(app: &App) -> Ctx<'_> {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/vault", |app, _, _| status(&ctx(app)))
+        .doc(RouteDoc::new("Show the vault's state"))
         .post("/v1/vault/unseal", |app, req, _| unseal(&ctx(app), req))
+        .doc(RouteDoc::new("Unseal the vault").errors(&[400, 429, 503]))
         .post("/v1/vault/seal", |app, _, _| seal(&ctx(app)))
+        .doc(RouteDoc::new("Seal the vault").errors(&[503]))
         .post("/v1/vault/slots", |app, req, _| add_slot(&ctx(app), req))
+        .doc(RouteDoc::new("Add an unlock slot").errors(&[400, 503]))
         .delete("/v1/vault/slots/{id}", |app, _, p| {
             remove_slot(&ctx(app), p.get("id"))
         })
+        .doc(RouteDoc::new("Remove an unlock slot").errors(&[404, 409, 503]))
         .post("/v1/vault/recovery", |app, _, _| recovery(&ctx(app)))
+        .doc(RouteDoc::new("Make a new recovery code, shown once").errors(&[503]))
         .post("/v1/vault/rekey", |app, req, _| rekey(&ctx(app), req))
+        .doc(RouteDoc::new("Rekey the vault").errors(&[400, 503]))
         .get("/v1/vault/secrets", |app, _, _| list(&ctx(app)))
+        .doc(RouteDoc::new("List the vault's entries").errors(&[503]))
         .post("/v1/vault/secrets", |app, req, _| create(&ctx(app), req))
+        .doc(RouteDoc::new("Create a secret").errors(&[400, 409, 503]))
         .route("PUT", "/v1/vault/secrets/{id}/value", |app, req, p| {
             rotate(&ctx(app), p.get("id"), req)
         })
+        .doc(RouteDoc::new("Rotate a secret's value").errors(&[400, 404, 503]))
         .route("PATCH", "/v1/vault/secrets/{id}", |app, req, p| {
             patch(&ctx(app), p.get("id"), req)
         })
+        .doc(RouteDoc::new("Change a secret's label, scope or bindings").errors(&[400, 404, 503]))
         .post("/v1/vault/secrets/{id}/rollback", |app, req, p| {
             rollback(&ctx(app), p.get("id"), req)
         })
+        .doc(RouteDoc::new("Roll a secret back to an earlier version").errors(&[400, 404, 503]))
         .delete("/v1/vault/secrets/{id}", |app, _, p| {
             delete(&ctx(app), p.get("id"))
         })
+        .doc(
+            RouteDoc::new("Delete a secret")
+                .status(204)
+                .errors(&[404, 503]),
+        )
         .post("/v1/vault/secrets/{id}/test", |app, req, p| {
             test(&ctx(app), p.get("id"), req, |binding, node| {
                 scrubbed(app, binding, node)
             })
         })
+        .doc(RouteDoc::new("Check a secret with its bound consumer").errors(&[400, 404, 503]))
         .post("/v1/vault/import", |app, req, _| import(&ctx(app), req))
+        .doc(RouteDoc::new("Import secrets from a dotenv file").errors(&[400, 503]))
         .get("/v1/vault/consumers", |app, _, _| consumers(&ctx(app)))
+        .doc(RouteDoc::new("List each consumer and its resolved entry").errors(&[503]))
         .get("/v1/vault/audit", |app, req, _| audit(&ctx(app), req))
+        .doc(RouteDoc::new("Read the audit log, verifying it on request").errors(&[400, 503]))
 }
 
 fn now() -> u64 {

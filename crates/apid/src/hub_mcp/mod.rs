@@ -25,7 +25,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::db::Db;
@@ -360,6 +360,7 @@ pub fn routes<S: Host>(router: Router<S>) -> Router<S> {
         .post("/mcp", |state, req, _| {
             handle_post(state.hub_mcp(), state.plaza(), req)
         })
+        .doc(RouteDoc::new("Send an MCP message to the hub").errors(&[400, 403, 404]))
         .get("/mcp", |state, req, _| {
             if state.hub_mcp().enabled() && state.hub_mcp().reachable(req.peer) {
                 Response::error(405, "this endpoint accepts POST").with_header("Allow", "POST")
@@ -367,6 +368,7 @@ pub fn routes<S: Host>(router: Router<S>) -> Router<S> {
                 Response::error(404, "no such endpoint")
             }
         })
+        .doc(RouteDoc::new("Refuse a GET on the MCP endpoint (it takes POST)").errors(&[404, 405]))
 }
 
 /// Answers one `POST /mcp`: a single message or a batch.

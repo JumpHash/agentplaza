@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::prices::Tokens;
@@ -705,8 +705,11 @@ pub fn retain(app: &App) {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/usage/summary", |app, req, _| summary_route(app, req))
+        .doc(RouteDoc::new("Summarize usage over a time window").errors(&[400]))
         .get("/v1/usage/series", |app, req, _| series_route(app, req))
+        .doc(RouteDoc::new("Show usage over time, bucketed").errors(&[400]))
         .get("/v1/usage/calls", |app, req, _| calls_route(app, req))
+        .doc(RouteDoc::new("List the newest model calls").errors(&[400]))
 }
 
 fn summary_route(app: &App, req: &Request) -> Response {

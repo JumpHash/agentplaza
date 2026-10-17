@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Component, Path};
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use serde_json::{Map, Value, json};
 
 use crate::agents::Status;
@@ -16,27 +16,35 @@ pub fn router() -> Router<App> {
         .get("/v1/overview", |app, _, _| {
             Response::json(200, &overview_value(app))
         })
+        .doc(RouteDoc::new("Read the hub's overview"))
         .get("/v1/machines", |app, _, _| machines(app))
+        .doc(RouteDoc::new("List the machines on this plaza"))
         .get("/v1/machine", |app, _, _| {
             app.noded.proxy("GET", "/v1/machine", b"")
         })
+        .doc(RouteDoc::new("Read this machine's facts"))
         .get("/v1/hub", |app, _, _| {
             app.hub.proxy("GET", "/v1/status", b"")
         })
+        .doc(RouteDoc::new("Read the hub's status"))
         .get("/v1/runs", |app, _, _| {
             app.noded.proxy("GET", "/v1/runs", b"")
         })
+        .doc(RouteDoc::new("List the runs on this machine"))
         .post("/v1/runs", |app, req, _| {
             app.noded.proxy("POST", "/v1/runs", &req.body)
         })
+        .doc(RouteDoc::new("Start a run"))
         .get("/v1/runs/{id}", |app, _, p| {
             app.noded
                 .proxy("GET", &format!("/v1/runs/{}", p.get("id")), b"")
         })
+        .doc(RouteDoc::new("Read a run"))
         .delete("/v1/runs/{id}", |app, _, p| {
             app.noded
                 .proxy("DELETE", &format!("/v1/runs/{}", p.get("id")), b"")
         })
+        .doc(RouteDoc::new("Delete a run"))
         .post("/v1/runs/{id}/input", |app, req, p| {
             app.noded.proxy(
                 "POST",
@@ -44,25 +52,31 @@ pub fn router() -> Router<App> {
                 &req.body,
             )
         })
+        .doc(RouteDoc::new("Send input to a run"))
         // The hub machine's shared data volumes: read-only images agents mount at /data/<name>.
         .get("/v1/volumes", |app, _, _| {
             app.noded.proxy("GET", "/v1/volumes", b"")
         })
+        .doc(RouteDoc::new("List the data volumes"))
         .post("/v1/volumes", |app, req, _| {
             app.noded.proxy("POST", "/v1/volumes", &req.body)
         })
+        .doc(RouteDoc::new("Create a data volume"))
         .delete("/v1/volumes/{name}", |app, _, p| {
             app.noded
                 .proxy("DELETE", &format!("/v1/volumes/{}", p.get("name")), b"")
         })
+        .doc(RouteDoc::new("Delete a data volume"))
         // The hub machine's warm templates (new agents and sandboxes restore one instead of booting).
         .get("/v1/templates", |app, _, _| {
             app.noded.proxy("GET", "/v1/templates", b"")
         })
+        .doc(RouteDoc::new("List the warm templates"))
         .delete("/v1/templates/{key}", |app, _, p| {
             app.noded
                 .proxy("DELETE", &format!("/v1/templates/{}", p.get("key")), b"")
-        });
+        })
+        .doc(RouteDoc::new("Delete a warm template"));
     let router = events::routes(router);
     let router = crate::acp::routes(router);
     let router = settings::routes(router);
@@ -122,16 +136,20 @@ pub fn router() -> Router<App> {
         .get("/v1/robots/species", |app, _, _| {
             crate::looks::species_list(app)
         })
+        .doc(RouteDoc::new("List the robot species with counts"))
         .route("PUT", "/v1/agents/{cid}/species", |app, req, p| {
             crate::looks::set_species(app, req, p)
-        });
+        })
+        .doc(RouteDoc::new("Give an agent a robot species").errors(&[400, 404]));
     router
         .get("/", |app, req, _| {
             static_file(&app.config.console, "index.html", accepts(req))
         })
+        .doc(RouteDoc::new("Serve the console's start page").errors(&[404]))
         .get("/{file}", |app, req, p| {
             static_file(&app.config.console, p.get("file"), accepts(req))
         })
+        .doc(RouteDoc::new("Serve a console file").errors(&[404]))
         .get("/assets/{file}", |app, req, p| {
             static_file(
                 &app.config.console,
@@ -139,6 +157,7 @@ pub fn router() -> Router<App> {
                 accepts(req),
             )
         })
+        .doc(RouteDoc::new("Serve a console asset").errors(&[404]))
 }
 
 /// The hub's machine id in `/v1/machines` and in `/v1/nodes` (`n0`, see `nodes::views`), so a client

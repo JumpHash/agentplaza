@@ -7,7 +7,7 @@
 //! POST /v1/agents/{cid}/wipe   body WipeRequest → {ok, wiped: [what]}
 //! POST /v1/agents/{cid}/retire                 → {ok}
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -28,8 +28,14 @@ pub struct WipeRequest {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/v1/agents/{cid}/restart", restart_route)
+        .doc(RouteDoc::new("Restart an agent's VM, cancelling its work").errors(&[404, 409]))
         .post("/v1/agents/{cid}/wipe", wipe_route)
+        .doc(
+            RouteDoc::new("Wipe an agent's workspace and chosen data")
+                .errors(&[400, 404, 409, 500]),
+        )
         .post("/v1/agents/{cid}/retire", retire_route)
+        .doc(RouteDoc::new("Retire an agent and stop its VM").errors(&[404, 409]))
 }
 
 fn restart_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {

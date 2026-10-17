@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::chat::Usage;
 use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -914,27 +914,38 @@ fn reconcile_once(app: &App) {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/agents", |app, _req, _p| list(app))
+        .doc(RouteDoc::new("List the agents"))
         .post("/v1/agents", |app, req, _p| spawn(app, req))
+        .doc(RouteDoc::new("Spawn agents of a role").errors(&[400, 502]))
         .get("/v1/agents/{cid}", |app, _req, p| match agent_at(app, p) {
             Ok(agent) => Response::json(200, &view(app, &agent)),
             Err(resp) => resp,
         })
+        .doc(RouteDoc::new("Get an agent").errors(&[404]))
         .route("PATCH", "/v1/agents/{cid}", |app, req, p| {
             patch(app, req, p)
         })
+        .doc(RouteDoc::new("Rename an agent or change its model").errors(&[400, 404, 500]))
         .delete("/v1/agents/{cid}", |app, _req, p| delete(app, p))
+        .doc(RouteDoc::new("Delete an agent and its run").errors(&[404]))
         .post("/v1/agents/{cid}/chat", chat)
+        .doc(RouteDoc::new("Send an agent a chat message").errors(&[400, 404, 409]))
         .post("/v1/agents/{cid}/assign", assign)
+        .doc(RouteDoc::new("Assign an open task to an agent").errors(&[400, 404, 409]))
         .post("/v1/agents/{cid}/cancel", |app, _req, p| cancel(app, p))
+        .doc(RouteDoc::new("Cancel an agent's work in progress").errors(&[404]))
         .post("/v1/agents/{cid}/stop", |app, req, p| {
             to_hub(app, req, p, "stop")
         })
+        .doc(RouteDoc::new("Stop an agent").errors(&[404]))
         .post("/v1/agents/{cid}/tell", |app, req, p| {
             to_hub(app, req, p, "tell")
         })
+        .doc(RouteDoc::new("Send an agent a message").errors(&[404]))
         .get("/v1/agents/{cid}/transcript", |app, req, p| {
             transcript(app, req, p)
         })
+        .doc(RouteDoc::new("Read an agent's transcript").errors(&[404]))
 }
 
 /// Chat text limit, in characters.
