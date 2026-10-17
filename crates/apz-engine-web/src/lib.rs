@@ -30,13 +30,15 @@ use web_time::{Duration, Instant};
 
 /// A click is a pointerdown and a pointerup at most this far apart (logical px), the engine's own click test.
 const CLICK_SLOP: f32 = 4.0;
-/// The ambient tier (the throttled frames) draws at most this often: 30 per second. At 12 the idle fleet (its packets,
-/// fans and sway) read as stutter; a Machines frame costs about a millisecond since a hover stopped re-baking it.
+/// On a software adapter (SwiftShader, llvmpipe) the ambient tier draws at most this often: 30 per second, since every
+/// frame costs the CPU the whole picture. On a GPU every tier draws on every animation frame, at the display's rate
+/// (120 Hz and up): a Machines frame costs well under a millisecond (crates/apz-engine/tests/machines_budget.rs).
 const AMBIENT_INTERVAL: Duration = Duration::from_micros(1_000_000 / 30);
 /// Frames submitted but not yet done on the GPU. A frame waits for an earlier one to finish once this many are in
 /// flight: a slow GPU (a software one in the test browser) would otherwise queue frames, and the staging memory of
-/// their uploads, until the device runs out (createBuffer throws).
-const MAX_FRAMES_IN_FLIGHT: u32 = 2;
+/// their uploads, until the device runs out (createBuffer throws). Three keep a fast GPU fed above 120 frames a
+/// second (two capped WebGL at about 110 on an RTX 3090 with vsync off).
+const MAX_FRAMES_IN_FLIGHT: u32 = 3;
 
 /// Which backends `start` may use.
 #[derive(Clone, Copy)]
@@ -81,6 +83,8 @@ struct Inner {
     /// The canvas is on screen (the IntersectionObserver's answer).
     visible: bool,
     reduced_motion: bool,
+    /// The adapter is a software one (a CPU device, SwiftShader or llvmpipe): the ambient frames are throttled.
+    software: bool,
     /// The motion of the last frame drawn: decides the tier of the next draw.
     last_motion: Motion,
     last_draw: Option<Instant>,
@@ -167,6 +171,7 @@ pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine
         canvas: canvas.clone(),
         device: gpu.device,
         _instance: gpu.instance,
+        software: is_software(&gpu.adapter.get_info()),
         _adapter: gpu.adapter,
         surface: Some(gpu.surface),
         config,
@@ -696,6 +701,16 @@ async fn open_backend(
     }))
 }
 
+/// Whether an adapter draws on the CPU: its device type says so, or its name is a known software rasteriser (WebGL
+/// reports no device type).
+fn is_software(info: &wgpu::AdapterInfo) -> bool {
+    let name = info.name.to_ascii_lowercase();
+    info.device_type == wgpu::DeviceType::Cpu
+        || ["swiftshader", "llvmpipe", "softpipe", "software"]
+            .iter()
+            .any(|s| name.contains(s))
+}
+
 /// The canvas's backing size: its CSS size times the device pixel ratio, rounded, at least 1 by 1.
 fn backing_size(canvas: &HtmlCanvasElement, dpr: f64) -> (u32, u32) {
     let rect: DomRect = canvas.get_bounding_client_rect();
@@ -967,12 +982,19 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
 
     let now = Instant::now();
     let first = std::mem::replace(&mut s.first_tick, false);
-    // Ambient frames are throttled to 30 per second; with reduced motion they are treated as Rest (no throttle).
-    let ambient_wait = s.last_motion == Motion::Ambient
+    // On a software adapter the ambient frames are throttled to 30 per second; with reduced motion they are treated as
+    // Rest (no throttle). On a GPU nothing waits: every animation frame draws.
+    let ambient_wait = s.software
+        && s.last_motion == Motion::Ambient
         && !s.reduced_motion
         && s.last_draw
             .is_some_and(|t| now.saturating_duration_since(t) < AMBIENT_INTERVAL);
     let drawable = s.visible && !s.document.hidden() && !ambient_wait && s.engine.busy();
+    if s.in_flight.load(Ordering::SeqCst) >= MAX_FRAMES_IN_FLIGHT {
+        // On WebGL, wgpu runs the work-done callbacks only when it maintains the queue: at a submit or a poll. With the
+        // frames held back here nothing would submit again, and the view would freeze for good, so poll for them.
+        let _ = s.device.poll(wgpu::PollType::Poll);
+    }
     if !(first || drawable) || s.in_flight.load(Ordering::SeqCst) >= MAX_FRAMES_IN_FLIGHT {
         return;
     }
