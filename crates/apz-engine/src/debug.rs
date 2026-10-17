@@ -8,7 +8,12 @@ use crate::stage::Stage;
 impl Stage {
     /// The shown view's name, as `__apzPerf` gives it: `machine` while the one-machine stage shows, else `machines`.
     pub fn view_name(&self) -> String {
-        if self.machine.is_some() { "machine" } else { "machines" }.to_string()
+        if self.machine.is_some() {
+            "machine"
+        } else {
+            "machines"
+        }
+        .to_string()
     }
 
     /// The Machines view's camera as `__apzCamera` reads it: the view, the eye, the target and the field of view in
@@ -91,6 +96,9 @@ mod tests {
         assert!(cam["fov"].is_number());
         let scene: Value = serde_json::from_str(&stage.scene_json()).unwrap();
         assert_eq!(scene["type"], "Scene");
-        assert!(!scene["children"].as_array().unwrap().is_empty(), "the sky and the ground are in the scene");
+        assert!(
+            !scene["children"].as_array().unwrap().is_empty(),
+            "the sky and the ground are in the scene"
+        );
     }
 }

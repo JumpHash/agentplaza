@@ -197,14 +197,20 @@ fn real_frames_pass_wgpu_validation_and_show_a_picture() {
         fleet: Some(fixture()),
         ..Feed::default()
     });
-    assert!(engine.stage.fleet.is_some(), "the fixture builds the Machines view");
+    assert!(
+        engine.stage.fleet.is_some(),
+        "the fixture builds the Machines view"
+    );
     let machines = render(&device, &queue, &mut engine, "machines");
     check_picture("machines", &machines);
 
     // 2. One machine of the fixture on its stage (the machine view's model).
     let id = fixture().machines[0].id.clone();
     engine.command(Cmd::ShowMachine { id });
-    assert!(engine.stage.machine.is_some(), "the fixture's first machine shows on its stage");
+    assert!(
+        engine.stage.machine.is_some(),
+        "the fixture's first machine shows on its stage"
+    );
     let stage = render(&device, &queue, &mut engine, "machine stage");
     check_picture("machine stage", &stage);
 

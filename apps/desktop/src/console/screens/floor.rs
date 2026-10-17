@@ -262,7 +262,8 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .into(),
     ];
     let (w, h) = state.size;
-    if w > 0.0 && h > 0.0
+    if w > 0.0
+        && h > 0.0
         && let Some(layer) = popup_layer(state, w, h)
     {
         layers.push(layer);
@@ -340,10 +341,11 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         names = names.push(ui::faint("No agents run here."));
     }
     for cid in m.agents.iter().take(POPUP_NAMES) {
-        let name = state.agents.iter().find(|a| a.cid == *cid).map_or_else(
-            || format!("agent {cid}"),
-            |a| display_name(*cid, &a.name),
-        );
+        let name = state
+            .agents
+            .iter()
+            .find(|a| a.cid == *cid)
+            .map_or_else(|| format!("agent {cid}"), |a| display_name(*cid, &a.name));
         names = names.push(ui::btn(
             &name,
             None,

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Id, agent_side, ide, lab_common, nodes, sanctions};
-use crate::console::engine::world::layout::{agent_hue, role_hue};
+use crate::console::engine::roles::{agent_hue, role_hue};
 use crate::console::rich;
 use crate::console::{Ctx, client, events, ui};
 use crate::theme::SANS;
@@ -1530,7 +1530,7 @@ fn conduct_card<'a>(state: &'a State) -> Element<'a, Msg> {
                         "Lift",
                         None,
                         ui::Kind::Primary,
-                        (!state.busy).then(|| Msg::Ask(Dialog::Lift(s.id)))
+                        (!state.busy).then_some(Msg::Ask(Dialog::Lift(s.id)))
                     ),
                 ]
                 .spacing(10)

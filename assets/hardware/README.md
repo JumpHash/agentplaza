@@ -81,7 +81,7 @@ LEDs (`led-ok`, `led-warn`, `led-off`, `led-crit`) must exist: the `status` tag 
 
 ## Grounding
 
-Every solid rests on what is directly under it. The rule, as the audit checks it (the grounding audit in `crates/apz-engine/src/world/ground_audit.rs`):
+Every solid rests on what is directly under it:
 
 - The bottom of a solid is at the top of the highest solid under it, within 0.02, at its centre and four inset corners of its bottom face. A bottom more than 0.02 above that is **floating**.
 - A solid whose bottom lies inside a solid beneath it, overlapping by more than 0.02 on every axis, is **sinking**. So is a bottom below the ground (y = 0).

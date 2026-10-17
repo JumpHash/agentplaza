@@ -288,5 +288,4 @@ mod tests {
         assert_eq!(lab.info()["errors"], json!(want));
         assert_eq!(lab.info()["kind"], "hardware");
     }
-
 }

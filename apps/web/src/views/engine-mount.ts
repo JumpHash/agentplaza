@@ -20,8 +20,8 @@ export interface WebEngine {
   /** The engine's commands: reset the view, open (or with no id, close) the popup, show a machine, leave a machine. */
   command(name: 'reset' | 'popup' | 'show_machine' | 'leave_machine', arg?: string | null): void;
   /** A pick on the stage: only a machine is picked. */
-  on_pick(cb: (kind: 'machine', id: string) => void): void;
-  screen_of(kind: 'machine' | 'robot', id: string): Float32Array;
+  on_pick(cb: (kind: 'machine' | 'none', id: string) => void): void;
+  screen_of(kind: 'machine', id: string): Float32Array;
   busy(): boolean;
   frames_drawn(): number;
   draw_calls(): number;
@@ -94,7 +94,7 @@ export interface LabCatalog {
 interface EngineGlue {
   default: () => Promise<unknown>;
   lab_catalog: () => string;
-  start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2'; nav?: boolean }) => Promise<WebEngine>;
+  start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_hardware_lab: (canvas: HTMLCanvasElement, opts: HardwareLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
@@ -134,12 +134,10 @@ export function loadLabCatalog(): Promise<LabCatalog> {
 /** The backend the page asks for: webgl2 with ?gl=1, else auto. */
 const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto');
 
-/** The navigation overlay the page asks for: on with ?nav=1. */
-const navOf = (): boolean => new URLSearchParams(location.search).get('nav') === '1';
 
 /** Loads the glue and starts an engine on the canvas: the Machines view and the stages share it. Throws without a glue. */
 export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
-  return (await loadGlue()).start(canvas, { backend: backendOf(), nav: navOf() });
+  return (await loadGlue()).start(canvas, { backend: backendOf() });
 }
 
 /** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */
@@ -690,10 +688,10 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
       started.destroy();
       return;
     }
-    // A pick is a machine: the popup opens on its card (the engine has already selected it).
-    started.on_pick((_kind, id) => {
+    // A machine's pick opens the popup on its card (the engine has already selected it); a click on nothing closes it.
+    started.on_pick((kind, id) => {
       if (closed) return;
-      popupId = id;
+      popupId = kind === 'machine' ? id : null;
       renderPopup();
     });
     engine = started;

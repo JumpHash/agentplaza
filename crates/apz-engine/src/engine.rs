@@ -713,7 +713,6 @@ impl Engine {
         let lab = self.stage.lab.as_ref()?;
         Some(lab.draw_counts(&owned, self.main_pass_calls()))
     }
-
 }
 
 /// The agents from the hub's list: a bare array, or `{ "agents": [...] }`.

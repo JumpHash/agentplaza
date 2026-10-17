@@ -120,9 +120,6 @@ pub struct WebEngine {
     hooks: RefCell<Option<Hooks>>,
 }
 
-/// The option that shows the navigation overlay (`APZ_NAV_OVERLAY`), read when the stage is built.
-const NAV_OPTIONS: [(&str, &str); 1] = [("nav", "APZ_NAV_OVERLAY")];
-
 /// The labs' option lists as JSON, from what the engine embeds (`apz_engine::lab_catalog`): the robot species, clips,
 /// tools, carried items, props and effects; the hardware models and each model's params. The labs list
 /// their controls from it, so the page loads none of the asset files.
@@ -131,15 +128,11 @@ pub fn lab_catalog() -> String {
     apz_engine::lab_catalog::catalog_json()
 }
 
-/// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2', nav?: boolean }`; a missing backend is 'auto'.
-/// The labs call this too: their own overrides stay set, since `nav` is only set when the options name it.
+/// Starts the engine on `canvas`. `opts` is `{ backend?: 'auto' | 'webgl2' }`; a missing backend is 'auto'. The labs call
+/// this too, with their own env overrides already set.
 #[wasm_bindgen]
 pub async fn start(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEngine, JsValue> {
     install_panic_hook();
-    let nav = lab_env(&opts, &NAV_OPTIONS);
-    if !nav.is_empty() {
-        apz_engine::set_env_overrides(nav);
-    }
     let mode = mode_of(&opts)?;
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("there is no window"))?;
     let document = window

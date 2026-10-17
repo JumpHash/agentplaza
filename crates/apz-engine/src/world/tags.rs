@@ -108,7 +108,6 @@ fn text_width(font: &str, text: &str) -> f32 {
     measure.measure_text(text)
 }
 
-
 /// logical px.
 pub(crate) fn paint_tag(name: &str, square: &str, scale: f32) -> (Canvas, f32, f32) {
     let room = TAG_MAX_W - 2.0 - 2.0 * PAD_X - SQUARE - TAG_GAP_X;
