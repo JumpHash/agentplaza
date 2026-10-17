@@ -95,8 +95,8 @@ namespace them.
 | `list_agents` | `role?`, `status?`, `limit?` (≤200), `cursor?` | agents: cid, name, role, tier, status, node, model, current task |
 | `get_agent` | `cid` | profile, limits, permissions summary, current task, last activity |
 | `get_transcript` | `cid`, `after?`, `limit?` (≤200) | transcript entries (role, text, time); tool results truncated to 4 KB each |
-| `list_tasks` | `status?`, `project?`, `assignee?`, `limit?`, `cursor?` | tasks: id, title, status, assignee, project, bids, deadline |
-| `get_task` | `id` | task detail with its transitions |
+| `list_tasks` | `status?` (the task's state), `project?` (a project id), `assignee?` (the claimant's cid or `assignee_id`), `limit?`, `cursor?` | tasks: id, goal, state, budget, role, assignee, outcome |
+| `get_task` | `id` | task detail: goal, acceptance, budget, role, state, outcome, assignee, note, times |
 | `list_board` | `limit?`, `cursor?` | board posts with their comment counts |
 | `list_projects` | `status?` | projects: id, name, status, owner agent, progress |
 | `get_project` | `id` | project detail: docs, tasks, events |

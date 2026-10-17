@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use apz_http::{Request, Response, Router};
+use apz_plaza::ConnectedAgent;
+use apz_plaza::events::EventBus;
+use apz_plaza::tasks::{CreateTask, TaskLedger};
 use serde_json::{Value, json};
 
 use super::audit::MemoryAudit;
@@ -129,9 +132,32 @@ impl Plaza for FakePlaza {
     }
 
     fn tasks(&self) -> Vec<Value> {
-        vec![
-            json!({ "id": "t1", "title": "Ship", "status": "open", "assignee": null, "project": null }),
-        ]
+        // The ledger's own rows: t1 open, t2 claimed by cid 1 (a coder), t3 by cid 2 (no role, so cid:2).
+        let ledger = TaskLedger::new(Arc::new(EventBus::default()));
+        let claimants = [None, Some((1_u64, Some("coder"))), Some((2, None))];
+        claimants
+            .into_iter()
+            .map(|claimant| {
+                let task = ledger
+                    .create(&CreateTask {
+                        goal: "Ship".into(),
+                        acceptance: None,
+                        budget: None,
+                        role: None,
+                    })
+                    .expect("a task");
+                if let Some((cid, role)) = claimant {
+                    let agent = ConnectedAgent {
+                        cid,
+                        role: role.map(String::from),
+                        run: "r1".into(),
+                        vm: 0,
+                    };
+                    task.claim(&agent).expect("a claim");
+                }
+                serde_json::to_value(task.view()).expect("a task row")
+            })
+            .collect()
     }
 
     fn task(&self, id: &str) -> Option<Value> {
@@ -143,11 +169,19 @@ impl Plaza for FakePlaza {
     }
 
     fn projects(&self) -> Vec<Value> {
-        Vec::new()
+        // One project, in the project store's own shape, that lists t1 and t3.
+        let project: crate::projects::Project = serde_json::from_value(json!({
+            "id": "pr1", "title": "Site", "goal": "a site", "kind": "code", "stage": "brief",
+            "lead_cid": 1, "tasks": ["t1", "t3"], "created_ms": T0, "updated_ms": T0,
+        }))
+        .expect("a project");
+        vec![serde_json::to_value(project).expect("a project row")]
     }
 
-    fn project(&self, _id: &str) -> Option<Value> {
-        None
+    fn project(&self, id: &str) -> Option<Value> {
+        self.projects()
+            .into_iter()
+            .find(|project| project["id"] == id)
     }
 
     fn approvals(&self) -> Vec<Value> {
@@ -954,6 +988,55 @@ fn one_happy_call_per_scope_reaches_its_service() {
     ));
     assert_eq!(told["result"]["isError"], false, "{told}");
     assert_eq!(told["result"]["structuredContent"]["text"], "look at t1");
+}
+
+#[test]
+fn list_tasks_filters_by_state_project_and_claimant() {
+    let h = harness(true);
+    let (token, _) = h.mint(Scope::Observe, &[], None);
+    let session = h.session(&token);
+    let ids = |args: Value| -> Vec<String> {
+        let body = body_of(&h.call(&token, Some(&session), tool_call("list_tasks", args)));
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        body["result"]["structuredContent"]["tasks"]
+            .as_array()
+            .expect("a tasks array")
+            .iter()
+            .map(|task| task["id"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(ids(json!({})), ["t1", "t2", "t3"]);
+    assert_eq!(ids(json!({ "status": "open" })), ["t1"]);
+    assert_eq!(ids(json!({ "status": "claimed" })), ["t2", "t3"]);
+    assert_eq!(ids(json!({ "project": "pr1" })), ["t1", "t3"]);
+    assert!(
+        ids(json!({ "project": "pr9" })).is_empty(),
+        "a project that does not exist has no tasks"
+    );
+    assert_eq!(ids(json!({ "assignee": 1 })), ["t2"]);
+    assert_eq!(ids(json!({ "assignee": "coder" })), ["t2"]);
+    assert_eq!(ids(json!({ "assignee": "cid:2" })), ["t3"]);
+    assert_eq!(
+        ids(json!({ "status": "claimed", "project": "pr1", "assignee": 2 })),
+        ["t3"]
+    );
+}
+
+#[test]
+fn get_task_answers_the_task_and_says_its_state() {
+    let h = harness(true);
+    let (token, _) = h.mint(Scope::Observe, &[], None);
+    let session = h.session(&token);
+    let body = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("get_task", json!({ "id": "t2" })),
+    ));
+    assert_eq!(
+        body["result"]["structuredContent"]["agent_cid"], 1,
+        "{body}"
+    );
+    assert_eq!(body["result"]["content"][0]["text"], "Task t2: claimed.");
 }
 
 #[test]
