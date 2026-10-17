@@ -189,7 +189,7 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .logo .mono-mark { font: 700 13px var(--sans); letter-spacing: -0.02em; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--paper) 70%, transparent); display: grid; place-items: center; padding: 24px; }
-.modal { width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: 6px 6px 0 var(--ink); }
+.modal { width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: 6px 6px 0 var(--shade); }
 .modal .card-head { position: sticky; top: 0; background: var(--sheet); border-bottom: 2px solid var(--ink); padding: 16px 18px 12px; }
 .modal .card-head h2 { font: 700 18px/1.1 var(--sans); letter-spacing: -0.01em; }
 .modal .card-body { padding: 18px; }

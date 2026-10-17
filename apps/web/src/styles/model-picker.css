@@ -94,7 +94,7 @@
   color: var(--ink);
   border: 1px solid var(--ink);
   border-radius: 0;
-  box-shadow: 4px 4px 0 var(--ink);
+  box-shadow: 4px 4px 0 var(--shade);
 }
 
 .mp-list {
