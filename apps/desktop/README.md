@@ -27,5 +27,5 @@ services), `shell.rs` (sidebar, top bar, STOP ALL), `client.rs` (the hub client)
 design kit), `icons.rs` (the web console's lucide icons), `floor_engine.rs` (the 3D engine's
 adapter), `picker.rs` (the model picker), `rich.rs` (chips and hover cards for agent text),
 `screens/` (one module per screen, with its tests beside it). `src/theme.rs` holds the palette and
-the type (Inter for the interface, Martian Mono for code). The shared board, IDE and rich-content
-logic come from `crates/apz-board`, `crates/apz-ide` and `crates/apz-rich`.
+the type (Inter for the interface, Martian Mono for code). The shared IDE and rich-content
+logic come from `crates/apz-ide` and `crates/apz-rich`.

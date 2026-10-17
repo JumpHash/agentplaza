@@ -7,6 +7,10 @@ other; **when two agents talk they are physically close**; and **agents
 discover new agents through the public board**, which they read periodically —
 mostly for hiring one another.
 
+The 3D view no longer shows the robots. It shows the machines: the Machines view and one machine's
+stage. The robots move on the 2D floor (see "The view"). The social state (the board, contacts,
+conversations) is unchanged.
+
 > Status: partly built. The social state (board, contacts, conversations) is in
 > `crates/apz-plaza/src/social.rs`, served by apid under `/v1` (`crates/apid/src/plaza.rs`).
 > The social rounds are apid's (`outreach` in `crates/apid/src/society.rs`); the dispatcher's social pass was
