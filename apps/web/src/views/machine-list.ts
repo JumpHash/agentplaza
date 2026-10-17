@@ -12,7 +12,7 @@ import { ago, badge, button, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook } from './station-machine';
-import { lookOfSpec, specKey, THUMB_H, THUMB_W, type PictureSpec } from './machine-picture';
+import { lookOfSpec, sizeLine, specKey, THUMB_H, THUMB_W, VIEWS, type PictureSpec } from './machine-picture';
 import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 
 export type Stats = NonNullable<MachineNode['stats']>;
@@ -718,6 +718,8 @@ interface Item {
   visible: boolean;
   /** This row's panel holds the stage canvas. */
   onStage: boolean;
+  /** The flat views under the open row's stage (set when the row opens with an engine). */
+  views?: HTMLElement | null;
   gone: boolean;
 }
 
@@ -759,16 +761,52 @@ function showThumb(it: Item, k: string, url: string | null): void {
   else replace(it.pic, fallbackPicture(it.row));
 }
 
-/** The engine's RGBA8 buffer as a PNG data URL (null when the buffer is not w by h pixels). */
-function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
-  if (rgba.length !== w * h * 4) return null;
-  const c = document.createElement('canvas');
+/** Paints the engine's RGBA8 buffer onto a canvas of w by h pixels (false when the buffer is not w by h pixels). */
+function paintRgba(c: HTMLCanvasElement, rgba: Uint8Array, w: number, h: number): boolean {
+  if (rgba.length !== w * h * 4) return false;
   c.width = w;
   c.height = h;
   const ctx = c.getContext('2d');
-  if (!ctx) return null;
+  if (!ctx) return false;
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
-  return c.toDataURL('image/png');
+  return true;
+}
+
+/** The engine's RGBA8 buffer as a PNG data URL (null when the buffer is not w by h pixels). */
+function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
+  const c = document.createElement('canvas');
+  return paintRgba(c, rgba, w, h) ? c.toDataURL('image/png') : null;
+}
+
+/** The flat views under an open row's stage: four labelled figures; fillViews paints them. */
+function viewsStrip(): HTMLElement {
+  return h(
+    'div.machine-views',
+    null,
+    ...VIEWS.map(({ label }) => h('figure', null, h('canvas', { role: 'img', 'aria-label': label, width: THUMB_W, height: THUMB_H }), h('figcaption', null, label))),
+  );
+}
+
+/** Asks the engine for each view (at the device's pixel ratio, at most 512 a side) and for the machine's size caption. A rejected request leaves its canvas empty. */
+function fillViews(strip: HTMLElement, machineId: string, stage: EngineStage): void {
+  const pr = pixelRatio();
+  const w = Math.min(512, Math.round(THUMB_W * pr));
+  const h2 = Math.min(512, Math.round(THUMB_H * pr));
+  strip.querySelectorAll<HTMLCanvasElement>('canvas').forEach((c, i) => {
+    const view = VIEWS[i]?.view;
+    if (view === undefined) return;
+    stage.view(machineId, view, w, h2).then(
+      (rgba) => paintRgba(c, rgba, w, h2),
+      () => false,
+    );
+  });
+  stage.machineInfo(machineId).then(
+    (info) => {
+      const line = sizeLine(info);
+      if (line !== null) strip.append(h('p.machine-views-caption', null, line));
+    },
+    () => undefined,
+  );
 }
 
 function placeCanvas(c: HTMLCanvasElement, x: number, y: number, w: number, h: number, transform: string, interactive: boolean): void {
@@ -958,7 +996,7 @@ export function machineList(): MachineList {
     const toggle = it.onStage ? button('Hide 3D view', () => choose(it.key), { kind: 'ghost', size: 'sm' }) : null;
     replace(
       it.inner,
-      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle), h('div.mlist-detail-main', null, it.row.detail())),
+      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle, it.views ?? null), h('div.mlist-detail-main', null, it.row.detail())),
     );
   };
 
@@ -1080,7 +1118,7 @@ export function machineList(): MachineList {
   }
 
   /** The open row's engine canvas: over its stage slot, faded in once the engine has drawn its first frame. */
-  function startEngineRow(machineId: string): void {
+  function startEngineRow(machineId: string): EngineStage {
     const canvas = document.createElement('canvas');
     canvas.className = 'mlist-engine-canvas';
     canvas.style.opacity = '0';
@@ -1092,6 +1130,7 @@ export function machineList(): MachineList {
     });
     eng = { canvas, stage };
     placeEngine();
+    return stage;
   }
 
   /** Keeps the engine canvas over the open row's stage slot (the panel's height moves the slot during a morph). */
@@ -1116,13 +1155,15 @@ export function machineList(): MachineList {
     const engineId = engineWanted() ? it.row.machineId : null;
     openKey = it.key;
     it.onStage = engineId !== null;
+    it.views = engineId !== null ? viewsStrip() : null;
     it.panel.hidden = false;
     paintDetail(it);
     const h1 = it.panel.scrollHeight;
     it.summary.setAttribute('aria-expanded', 'true');
     if (engineId !== null) {
       stopThumbStage(); // one engine per page: the row's engine takes over the thumbnails
-      startEngineRow(engineId);
+      const stage = startEngineRow(engineId);
+      if (it.views) fillViews(it.views, engineId, stage);
     }
     anim = { kind: 'open', it, h0: 0, h1, t0: performance.now() };
     ensureLoop();

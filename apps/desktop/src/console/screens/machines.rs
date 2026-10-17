@@ -21,7 +21,9 @@ use apz_engine::input::Action;
 use apz_engine::{Cmd, Engine, Feed, Motion};
 
 use super::Id;
-use crate::console::engine::fleet::FleetResponse;
+use crate::console::engine::fleet::{self, FleetResponse};
+use crate::console::engine::kit;
+use crate::console::engine::machine_stage::View;
 use crate::console::floor_engine::EngineProgram;
 use crate::console::ui::{INK, INK_2, INK_3, Kind, RULE, RULE_FAINT, SHEET, SIGNAL, Tone};
 use crate::console::{Ctx, client, render_card, ui};
@@ -1158,6 +1160,34 @@ fn stage_view<'a>(s: &'a StageView) -> Element<'a, Msg> {
         .into()
 }
 
+/// The machine's four flat views (`View::FLAT`) in a row under its 3D stage: each a card with its view's name under it,
+/// then one caption with the machine's size in centimetres and its kit model. Returns None when the kit has no model
+/// for the machine (the cards have none either).
+fn flat_views<'a>(m: &'a Machine) -> Option<Element<'a, Msg>> {
+    let active = is_live(&m.runs);
+    let machine = render_card::card_machine(&m.kind, &m.vendor, m.gpus.len(), active)?;
+    let model = kit::model(fleet::kit_model_of(&machine))?;
+    let mut columns: Vec<Element<'a, Msg>> = Vec::with_capacity(View::FLAT.len());
+    for (index, view) in View::FLAT.into_iter().enumerate() {
+        let card = render_card::flat_view(index, &m.kind, &m.vendor, m.gpus.len(), active, view)?;
+        columns.push(column![card, ui::label(view.name())].spacing(4).into());
+    }
+    // The kit's size is in kit units, 1 unit = 10 cm.
+    let cm = model.size * 10.0;
+    let caption = format!(
+        "{} × {} × {} cm · {}",
+        cm.x.round(),
+        cm.y.round(),
+        cm.z.round(),
+        model.id
+    );
+    Some(
+        column![row(columns).spacing(12), ui::faint(caption)]
+            .spacing(8)
+            .into(),
+    )
+}
+
 fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
     let slot = data.machines.iter().position(|x| x.id == m.id).unwrap_or(0);
     let figure: Element<'a, Msg> = device(m, slot);
@@ -1183,7 +1213,9 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
         technical(state, m),
     ];
     if let Some(s) = open {
-        parts.insert(3, stage_view(s));
+        let mut stage: Vec<Element<'a, Msg>> = vec![stage_view(s)];
+        stage.extend(flat_views(m));
+        parts.insert(3, column(stage).spacing(12).into());
     }
     if let Some(st) = &m.station {
         parts.insert(2, station_facts(st));

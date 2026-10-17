@@ -32,7 +32,7 @@ import { CENTRE_MIN, clampSize, closeSheets, defaultLayout, fitSize, isNarrow, L
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
 import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
-import { lookOfSpec, specKey, type PictureSpec } from '../src/views/machine-picture';
+import { lookOfSpec, sizeLine, specKey, VIEWS, type PictureSpec } from '../src/views/machine-picture';
 import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
 import type { NodeView, StationVm } from '../src/api';
 import { api, e2bApi, egressApi } from '../src/api';
@@ -1098,6 +1098,16 @@ eq(
   'row picture: why a row has no picture (revoked first)',
 );
 sectionEnd('station machine tests: ok');
+
+// ---- The Machines row's flat views (views/machine-picture.ts): four labelled views, and the size caption ----
+eq(
+  VIEWS.map((v) => `${v.view}:${v.label}`),
+  ['front:Front', 'side:Side', 'back:Back', 'top:Top'],
+  'views strip: the four flat views in order, each labelled',
+);
+eq(sizeLine({ model: 'server', size_cm: [44, 60, 90] }), '44 × 60 × 90 cm · server', 'views caption: the size in cm and the model');
+eq(sizeLine(null), null, 'views caption: omitted when the engine has no facts for the machine');
+sectionEnd('machine views tests: ok');
 
 // ---- IDE agent view model (src/ide/view.ts) ----
 {

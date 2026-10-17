@@ -37,6 +37,56 @@ const FAN_RATE: f32 = std::f32::consts::TAU * 2.0;
 const PLINTH_MARGIN: f32 = 0.5;
 const PLINTH_H: f32 = 0.18;
 
+/// A drawing of the machine: the stage's three-quarter view, or one of the flat views of a technical drawing (an
+/// orthographic camera square to a face: no perspective, so the parts keep their proportions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Iso,
+    Front,
+    Side,
+    Back,
+    Top,
+}
+
+impl View {
+    /// The flat views, in the order a drawing sheet shows them.
+    pub const FLAT: [View; 4] = [View::Front, View::Side, View::Back, View::Top];
+
+    /// The view a host names: `iso`, `front`, `side`, `back` or `top`, any case.
+    pub fn parse(name: &str) -> Option<View> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "iso" => Some(View::Iso),
+            "front" => Some(View::Front),
+            "side" => Some(View::Side),
+            "back" => Some(View::Back),
+            "top" => Some(View::Top),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            View::Iso => "iso",
+            View::Front => "front",
+            View::Side => "side",
+            View::Back => "back",
+            View::Top => "top",
+        }
+    }
+
+    /// From the machine's centre towards the eye of a flat view (the front faces +z; the side is the right-hand one;
+    /// the top looks down with the front at the bottom of the picture). None for the three-quarter view.
+    fn eye_dir(self) -> Option<Vec3> {
+        match self {
+            View::Iso => None,
+            View::Front => Some(Vec3::Z),
+            View::Side => Some(Vec3::X),
+            View::Back => Some(Vec3::NEG_Z),
+            View::Top => Some(Vec3::new(0.0, 1.0, 1.0e-4).normalize()),
+        }
+    }
+}
+
 /// The studio lights (the web's `makeScene`): a warm hemisphere light and a warm key light from above and to the front,
 /// over the palette's flat background.
 fn studio_world(palette: &Palette) -> World {
@@ -98,6 +148,8 @@ pub struct MachineStage {
     pub id: String,
     /// The kit model the machine is drawn as (`fleet::kit_model_of`).
     pub model: &'static str,
+    /// The kit model's own size (width, height, depth, kit units of about 10 cm), without the plinth.
+    pub model_size: [f32; 3],
     /// The machine and its plinth: width, height and depth.
     pub size: [f32; 3],
     pub orbit: Orbit,
@@ -158,6 +210,7 @@ impl MachineStage {
         let mut stage = MachineStage {
             id: machine.id.clone(),
             model: model_id,
+            model_size: model.size.to_array(),
             size,
             orbit: Orbit::default(),
             center,
@@ -291,6 +344,39 @@ impl MachineStage {
         self.frame_with(self.camera_of(&orbit, aspect))
     }
 
+    /// The frame of `view` at `aspect`: the thumbnail's pose for [`View::Iso`]; for a flat view, an orthographic camera
+    /// square to that face, the machine and its plinth filling [`THUMB_FILL`] of the picture by its tighter side.
+    pub fn view_frame(&self, view: View, aspect: f32) -> Frame {
+        let Some(dir) = view.eye_dir() else {
+            return self.thumbnail_frame(aspect);
+        };
+        let right = Vec3::Y.cross(dir).normalize();
+        let up = dir.cross(right);
+        let half = Vec3::from(self.size) / 2.0;
+        let (mut u, mut v) = (0.0f32, 0.0f32);
+        for k in 0..8 {
+            let corner = Vec3::new(
+                if k & 1 == 0 { -half.x } else { half.x },
+                if k & 2 == 0 { -half.y } else { half.y },
+                if k & 4 == 0 { -half.z } else { half.z },
+            );
+            u = u.max(corner.dot(right).abs());
+            v = v.max(corner.dot(up).abs());
+        }
+        let half_h = v.max(u / aspect.max(1e-3)) / THUMB_FILL;
+        let dist = half_h / (FOV_DEG.to_radians() / 2.0).tan();
+        let camera = Camera {
+            eye: self.center + dir * dist,
+            target: self.center,
+            fov: FOV_DEG,
+            near: 0.05,
+            far: 1000.0,
+            aspect,
+            ortho: true,
+        };
+        self.frame_with(camera)
+    }
+
     fn frame_with(&self, camera: Camera) -> Frame {
         Frame {
             animated: Some(Arc::new(self.instances())),
@@ -318,6 +404,17 @@ impl Stage {
             .as_ref()
             .and_then(|f| f.machines.iter().find(|m| m.id == id))?;
         MachineStage::new(machine, &self.palette())
+    }
+
+    /// The kit model one machine of the current feed draws as, and that model's size (width, height, depth in kit units
+    /// of about 10 cm), or None when the feed has no such machine.
+    pub fn machine_model(&self, id: &str) -> Option<(&'static str, [f32; 3])> {
+        let machine = self
+            .fleet_data
+            .as_ref()
+            .and_then(|f| f.machines.iter().find(|m| m.id == id))?;
+        let model = kit::model(kit_model_of(machine))?;
+        Some((kit_model_of(machine), model.size.to_array()))
     }
 
     /// Shows one machine of the current feed on the stage (`Cmd::ShowMachine`). False when the feed has no such machine.
@@ -463,7 +560,9 @@ mod tests {
             .expect("the fixture machine");
         let stage = MachineStage::new(m, &ink()).expect("a stage");
         let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
-        renderer.thumbnail(&stage, 64, 64).expect("the readback")
+        renderer
+            .thumbnail(&stage, View::Iso, 64, 64)
+            .expect("the readback")
     }
 
     /// One pixel of a 64 by 64 RGBA thumbnail.
@@ -538,6 +637,71 @@ mod tests {
             bright >= 60.0,
             "the server is lit: its brightest twentieth reaches only {bright:.0} of 255"
         );
+    }
+
+    #[test]
+    fn the_flat_views_are_orthographic_and_square_to_their_faces() {
+        let m = machine(json!({ "id": "s", "name": "s", "kind": "server" }));
+        let stage = MachineStage::new(&m, &ink()).expect("a stage");
+        for (view, dir) in [
+            (View::Front, Vec3::Z),
+            (View::Side, Vec3::X),
+            (View::Back, Vec3::NEG_Z),
+            (View::Top, Vec3::Y),
+        ] {
+            let camera = stage.view_frame(view, 1.0).camera;
+            assert!(camera.ortho, "{view:?} is flat");
+            let towards_eye = (camera.eye - camera.target).normalize();
+            assert!(
+                towards_eye.dot(dir) > 0.999,
+                "{view:?} looks along {towards_eye}"
+            );
+            assert_eq!(View::parse(view.name()), Some(view));
+        }
+        assert!(
+            !stage.view_frame(View::Iso, 1.0).camera.ortho,
+            "the three-quarter view keeps its perspective"
+        );
+        assert_eq!(View::parse("Elevation"), None);
+    }
+
+    #[test]
+    fn each_flat_view_draws_the_machine_large_on_a_clear_card() {
+        let Some((device, queue)) = test_device() else {
+            eprintln!("no wgpu adapter here: the view test is skipped");
+            return;
+        };
+        const N: usize = 64;
+        let m = machine(json!({ "id": "s", "name": "s", "kind": "server" }));
+        let stage = MachineStage::new(&m, &ink()).expect("a stage");
+        let mut renderer = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        for view in View::FLAT {
+            let px = renderer
+                .thumbnail(&stage, view, 64, 64)
+                .expect("the readback");
+            // The corners hold nothing but, from above, the faint cast shadow (the catcher's 0.2 opacity: alpha 51).
+            for (x, y) in [(0, 0), (N - 1, 0), (0, N - 1), (N - 1, N - 1)] {
+                assert!(
+                    pixel(&px, x, y)[3] <= 51,
+                    "{view:?}: the corner ({x}, {y}) is {:?}",
+                    pixel(&px, x, y)
+                );
+            }
+            let (mut lo, mut hi) = ((N, N), (0, 0));
+            for y in 0..N {
+                for x in 0..N {
+                    if pixel(&px, x, y)[3] >= 128 {
+                        lo = (lo.0.min(x), lo.1.min(y));
+                        hi = (hi.0.max(x), hi.1.max(y));
+                    }
+                }
+            }
+            let span = (hi.0.saturating_sub(lo.0) + 1).max(hi.1.saturating_sub(lo.1) + 1);
+            assert!(
+                span as f32 >= 0.75 * N as f32,
+                "{view:?}: the machine spans {span} of {N} px"
+            );
+        }
     }
 
     #[test]

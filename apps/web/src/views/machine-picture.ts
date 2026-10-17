@@ -3,6 +3,7 @@
 // nothing and holds no renderer.
 
 import { lookOf, type Look, type MachineKind } from './machine-look';
+import type { MachineInfo, MachineView } from './engine-mount';
 
 /** CSS px of a list thumbnail. */
 export const THUMB_W = 160;
@@ -108,4 +109,19 @@ export function specKey(spec: PictureSpec): string {
   const p = pictureOf(spec);
   const tints = p.tints.map((t) => (t === null ? '-' : t.toString(16))).join(',');
   return `m${digest([PICTURE_VERSION, p.look, tints, p.sticks, p.drives].join('|'))}`;
+}
+
+/** The four flat views under a row's stage, in the order the strip shows them. */
+export const VIEWS: readonly { view: MachineView; label: string }[] = [
+  { view: 'front', label: 'Front' },
+  { view: 'side', label: 'Side' },
+  { view: 'back', label: 'Back' },
+  { view: 'top', label: 'Top' },
+];
+
+/** The views' caption, `44 × 60 × 90 cm · server`; null when the engine has no facts for the machine. */
+export function sizeLine(info: MachineInfo | null): string | null {
+  if (info === null) return null;
+  const [w, h, d] = info.size_cm;
+  return `${w} × ${h} × ${d} cm · ${info.model}`;
 }

@@ -14,6 +14,27 @@ function glueName(): string {
 }
 
 /** The surface of the wasm engine this mount uses (the crate's WebEngine, wasm-bindgen --target web). */
+/** A machine's view: the iso orbit, or one of the four flat orthographic drawings. */
+export type MachineView = 'iso' | 'front' | 'side' | 'back' | 'top';
+
+/** A machine's facts from the engine: its model, and its size in cm as [width, height, depth]. */
+export interface MachineInfo {
+  model: string;
+  size_cm: [number, number, number];
+}
+
+/** The engine's machine_info JSON as a MachineInfo; null for `null`, or for JSON of another shape. */
+export function parseMachineInfo(json: string): MachineInfo | null {
+  try {
+    const v: unknown = JSON.parse(json);
+    if (typeof v !== 'object' || v === null) return null;
+    const { model, size_cm } = v as Partial<MachineInfo>;
+    return typeof model === 'string' && Array.isArray(size_cm) && size_cm.length === 3 ? (v as MachineInfo) : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface WebEngine {
   backend(): string;
   set_feed(json: string): void;
@@ -44,6 +65,10 @@ export interface WebEngine {
   look_at(x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   portrait(json: string, w: number, h: number): Promise<Uint8Array>;
+  /** One of the machine's views, RGBA8 w by h with a transparent background (each side at most 512). */
+  view(id: string, view: string, w: number, h: number): Promise<Uint8Array>;
+  /** The machine's facts, JSON `{"model", "size_cm"}`, or `null`. */
+  machine_info(id: string): string;
   destroy(): void;
 }
 
@@ -244,6 +269,10 @@ export interface EngineStage {
   portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   /** The engine's RGBA8 thumbnail of a machine, w by h (each side at most 512). Rejects ENGINE_STOPPED once destroyed. */
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
+  /** One of the machine's views (iso, front, side, back, top), RGBA8 w by h. Rejects ENGINE_STOPPED once destroyed. */
+  view(id: string, view: MachineView, w: number, h: number): Promise<Uint8Array>;
+  /** The machine's facts from the engine, or null. Rejects ENGINE_STOPPED once destroyed. */
+  machineInfo(id: string): Promise<MachineInfo | null>;
   /** Stops the engine and the fleet poll. The caller removes the canvas. */
   destroy(): void;
 }
@@ -327,27 +356,22 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
   };
   boot().catch((e: unknown) => console.error('engine stage did not start', e));
 
+  // Runs a call on the engine once the fleet has shown it; a stopped engine rejects ENGINE_STOPPED.
+  const whenReady = <T>(run: (e: WebEngine) => T | Promise<T>): Promise<T> =>
+    Promise.race([fleetSeen, stopped])
+      .then(() => {
+        if (closed || engine === null) throw new Error(closed ? ENGINE_STOPPED : 'the engine did not start');
+        return run(engine);
+      })
+      .catch((e: unknown) => {
+        throw closed ? new Error(ENGINE_STOPPED) : e;
+      });
+
   return {
-    thumbnail(id, w, h) {
-      return Promise.race([fleetSeen, stopped])
-        .then(() => {
-          if (closed || engine === null) throw new Error(closed ? ENGINE_STOPPED : 'the engine did not start');
-          return engine.thumbnail(id, w, h);
-        })
-        .catch((e: unknown) => {
-          throw closed ? new Error(ENGINE_STOPPED) : e;
-        });
-    },
-    portrait(json, w, h) {
-      return Promise.race([fleetSeen, stopped])
-        .then(() => {
-          if (closed || engine === null) throw new Error(closed ? ENGINE_STOPPED : 'the engine did not start');
-          return engine.portrait(json, w, h);
-        })
-        .catch((e: unknown) => {
-          throw closed ? new Error(ENGINE_STOPPED) : e;
-        });
-    },
+    thumbnail: (id, w, h) => whenReady((e) => e.thumbnail(id, w, h)),
+    portrait: (json, w, h) => whenReady((e) => e.portrait(json, w, h)),
+    view: (id, view, w, h) => whenReady((e) => e.view(id, view, w, h)),
+    machineInfo: (id) => whenReady((e) => parseMachineInfo(e.machine_info(id))),
     destroy() {
       closed = true;
       stopNow();
@@ -372,6 +396,8 @@ export function startThumbEngine(): EngineStage {
   return {
     thumbnail: (id, w, h) => stage.thumbnail(id, w, h),
     portrait: (json, w, h) => stage.portrait(json, w, h),
+    view: (id, view, w, h) => stage.view(id, view, w, h),
+    machineInfo: (id) => stage.machineInfo(id),
     destroy() {
       stage.destroy();
       canvas.remove();

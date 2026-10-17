@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use apz_engine::input::{Button, Event};
+use apz_engine::machine_stage::View;
 use apz_engine::style::{Lamp, Style};
 use apz_engine::{Cmd, Engine, Motion, Pick};
 use js_sys::{Array, Float32Array, Function, Promise, Reflect, Uint8Array, Uint32Array};
@@ -284,7 +285,20 @@ impl WebEngine {
     /// One machine's stage pose rendered offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. A Promise, since the
     /// readback is async: it resolves once the GPU has copied the pixels back, and rejects for an unknown id.
     pub fn thumbnail(&self, id: String, w: u32, h: u32) -> Promise {
-        let started = self.shared.borrow_mut().engine.thumbnail_begin(&id, w, h);
+        self.view(id, "iso".to_string(), w, h)
+    }
+
+    /// One machine drawn in `view` ('iso', or the flat 'front', 'side', 'back' and 'top': orthographic, square to that
+    /// face), offscreen at `w` by `h` (each at most 512), as RGBA8 bytes. Rejects for an unknown id or view.
+    pub fn view(&self, id: String, view: String, w: u32, h: u32) -> Promise {
+        let started = View::parse(&view)
+            .ok_or_else(|| format!("no view '{view}' (iso, front, side, back or top)"))
+            .and_then(|view| {
+                self.shared
+                    .borrow_mut()
+                    .engine
+                    .thumbnail_begin(&id, view, w, h)
+            });
         wasm_bindgen_futures::future_to_promise(async move {
             let thumb = started.map_err(|e| JsValue::from_str(&e))?;
             let pixels = thumb.pixels().await.map_err(|e| JsValue::from_str(&e))?;
@@ -302,6 +316,20 @@ impl WebEngine {
             let pixels = thumb.pixels().await.map_err(|e| JsValue::from_str(&e))?;
             Ok(Uint8Array::from(pixels.as_slice()).into())
         })
+    }
+
+    /// The kit model one machine draws as and its size, as JSON: `{"model": "server", "size_cm": [w, h, d]}` (one kit
+    /// unit is 10 cm), or `null` when the feed has no such machine.
+    pub fn machine_info(&self, id: String) -> String {
+        match self.shared.borrow().engine.stage.machine_model(&id) {
+            Some((model, [w, h, d])) => format!(
+                "{{\"model\":\"{model}\",\"size_cm\":[{:.0},{:.0},{:.0}]}}",
+                w * 10.0,
+                h * 10.0,
+                d * 10.0
+            ),
+            None => "null".to_string(),
+        }
     }
 
     /// The backend the engine draws with: 'webgpu' or 'webgl2'.
