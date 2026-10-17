@@ -9,11 +9,12 @@
 # serves anything from that run: the artifact holds only result data (JSON and JUnit), which main's
 # own report builder (api-tests/report/build.mjs) reads, escapes and scrubs into the page. The pull
 # request is found from the run's commit, not from anything in the artifact.
-name: api report
+name: API report
+run-name: "API report: ${{ github.event.workflow_run.display_title }}"
 
 on:
   workflow_run:
-    workflows: [pr]
+    workflows: [Checks]
     types: [completed]
 
 permissions:
@@ -27,6 +28,7 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish to Pages
     if: github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 10

@@ -8,8 +8,10 @@
 # The runner's labels come from the repository variable MACOS_RUNNER (a JSON list; default
 # ["self-hosted","macOS","X64"]); APZ_MACOS=off skips macOS, and a release then ships without it.
 # Speed: cargo's build directory persists on the runner (only changed crates compile), one release
-# build per architecture for tests and packages, nextest.
-name: macos
+# build per architecture for tests and packages, nextest; the checkout keeps the mtimes this runner
+# last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
+name: macOS
+run-name: "${{ format('macOS by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -18,12 +20,26 @@ on:
       package: { type: boolean, default: false }
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
+      # Build and link the tests of the architecture this runner cannot run; false only checks that
+      # they compile (cargo check: no code generated, nothing linked). pr.yml passes false for a
+      # pull request; the merge queue, nightly and releases build them in full.
+      link: { type: boolean, default: true }
   workflow_call:
     inputs:
       version: { type: string, default: "" }
       package: { type: boolean, default: false }
       tests: { type: boolean, default: true }
       trusted: { type: boolean, default: true }
+      # Packages (space-separated) whose tests run, with those of every package that depends on
+      # them; empty: all.
+      only: { type: string, default: "" }
+      # Build and link the tests of the architecture this runner cannot run; false only checks that
+      # they compile (cargo check: no code generated, nothing linked). pr.yml passes false for a
+      # pull request; the merge queue, nightly and releases build them in full.
+      link: { type: boolean, default: true }
 
 concurrency:
   group: ${{ github.workflow }}-macos-${{ github.ref }}
@@ -36,6 +52,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
+  # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
+  # instead"), and the build directory kept on the runner already keeps unchanged crates built.
+  RUSTC_WRAPPER: ""
   # The oldest macOS the app supports (Info.plist's LSMinimumSystemVersion): C code and Rust agree.
   MACOSX_DEPLOYMENT_TARGET: "12.0"
   VERSION: ${{ inputs.version || '0.0.0-ci' }}
@@ -46,13 +65,16 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }}
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }}
     if: vars.APZ_MACOS != 'off'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","X64"]') }}
     # A cold build directory compiles everything once; after that a run rebuilds only what changed.
     # A hung test is killed by nextest after 2 minutes.
     timeout-minutes: 90
     steps:
+      # The fleet may set its wrapper for the job (GITHUB_ENV, which outranks env above): unset it here too.
+      - name: No fleet sccache
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
       # save theirs (the aarch64 guest) with zstd; without it here they are not found, and what
@@ -80,18 +102,38 @@ jobs:
       # A pull request from a fork builds in its own directory, never in the one releases use.
       - name: The runner's build directory
         run: echo "CARGO_TARGET_DIR=$HOME/.cache/${{ inputs.trusted && 'agentplaza-ci' || 'agentplaza-ci-untrusted' }}/target" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "x86_64-apple-darwin,aarch64-apple-darwin" }
+      # Pinned like the Linux image's (.github/ci/Dockerfile RUST_VERSION): a new Rust is a deliberate
+      # change, not a full rebuild on the day it ships.
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.99.0", targets: "x86_64-apple-darwin,aarch64-apple-darwin" }
+      # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
+      - name: Keep the build directory fresh
+        run: |
+          py=python3; $py -c '' 2>/dev/null || py=python
+          $py .github/ci/build-cache.py mtimes "$(dirname "$CARGO_TARGET_DIR")"
+      - name: Which tests
+        if: inputs.tests && inputs.only != ''
+        env: { ONLY: "${{ inputs.only }}" }
+        run: |
+          filter=""
+          for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
+          echo "the tests of $ONLY and of what depends on them: $filter"
+          echo "NEXTEST_FILTER=$filter" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         if: inputs.tests
         with: { tool: nextest }
       - name: Test (Intel; the guest harness runs only inside Linux VMs)
         if: inputs.tests
-        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target x86_64-apple-darwin
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile release --profile ci --target x86_64-apple-darwin ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (Apple Silicon cannot run here)
         if: inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
-        run: cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
+        run: |
+          if [ "${{ inputs.link }}" = true ]; then
+            cargo test --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --no-run
+          else
+            cargo check --workspace --exclude agent-harness --locked --profile release --target aarch64-apple-darwin --all-targets
+          fi
       - name: Build the binaries
         if: inputs.package
         run: |
@@ -150,3 +192,10 @@ jobs:
       - uses: actions/cache/save@v4
         if: inputs.package
         with: { path: out-macos, key: "pkg-macos-${{ github.run_id }}" }
+      # Units no build has used for days go first; the directory is emptied only if the disk is short.
+      - name: Prune the build directory
+        if: always()
+        run: |
+          [ -f .github/ci/build-cache.py ] || exit 0  # the job ended before its checkout
+          py=python3; $py -c '' 2>/dev/null || py=python
+          $py .github/ci/build-cache.py prune "$CARGO_TARGET_DIR"

@@ -4,7 +4,7 @@
 # bookworm in the same job where the runner can run arm64 (qemu). release.yml calls this after
 # linux.yml on every push to main. (The Pi's code is tested by linux.yml's arm64 job.) Runs on the
 # org's self-hosted Linux runner, packaging inside the CI image (see linux.yml).
-name: raspberry-pi
+name: Raspberry Pi
 
 on:
   workflow_call:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   package:
-    name: package (Raspberry Pi OS arm64)
+    name: Package (Raspberry Pi OS arm64)
     if: inputs.package
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15

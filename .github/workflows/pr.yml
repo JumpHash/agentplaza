@@ -1,15 +1,22 @@
 # The pull request gate: every pull request to main, and every merge-queue entry (the exact commit
-# that will land), runs this. `ci-ok` sums it up and is the one check the main ruleset requires.
+# that will land), runs this. "All checks passed" (job ci-ok) sums it up and is the one check the
+# main ruleset requires: a check is named by its job's name, so renaming that job means changing the
+# ruleset's required check with it.
 #
 #   changes     what the change touches (.github/ci/changes.sh): a change with no code in it
 #               (Markdown, docs, .gitignore and the like) builds and tests nothing
 #   lint        rustfmt, clippy with warnings as errors, cargo deny (advisories, licences, sources)
 #   migrations  applied migrations unchanged, new ones numbered in order (scripts/check-migrations.sh)
 #   console     the web console's type-check, build and tests (console.yml)
-#   linux       the Linux tests (linux.yml): x86_64 always, arm64 when platform code changes
+#   linux       the Linux tests (linux.yml): x86_64 and arm64, each on its own runners
 #   windows     the Windows tests (windows.yml), when platform code changes
 #   macos       the macOS tests (macos.yml), when platform code changes
 #   api         the hub API's tests against a scratch hub (api-tests/): Bruno, timings, fuzzing
+#
+# Speed: every build job starts from the runner's warm build directory and rebuilds only the crates
+# the change touches (.github/ci/build-cache.py, in-image.sh). A pull request runs only the tests of
+# the packages it changes and of every package that depends on them (changes.sh `tests`); the merge
+# queue runs them all on the exact commit that lands.
 #
 # Safety: this is a public repository whose jobs run on the org's self-hosted runners. Workflows of
 # outside contributors run only after an owner approves them (repository setting), no job here gets
@@ -17,7 +24,8 @@
 # directory on the runners (`trusted: false`), never in the one releases build from.
 # Main itself only builds and packages (release.yml): its commits were tested here, in the queue.
 # A nightly full run (nightly.yml) catches what the path filter lets through.
-name: pr
+name: Checks
+run-name: "${{ github.event_name == 'merge_group' && format('Merge queue: {0}', github.event.merge_group.head_commit.message) || format('#{0} {1}', github.event.pull_request.number, github.event.pull_request.title) }}"
 
 on:
   pull_request:
@@ -34,12 +42,16 @@ permissions:
 
 jobs:
   changes:
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    name: What changed
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 5
     outputs:
       build: ${{ steps.diff.outputs.build }}
       web: ${{ steps.diff.outputs.web }}
       platform: ${{ steps.diff.outputs.platform }}
+      # On a pull request, the packages whose tests run (and their dependents'); the queue runs all.
+      only: ${{ github.event_name == 'pull_request' && steps.diff.outputs.tests != 'all' && steps.diff.outputs.tests || '' }}
       trusted: ${{ steps.diff.outputs.trusted }}
     steps:
       - uses: actions/checkout@v5
@@ -53,6 +65,7 @@ jobs:
         run: .github/ci/changes.sh "$BASE" HEAD
 
   lint:
+    name: Lint (rustfmt, clippy, cargo deny)
     needs: changes
     if: needs.changes.outputs.build == 'true'
     runs-on: [self-hosted, Linux, X64, hetzner]
@@ -64,6 +77,8 @@ jobs:
       - name: Untrusted build cache
         if: needs.changes.outputs.trusted != 'true'
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
       - name: rustfmt
         run: .github/ci/in-image.sh 'cargo fmt --all -- --check'
       - name: clippy (warnings fail)
@@ -72,9 +87,11 @@ jobs:
         run: .github/ci/in-image.sh 'cargo deny --locked check'
 
   migrations:
+    name: Migrations
     needs: changes
     if: needs.changes.outputs.build == 'true'
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
@@ -85,6 +102,7 @@ jobs:
         run: scripts/check-migrations.sh "$BASE"
 
   console:
+    name: Web console
     needs: changes
     if: needs.changes.outputs.web == 'true'
     uses: ./.github/workflows/console.yml
@@ -92,31 +110,44 @@ jobs:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
 
   linux:
+    name: Linux
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/linux.yml
     with:
-      arches: ${{ needs.changes.outputs.platform == 'true' && '["x86_64","aarch64"]' || '["x86_64"]' }}
+      arches: '["x86_64","aarch64"]'
+      # arm64 natively, for the packages whose code differs there; nightly runs its full suite.
+      arm64: native
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
 
   windows:
+    name: Windows
     needs: changes
     if: needs.changes.outputs.platform == 'true'
     uses: ./.github/workflows/windows.yml
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
+      # A pull request only compiles what this runner cannot run; the queue builds it in full.
+      link: ${{ github.event_name == 'merge_group' }}
 
   macos:
+    name: macOS
     needs: changes
     if: needs.changes.outputs.platform == 'true'
     uses: ./.github/workflows/macos.yml
     with:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
+      only: ${{ needs.changes.outputs.only }}
+      # A pull request only compiles what this runner cannot run; the queue builds it in full.
+      link: ${{ github.event_name == 'merge_group' }}
 
   # The hub API: the Bruno collection (a failure fails the gate), timings, and fuzzing from the spec
   # (reported, not failing yet). The results go to the api-results artifact; api-report.yml builds
   # the report from them and publishes it to Pages.
   api:
+    name: Hub API (Bruno, timings, fuzzing)
     needs: changes
     if: needs.changes.outputs.build == 'true'
     runs-on: [self-hosted, Linux, X64, hetzner]
@@ -128,6 +159,8 @@ jobs:
       - name: Untrusted build cache
         if: needs.changes.outputs.trusted != 'true'
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
       - name: Build the hub
         run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid'
       - name: Run the API tests
@@ -152,17 +185,28 @@ jobs:
           exit 1
 
   # The one required check. A job skipped because the change does not touch it counts as passed.
+  # It runs even when the run is cancelled (`always()`): GitHub counts a skipped required check as
+  # passed, so a cancelled run would otherwise look green. It then says which jobs never finished.
   ci-ok:
+    name: All checks passed
     needs: [changes, lint, migrations, console, linux, windows, macos, api]
     if: always()
-    runs-on: [self-hosted, Linux, X64, hetzner]
+    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
+    runs-on: [self-hosted, light]
     timeout-minutes: 2
     steps:
       - env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.value.result)\t\(.key)"'
+          # Jobs with the given result, comma-separated.
+          with() { echo "$RESULTS" | jq -r --arg r "$1" '[to_entries[] | select(.value.result == $r) | .key] | join(", ")'; }
+          failed=$(with failure) cancelled=$(with cancelled)
+          if [ -n "$failed" ]; then echo "::error::failed: $failed"; fi
+          if [ -n "$cancelled" ]; then
+            echo "::error::cancelled before they finished (by hand, or by a newer push): $cancelled. Nothing failed there; re-run them."
+          fi
           bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
-          if [ -n "$bad" ]; then echo "::error::not passed: $bad"; exit 1; fi
+          if [ -n "$bad" ]; then exit 1; fi
           # `changes` decides what runs; if it did not succeed, nothing was checked.
           [ "$(echo "$RESULTS" | jq -r .changes.result)" = success ]
