@@ -86,6 +86,7 @@ export function machineCard(
       h('dt', null, 'Last seen'),
       seen,
     ),
+    h('div.floor-card-activity', null, h('a', { href: href('machines', m.id) }, 'Open machine')),
     h(
       'div.machine-agents',
       null,

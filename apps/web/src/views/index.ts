@@ -11,12 +11,11 @@ import { mount as volumes } from './volumes';
 import { mount as egressCredentials } from './egress-credentials';
 import { mount as council } from './council';
 import { mount as files } from './files';
-import { mount as floor } from './floor';
+import { mount as machines } from './machines';
 import { mount as git } from './git';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
 import { mount as robotLab } from './robot-lab';
-import { mount as machine } from './machine';
 import { mount as mcp } from './mcp';
 import { mount as models } from './models';
 import { mount as nodes } from './nodes';
@@ -58,7 +57,7 @@ export const SCREENS: Screen[] = [
   { key: 'git', label: 'Git', icon: 'git', section: 'Plaza', mount: git },
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
-  { key: 'floor', label: 'Floor', icon: 'floor', section: 'Plaza', mount: floor },
+  { key: 'machines', label: 'Machines', icon: 'machine', section: 'Plaza', mount: machines },
   { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
   { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
   { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },
@@ -74,7 +73,6 @@ export const SCREENS: Screen[] = [
   { key: 'egress', label: 'Egress credentials', icon: 'key', section: 'Setup', mount: egressCredentials },
   { key: 'e2b', label: 'E2B API', icon: 'wrench', section: 'Setup', mount: e2b },
   { key: 'volumes', label: 'Volumes', icon: 'wrench', section: 'Setup', mount: volumes },
-  { key: 'machine', label: 'Machines', icon: 'machine', section: 'Setup', mount: machine },
   { key: 'workstations', label: 'Workstations', icon: 'harness', section: 'Setup', mount: workstations },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },

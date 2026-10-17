@@ -21,6 +21,7 @@ use apz_engine::input::Action;
 use apz_engine::{Cmd, Engine, Feed, Motion};
 
 use super::Id;
+use super::floor;
 use crate::console::engine::fleet::{self, FleetResponse};
 use crate::console::engine::kit;
 use crate::console::engine::machine_stage::View;
@@ -56,12 +57,34 @@ pub struct State {
     run_vms: HashMap<String, Result<Vec<VmRow>, String>>,
     /// The machine whose 3D view is open (one at a time); its engine is dropped on collapse.
     stage: Option<StageView>,
+    /// The grid (the fleet on the 3D floor, the default) or the list (a section per machine).
+    mode: Mode,
+    /// The grid's own state: its engine, fleet poll and popup.
+    grid: floor::State,
+}
+
+/// The screen's two views of the fleet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Grid,
+    List,
+}
+
+impl State {
+    pub fn in_grid(&self) -> bool {
+        self.mode == Mode::Grid
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
+    /// The grid's messages (its 3D floor and popup).
+    Grid(floor::Msg),
+    /// The Grid | List switch.
+    SetMode(Mode),
     Loaded(Result<Value, String>),
     /// The topology picked a machine.
     Pick(String),
@@ -258,7 +281,7 @@ impl std::fmt::Debug for StageView {
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
-        Msg::Go(id) => Some(id.clone()),
+        Msg::Go(id) | Msg::Grid(floor::Msg::Go(id)) => Some(id.clone()),
         _ => None,
     }
 }
@@ -266,6 +289,14 @@ pub fn go(msg: &Msg) -> Option<Id> {
 /// Loads the screen's data (called when it opens and on every poll tick): the overview, the
 /// machines and the agents, in one task.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    match state.mode {
+        Mode::Grid => floor::load(&mut state.grid, ctx).map(Msg::Grid),
+        Mode::List => load_list(state, ctx),
+    }
+}
+
+/// Loads the list's data in one task (the 3D view's fleet too, while it is open).
+fn load_list(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
     let main = client::task(
         move || {
@@ -299,6 +330,9 @@ fn stage_fleet(ctx: &Ctx) -> Task<Msg> {
 /// The 3D view's clock: frames while it moves (30 a second on a software adapter, as the Floor), about 12 a second while
 /// it only turns, none at rest.
 pub fn subscription(state: &State) -> Subscription<Msg> {
+    if state.mode == Mode::Grid {
+        return floor::subscription(&state.grid).map(Msg::Grid);
+    }
     match state.stage.as_ref().map(|s| s.motion) {
         Some(Motion::Active) if crate::console::engine::render::light() => {
             iced::time::every(Duration::from_millis(33)).map(Msg::StageFrame)
@@ -322,7 +356,27 @@ fn fetch_run(ctx: &Ctx, id: String) -> Task<Msg> {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::Grid(floor::Msg::Go(_)) => Task::none(),
+        Msg::Grid(floor::Msg::OpenMachine(id)) => {
+            // The popup closes with the grid; the list shows the machine's section, and its 3D view with it.
+            let _ = floor::update(&mut state.grid, floor::Msg::Escape, ctx);
+            open_in_list(state, &id);
+            let stage = if state.stage.as_ref().is_some_and(|s| s.id == id) {
+                Task::none()
+            } else {
+                update(state, Msg::ToggleStage(id.clone()), ctx)
+            };
+            Task::batch([stage, load(state, ctx).chain(Task::done(Msg::Pick(id)))])
+        }
+        Msg::Grid(m) => floor::update(&mut state.grid, m, ctx).map(Msg::Grid),
+        Msg::SetMode(mode) => {
+            if state.mode == mode {
+                Task::none()
+            } else {
+                state.mode = mode;
+                load(state, ctx)
+            }
+        }
         Msg::Loaded(Ok(v)) => {
             let data = parse_data(&v);
             let run_ids: BTreeSet<String> = data
@@ -491,6 +545,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The grid's "Open machine": the list shows, with the machine selected (its section is picked once the list loads).
+fn open_in_list(state: &mut State, id: &str) {
+    state.mode = Mode::List;
+    state.selected = Some(id.to_string());
+}
+
 fn toggle(set: &mut BTreeSet<String>, key: String) {
     if !set.remove(&key) {
         set.insert(key);
@@ -498,7 +558,21 @@ fn toggle(set: &mut BTreeSet<String>, key: String) {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    ui::sheet(ui::view_head("Machines", vec![]), body(state))
+    let switch = ui::seg(
+        &[(Mode::Grid, "Grid"), (Mode::List, "List")],
+        state.mode,
+        Msg::SetMode,
+    );
+    match state.mode {
+        Mode::Grid => {
+            let actions = vec![floor::reset_button().map(Msg::Grid), switch];
+            ui::sheet(
+                ui::view_head("Machines", actions),
+                floor::body(&state.grid).map(Msg::Grid),
+            )
+        }
+        Mode::List => ui::sheet(ui::view_head("Machines", vec![switch]), body(state)),
+    }
 }
 
 fn body<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -2258,5 +2332,15 @@ mod tests {
             agent_user.station.as_ref().and_then(|s| s.badge.clone()),
             None
         );
+    }
+
+    #[test]
+    fn the_grid_is_the_default_and_an_open_machine_switches_to_the_list() {
+        let mut state = State::default();
+        assert_eq!(state.mode, Mode::Grid);
+        assert!(state.in_grid());
+        open_in_list(&mut state, "m2");
+        assert_eq!(state.mode, Mode::List);
+        assert_eq!(state.selected.as_deref(), Some("m2"));
     }
 }

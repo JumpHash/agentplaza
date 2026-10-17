@@ -84,7 +84,6 @@ pub enum Id {
     Git,
     Library,
     Approvals,
-    Floor,
     Society,
     Conversations,
     Board,
@@ -141,7 +140,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Git, "Git", "Plaza", "git"),
     (Id::Library, "Library", "Plaza", "library"),
     (Id::Approvals, "Approvals", "Plaza", "approval"),
-    (Id::Floor, "Floor", "Plaza", "floor"),
+    (Id::Machines, "Machines", "Plaza", "machine"),
     (Id::Metrics, "Metrics", "Plaza", "zap"),
     (Id::Society, "Society", "Social", "society"),
     (
@@ -159,7 +158,6 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Tools, "Tools", "Setup", "wrench"),
     (Id::Mcp, "MCP", "Setup", "terminal"),
     (Id::Vault, "Vault", "Setup", "key"),
-    (Id::Machines, "Machines", "Setup", "machine"),
     (Id::Workstations, "Workstations", "Setup", "harness"),
     (Id::Nodes, "Nodes", "Setup", "link"),
     (Id::Egress, "Egress", "Setup", "external"),
@@ -179,7 +177,6 @@ pub struct Screens {
     pub git: git::State,
     pub library: library::State,
     pub approvals: approvals::State,
-    pub floor: floor::State,
     pub engine_lab: engine_lab::State,
     pub society: society::State,
     pub conversations: conversations::State,
@@ -222,7 +219,6 @@ pub enum Msg {
     Git(git::Msg),
     Library(library::Msg),
     Approvals(approvals::Msg),
-    Floor(floor::Msg),
     EngineLab(engine_lab::Msg),
     Society(society::Msg),
     Conversations(conversations::Msg),
@@ -266,7 +262,6 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Git(m) => git::go(m),
         Msg::Library(m) => library::go(m),
         Msg::Approvals(m) => approvals::go(m),
-        Msg::Floor(m) => floor::go(m),
         Msg::EngineLab(_) => None,
         Msg::Society(m) => society::go(m),
         Msg::Conversations(m) => conversations::go(m),
@@ -373,7 +368,6 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Git | Id::Repo(_) => git::load(&mut screens.git, ctx).map(Msg::Git),
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
-        Id::Floor => floor::load(&mut screens.floor, ctx).map(Msg::Floor),
         Id::RobotLab => {
             engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab)
         }
@@ -432,7 +426,6 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Git(m) => git::update(&mut screens.git, m, ctx).map(Msg::Git),
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
-        Msg::Floor(m) => floor::update(&mut screens.floor, m, ctx).map(Msg::Floor),
         Msg::EngineLab(m) => {
             engine_lab::update(&mut screens.engine_lab, m, ctx).map(Msg::EngineLab)
         }
@@ -483,14 +476,18 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// The shown screen's own subscriptions: the Floor's animation frames and the hub's events while it is open.
+/// Whether the shown screen scrolls its own page, so the shell does not wrap it: Machines' grid fills the window.
+pub fn scrolls_itself(screens: &Screens, id: &Id) -> bool {
+    matches!(id, Id::Machines) && screens.machines.in_grid()
+}
+
+/// The shown screen's own subscriptions: its animation frames (the Machines grid's or a 3D view's) and the hub's events while it is open.
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
         Id::Overview => overview::subscription(ctx).map(Msg::Overview),
         Id::Agents => agents::subscription(ctx).map(Msg::Agents),
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
-        Id::Floor => floor::subscription(&screens.floor).map(Msg::Floor),
         Id::RobotLab | Id::HardwareLab => {
             engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
         }
@@ -541,7 +538,6 @@ pub fn view<'a>(
         Id::Git | Id::Repo(_) => git::view(&screens.git, ctx).map(Msg::Git),
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
-        Id::Floor => floor::view(&screens.floor, ctx).map(Msg::Floor),
         Id::RobotLab | Id::HardwareLab => {
             engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab)
         }

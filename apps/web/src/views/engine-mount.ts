@@ -533,7 +533,7 @@ export function perfProbe(engine: WebEngine, view: () => string): () => Record<s
  * The Machines view on the wasm engine (the Floor's page): the fleet's machines, drawn by the engine. A pick opens the
  * machine popup (floor-popup.ts's card), anchored to the machine's point on the stage.
  */
-export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void): Cleanup {
+export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void, bindReset?: (reset: (() => void) | null) => void): Cleanup {
   const name = glueName();
   if (name === '') return () => undefined; // no engine in this build: show nothing
   const wrap = document.createElement('div');
@@ -564,11 +564,10 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
     }),
   );
   wrap.append(canvas, status, legend, card);
-  // The page header (the old Floor's): the title, and on the right RESET VIEW.
-  const resetBtn = button('Reset view', () => engine?.command('reset'), { icon: 'refresh' });
-  const viewHead = h('div.view-head', null, h('h1', null, 'Floor'), h('div.actions', null, resetBtn));
-  root.append(viewHead, wrap);
-  // The Floor fills the window (floor.css): the view and the page take the floor mode.
+  // The Machines screen's Reset view runs the engine's reset (null once the engine is gone).
+  bindReset?.(() => engine?.command('reset'));
+  root.append(wrap);
+  // The grid fills the window (floor.css): the view and the page take the floor mode.
   root.classList.add('floor-view');
   document.body.classList.add('floor-mode');
 

@@ -19,12 +19,24 @@ export function go(screen: string, ...params: (string | number)[]): void {
   location.hash = href(screen, ...params);
 }
 
-/** Screens that moved: an old hash is rewritten to its new place before the screen mounts. */
-const MOVED: Record<string, string> = { usage: '#/metrics?tab=tokens' };
+/** Screens that moved: an old hash is rewritten to its new place before the screen mounts (movedTo). */
+const MOVED: Record<string, (route: Route) => string> = {
+  usage: () => '#/metrics?tab=tokens',
+  // The Floor and the Setup list are one Machines screen: `#/machine/<id>` opens that machine's row.
+  floor: () => href('machines'),
+  machine: (route) => (route.params[0] ? href('machines', route.params[0]) : '#/machines?view=list'),
+};
+
+/** Where an old hash moved to, or null when its screen has not moved. */
+export function movedTo(hash: string): string | null {
+  const route = parse(hash);
+  const move = Object.prototype.hasOwnProperty.call(MOVED, route.screen) ? MOVED[route.screen] : undefined;
+  return move ? move(route) : null;
+}
 
 export function onRoute(fn: (route: Route) => void): void {
   const route = (): void => {
-    const to = MOVED[parse(location.hash).screen];
+    const to = movedTo(location.hash);
     if (to) history.replaceState(null, '', to);
     fn(parse(location.hash));
   };

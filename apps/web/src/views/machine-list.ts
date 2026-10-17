@@ -694,7 +694,7 @@ export interface MachineList {
   readonly el: HTMLElement;
   /** Replaces the rows in place, keyed by `key`. `fallback` shows when there are none. Deferred while a morph runs. */
   setRows(rows: ListRow[], fallback?: Node | null): void;
-  /** Opens the row with `key` (closing the open one first), or closes the open row when null. */
+  /** Opens the row with `key` (closing the open one first), or closes the open row when null. A row not loaded yet opens when it arrives. */
   open(key: string | null): void;
   /** Cancels frames and timers, releases the stage and removes its canvas. */
   destroy(): void;
@@ -1216,11 +1216,10 @@ export function machineList(): MachineList {
         continue;
       }
       if (desired === null) break;
+      // A row that has not loaded yet stays wanted: it opens when setRows brings it.
       const next = items.get(desired);
-      if (!next) {
-        desired = null;
-        break;
-      }
+      if (!next) break;
+      next.el.scrollIntoView({ block: 'nearest' });
       beginOpen(next);
     }
     if (queue.length) schedulePump();
@@ -1275,7 +1274,6 @@ export function machineList(): MachineList {
     open(key) {
       if (destroyed) return;
       desired = key;
-      if (key !== null) items.get(key)?.el.scrollIntoView({ block: 'nearest' });
       settle();
     },
     destroy() {
