@@ -45,7 +45,7 @@ done
 
 # The console ships with its wasm engine and the IDE's wasm (apps/web/build.mjs): a dist without them has no 3D
 # or no IDE, so refuse to stage it.
-for pat in 'apz_engine_web-*_bg.wasm' 'apz_engine_web-*.js' 'layout-worker-*.js' 'apz_ide_web-*_bg.wasm' 'apz_ide_web-*.js'; do
+for pat in 'apz_engine_web-*_bg.wasm' 'apz_engine_web-*.js' 'apz_ide_web-*_bg.wasm' 'apz_ide_web-*.js'; do
   compgen -G "$root/apps/web/dist/$pat" >/dev/null \
     || { echo "stage.sh: apps/web/dist has no $pat: rebuild the console with the engine (apps/web/build.mjs)" >&2; exit 1; }
 done

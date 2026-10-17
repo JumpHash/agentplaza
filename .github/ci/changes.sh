@@ -74,7 +74,7 @@ for f in "${files[@]}"; do
   fi
   case "$f" in
     apps/web/* | crates/apz-engine/* | crates/apz-engine-web/* | crates/apz-ide/* | crates/apz-ide-web/* | \
-    crates/apz-metrics-view/* | crates/apz-board/* | .github/workflows/console.yml) web=true ;;
+    crates/apz-metrics-view/* | assets/hardware/* | assets/robots/* | .github/workflows/console.yml) web=true ;;
   esac
   case "$f" in
     crates/apz-desktop*/* | crates/vmm/* | crates/noded/* | crates/vsockd/* | crates/vmctl/* | \
