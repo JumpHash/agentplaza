@@ -3,7 +3,7 @@
 
 .mlist { position: relative; min-width: 0; --mlist-gap: 20px; }
 .mlist-rows { display: block; min-width: 0; }
-.mlist-item { border-top: 1px solid var(--rule); }
+.mlist-item { border-top: 1px solid var(--rule); scroll-margin-top: calc(var(--topbar-h) + 16px); }
 .mlist-rows > .mlist-item:last-child { border-bottom: 1px solid var(--rule); }
 
 .mlist-summary {

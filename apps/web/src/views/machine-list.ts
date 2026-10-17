@@ -866,6 +866,10 @@ export function machineList(): MachineList {
   let dirty = false;
   // The row the reader wants open (null: none), and the row that is open or closing.
   let desired: string | null = null;
+  /** The next row to open came from `open` (a link to the machine), so it scrolls to the top. */
+  let toTop = false;
+  /** The row opened by its id, while it opens: it comes back to the top once its panel has grown. */
+  let pinned: Item | null = null;
   let openKey: string | null = null;
   let anim: Anim | null = null;
   // The engine's stage for the open row: its canvas sits over the row's stage slot.
@@ -1020,6 +1024,7 @@ export function machineList(): MachineList {
 
   const choose = (key: string): void => {
     desired = desired === key ? null : key;
+    toTop = false;
     settle();
   };
 
@@ -1219,7 +1224,10 @@ export function machineList(): MachineList {
       // A row that has not loaded yet stays wanted: it opens when setRows brings it.
       const next = items.get(desired);
       if (!next) break;
-      next.el.scrollIntoView({ block: 'nearest' });
+      // A row opened by its id (a link to the machine) comes to the top; one the user clicked stays where it is.
+      next.el.scrollIntoView({ block: toTop ? 'start' : 'nearest' });
+      pinned = toTop ? next : null;
+      toTop = false;
       beginOpen(next);
     }
     if (queue.length) schedulePump();
@@ -1245,7 +1253,12 @@ export function machineList(): MachineList {
       a.it.panel.style.height = `${lerp(a.h0, a.h1, easeInOutCubic(t))}px`;
       if (t >= 1) {
         anim = null;
-        if (a.kind === 'open') finishOpen(a);
+        if (a.kind === 'open') {
+          finishOpen(a);
+          // What loaded above a linked row while it opened (the topology, the pictures) moved it: bring it back up.
+          if (pinned === a.it) a.it.el.scrollIntoView({ block: 'start' });
+          pinned = null;
+        }
         else finishClose(a.it);
         settle();
       }
@@ -1274,6 +1287,7 @@ export function machineList(): MachineList {
     open(key) {
       if (destroyed) return;
       desired = key;
+      toTop = key !== null;
       settle();
     },
     destroy() {

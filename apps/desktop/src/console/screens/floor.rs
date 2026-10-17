@@ -374,9 +374,17 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         .spacing(8)
         .align_y(Alignment::Center),
         ui::sans(model, 11.0, crate::theme::palette().ink_3),
+        // "Open machine" sits by the status, near the top, so a long card never hides it.
         row![
             ui::label("Status"),
-            ui::badge(&m.status, status_tone(&m.status))
+            ui::badge(&m.status, status_tone(&m.status)),
+            Space::new().width(Length::Fill),
+            ui::btn(
+                "Open machine",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::OpenMachine(m.id.clone())),
+            )
         ]
         .spacing(10)
         .align_y(Alignment::Center),
@@ -392,12 +400,6 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         .spacing(10)
         .align_y(Alignment::Center),
         names,
-        ui::btn(
-            "Open machine",
-            None,
-            ui::Kind::Primary,
-            Some(Msg::OpenMachine(m.id.clone())),
-        ),
     ]
     .spacing(10);
     let card = container(body)
