@@ -1422,9 +1422,11 @@ mod tests {
 
     #[test]
     fn a_silent_peer_is_pinged_then_closed_after_dead_after() {
+        // The ping has to go out before death: with 10 and 30 ms, a test thread woken 20 ms late on
+        // a loaded runner found the peer already dead and never pinged.
         let limits = Limits {
-            ping_every: Duration::from_millis(10),
-            dead_after: Duration::from_millis(30),
+            ping_every: Duration::from_millis(20),
+            dead_after: Duration::from_millis(400),
             ..Limits::default()
         };
         let (mut socket, pipe) = server_socket(limits);
