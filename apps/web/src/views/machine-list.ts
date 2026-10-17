@@ -14,6 +14,7 @@ import { h, icon, replace } from '../ui/dom';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook } from './station-machine';
 import { lookOfSpec, sizeLine, specKey, THUMB_H, THUMB_W, VIEWS, type PictureSpec } from './machine-picture';
 import { engineWanted, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
+import { href } from '../router';
 
 export type Stats = NonNullable<MachineNode['stats']>;
 type VmDetail = Vm & { serial?: string };
@@ -748,7 +749,7 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 const easeInOutCubic = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 /** The line art of a row with no picture of its own: the device drawing, or a generic icon when the kind is unknown. */
-function fallbackPicture(row: ListRow): Node {
+export function fallbackPicture(row: Pick<ListRow, 'spec' | 'active'>): Node {
   if (!row.spec) return h('span.mlist-unknown', null, icon('machine'));
   return deviceVisual(lookOfSpec(row.spec), { gpu: row.spec.gpus.length > 0, active: row.active });
 }
@@ -779,7 +780,7 @@ function pngOf(rgba: Uint8Array, w: number, h: number): string | null {
 }
 
 /** The flat views under an open row's stage: four labelled figures; fillViews paints them. */
-function viewsStrip(): HTMLElement {
+export function viewsStrip(): HTMLElement {
   return h(
     'div.machine-views',
     null,
@@ -788,7 +789,7 @@ function viewsStrip(): HTMLElement {
 }
 
 /** Asks the engine for each view (at the device's pixel ratio, at most 512 a side) and for the machine's size caption. A rejected request leaves its canvas empty. */
-function fillViews(strip: HTMLElement, machineId: string, stage: EngineStage): void {
+export function fillViews(strip: HTMLElement, machineId: string, stage: EngineStage): void {
   const pr = pixelRatio();
   const w = Math.min(512, Math.round(THUMB_W * pr));
   const h2 = Math.min(512, Math.round(THUMB_H * pr));
@@ -1000,7 +1001,7 @@ export function machineList(): MachineList {
     const toggle = it.onStage ? button('Hide 3D view', () => choose(it.key), { kind: 'ghost', size: 'sm' }) : null;
     replace(
       it.inner,
-      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle, it.views ?? null), h('div.mlist-detail-main', null, it.row.detail())),
+      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle, it.views ?? null), h('div.mlist-detail-main', null, it.row.machineId !== null ? h('div.mlist-detail-head', null, h('a.mlist-open', { href: href('machines', it.row.machineId) }, 'Open')) : null, it.row.detail())),
     );
   };
 

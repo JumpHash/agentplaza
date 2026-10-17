@@ -17,6 +17,7 @@ use iced::{
 };
 use serde_json::Value;
 
+use apz_engine::gpus::{GpuInput, card_summary};
 use apz_engine::input::Action;
 use apz_engine::{Cmd, Engine, Feed, Motion};
 
@@ -57,18 +58,38 @@ pub struct State {
     run_vms: HashMap<String, Result<Vec<VmRow>, String>>,
     /// The machine whose 3D view is open (one at a time); its engine is dropped on collapse.
     stage: Option<StageView>,
-    /// The grid (the fleet on the 3D floor, the default) or the list (a section per machine).
+    /// The grid (the fleet on the 3D floor, the default), the list (a section per machine) or one machine's view.
     mode: Mode,
+    /// The tab a machine's view came from; its back button returns to it.
+    back: Tab,
     /// The grid's own state: its engine, fleet poll and popup.
     grid: floor::State,
 }
 
-/// The screen's two views of the fleet.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The screen's views of the fleet: the grid, the list, and one machine's own view.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Grid,
     List,
+    Machine(String),
+}
+
+/// The Grid | List switch's tabs (a machine's view is not a tab: the switch shows the tab it came from).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Grid,
+    List,
+}
+
+impl Tab {
+    fn mode(self) -> Mode {
+        match self {
+            Tab::Grid => Mode::Grid,
+            Tab::List => Mode::List,
+        }
+    }
 }
 
 impl State {
@@ -85,6 +106,10 @@ pub enum Msg {
     Grid(floor::Msg),
     /// The Grid | List switch.
     SetMode(Mode),
+    /// A machine's own view opens (from the grid's popup or a section's Open button).
+    OpenMachine(String),
+    /// The machine's view closes, back to the tab it came from.
+    Back,
     Loaded(Result<Value, String>),
     /// The topology picked a machine.
     Pick(String),
@@ -291,7 +316,7 @@ pub fn go(msg: &Msg) -> Option<Id> {
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     match state.mode {
         Mode::Grid => floor::load(&mut state.grid, ctx).map(Msg::Grid),
-        Mode::List => load_list(state, ctx),
+        Mode::List | Mode::Machine(_) => load_list(state, ctx),
     }
 }
 
@@ -358,21 +383,24 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) | Msg::Grid(floor::Msg::Go(_)) => Task::none(),
         Msg::Grid(floor::Msg::OpenMachine(id)) => {
-            // The popup closes with the grid; the list shows the machine's section, and its 3D view with it.
+            // The popup closes with the grid; the machine's own view opens.
             let _ = floor::update(&mut state.grid, floor::Msg::Escape, ctx);
-            open_in_list(state, &id);
-            let stage = if state.stage.as_ref().is_some_and(|s| s.id == id) {
-                Task::none()
-            } else {
-                update(state, Msg::ToggleStage(id.clone()), ctx)
-            };
-            Task::batch([stage, load(state, ctx).chain(Task::done(Msg::Pick(id)))])
+            open_machine(state, ctx, id)
+        }
+        Msg::OpenMachine(id) => open_machine(state, ctx, id),
+        Msg::Back => {
+            leave_machine(state);
+            load(state, ctx)
         }
         Msg::Grid(m) => floor::update(&mut state.grid, m, ctx).map(Msg::Grid),
         Msg::SetMode(mode) => {
             if state.mode == mode {
                 Task::none()
             } else {
+                // Leaving a machine's view closes its 3D view.
+                if matches!(state.mode, Mode::Machine(_)) {
+                    state.stage = None;
+                }
                 state.mode = mode;
                 load(state, ctx)
             }
@@ -496,12 +524,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.stage = None;
                 Task::none()
             } else {
-                state.stage = Some(StageView {
-                    id,
-                    engine: Engine::detached(),
-                    shown: false,
-                    motion: Motion::Active,
-                });
+                state.stage = Some(new_stage(id));
                 stage_fleet(ctx)
             }
         }
@@ -526,7 +549,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::StageFleet(Err(_)) => Task::none(),
         Msg::StageFrame(now) => {
             if let Some(s) = state.stage.as_mut() {
-                s.motion = s.engine.advance(now, (STAGE_W, STAGE_H)).motion;
+                s.motion = s.engine.advance(now, stage_size(&state.mode)).motion;
             }
             Task::none()
         }
@@ -545,10 +568,53 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// The grid's "Open machine": the list shows, with the machine selected (its section is picked once the list loads).
-fn open_in_list(state: &mut State, id: &str) {
-    state.mode = Mode::List;
-    state.selected = Some(id.to_string());
+/// The machine's own view's 3D stage, in logical px (the engine draws at the size it is advanced with).
+const MACHINE_STAGE_W: f32 = 640.0;
+const MACHINE_STAGE_H: f32 = 420.0;
+
+/// The 3D view's size for the screen's mode.
+fn stage_size(mode: &Mode) -> (f32, f32) {
+    match mode {
+        Mode::Machine(_) => (MACHINE_STAGE_W, MACHINE_STAGE_H),
+        _ => (STAGE_W, STAGE_H),
+    }
+}
+
+/// One machine's 3D view, not yet shown.
+fn new_stage(id: String) -> StageView {
+    StageView {
+        id,
+        engine: Engine::detached(),
+        shown: false,
+        motion: Motion::Active,
+    }
+}
+
+/// Opens a machine's own view: its 3D view opens with it (unless it is open), and the view remembers the tab it came from.
+fn enter_machine(state: &mut State, id: String) {
+    if !matches!(state.mode, Mode::Machine(_)) {
+        state.back = match state.mode {
+            Mode::List => Tab::List,
+            _ => Tab::Grid,
+        };
+    }
+    if !state.stage.as_ref().is_some_and(|s| s.id == id) {
+        state.stage = Some(new_stage(id.clone()));
+    }
+    state.selected = Some(id.clone());
+    state.mode = Mode::Machine(id);
+}
+
+/// Leaves a machine's view for the tab it came from; its 3D view closes.
+fn leave_machine(state: &mut State) {
+    state.stage = None;
+    state.mode = state.back.mode();
+}
+
+/// Opens a machine's own view and loads the screen's data (the 3D view's fleet too).
+fn open_machine(state: &mut State, ctx: &Ctx, id: String) -> Task<Msg> {
+    enter_machine(state, id);
+    load(state, ctx)
 }
 
 fn toggle(set: &mut BTreeSet<String>, key: String) {
@@ -558,12 +624,18 @@ fn toggle(set: &mut BTreeSet<String>, key: String) {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    // A machine's view shows the tab it came from as selected.
+    let tab = match &state.mode {
+        Mode::Machine(_) => state.back,
+        Mode::Grid => Tab::Grid,
+        Mode::List => Tab::List,
+    };
     let switch = ui::seg(
-        &[(Mode::Grid, "Grid"), (Mode::List, "List")],
-        state.mode,
-        Msg::SetMode,
+        &[(Tab::Grid, "Grid"), (Tab::List, "List")],
+        tab,
+        |t: Tab| Msg::SetMode(t.mode()),
     );
-    match state.mode {
+    match &state.mode {
         Mode::Grid => {
             let actions = vec![floor::reset_button().map(Msg::Grid), switch];
             ui::sheet(
@@ -572,6 +644,10 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             )
         }
         Mode::List => ui::sheet(ui::view_head("Machines", vec![switch]), body(state)),
+        Mode::Machine(id) => ui::sheet(
+            ui::view_head("Machines", vec![switch]),
+            machine_body(state, id),
+        ),
     }
 }
 
@@ -604,6 +680,241 @@ fn body<'a>(state: &'a State) -> Element<'a, Msg> {
         }
     }
     column(parts).spacing(32).into()
+}
+
+// ---- A machine's own view: one machine on its page ------------------------------------------
+
+/// The machine's view: its header, its 3D stage with the hardware and the load beside it, its flat views, then its VM
+/// slots, agents and events.
+fn machine_body<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(e) = &state.error {
+        parts.push(ui::error_line(e));
+    }
+    match &state.data {
+        None if state.offline.is_some() => parts.push(ui::empty(
+            "machine",
+            "The node is offline",
+            "Start the node daemon to see its machines and VMs.",
+        )),
+        None => parts.push(ui::loading()),
+        Some(data) => match data.machines.iter().find(|m| m.id == id) {
+            Some(m) => parts.push(machine_page(state, data, m)),
+            None => parts.push(ui::empty(
+                "machine",
+                "No such machine.",
+                "It is not on the plaza any more.",
+            )),
+        },
+    }
+    column(parts).spacing(24).into()
+}
+
+fn machine_page<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
+    let stage: Element<'a, Msg> = match state.stage.as_ref().filter(|s| s.id == m.id) {
+        Some(s) => stage_view(s, (MACHINE_STAGE_W, MACHINE_STAGE_H)),
+        None => Space::new()
+            .width(Length::Fixed(MACHINE_STAGE_W))
+            .height(Length::Fixed(MACHINE_STAGE_H))
+            .into(),
+    };
+    let (status, tone) = status_of(m);
+    let head = column![
+        row![
+            ui::btn("‹ Machines", None, Kind::Ghost, Some(Msg::Back)),
+            ui::sans(m.name.to_string(), 22.0, INK),
+            ui::badge(status, tone),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center),
+        ui::faint(format!(
+            "{} · {}",
+            kind_label(&m.kind),
+            m.model.as_deref().unwrap_or("model not reported")
+        )),
+    ]
+    .spacing(6);
+    let fleet_m = state
+        .grid
+        .fleet_data
+        .as_ref()
+        .and_then(|f| f.machines.iter().find(|x| x.id == m.id));
+    let side = column![
+        ui::card("Hardware", hardware(m, fleet_m)),
+        ui::card("Load", live_stats(m, true))
+    ]
+    .spacing(16)
+    .width(Length::Fill);
+    let mut parts: Vec<Element<'a, Msg>> = vec![head.into(), row![stage, side].spacing(24).into()];
+    parts.extend(flat_views(m));
+    parts.push(
+        row![
+            container(ui::card("VM slots", runs(state, m))).width(Length::Fill),
+            container(ui::card("Agents", agent_list(data, m))).width(Length::Fill),
+            container(ui::card("Events", events_block(m))).width(Length::Fill),
+        ]
+        .spacing(16)
+        .into(),
+    );
+    column(parts).spacing(24).into()
+}
+
+/// The machine's hardware: its CPU, cores, memory, system and storage, then each GPU with its reference card. The
+/// fleet's machine (`f`, from the grid's feed) carries what the List's record does not; the record fills the gaps.
+fn hardware<'a>(m: &'a Machine, f: Option<&'a apz_engine::fleet::Machine>) -> Element<'a, Msg> {
+    let (cpu, cores) = match (&m.apple, f) {
+        (Some(a), _) => (
+            a.chip.clone(),
+            format!(
+                "{} cores ({} performance, {} efficiency)",
+                a.p_cores + a.e_cores,
+                a.p_cores,
+                a.e_cores
+            ),
+        ),
+        (None, Some(f)) if !f.cpu.model.is_empty() => (
+            f.cpu.model.clone(),
+            format!("{} cores · {} threads", f.cpu.cores, f.cpu.threads),
+        ),
+        (None, _) => (
+            "CPU model not reported".to_string(),
+            format!("{} CPUs", m.cpus),
+        ),
+    };
+    let os = f
+        .map(|f| f.os.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| m.station.as_ref().map(|s| s.os.as_str()))
+        .unwrap_or("OS not reported");
+    let arch = f
+        .map(|f| f.arch.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(m.arch.as_str());
+    let backend = f
+        .map(|f| f.backend.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(m.backend.as_str());
+    let memory = f
+        .map(|f| f.memory_mib as f64)
+        .filter(|mib| *mib > 0.0)
+        .unwrap_or(m.memory_mib);
+    let mut rows: Vec<Element<'a, Msg>> = vec![
+        fact("CPU", cpu),
+        fact("Cores", cores),
+        fact("Memory", human(memory)),
+        fact("System", format!("{os} · {arch} · {backend}")),
+    ];
+    if let Some(f) = f.filter(|f| f.storage_gib > 0) {
+        rows.push(fact("Storage", human(f.storage_gib as f64 * 1024.0)));
+    }
+    match f {
+        Some(f) => rows.extend(f.gpus.iter().map(|g| {
+            let vendor = if g.vendor.is_empty() {
+                m.vendor.as_str()
+            } else {
+                g.vendor.as_str()
+            };
+            let mib = g.memory_mib.map(|mib| mib as f64);
+            fact("GPU", gpu_line(m, &g.name, vendor, mib))
+        })),
+        None => rows.extend(
+            m.gpus
+                .iter()
+                .map(|name| fact("GPU", gpu_line(m, name, &m.vendor, None))),
+        ),
+    }
+    column(rows).spacing(10).into()
+}
+
+fn fact<'a>(label: &str, value: String) -> Element<'a, Msg> {
+    column![ui::label(label), ui::sans(value, 12.0, INK)]
+        .spacing(2)
+        .into()
+}
+
+/// A GPU's line: its reference card (name, form, slots when there are any, cooling), "(generic)" for a fallback card,
+/// or the GPU's own name when no card matches. Empty parts are left out.
+fn gpu_line(m: &Machine, name: &str, vendor: &str, memory_mib: Option<f64>) -> String {
+    let input = GpuInput {
+        vendor: vendor.to_string(),
+        name: name.to_string(),
+        memory_mib,
+    };
+    let summary = card_summary(&input, Some(m.kind.as_str()));
+    let Some(card) = summary.get("card").filter(|c| c.is_object()) else {
+        return name.to_string();
+    };
+    // A card's width in slots is a float (2.5-slot cards exist); 0 means unknown and is left out.
+    let slots = card.get("slots").and_then(Value::as_f64).unwrap_or(0.0);
+    let mut parts = vec![text(card, "name"), text(card, "form")];
+    if slots > 0.0 {
+        parts.push(format!("{slots}-slot"));
+    }
+    parts.push(text(card, "cooling"));
+    parts.retain(|p| !p.is_empty());
+    let mut line = parts.join(" · ");
+    if card.get("generic").and_then(Value::as_bool) == Some(true) {
+        line = if line.is_empty() {
+            "(generic)".to_string()
+        } else {
+            format!("{line} (generic)")
+        };
+    }
+    if line.is_empty() {
+        name.to_string()
+    } else {
+        line
+    }
+}
+
+/// The machine's agents' VMs: each agent's name opens the agent.
+fn agent_list<'a>(data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
+    let Some(plaza) = m.stats.as_ref().and_then(|s| s.plaza.as_ref()) else {
+        return ui::faint("This node doesn't report its agents yet.").into();
+    };
+    if plaza.vms.is_empty() {
+        return ui::faint("No agent VMs on this node.").into();
+    }
+    let rows: Vec<Element<'a, Msg>> = plaza
+        .vms
+        .iter()
+        .map(|v| {
+            let agent = v.cid.and_then(|c| data.agents.get(&c));
+            let name = match (agent, v.cid) {
+                (Some(a), _) if a.name.trim().is_empty() => "Unnamed".to_string(),
+                (Some(a), _) => a.name.clone(),
+                (None, None) => "Unattached".to_string(),
+                (None, Some(c)) => format!("CID {c}"),
+            };
+            let role = agent
+                .map(|a| a.role_label.clone())
+                .or_else(|| v.role.clone())
+                .unwrap_or_else(|| "—".to_string());
+            let title: Element<'a, Msg> = match v.cid {
+                Some(cid) => ui::btn_sm(&name, None, Kind::Ghost, Some(Msg::Go(Id::Agent(cid)))),
+                None => ui::sans(name, 12.0, INK).into(),
+            };
+            column![title, ui::faint(format!("{role} · {}/{}", v.run, v.vm))]
+                .spacing(2)
+                .into()
+        })
+        .collect();
+    column(rows).spacing(12).into()
+}
+
+/// The machine's events: the screen has no events feed, so this shows whether the machine answers now.
+fn events_block<'a>(m: &'a Machine) -> Element<'a, Msg> {
+    let reach = match m.reachable {
+        Some(true) => "Reachable now",
+        Some(false) => "Not reachable",
+        None => "Reachability not reported",
+    };
+    column![
+        ui::sans(reach.to_string(), 12.0, INK),
+        ui::faint("No recent events")
+    ]
+    .spacing(8)
+    .into()
 }
 
 // ---- The topology: the control plane, wired to each machine ---------------------------------
@@ -697,8 +1008,9 @@ impl canvas::Program<Msg> for Wires {
     }
 }
 
-/// One machine's block in the fleet column: its name, its kind and state. Picking it selects it.
-fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
+/// A machine's status word and its tone: the station's status, else unreachable, running or idle. The List's block
+/// and the machine's own view both show it.
+fn status_of(m: &Machine) -> (&str, Tone) {
     let live = is_live(&m.runs);
     let down = m.reachable == Some(false);
     let tone = if down {
@@ -717,6 +1029,12 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     } else {
         "idle"
     };
+    (status, tone)
+}
+
+/// One machine's block in the fleet column: its name, its kind and state. Picking it selects it.
+fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
+    let (status, tone) = status_of(m);
     let selected = state.selected.as_deref() == Some(m.id.as_str());
     let content = column![
         row![
@@ -1223,14 +1541,14 @@ fn device<'a>(m: &'a Machine, slot: usize) -> Element<'a, Msg> {
 // ---- A machine's section ----------------------------------------------------------------------
 
 /// The machine's 3D view: the engine's stage, drawn through the shared shader program at the stage's size.
-fn stage_view<'a>(s: &'a StageView) -> Element<'a, Msg> {
+fn stage_view<'a>(s: &'a StageView, size: (f32, f32)) -> Element<'a, Msg> {
     let program = EngineProgram {
         primitive: s.engine.scene(),
         wrap: Msg::Stage,
     };
     shader(program)
-        .width(Length::Fixed(STAGE_W))
-        .height(Length::Fixed(STAGE_H))
+        .width(Length::Fixed(size.0))
+        .height(Length::Fixed(size.1))
         .into()
 }
 
@@ -1272,7 +1590,18 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
         "Show 3D view"
     };
     let mut parts: Vec<Element<'a, Msg>> = vec![
-        ui::sans(m.name.to_string(), 18.0, INK).into(),
+        row![
+            ui::sans(m.name.to_string(), 18.0, INK),
+            ui::btn(
+                "Open",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::OpenMachine(m.id.clone()))
+            ),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into(),
         ui::faint(sentence(m)).into(),
         ui::btn(
             orbit_label,
@@ -1280,14 +1609,14 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
             ui::Kind::Secondary,
             Some(Msg::ToggleStage(m.id.clone())),
         ),
-        live_stats(m),
+        live_stats(m, false),
         resources(state, data, m),
         ui::label("Runs").into(),
         runs(state, m),
         technical(state, m),
     ];
     if let Some(s) = open {
-        let mut stage: Vec<Element<'a, Msg>> = vec![stage_view(s)];
+        let mut stage: Vec<Element<'a, Msg>> = vec![stage_view(s, (STAGE_W, STAGE_H))];
         stage.extend(flat_views(m));
         parts.insert(3, column(stage).spacing(12).into());
     }
@@ -1300,17 +1629,18 @@ fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, 
         .into()
 }
 
-/// The machine's tallies: CPU with its sparkline, memory, load and the agents' VMs.
-fn live_stats<'a>(m: &'a Machine) -> Element<'a, Msg> {
+/// The machine's tallies: CPU with its sparkline, memory, load and the agents' VMs. `two_rows` sets them as a 2 x 2
+/// grid for a narrow column; otherwise they sit in one row.
+fn live_stats<'a>(m: &'a Machine, two_rows: bool) -> Element<'a, Msg> {
     let Some(s) = &m.stats else {
         return ui::faint("No live stats.").into();
     };
-    let tallies = row![
+    let tallies = [
         tally(
             "CPU",
             format!("{}%", s.cpu.round()),
             None,
-            Some(spark(&s.history))
+            Some(spark(&s.history)),
         ),
         tally(
             "Memory",
@@ -1319,10 +1649,10 @@ fn live_stats<'a>(m: &'a Machine) -> Element<'a, Msg> {
             Some(stacked(
                 &[
                     (s.mem_used, INK),
-                    ((s.mem_total - s.mem_used).max(0.0), RULE_FAINT)
+                    ((s.mem_total - s.mem_used).max(0.0), RULE_FAINT),
                 ],
                 s.mem_total,
-                6.0
+                6.0,
             )),
         ),
         tally(
@@ -1335,12 +1665,24 @@ fn live_stats<'a>(m: &'a Machine) -> Element<'a, Msg> {
             "Agents' VMs",
             s.vms_running.to_string(),
             Some(format!("{} GiB reserved", gib(s.guest_mem))),
-            None
+            None,
         ),
-    ]
-    .spacing(12);
+    ];
+    let tallies: Element<'a, Msg> = if two_rows {
+        let [cpu, mem, load, vms] = tallies;
+        column![
+            row![cpu, mem].spacing(12).width(Length::Fill),
+            row![load, vms].spacing(12).width(Length::Fill),
+        ]
+        .spacing(12)
+        .width(Length::Fill)
+        .into()
+    } else {
+        row(tallies).spacing(12).into()
+    };
     column![tallies, ui::faint(format!("Up {}", uptime(s.uptime_s)))]
         .spacing(12)
+        .width(Length::Fill)
         .into()
 }
 
@@ -2335,12 +2677,27 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_is_the_default_and_an_open_machine_switches_to_the_list() {
+    fn the_grid_is_the_default_and_an_open_machine_gets_its_own_view() {
         let mut state = State::default();
         assert_eq!(state.mode, Mode::Grid);
         assert!(state.in_grid());
-        open_in_list(&mut state, "m2");
-        assert_eq!(state.mode, Mode::List);
+        enter_machine(&mut state, "m2".to_string());
+        assert_eq!(state.mode, Mode::Machine("m2".to_string()));
+        assert_eq!(state.back, Tab::Grid);
         assert_eq!(state.selected.as_deref(), Some("m2"));
+        assert!(state.stage.as_ref().is_some_and(|s| s.id == "m2"));
+    }
+
+    #[test]
+    fn back_returns_to_the_tab_the_machine_was_opened_from() {
+        let mut state = State {
+            mode: Mode::List,
+            ..State::default()
+        };
+        enter_machine(&mut state, "m1".to_string());
+        assert_eq!(state.mode, Mode::Machine("m1".to_string()));
+        leave_machine(&mut state);
+        assert_eq!(state.mode, Mode::List);
+        assert!(state.stage.is_none());
     }
 }
