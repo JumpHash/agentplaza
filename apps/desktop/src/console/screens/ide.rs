@@ -1613,7 +1613,7 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if matches!(event.kind.as_str(), "agent" | "work" | "project" | "task") {
                 tasks.push(load_roster(ctx));
             }
-            if event.kind == "board" {
+            if matches!(event.kind.as_str(), "board" | "board_paused") {
                 tasks.push(load_board(st, ctx));
             }
             tasks.push(event_task(st, event, ctx));
