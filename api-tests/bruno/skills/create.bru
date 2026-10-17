@@ -1,0 +1,49 @@
+meta {
+  name: Create a skill
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "pdf-forms",
+    "title": "PDF forms",
+    "tags": [],
+    "bindings": ["role:builder"],
+    "skill_md": "---\nname: pdf-forms\ndescription: Fill PDF forms. Use when the task involves a PDF with form fields.\n---\n# PDF forms\n\nRead [the reference](reference.md) first.\n",
+    "files": [
+      { "path": "reference.md", "content_b64": "IyBSZWZlcmVuY2UK" }
+    ],
+    "note": "first version"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.skill.id: eq "pdf-forms"
+  res.body.skill.title: eq "PDF forms"
+  res.body.skill.latest_version: eq 1
+}
+
+tests {
+  test("the new skill has its bindings and no published version", function () {
+    const skill = res.getBody().skill;
+    expect(skill.bindings).to.include("role:builder");
+    expect(skill.active_version).to.be.null;
+  });
+}
+
+script:post-response {
+  bru.setVar("skillId", res.getBody().skill.id);
+}

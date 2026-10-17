@@ -1,0 +1,23 @@
+meta {
+  name: List the workstation join codes on an empty hub
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("no workstation join codes exist yet", function () {
+    expect(res.getBody()).to.be.an("array").that.is.empty;
+  });
+}

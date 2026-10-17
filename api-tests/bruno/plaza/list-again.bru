@@ -1,0 +1,26 @@
+meta {
+  name: List the tasks after a create
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tasks: isArray
+}
+
+tests {
+  test("the list holds the one created task", function () {
+    const tasks = res.getBody().tasks;
+    expect(tasks).to.have.lengthOf(1);
+    expect(tasks[0].id).to.equal(bru.getVar("taskId"));
+    expect(tasks[0].state).to.equal("open");
+  });
+}

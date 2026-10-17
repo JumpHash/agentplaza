@@ -1,0 +1,23 @@
+meta {
+  name: Archive the prompt
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{promptId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.prompt.id: eq "planner"
+}
+
+tests {
+  test("sets archived_ms", function () {
+    expect(res.getBody().prompt.archived_ms).to.be.a("number");
+  });
+}

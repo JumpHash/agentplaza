@@ -1,0 +1,23 @@
+meta {
+  name: List the node join codes on an empty hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("no join codes exist yet", function () {
+    expect(res.getBody()).to.be.an("array").that.is.empty;
+  });
+}

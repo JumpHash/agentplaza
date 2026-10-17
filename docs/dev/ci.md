@@ -27,6 +27,7 @@ the hub compiles them in or tests against them, so they count as code.
 | `console` | the console or what it compiles from changed | The web console's type-check, build and tests (`console.yml`) |
 | `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
 | `windows`, `macos` | platform code changed | The Windows and macOS tests |
+| `api` | code or CI changed | The hub API against a scratch hub (`api-tests/run.sh`): the Bruno collection (a failure blocks the merge), timings, and Schemathesis fuzzing from the spec (reported only) |
 | `ci-ok` (All checks passed) | always | Passes when every job above passed or was skipped. Names the jobs that failed and the ones that were cancelled |
 
 "Platform code" is the platform crates (`apz-desktop*`, `vmm`, `noded`, `vsockd`, `vmctl`,
@@ -95,7 +96,8 @@ no second copy of compiled crates (sccache) is kept beside it.
 
 Workflows carry plain names: **Checks** (the gate) and **Release**, **Nightly tests**, and the
 platforms and parts they call (**Linux**, **Windows**, **macOS**, **Web console**, **Agent guest**,
-**MCP relay**, **Raspberry Pi**, **Trainer**). A run is titled by what it tests or ships:
+**MCP relay**, **Raspberry Pi**, **Trainer**), and **API report** and **API report cleanup**,
+which publish and remove the hub API report. A run is titled by what it tests or ships:
 
 - `#35 CI: warm builds…` for a pull request;
 - `Merge queue: <commit>` for a merge-queue entry;
@@ -105,12 +107,35 @@ platforms and parts they call (**Linux**, **Windows**, **macOS**, **Web console*
 A job reads as part and step, such as `Linux / Test (arm64)`, `Release / Publish to GitHub` or
 `Checks / All checks passed`.
 
+## The hub API report
+
+`api-tests/run.sh` starts a scratch hub (empty config, no database, no node daemon, no git host) and runs:
+- the Bruno collection in `api-tests/bruno`, one folder per area;
+- timings: every parameterless GET in `docs/api/openapi.json`, 20 times each;
+- Schemathesis, with requests generated from the spec, looking for 5xx answers and dropped connections.
+
+Routes marked `x-outbound` in the spec reach the internet, so the timings and the fuzzing skip them.
+
+The gate keeps the results as the `api-results` artifact. `api-report.yml` then runs from main, builds
+the page with main's `api-tests/report/build.mjs`, and publishes it to GitHub Pages:
+- `api/pr/<n>/` for a pull request, linked in a comment on it;
+- `api/main/` for the merge queue's run, which is the baseline the timings compare against.
+
+`api-report-cleanup.yml` removes a pull request's report when it closes. The publishing never runs or
+serves anything from the pull request: the artifact holds only data, and the builder escapes it and
+scrubs tokens and secrets from it.
+
+Locally: `BRU=bru ST=st api-tests/run.sh target/debug/apid api-out`, with `APZ_API_FUZZ=0` to skip the
+fuzzing. Then open `api-out/site/index.html`.
+
 ## All workflows
 
 | Workflow | Runs on | What it does |
 |---|---|---|
 | `pr.yml` | pull requests to main, merge-queue entries | The gate, above |
 | `release.yml` | pushes to main with code in them, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), builds and packages every platform (no tests: the queue tested the commit), and publishes the GitHub Release |
+| `api-report.yml` | after each `pr.yml` run (from main) | Builds the hub API report from the run's results and publishes it to Pages; links it on the pull request |
+| `api-report-cleanup.yml` | a pull request closing | Removes its API report from Pages |
 | `nightly.yml` | every night after a day with code changes, or by hand | Every platform's tests: Linux x86_64 and arm64, Windows, macOS, the console |
 | `linux.yml` | from the above, or by hand | Tests with nextest (`tests`) and, with `package`, builds the packages for x86_64 and arm64 and installs them in Ubuntu, Debian, Fedora and Arch containers |
 | `macos.yml` | from the above, or by hand | Tests on the Intel Mac; with `package`, the Intel and Apple silicon DMGs |

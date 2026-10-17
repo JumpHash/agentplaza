@@ -1,0 +1,35 @@
+meta {
+  name: Create an E2B key for the reads
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "bruno e2b reads"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.label: eq "bruno e2b reads"
+}
+
+script:post-response {
+  bru.setVar("e2bKey", res.getBody().key);
+  bru.setVar("e2bKeyId", res.getBody().id);
+}
+
+tests {
+  test("the key is shown once, with the e2b_ prefix and forty hex digits", function () {
+    expect(res.getBody().key).to.match(/^e2b_[0-9a-f]{40}$/);
+    expect(res.getBody().id).to.match(/^e2k-[0-9a-f]+$/);
+  });
+}

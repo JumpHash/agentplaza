@@ -1,0 +1,31 @@
+meta {
+  name: Read the secret's metadata back from the list
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the list shows the created entry's metadata and no value", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    const id = bru.getVar("secretId");
+    const entry = body.find((e) => e.id === id);
+    expect(entry, "created entry is listed").to.not.be.undefined;
+    expect(entry.name).to.equal("BRU_TEST_KEY");
+    expect(entry.label).to.equal("bru label changed");
+    expect(entry.scope.kind).to.equal("plaza");
+    expect(entry).to.not.have.property("value");
+    expect(JSON.stringify(body)).to.not.include("bru-test-value-0123456789");
+  });
+}

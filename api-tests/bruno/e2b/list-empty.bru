@@ -1,0 +1,27 @@
+meta {
+  name: List the running sandboxes (empty)
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bKey}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a fresh hub lists no sandboxes", function () {
+    expect(res.getBody()).to.be.an("array");
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

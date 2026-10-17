@@ -1,0 +1,26 @@
+meta {
+  name: List the rules after adding one
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/laws/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.rules: isArray
+}
+
+tests {
+  test("lists the rule that was added", function () {
+    const rule = res.getBody().rules.find((r) => r.id === bru.getVar("ruleId"));
+    expect(rule).to.not.be.undefined;
+    expect(rule.title).to.equal("Bruno test rule");
+    expect(rule.enabled).to.equal(true);
+  });
+}

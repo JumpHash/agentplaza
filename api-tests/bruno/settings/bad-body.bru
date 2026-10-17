@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a settings body that is not valid JSON for the type
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "max_turns": "lots"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the settings JSON is bad", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("error");
+    expect(body.error).to.include("bad settings JSON");
+  });
+}

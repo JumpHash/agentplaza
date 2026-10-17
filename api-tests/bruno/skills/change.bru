@@ -1,0 +1,35 @@
+meta {
+  name: Change a skill's title and tags
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/skills/{{skillId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "PDF forms (fillable)",
+    "tags": ["pdf"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.skill.id: eq "pdf-forms"
+  res.body.skill.title: eq "PDF forms (fillable)"
+}
+
+tests {
+  test("the tags are kept", function () {
+    expect(res.getBody().skill.tags).to.include("pdf");
+  });
+}

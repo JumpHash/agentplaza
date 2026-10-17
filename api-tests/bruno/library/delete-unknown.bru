@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when deleting an unknown tool version
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/library/no-such-tool/1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

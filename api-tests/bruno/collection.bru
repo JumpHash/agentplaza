@@ -1,0 +1,10 @@
+docs {
+  # The hub API's tests
+
+  Run against a scratch hub (`api-tests/run.sh` starts one: empty config, state in a temporary
+  directory, no node daemon, no git host). Requests come from 127.0.0.1, so the hub treats them as
+  the owner's and no token is needed.
+
+  One folder per area. A folder's requests run in `seq` order, so a folder can create something,
+  read it back, change it and delete it, passing ids along with `bru.setVar`.
+}

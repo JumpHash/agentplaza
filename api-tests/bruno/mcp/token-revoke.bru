@@ -1,0 +1,16 @@
+meta {
+  name: Revoke an MCP token
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/hub-mcp/tokens/{{tokenId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

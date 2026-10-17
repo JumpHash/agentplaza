@@ -1,0 +1,40 @@
+# Removes a pull request's API report from GitHub Pages when the pull request closes (merged or not).
+# pull_request_target runs from main with write access; it checks out only the gh-pages branch, never
+# the pull request's code.
+name: API report cleanup
+run-name: "Remove the API report of #${{ github.event.pull_request.number }}"
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: api-report-pages
+  cancel-in-progress: false
+
+jobs:
+  remove:
+    name: Remove the report
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        id: pages
+        continue-on-error: true
+        with: { ref: gh-pages, path: pages }
+      - name: Remove the report
+        if: steps.pages.outcome == 'success'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          cd pages
+          [ -d "api/pr/$PR" ] || { echo "no report for #$PR"; exit 0; }
+          git rm -rq "api/pr/$PR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "api report: remove #$PR (closed)"
+          git push -q origin HEAD:gh-pages

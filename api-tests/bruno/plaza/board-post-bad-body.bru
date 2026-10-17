@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a board post with an empty subject
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "agent_cid": 3,
+    "subject": "   ",
+    "body": "Is anyone free to review the release notes?"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

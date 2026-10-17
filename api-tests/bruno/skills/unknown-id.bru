@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for an unknown skill
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/no-such-skill
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

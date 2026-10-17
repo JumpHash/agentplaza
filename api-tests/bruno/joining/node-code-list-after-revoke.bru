@@ -1,0 +1,25 @@
+meta {
+  name: List the join codes after revoking shows the code as revoked
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the revoked code is listed as revoked", function () {
+    const code = res.getBody().find((c) => c.id === bru.getVar("nodeCodeId"));
+    expect(code, "the revoked code is still listed").to.not.be.undefined;
+    expect(code.state).to.equal("revoked");
+  });
+}

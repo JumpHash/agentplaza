@@ -1,0 +1,26 @@
+meta {
+  name: List the sanctions on an empty hub
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/sanctions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.sanctions: isArray
+  res.body.suspensions: isArray
+}
+
+tests {
+  test("no sanctions or suspensions before any agent is sanctioned", function () {
+    const body = res.getBody();
+    expect(body.sanctions).to.have.lengthOf(0);
+    expect(body.suspensions).to.have.lengthOf(0);
+  });
+}

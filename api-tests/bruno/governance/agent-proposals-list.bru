@@ -1,0 +1,23 @@
+meta {
+  name: List the agent proposals on an empty hub
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/agent-proposals
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("no agent proposals before an agent proposes one", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

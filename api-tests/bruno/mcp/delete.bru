@@ -1,0 +1,16 @@
+meta {
+  name: Delete an MCP server
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/mcp/servers/{{mcpId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

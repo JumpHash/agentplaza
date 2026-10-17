@@ -1,0 +1,41 @@
+meta {
+  name: Create a task
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Write the release notes",
+    "acceptance": "The notes list every merged change",
+    "budget": 200,
+    "role": "writer"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.goal: eq "Write the release notes"
+  res.body.state: eq "open"
+  res.body.budget: eq 200
+  res.body.role: eq "writer"
+}
+
+tests {
+  test("the task is open with no outcome and an id", function () {
+    const body = res.getBody();
+    expect(body.id).to.be.a("string");
+    expect(body.outcome).to.equal(null);
+  });
+}
+
+script:post-response {
+  bru.setVar("taskId", res.getBody().id);
+}

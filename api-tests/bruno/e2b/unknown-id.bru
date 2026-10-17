@@ -1,0 +1,29 @@
+meta {
+  name: Get a sandbox that does not exist
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes/sb0000000000000000
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bKey}}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "sandbox_not_found"
+}
+
+tests {
+  test("E2B's error body names the missing sandbox", function () {
+    const body = res.getBody();
+    expect(body.code).to.equal(404);
+    expect(body.message).to.equal("no sandbox sb0000000000000000");
+  });
+}

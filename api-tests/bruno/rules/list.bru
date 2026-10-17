@@ -1,0 +1,28 @@
+meta {
+  name: List the owner's rules on an empty hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/laws/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.rules: isArray
+  res.body.overrides: isArray
+  res.body.constitutional_off: isArray
+}
+
+tests {
+  test("starts with no rules and no overrides", function () {
+    const body = res.getBody();
+    expect(body.rules.length).to.equal(0);
+    expect(body.overrides.length).to.equal(0);
+    expect(body.constitutional_off.length).to.equal(0);
+  });
+}

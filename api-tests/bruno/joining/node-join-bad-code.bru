@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a node join with a bad join code
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "secret": "bogus",
+    "public_key": "bogus",
+    "name": "bruno-node"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal does not reveal why the code failed", function () {
+    expect(res.getBody().error).to.equal("this join code is not valid");
+  });
+}

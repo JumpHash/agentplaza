@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a usage window that ends before it starts
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/summary?from=2000&to=1000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error says from is after to", function () {
+    expect(res.getBody().error).to.include("after");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a rule whose body is not a JSON object
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  ["not", "a", "rule"]
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "the body must be a JSON object"
+}

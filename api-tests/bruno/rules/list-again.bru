@@ -1,0 +1,27 @@
+meta {
+  name: List the rules after a rename
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/laws/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.rules: isArray
+}
+
+tests {
+  test("shows the renamed rule", function () {
+    const rules = res.getBody().rules;
+    const rule = rules.find((r) => r.id === bru.getVar("ruleId"));
+    expect(rule).to.not.be.undefined;
+    expect(rule.title).to.equal("Renamed by the API suite");
+    expect(rules.length).to.equal(1);
+  });
+}

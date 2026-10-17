@@ -1,0 +1,31 @@
+meta {
+  name: Save a valid change to the settings
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "max_turns": 50
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.max_turns: eq 50
+}
+
+tests {
+  test("the save returns the settings it kept", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("model_policy");
+    expect(body.max_turns).to.equal(50);
+  });
+}

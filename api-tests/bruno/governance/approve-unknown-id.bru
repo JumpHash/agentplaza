@@ -1,0 +1,20 @@
+meta {
+  name: Approve an agent proposal that does not exist
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/agent-proposals/no-such-proposal/approve
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,26 @@
+meta {
+  name: List the MCP tokens
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tokens: isArray
+}
+
+tests {
+  test("the created token is listed, without its value", function () {
+    const tokens = res.getBody().tokens;
+    const ids = tokens.map((t) => t.id);
+    expect(ids).to.include(bru.getVar("tokenId"));
+    tokens.forEach((t) => expect(t).to.not.have.property("token"));
+  });
+}

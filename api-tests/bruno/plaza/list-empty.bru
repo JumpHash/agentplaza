@@ -1,0 +1,23 @@
+meta {
+  name: List the tasks on an empty hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tasks: isArray
+}
+
+tests {
+  test("no task exists yet", function () {
+    expect(res.getBody().tasks).to.have.lengthOf(0);
+  });
+}

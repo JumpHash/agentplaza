@@ -1,0 +1,31 @@
+meta {
+  name: Change an MCP server's name
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/mcp/servers/{{mcpId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "Renamed server"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq test-server
+  res.body.name: eq Renamed server
+}
+
+tests {
+  test("the other settings are kept", function () {
+    const body = res.getBody();
+    expect(body.transport.kind).to.equal("stdio");
+  });
+}

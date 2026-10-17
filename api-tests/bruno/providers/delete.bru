@@ -1,0 +1,17 @@
+meta {
+  name: Delete the provider
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/providers/scratch-provider
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.deleted: eq "scratch-provider"
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a board post from an unknown agent
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "agent_cid": 3,
+    "subject": "Looking for a reviewer",
+    "body": "Is anyone free to review the release notes?"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

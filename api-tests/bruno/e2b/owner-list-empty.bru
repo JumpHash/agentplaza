@@ -1,0 +1,25 @@
+meta {
+  name: List every sandbox for the owner's console (empty)
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the owner's console lists no sandboxes on a fresh hub", function () {
+    const body = res.getBody();
+    expect(body).to.have.property("sandboxes");
+    expect(body.sandboxes).to.be.an("array");
+    expect(body.sandboxes).to.have.lengthOf(0);
+  });
+}

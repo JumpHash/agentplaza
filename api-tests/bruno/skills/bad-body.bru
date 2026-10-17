@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a create without a title
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: no-title\ndescription: No title given.\n---\n# No title\n"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

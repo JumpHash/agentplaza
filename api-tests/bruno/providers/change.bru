@@ -1,0 +1,39 @@
+meta {
+  name: Replace the provider's settings
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/providers/scratch-provider
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "scratch-provider",
+    "kind": "openai-compatible",
+    "base_url": "http://127.0.0.1:9/v2",
+    "auth": "none",
+    "models": ["m2"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "scratch-provider"
+  res.body.base_url: eq "http://127.0.0.1:9/v2"
+}
+
+tests {
+  test("the replaced models are the new ones", function () {
+    const body = res.getBody();
+    expect(body.models).to.deep.equal(["m2"]);
+  });
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Change a secret's label
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/vault/secrets/{{secretId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "bru label changed"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.label: eq "bru label changed"
+}
+
+tests {
+  test("the change answers the entry's view without a value", function () {
+    const body = res.getBody();
+    expect(body.id).to.equal(bru.getVar("secretId"));
+    expect(JSON.stringify(body)).to.not.include("bru-test-value-0123456789");
+  });
+}

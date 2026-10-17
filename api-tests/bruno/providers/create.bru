@@ -1,0 +1,44 @@
+meta {
+  name: Add a provider
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/providers
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "scratch-provider",
+    "kind": "openai-compatible",
+    "base_url": "http://127.0.0.1:9/v1",
+    "auth": "none",
+    "models": ["m1"]
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.id: eq "scratch-provider"
+  res.body.kind: eq "openai-compatible"
+  res.body.group: eq "chat"
+  res.body.base_url: eq "http://127.0.0.1:9/v1"
+  res.body.credential: eq "none"
+  res.body.models: isArray
+}
+
+tests {
+  test("the view never carries a secret value", function () {
+    const body = res.getBody();
+    expect(body).to.not.have.property("secret");
+    expect(body.extra_headers).to.deep.equal({});
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Archive a skill
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{skillId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.skill.id: eq "pdf-forms"
+}
+
+tests {
+  test("the skill is marked archived", function () {
+    expect(res.getBody().skill.archived_ms).to.be.a("number");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: List the providers again
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the replaced provider is listed with its new models", function () {
+    const found = res.getBody().find((p) => p.id === "scratch-provider");
+    expect(found).to.not.equal(undefined);
+    expect(found.models).to.deep.equal(["m2"]);
+  });
+}
