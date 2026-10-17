@@ -6,14 +6,14 @@
 .btn.plaza-stop {
   background: var(--crit);
   border-color: var(--crit);
-  color: #fff;
+  color: var(--sheet);
   font-family: var(--sans);
   font-weight: 700;
   letter-spacing: 0.08em;
   border-radius: 0;
   box-shadow: 2px 2px 0 var(--ink);
 }
-.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, #000); color: #fff; }
+.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, #000); color: var(--sheet); }
 
 .btn.plaza-resume {
   background: var(--ok);
