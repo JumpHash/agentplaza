@@ -27,7 +27,7 @@ Cargo workspace members (`Cargo.toml`), plus the non-Cargo parts.
 | [`crates/apz-trust`](../crates/apz-trust) | Join tokens, node keys, signed requests, pinned TLS and owner tokens |
 | [`crates/apz-os`](../crates/apz-os) | Platform differences: state locations, private files, randomness, detached processes |
 | [`crates/apz-setup`](../crates/apz-setup) | First-run setup of a local plaza: checks requirements and fixes the missing ones |
-| [`crates/apz-engine`](../crates/apz-engine) | The 3D engine for the Floor (wgpu), platform-agnostic |
+| [`crates/apz-engine`](../crates/apz-engine) | The 3D engine for the Machines screen and the machine view (wgpu), platform-agnostic |
 | [`crates/apz-engine-web`](../crates/apz-engine-web) | The browser shell of the engine (wasm-bindgen; WebGPU, WebGL2 fallback) |
 | [`crates/apz-board`](../crates/apz-board) | The hardware-board model shared by the desktop and the web (WASM) |
 | [`crates/apz-ide`](../crates/apz-ide) | The IDE model: workspaces, entries, buffers, diffs, path rules, state reducer |
