@@ -364,7 +364,7 @@ pub struct Match {
 pub struct Catalog {
     pub specs: GpuSpecFile,
     pub rules: MatchFile,
-    patterns: Vec<fancy_regex::Regex>,
+    patterns: Vec<regex_lite::Regex>,
 }
 
 static CATALOG: OnceLock<Catalog> = OnceLock::new();
@@ -396,8 +396,8 @@ pub fn catalog() -> &'static Catalog {
 }
 
 /// The name regex, case-insensitive as in the TS matcher (`new RegExp(src, 'i')`).
-fn compile(pattern: &str) -> Result<fancy_regex::Regex, fancy_regex::Error> {
-    fancy_regex::Regex::new(&format!("(?i){pattern}"))
+fn compile(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    regex_lite::Regex::new(&format!("(?i){pattern}"))
 }
 
 /// The card for one detected GPU, or `None` when no rule matches. Vendors compare case-insensitively.
@@ -419,7 +419,7 @@ pub fn match_card(gpu: &GpuInput, machine_kind: Option<&str>) -> Option<Match> {
                 continue;
             }
         }
-        if !matches!(re.is_match(&gpu.name), Ok(true)) {
+        if !re.is_match(&gpu.name) {
             continue;
         }
         let card = cat
@@ -669,6 +669,28 @@ pub fn validate_match(file: &MatchFile, spec_ids: &[&str]) -> Vec<String> {
         }
     }
     errs
+}
+
+/// What the machine view's hardware panel says about one detected GPU: its own name, and the reference card it matched
+/// (None when no rule matched), with the card's segment, form factor, slot width, size in millimetres, cooling and fan
+/// count, and whether the match is a generic fallback rather than that exact card.
+pub fn card_summary(gpu: &GpuInput, machine_kind: Option<&str>) -> serde_json::Value {
+    let lower = |d: &dyn std::fmt::Debug| format!("{d:?}").to_ascii_lowercase();
+    let card = match_card(gpu, machine_kind).map(|m| {
+        let c = m.card;
+        serde_json::json!({
+            "id": c.id,
+            "name": c.name,
+            "segment": lower(&c.segment),
+            "form": lower(&c.form),
+            "slots": c.slots,
+            "size_mm": c.size_mm.map(|d| [d.length, d.height, d.thickness]),
+            "cooling": lower(&c.cooling.kind),
+            "fans": c.cooling.fans.len(),
+            "generic": m.fallback,
+        })
+    });
+    serde_json::json!({ "gpu": gpu.name, "vendor": gpu.vendor, "memory_mib": gpu.memory_mib, "card": card })
 }
 
 #[cfg(test)]
@@ -1007,5 +1029,37 @@ mod tests {
             let got = match_card(&gpu, kind).map(|m| (m.card.id.as_str(), m.fallback, m.rule));
             assert_eq!(got, card.map(|c| (c, fallback, rule)), "{vendor} / {name}");
         }
+    }
+
+    #[test]
+    fn a_card_summary_names_the_matched_card_and_its_build() {
+        let gpu = GpuInput {
+            vendor: "NVIDIA".into(),
+            name: "NVIDIA H100 80GB HBM3".into(),
+            memory_mib: Some(81_559.0),
+        };
+        let s = card_summary(&gpu, Some("server"));
+        assert_eq!(s["gpu"], "NVIDIA H100 80GB HBM3");
+        let card = &s["card"];
+        assert!(
+            card["name"].as_str().is_some_and(|n| n.contains("H100")),
+            "{s}"
+        );
+        assert!(
+            card["form"].is_string() && card["cooling"].is_string() && card["generic"].is_boolean(),
+            "{s}"
+        );
+        let none = card_summary(
+            &GpuInput {
+                vendor: "acme".into(),
+                name: "Mystery".into(),
+                memory_mib: None,
+            },
+            None,
+        );
+        assert!(
+            none["card"].is_null() || none["card"]["generic"] == true,
+            "{none}"
+        );
     }
 }

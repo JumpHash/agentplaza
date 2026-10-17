@@ -1,3 +1,4 @@
+import { parseGpuCards, type GpuCardInfo } from './machine-view-model';
 import { api, type Agent, type FleetResponse } from '../api';
 import { floorName } from '../roles';
 import { button } from '../ui/components';
@@ -69,6 +70,8 @@ export interface WebEngine {
   view(id: string, view: string, w: number, h: number): Promise<Uint8Array>;
   /** The machine's facts, JSON `{"model", "size_cm"}`, or `null`. */
   machine_info(id: string): string;
+  /** The machine's GPUs, each with the reference card the engine matched, JSON (see GpuCardInfo), or `null`. */
+  gpu_cards(id: string): string;
   destroy(): void;
 }
 
@@ -273,6 +276,8 @@ export interface EngineStage {
   view(id: string, view: MachineView, w: number, h: number): Promise<Uint8Array>;
   /** The machine's facts from the engine, or null. Rejects ENGINE_STOPPED once destroyed. */
   machineInfo(id: string): Promise<MachineInfo | null>;
+  /** Each GPU of the machine with its reference card, or null. Rejects ENGINE_STOPPED once destroyed. */
+  gpuCards(id: string): Promise<GpuCardInfo[] | null>;
   /** Stops the engine and the fleet poll. The caller removes the canvas. */
   destroy(): void;
 }
@@ -372,6 +377,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
     portrait: (json, w, h) => whenReady((e) => e.portrait(json, w, h)),
     view: (id, view, w, h) => whenReady((e) => e.view(id, view, w, h)),
     machineInfo: (id) => whenReady((e) => parseMachineInfo(e.machine_info(id))),
+    gpuCards: (id) => whenReady((e) => parseGpuCards(e.gpu_cards(id))),
     destroy() {
       closed = true;
       stopNow();
@@ -398,6 +404,7 @@ export function startThumbEngine(): EngineStage {
     portrait: (json, w, h) => stage.portrait(json, w, h),
     view: (id, view, w, h) => stage.view(id, view, w, h),
     machineInfo: (id) => stage.machineInfo(id),
+    gpuCards: (id) => stage.gpuCards(id),
     destroy() {
       stage.destroy();
       canvas.remove();

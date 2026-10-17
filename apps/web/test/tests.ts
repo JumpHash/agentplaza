@@ -1,6 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, movedTo } from '../src/router';
 import { machinesRoute, viewHash } from '../src/views/machines';
+import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
 import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
 import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
 import richVectors from '../../../crates/apz-rich/tests/vectors.json';
@@ -1747,7 +1748,8 @@ eq(machinesRoute('#/machines').view, 'grid', 'machines: the bare route is the gr
 eq(machinesRoute('#/machines').id, null, 'machines: the grid has no open row');
 eq(machinesRoute('#/machines?view=list').view, 'list', 'machines: ?view=list is the list');
 eq(machinesRoute('#/machines?view=grid').view, 'grid', 'machines: ?view=grid is the grid');
-eq(machinesRoute('#/machines/m-7').view, 'list', 'machines: a machine id opens the list');
+eq(machinesRoute('#/machines/m-7').view, 'machine', 'machines: a machine id opens its own view');
+eq(machinesRoute('#/machines/m-7').id, 'm-7', 'machines: the id is the machine');
 eq(machinesRoute('#/machines/m-7').id, 'm-7', 'machines: the id is the row to open');
 eq(viewHash('list'), '#/machines?view=list', 'machines: the list hash');
 eq(viewHash('grid'), '#/machines', 'machines: the grid hash');
@@ -1757,3 +1759,31 @@ eq(movedTo('#/machine/m-7'), '#/machines/m-7', 'machines: #/machine/<id> moves t
 eq(movedTo('#/machines'), null, 'machines: the screen itself does not move');
 eq(movedTo('#/usage'), '#/metrics?tab=tokens', 'machines: #/usage still moves');
 sectionEnd('machines route tests: ok');
+
+// The machine view's pure helpers: VM rows, GPU card lines, the metrics series.
+eq(
+  vmRows({ runs: [{ id: 'r12', vms: [{ index: 3, state: 'running', guest_cid: 105 }] }] } as unknown as Parameters<typeof vmRows>[0]),
+  [{ id: 'r12/3', run: 'r12', index: 3, state: 'running', cid: 105 }],
+  'a VM row names its run and index, and its agent CID',
+);
+eq(vmRows({ runs: undefined } as unknown as Parameters<typeof vmRows>[0]), [], 'a machine with no runs lists no VMs');
+const refCard = { id: 'rtx-4090-fe', name: 'RTX 4090 Founders', segment: 'consumer', form: 'desktop', slots: 3, size_mm: null, cooling: 'air', fans: 3, generic: false };
+eq(
+  gpuCardLine({ gpu: 'NVIDIA GeForce RTX 4090', vendor: 'nvidia', memory_mib: 24576, card: refCard }),
+  'RTX 4090 Founders · desktop · 3-slot · air',
+  'a GPU line: card name, form, slots, cooling',
+);
+eq(gpuCardLine({ gpu: 'x', vendor: 'nvidia', memory_mib: null, card: { ...refCard, generic: true } }), 'RTX 4090 Founders · desktop · 3-slot · air (generic)', 'a generic card says so');
+eq(gpuCardLine({ gpu: 'Mystery GPU', vendor: 'other', memory_mib: null, card: null }), 'Mystery GPU · no reference card', 'a GPU with no card');
+eq(parseGpuCards('null'), null, 'the engine says null for an unknown machine');
+eq(parseGpuCards('{'), null, 'a broken reply is no GPUs');
+eq(parseGpuCards('[]'), [], 'no GPUs is an empty list');
+const cpuView = { panels: [{ metric: 'host.cpu_pct', body: { type: 'chart', series: [{ values: [1, null, 3] }] } }, { metric: 'host.gpu_util_pct', body: { type: 'empty', text: '' } }] };
+eq(metricValues(cpuView as unknown as Parameters<typeof metricValues>[0], 'host.cpu_pct'), [1, null, 3], 'the first series of the metric');
+eq(metricValues(cpuView as unknown as Parameters<typeof metricValues>[0], 'host.gpu_util_pct'), [], 'a panel that is not a chart has no values');
+eq(metricValues({} as unknown as Parameters<typeof metricValues>[0], 'host.cpu_pct'), [], 'an empty view (a hub without metrics) has no values');
+eq(metricValues(cpuView as unknown as Parameters<typeof metricValues>[0], 'host.nope'), [], 'a metric the view does not show');
+eq(latestValue([1, null, 3, null]), 3, 'the newest number is the latest');
+eq(latestValue([null, null]), null, 'no number, no latest');
+eq(finiteValues([1, null, 3]), [1, 3], 'finite values only');
+sectionEnd('machine view helper tests: ok');

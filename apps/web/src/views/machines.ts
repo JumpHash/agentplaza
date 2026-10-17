@@ -6,9 +6,10 @@ import { h } from '../ui/dom';
 import { href, parse } from '../router';
 import { mountGrid } from './floor';
 import { mountList } from './machine';
+import { mountMachineView } from './machine-view';
 import type { Cleanup } from './index';
 
-export type MachinesView = 'grid' | 'list';
+export type MachinesView = 'grid' | 'list' | 'machine';
 
 export interface MachinesRoute {
   view: MachinesView;
@@ -20,7 +21,7 @@ export interface MachinesRoute {
 export function machinesRoute(hash: string): MachinesRoute {
   const id = parse(hash).params[0] ?? null;
   const query = new URLSearchParams(hash.split('?')[1] ?? '');
-  return { view: id !== null || query.get('view') === 'list' ? 'list' : 'grid', id };
+  return { view: id !== null ? 'machine' : query.get('view') === 'list' ? 'list' : 'grid', id };
 }
 
 /** The hash of a view: the bare route is the Grid, the List carries `?view=list`. */
@@ -32,6 +33,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let view: MachinesView | null = null;
   let body: Cleanup = () => undefined;
   let reset: (() => void) | null = null;
+  let shown: string | null = null; // the machine id the view shows
 
   const bodyBox = h('div.machines-body');
   const gridBtn = button('Grid', () => {
@@ -43,7 +45,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const resetBtn = button('Reset view', () => reset?.(), { icon: 'refresh' });
   resetBtn.hidden = true;
   const switchBox = h('div.machines-switch', { role: 'group', 'aria-label': 'View' }, gridBtn, listBtn);
-  root.append(h('div.view-head', null, h('h1', null, 'Machines'), h('div.actions', null, switchBox, resetBtn)), bodyBox);
+  const head = h('div.view-head', null, h('h1', null, 'Machines'), h('div.actions', null, switchBox, resetBtn));
+  root.append(head, bodyBox);
 
   // The Reset view button belongs to the Grid, and shows while the Grid has an engine to reset.
   const bindReset = (fn: (() => void) | null): void => {
@@ -54,19 +57,21 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   // Shows the body the hash asks for; the body it replaces releases its resources first.
   const paint = (): void => {
     const route = machinesRoute(location.hash);
-    if (route.view === view) return;
+    if (route.view === view && route.id === shown) return;
     view = route.view;
+    shown = route.id;
     body();
     body = () => undefined;
     bodyBox.replaceChildren();
     reset = null;
     resetBtn.hidden = true;
     root.classList.toggle('floor-view', view === 'grid');
+    head.hidden = view === 'machine';
     gridBtn.setAttribute('aria-pressed', String(view === 'grid'));
     gridBtn.classList.toggle('primary', view === 'grid');
     listBtn.setAttribute('aria-pressed', String(view === 'list'));
     listBtn.classList.toggle('primary', view === 'list');
-    body = view === 'grid' ? mountGrid(bodyBox, bindReset) : mountList(bodyBox, route.id);
+    body = view === 'grid' ? mountGrid(bodyBox, bindReset) : route.id !== null ? mountMachineView(bodyBox, route.id) : mountList(bodyBox);
   };
 
   // The switch and the redirects change the hash within this screen; a different screen takes the page away.

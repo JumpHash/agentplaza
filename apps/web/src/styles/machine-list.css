@@ -133,3 +133,7 @@
   .mlist-detail { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .mlist-stage-slot { max-width: 100%; }
 }
+
+/* The open row's link to its machine view. */
+.mlist-detail-head { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.mlist-open { font-size: 13px; color: var(--signal); }
