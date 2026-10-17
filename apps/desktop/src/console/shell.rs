@@ -420,6 +420,7 @@ pub fn full_window(current: &Id) -> bool {
 pub fn view<'a, M: Clone + 'a>(
     state: &'a State,
     screen: Element<'a, M>,
+    self_scrolling: bool,
     wrap: fn(Msg) -> M,
 ) -> Element<'a, M> {
     let base: Element<'a, M> = if full_window(&state.current) {
@@ -437,7 +438,7 @@ pub fn view<'a, M: Clone + 'a>(
             main = main.push(gpu_banner(adapter));
         }
         // A screen that does not scroll its own page is wrapped in one, so a squeezed screen scrolls instead of clipping.
-        let screen = if manages_scroll(&state.current) {
+        let screen = if self_scrolling || manages_scroll(&state.current) {
             screen
         } else {
             ui::scroll(screen)
@@ -488,7 +489,7 @@ fn shows(entry: &Id, current: &Id) -> bool {
 }
 
 /// Screens whose view scrolls its own page (a `scrollable` inside `ui::sheet`), or that handle their own
-/// pointer input (Floor's canvas). The shell wraps every other screen; add a screen here once its view scrolls itself.
+/// pointer input (a 3D view's canvas). The shell wraps every other screen; add a screen here once its view scrolls itself.
 fn manages_scroll(id: &super::screens::Id) -> bool {
     use super::screens::Id;
     matches!(
@@ -501,7 +502,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Git
             | Id::Repo(_)
             | Id::Library
-            | Id::Floor
             | Id::RobotLab
             | Id::HardwareLab
             | Id::Ide(_)

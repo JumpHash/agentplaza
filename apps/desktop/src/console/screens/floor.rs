@@ -1,7 +1,7 @@
-//! The Floor screen (parity with the web console's `floor` view): the fleet's machines on the 3D floor in a shader
+//! The Machines grid (parity with the web console's `floor` view): the fleet's machines on the 3D floor in a shader
 //! widget, with their name tags, the machine popup and the legend over it.
 //!
-//! The screen shows the Machines view only: the fleet from `GET /v1/fleet` on the Floor's sky and ground
+//! The grid shows the Machines view only: the fleet from `GET /v1/fleet` on the Floor's sky and ground
 //! (`State::machines` + `State::fleet`). Hover lifts a machine and a click opens its popup (Esc closes it); the popup
 //! lists the machine's agents, and each name opens that agent's screen.
 //!
@@ -37,7 +37,7 @@ const POPUP_NAMES: usize = 6;
 /// The fleet poll.
 const FLEET_EVERY: Duration = Duration::from_secs(5);
 
-/// The Floor screen's state: the engine (its stage is what the Floor shows and how it moves), the motion of the
+/// The grid's state: the engine (its stage is what the Floor shows and how it moves), the motion of the
 /// last frame (how often the window should draw next), plus the screen's own timing origin. The screen reads and
 /// drives the stage through `Deref`.
 pub struct State(pub Engine, Motion);
@@ -105,17 +105,11 @@ pub enum Msg {
     Escape,
     /// Navigate to another screen.
     Go(Id),
+    /// The popup's "Open machine": the Machines screen shows the machine's section and its 3D view.
+    OpenMachine(String),
 }
 
-/// The navigation this message asks for, if any.
-pub fn go(msg: &Msg) -> Option<Id> {
-    match msg {
-        Msg::Go(id) => Some(id.clone()),
-        _ => None,
-    }
-}
-
-/// Animation frames from the window, the fleet poll and Esc, while the Floor is the shown screen. The frames follow
+/// Animation frames from the window, the fleet poll and Esc, while the grid is the shown view. The frames follow
 /// the last frame's motion: every frame while something is active, 12 a second while only the decoration turns,
 /// none at rest (a change or input brings them back on the next update).
 pub fn subscription(state: &State) -> Subscription<Msg> {
@@ -208,7 +202,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Select(at) => state.select(at.map(|p| (p.x, p.y))),
         Msg::ResetView => state.reset_view(),
         Msg::Escape => state.popup = None,
-        Msg::Go(_) => {}
+        Msg::Go(_) | Msg::OpenMachine(_) => {}
     }
     if let Some((name, t0)) = perf_msg
         && ms_since(t0) > 16.0
@@ -246,15 +240,18 @@ fn floor_msg(action: Action) -> Msg {
     }
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let actions = vec![ui::btn(
+/// The grid's header action: the view's reset.
+pub fn reset_button<'a>() -> Element<'a, Msg> {
+    ui::btn(
         "Reset view",
         Some("refresh"),
         ui::Kind::Secondary,
         Some(Msg::ResetView),
-    )];
-    let head = ui::view_head("Machines", actions);
+    )
+}
 
+/// The grid's body: the stage with its popup and legend, under the errors (the screen's sheet holds the header).
+pub fn body<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut layers: Vec<Element<'a, Msg>> = vec![
         shader(EngineProgram {
             primitive: Arc::clone(&state.frame),
@@ -300,7 +297,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(e) = &state.fleet_error {
         body = body.push(ui::error_line(&format!("Machines: {e}")));
     }
-    ui::sheet(head, body.push(stage).into())
+    body.push(stage).into()
 }
 
 /// The popup of the open machine, beside its tag (none while the fleet or the machine is missing).
@@ -377,9 +374,17 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         .spacing(8)
         .align_y(Alignment::Center),
         ui::sans(model, 11.0, crate::theme::palette().ink_3),
+        // "Open machine" sits by the status, near the top, so a long card never hides it.
         row![
             ui::label("Status"),
-            ui::badge(&m.status, status_tone(&m.status))
+            ui::badge(&m.status, status_tone(&m.status)),
+            Space::new().width(Length::Fill),
+            ui::btn(
+                "Open machine",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::OpenMachine(m.id.clone())),
+            )
         ]
         .spacing(10)
         .align_y(Alignment::Center),

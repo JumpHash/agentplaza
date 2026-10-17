@@ -105,6 +105,9 @@ fn boot() -> (Console, Task<Msg>) {
             .find(|(_, label, ..)| label.eq_ignore_ascii_case(&name))
         {
             console.shell.current = id.clone();
+        } else if name.eq_ignore_ascii_case("Floor") {
+            // The Floor is the Machines screen's grid, which is its default view.
+            console.shell.current = screens::Id::Machines;
         } else if name.eq_ignore_ascii_case("LabJobs") {
             // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
             console.shell.current = screens::Id::LabJobs;
@@ -402,6 +405,7 @@ fn view(console: &Console) -> Element<'_, Msg> {
                 &console.shell,
                 screens::view(&console.screens, &console.shell.current, ctx, plaza)
                     .map(Msg::Screen),
+                screens::scrolls_itself(&console.screens, &console.shell.current),
                 Msg::Shell,
             );
             let open = console.shell.mode == shell::Mode::Open;

@@ -1,5 +1,6 @@
 // Pure-logic tests: run with `npm test`.
-import { parse, href } from '../src/router';
+import { parse, href, movedTo } from '../src/router';
+import { machinesRoute, viewHash } from '../src/views/machines';
 import { classify, label, type RichCtx, type Span } from '../src/ui/rich';
 import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
 import richVectors from '../../../crates/apz-rich/tests/vectors.json';
@@ -1740,3 +1741,19 @@ if (failedSections.length) {
   eq(wrapsAtSpaces('sonnet-5.5 on r-12'), 'sonnet\u20115.5 on r\u201112', 'table text: hyphens do not break, spaces do');
   console.log('metrics band tests: ok');
 }
+
+// ---- Machines: the screen's view and row from its hash (views/machines.ts), and the moved routes (router.ts) ----
+eq(machinesRoute('#/machines').view, 'grid', 'machines: the bare route is the grid');
+eq(machinesRoute('#/machines').id, null, 'machines: the grid has no open row');
+eq(machinesRoute('#/machines?view=list').view, 'list', 'machines: ?view=list is the list');
+eq(machinesRoute('#/machines?view=grid').view, 'grid', 'machines: ?view=grid is the grid');
+eq(machinesRoute('#/machines/m-7').view, 'list', 'machines: a machine id opens the list');
+eq(machinesRoute('#/machines/m-7').id, 'm-7', 'machines: the id is the row to open');
+eq(viewHash('list'), '#/machines?view=list', 'machines: the list hash');
+eq(viewHash('grid'), '#/machines', 'machines: the grid hash');
+eq(movedTo('#/floor'), '#/machines', 'machines: #/floor moves to the grid');
+eq(movedTo('#/machine'), '#/machines?view=list', 'machines: #/machine moves to the list');
+eq(movedTo('#/machine/m-7'), '#/machines/m-7', 'machines: #/machine/<id> moves to that row');
+eq(movedTo('#/machines'), null, 'machines: the screen itself does not move');
+eq(movedTo('#/usage'), '#/metrics?tab=tokens', 'machines: #/usage still moves');
+sectionEnd('machines route tests: ok');

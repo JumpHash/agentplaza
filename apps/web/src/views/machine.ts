@@ -75,16 +75,19 @@ function topology(o: Overview | null, machines: MachineNode[], selectedId: strin
   return h('div.mach-topo', null, plane, wiresBox, fleet);
 }
 
-export function mount(root: HTMLElement, _params: string[]): Cleanup {
+/** The Machines screen's List view (machines.ts): the control plane, then one row per machine. `openId` opens that row. */
+export function mountList(root: HTMLElement, openId: string | null): Cleanup {
   const topoBox = h('div');
   const list = machineList();
-  root.append(h('div.view-head', null, h('h1', null, 'Machines')), topoBox, list.el);
+  root.append(topoBox, list.el);
 
   let alive = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let machines: MachineNode[] = [];
   let overview: Overview | null = null;
-  let selectedId: string | null = null;
+  let selectedId: string | null = openId;
+  // The row opens once it has loaded: the list keeps a wanted row until its rows arrive.
+  if (openId !== null) list.open(openId);
   let agentsByCid = new Map<number, Agent>(); // names for the agents' VMs, matched by CID
 
   async function killRun(id: string): Promise<void> {
