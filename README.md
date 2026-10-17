@@ -3,7 +3,7 @@
 <p align="center"><strong>Self-hosted AI agents, each in its own microVM, with rules, budgets and a kill switch you control.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/github/v/release/JumpHash/agentplaza" alt="Latest release"></a>
+  <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fagentplaza.io%2Fbadge%2Frelease.json" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Raspberry%20Pi-lightgrey" alt="Platforms: Linux, macOS, Windows, Raspberry Pi">
   <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Built with Rust">
