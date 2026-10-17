@@ -332,6 +332,16 @@ impl WebEngine {
         }
     }
 
+    /// Each GPU of one machine with the reference card it matched, as a JSON array of `{gpu, vendor, memory_mib, card}`
+    /// (`card`: `{id, name, segment, form, slots, size_mm, cooling, fans, generic}`, or null when no card matched), or
+    /// `null` when the feed has no such machine.
+    pub fn gpu_cards(&self, id: String) -> String {
+        match self.shared.borrow().engine.stage.machine_cards(&id) {
+            Some(cards) => serde_json::Value::from(cards).to_string(),
+            None => "null".to_string(),
+        }
+    }
+
     /// The backend the engine draws with: 'webgpu' or 'webgl2'.
     pub fn backend(&self) -> String {
         backend_name(self.shared.borrow().backend).to_string()

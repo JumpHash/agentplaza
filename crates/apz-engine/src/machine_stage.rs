@@ -417,6 +417,29 @@ impl Stage {
         Some((kit_model_of(machine), model.size.to_array()))
     }
 
+    /// Each GPU of one machine of the current feed with the reference card it matched (`gpus::card_summary`), in the
+    /// machine's GPU order, or None when the feed has no such machine.
+    pub fn machine_cards(&self, id: &str) -> Option<Vec<serde_json::Value>> {
+        let machine = self
+            .fleet_data
+            .as_ref()
+            .and_then(|f| f.machines.iter().find(|m| m.id == id))?;
+        Some(
+            machine
+                .gpus
+                .iter()
+                .map(|g| {
+                    let input = crate::gpus::GpuInput {
+                        vendor: g.vendor.clone(),
+                        name: g.name.clone(),
+                        memory_mib: g.memory_mib.map(|m| m as f64),
+                    };
+                    crate::gpus::card_summary(&input, Some(&machine.kind))
+                })
+                .collect(),
+        )
+    }
+
     /// Shows one machine of the current feed on the stage (`Cmd::ShowMachine`). False when the feed has no such machine.
     pub fn show_machine(&mut self, id: &str) -> bool {
         match self.machine_stage_for(id) {
