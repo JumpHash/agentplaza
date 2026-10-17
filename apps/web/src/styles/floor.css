@@ -38,10 +38,6 @@ body.floor-mode .view { flex: 1 1 0; min-height: 0; max-width: none; margin-bott
 .floor-stage-3d .floor-key.working { background: var(--signal); }
 .floor-key.idle { background: var(--ok); }
 .floor-key.offline { background: var(--ink-3); }
-/* The Machines view's status squares: online, draining amber, offline grey, revoked red. */
-.floor-key.online { background: var(--ok); }
-.floor-key.draining { background: var(--warn); }
-.floor-key.revoked { background: var(--crit); }
 /* The loading card of an arrival that waits for its build (floor.ts updateLoading): a thin bar fed by the build's progress. */
 .floor-loading {
   position: absolute; z-index: 3; top: 14px; left: 50%; transform: translateX(-50%); width: 300px; max-width: calc(100% - 28px);

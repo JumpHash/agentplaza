@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use apz_engine::input::{Button, Event};
+use apz_engine::style::{Lamp, Style};
 use apz_engine::{Cmd, Engine, Motion, Pick};
 use js_sys::{Array, Float32Array, Function, Promise, Reflect, Uint8Array, Uint32Array};
 use wasm_bindgen::JsCast;
@@ -326,6 +327,28 @@ impl WebEngine {
             _ => return,
         };
         self.shared.borrow_mut().engine.command(cmd);
+    }
+
+    /// Draws the Machines view in the style `style` ('ink', 'blueprint' or 'night', any case) for a dark or light
+    /// console theme, and asks for a frame. An unknown style name keeps the current one.
+    pub fn set_style(&self, style: String, dark: bool) {
+        let mut s = self.shared.borrow_mut();
+        let style = Style::parse(&style).unwrap_or(s.engine.stage.style);
+        s.engine.set_style(style, dark);
+    }
+
+    /// The four status lamps' colours in the stage's palette, as a JSON array of CSS hex colours ("#rrggbb"): Working,
+    /// Idle, Strained, Offline.
+    pub fn lamps(&self) -> String {
+        let palette = self.shared.borrow().engine.stage.palette();
+        let hex: Vec<String> = [Lamp::Working, Lamp::Idle, Lamp::Strained, Lamp::Offline]
+            .into_iter()
+            .map(|lamp| {
+                let [r, g, b] = palette.lamp(lamp).to_srgb_u8();
+                format!("\"#{r:02x}{g:02x}{b:02x}\"")
+            })
+            .collect();
+        format!("[{}]", hex.join(","))
     }
 
     /// Aims the camera at (x, y, z) from `dist` away, at polar angle `polar` from +Y and `azimuth` (radians, as the

@@ -19,6 +19,10 @@ export interface WebEngine {
   set_feed(json: string): void;
   /** The engine's commands: reset the view, open (or with no id, close) the popup, show a machine, leave a machine. */
   command(name: 'reset' | 'popup' | 'show_machine' | 'leave_machine', arg?: string | null): void;
+  /** Draws the Machines view in a style (`ink`, `blueprint` or `night`) and the console theme (dark or light). */
+  set_style(style: string, dark: boolean): void;
+  /** The four status lamps' colours, JSON: CSS hex for Working, Idle, Strained and Offline, in the stage's palette. */
+  lamps(): string;
   /** A pick on the stage: only a machine is picked. */
   on_pick(cb: (kind: 'machine' | 'none', id: string) => void): void;
   screen_of(kind: 'machine', id: string): Float32Array;
@@ -375,12 +379,12 @@ export function startThumbEngine(): EngineStage {
   };
 }
 
-/** The legend's keys: the Machines view's statuses (the floor.css swatch colours). */
+/** The legend's keys: the Machines view's lamps, in the engine's lamp order (WebEngine.lamps). */
 const FLEET_KEYS: [string, string][] = [
-  ['online', 'Online'],
-  ['draining', 'Draining'],
+  ['working', 'Working'],
+  ['idle', 'Idle'],
+  ['strained', 'Draining'],
   ['offline', 'Offline'],
-  ['revoked', 'Revoked'],
 ];
 
 /** A node of `window.__apzScene`: three's Object3D fields the retired build's scene was read by, and its walk. */
@@ -521,13 +525,15 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
   card.className = 'floor-card machine-card';
   card.style.cssText = 'right:16px;top:16px;left:auto';
   card.hidden = true;
-  // The legend, bottom-left of the stage: the machines' statuses.
+  // The legend, bottom-left of the stage: the machines' lamps. The swatches take the engine's lamp colours (paintLamps).
+  const swatches: HTMLElement[] = [];
   const legend = h(
     'div.floor-legend',
     null,
     ...FLEET_KEYS.map(([key, label]) => {
       const swatch = document.createElement('i');
       swatch.className = `floor-key ${key}`;
+      swatches.push(swatch);
       return h('span', null, swatch, label);
     }),
   );
@@ -678,6 +684,26 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
   };
   let removeDebug: (() => void) | null = null;
 
+  // The legend's swatches take the engine's lamp colours in its current palette (WebEngine.lamps, FLEET_KEYS order).
+  const paintLamps = (started: WebEngine): void => {
+    try {
+      const lamps = JSON.parse(started.lamps()) as string[];
+      swatches.forEach((swatch, i) => {
+        const colour = lamps[i];
+        if (colour !== undefined) swatch.style.background = colour;
+      });
+    } catch {
+      // the swatches keep their floor.css colours
+    }
+  };
+  // The console is dark unless the page says light: the engine draws in that theme and the legend follows it.
+  const applyTheme = (started: WebEngine): void => {
+    started.set_style('ink', document.documentElement.dataset.theme !== 'light');
+    paintLamps(started);
+  };
+  // Watches the page's theme (data-theme on the root) while the engine runs; disconnected in the cleanup.
+  let themeObserver: MutationObserver | null = null;
+
   // Escape closes the popup here, before the engine's own handler.
   const onKey = (ev: KeyboardEvent): void => {
     if (ev.key !== 'Escape' || closed || popupId === null) return;
@@ -699,6 +725,11 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
       renderPopup();
     });
     engine = started;
+    applyTheme(started);
+    themeObserver = new MutationObserver(() => {
+      if (engine !== null) applyTheme(engine);
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     // The engine's counters for the browser checks (this mount only: the flag is on the page's URL).
     (window as unknown as { apzEngine?: WebEngine }).apzEngine = started;
     removeDebug = installDebugHooks(started);
@@ -729,6 +760,8 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
     engine = null;
     removeDebug?.();
     removeDebug = null;
+    themeObserver?.disconnect();
+    themeObserver = null;
     e?.destroy();
     root.innerHTML = '';
   };

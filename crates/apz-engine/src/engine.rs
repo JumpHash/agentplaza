@@ -462,6 +462,12 @@ impl Engine {
         self.dirty = true;
     }
 
+    /// Draws the machines in `style` for a dark or light console theme (`Stage::set_style`), and asks for a frame.
+    pub fn set_style(&mut self, style: crate::style::Style, dark: bool) {
+        self.stage.set_style(style, dark);
+        self.dirty = true;
+    }
+
     /// Feeds one pointer event. Returns whether the host should capture it (keep it from the widgets beneath).
     pub fn input(&mut self, event: input::Event) -> bool {
         let size = self.stage.size;

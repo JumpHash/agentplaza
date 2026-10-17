@@ -392,7 +392,7 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                     ("top", "TOP"),
                     ("front", "FRONT"),
                     ("side", "SIDE"),
-                    ("anchor", "ANCHOR"),
+                    ("back", "BACK"),
                 ],
             ));
             out

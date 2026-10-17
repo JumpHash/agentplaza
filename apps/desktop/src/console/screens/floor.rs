@@ -177,7 +177,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let started = Instant::now();
             // The machines follow the console's theme (the stage rebuilds only when it changed).
             let style = state.style;
-            state.set_style(style, !crate::theme::is_light());
+            state.0.set_style(style, !crate::theme::is_light());
             let size = state.size;
             let out = state.0.advance(now, size);
             state.1 = out.motion;
