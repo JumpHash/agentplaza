@@ -19,7 +19,8 @@
 # depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
 # packages go to the cache under this run's id for release.yml's publish job.
-name: linux
+name: Linux
+run-name: "${{ format('Linux by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -63,7 +64,7 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }} (${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }})
     strategy:
       fail-fast: false
       matrix:

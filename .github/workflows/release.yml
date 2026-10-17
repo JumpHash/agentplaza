@@ -8,7 +8,8 @@
 # workflows only build and package here: the merge queue tested this exact commit (pr.yml), and
 # nightly.yml tests every platform. The tags record
 # the released versions; main is protected (pull requests only), so nothing is written back to it.
-name: release
+name: Release
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Release by hand: {0}', inputs.version || 'the next version') || format('Release: {0}', github.event.head_commit.message) }}"
 
 on:
   push:
@@ -16,7 +17,8 @@ on:
     # A push with no code in it starts no run at all; the version job's check (changes.sh) is
     # the full rule and also catches what this filter can't express. A change that sets VERSION
     # along with code still releases.
-    paths-ignore: ["docs/**", "**/*.md", "VERSION", "**/.gitignore", ".github/CODEOWNERS"]
+    # (docs/agents and docs/api are code: the hub compiles them in or tests against them.)
+    paths: ["**", "!docs/**", "docs/agents/**", "docs/api/**", "!**/*.md", "!VERSION", "!**/.gitignore", "!.github/CODEOWNERS"]
   workflow_dispatch:
     inputs:
       version:
@@ -38,6 +40,7 @@ permissions:
 # APZ_WINDOWS_ARM64=on (its runner needs LLVM and the VS ARM64 tools): a release ships without them.
 jobs:
   version:
+    name: Version
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
     runs-on: [self-hosted, light]
     timeout-minutes: 3
@@ -61,40 +64,48 @@ jobs:
         run: packaging/scripts/next-version.sh
 
   guest:
+    name: Agent guest
     needs: version
     if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/guest.yml
   relay:
+    name: MCP relay
     needs: version
     if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/relay.yml
   console:
+    name: Web console
     needs: version
     if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/console.yml
   linux:
+    name: Linux
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/linux.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   macos:
+    name: macOS
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/macos.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   windows:
+    name: Windows
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
     secrets: inherit
   # Made from the Linux arm64 build.
   raspberry-pi:
+    name: Raspberry Pi
     needs: [version, linux]
     uses: ./.github/workflows/raspberry-pi.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
     secrets: inherit
 
   publish:
+    name: Publish to GitHub
     needs: [version, linux, macos, windows, raspberry-pi, console]
     # Every platform passed; macOS may also have been switched off.
     if: >-
