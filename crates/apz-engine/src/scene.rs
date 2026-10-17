@@ -332,6 +332,9 @@ pub struct Texture {
     /// three's `flipY`: a canvas texture's first row is its top (v = 1), as three's CanvasTexture uploads it; a data
     /// texture's first row is v = 0. The mesh draws read v as 1 - v for it (render.rs rows_of).
     pub flip_y: bool,
+    /// The levels below `rgba` (level 1 down to 1×1), when the file brought them (a KTX2 texture): the renderer uploads
+    /// these instead of building its own chain. Empty: the renderer builds them.
+    pub mips: Vec<Arc<Vec<u8>>>,
 }
 
 pub type Tex = Arc<Texture>;
@@ -350,6 +353,7 @@ impl Texture {
             nearest: false,
             srgb: true,
             flip_y: false,
+            mips: Vec::new(),
         }
     }
 
@@ -385,6 +389,9 @@ pub enum Shading {
     Grass,
     /// three's `PointsMaterial`: round-less square points `size` world units wide, attenuated.
     Points { size: f32 },
+    /// Lines: the geometry's indices are pairs (a line list), drawn unlit in `color` and nudged toward the camera so they
+    /// win the depth test on the faces they outline (the kit's feature edges).
+    Line,
 }
 
 /// three's `side`.
@@ -1094,6 +1101,8 @@ pub enum DrawKind {
     OutlineInstanced(Arc<Vec<Instance>>, usize),
     /// Points at these positions (relative to `model`).
     Points(Arc<Vec<[f32; 3]>>),
+    /// A line list: `geo`'s indices are pairs (a mesh whose material's shading is [`Shading::Line`]).
+    Lines,
 }
 
 /// One thing the renderer draws.
@@ -1376,6 +1385,16 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
 
 /// A mesh's draws at `world`: the mesh, then its ink hull (`hull` as geometry, without shadows).
 fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) -> Vec<Draw> {
+    if matches!(mat.get().shading, Shading::Line) {
+        return draw_of(DrawKind::Lines, geo, mat, world, at)
+            .map(|d| Draw {
+                cast_shadow: false,
+                receive_shadow: false,
+                ..d
+            })
+            .into_iter()
+            .collect();
+    }
     let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else {
         return Vec::new();
     };
@@ -2028,6 +2047,17 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
                     class_of(&d.material),
                     d.cast_shadow,
                     d.receive_shadow,
+                    d.render_order,
+                    d.lod,
+                    fade
+                ),
+                Some(d.material.color.to_array()),
+            ),
+            // Lines merge like the toon meshes: by everything but their colour, which becomes the vertex colour.
+            DrawKind::Lines => (
+                format!(
+                    "l|{}|{}|{}|{}",
+                    class_of(&d.material),
                     d.render_order,
                     d.lod,
                     fade

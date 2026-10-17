@@ -137,7 +137,7 @@ const PASS_OVERLAY: usize = 3;
 const PASS_BLIT: usize = 4;
 
 /// The programs a draw can select, counted per draw in `Pipeline::programs` (the index of each: [`program_index`]).
-const PROGRAM_COUNT: usize = 7;
+const PROGRAM_COUNT: usize = 8;
 
 fn program_index(prog: Prog) -> usize {
     match prog {
@@ -148,6 +148,7 @@ fn program_index(prog: Prog) -> usize {
         Prog::Outline => 4,
         Prog::Sky => 5,
         Prog::Points => 6,
+        Prog::Line => 7,
     }
 }
 
@@ -431,6 +432,8 @@ enum Prog {
     Outline,
     Sky,
     Points,
+    /// A line list (`DrawKind::Lines`): unlit, nudged toward the camera.
+    Line,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1648,7 +1651,7 @@ impl Pipeline {
                 } else {
                     wgpu::FilterMode::Linear
                 },
-                anisotropy_clamp: if nearest { 1 } else { 4 },
+                anisotropy_clamp: if nearest { 1 } else { 16 },
                 ..Default::default()
             })
         })
@@ -1657,6 +1660,15 @@ impl Pipeline {
     fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture) {
         let levels = if tex.nearest {
             vec![(tex.width, tex.height, tex.rgba.to_vec())]
+        } else if !tex.mips.is_empty() {
+            // The file's own chain (a KTX2 texture, filtered offline): level 0, then each level halved.
+            let mut levels = vec![(tex.width, tex.height, tex.rgba.to_vec())];
+            let (mut w, mut h) = (tex.width, tex.height);
+            for level in &tex.mips {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+                levels.push((w, h, level.to_vec()));
+            }
+            levels
         } else {
             mip_chain(tex.width, tex.height, &tex.rgba)
         };
@@ -1802,6 +1814,7 @@ impl Pipeline {
             ),
             Prog::Sky => ("vs_sky", "fs_sky", vec![mesh_layout(), row_layout()]),
             Prog::Points => ("vs_points", "fs_basic", vec![row_layout()]),
+            Prog::Line => ("vs_line", "fs_basic", vec![mesh_layout(), row_layout()]),
         };
         let blend = match key.blend {
             Blend::Opaque => None,
@@ -1834,6 +1847,11 @@ impl Pipeline {
                 buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
+                topology: if key.prog == Prog::Line {
+                    wgpu::PrimitiveTopology::LineList
+                } else {
+                    wgpu::PrimitiveTopology::TriangleList
+                },
                 cull_mode,
                 ..Default::default()
             },
@@ -2011,7 +2029,7 @@ struct Stamp {
 fn bounds_visible(d: &Draw, volume: &Frustum) -> bool {
     match &d.kind {
         DrawKind::Points(_) => true,
-        DrawKind::Mesh | DrawKind::Outline => {
+        DrawKind::Mesh | DrawKind::Outline | DrawKind::Lines => {
             let (c, r) = world_sphere(&d.geo, d.model);
             volume.sphere_visible(c, r)
         }
@@ -2222,6 +2240,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     let prog = match (&draw.kind, m.shading) {
         (DrawKind::Outline | DrawKind::OutlineInstanced(..), _) => Prog::Outline,
         (DrawKind::Points(_), _) => Prog::Points,
+        (DrawKind::Lines, _) => Prog::Line,
         (_, Shading::Sky { .. }) => Prog::Sky,
         (_, Shading::Grass) => Prog::Grass,
         (_, Shading::Basic) => Prog::Basic,
@@ -2230,7 +2249,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     };
     let cull = match (prog, m.side) {
         (Prog::Outline, _) | (Prog::Sky, _) => 2,
-        (Prog::Points, _) => 0,
+        (Prog::Points, _) | (Prog::Line, _) => 0,
         (_, Side::Front) => 1,
         (_, Side::Back) => 2,
         (_, Side::Double) => 0,
@@ -2248,7 +2267,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     // surface of the cutaway shows, as three.js's per-mesh sort did.
     let depth_write = match prog {
         Prog::Outline => true,
-        Prog::Sky => false,
+        Prog::Sky | Prog::Line => false,
         _ => m.depth_write && !m.additive,
     };
     Key {
@@ -2311,7 +2330,7 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
         robot: hues,
     };
     match &draw.kind {
-        DrawKind::Mesh => vec![row(draw.model, m.color.to_array(), uv)],
+        DrawKind::Mesh | DrawKind::Lines => vec![row(draw.model, m.color.to_array(), uv)],
         DrawKind::Outline => vec![row(draw.model, world_ink, uv)],
         DrawKind::Instanced(instances, count) => instances
             .iter()
@@ -2986,8 +3005,9 @@ mod tests {
 
     #[test]
     fn draw_stats_split_the_passes_and_keep_outline_apart_from_the_main_pass() {
-        // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points].
-        let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4]);
+        // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points,
+        // line].
+        let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4, 0]);
         assert_eq!(stats.total, 19);
         assert_eq!(stats.shadow, 1);
         assert_eq!(stats.outline, 4);

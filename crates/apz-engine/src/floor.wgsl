@@ -161,6 +161,19 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
     return r;
 }
 
+// Lines (the kit's feature edges): a line list, unlit, its colour the row's times the vertex colour, nudged toward the
+// camera in clip space so a line wins the depth test against the faces it outlines.
+@vertex
+fn vs_line(v: VertexIn, i: InstanceIn) -> Varyings {
+    let m = model_of(i);
+    var o: Varyings;
+    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    var r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), vec3<f32>(0.0, 1.0, 0.0), v.uv, i);
+    r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
+    r.clip.z = r.clip.z - 0.0006 * r.clip.w;
+    return r;
+}
+
 // Grass: each blade bends by its height, the wind a function of where the tuft stands.
 @vertex
 fn vs_grass(v: VertexIn, i: InstanceIn) -> Varyings {

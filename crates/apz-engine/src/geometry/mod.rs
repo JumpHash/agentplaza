@@ -9,6 +9,7 @@ use glam::Mat4;
 
 use super::scene::{Geo, Geometry};
 
+pub mod edges;
 mod round;
 pub use round::{cone, cylinder, cylinder_full, dodecahedron, sphere, sphere_part, torus};
 
