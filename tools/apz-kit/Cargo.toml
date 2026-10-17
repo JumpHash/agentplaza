@@ -1,0 +1,22 @@
+[package]
+name = "apz-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Builds the AgentPlaza machine model kit: the ten machines as glTF (.glb) with their textures as KTX2, and the 2D views"
+
+[dependencies]
+glam = "0.30"
+libm = "0.2"
+# preserve_order: the kit's JSON keeps its keys in the order written, whatever else the workspace build enables (the
+# workspace turns it on elsewhere; without it here, `-p apz-kit` alone would sort the keys and write other bytes).
+serde_json = { workspace = true, features = ["preserve_order"] }
+ruzstd = "0.9"
+
+[dev-dependencies]
+gltf = { version = "1.4", default-features = false, features = ["utils", "extras", "names"] }
+ktx2 = "0.5"
+
+[lints]
+workspace = true
