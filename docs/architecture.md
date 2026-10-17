@@ -516,13 +516,13 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 
 | family | routes |
 |---|---|
-| overview, machines | `/v1/overview`, `/v1/machines`, `/v1/machine`, `/v1/machine/stats`, `/v1/fleet`, `/v1/status` |
+| overview, machines | `/v1/overview`, `/v1/machines`, `/v1/machine`, `/v1/fleet` |
 | hub identity and sign-in | `/v1/hub`, `/v1/hub/identity`, `/v1/hub/owner-token/rotate`, `/v1/auth/session`, `/v1/auth/check` |
 | events | `/v1/ws` (WebSocket, read-only; one `{event, data}` text message per event) |
-| settings, models, prices | `/v1/settings`, `/v1/models` (`?tier=orchestrator\|worker`), `/v1/provider-kinds`, `/v1/providers`, `/v1/providers/{id}` (`/secret`, `/test`, `/models`), `/v1/prices`, `/v1/usage/summary`, `/v1/usage/series`, `/v1/usage/calls` |
-| agents | `/v1/agents`, `/v1/agents/{cid}` (`/chat`, `/assign`, `/cancel`, `/stop`, `/tell`, `/send`, `/restart`, `/retire`, `/wipe`, `/transcript`, `/memory`, `/memory/{slug}`, `/profile`, `/permissions`, `/limits`, `/control`, `/contacts`, `/infractions`, `/rating`, `/species`, `/sleep`, `/wake`, `/move`, `/fork`, `/vm-checkpoints`, `/vm-checkpoints/{name}` (`/restore`)), `/v1/agent-proposals` (`/{id}/approve`, `/{id}/reject`), `/v1/roles`, `/v1/robots/species`, `/v1/loops` |
+| settings, models, prices | `/v1/settings`, `/v1/models`, `/v1/provider-kinds`, `/v1/providers`, `/v1/providers/{id}` (`/secret`, `/test`, `/models`), `/v1/prices`, `/v1/usage/summary`, `/v1/usage/series`, `/v1/usage/calls` |
+| agents | `/v1/agents`, `/v1/agents/{cid}` (`/chat`, `/assign`, `/cancel`, `/stop`, `/tell`, `/restart`, `/retire`, `/wipe`, `/transcript`, `/memory`, `/memory/{slug}`, `/profile`, `/permissions`, `/limits`, `/control`, `/contacts`, `/infractions`, `/rating`, `/species`, `/sleep`, `/wake`, `/move`, `/fork`, `/vm-checkpoints`, `/vm-checkpoints/{name}` (`/restore`)), `/v1/agent-proposals` (`/{id}/approve`, `/{id}/reject`), `/v1/roles`, `/v1/robots/species`, `/v1/loops` |
 | plaza state | `/v1/plaza/state`, `/v1/plaza/stop` (STOP ALL), `/v1/plaza/resume` |
-| work | `/v1/tasks`, `/v1/tasks/{id}` (`/bid`, `/award`, `/claim`, `/finish`), `/v1/agora`, `/v1/board`, `/v1/board/posts`, `/v1/board/read`, `/v1/board/export`, `/v1/board/pause`, `/v1/board/{id}/comments`, `/v1/conversations`, `/v1/conversations/{a}/{b}`, `/v1/messages`, `/v1/notes`, `/v1/society` |
+| work | `/v1/tasks`, `/v1/tasks/{id}` (`/bid`, `/award`, `/claim`, `/finish`), `/v1/agora`, `/v1/board`, `/v1/board/posts`, `/v1/board/read`, `/v1/board/export`, `/v1/board/pause`, `/v1/board/{id}/comments`, `/v1/conversations`, `/v1/conversations/{a}/{b}`, `/v1/society` |
 | governance | `/v1/motions`, `/v1/motions/{id}` (`/vote`, `/decide`), `/v1/approvals`, `/v1/approvals/{id}`, `/v1/decisions`, `/v1/decisions/default`, `/v1/sanctions`, `/v1/sanctions/{id}/lift`, `/v1/infractions`, `/v1/projects`, `/v1/projects/{id}` (`/approve`, `/veto`) |
 | treasury | `/v1/treasury`, `/v1/treasury/journal`, `/v1/treasury/series`, `/v1/treasury/wallets`, `/v1/treasury/mint`, `/v1/treasury/fine` |
 | laws | `/v1/laws`, `/v1/laws/check`, `/v1/laws/rules`, `/v1/laws/rules/{id}` (`/enable`, `/disable`), `/v1/laws/violations`, `/v1/laws/overrides/{law}` |
@@ -534,11 +534,11 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`), `/v1/git/smart/{repo}/{info/refs,git-upload-pack,git-receive-pack}` (the smart-HTTP of the ACP repository mirror, owner only) |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
-| workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults`, `/v1/workstations` (VMs on nodes, proxied to `noded`) |
+| workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults` |
 | nodes | `/v1/nodes` (`/join`, `/codes`, `/{id}` with `/heartbeat`, `/commands`, `/results`, `/runs`, `/machine`, `/stats`, `/drain`, `/revoke`), `/v1/node-link` (`/join`, `/leave`) |
 | egress credentials | `/v1/egress/inject` (`GET`, `POST`; `/{id}` with `PATCH`, `DELETE`) ([`design/egress-credentials.md`](design/egress-credentials.md)) |
 | E2B sandboxes | `/v1/e2b/keys` (`GET`, `POST`; `/{id}` with `DELETE`), `/v1/e2b/sandboxes` (`GET`; `/{id}` with `DELETE`, `/pause`, `/resume`), and the SDK API under `/e2b` ([`design/e2b.md`](design/e2b.md)) |
-| VMs (proxied to `noded`) | `/v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/input`, `/v1/runs/{run}/vms/{index}/memory` and `/vms/{vm}/{action}`; the checkpoints and forks of the VMs ([`design/vm-snapshots.md`](design/vm-snapshots.md)) |
+| VMs (proxied to `noded`) | `/v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/input`, `/v1/volumes` (`/{name}`), `/v1/templates` (`/{key}`); the VMs' checkpoints and forks are under `/v1/agents/{cid}` ([`design/vm-snapshots.md`](design/vm-snapshots.md)) |
 | Lab | `/v1/foundry/datasets`, `/v1/foundry/jobs` (`/{id}`, `/cancel`, `/events`), `/v1/foundry/models` (`/import`, `/{id}` with `/promote`, `/shadow`, `/retire`, `/rederive`, `/invoke`), `/v1/foundry/recipes` (`/{id}/vet`), `/v1/foundry/plan`, `/v1/foundry/hf/*`, `/v1/foundry/devices` |
 | files | `/v1/files`, `/v1/files/{id}`, `/v1/files/{id}/content` |
 | consoles | `/` and the console's static files (`apps/web/dist`) |
