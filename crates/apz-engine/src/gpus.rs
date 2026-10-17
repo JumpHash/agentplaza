@@ -364,7 +364,7 @@ pub struct Match {
 pub struct Catalog {
     pub specs: GpuSpecFile,
     pub rules: MatchFile,
-    patterns: Vec<fancy_regex::Regex>,
+    patterns: Vec<regex_lite::Regex>,
 }
 
 static CATALOG: OnceLock<Catalog> = OnceLock::new();
@@ -396,8 +396,8 @@ pub fn catalog() -> &'static Catalog {
 }
 
 /// The name regex, case-insensitive as in the TS matcher (`new RegExp(src, 'i')`).
-fn compile(pattern: &str) -> Result<fancy_regex::Regex, fancy_regex::Error> {
-    fancy_regex::Regex::new(&format!("(?i){pattern}"))
+fn compile(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    regex_lite::Regex::new(&format!("(?i){pattern}"))
 }
 
 /// The card for one detected GPU, or `None` when no rule matches. Vendors compare case-insensitively.
@@ -419,7 +419,7 @@ pub fn match_card(gpu: &GpuInput, machine_kind: Option<&str>) -> Option<Match> {
                 continue;
             }
         }
-        if !matches!(re.is_match(&gpu.name), Ok(true)) {
+        if !re.is_match(&gpu.name) {
             continue;
         }
         let card = cat

@@ -22,7 +22,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 ab_glyph = "0.2"
-fancy-regex = "0.14"
+# The GPU match rules' regexes: regex-lite keeps the web engine small (no lookaround; the rules need none).
+regex-lite = "0.1"
 tiny-skia = "0.11"
 # `Instant` for the frame clock: std on native, performance.now() in the browser.
 web-time = "1"

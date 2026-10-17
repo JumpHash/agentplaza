@@ -119,7 +119,7 @@
     },
     {
       "vendor": "nvidia",
-      "name_regex": "L40(?!S)",
+      "name_regex": "L40(?:$|[^S])",
       "card": "nvidia-l40"
     },
     {
@@ -194,7 +194,7 @@
     },
     {
       "vendor": "amd",
-      "name_regex": "Radeon RX 7900 XT(?!X)",
+      "name_regex": "Radeon RX 7900 XT(?:$|[^X])",
       "card": "amd-rx7900xt-mba"
     },
     {
