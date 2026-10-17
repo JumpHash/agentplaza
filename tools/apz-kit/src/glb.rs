@@ -2,7 +2,7 @@
 //! scene always gives the same bytes.
 
 use crate::mesh::Mesh;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A material the engine finds by `name`. `base` is linear RGBA, `emissive` linear RGB. `texture` names a KTX2 file
 /// beside the `.glb` (it goes in the material's extras as `{"texture": name}`: glTF's own image slots take PNG or
@@ -16,7 +16,7 @@ pub struct Material {
     pub roughness: f32,
     pub texture: Option<String>,
     pub double_sided: bool,
-    /// Blend mode BLEND when `base[3]` < 1.
+    /// Blend mode BLEND (`base[3]` is the opacity), else OPAQUE.
     pub transparent: bool,
 }
 
@@ -36,12 +36,20 @@ pub struct Node {
 impl Node {
     /// A named node with an identity transform and nothing in it.
     pub fn group(name: &str) -> Node {
-        Node { name: name.to_string(), rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], ..Node::default() }
+        Node {
+            name: name.to_string(),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0; 3],
+            ..Node::default()
+        }
     }
 
     /// A named node drawing `mesh` with material index `material`.
     pub fn mesh(name: &str, mesh: Mesh, material: usize) -> Node {
-        Node { mesh: Some((mesh, material)), ..Node::group(name) }
+        Node {
+            mesh: Some((mesh, material)),
+            ..Node::group(name)
+        }
     }
 
     pub fn at(mut self, x: f32, y: f32, z: f32) -> Node {
@@ -150,14 +158,36 @@ impl Builder {
     }
 
     fn mesh(&mut self, mesh: &Mesh, material: usize) -> usize {
-        let position = self.attribute(&f32_bytes(&mesh.positions), ARRAY_BUFFER, FLOAT, "VEC3", mesh.positions.len());
+        let position = self.attribute(
+            &f32_bytes(&mesh.positions),
+            ARRAY_BUFFER,
+            FLOAT,
+            "VEC3",
+            mesh.positions.len(),
+        );
         let (min, max) = bounds(&mesh.positions);
         self.accessors[position]["min"] = json!(min);
         self.accessors[position]["max"] = json!(max);
-        let normal = self.attribute(&f32_bytes(&mesh.normals), ARRAY_BUFFER, FLOAT, "VEC3", mesh.normals.len());
-        let uv = self.attribute(&f32_bytes(&mesh.uvs), ARRAY_BUFFER, FLOAT, "VEC2", mesh.uvs.len());
+        let normal = self.attribute(
+            &f32_bytes(&mesh.normals),
+            ARRAY_BUFFER,
+            FLOAT,
+            "VEC3",
+            mesh.normals.len(),
+        );
+        let uv = self.attribute(
+            &f32_bytes(&mesh.uvs),
+            ARRAY_BUFFER,
+            FLOAT,
+            "VEC2",
+            mesh.uvs.len(),
+        );
         let indices = self.attribute(
-            &mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>(),
+            &mesh
+                .indices
+                .iter()
+                .flat_map(|i| i.to_le_bytes())
+                .collect::<Vec<u8>>(),
             ELEMENT_ARRAY_BUFFER,
             UNSIGNED_INT,
             "SCALAR",
@@ -174,7 +204,14 @@ impl Builder {
     }
 
     /// Appends `bytes` as a buffer view (4-byte aligned: every element is 4 bytes) and an accessor over it.
-    fn attribute(&mut self, bytes: &[u8], target: u32, component: u32, kind: &str, count: usize) -> usize {
+    fn attribute(
+        &mut self,
+        bytes: &[u8],
+        target: u32,
+        component: u32,
+        kind: &str,
+        count: usize,
+    ) -> usize {
         let offset = self.bin.len();
         self.bin.extend_from_slice(bytes);
         self.views.push(json!({
@@ -219,7 +256,11 @@ fn set_list(json: &mut Value, key: &str, items: Vec<Value>) {
 }
 
 fn f32_bytes<const N: usize>(items: &[[f32; N]]) -> Vec<u8> {
-    items.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+    items
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
 }
 
 /// The (min, max) corners of `points`; zeros when there are none (glTF needs finite bounds).

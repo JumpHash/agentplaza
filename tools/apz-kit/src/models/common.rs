@@ -40,8 +40,8 @@ pub fn materials() -> Vec<Material> {
     let table: [(&str, u32, f32, f32, bool, bool); 18] = [
         ("graphite", 0x3c4762, 0.45, 0.55, false, false),
         ("graphite_dark", 0x2b3349, 0.4, 0.6, false, false),
-        ("aluminium", 0xd7dbe2, 1.0, 0.34, false, false),
-        ("aluminium_dark", 0x9ea6b3, 1.0, 0.4, false, false),
+        ("aluminium", 0xd7dbe2, 0.5, 0.34, false, false),
+        ("aluminium_dark", 0x9ea6b3, 0.5, 0.4, false, false),
         ("polymer", 0x1c2029, 0.0, 0.78, false, false),
         ("bezel", 0x12151d, 0.15, 0.62, false, false),
         ("bay", 0x252b3a, 0.3, 0.5, false, false),
@@ -136,7 +136,9 @@ pub fn fan(name: &str, r: f32, x: f32, y: f32, z: f32, face_x: bool) -> Node {
         let blade = mesh::cuboid(r * 0.62, r * 0.26, 0.012)
             .rotated(Quat::from_rotation_x(0.55))
             .translated(Vec3::new(r * 0.5, 0.0, 0.0))
-            .rotated(Quat::from_rotation_z(i as f32 / 7.0 * std::f32::consts::TAU));
+            .rotated(Quat::from_rotation_z(
+                i as f32 / 7.0 * std::f32::consts::TAU,
+            ));
         rotor.append(&blade);
     }
     let hub = cyl_z(r * 0.2, 0.06, 24, 0.0, 0.0, 0.0);
@@ -147,9 +149,11 @@ pub fn fan(name: &str, r: f32, x: f32, y: f32, z: f32, face_x: bool) -> Node {
     };
     let mut mount = Node::group(name).at(x, y, z);
     mount.rotation = rotation.to_array();
-    mount
-        .with(part("fan_frame", frame, M::Polymer))
-        .with(Node::group("fan").with(part("fan_blades", rotor, M::Blade)).with(part("fan_hub", hub, M::Polymer)))
+    mount.with(part("fan_frame", frame, M::Polymer)).with(
+        Node::group("fan")
+            .with(part("fan_blades", rotor, M::Blade))
+            .with(part("fan_hub", hub, M::Polymer)),
+    )
 }
 
 /// A VM slot's light `n` (1-based): an emissive bar the engine lights by the slot's state.
@@ -159,7 +163,11 @@ pub fn slot_light(n: u32, w: f32, x: f32, y: f32, z: f32) -> Node {
 
 /// The name plate: a `w` by `w / 4` plane facing +z at (`x`, `y`, `z`); the engine paints the machine's name on it.
 pub fn plate(w: f32, x: f32, y: f32, z: f32) -> Node {
-    part("plate", mesh::plane(w, w / 4.0).translated(Vec3::new(x, y, z)), M::Plate)
+    part(
+        "plate",
+        mesh::plane(w, w / 4.0).translated(Vec3::new(x, y, z)),
+        M::Plate,
+    )
 }
 
 /// The screen: a `w` by `h` plane carried by `m` (from a plane facing +z centred on the origin); the engine paints the
@@ -183,7 +191,13 @@ pub fn block(w: f32, h: f32, d: f32, m: M) -> Vec<Node> {
 
 /// The scene of one model: `kind`, its size (w, h, d in kit units), and its three levels of detail as the roots `lod0`,
 /// `lod1` and `lod2`. Anchors go in every level (pass them in each list).
-pub fn scene(kind: &str, size: [f32; 3], lod0: Vec<Node>, lod1: Vec<Node>, lod2: Vec<Node>) -> Scene {
+pub fn scene(
+    kind: &str,
+    size: [f32; 3],
+    lod0: Vec<Node>,
+    lod1: Vec<Node>,
+    lod2: Vec<Node>,
+) -> Scene {
     let level = |name: &str, nodes: Vec<Node>| {
         let mut root = Node::group(name);
         root.children = nodes;
@@ -192,7 +206,11 @@ pub fn scene(kind: &str, size: [f32; 3], lod0: Vec<Node>, lod1: Vec<Node>, lod2:
     Scene {
         name: kind.to_string(),
         materials: materials(),
-        roots: vec![level("lod0", lod0), level("lod1", lod1), level("lod2", lod2)],
+        roots: vec![
+            level("lod0", lod0),
+            level("lod1", lod1),
+            level("lod2", lod2),
+        ],
         extras: json!({ "kind": kind, "size": size }),
     }
 }

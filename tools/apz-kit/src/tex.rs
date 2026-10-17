@@ -26,7 +26,11 @@ pub fn grille(size: u32) -> Image {
             let mut nearest = f32::INFINITY;
             for row in (ry - 2)..=(ry + 2) {
                 let cy = row as f32 * row_gap;
-                let offset = if row.rem_euclid(2) == 1 { pitch / 2.0 } else { 0.0 };
+                let offset = if row.rem_euclid(2) == 1 {
+                    pitch / 2.0
+                } else {
+                    0.0
+                };
                 let column0 = ((px - offset) / pitch).round() as i64;
                 for column in (column0 - 2)..=(column0 + 2) {
                     let cx = column as f32 * pitch + offset;
@@ -44,7 +48,11 @@ pub fn grille(size: u32) -> Image {
             rgba.push(255);
         }
     }
-    Image { width: size, height: size, rgba }
+    Image {
+        width: size,
+        height: size,
+        rgba,
+    }
 }
 
 /// Maps a difference into the range -period/2..period/2.

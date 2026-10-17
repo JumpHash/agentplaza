@@ -320,14 +320,8 @@ pub fn ring(r_in: f32, r_out: f32, segments: u32) -> Mesh {
         let inner = 2 * i;
         let outer = inner + 1;
         let (next_inner, next_outer) = (inner + 2, inner + 3);
-        m.indices.extend_from_slice(&[
-            inner,
-            outer,
-            next_outer,
-            inner,
-            next_outer,
-            next_inner,
-        ]);
+        m.indices
+            .extend_from_slice(&[inner, outer, next_outer, inner, next_outer, next_inner]);
     }
     m
 }
@@ -335,7 +329,15 @@ pub fn ring(r_in: f32, r_out: f32, segments: u32) -> Mesh {
 /// A `w` by `h` rectangle in the xy plane facing +z, uv (0, 0) at the bottom left and (1, 1) at the top right.
 pub fn plane(w: f32, h: f32) -> Mesh {
     let mut m = Mesh::default();
-    push_quad(&mut m, Vec3::ZERO, Vec3::Z, Vec3::X, Vec3::Y, w / 2.0, h / 2.0);
+    push_quad(
+        &mut m,
+        Vec3::ZERO,
+        Vec3::Z,
+        Vec3::X,
+        Vec3::Y,
+        w / 2.0,
+        h / 2.0,
+    );
     m
 }
 

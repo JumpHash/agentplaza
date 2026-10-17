@@ -1,7 +1,7 @@
 //! RGBA8 images, their mip chains, and KTX2 files with zstd supercompression (what the engine loads with the `ktx2`
 //! and `ruzstd` crates).
 
-use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 
 /// An RGBA8 image, rows top to bottom.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,7 +33,12 @@ fn halve(src: &Image, srgb: bool) -> Image {
     let height = (src.height / 2).max(1);
     let texel = |x: u32, y: u32| -> [u8; 4] {
         let i = ((y * src.width + x) * 4) as usize;
-        [src.rgba[i], src.rgba[i + 1], src.rgba[i + 2], src.rgba[i + 3]]
+        [
+            src.rgba[i],
+            src.rgba[i + 1],
+            src.rgba[i + 2],
+            src.rgba[i + 3],
+        ]
     };
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
@@ -53,7 +58,11 @@ fn halve(src: &Image, srgb: bool) -> Image {
             }
         }
     }
-    Image { width, height, rgba }
+    Image {
+        width,
+        height,
+        rgba,
+    }
 }
 
 fn srgb_to_linear(v: u8) -> f32 {
@@ -75,7 +84,9 @@ fn linear_to_srgb(l: f32) -> u8 {
 }
 
 /// The KTX2 file identifier.
-const IDENTIFIER: [u8; 12] = [0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A];
+const IDENTIFIER: [u8; 12] = [
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+];
 /// Identifier, header (9 u32), index (32 bytes): where the level index starts.
 const HEADER_LEN: usize = 12 + 9 * 4 + 32;
 /// One level index entry: byteOffset, byteLength, uncompressedByteLength (u64 each).
@@ -163,7 +174,11 @@ mod tests {
                 rgba.extend_from_slice(&f(x, y));
             }
         }
-        Image { width, height, rgba }
+        Image {
+            width,
+            height,
+            rgba,
+        }
     }
 
     #[test]
@@ -185,7 +200,11 @@ mod tests {
             [v, 0, 0, v]
         });
         let srgb = mip_chain(&base, true);
-        assert!((186..=189).contains(&srgb[1].rgba[0]), "got {}", srgb[1].rgba[0]);
+        assert!(
+            (186..=189).contains(&srgb[1].rgba[0]),
+            "got {}",
+            srgb[1].rgba[0]
+        );
         assert_eq!(srgb[1].rgba[3], 128, "alpha is averaged linearly");
         let plain = mip_chain(&base, false);
         assert_eq!(plain[1].rgba[0], 128);

@@ -8,6 +8,7 @@
 //! - [`ktx2w`]: RGBA8 images and their mip chains, written as KTX2 with zstd supercompression.
 //! - [`tex`]: the kit's procedural textures (the grille).
 //! - [`models`]: the ten machines.
+//! - [`files`]: the kit's files (the models, the textures and the manifest), as `apz-kit build` writes them.
 //!
 //! The kit's contract with the engine (names the engine looks for):
 //! - Materials by name: `graphite`, `graphite_dark`, `aluminium`, `aluminium_dark`, `polymer`, `bezel`, `bay`,
@@ -21,6 +22,7 @@
 //! - The scene's extras: `{"kind": …, "size": [w, h, d]}`. Units: 1 u ≈ 10 cm; the base stands on y = 0 and the front
 //!   faces +z.
 
+pub mod files;
 pub mod glb;
 pub mod ktx2w;
 pub mod mesh;

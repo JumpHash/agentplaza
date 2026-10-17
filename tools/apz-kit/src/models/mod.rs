@@ -37,7 +37,8 @@ mod tests {
     }
 
     fn triangles(node: &Node) -> usize {
-        node.mesh.as_ref().map_or(0, |(m, _)| m.triangles()) + node.children.iter().map(triangles).sum::<usize>()
+        node.mesh.as_ref().map_or(0, |(m, _)| m.triangles())
+            + node.children.iter().map(triangles).sum::<usize>()
     }
 
     #[test]
@@ -51,20 +52,43 @@ mod tests {
             for root in &scene.roots {
                 let mut all = Vec::new();
                 names(root, &mut all);
-                assert!(all.iter().any(|n| n == "status"), "{stem}/{}: a status strip", root.name);
-                assert!(all.iter().any(|n| n == "anchor:label"), "{stem}/{}: a label anchor", root.name);
+                assert!(
+                    all.iter().any(|n| n == "status"),
+                    "{stem}/{}: a status strip",
+                    root.name
+                );
+                assert!(
+                    all.iter().any(|n| n == "anchor:label"),
+                    "{stem}/{}: a label anchor",
+                    root.name
+                );
             }
-            let (full, simple, blocky) =
-                (triangles(&scene.roots[0]), triangles(&scene.roots[1]), triangles(&scene.roots[2]));
+            let (full, simple, blocky) = (
+                triangles(&scene.roots[0]),
+                triangles(&scene.roots[1]),
+                triangles(&scene.roots[2]),
+            );
             assert!(full <= 40_000, "{stem}: {full} triangles in full detail");
-            assert!(simple < full, "{stem}: simple ({simple}) is lighter than full ({full})");
+            assert!(
+                simple < full,
+                "{stem}: simple ({simple}) is lighter than full ({full})"
+            );
             assert!(blocky <= 200, "{stem}: {blocky} triangles as a block");
-            assert!(scene.extras["size"].as_array().is_some_and(|s| s.len() == 3), "{stem}: a size");
+            assert!(
+                scene.extras["size"]
+                    .as_array()
+                    .is_some_and(|s| s.len() == 3),
+                "{stem}: a size"
+            );
             for node in &scene.roots {
                 let mut stack = vec![node];
                 while let Some(n) = stack.pop() {
                     if let Some((mesh, m)) = &n.mesh {
-                        assert!(*m < scene.materials.len(), "{stem}/{}: material {m}", n.name);
+                        assert!(
+                            *m < scene.materials.len(),
+                            "{stem}/{}: material {m}",
+                            n.name
+                        );
                         assert!(!mesh.indices.is_empty(), "{stem}/{}: an empty mesh", n.name);
                     }
                     stack.extend(n.children.iter());
