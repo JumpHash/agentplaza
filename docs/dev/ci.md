@@ -166,7 +166,7 @@ fuzzing. Then open `api-out/site/index.html`.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `pr.yml` | pull requests to main, merge-queue entries | The gate, above |
+| `pr.yml` | every pull request (also one stacked on another branch), merge-queue entries | The gate, above |
 | `release.yml` | pushes to main with code in them, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), builds and packages every platform (no tests: the queue tested the commit), and publishes the GitHub Release |
 | `check-results.yml` | after each `pr.yml` run (from main), or by hand | Comments on the pull request with the run's results: Tests, Lint, Web console |
 | `api-report.yml` | after each `pr.yml` run (from main), or by hand | Builds the hub API report from the run's results and publishes it to Pages; comments on the pull request with it |
