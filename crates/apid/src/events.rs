@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use apz_http::client::Target;
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_metrics::{Counter, EntityKind, Gauge, Hist, SeriesKey};
 use serde::{Deserialize, Serialize};
 
@@ -220,23 +220,25 @@ impl Drop for Slot {
 static SOCKETS: Slots = Slots::new();
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    router.get("/v1/ws", |app, req, _| {
-        let Some(slot) = SOCKETS.take(req.peer) else {
-            return Response::error(429, "too many open event sockets; close one first");
-        };
-        let events = app.bus.subscribe();
-        let lag = app.bus.lag();
-        ws::accept(
-            req,
-            Origins::SameHost,
-            Some(PROTOCOL),
-            Limits::default(),
-            move |socket| {
-                let _slot = slot;
-                serve(socket, events, lag);
-            },
-        )
-    })
+    router
+        .get("/v1/ws", |app, req, _| {
+            let Some(slot) = SOCKETS.take(req.peer) else {
+                return Response::error(429, "too many open event sockets; close one first");
+            };
+            let events = app.bus.subscribe();
+            let lag = app.bus.lag();
+            ws::accept(
+                req,
+                Origins::SameHost,
+                Some(PROTOCOL),
+                Limits::default(),
+                move |socket| {
+                    let _slot = slot;
+                    serve(socket, events, lag);
+                },
+            )
+        })
+        .doc(RouteDoc::new("Open a socket that streams the hub's events").errors(&[429]))
 }
 
 /// Forwards the bus's events to `socket` until it ends: a client message closes it (read-only,

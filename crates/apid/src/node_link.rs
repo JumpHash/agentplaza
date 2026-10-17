@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -363,8 +363,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/node-link", |_, _, _| {
             Response::json(200, &status().json())
         })
+        .doc(RouteDoc::new("Read this machine's link to a hub"))
         .post("/v1/node-link/join", |_, req, _| join_route(&req.body))
+        .doc(RouteDoc::new("Join a hub with a join code").errors(&[400, 409]))
         .post("/v1/node-link/leave", |_, req, _| leave_route(&req.body))
+        .doc(RouteDoc::new("Leave the hub, optionally forgetting this node").errors(&[400, 500]))
 }
 
 #[cfg(test)]

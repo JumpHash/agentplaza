@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use apz_gateway::ModelRef;
-use apz_http::{Response, Router};
+use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::social::{self, Prune};
 use apz_station::StationSettings;
 use serde::{Deserialize, Serialize};
@@ -1013,6 +1013,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
             Response::json(200, &value)
         })
+        .doc(RouteDoc::new("Get the hub's settings").errors(&[500]))
         .route("PUT", "/v1/settings", |app, req, _| {
             let new: Settings = match req.json() {
                 Ok(settings) => settings,
@@ -1028,6 +1029,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Err(msg) => Response::json(400, &json!({ "error": msg })),
             }
         })
+        .doc(RouteDoc::new("Save the hub's settings"))
 }
 
 impl Store {

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use apz_gateway::Caller;
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, Event, SeriesKey};
 use apz_proto::chat::{Block, ChatRequest, Message, Role};
 use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, WorkStatus, cap_output};
@@ -247,6 +247,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({ "profile": profile })))
             })
         })
+        .doc(RouteDoc::new("Register an agent's VM and get its profile").errors(&[400, 403]))
         .post("/internal/v1/agents/{cid}/message", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
                 let message: GuestMessage = req
@@ -256,6 +257,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({ "reply": reply })))
             })
         })
+        .doc(RouteDoc::new("Handle a guest message from an agent's VM").errors(&[400, 403]))
         .post("/internal/v1/agents/{cid}/gone", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
                 let gone: Gone = req.json().unwrap_or(Gone {
@@ -265,6 +267,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
+        .doc(RouteDoc::new("Record that an agent's session has ended").errors(&[403]))
         .post("/internal/v1/agents/{cid}/egress", |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
                 let egress: Egress = req
@@ -287,6 +290,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(Response::json(200, &json!({})))
             })
         })
+        .doc(RouteDoc::new("Record an agent's outbound connection").errors(&[400, 403]))
         // The egress proxy asks before it dials a host for an agent: the fetch blocklist and the laws.
         .post("/internal/egress/check", |app, req, _p| {
             let check: EgressCheck = match req.json() {
@@ -300,6 +304,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 ))
             })
         })
+        .doc(RouteDoc::new("Check whether an agent may reach a host").errors(&[400, 403]))
         // The egress proxy's leaf certificate for an intercepted host (the hub signs it with the egress CA).
         .post("/internal/egress/cert", |app, req, _p| {
             let cert: EgressCert = match req.json() {
@@ -310,6 +315,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(crate::egress_inject::cert_reply(app, cid, &cert.host))
             })
         })
+        .doc(RouteDoc::new("Issue a certificate for an intercepted host").errors(&[400, 403]))
         // The egress proxy's header for one request on an intercepted host: the secret is read here, never sent to the guest.
         .post("/internal/egress/inject", |app, req, _p| {
             let inject: EgressInject = match req.json() {
@@ -320,6 +326,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(crate::egress_inject::inject_reply(app, cid, &inject.ask))
             })
         })
+        .doc(RouteDoc::new("Get the header for an intercepted request").errors(&[400, 403]))
         // An agent's decision (from its VM: `POST http://plaza.gateway/decisions`, which vsockd
         // forwards here with the agent's CID).
         .post(
@@ -330,6 +337,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Record an agent's decision").errors(&[403]))
         // vsockd's gateway asks for a sandbox's CID and envd access token by its id (`sb…`).
         .get("/internal/e2b/sandboxes/{id}", |app, req, p| {
             let presented = req
@@ -345,6 +353,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 None => Response::error(404, "no such sandbox"),
             }
         })
+        .doc(RouteDoc::new("Look up a sandbox's CID and access token").errors(&[403, 404]))
 }
 
 /// Checks who is calling and the CID, then runs `f`. The local gateway presents the internal

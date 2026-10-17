@@ -10,7 +10,7 @@
 
 use std::sync::Mutex;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::tasks::MIN_TASK_BUDGET;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -232,8 +232,11 @@ pub fn prompt_for(app: &App, role: &str) -> String {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/roles", list_route)
+        .doc(RouteDoc::new("List the built-in and custom roles"))
         .post("/v1/roles", save_route)
+        .doc(RouteDoc::new("Create or update a custom role").errors(&[400, 409]))
         .delete("/v1/roles/{id}", remove_route)
+        .doc(RouteDoc::new("Delete a custom role").errors(&[404, 409]))
 }
 
 /// The text under a built-in prompt's `## Purpose` heading, up to the next `## `.

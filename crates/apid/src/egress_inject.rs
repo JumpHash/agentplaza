@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, date_time_ymd,
@@ -732,9 +732,13 @@ pub(crate) fn inject_reply(app: &App, cid: u64, ask: &Ask) -> Response {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/egress/inject", list_route)
+        .doc(RouteDoc::new("List the egress injection rules"))
         .post("/v1/egress/inject", create_route)
+        .doc(RouteDoc::new("Create an egress injection rule").errors(&[400]))
         .route("PATCH", "/v1/egress/inject/{id}", update_route)
+        .doc(RouteDoc::new("Update an egress injection rule").errors(&[400]))
         .delete("/v1/egress/inject/{id}", delete_route)
+        .doc(RouteDoc::new("Delete an egress injection rule"))
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {

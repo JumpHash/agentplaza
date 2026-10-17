@@ -45,7 +45,7 @@
 use std::time::Duration;
 
 use apz_http::ws::{self, Limits, Origins};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_station::{Facts, StationSettings};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -68,87 +68,131 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/stations/codes", |app, req, _| {
             issue_code_route(app, req)
         })
+        .doc(RouteDoc::new("Issue a join code for a new workstation").status(201))
         .get("/v1/stations/codes", |app, _, _| {
             Response::json(200, &app.stations.codes(apz_plaza::now_ms()))
         })
+        .doc(RouteDoc::new("List the join codes"))
         .delete("/v1/stations/codes/{id}", |app, _, p| {
             code_revoke_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Revoke an unused join code"))
         .post("/v1/stations/join", |app, req, _| join_route(app, req))
+        .doc(
+            RouteDoc::new("Join as a workstation with a code")
+                .status(201)
+                .errors(&[403]),
+        )
         .get("/v1/stations/link", |app, req, _| link_route(app, req))
+        .doc(RouteDoc::new("Open the workstation daemon's link socket"))
         .get("/v1/stations/audit", |app, req, _| audit_route(app, req))
+        .doc(RouteDoc::new("List the station audit, newest first").errors(&[500]))
         .get("/v1/stations/recordings", |app, req, _| {
             recordings_list_route(app, req)
         })
+        .doc(RouteDoc::new("List the station recordings, newest first").errors(&[500]))
         .get("/v1/stations/recordings/{id}", |app, _, p| {
             recording_show_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Show a recording and its events").errors(&[404, 500]))
         .get("/v1/stations/recordings/{id}/frames/{seq}", |app, _, p| {
             recording_frame_route(app, p.get("id"), p.get("seq"))
         })
+        .doc(RouteDoc::new("Get one JPEG frame of a recording").errors(&[404, 500]))
         .delete("/v1/stations/recordings/{id}", |app, _, p| {
             recording_delete_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Delete a recording"))
         .get("/v1/stations/recording-defaults", |app, _, _| {
             Response::json(200, &app.settings.get().workstation_recordings)
         })
+        .doc(RouteDoc::new(
+            "Show the recording defaults for new workstations",
+        ))
         .route("PUT", "/v1/stations/recording-defaults", |app, req, _| {
             recording_defaults_route(app, req)
         })
+        .doc(RouteDoc::new(
+            "Save the recording defaults for new workstations",
+        ))
         .get("/v1/stations", |app, _, _| {
             Response::json(200, &app.stations.views(apz_plaza::now_ms()))
         })
+        .doc(RouteDoc::new("List the workstations"))
         .get("/v1/stations/{id}", |app, _, p| {
             show_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Show a workstation").errors(&[404]))
         .post("/v1/stations/{id}/drain", |app, _, p| {
             drain_route(app, p.get("id"), true)
         })
+        .doc(RouteDoc::new("Stop new work on a workstation").errors(&[404]))
         .post("/v1/stations/{id}/undrain", |app, _, p| {
             drain_route(app, p.get("id"), false)
         })
+        .doc(RouteDoc::new("Let a drained workstation take work again").errors(&[404]))
         .post("/v1/stations/{id}/revoke", |app, _, p| {
             revoke_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Revoke a workstation's token and end its link").errors(&[404]))
         .route("PATCH", "/v1/stations/{id}", |app, req, p| {
             rename_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("Rename a workstation").errors(&[404]))
         .get("/v1/stations/{id}/settings", |app, _, p| {
             settings_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Show a workstation's settings").errors(&[404]))
         .route("PUT", "/v1/stations/{id}/settings", |app, req, p| {
             put_settings_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("Replace a workstation's settings"))
         .post("/v1/stations/{id}/leases", |app, req, p| {
             open_lease_route(app, req, p.get("id"), None, OWNER)
         })
+        .doc(RouteDoc::new("Open a lease on a workstation for an agent").status(201))
         .get("/v1/stations/{id}/leases", |app, _, p| {
             leases_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("List a workstation's leases").errors(&[404]))
         .delete("/v1/stations/{id}/leases/{lease}", |app, _, p| {
             release_route(app, p.get("id"), p.get("lease"), None, OWNER)
         })
+        .doc(RouteDoc::new("Release a workstation lease"))
         .get("/v1/stations/{id}/sync", |app, _, p| {
             sync_state_route(app, p.get("id"))
         })
+        .doc(RouteDoc::new("Show a workstation's file sync state"))
         .post("/v1/stations/{id}/sync/resume", |app, req, p| {
             sync_resume_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("Resume a paused file sync").status(202))
         .get("/v1/stations/{id}/files", |app, req, p| {
             sync_files_route(app, req, p.get("id"))
         })
+        .doc(RouteDoc::new("List a workstation's mirrored files"))
         .get("/v1/stations/{id}/files/{path..}", |app, _, p| {
             sync_read_route(app, p.get("id"), p.get("path"))
         })
+        .doc(RouteDoc::new("Read a mirrored file"))
         .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| {
             sync_put_route(app, req, p.get("id"), p.get("path"))
         })
+        .doc(RouteDoc::new("Write a file to a workstation's work folder").status(201))
         .delete("/v1/stations/{id}/files/{path..}", |app, _, p| {
             sync_delete_route(app, p.get("id"), p.get("path"))
         })
+        .doc(RouteDoc::new(
+            "Delete a file from a workstation's work folder",
+        ))
         .post("/v1/stations/{id}/files/{path..}", |app, req, p| {
             sync_post_route(app, req, p.get("id"), p.get("path"))
         })
+        .doc(
+            RouteDoc::new("Put a mirrored file into the Library")
+                .status(201)
+                .errors(&[404]),
+        )
         .post(
             "/internal/v1/agents/{cid}/stations/{id}/leases",
             |app, req, p| {
@@ -157,6 +201,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Open a lease on a workstation as an agent").status(201))
         .delete(
             "/internal/v1/agents/{cid}/stations/{id}/leases/{lease}",
             |app, req, p| {
@@ -164,7 +209,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     Ok(agent_release_route(app, p.get("id"), p.get("lease"), cid))
                 })
             },
-        );
+        )
+        .doc(RouteDoc::new("Release an agent's own workstation lease"));
     // The live views and the takeover socket (screen.rs, control.rs).
     super::control::routes(super::screen::routes(router))
 }

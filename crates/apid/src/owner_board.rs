@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_plaza::social::{OwnerPostRequest, PostView};
 use apz_proto::wire::WorkKind;
 use serde::Deserialize;
@@ -27,8 +27,15 @@ const EVERYONE: &str = "all";
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .post("/v1/board/posts", |app, req, _| owner_post(app, &req.body))
+        .doc(
+            RouteDoc::new("Post to the board as the owner")
+                .status(201)
+                .errors(&[400]),
+        )
         .post("/v1/board/pause", |app, req, _| pause(app, &req.body))
+        .doc(RouteDoc::new("Pause or resume a board's deliveries").errors(&[400, 500]))
         .get("/v1/board/export", |app, req, _| export(app, req))
+        .doc(RouteDoc::new("Export a board thread as Markdown or JSON").errors(&[400]))
 }
 
 /// Which project each post is for: the post's own project, or else the project whose tasks it names.

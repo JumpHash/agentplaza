@@ -14,6 +14,8 @@ webpki-roots = "1"
 apz-trust = { path = "../apz-trust" }
 sha1 = "0.10"
 base64 = "0.22"
+# The routes' documentation (RouteDoc) carries their bodies' JSON Schemas, for the OpenAPI spec.
+schemars = "1"
 
 [dev-dependencies]
 rcgen = "0.13"

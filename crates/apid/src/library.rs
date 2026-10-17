@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::{Program, ProgramFile};
 use serde::{Deserialize, Serialize};
@@ -413,6 +413,7 @@ pub fn take_package_call(cid: u64, call: &str) -> bool {
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/library", |app, _req, _p| list(app))
+        .doc(RouteDoc::new("List the library's tool versions"))
         .get("/v1/library/{name}/{version}/files", |app, req, p| {
             files(
                 app,
@@ -421,12 +422,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 req.query_param("path"),
             )
         })
+        .doc(RouteDoc::new("List a tool version's files, or read one").errors(&[404]))
         .post("/v1/library/{name}/{version}/review", |app, req, p| {
             review(app, req, p.get("name"), p.get("version"))
         })
+        .doc(RouteDoc::new("Approve or reject a tool version").errors(&[400, 409]))
         .delete("/v1/library/{name}/{version}", |app, _req, p| {
             delete(app, p.get("name"), p.get("version"))
         })
+        .doc(RouteDoc::new("Delete a tool version").errors(&[404]))
 }
 
 #[derive(Deserialize)]

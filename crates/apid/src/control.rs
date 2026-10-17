@@ -8,7 +8,7 @@
 
 use std::sync::Mutex;
 
-use apz_http::{Params, Request, Response, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::state::App;
@@ -103,8 +103,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/plaza/state", |app, _, _| {
             Response::json(200, &app.control.state())
         })
+        .doc(RouteDoc::new("Show whether the plaza is stopped"))
         .post("/v1/plaza/stop", stop_route)
+        .doc(RouteDoc::new("Stop all work and hold the plaza").errors(&[400]))
         .post("/v1/plaza/resume", resume_route)
+        .doc(RouteDoc::new("Resume the plaza after a stop"))
 }
 
 /// Body `{reason?}` is optional; the owner acts.

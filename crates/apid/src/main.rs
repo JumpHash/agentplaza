@@ -54,6 +54,7 @@ mod memory;
 mod metrics;
 mod node_link;
 mod nodes;
+mod openapi;
 mod owner_board;
 mod payments;
 mod placement;
@@ -110,6 +111,7 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
   --console DIR      the web console's files (default share/console when installed, else
                      apps/web/dist)
   -V, --version      print the version and exit
+  openapi            print the hub API's OpenAPI spec (docs/api/openapi.json) and exit
   --env-file FILE    KEY=VALUE lines loaded into the environment at start
                      (default ~/.config/agentplaza/keys.env, if present)
   --vault-key FILE   the vault's key file (default: the config directory's vault.key); created on
@@ -122,6 +124,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("apid {}", apz_os::version());
+        return ExitCode::SUCCESS;
+    }
+    if args.first().is_some_and(|a| a == "openapi") {
+        openapi::print();
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {

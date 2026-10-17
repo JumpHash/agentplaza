@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use apz_gateway::Caller;
 use apz_http::client::Target;
 use apz_http::ws::{self, Message, Origins, Socket};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::agents::Agent;
@@ -47,6 +47,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Messages call to Anthropic"))
         .get(
             "/internal/v1/agents/{cid}/gateway/anthropic/v1/messages",
             |app, req, p| {
@@ -56,6 +57,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 authorized(app, req, p.get("cid"), |cid| messages_socket(app, req, cid))
             },
         )
+        .doc(RouteDoc::new("Open a socket for Messages calls to Anthropic").errors(&[405]))
         .get(
             "/internal/v1/agents/{cid}/gateway/anthropic/v1/models",
             |app, req, p| {
@@ -64,6 +66,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("List the Anthropic models for the agent"))
         .post(
             "/internal/v1/agents/{cid}/gateway/openai/v1/responses",
             |app, req, p| {
@@ -72,6 +75,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Responses call to OpenAI"))
         .get(
             "/internal/v1/agents/{cid}/gateway/openai/v1/responses",
             |app, req, p| {
@@ -83,6 +87,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Open a socket for Responses calls to OpenAI").errors(&[405]))
         .post(
             "/internal/v1/agents/{cid}/gateway/openai/v1/chat/completions",
             |app, req, p| {
@@ -91,6 +96,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a chat completion to OpenAI"))
         .get(
             "/internal/v1/agents/{cid}/gateway/openai/v1/models",
             |app, req, p| {
@@ -99,6 +105,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("List the OpenAI models for the agent"))
         .post(
             "/internal/v1/agents/{cid}/gateway/openrouter/v1/chat/completions",
             |app, req, p| {
@@ -107,6 +114,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a chat completion to OpenRouter"))
         .post(
             "/internal/v1/agents/{cid}/gateway/openrouter/v1/messages",
             |app, req, p| {
@@ -115,6 +123,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Messages call to OpenRouter"))
         .get(
             "/internal/v1/agents/{cid}/gateway/openrouter/v1/models",
             |app, req, p| {
@@ -123,6 +132,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("List the OpenRouter models for the agent"))
         .post(
             "/internal/v1/agents/{cid}/gateway/opencode/v1/chat/completions",
             |app, req, p| {
@@ -131,6 +141,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a chat completion through OpenCode"))
         .post(
             "/internal/v1/agents/{cid}/gateway/opencode/v1/responses",
             |app, req, p| {
@@ -139,6 +150,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Responses call through OpenCode"))
         .post(
             "/internal/v1/agents/{cid}/gateway/opencode/v1/messages",
             |app, req, p| {
@@ -147,6 +159,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Messages call through OpenCode"))
         .get(
             "/internal/v1/agents/{cid}/gateway/opencode/v1/models",
             |app, req, p| {
@@ -155,6 +168,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("List the OpenCode models for the agent"))
         .post(
             "/internal/v1/agents/{cid}/gateway/gemini/v1beta/models/{call}",
             |app, req, p| {
@@ -169,12 +183,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 })
             },
         )
+        .doc(RouteDoc::new("Send a Gemini model call").errors(&[404]))
         .get(
             "/internal/v1/agents/{cid}/gateway/gemini/v1beta/models",
             |app, req, p| {
                 authorized(app, req, p.get("cid"), |cid| list_gemini_models(app, cid))
             },
         )
+        .doc(RouteDoc::new("List the Gemini models for the agent"))
 }
 
 /// A GET without an upgrade to a socket path: the 405 the router gives a path that takes only POST.

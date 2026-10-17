@@ -7,7 +7,7 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use apz_http::{Body, Request, Response, Router};
+use apz_http::{Body, Request, Response, RouteDoc, Router};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 
@@ -63,11 +63,13 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 relay(app, req, cid, p.get("rest"))
             })
         })
+        .doc(RouteDoc::new("Relay a vendor read for the agent").errors(&[403, 404, 409]))
         .post(PATH, |app, req, p| {
             authorized(app, req, p.get("cid"), |cid| {
                 relay(app, req, cid, p.get("rest"))
             })
         })
+        .doc(RouteDoc::new("Relay a vendor call for the agent").errors(&[403, 404, 409]))
 }
 
 /// Registers each vendor's binding with the vault, so the console lists it and the owner can bind the

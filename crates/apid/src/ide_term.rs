@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use apz_http::ws::{self, Limits, Message, Origins, Socket};
-use apz_http::{Request, Response, Router};
+use apz_http::{Request, Response, RouteDoc, Router};
 use apz_ide::workspace::WorkspaceId;
 use apz_station::{Op, TermOp};
 use base64::Engine;
@@ -1045,6 +1045,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             serve(&Live(app), target, &mut socket);
         })
     })
+    .doc(RouteDoc::new("Open a terminal socket on a workspace").errors(&[400, 429]))
 }
 
 #[cfg(test)]
