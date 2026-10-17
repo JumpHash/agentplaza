@@ -10,7 +10,8 @@
 # only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64. Speed: cargo's build directory persists on the
 # runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest; the checkout keeps the mtimes
 # this runner last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
-name: windows
+name: Windows
+run-name: "${{ format('Windows by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -67,7 +68,7 @@ defaults:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:

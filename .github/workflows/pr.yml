@@ -1,5 +1,7 @@
 # The pull request gate: every pull request to main, and every merge-queue entry (the exact commit
-# that will land), runs this. `ci-ok` sums it up and is the one check the main ruleset requires.
+# that will land), runs this. "All checks passed" (job ci-ok) sums it up and is the one check the
+# main ruleset requires: a check is named by its job's name, so renaming that job means changing the
+# ruleset's required check with it.
 #
 #   changes     what the change touches (.github/ci/changes.sh): a change with no code in it
 #               (Markdown, docs, .gitignore and the like) builds and tests nothing
@@ -21,7 +23,8 @@
 # directory on the runners (`trusted: false`), never in the one releases build from.
 # Main itself only builds and packages (release.yml): its commits were tested here, in the queue.
 # A nightly full run (nightly.yml) catches what the path filter lets through.
-name: pr
+name: Checks
+run-name: "${{ github.event_name == 'merge_group' && format('Merge queue: {0}', github.event.merge_group.head_commit.message) || format('#{0} {1}', github.event.pull_request.number, github.event.pull_request.title) }}"
 
 on:
   pull_request:
@@ -38,6 +41,7 @@ permissions:
 
 jobs:
   changes:
+    name: What changed
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
     runs-on: [self-hosted, light]
     timeout-minutes: 5
@@ -60,6 +64,7 @@ jobs:
         run: .github/ci/changes.sh "$BASE" HEAD
 
   lint:
+    name: Lint (rustfmt, clippy, cargo deny)
     needs: changes
     if: needs.changes.outputs.build == 'true'
     runs-on: [self-hosted, Linux, X64, hetzner]
@@ -81,6 +86,7 @@ jobs:
         run: .github/ci/in-image.sh 'cargo deny --locked check'
 
   migrations:
+    name: Migrations
     needs: changes
     if: needs.changes.outputs.build == 'true'
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
@@ -95,6 +101,7 @@ jobs:
         run: scripts/check-migrations.sh "$BASE"
 
   console:
+    name: Web console
     needs: changes
     if: needs.changes.outputs.web == 'true'
     uses: ./.github/workflows/console.yml
@@ -102,6 +109,7 @@ jobs:
       trusted: ${{ needs.changes.outputs.trusted == 'true' }}
 
   linux:
+    name: Linux
     needs: changes
     if: needs.changes.outputs.build == 'true'
     uses: ./.github/workflows/linux.yml
@@ -113,6 +121,7 @@ jobs:
       only: ${{ needs.changes.outputs.only }}
 
   windows:
+    name: Windows
     needs: changes
     if: needs.changes.outputs.platform == 'true'
     uses: ./.github/workflows/windows.yml
@@ -123,6 +132,7 @@ jobs:
       link: ${{ github.event_name == 'merge_group' }}
 
   macos:
+    name: macOS
     needs: changes
     if: needs.changes.outputs.platform == 'true'
     uses: ./.github/workflows/macos.yml
@@ -136,6 +146,7 @@ jobs:
   # It runs even when the run is cancelled (`always()`): GitHub counts a skipped required check as
   # passed, so a cancelled run would otherwise look green. It then says which jobs never finished.
   ci-ok:
+    name: All checks passed
     needs: [changes, lint, migrations, console, linux, windows, macos]
     if: always()
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.

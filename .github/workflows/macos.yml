@@ -10,7 +10,8 @@
 # Speed: cargo's build directory persists on the runner (only changed crates compile), one release
 # build per architecture for tests and packages, nextest; the checkout keeps the mtimes this runner
 # last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
-name: macos
+name: macOS
+run-name: "${{ format('macOS by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -66,7 +67,7 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }}
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }}
     if: vars.APZ_MACOS != 'off'
     runs-on: ${{ fromJSON(vars.MACOS_RUNNER || '["self-hosted","macOS","X64"]') }}
     # A cold build directory compiles everything once; after that a run rebuilds only what changed.

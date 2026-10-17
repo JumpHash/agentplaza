@@ -1,6 +1,6 @@
 # Foundry trainer: CPU tests of the single, tight (gloo, 2 processes) and loose (2 islands through a
 # local hub) paths, ONNX export and checks. The GPU images are built by hand or at release.
-name: trainer
+name: Trainer
 
 # Runs on a push to main only: never on pull requests or other branches.
 on:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   test:
-    name: trainer tests (CPU)
+    name: Tests (CPU)
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 30
     defaults:

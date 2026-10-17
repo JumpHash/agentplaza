@@ -1,4 +1,4 @@
-name: console
+name: Web console
 
 # The web console (apps/web/dist): built once per commit with its wasm engine and the IDE's wasm, tested, and
 # saved to the Actions cache (no artifact storage) under this commit, for every package to ship. The build is not
@@ -12,6 +12,7 @@ on:
 
 jobs:
   console:
+    name: Build and test
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 20
     steps:
