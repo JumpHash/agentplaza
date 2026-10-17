@@ -2073,7 +2073,11 @@ impl Primitive {
                 None
             }
         });
-        let flat = (w.background, w.background, w.background);
+        // fs_sky writes its colours raw (the painted sky's were authored so), so a flat background goes in as its
+        // sRGB values: the sky then meets the clear colour, which is encoded.
+        let [r, g, b] = w.background.to_srgb();
+        let raw_bg = super::scene::Color { r, g, b };
+        let flat = (raw_bg, raw_bg, raw_bg);
         let (sky_top, sky_horizon, sky_ground) = if w.flat_background {
             flat
         } else {
