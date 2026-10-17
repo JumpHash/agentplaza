@@ -30,7 +30,7 @@ pub fn feature_edges(positions: &[[f32; 3]], indices: &[u32], threshold_deg: f32
 
     // Each undirected edge (by canonical pair) with the unit normals of the faces that use it.
     let mut faces_by_edge: HashMap<(u32, u32), Vec<[f32; 3]>> = HashMap::new();
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         let (a, b, c) = (positions[i0], positions[i1], positions[i2]);
         let normal = cross(sub(b, a), sub(c, a));
@@ -132,7 +132,7 @@ mod tests {
         let (positions, indices) = split_cube();
         let edges = feature_edges(&positions, &indices, 30.0);
         assert_eq!(edges.len(), 24, "12 cube edges, as pairs");
-        for pair in edges.chunks_exact(2) {
+        for pair in edges.as_chunks::<2>().0 {
             assert!(pair[0] < pair[1], "lower index first");
         }
     }

@@ -954,8 +954,12 @@ mod tests {
         assert_eq!(sort(a), sort(b));
         for (i, z) in zones.iter().enumerate() {
             for w in zones.iter().skip(i + 1) {
+                // Zones in one row are apart in x, zones in different rows apart in z.
                 assert!(
-                    z.max[0] < w.min[0] || w.max[0] < z.min[0],
+                    z.max[0] < w.min[0]
+                        || w.max[0] < z.min[0]
+                        || z.max[1] < w.min[1]
+                        || w.max[1] < z.min[1],
                     "{:?} and {:?} overlap",
                     z.zone,
                     w.zone

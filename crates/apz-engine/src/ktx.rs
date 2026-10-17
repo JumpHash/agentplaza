@@ -102,11 +102,11 @@ mod tests {
             assert_eq!(mip.len(), side * side * 4, "mip level {}", i + 1);
         }
         assert!(
-            t.rgba.chunks_exact(4).any(|p| p[0] < 16),
+            t.rgba.as_chunks::<4>().0.iter().any(|p| p[0] < 16),
             "a dark texel in level 0"
         );
         assert!(
-            t.rgba.chunks_exact(4).any(|p| p[0] > 24),
+            t.rgba.as_chunks::<4>().0.iter().any(|p| p[0] > 24),
             "a lighter texel in level 0"
         );
     }
