@@ -228,7 +228,7 @@ eq(tweenArray([1], [1, 3], 1), [1, 3], 'tween: a missing entry counts as zero');
 eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 
 // Hardware models (assets/hardware): every file validates, the index lists every file, the loader builds them.
-eq(parse('#/hardware-lab?model=exterior/workstation&gpus=1'), { screen: 'hardware-lab', params: [] }, 'a query is not part of the route');
+eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [] }, 'a query is not part of the route');
 
 // Treasury: the range window, flow totals, chart data, journal paging merge and the party labels.
 const TDAY = 86_400_000;

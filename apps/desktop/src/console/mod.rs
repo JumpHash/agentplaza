@@ -110,7 +110,6 @@ fn boot() -> (Console, Task<Msg>) {
             console.shell.current = screens::Id::LabJobs;
         } else if let Some(id) = [
             ("RobotLab", screens::Id::RobotLab),
-            ("RoomLab", screens::Id::RoomLab),
             ("HardwareLab", screens::Id::HardwareLab),
         ]
         .into_iter()

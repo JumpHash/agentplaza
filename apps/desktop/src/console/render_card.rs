@@ -12,13 +12,15 @@ use glam::{Mat4, Vec3};
 use iced::widget::shader::{self, Viewport};
 use iced::{Element, Length, Rectangle, mouse, wgpu, window};
 
-use crate::console::engine::hardware::{self, Built, Model, Params, Status};
+use crate::console::engine::fleet::{self, Machine};
+use crate::console::engine::kit;
+use crate::console::engine::machine_stage::MachineStage;
 use crate::console::engine::render;
 use crate::console::engine::robot::{Robot, RobotPose, RobotState, robot_palette};
 use crate::console::engine::scene::{
-    self, Camera, Draw, DrawKind, Filter, Frame, Geometry, Material, Obj, PointLightDraw, Shading,
-    Texture, World,
+    self, Camera, Draw, DrawKind, Frame, Geometry, Material, Shading, Texture, World,
 };
+use crate::console::engine::style::{Palette, Style};
 
 /// The machine cards' slots (`slot` wraps at this count).
 pub(crate) const CARD_SLOTS: usize = 8;
@@ -31,7 +33,7 @@ pub(crate) const PORTRAIT_SLOTS: usize = 32;
 /// stale statics.
 static BUILDS: AtomicU64 = AtomicU64::new(1);
 
-/// A card redraws about 30 times a second, for its LEDs; the exterior itself holds still (no turn).
+/// A card redraws about 30 times a second, for its status lamp and fans; its pose holds still (the thumbnail's start pose).
 const CARD_FRAME: Duration = Duration::from_millis(33);
 
 /// One slot's renderer: the floor's own pipeline, held apart per slot and per pool (iced keeps one pipeline per type).
@@ -89,25 +91,21 @@ impl<const PORTRAIT: bool, const N: usize> shader::Primitive for CardPrimitive<P
     }
 }
 
-// ---- A machine's exterior: the floor's 3D model in a card -------------------------------------
+// ---- A machine's exterior: the machine stage's model in a card --------------------------------
 
-/// A card's state: its built model with the statics baked from it, the time of its last redraw, and the frame the
-/// GPU draws next. The LEDs blink in `update`, once per redraw; `draw` only hands the frame over.
+/// A card's state: its machine stage (built on the first redraw, and again when the console's theme turns) with the
+/// theme it was built in, and the frame the GPU draws next. The stage steps in `update`, once per redraw; `draw` only
+/// hands the frame over.
 #[derive(Default)]
 pub(crate) struct CardState {
-    built: Option<Built>,
-    statics: Option<(u64, Arc<Vec<Draw>>, Vec<PointLightDraw>)>,
+    stage: Option<(MachineStage, bool)>,
     last: Option<Instant>,
-    /// The card's ambient clock in seconds (the pulses and blinks read it); the card redraws continuously, so it integrates dt.
-    clock: f32,
     frame: Option<Arc<Frame>>,
 }
 
 /// A machine's exterior in a card, on card slot `N`.
 pub(crate) struct Card<const N: usize> {
-    model: &'static Model,
-    gpus: usize,
-    active: bool,
+    machine: Machine,
 }
 
 impl<const N: usize, M> shader::Program<M> for Card<N> {
@@ -128,36 +126,19 @@ impl<const N: usize, M> shader::Program<M> for Card<N> {
             .last
             .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
         st.last = Some(*now);
-        if st.built.is_none() {
-            let built = hardware::build(
-                self.model,
-                &Params::default().with("gpus", self.gpus as f64),
-            );
-            let version = BUILDS.fetch_add(1, AtomicOrdering::Relaxed);
-            let statics = Arc::new(scene::bake(&built.root));
-            let lights = scene::flatten(&built.root, Filter::Static).1;
-            st.statics = Some((version, statics, lights));
-            st.built = Some(built);
+        let dark = !crate::theme::is_light();
+        if st
+            .stage
+            .as_ref()
+            .is_none_or(|(_, built_dark)| *built_dark != dark)
+        {
+            let palette = Palette::of(Style::Ink, dark);
+            st.stage = Some((MachineStage::new(&self.machine, &palette)?, dark));
         }
-        let (Some(built), Some((version, statics, lights))) =
-            (st.built.as_mut(), st.statics.as_ref())
-        else {
-            return None;
-        };
-        let status = hardware::State {
-            status: Status::Online,
-            activity: if self.active { 1.0 } else { 0.0 },
-            open: 1.0,
-        };
-        st.clock += dt;
-        built.update(dt, st.clock, &status);
+        let (stage, _) = st.stage.as_mut()?;
         let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
-        st.frame = Some(Arc::new(card_frame(
-            built,
-            self.model,
-            (*version, statics, lights),
-            aspect,
-        )));
+        stage.step(dt, aspect, false);
+        st.frame = Some(Arc::new(stage.thumbnail_frame(aspect)));
         Some(shader::Action::request_redraw_at(*now + CARD_FRAME))
     }
 
@@ -173,93 +154,8 @@ impl<const N: usize, M> shader::Program<M> for Card<N> {
     }
 }
 
-/// The frame of an exterior: its statics and its dynamic parts (the LEDs), under a camera that frames the whole model
-/// (`fit_camera`). The paper colour is the world's background, but the card's clear is transparent, so only the meshes
-/// show; no fog, so the card sits on the page.
-fn card_frame(
-    built: &Built,
-    model: &Model,
-    statics: (u64, &Arc<Vec<Draw>>, &[PointLightDraw]),
-    aspect: f32,
-) -> Frame {
-    let (version, statics, static_lights) = statics;
-    let root = &built.root;
-    let root_world = root.local_matrix();
-    let children = root.get().children.clone();
-    let mut roots: Vec<(Obj, Mat4)> = Vec::new();
-    for c in &children {
-        if c.get().dynamic {
-            roots.push((c.clone(), root_world));
-        } else {
-            roots.extend(scene::dynamic_roots(c, root_world));
-        }
-    }
-    let (draws, mut lights) = scene::flatten_roots(&roots);
-    lights.extend_from_slice(static_lights);
-    let camera = fit_camera(model, aspect, &draws, statics.as_slice());
-    let world = World {
-        background: scene::Color::srgb(
-            crate::theme::palette().paper.r,
-            crate::theme::palette().paper.g,
-            crate::theme::palette().paper.b,
-        ),
-        fog_near: 1.0e6,
-        fog_far: 1.0e6 + 1.0,
-        ..Default::default()
-    };
-    Frame {
-        animated: None,
-        camera,
-        world,
-        statics: Arc::clone(statics),
-        statics_version: version,
-        draws,
-        lights,
-        time: 0.0,
-        overlays: Vec::new(),
-        fades: Arc::new(built.fades.clone()),
-        plaza: None,
-        anim_batches: Arc::new(Vec::new()),
-        focus: None,
-    }
-}
-
-/// The camera for a model: it looks along the model's own camera anchor's direction, at the centre of the bounding sphere
-/// of the whole posed model (the opened lid included, from its world-space meshes; the authored size is the floor), from
-/// far enough back that the sphere fits the card's height and width (a 40 degree vertical field) at any aspect.
-fn fit_camera(model: &Model, aspect: f32, draws: &[Draw], statics: &[Draw]) -> Camera {
-    const FOV: f32 = 40.0;
-    const MARGIN: f32 = 1.12;
-    let anchor = model.anchors.camera.as_ref();
-    let look = Vec3::from(anchor.map_or([0.0, model.size[1] * 0.5, 0.0], |c| c.look));
-    let dir = anchor
-        .and_then(|c| (Vec3::from(c.at) - look).try_normalize())
-        .unwrap_or(Vec3::Z);
-    let (mut lo, mut hi) = (Vec3::ZERO, Vec3::from(model.size));
-    for d in draws.iter().chain(statics) {
-        if matches!(d.kind, DrawKind::Mesh | DrawKind::Outline) {
-            let (c, r) = scene::world_sphere(&d.geo, d.model);
-            lo = lo.min(c - Vec3::splat(r));
-            hi = hi.max(c + Vec3::splat(r));
-        }
-    }
-    let centre = (lo + hi) * 0.5;
-    let radius = ((hi - lo) * 0.5).length().max(0.05);
-    let t = (FOV * 0.5).to_radians().tan();
-    let t_min = t.min(t * aspect.max(0.1));
-    // A sphere of angular radius asin(r / d) fits the narrower half field when d >= r * sqrt(1 + t^2) / t.
-    let dist = radius * (1.0 + t_min * t_min).sqrt() / t_min * MARGIN;
-    Camera {
-        eye: centre + dir * dist,
-        target: centre,
-        fov: FOV,
-        near: 0.05,
-        far: 1000.0,
-        aspect,
-    }
-}
-
-/// A machine's exterior drawn in a card on card slot `slot` (wraps). Returns None when the model is missing.
+/// A machine's exterior drawn in a card on card slot `slot` (wraps). Returns None when the kit has no model for the
+/// machine, the same case in which `MachineStage::new` returns None (checked here, so a view never builds a stage).
 pub(crate) fn exterior<'a, M: 'a>(
     slot: usize,
     kind: &str,
@@ -267,12 +163,19 @@ pub(crate) fn exterior<'a, M: 'a>(
     gpus: usize,
     active: bool,
 ) -> Option<Element<'a, M>> {
-    let name = hardware::models_for(kind, Some(vendor));
-    let model = hardware::model(name).or_else(|| hardware::model("exterior/workstation"))?;
+    let machine = Machine {
+        kind: kind.to_string(),
+        vendor: Some(vendor.to_string()),
+        status: "online".into(),
+        working: u32::from(active),
+        gpus: vec![Default::default(); gpus],
+        ..Default::default()
+    };
+    kit::model(fleet::kit_model_of(&machine))?;
     macro_rules! card {
         ($($n:literal)*) => {
             match slot % CARD_SLOTS {
-                $($n => shader::Shader::<M, _>::new(Card::<$n> { model, gpus, active }).width(Length::Fixed(160.0)).height(Length::Fixed(120.0)).into(),)*
+                $($n => shader::Shader::<M, _>::new(Card::<$n> { machine }).width(Length::Fixed(160.0)).height(Length::Fixed(120.0)).into(),)*
                 _ => return None,
             }
         };
@@ -411,6 +314,7 @@ fn portrait_frame(robot: &Robot, spec: PortraitSpec, version: u64, aspect: f32) 
     Frame {
         animated: None,
         camera: Camera {
+            ortho: false,
             eye: Vec3::new(1.0, 1.25, 3.4),
             target: Vec3::new(0.0, 0.72, 0.0),
             fov: 30.0,

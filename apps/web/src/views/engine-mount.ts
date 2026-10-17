@@ -59,21 +59,22 @@ export interface LabOptions {
   fx?: string;
 }
 
-/** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. `params` are the
- *  model's own numbers (APZ_HW_PARAMS). Unset ones take the lab's defaults. */
+/** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. `model` is a kit
+ *  model id or `all`; `lod` is 0 (full) to 2 (block); `style` is ink, blueprint or night; `status` is working, idle,
+ *  strained or offline; `cam` is iso, front, side, back or top; `ortho` draws with the orthographic camera. Unset ones
+ *  take the engine's defaults. */
 export interface HardwareLabOptions {
   model?: string;
-  gpus?: number;
+  lod?: number;
+  style?: string;
+  theme?: string;
   status?: string;
-  working?: number;
-  open?: number;
-  traces?: boolean;
   cam?: string;
-  params?: Record<string, number>;
+  ortho?: boolean;
 }
 
 /** The labs' option lists, from the engine (`lab_catalog`): the robot species and their clips, tools, carried items,
- *  props and effects; the room roles; the hardware models, with each model's params (their defaults, without the GPUs). */
+ *  props and effects; the room roles; the hardware kit's model ids, render styles and levels of detail. */
 export interface LabCatalog {
   species: string[];
   /** The shared clip ids. */
@@ -87,7 +88,10 @@ export interface LabCatalog {
   fx: string[];
   roles: string[];
   models: string[];
-  params: Record<string, Record<string, number>>;
+  /** The hardware lab's styles: ink, blueprint, night. */
+  styles: string[];
+  /** The hardware lab's levels of detail, 0 (full) to lods - 1 (block). */
+  lods: number;
 }
 
 /** The glue module: its default export loads the .wasm; `start` builds the engine on a canvas. */

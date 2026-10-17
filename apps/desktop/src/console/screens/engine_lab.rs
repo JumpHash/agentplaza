@@ -1,11 +1,11 @@
-//! The engine's labs, as the web's hidden `#/robot-lab`, `#/room-lab` and `#/hardware-lab` routes: the engine on a lab
+//! The engine's labs, as the web's hidden `#/robot-lab` and `#/hardware-lab` routes: the engine on a lab
 //! stage with the web lab's controls (the options come from the engine's own catalog, `apz_engine::lab_catalog`). Every
 //! change starts the stage again with the options set, as the web's lab restarts its engine. Hidden from the sidebar as
-//! on the web: `APZ_SCREEN=RobotLab|RoomLab|HardwareLab` opens one.
+//! on the web: `APZ_SCREEN=RobotLab|HardwareLab` opens one.
 
 use std::collections::BTreeMap;
 
-use iced::widget::{checkbox, column, container, pick_list, row, slider, text_input};
+use iced::widget::{checkbox, column, container, pick_list, row, slider};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use serde_json::Value;
 
@@ -19,7 +19,6 @@ use crate::theme;
 pub enum Kind {
     #[default]
     Robot,
-    Room,
     Hardware,
 }
 
@@ -27,7 +26,6 @@ impl Kind {
     pub fn id(self) -> Id {
         match self {
             Kind::Robot => Id::RobotLab,
-            Kind::Room => Id::RoomLab,
             Kind::Hardware => Id::HardwareLab,
         }
     }
@@ -35,7 +33,6 @@ impl Kind {
     fn title(self) -> &'static str {
         match self {
             Kind::Robot => "Robot lab",
-            Kind::Room => "Room lab",
             Kind::Hardware => "Hardware lab",
         }
     }
@@ -55,23 +52,12 @@ impl Kind {
                 ("orch", "0"),
                 ("cam", "front"),
             ],
-            Kind::Room => &[
-                ("role", "orchestrator"),
-                ("w", "4"),
-                ("d", "3.5"),
-                ("door", "s"),
-                ("seed", "7"),
-                ("grid", "0"),
-                ("cam", "oblique"),
-                ("debug", "0"),
-            ],
             Kind::Hardware => &[
-                ("model", "exterior/workstation"),
-                ("gpus", "0"),
-                ("status", "online"),
-                ("working", "0"),
-                ("open", "0"),
-                ("traces", "1"),
+                ("model", "all"),
+                ("lod", "0"),
+                ("style", "ink"),
+                ("theme", "dark"),
+                ("status", "working"),
                 ("cam", "iso"),
             ],
         };
@@ -79,15 +65,10 @@ impl Kind {
     }
 }
 
-/// The lab screen: which lab, its options, the model's own params (the hardware lab), and the engine on its stage.
+/// The lab screen: which lab, its options, and the engine on its stage.
 pub struct State {
     kind: Kind,
     values: BTreeMap<&'static str, String>,
-    params: BTreeMap<String, String>,
-    /// The typed text of the number fields, not yet applied (applied on Enter).
-    drafts: BTreeMap<&'static str, String>,
-    /// The typed text of the model params, not yet applied (applied on Enter).
-    param_drafts: BTreeMap<String, String>,
     stage: floor::State,
     catalog: Value,
     /// The kind the stage was last started for (None: not yet).
@@ -101,9 +82,6 @@ impl Default for State {
         State {
             kind: Kind::Robot,
             values: Kind::Robot.defaults(),
-            params: BTreeMap::new(),
-            drafts: BTreeMap::new(),
-            param_drafts: BTreeMap::new(),
             stage: floor::State::default(),
             catalog,
             started: None,
@@ -126,22 +104,10 @@ pub enum Msg {
     Stage(floor::Msg),
     /// An option changed: the stage starts again with it.
     Set(&'static str, String),
-    /// A number field's text changed: kept as a draft until Enter applies it.
-    Draft(&'static str, String),
-    /// A number field was submitted: its draft is applied (or reverted when it is not a number).
-    Commit(&'static str),
-    /// A model param's text changed (the hardware lab): kept as a draft until Enter applies it.
-    ParamDraft(String, String),
-    /// A model param was submitted: applied when it is a number, else reverted.
-    ParamCommit(String),
 }
 
-/// The env names the engine's labs read (apz-engine-web's `LAB_OPTIONS`, `ROOM_LAB_OPTIONS`, `HARDWARE_LAB_OPTIONS`).
-fn env_of(
-    kind: Kind,
-    values: &BTreeMap<&'static str, String>,
-    params: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+/// The env names the engine's labs read (apz-engine-web's `LAB_OPTIONS` and `HARDWARE_LAB_OPTIONS`).
+fn env_of(kind: Kind, values: &BTreeMap<&'static str, String>) -> BTreeMap<String, String> {
     let names: &[(&str, &str)] = match kind {
         Kind::Robot => &[
             ("species", "APZ_ROBOT_LAB"),
@@ -155,25 +121,17 @@ fn env_of(
             ("prop", "APZ_ROBOT_PROP"),
             ("fx", "APZ_ROBOT_FX"),
         ],
-        Kind::Room => &[
-            ("role", "APZ_ROOM_LAB"),
-            ("seed", "APZ_ROOM_SEED"),
-            ("door", "APZ_ROOM_DOOR"),
-            ("grid", "APZ_ROOM_GRID"),
-            ("cam", "APZ_ROOM_CAM"),
-            ("debug", "APZ_ROOM_DEBUG"),
-        ],
         Kind::Hardware => &[
             ("model", "APZ_HW_LAB"),
-            ("gpus", "APZ_HW_GPUS"),
+            ("lod", "APZ_HW_LOD"),
+            ("style", "APZ_HW_STYLE"),
+            ("theme", "APZ_HW_THEME"),
             ("status", "APZ_HW_STATUS"),
-            ("working", "APZ_HW_WORKING"),
-            ("open", "APZ_HW_OPEN"),
-            ("traces", "APZ_HW_TRACES"),
             ("cam", "APZ_HW_CAM"),
+            ("ortho", "APZ_HW_ORTHO"),
         ],
     };
-    let mut env: BTreeMap<String, String> = names
+    let env: BTreeMap<String, String> = names
         .iter()
         .filter_map(|&(k, name)| {
             values
@@ -182,31 +140,13 @@ fn env_of(
                 .map(|v| (name.to_string(), v.clone()))
         })
         .collect();
-    match kind {
-        Kind::Room => {
-            let (w, d) = (
-                values.get("w").cloned().unwrap_or_default(),
-                values.get("d").cloned().unwrap_or_default(),
-            );
-            env.insert("APZ_ROOM_SIZE".into(), format!("{w}x{d}"));
-        }
-        Kind::Hardware if !params.is_empty() => {
-            let pairs: Vec<String> = params
-                .iter()
-                .filter(|(_, v)| v.trim().parse::<f64>().is_ok())
-                .map(|(k, v)| format!("{k}={}", v.trim()))
-                .collect();
-            env.insert("APZ_HW_PARAMS".into(), pairs.join(","));
-        }
-        _ => {}
-    }
     env
 }
 
 /// Starts the stage again with the lab's options: they are set while the stage builds (the labs read them then), as
 /// the web's `start_lab` sets them for its engine.
 fn restart(state: &mut State) {
-    apz_engine::set_env_overrides(env_of(state.kind, &state.values, &state.params));
+    apz_engine::set_env_overrides(env_of(state.kind, &state.values));
     state.stage = floor::State::default();
     apz_engine::set_env_overrides(BTreeMap::new());
     state.started = Some(state.kind);
@@ -217,69 +157,20 @@ pub fn open(state: &mut State, kind: Kind) -> Task<Msg> {
     if state.started != Some(kind) {
         state.kind = kind;
         state.values = kind.defaults();
-        state.params.clear();
-        state.drafts.clear();
-        state.param_drafts.clear();
         restart(state);
     }
     Task::none()
-}
-
-/// The stored value of a number field's typed text, read as the web's lab does: a seed from 0 to 4294967295, floored;
-/// a width or depth from 1 to 12, kept as typed. Out of range, or not a number, is None, and the field keeps its last
-/// value.
-fn number_value(key: &str, text: &str) -> Option<String> {
-    let x = text.trim().parse::<f64>().ok().filter(|x| x.is_finite())?;
-    if key == "seed" {
-        return (0.0..=4_294_967_295.0)
-            .contains(&x)
-            .then(|| (x.floor() as u64).to_string());
-    }
-    (1.0..=12.0).contains(&x).then(|| format!("{}", x))
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Stage(m) => floor::update(&mut state.stage, m, ctx).map(Msg::Stage),
         Msg::Set(key, value) => {
-            if key == "model" {
-                state.params.clear(); // another model has its own params
-                state.param_drafts.clear();
-            }
             if key == "species" && state.kind == Kind::Robot {
                 state.values.insert("clip", String::new()); // the clip list follows the species
             }
             state.values.insert(key, value);
             restart(state);
-            Task::none()
-        }
-        Msg::Draft(key, text) => {
-            state.drafts.insert(key, text);
-            Task::none()
-        }
-        Msg::Commit(key) => {
-            if let Some(value) = state
-                .drafts
-                .remove(key)
-                .and_then(|text| number_value(key, &text))
-            {
-                state.values.insert(key, value);
-                restart(state);
-            }
-            Task::none()
-        }
-        Msg::ParamDraft(key, text) => {
-            state.param_drafts.insert(key, text);
-            Task::none()
-        }
-        Msg::ParamCommit(key) => {
-            if let Some(text) = state.param_drafts.remove(&key) {
-                let text = text.trim().to_string();
-                if text.parse::<f64>().is_ok() {
-                    state.params.insert(key, text);
-                    restart(state);
-                }
-            }
             Task::none()
         }
     }
@@ -341,26 +232,6 @@ fn select<'a>(
         pick_list(choices, selected, move |c: Choice| Msg::Set(key, c.value))
             .style(theme::pick_list)
             .text_size(13.0)
-            .into(),
-    )
-}
-
-/// A labelled number field: the typed text is a draft until Enter applies it (see [`number_value`]).
-fn number<'a>(state: &State, label: &str, key: &'static str) -> Element<'a, Msg> {
-    let value = state
-        .drafts
-        .get(key)
-        .or_else(|| state.values.get(key))
-        .cloned()
-        .unwrap_or_default();
-    field(
-        label,
-        text_input("", &value)
-            .on_input(move |v| Msg::Draft(key, v))
-            .on_submit(Msg::Commit(key))
-            .style(theme::input)
-            .padding(6.0)
-            .width(Length::Fixed(72.0))
             .into(),
     )
 }
@@ -488,78 +359,31 @@ fn controls<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 ),
             ]
         }
-        Kind::Room => {
-            let mut roles = vec!["all".to_string()];
-            roles.extend(list(c, "roles"));
-            vec![
-                select(state, "Role", "role", None, roles),
-                number(state, "Width", "w"),
-                number(state, "Depth", "d"),
-                select(
-                    state,
-                    "Door",
-                    "door",
-                    None,
-                    ["n", "e", "s", "w"].map(String::from).to_vec(),
-                ),
-                number(state, "Seed", "seed"),
-                toggle(state, "Twelve seeds", "grid"),
-                select(
-                    state,
-                    "Camera",
-                    "cam",
-                    None,
-                    ["oblique", "top"].map(String::from).to_vec(),
-                ),
-                toggle(state, "Debug", "debug"),
-            ]
-        }
         Kind::Hardware => {
-            let model = state.values.get("model").cloned().unwrap_or_default();
+            let mut models = vec!["all".to_string()];
+            models.extend(list(c, "models"));
             let mut out = vec![
-                select(state, "Model", "model", None, list(c, "models")),
-                buttons(
+                select(state, "Model", "model", None, models),
+                buttons(state, "lod", &[("0", "FULL"), ("1", "MID"), ("2", "BLOCK")]),
+                select(
                     state,
-                    "gpus",
-                    &[("0", "0 GPUs"), ("1", "1 GPU"), ("2", "2 GPUs")],
+                    "Style",
+                    "style",
+                    None,
+                    ["ink", "blueprint", "night"].map(String::from).to_vec(),
                 ),
+                buttons(state, "theme", &[("light", "LIGHT"), ("dark", "DARK")]),
                 select(
                     state,
                     "Status",
                     "status",
                     None,
-                    ["online", "draining", "offline", "revoked"]
+                    ["working", "idle", "strained", "offline"]
                         .map(String::from)
                         .to_vec(),
                 ),
-                range(state, "Working", "working", 0.0, 6.0, 1.0),
-                range(state, "Open", "open", 0.0, 1.0, 0.01),
-                toggle(state, "Traces (boards)", "traces"),
+                toggle(state, "Orthographic", "ortho"),
             ];
-            if let Some(defaults) = c["params"].get(&model).and_then(Value::as_object) {
-                // The model's params by name, as the web's lab lists them.
-                let mut names: Vec<&String> = defaults.keys().collect();
-                names.sort();
-                for k in names {
-                    let shown = state
-                        .param_drafts
-                        .get(k)
-                        .or_else(|| state.params.get(k))
-                        .cloned()
-                        .unwrap_or_else(|| defaults[k].to_string());
-                    let (draft, commit) = (k.clone(), k.clone());
-                    out.push(field(
-                        k,
-                        text_input("", &shown)
-                            .on_input(move |x| Msg::ParamDraft(draft.clone(), x))
-                            .on_submit(Msg::ParamCommit(commit))
-                            .style(theme::input)
-                            .padding(6.0)
-                            .width(Length::Fixed(72.0))
-                            .into(),
-                    ));
-                }
-            }
             out.push(buttons(
                 state,
                 "cam",
@@ -601,9 +425,8 @@ fn robot_draws_text(counts: &apz_engine::robots::lab::DrawCounts, prop: bool) ->
     format!("draw calls per robot (main pass): {}", parts.join(" · "))
 }
 
-/// The lab's readout: the room lab's violations and rooms, the hardware lab's summary (red on errors), the robot lab's
-/// draw calls of the last frame.
-fn readout(state: &State) -> (String, Vec<String>, bool) {
+/// The lab's readout: the hardware lab's summary (red on errors), the robot lab's draw calls of the last frame.
+fn readout(state: &State) -> (String, bool) {
     let info: Value = serde_json::from_str(&state.stage.lab_info()).unwrap_or(Value::Null);
     let lines = |key: &str| {
         info[key]
@@ -627,21 +450,12 @@ fn readout(state: &State) -> (String, Vec<String>, bool) {
                 state.stage.lab.as_ref().map(|lab| {
                     robot_draws_text(&lab.draw_counts(&owned, calls), prop_screen(state))
                 });
-            (text.unwrap_or_default(), Vec::new(), false)
-        }
-        Kind::Room => {
-            let debug = state.values.get("debug").is_some_and(|v| v == "1");
-            (
-                info["summary"].as_str().unwrap_or_default().to_string(),
-                if debug { lines("lines") } else { Vec::new() },
-                false,
-            )
+            (text.unwrap_or_default(), false)
         }
         Kind::Hardware => {
             let errors: Vec<String> = lines("errors");
             (
                 info["summary"].as_str().unwrap_or_default().to_string(),
-                Vec::new(),
                 !errors.is_empty(),
             )
         }
@@ -655,25 +469,17 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         .align_y(Alignment::End)
         .wrap()
         .vertical_spacing(10);
-    let (summary, lines, bad) = readout(state);
+    let (summary, bad) = readout(state);
     let p = theme::palette();
-    let mut body = column![
+    let body = column![
         bar,
         ui::sans(summary, 12.0, if bad { p.crit } else { p.ink_2 })
     ]
     .spacing(12);
-    for l in lines {
-        body = body.push(ui::sans(l, 12.0, p.ink));
-    }
-    // The web lab's canvas heights: the field of view is vertical, so the same height frames the same.
-    let tall = match state.kind {
-        Kind::Room if state.values.get("role").is_some_and(|r| r == "all") => 760.0,
-        Kind::Room => 540.0,
-        Kind::Robot | Kind::Hardware => 420.0,
-    };
+    // The web lab's canvas height: the field of view is vertical, so the same height frames the same.
     let stage = container(floor::stage(&state.stage, ctx).map(Msg::Stage))
         .width(Length::Fill)
-        .height(Length::Fixed(tall));
+        .height(Length::Fixed(420.0));
     let page = ui::scroll(body.push(stage).height(Length::Shrink)).height(Length::Fill);
     ui::sheet(head, page.into())
 }
