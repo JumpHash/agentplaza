@@ -3,7 +3,7 @@
 # one, or after the runner fleet's storage guard deleted every image) then pulls it in about a minute
 # instead of building it in six (.github/ci/image.sh). Each architecture builds natively on its own
 # runners. Runs when main's Dockerfile changes, and by hand.
-name: ci image
+name: CI image
 
 on:
   push:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   publish:
-    name: publish (${{ matrix.arch }})
+    name: Publish (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:

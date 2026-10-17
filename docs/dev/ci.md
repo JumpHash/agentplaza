@@ -119,7 +119,7 @@ A job reads as part and step, such as `Linux / Test (arm64)`, `Release / Publish
 | `guest.yml` | from `release.yml` | Builds the agents' guest kernel and initramfs per architecture |
 | `raspberry-pi.yml` | from `release.yml` | Packages the Raspberry Pi `.deb` and tarball |
 | `relay.yml` | from `release.yml` | Builds the MCP relay container |
-| `ci-image.yml` | pushes to main that change the CI image, or by hand | Publishes the CI image for x86_64 and arm64 to `ghcr.io/jumphash/agentplaza-ci`. A runner without the image pulls it instead of building it (`image.sh`) |
+| `ci-image.yml` (CI image) | pushes to main that change the CI image, or by hand | Publishes the CI image for x86_64 and arm64 to `ghcr.io/jumphash/agentplaza-ci`. A runner without the image pulls it instead of building it (`image.sh`) |
 | `trainer.yml` | pushes to main that touch `trainer/`, or by hand | Runs the trainer's tests (`pytest`) |
 
 For the stage layout and the version rules, read [`packaging/README.md`](../../packaging/README.md).
