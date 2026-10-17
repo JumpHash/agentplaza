@@ -24,7 +24,7 @@ required check, and changes under `.github/` need a code owner's review (CODEOWN
 | `lint` | code or CI changed | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo deny check` (advisories, licences, sources: `deny.toml`) |
 | `migrations` | code or CI changed | Applied migrations unchanged, new ones numbered in order (`scripts/check-migrations.sh`) |
 | `console` | the console or what it compiles from changed | The web console's type-check, build and tests (`console.yml`) |
-| `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `agent-harness`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
+| `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
 | `windows`, `macos` | platform code changed | The Windows and macOS tests |
 | `ci-ok` | always | Passes when every job above passed or was skipped |
 
