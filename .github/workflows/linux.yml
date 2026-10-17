@@ -19,7 +19,8 @@
 # depend on them (`only`, from changes.sh).
 # Nothing goes through artifact storage: the guest comes from the cache guest.yml fills, and the
 # packages go to the cache under this run's id for release.yml's publish job.
-name: linux
+name: Linux
+run-name: "${{ format('Linux by hand: {0}', inputs.package && 'package' || 'test') }}"
 
 on:
   workflow_dispatch:
@@ -63,7 +64,7 @@ env:
 
 jobs:
   build:
-    name: ${{ inputs.package && (inputs.tests && 'test and package' || 'package') || 'test' }} (${{ matrix.arch }})
+    name: ${{ inputs.package && (inputs.tests && 'Test and package' || 'Package') || 'Test' }} (${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -85,9 +86,10 @@ jobs:
       TARGET_ARG: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '--target aarch64-unknown-linux-gnu' || '' }}
       OUT: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '/ci-target/aarch64-unknown-linux-gnu/release' || '/ci-target/release' }}
       # What the tests build: the workspace, but natively on arm64 only the packages whose code
-      # differs there (cfg(target_arch), or run inside the arm64 guests): the rest is the same code
-      # x86_64 tests, and the full arm64 suite runs nightly (arm64: full).
-      PACKAGES: ${{ matrix.arch == 'aarch64' && !(matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')) && '-p vmm -p vmctl -p noded -p vsockd -p agent-harness -p apz-setup -p acpi_tables' || '--workspace' }}
+      # differs there (cfg(target_arch), or the VM node and its devices): the rest is the same code
+      # x86_64 tests, and the full arm64 suite runs nightly (arm64: full). Not agent-harness: no
+      # arch-specific code, and its tests assume a non-root user, which rootless Docker's builds are not.
+      PACKAGES: ${{ matrix.arch == 'aarch64' && !(matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')) && '-p vmm -p vmctl -p noded -p vsockd -p apz-setup -p acpi_tables' || '--workspace' }}
       # The tests' time budgets (APZ_PERF_SLACK): arm64 cross-compiled on x86_64 runs its tests
       # emulated, 15 to 50 times slower (natively it needs no more than x86_64).
       APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '25' || '' }}

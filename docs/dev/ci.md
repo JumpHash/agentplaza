@@ -13,8 +13,9 @@ release and the nightly run alike. A change with no code in it (Markdown, `docs/
 tests nothing, and cuts no version or release. `docs/agents/` and `docs/api/` are the exception:
 the hub compiles them in or tests against them, so they count as code.
 
-`main` takes squash merges of pull requests only, through the merge queue. `ci-ok` is its one
-required check, and changes under `.github/` need a code owner's review (CODEOWNERS).
+`main` takes squash merges of pull requests only, through the merge queue. **All checks passed**
+(job `ci-ok`) is its one required check, and changes under `.github/` need a code owner's review
+(CODEOWNERS).
 
 ## The gate (`pr.yml`)
 
@@ -24,9 +25,9 @@ required check, and changes under `.github/` need a code owner's review (CODEOWN
 | `lint` | code or CI changed | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo deny check` (advisories, licences, sources: `deny.toml`) |
 | `migrations` | code or CI changed | Applied migrations unchanged, new ones numbered in order (`scripts/check-migrations.sh`) |
 | `console` | the console or what it compiles from changed | The web console's type-check, build and tests (`console.yml`) |
-| `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `agent-harness`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
+| `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
 | `windows`, `macos` | platform code changed | The Windows and macOS tests |
-| `ci-ok` | always | Passes when every job above passed or was skipped |
+| `ci-ok` (All checks passed) | always | Passes when every job above passed or was skipped. Names the jobs that failed and the ones that were cancelled |
 
 "Platform code" is the platform crates (`apz-desktop*`, `vmm`, `noded`, `vsockd`, `vmctl`,
 `apz-uds`, `apz-os`, `acpi-tables`), the desktop app, packaging, `Cargo.toml`/`Cargo.lock`, the
@@ -89,6 +90,20 @@ clone; `mtimes` covers that. When the host's disk passes its limit, the guard al
 `~/.cache`, which holds our build directory, and every Docker image, including the CI image, on
 every runner. The next builds then start cold. So the Linux build directory is held to 40 GB, and
 no second copy of compiled crates (sccache) is kept beside it.
+
+## In the Actions view
+
+Workflows carry plain names: **Checks** (the gate) and **Release**, **Nightly tests**, and the
+platforms and parts they call (**Linux**, **Windows**, **macOS**, **Web console**, **Agent guest**,
+**MCP relay**, **Raspberry Pi**, **Trainer**). A run is titled by what it tests or ships:
+
+- `#35 CI: warm builds…` for a pull request;
+- `Merge queue: <commit>` for a merge-queue entry;
+- `Release: <commit>` or `Release by hand: <version>` for a release;
+- `Nightly: every platform` for the nightly run.
+
+A job reads as part and step, such as `Linux / Test (arm64)`, `Release / Publish to GitHub` or
+`Checks / All checks passed`.
 
 ## All workflows
 
