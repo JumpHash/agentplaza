@@ -1,4 +1,4 @@
-//! The Floor engine as a host drives it: one object that owns the stage and the pointer state. The host feeds it
+//! The machines engine as a host drives it: one object that owns the stage and the pointer state. The host feeds it
 //! data ([`Feed`]), pointer events ([`Engine::input`]), actions ([`Engine::apply`]) and commands ([`Cmd`]), then
 //! asks for a frame. A host with its own render pass (the desktop's iced shader widget) advances the engine with
 //! [`Engine::advance`] and draws with a [`Renderer`]; a host with a plain target (the browser's canvas) calls
@@ -13,9 +13,8 @@ use crate::fleet::FleetResponse;
 use crate::input::{self, Action, Pointer};
 use crate::render;
 use crate::scene::{Camera, Frame};
-use crate::stage::{Motion, Stage, View, machine_at};
+use crate::stage::{Motion, Stage, machine_at};
 use crate::world::AgentInfo;
-use crate::world::view::Label;
 
 /// What the host has fetched since the last call. `None` means "no change" for that source.
 #[derive(Debug, Default, Clone)]
@@ -28,19 +27,9 @@ pub struct Feed {
     pub fleet_error: Option<String>,
 }
 
-/// A command from the host's controls: what the Floor screen does on a button or a click outside the scene.
+/// A command from the host's controls: what the Machines screen does on a button or a click outside the scene.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
-    /// Show the fleet's Machines view.
-    ShowMachines,
-    /// Selects the robot of agent `cid` in the shown board (its full label), or none.
-    SelectRobot(Option<u64>),
-    /// Show one machine's view by its id.
-    SelectMachine(String),
-    /// ENTER: fly into the machine with this id.
-    Enter(String),
-    /// Back out of the machine view (the reverse of ENTER).
-    Back,
     /// Reset the camera to the view's default.
     ResetView,
     /// Open the popup of a machine (Machines view), or close it with None.
@@ -51,13 +40,11 @@ pub enum Cmd {
     LeaveMachine,
 }
 
-/// What is under a point: a machine in the Machines view, or a robot in a machine's view.
+/// What is under a point: a machine in the Machines view.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pick {
-    /// The id of the machine under the point (the Machines view).
+    /// The id of the machine under the point.
     Machine(String),
-    /// The cid of the robot under the point (a machine's view).
-    Robot(u64),
 }
 
 /// What one frame produced, for the host to draw around the picture and to act on.
@@ -67,8 +54,6 @@ pub struct FrameOut {
     /// throttled (12 fps), [`Motion::Rest`] not at all. Active covers input in the last 250 ms and any change since
     /// the last frame.
     pub motion: Motion,
-    /// The name labels of the shown view, in logical px (the host draws them, or the overlays already do).
-    pub labels: Vec<Label>,
     /// The shown view's camera, for the host's own overlays.
     pub camera: Camera,
 }
@@ -509,26 +494,21 @@ impl Engine {
             self.stage.machine = None;
         }
         match cmd {
-            Cmd::ShowMachines => self.stage.set_view(View::Machines),
-            Cmd::SelectMachine(id) => self.stage.set_view(View::Machine(id)),
-            Cmd::Enter(id) => self.stage.enter(id),
-            Cmd::Back => self.stage.leave(),
             Cmd::ResetView => self.stage.reset_view(),
             Cmd::OpenPopup(id) => self.stage.open_popup(id),
             Cmd::ShowMachine { id } => {
                 self.stage.show_machine(&id);
             }
             Cmd::LeaveMachine => self.stage.leave_machine(),
-            Cmd::SelectRobot(cid) => self.stage.floor.selected = cid,
         }
         self.dirty = true;
     }
 
-    /// Aims the active floor's camera at `target`, from `eye` (or from where it is now, keeping its distance).
+    /// Aims the Machines view's camera at `target`, from `eye` (or from where it is now, keeping its distance).
     /// The host's debug look: it does not change the scene, only the framing.
     pub fn look_at(&mut self, target: [f32; 3], eye: Option<[f32; 3]>) {
         let target = glam::Vec3::from_array(target);
-        let floor = self.stage.active();
+        let floor = &mut self.stage.machines;
         let eye = match eye {
             Some(e) => glam::Vec3::from_array(e),
             None => floor.orbit.camera(1.0).eye,
@@ -573,19 +553,13 @@ impl Engine {
         if let Some(machine) = self.stage.machine.as_ref() {
             return FrameOut {
                 motion,
-                labels: Vec::new(),
                 camera: machine.camera(),
             };
         }
-        let floor = match self.stage.view {
-            View::Machines => &self.stage.machines,
-            _ => &self.stage.floor,
-        };
         let aspect = if size.1 > 0.0 { size.0 / size.1 } else { 1.0 };
         FrameOut {
             motion,
-            labels: floor.labels(size.0, size.1),
-            camera: floor.orbit.camera(aspect),
+            camera: self.stage.machines.orbit.camera(aspect),
         }
     }
 
@@ -678,19 +652,13 @@ impl Engine {
         self.busy || self.dirty
     }
 
-    /// What is under the logical px point `at`: a machine in the Machines view, else a robot of the shown board.
+    /// What is under the logical px point `at`: a machine of the Machines view.
     pub fn pick(&self, at: (f32, f32)) -> Option<Pick> {
-        match self.stage.view {
-            View::Machines => machine_at(&self.stage, at).map(Pick::Machine),
-            _ => {
-                let (w, h) = self.stage.size;
-                self.stage.floor.pick(at.0, at.1, w, h).map(Pick::Robot)
-            }
-        }
+        machine_at(&self.stage, at).map(Pick::Machine)
     }
 
     /// Where a pick's label sits on the shown view, as (x, y) in logical px from the top-left, or None when it is not on
-    /// screen. A machine's label is projected with the Machines' camera, a robot's with the shown board's.
+    /// screen. A machine's label is projected with the Machines' camera.
     pub fn screen_of(&self, pick: &Pick) -> Option<(f32, f32)> {
         let (w, h) = self.stage.size;
         if w <= 0.0 || h <= 0.0 {
@@ -704,13 +672,6 @@ impl Engine {
                     w,
                     h,
                 )
-            }
-            Pick::Robot(cid) => {
-                let floor = &self.stage.floor;
-                floor
-                    .orbit
-                    .camera(w / h)
-                    .to_screen(floor.anchor_of(*cid)?, w, h)
             }
         }
     }
@@ -753,10 +714,6 @@ impl Engine {
         Some(lab.draw_counts(&owned, self.main_pass_calls()))
     }
 
-    /// Seconds since the ENTER sequence began (`Entry::elapsed`), or None when no sequence runs. The debug hook reads it.
-    pub fn entry_time(&self) -> Option<f64> {
-        self.stage.entry.as_ref().map(|e| e.elapsed())
-    }
 }
 
 /// The agents from the hub's list: a bare array, or `{ "agents": [...] }`.

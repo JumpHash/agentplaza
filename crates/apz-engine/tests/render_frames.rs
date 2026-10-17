@@ -1,5 +1,5 @@
 //! Real frames, drawn offscreen on a wgpu device: the Machines view of the 15-machine fixture (the fleet animation and the
-//! GPU hardware animation on), the plaza, and the robot lab. Each must pass wgpu validation and show a picture that is not
+//! GPU hardware animation on), one machine on its stage, and the robot lab. Each must pass wgpu validation and show a picture that is not
 //! flat, blank or blown out. Skipped where there is no adapter.
 
 use std::collections::HashSet;
@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use apz_engine::fleet::FleetResponse;
-use apz_engine::stage::View;
 use apz_engine::{Cmd, Engine, Feed};
 
 const W: u32 = 320;
@@ -198,23 +197,16 @@ fn real_frames_pass_wgpu_validation_and_show_a_picture() {
         fleet: Some(fixture()),
         ..Feed::default()
     });
-    engine.command(Cmd::ShowMachines);
-    assert!(
-        engine.stage.view == View::Machines,
-        "the fixture shows the Machines view"
-    );
+    assert!(engine.stage.fleet.is_some(), "the fixture builds the Machines view");
     let machines = render(&device, &queue, &mut engine, "machines");
     check_picture("machines", &machines);
 
-    // 2. The plaza: shown directly when the fleet cannot be read.
-    let mut engine = Engine::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-    engine.set_data(Feed {
-        fleet_error: Some("the fleet is unreachable".into()),
-        ..Feed::default()
-    });
-    engine.stage.set_view(View::Plaza);
-    let plaza = render(&device, &queue, &mut engine, "plaza");
-    check_picture("plaza", &plaza);
+    // 2. One machine of the fixture on its stage (the machine view's model).
+    let id = fixture().machines[0].id.clone();
+    engine.command(Cmd::ShowMachine { id });
+    assert!(engine.stage.machine.is_some(), "the fixture's first machine shows on its stage");
+    let stage = render(&device, &queue, &mut engine, "machine stage");
+    check_picture("machine stage", &stage);
 
     // 3. The robot lab: APZ_ROBOT_LAB=all lines up every species on the floor.
     // SAFETY: this is the only test in this binary, so no other thread reads or writes the environment.

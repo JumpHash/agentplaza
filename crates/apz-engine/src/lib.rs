@@ -1,14 +1,14 @@
-//! The Floor in 3D: one platform-agnostic wgpu engine, for the desktop (through iced's shader widget, in
+//! The machines in 3D: one platform-agnostic wgpu engine, for the desktop (through iced's shader widget, in
 //! `apps/desktop`) and the browser (WebAssembly). It never creates a window or a surface: the host hands it a
 //! `wgpu::Device`, a `wgpu::Queue` and a target. `scene` is the three.js-like scene graph the ports build,
-//! `render` draws it, `world` is the floor itself (districts, robots, walking, packets, labels), and `stage`
-//! is what the Floor screen shows and how it moves (the machines view, a board, ENTER).
-//! See `README.md` for the module map and the host contract.
+//! `render` draws it, `world` is the scene the Machines view stands in (sky, ground, camera, machine labels),
+//! `fleet` is the Machines view itself, `machine_stage` the one-machine stage, and `stage` is what the screen shows
+//! and how it moves. See `README.md` for the module map and the host contract.
 //!
 //! Module ↔ web source: `geometry` ↔ three's geometries; `canvas` ↔ the 2D canvas the textures
 //! paint on; `textures` ↔ `floor3d/textures.ts`; `toon` ↔ `floor3d/toon.ts`; `robot` ↔
-//! `floor3d/robot.ts`; `props` ↔ `floor3d/props.ts`; `outskirts` ↔ `floor3d/outskirts.ts`; `rooms` ↔
-//! `floor3d/rooms/*`; `controls` ↔ three's OrbitControls; `world` ↔ `floor.ts`.
+//! `floor3d/robot.ts` (agent portraits and the robot lab); `props` ↔ `floor3d/props.ts`; `controls` ↔ three's
+//! OrbitControls.
 
 pub mod assets;
 pub mod canvas;
@@ -16,8 +16,6 @@ pub mod controls;
 pub mod core;
 pub mod debug;
 pub mod engine;
-pub mod entry;
-pub mod entry_scene;
 pub mod fleet;
 pub mod geometry;
 pub mod gpus;
@@ -25,21 +23,17 @@ pub mod hardware;
 pub mod hardware_lab;
 pub mod input;
 pub mod lab_catalog;
-pub use apz_board::nav::lift as lift_ctrl;
 pub mod machine_stage;
-pub mod outskirts;
 pub mod portrait;
 pub mod props;
 pub mod render;
 pub mod robot;
 pub mod robots;
 pub mod roles;
-pub mod rooms;
 pub mod scene;
 pub mod stage;
 pub mod textures;
 pub mod toon;
-pub mod warm;
 pub mod world;
 
 pub use engine::{

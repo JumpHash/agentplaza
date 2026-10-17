@@ -17,7 +17,7 @@ use glam::{Mat4, Quat, Vec3};
 use super::super::geometry::plane;
 use super::super::scene::{Color, Geo, Geometry, Mat, Material, Obj, Shading, Side, Tex, Texture};
 use super::super::textures::Rng;
-use super::super::world::layout::{AZIMUTH, POLAR};
+use super::super::world::{AZIMUTH, POLAR};
 use super::files::warn_once;
 
 /// The live effects of the whole scene at once: beyond this, new ones are dropped (the budget).

@@ -154,7 +154,6 @@ pub(crate) fn pale_stage(floor: &mut Floor, bg: Color) {
     floor.stars.set_visible(false);
     floor.planet.set_visible(false);
     floor.dust.set_visible(false);
-    floor.backdrop.set_visible(false);
     floor.ground.set_visible(false);
     floor.statics_dirty = true;
     let world = &mut floor.world;

@@ -267,7 +267,7 @@ pub(crate) fn exterior<'a, M: 'a>(
     gpus: usize,
     active: bool,
 ) -> Option<Element<'a, M>> {
-    let name = hardware::models_for(kind, Some(vendor)).0;
+    let name = hardware::models_for(kind, Some(vendor));
     let model = hardware::model(name).or_else(|| hardware::model("exterior/workstation"))?;
     macro_rules! card {
         ($($n:literal)*) => {

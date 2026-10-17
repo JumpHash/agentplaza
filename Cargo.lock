@@ -106,7 +106,6 @@ name = "agentplaza-desktop"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
- "apz-board",
  "apz-engine",
  "apz-http",
  "apz-ide",
@@ -363,15 +362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apz-board"
-version = "0.1.0"
-dependencies = [
- "apz-os",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "apz-desktop"
 version = "0.1.0"
 dependencies = [
@@ -439,7 +429,6 @@ name = "apz-engine"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
- "apz-board",
  "apz-os",
  "bevy_ecs",
  "bytemuck",
