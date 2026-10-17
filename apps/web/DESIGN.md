@@ -20,7 +20,7 @@ One visual language for every screen, the 3D floor's overlays and the agent view
 - Long prose stays readable: at most ~72ch per line.
 
 ## 3D floor and agent views
-- The 3D world is drawn by `crates/apz-engine`, the same engine on the web (wasm, mounted by `src/views/engine-mount.ts`) and in the desktop app. It keeps its toon art (`crates/apz-engine/src/toon.rs`). Without WebGPU or WebGL2 the Floor falls back to the 2D floor (`src/views/floor2d.ts`).
+- The 3D world is drawn by `crates/apz-engine`, the same engine on the web (wasm, mounted by `src/views/engine-mount.ts`) and in the desktop app. It keeps its toon art (`crates/apz-engine/src/toon.rs`). Without WebGPU or WebGL2 the Floor shows an empty state that links to the machine list (`src/views/floor.ts`).
 - Everything drawn over it (name labels, the agent card, the legend, buttons; `src/views/floor-popup.ts`) uses the console's language: square `--sheet` boxes, 1px `--ink` border, mono name, the role as a square tag with the role colour as a 3px left stripe — never a rounded pill. Buttons are the console's `button()`.
 - The floor canvas sits in a card like any other section (1px `--rule` border, no rounded corners).
 - Agent portraits and avatars: square frames (1px `--ink` border, `--sheet` background), no rounded frames.
