@@ -17,9 +17,9 @@ use iced::{Alignment, Border, Color, Element, Length, Point, Shadow, Subscriptio
 use serde_json::Value;
 
 use super::Id;
-use crate::console::engine::fleet::{self, FleetResponse, Machine};
-use crate::console::engine::hardware::Status;
+use crate::console::engine::fleet::{FleetResponse, Machine};
 use crate::console::engine::scene::Color as SceneColor;
+use crate::console::engine::style::{Lamp, Palette};
 use crate::console::engine::world::display_name;
 use crate::console::floor_engine::EngineProgram;
 use crate::console::{Ctx, client, ui};
@@ -175,6 +175,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Frame(now) => {
             let started = Instant::now();
+            // The machines follow the console's theme (the stage rebuilds only when it changed).
+            let style = state.style;
+            state.0.set_style(style, !crate::theme::is_light());
             let size = state.size;
             let out = state.0.advance(now, size);
             state.1 = out.motion;
@@ -269,7 +272,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         layers.push(layer);
     }
     layers.push(
-        container(legend())
+        container(legend(&state.palette()))
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Alignment::Start)
@@ -403,13 +406,13 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
     pin(opaque(card)).x(left).y(top).into()
 }
 
-/// The legend's keys, bottom-left of the stage: the machines' statuses.
-fn legend<'a>() -> Element<'a, Msg> {
+/// The legend's keys, bottom-left of the stage: the machines' status lights, in the stage's palette.
+fn legend<'a>(palette: &Palette) -> Element<'a, Msg> {
     let body = row![
-        key(status_colour(Status::Online), "Online"),
-        key(status_colour(Status::Draining), "Draining"),
-        key(status_colour(Status::Offline), "Offline"),
-        key(status_colour(Status::Revoked), "Revoked"),
+        key(lamp_colour(palette, Lamp::Working), "Working"),
+        key(lamp_colour(palette, Lamp::Idle), "Idle"),
+        key(lamp_colour(palette, Lamp::Strained), "Draining"),
+        key(lamp_colour(palette, Lamp::Offline), "Offline"),
     ]
     .spacing(14)
     .align_y(Alignment::Center);
@@ -473,9 +476,9 @@ fn role_tag<'a>(role: &str, hue: f32) -> Element<'a, Msg> {
     .into()
 }
 
-/// A machine status's LED colour, as the iced colour.
-fn status_colour(status: Status) -> Color {
-    let rgb = fleet::status_led(status).to_srgb();
+/// A status light's colour in `palette`, as the iced colour.
+fn lamp_colour(palette: &Palette, lamp: Lamp) -> Color {
+    let rgb = palette.lamp(lamp).to_srgb();
     Color::from_rgb(rgb[0], rgb[1], rgb[2])
 }
 

@@ -15,8 +15,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use apz_engine::input::{Button, Event};
+use apz_engine::style::{Lamp, Style};
 use apz_engine::{Cmd, Engine, Motion, Pick};
-use js_sys::{Array, Float32Array, Function, Object, Promise, Reflect, Uint8Array, Uint32Array};
+use js_sys::{Array, Float32Array, Function, Promise, Reflect, Uint8Array, Uint32Array};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
@@ -250,46 +251,26 @@ pub async fn start_lab(canvas: HtmlCanvasElement, opts: JsValue) -> Result<WebEn
 /// The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine.
 const HARDWARE_LAB_OPTIONS: [(&str, &str); 7] = [
     ("model", "APZ_HW_LAB"),
-    ("gpus", "APZ_HW_GPUS"),
+    ("lod", "APZ_HW_LOD"),
+    ("style", "APZ_HW_STYLE"),
+    ("theme", "APZ_HW_THEME"),
     ("status", "APZ_HW_STATUS"),
-    ("working", "APZ_HW_WORKING"),
-    ("open", "APZ_HW_OPEN"),
-    ("traces", "APZ_HW_TRACES"),
     ("cam", "APZ_HW_CAM"),
+    ("ortho", "APZ_HW_ORTHO"),
 ];
 
-/// The model's own params, as `name=value` pairs joined by commas (APZ_HW_PARAMS): `opts.params` is an object of numbers;
-/// a value that is not a number is left out. None when the options name no params.
-fn hardware_params(opts: &JsValue) -> Option<String> {
-    let params = Reflect::get(opts, &JsValue::from_str("params")).ok()?;
-    if !params.is_object() {
-        return None;
-    }
-    let pairs: Vec<String> = Object::keys(&Object::from(params.clone()))
-        .iter()
-        .filter_map(|key| {
-            let name = key.as_string()?;
-            let value = Reflect::get(&params, &key).ok()?.as_f64()?;
-            Some(format!("{name}={value}"))
-        })
-        .collect();
-    Some(pairs.join(","))
-}
-
-/// Starts the engine as the hardware lab: `opts` is `{ backend?, model?, gpus?, status?, working?, open?, traces?, cam?,
-/// params? }` (a missing model is `board/workstation`; a boolean `traces` is 1 or 0; `params` is the model's own numbers,
-/// by name). The options are set as env names only while the stage builds, as `start_lab` does.
+/// Starts the engine as the hardware lab: `opts` is `{ backend?, model?, lod?, style?, theme?, status?, cam?, ortho? }`
+/// (a missing model is `all`; a boolean `ortho` is 1 or unset: false leaves APZ_HW_ORTHO out). The options are set as env
+/// names only while the stage builds, as `start_lab` does.
 #[wasm_bindgen]
 pub async fn start_hardware_lab(
     canvas: HtmlCanvasElement,
     opts: JsValue,
 ) -> Result<WebEngine, JsValue> {
     let mut vars = lab_env(&opts, &HARDWARE_LAB_OPTIONS);
-    if let Some(params) = hardware_params(&opts) {
-        vars.insert("APZ_HW_PARAMS".to_string(), params);
-    }
+    vars.retain(|name, value| name != "APZ_HW_ORTHO" || value == "1");
     vars.entry("APZ_HW_LAB".to_string())
-        .or_insert_with(|| "board/workstation".to_string());
+        .or_insert_with(|| "all".to_string());
     apz_engine::set_env_overrides(vars);
     let started = start(canvas, opts).await;
     if started.is_err() {
@@ -346,6 +327,28 @@ impl WebEngine {
             _ => return,
         };
         self.shared.borrow_mut().engine.command(cmd);
+    }
+
+    /// Draws the Machines view in the style `style` ('ink', 'blueprint' or 'night', any case) for a dark or light
+    /// console theme, and asks for a frame. An unknown style name keeps the current one.
+    pub fn set_style(&self, style: String, dark: bool) {
+        let mut s = self.shared.borrow_mut();
+        let style = Style::parse(&style).unwrap_or(s.engine.stage.style);
+        s.engine.set_style(style, dark);
+    }
+
+    /// The four status lamps' colours in the stage's palette, as a JSON array of CSS hex colours ("#rrggbb"): Working,
+    /// Idle, Strained, Offline.
+    pub fn lamps(&self) -> String {
+        let palette = self.shared.borrow().engine.stage.palette();
+        let hex: Vec<String> = [Lamp::Working, Lamp::Idle, Lamp::Strained, Lamp::Offline]
+            .into_iter()
+            .map(|lamp| {
+                let [r, g, b] = palette.lamp(lamp).to_srgb_u8();
+                format!("\"#{r:02x}{g:02x}{b:02x}\"")
+            })
+            .collect();
+        format!("[{}]", hex.join(","))
     }
 
     /// Aims the camera at (x, y, z) from `dist` away, at polar angle `polar` from +Y and `azimuth` (radians, as the

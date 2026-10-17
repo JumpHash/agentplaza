@@ -13,6 +13,10 @@ path = "src/lib.rs"
 # The same wgpu as iced 0.14 uses (27.0.1 in Cargo.lock), so iced's Device, Queue and TextureView are ours.
 wgpu = "27.0.1"
 glam = { version = "0.30", features = ["bytemuck"] }
+# The machine model kit: glTF models and KTX2 textures (pure Rust, so the wasm build takes them too).
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras"] }
+ktx2 = "0.5"
+ruzstd = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true

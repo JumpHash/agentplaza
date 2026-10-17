@@ -332,6 +332,9 @@ pub struct Texture {
     /// three's `flipY`: a canvas texture's first row is its top (v = 1), as three's CanvasTexture uploads it; a data
     /// texture's first row is v = 0. The mesh draws read v as 1 - v for it (render.rs rows_of).
     pub flip_y: bool,
+    /// The levels below `rgba` (level 1 down to 1×1), when the file brought them (a KTX2 texture): the renderer uploads
+    /// these instead of building its own chain. Empty: the renderer builds them.
+    pub mips: Vec<Arc<Vec<u8>>>,
 }
 
 pub type Tex = Arc<Texture>;
@@ -350,6 +353,7 @@ impl Texture {
             nearest: false,
             srgb: true,
             flip_y: false,
+            mips: Vec::new(),
         }
     }
 
@@ -385,6 +389,9 @@ pub enum Shading {
     Grass,
     /// three's `PointsMaterial`: round-less square points `size` world units wide, attenuated.
     Points { size: f32 },
+    /// Lines: the geometry's indices are pairs (a line list), drawn unlit in `color` and nudged toward the camera so they
+    /// win the depth test on the faces they outline (the kit's feature edges).
+    Line,
 }
 
 /// three's `side`.
@@ -608,8 +615,8 @@ pub struct Node {
     pub rest: bool,
     /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
     pub walk: bool,
-    /// The hardware detail level this node is under: 0 none, 1 medium, 2 fine. A part of level 1 or 2 shows by the
-    /// camera's distance to its own box (`hardware::Built::frame_detail`), which sets its `visible`.
+    /// The detail level this node is under: 0 none, 1 medium, 2 fine. A part of level 1 or 2 shows by the camera's
+    /// distance to its own box, which sets its `visible`.
     pub lod: u8,
     /// The cutaway this node belongs to (0: none). Its draws fade while they stand between the
     /// camera and the focus (see [`Fade`]).
@@ -967,7 +974,8 @@ pub fn world_sphere(geo: &Geometry, m: Mat4) -> (Vec3, f32) {
     )
 }
 
-/// A perspective camera looking at `target` (three's `PerspectiveCamera` + `lookAt`).
+/// A camera looking at `target` (three's `PerspectiveCamera` + `lookAt`), or an orthographic one (`ortho`) whose view
+/// is as tall as the perspective one's at the target's distance, so its framing and zoom match.
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub eye: Vec3,
@@ -978,6 +986,8 @@ pub struct Camera {
     pub far: f32,
     /// Width / height.
     pub aspect: f32,
+    /// Orthographic: parallel rays, no perspective (the Machines view's isometric grid).
+    pub ortho: bool,
 }
 
 impl Camera {
@@ -987,6 +997,14 @@ impl Camera {
 
     /// Projection with wgpu's 0..1 depth.
     pub fn projection(&self) -> Mat4 {
+        if self.ortho {
+            let dist = self.eye.distance(self.target);
+            let half_h = dist * (self.fov.to_radians() / 2.0).tan();
+            let half_w = half_h * self.aspect.max(1e-3);
+            // Parallel rays: the volume starts as far behind the eye as the target is in front of it, so a close zoom
+            // never clips the scene around the target (the far sky stays out).
+            return Mat4::orthographic_rh(-half_w, half_w, -half_h, half_h, -dist, self.far);
+        }
         Mat4::perspective_rh(
             self.fov.to_radians(),
             self.aspect.max(1e-3),
@@ -1094,6 +1112,8 @@ pub enum DrawKind {
     OutlineInstanced(Arc<Vec<Instance>>, usize),
     /// Points at these positions (relative to `model`).
     Points(Arc<Vec<[f32; 3]>>),
+    /// A line list: `geo`'s indices are pairs (a mesh whose material's shading is [`Shading::Line`]).
+    Lines,
 }
 
 /// One thing the renderer draws.
@@ -1376,6 +1396,16 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
 
 /// A mesh's draws at `world`: the mesh, then its ink hull (`hull` as geometry, without shadows).
 fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) -> Vec<Draw> {
+    if matches!(mat.get().shading, Shading::Line) {
+        return draw_of(DrawKind::Lines, geo, mat, world, at)
+            .map(|d| Draw {
+                cast_shadow: false,
+                receive_shadow: false,
+                ..d
+            })
+            .into_iter()
+            .collect();
+    }
     let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else {
         return Vec::new();
     };
@@ -2028,6 +2058,17 @@ fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
                     class_of(&d.material),
                     d.cast_shadow,
                     d.receive_shadow,
+                    d.render_order,
+                    d.lod,
+                    fade
+                ),
+                Some(d.material.color.to_array()),
+            ),
+            // Lines merge like the toon meshes: by everything but their colour, which becomes the vertex colour.
+            DrawKind::Lines => (
+                format!(
+                    "l|{}|{}|{}|{}",
+                    class_of(&d.material),
                     d.render_order,
                     d.lod,
                     fade

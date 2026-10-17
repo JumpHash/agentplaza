@@ -19,12 +19,12 @@ WebGPU and WebGL2 the web shows an empty state and points to the machine list.
 | `world` | The scene the Machines view stands in: `Floor` (sky, stars, ground, dust, the orbit, the world's light, the baked statics) and `tags` (the machines' name tags). |
 | `render` | The wgpu pipelines and the frame's passes: `Pipeline::new`, `Primitive::prepare`, `Primitive::draw`, `Rect`. |
 | `scene` | The scene graph the ports build: `Frame`, `Draw`, `Material`, `Geometry`, `Camera`, `World`. |
-| `fleet` | The Machines view's scene and the fleet snapshot (`FleetResponse`, `FleetScene`). |
-| `hardware` | The machine models (exteriors and parts), built from the embedded JSON. |
+| `fleet` | The Machines view: the fleet snapshot (`FleetResponse`) and its grid (`FleetScene`: zones, a plinth per machine with its CPU and memory bars, the kit model on it, its status light). |
+| `kit`, `ktx`, `style` | The machine model kit (`assets/hardware/kit`: glTF models with three levels of detail, KTX2 textures) as scene nodes, and the machines' styles (Ink, Blueprint, Night) as palettes. |
 | `robot`, `robots` | Robot rigs, clips, the species and tool registry, validation, and the robot lab (`APZ_ROBOT_LAB`). |
 | `roles` | A role's family and label. |
 | `geometry`, `canvas`, `textures`, `toon`, `props`, `controls` | Meshes, the 2D canvas the textures paint on, the toon shading, props, and the orbit camera (`Orbit`). |
-| `machine_stage`, `portrait`, `gpus`, `assets`, `core`, `debug`, `hardware_lab`, `lab_catalog` | One machine's exterior on the studio stage, an agent's robot portrait, the graphics-card specs, the asset registry (`Handle`s), the `bevy_ecs` engine core (nothing uses it yet), the debug hooks (view, camera, scene graph), the hardware lab (`APZ_HW_LAB`), and the labs' option lists. |
+| `machine_stage`, `portrait`, `assets`, `core`, `debug`, `hardware_lab`, `lab_catalog` | One machine's kit model on its stage, an agent's robot portrait, the asset registry (`Handle`s), the `bevy_ecs` engine core (nothing uses it yet), the debug hooks (view, camera, scene graph), the hardware lab (`APZ_HW_LAB`: the kit in a style), and the labs' option lists. |
 
 Several modules carry notes naming the three.js floor they were ported from (`apps/web/src/views/floor3d/robot.ts` and
 the like). That code is deleted (the engine is the web's 3D now, since commit 987394f); the notes stay as provenance,
@@ -58,9 +58,9 @@ The desktop's Floor screen (`apps/desktop/src/console/screens/floor.rs`) holds a
 
 ## Assets
 
-Every asset is compiled in: JSON with `include_str!` and the fonts with `include_bytes!` (Martian Mono, from the
-repo's `assets/`), and the WGSL shaders from this crate (`src/floor.wgsl`, `src/shaders/`). `build.rs` lists the
-hardware models and the robot files into `OUT_DIR`, so a new model or robot file needs no Rust edit. Nothing is read from disk at runtime, except the
+Every asset is compiled in: JSON with `include_str!`, the machine kit and the fonts with `include_bytes!` (Martian
+Mono, from the repo's `assets/`), and the WGSL shaders from this crate (`src/floor.wgsl`, `src/shaders/`). `build.rs`
+lists the kit's files and the robot files into `OUT_DIR`, so a new model or robot file needs no Rust edit. Nothing is read from disk at runtime, except the
 desktop's system-font lookup, which is native-only.
 
 ## wasm32

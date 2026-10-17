@@ -8,8 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use glam::Vec3;
 
 use crate::canvas::Canvas;
-use crate::fleet::{self, FleetScene};
-use crate::hardware::Status;
+use crate::fleet::FleetScene;
+use crate::scene::Color;
 use crate::scene::{Camera, Overlay, Tex};
 
 const SHEET: &str = "#111726";
@@ -47,7 +47,7 @@ pub fn machine_overlays(
             continue;
         };
         let _ = hovered;
-        let painted = painted_tag(&tag.name, tag.status, scale);
+        let painted = painted_tag(&tag.name, fleet.palette().lamp(tag.lamp), scale);
         let x = x - painted.box_w / 2.0;
         let y = y - TAG_GAP - painted.box_h;
         let (w, h) = (painted.box_w + 2.0, painted.box_h + 2.0);
@@ -76,8 +76,8 @@ struct PaintedTag {
 static TAG_CACHE: OnceLock<Mutex<HashMap<String, PaintedTag>>> = OnceLock::new();
 
 /// The tag's texture, from the cache or painted now.
-fn painted_tag(name: &str, status: Status, scale: f32) -> PaintedTag {
-    let led = fleet::status_led(status).to_srgb_u8();
+fn painted_tag(name: &str, lamp: Color, scale: f32) -> PaintedTag {
+    let led = lamp.to_srgb_u8();
     let key = format!("{name}\u{1f}{led:?}\u{1f}{scale:.2}");
     let cache = TAG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {

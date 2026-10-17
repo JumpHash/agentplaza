@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
+use super::super::geometry::shape_geometry;
 use super::super::geometry::{
     box_geo, circle, cone, cylinder_full, from_triangles, plane, ring, rounded_box, sphere_part,
     torus, transformed, weld_smooth,
 };
-use super::super::hardware::shape_geometry;
 use super::super::scene::{Geo as Mesh, Geometry};
 use super::types::{Eye, Geo, Part, Scale};
 

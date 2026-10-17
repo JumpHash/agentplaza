@@ -11,6 +11,7 @@ use crate::fleet::{self, FleetResponse, FleetScene};
 use crate::hardware_lab as hw_lab;
 use crate::robots::lab;
 use crate::scene::Frame;
+use crate::style::{Palette, Style};
 use crate::world::tags::machine_overlays;
 use crate::world::{AgentInfo, Floor};
 
@@ -58,12 +59,15 @@ pub struct Stage {
     pub moved: bool,
     /// `APZ_ROBOT_LAB`: a line-up of robots on the machines' ground.
     pub lab: Option<lab::Lab>,
-    /// `APZ_HW_LAB`: one hardware model on the machines' ground (see `hardware_lab`).
+    /// `APZ_HW_LAB`: the machine model kit on the machines' ground (see `hardware_lab`).
     pub hardware_lab: Option<hw_lab::Lab>,
     /// Reduced motion: the ambient visuals hold their t = 0 pose, and `tick` never reports `Motion::Ambient`.
     pub reduced_motion: bool,
     /// One machine on the studio stage (`Cmd::ShowMachine`), when it is shown; it takes over the view.
     pub machine: Option<crate::machine_stage::MachineStage>,
+    /// The machines' style, and whether the console's theme is dark (the palette follows both).
+    pub style: Style,
+    pub dark: bool,
 }
 
 impl Default for Stage {
@@ -72,6 +76,11 @@ impl Default for Stage {
         let lab = lab::build(&mut machines);
         let hardware_lab = hw_lab::build(&mut machines);
         let lab_mode = lab.is_some() || hardware_lab.is_some();
+        // The Machines view reads as a plan: an orthographic camera at the isometric angle (the labs keep perspective).
+        machines.orbit.ortho = !lab_mode;
+        if !lab_mode {
+            machines.apply_palette(&Palette::of(Style::default(), true));
+        }
         let popup = crate::env_var("APZ_FLOOR_POPUP").filter(|id| !id.is_empty());
         let frame = Arc::new(machines.frame(1.0));
         Stage {
@@ -96,6 +105,8 @@ impl Default for Stage {
             moved: lab_mode,
             machine: None,
             reduced_motion: false,
+            style: Style::default(),
+            dark: true,
         }
     }
 }
@@ -154,14 +165,10 @@ fn now_ms(at: Instant) -> f64 {
 }
 
 impl Stage {
-    /// The hardware models' detail parts show by the camera's eye (three's `frame()`, per part): the hardware lab's model
-    /// and the fleet's machines, which sit under the Machines scene's root. A part that switched re-bakes those statics.
+    /// The fleet's detail parts show by the camera's eye; a part that switched re-bakes the statics.
     fn detail_parts(&mut self, eye: glam::Vec3) {
         let top = self.machines.root.clone();
         let mut changed = false;
-        if let Some(lab) = self.hardware_lab.as_mut() {
-            changed |= lab.frame_detail(eye, &top);
-        }
         if let Some(fleet) = self.fleet.as_mut() {
             changed |= fleet.frame_detail(eye, &top);
         }
@@ -198,13 +205,17 @@ impl Stage {
         }
         if let Some(fleet) = &self.fleet {
             let f = fleet.frame();
-            self.machines.fit_sphere(f.center, f.radius, w / h);
-            // The haze keeps its look at the fitted distance (near 0.8, far 3 times it), whatever the fleet's size.
-            let dist = crate::world::fit_distance(f.radius, w / h);
-            self.machines.world.fog_near = dist * 0.8;
-            self.machines.world.fog_far = dist * 3.0;
-            if !self.machines.orbit.drifting() {
-                self.machines.orbit.start_drift(); // the framed view starts the idle sway
+            if self.machines.orbit.ortho {
+                // The plan view has no haze: every machine reads at full contrast.
+                self.machines.fit_points(&fleet.outline(), w / h);
+                self.machines.world.fog_near = 1.0e6;
+                self.machines.world.fog_far = 2.0e6;
+            } else {
+                self.machines.fit_sphere(f.center, f.radius, w / h);
+                // The haze keeps its look at the fitted distance (near 0.8, far 3 times it), whatever the fleet's size.
+                let dist = crate::world::fit_distance(f.radius, w / h);
+                self.machines.world.fog_near = dist * 0.8;
+                self.machines.world.fog_far = dist * 3.0;
             }
         }
     }
@@ -229,14 +240,12 @@ impl Stage {
             return;
         }
         self.moved = true;
-        self.machines.orbit.stop_drift(); // input stops the idle sway
         self.machines.orbit.rotate(dx, dy, height);
     }
 
     /// Pans the shown view by a drag.
     pub fn pan(&mut self, dx: f32, dy: f32, height: f32) {
         self.moved = true;
-        self.machines.orbit.stop_drift(); // input stops the idle sway
         self.machines.orbit.pan(dx, dy, height, FOV_DEG);
     }
 
@@ -247,22 +256,17 @@ impl Stage {
             return;
         }
         self.moved = true;
-        self.machines.orbit.stop_drift(); // input stops the idle sway
         self.machines.orbit.dolly(steps);
     }
 
-    /// Frames the view afresh (the Reset view control): the reset starts the idle sway again.
+    /// Frames the view afresh (the Reset view control).
     pub fn reset_view(&mut self) {
         self.moved = false;
-        self.machines.orbit.stop_drift();
         self.fit_machines();
     }
 
     /// The pointer hovers a machine; `None` leaves it.
     pub fn hover(&mut self, at: Option<(f32, f32)>) {
-        if at.is_some() {
-            self.machines.orbit.stop_drift(); // pointer movement over the stage stops the idle sway
-        }
         let hit = at.and_then(|p| machine_at(self, p));
         if let Some(fleet) = self.fleet.as_mut() {
             fleet.hover(hit.as_deref());
@@ -272,7 +276,6 @@ impl Stage {
 
     /// A click: opens the popup of the machine under the pointer, or closes it.
     pub fn select(&mut self, at: Option<(f32, f32)>) {
-        self.machines.orbit.stop_drift(); // a click stops the idle sway
         let id = at.and_then(|p| machine_at(self, p));
         self.open_popup(id);
     }
@@ -302,9 +305,6 @@ impl Stage {
         if self.machines.orbit.update() {
             motion = Motion::Active;
         }
-        if self.machines.orbit.drift_to(now) {
-            motion = motion.max(Motion::Ambient); // the idle sway turns the camera on the clock
-        }
         self.machines.step(dt, now_ms(now), ambient);
         if let Some(lab) = self.lab.as_mut() {
             lab.step(dt);
@@ -328,11 +328,14 @@ impl Stage {
                 frame.world.background = bg;
                 frame.world.flat_background = true;
             }
-            frame.animated = self
-                .fleet
-                .as_ref()
-                .zip(self.fleet_data.as_ref())
-                .map(|(f, d)| Arc::new(f.instances(d)));
+            frame.animated = match &self.hardware_lab {
+                Some(lab) => Some(Arc::new(lab.instances())),
+                None => self
+                    .fleet
+                    .as_ref()
+                    .zip(self.fleet_data.as_ref())
+                    .map(|(f, d)| Arc::new(f.instances(d))),
+            };
             if let Some(fleet) = &self.fleet {
                 frame.overlays = machine_overlays(
                     fleet,
@@ -364,7 +367,7 @@ impl Stage {
         self.fleet_seen = true;
         // A lab shows its own subject alone: no machines join it.
         if self.fleet.is_none() && self.lab.is_none() && self.hardware_lab.is_none() {
-            let fleet = fleet::build_fleet(&data, &self.machines.fleet_palette());
+            let fleet = fleet::build_fleet(&data, &self.palette());
             self.machines.root.add(&fleet.group);
             self.machines.statics_dirty = true; // the fleet's static parts are baked
             self.fleet = Some(fleet);
@@ -373,6 +376,35 @@ impl Stage {
         if !self.moved {
             self.fit_machines();
         }
+    }
+
+    /// The palette of the stage's style and theme.
+    pub fn palette(&self) -> Palette {
+        Palette::of(self.style, self.dark)
+    }
+
+    /// Draws the machines in `style`, for a dark or light console theme: the scene is rebuilt in the new palette (the
+    /// camera stays where it is). The labs keep their own look.
+    pub fn set_style(&mut self, style: Style, dark: bool) {
+        if (self.style, self.dark) == (style, dark) {
+            return;
+        }
+        self.style = style;
+        self.dark = dark;
+        if self.lab.is_some() || self.hardware_lab.is_some() {
+            return;
+        }
+        let palette = self.palette();
+        self.machines.apply_palette(&palette);
+        if let Some(old) = self.fleet.take() {
+            self.machines.root.remove(&old.group);
+        }
+        if let Some(data) = self.fleet_data.as_ref() {
+            let fleet = fleet::build_fleet(data, &palette);
+            self.machines.root.add(&fleet.group);
+            self.fleet = Some(fleet);
+        }
+        self.machines.statics_dirty = true;
     }
 
     /// A fleet request that failed (or could not be read): the error is kept for the host to show.
@@ -417,14 +449,14 @@ mod tests {
             assert_eq!(s.tick(t0 + Duration::from_millis(600)), Motion::Rest);
         }
     }
-    /// The online fleet, framed by a Reset view (which starts the idle sway).
+    /// The online fleet, framed by a Reset view.
     fn framed_fleet_stage() -> Stage {
         let mut s = online_fleet_stage();
         s.reset_view();
         s
     }
 
-    /// Drags the view, then steps until its damping settles. The sway must not resume.
+    /// Drags the view, then steps until its damping settles.
     fn drag_and_settle(s: &mut Stage, now: &mut Instant) {
         s.rotate(40.0, 0.0, 600.0);
         for _ in 0..2_000 {
@@ -437,41 +469,31 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_sway_turns_the_camera_on_the_clock_and_is_ambient() {
+    fn the_grid_holds_still_in_its_plan_view_and_reset_view_refits_it() {
         let mut s = framed_fleet_stage();
-        assert!(s.machines.orbit.drifting());
+        assert!(
+            s.machines.orbit.ortho,
+            "the Machines view is drawn as a plan"
+        );
         let t0 = Instant::now();
         s.tick(t0);
-        let framed = s.machines.orbit.theta;
-        assert_eq!(s.tick(t0 + Duration::from_secs(1)), Motion::Ambient);
-        let turned = s.machines.orbit.theta;
-        assert!(turned != framed, "the sway did not turn the camera");
+        let framed = (s.machines.orbit.theta, s.machines.orbit.radius);
+        s.tick(t0 + Duration::from_secs(1));
+        assert_eq!(s.machines.orbit.theta, framed.0, "the camera holds still");
+        let mut now = t0 + Duration::from_secs(1);
+        drag_and_settle(&mut s, &mut now);
+        assert_ne!(s.machines.orbit.theta, framed.0, "a drag turns the view");
+        s.reset_view();
+        for _ in 0..400 {
+            now += Duration::from_millis(16);
+            s.tick(now);
+        }
         assert!(
-            (turned - framed).abs() <= crate::controls::DRIFT_AMP,
-            "turned {turned} from {framed}"
+            (s.machines.orbit.radius - framed.1).abs() < 1e-3,
+            "reset view refits the fleet"
         );
     }
 
-    #[test]
-    fn reset_view_restarts_the_idle_sway() {
-        let mut s = framed_fleet_stage();
-        let t0 = Instant::now();
-        s.tick(t0);
-        let mut now = t0 + Duration::from_secs(1);
-        s.tick(now);
-        drag_and_settle(&mut s, &mut now);
-        assert!(!s.machines.orbit.drifting());
-        s.reset_view();
-        assert!(s.machines.orbit.drifting());
-        now += Duration::from_millis(16);
-        s.tick(now);
-        let framed = s.machines.orbit.theta;
-        assert_eq!(s.tick(now + Duration::from_secs(1)), Motion::Ambient);
-        assert!(
-            s.machines.orbit.theta != framed,
-            "the reset view did not sway"
-        );
-    }
     #[test]
     fn a_click_on_nothing_closes_the_popup_and_a_failed_fleet_keeps_its_error() {
         let mut s = online_fleet_stage();

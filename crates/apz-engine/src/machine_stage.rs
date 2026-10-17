@@ -1,24 +1,23 @@
-//! The machine stage: one machine's exterior on the studio stage, the view the web's Machines list morphs into when a
-//! row expands (`apps/web/src/views/floor3d/machine-stage.ts`). The model is the floor's exterior for the machine's
-//! look, configured from the machine: its GPU cards (count and vendor tint), its memory sticks and, where the model
-//! has them, its storage drives. The camera orbits the machine: it turns by itself until the first input, then the
-//! user drives it. The look and param rules are the web's, so a morph starts from the same picture.
+//! The machine stage: one machine's kit model (`crate::kit`, `fleet::kit_model_of`) on a plinth, in the current
+//! style's palette, the view a machine opens into from the Machines grid. Its status light and fans run on the GPU from
+//! the same tables the fleet uses, in one row of its own. The camera orbits the machine: it turns by itself until the
+//! first input, then the user drives it.
 //!
 //! The thumbnail is `Renderer::thumbnail` (native) and `WebEngine::thumbnail` (the browser): this pose rendered
-//! offscreen. The card tints go through `hardware::build_tinted`, and a shadow catcher sits under the machine.
+//! offscreen, with a shadow catcher under the machine.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{Mat4, Vec3};
 use web_time::Instant;
 
 use crate::controls::Orbit;
-use crate::fleet::{Machine, status_of};
-use crate::gpus::{self, GpuInput, Match};
-use crate::hardware::{self, Built, Model, Params, State};
-use crate::scene::{self, Camera, Color, Draw, Filter, Frame, Obj, PointLightDraw, World};
+use crate::fleet::{FleetInstances, MACHINE_SLOTS, Machine, kit_model_of, lamp_of, rgba};
+use crate::geometry;
+use crate::kit;
+use crate::scene::{self, Camera, Color, Draw, Filter, Frame, Mat, Obj, PointLightDraw, World};
 use crate::stage::{Motion, Stage};
+use crate::style::{Lamp, Palette};
 
 /// The stage camera's vertical field of view, degrees (the web's stage: FOV 30).
 pub const FOV_DEG: f32 = 30.0;
@@ -30,167 +29,20 @@ pub const THUMB_FILL: f32 = 0.85;
 pub const SPIN_RATE: f32 = std::f32::consts::TAU / 30.0;
 /// How far the orbit pose looks down onto the machine (the web's `high` vector).
 const ELEVATION: f32 = 0.12;
+/// The stage's machine binds its GPU animations to this row of the tables it hands the renderer.
+const SLOT: usize = 0;
+/// The fans' turn rate, radians per second (the fleet's idle rate).
+const FAN_RATE: f32 = std::f32::consts::TAU * 2.0;
+/// The plinth under the machine: this much wider and deeper than the model, this tall.
+const PLINTH_MARGIN: f32 = 0.5;
+const PLINTH_H: f32 = 0.18;
 
-/// The picture a machine is drawn as (the web's `Look`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Look {
-    Workstation,
-    Server,
-    Laptop,
-    Edge,
-    Phone,
-    Macbook,
-    Mac,
-}
-
-impl Look {
-    /// The model file for the look (the web's `EXTERIOR`).
-    pub fn exterior(self) -> &'static str {
-        match self {
-            Look::Macbook => "exterior/apple-laptop",
-            Look::Mac => "exterior/apple-desktop",
-            Look::Laptop => "exterior/laptop",
-            Look::Edge => "exterior/edge",
-            Look::Phone => "exterior/phone",
-            Look::Server => "exterior/server",
-            Look::Workstation => "exterior/workstation",
-        }
-    }
-
-    /// The GPU cards the look draws at most: the workstation's two, the server's four 2x2 cards, the laptop's one chip.
-    fn card_cap(self) -> usize {
-        match self {
-            Look::Workstation => 2,
-            Look::Server => 4,
-            Look::Laptop => 1,
-            _ => 0,
-        }
-    }
-
-    /// The DIMM slots the look's model has (its `dimms` param is the stick count).
-    fn memory_slots(self) -> u32 {
-        match self {
-            Look::Workstation | Look::Laptop => 4,
-            Look::Server => 16,
-            _ => 0,
-        }
-    }
-}
-
-/// The look of a machine of `kind` made by `vendor`. Apple's laptops are MacBooks, its other machines Mac minis and
-/// Studios. Unknown kinds draw as a workstation, as `hardware::models_for` does.
-pub fn look_of(kind: &str, vendor: Option<&str>) -> Look {
-    let apple = vendor == Some("apple");
-    match (kind, apple) {
-        ("phone", _) => Look::Phone,
-        ("laptop", true) => Look::Macbook,
-        (_, true) => Look::Mac,
-        ("laptop", false) => Look::Laptop,
-        ("edge", false) => Look::Edge,
-        ("server", false) => Look::Server,
-        _ => Look::Workstation,
-    }
-}
-
-/// The GPU shroud colour per vendor (the web's `CARD_TINT`). Other vendors keep the palette's shroud.
-fn card_tint(vendor: &str) -> Option<u32> {
-    match vendor.to_ascii_lowercase().as_str() {
-        "nvidia" => Some(0x76b900),
-        "amd" => Some(0xc8102e),
-        "intel" => Some(0x0068b5),
-        _ => None,
-    }
-}
-
-/// The sticks for `memory_mib` of RAM over `slots`: a stick is a power of two of at least 8 GiB, sized to fill the
-/// slots evenly (the web's `sticksFor`).
-pub fn sticks_for(memory_mib: u64, slots: u32) -> u32 {
-    let gib = memory_mib as f64 / 1024.0;
-    let per_slot = (gib / slots as f64).ceil();
-    let mut p: u64 = 1;
-    while (p as f64) < per_slot {
-        p *= 2;
-    }
-    let stick = p.max(8) as f64;
-    ((gib / stick).round() as u32).clamp(1, slots)
-}
-
-/// The storage drives a workstation shows: one when the count is unknown, at most two (the web's `drivesFor`).
-fn drives_for(drives: Option<u32>) -> u32 {
-    drives.map_or(1, |d| d.min(2))
-}
-
-/// The fields of a machine's picture that change its model's params.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Picture {
-    pub look: Look,
-    /// The vendor tint of each card shown, in card order (None: the palette's shroud).
-    pub tints: Vec<Option<u32>>,
-    pub sticks: u32,
-    pub drives: u32,
-}
-
-/// A machine's picture: its look, its shown cards and their tints, its sticks and its drives.
-pub fn picture(machine: &Machine, drives: Option<u32>) -> Picture {
-    let look = look_of(&machine.kind, machine.vendor.as_deref());
-    let tints = machine
-        .gpus
-        .iter()
-        .take(look.card_cap())
-        .map(|g| card_tint(&g.vendor))
-        .collect();
-    let slots = look.memory_slots();
-    Picture {
-        look,
-        tints,
-        sticks: if slots > 0 {
-            sticks_for(machine.memory_mib, slots)
-        } else {
-            0
-        },
-        drives: if look == Look::Workstation {
-            drives_for(drives)
-        } else {
-            0
-        },
-    }
-}
-
-/// The hardware params of a picture (the web's `assemble`): `gpus` when the model has cards, `dimms` when it has
-/// slots, `drives` for a workstation. Other params keep the model's defaults.
-pub fn params_of(pic: &Picture) -> Params {
-    let mut params = Params::default();
-    if pic.look.card_cap() > 0 {
-        params = params.with("gpus", pic.tints.len() as f64);
-    }
-    if pic.look.memory_slots() > 0 {
-        params = params.with("dimms", pic.sticks as f64);
-    }
-    if pic.look == Look::Workstation {
-        params = params.with("drives", pic.drives as f64);
-    }
-    params
-}
-
-/// Each detected GPU matched to its card (`gpus::match_card`), in the machine's GPU order.
-pub fn cards_of(machine: &Machine) -> Vec<Option<Match>> {
-    machine
-        .gpus
-        .iter()
-        .map(|g| {
-            let input = GpuInput {
-                vendor: g.vendor.clone(),
-                name: g.name.clone(),
-                memory_mib: g.memory_mib.map(|m| m as f64),
-            };
-            gpus::match_card(&input, Some(&machine.kind))
-        })
-        .collect()
-}
-
-/// The studio lights (the web's `makeScene`): a warm hemisphere light and a warm key light from above and to the front.
-fn studio_world() -> World {
+/// The studio lights (the web's `makeScene`): a warm hemisphere light and a warm key light from above and to the front,
+/// over the palette's flat background.
+fn studio_world(palette: &Palette) -> World {
     World {
+        background: palette.background,
+        flat_background: true,
         hemi_sky: Color::hex(0xfff8ec),
         hemi_ground: Color::hex(0x9c8f75),
         hemi_intensity: 1.4,
@@ -241,16 +93,12 @@ fn shadow_catcher() -> Draw {
     }
 }
 
-/// Each stage's statics get their own version, so the renderer never reuses one machine's baked draws for another.
-static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
-
-/// One machine on the stage: its built exterior, its baked statics and its orbit camera.
+/// One machine on the stage: its kit model on a plinth in the style's palette, its baked statics and its orbit camera.
 pub struct MachineStage {
     pub id: String,
-    pub picture: Picture,
-    /// The GPU card each detected GPU matched (None: no rule matched).
-    pub cards: Vec<Option<Match>>,
-    /// The model's size, in model units.
+    /// The kit model the machine is drawn as (`fleet::kit_model_of`).
+    pub model: &'static str,
+    /// The machine and its plinth: width, height and depth.
     pub size: [f32; 3],
     pub orbit: Orbit,
     center: Vec3,
@@ -261,49 +109,55 @@ pub struct MachineStage {
     /// The user has orbited or zoomed: the view is no longer refitted on resize.
     touched: bool,
     time: f32,
+    fan_angle: f32,
+    lamp: Lamp,
+    palette: Palette,
     statics: Arc<Vec<Draw>>,
     statics_version: u64,
+    anim_batches: Arc<Vec<scene::AnimBatch>>,
     lights: Vec<PointLightDraw>,
-    _built: Built,
 }
 
 impl MachineStage {
-    /// The stage for `machine`, built from its look's model with its params. Null only when the model is missing.
-    pub fn new(machine: &Machine, drives: Option<u32>) -> Option<MachineStage> {
-        let pic = picture(machine, drives);
-        let model: &'static Model = hardware::model(pic.look.exterior())
-            .or_else(|| hardware::model("exterior/workstation"))?;
-        let mut built = hardware::build_tinted(model, &params_of(&pic), &pic.tints);
-        built.freeze_cutaways(); // no fades on the stage
-        built.update(
-            0.0,
-            0.0,
-            &State {
-                status: status_of(&machine.status),
-                activity: 0.0,
-                open: 0.0,
-            },
-        );
+    /// The stage for `machine` in `palette`: its kit model's full detail on a plinth, its status light and fans driven
+    /// like the fleet's. None only when the kit has no such model.
+    pub fn new(machine: &Machine, palette: &Palette) -> Option<MachineStage> {
+        let model_id = kit_model_of(machine);
+        let model = kit::model(model_id)?;
+        let inst = model.instantiate(0, palette);
+        kit::set_machine(&inst.root, SLOT);
 
         let root = Obj::group();
-        root.add(&built.root);
-        let mut statics = scene::bake(&root);
+        let (w, d) = (model.size.x + PLINTH_MARGIN, model.size.z + PLINTH_MARGIN);
+        let plinth_mat = Mat::new(scene::Material {
+            color: palette.plinth,
+            shading: if palette.flat {
+                scene::Shading::Basic
+            } else {
+                scene::Shading::Toon
+            },
+            ..scene::Material::default()
+        });
+        let plinth = Obj::mesh(&geometry::rounded_box(w, PLINTH_H, d, 2, 0.08), &plinth_mat);
+        plinth
+            .set_position(0.0, PLINTH_H / 2.0, 0.0)
+            .set_shadows(false, true);
+        root.add(&plinth);
+        inst.root.set_position(0.0, PLINTH_H, 0.0);
+        root.add(&inst.root);
+
+        let baked = scene::bake_split(&root, scene::GPU_HW_ANIM);
+        let mut statics = baked.statics;
         statics.push(shadow_catcher());
-        let statics = Arc::new(statics);
         let lights = scene::flatten(&root, Filter::Static).1;
 
-        let size = model.size;
+        let size = [w, model.size.y + PLINTH_H, d];
         let center = Vec3::new(0.0, size[1] / 2.0, 0.0);
-        let dir = model
-            .anchors
-            .camera
-            .map(|c| (Vec3::from(c.at) - Vec3::from(c.look)).normalize_or_zero())
-            .filter(|d| *d != Vec3::ZERO)
-            .unwrap_or(Vec3::Z);
+        // A three-quarter view from the front right.
+        let dir = Vec3::new(0.55, 0.0, 1.0).normalize();
         let mut stage = MachineStage {
             id: machine.id.clone(),
-            picture: pic,
-            cards: cards_of(machine),
+            model: model_id,
             size,
             orbit: Orbit::default(),
             center,
@@ -312,13 +166,40 @@ impl MachineStage {
             auto: true,
             touched: false,
             time: 0.0,
-            statics,
-            statics_version: NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
+            fan_angle: 0.0,
+            lamp: lamp_of(machine),
+            palette: palette.clone(),
+            statics: Arc::new(statics),
+            statics_version: scene::next_id(), // process-unique: the renderer never reuses another scene's bake
+            anim_batches: Arc::new(baked.animated),
             lights,
-            _built: built,
         };
         stage.fit(1.0);
         Some(stage)
+    }
+
+    /// The machine's status light follows the feed: a new snapshot of the same machine.
+    pub fn update(&mut self, machine: &Machine) {
+        self.lamp = lamp_of(machine);
+    }
+
+    /// The GPU tables for the stage's one machine: its fan angle, its busy flag and its lamp colour in row [`SLOT`].
+    fn instances(&self) -> FleetInstances {
+        let mut out = FleetInstances {
+            machine_angles: vec![0.0; MACHINE_SLOTS],
+            machine_states: vec![[0.0; 4]; MACHINE_SLOTS],
+            machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS],
+        };
+        let working = self.lamp == Lamp::Working;
+        out.machine_angles[SLOT] = self.fan_angle;
+        out.machine_states[SLOT] = [
+            f32::from(u8::from(working)),
+            f32::from(u8::from(working)),
+            0.0,
+            0.0,
+        ];
+        out.machine_statuses[SLOT] = rgba(self.palette.lamp(self.lamp));
+        out
     }
 
     /// Frames the machine so it fills [`FILL`] of the view, from the camera's pose (the web's `frameOf`, orbit pose).
@@ -355,6 +236,9 @@ impl MachineStage {
             self.fit(aspect);
         }
         self.time += dt;
+        if !reduced {
+            self.fan_angle = (self.fan_angle + FAN_RATE * dt) % std::f32::consts::TAU;
+        }
         let spinning = self.auto && !reduced;
         if spinning {
             self.orbit.theta += SPIN_RATE * dt;
@@ -409,9 +293,9 @@ impl MachineStage {
 
     fn frame_with(&self, camera: Camera) -> Frame {
         Frame {
-            animated: None,
+            animated: Some(Arc::new(self.instances())),
             camera,
-            world: studio_world(),
+            world: studio_world(&self.palette),
             statics: Arc::clone(&self.statics),
             statics_version: self.statics_version,
             draws: Vec::new(),
@@ -420,7 +304,7 @@ impl MachineStage {
             overlays: Vec::new(),
             fades: Arc::new(Vec::new()), // no cutaways on the stage
             plaza: None,
-            anim_batches: Arc::new(Vec::new()),
+            anim_batches: Arc::clone(&self.anim_batches),
             focus: None,
         }
     }
@@ -433,7 +317,7 @@ impl Stage {
             .fleet_data
             .as_ref()
             .and_then(|f| f.machines.iter().find(|m| m.id == id))?;
-        MachineStage::new(machine, None)
+        MachineStage::new(machine, &self.palette())
     }
 
     /// Shows one machine of the current feed on the stage (`Cmd::ShowMachine`). False when the feed has no such machine.
@@ -476,6 +360,7 @@ mod tests {
     use super::*;
     use crate::engine::{Renderer, block_ready};
     use crate::fleet::FleetResponse;
+    use crate::style::Style;
     use serde_json::json;
 
     fn fixture() -> FleetResponse {
@@ -486,59 +371,47 @@ mod tests {
         serde_json::from_value(json).expect("a machine")
     }
 
-    fn gpus(n: usize, vendor: &str) -> Vec<serde_json::Value> {
-        (0..n)
-            .map(|_| json!({ "vendor": vendor, "name": "GPU" }))
-            .collect()
+    fn ink() -> Palette {
+        Palette::of(Style::Ink, true)
     }
 
     #[test]
-    fn a_machine_picture_follows_its_kind_and_vendor() {
-        // A four-GPU workstation shows two tinted cards and four sticks.
-        {
-            let m = machine(json!({
-                "id": "w", "name": "w", "kind": "workstation", "vendor": "dell",
-                "memory_mib": 65536, "gpus": gpus(4, "NVIDIA")
-            }));
-            let pic = picture(&m, None);
-            assert_eq!(pic.look, Look::Workstation);
-            assert_eq!(pic.tints, vec![Some(0x76b900), Some(0x76b900)]);
-            let params = params_of(&pic);
-            assert_eq!(params.values.get("gpus"), Some(&2.0));
-            assert_eq!(params.values.get("dimms"), Some(&4.0));
-            assert_eq!(params.values.get("drives"), Some(&1.0));
-            assert_eq!(cards_of(&m).len(), 4);
-            assert!(MachineStage::new(&m, None).is_some());
+    fn every_fixture_machine_gets_its_kit_model_in_every_style() {
+        for m in &fixture().machines {
+            for style in [Style::Ink, Style::Blueprint, Style::Night] {
+                let stage = MachineStage::new(m, &Palette::of(style, true)).expect("a stage");
+                assert_eq!(stage.model, kit_model_of(m), "{}", m.id);
+                let model = kit::model(stage.model).expect("the kit model");
+                assert!(
+                    stage.size[1] > model.size.y,
+                    "{}: the plinth raises the model",
+                    m.id
+                );
+                let frame = stage.frame();
+                assert!(!frame.statics.is_empty(), "{}: the stage draws", m.id);
+                assert!(
+                    !frame.anim_batches.is_empty(),
+                    "{}: its status light runs on the GPU",
+                    m.id
+                );
+            }
         }
-        // A laptop has one chip, its sticks, and no drives.
-        {
-            let m = machine(
-                json!({ "id": "l", "name": "l", "kind": "laptop", "vendor": "dell", "memory_mib": 16384 }),
-            );
-            let params = params_of(&picture(&m, None));
-            assert_eq!(params.values.get("gpus"), Some(&0.0));
-            assert_eq!(params.values.get("dimms"), Some(&2.0));
-            assert!(!params.values.contains_key("drives"));
-        }
-        // An Apple laptop is a MacBook with no card or stick params.
-        {
-            let m = machine(
-                json!({ "id": "a", "name": "a", "kind": "laptop", "vendor": "apple", "memory_mib": 16384 }),
-            );
-            let pic = picture(&m, None);
-            assert_eq!(pic.look, Look::Macbook);
-            assert!(params_of(&pic).values.is_empty());
-            assert!(MachineStage::new(&m, None).is_some());
-        }
-        // An Apple desktop is a Mac with no card or stick params.
-        {
-            let m = machine(
-                json!({ "id": "s", "name": "s", "kind": "workstation", "vendor": "apple", "memory_mib": 32768, "gpus": gpus(1, "Apple") }),
-            );
-            let pic = picture(&m, None);
-            assert_eq!(pic.look, Look::Mac);
-            assert!(params_of(&pic).values.is_empty());
-        }
+    }
+
+    #[test]
+    fn the_status_light_follows_the_machine() {
+        let mut m = machine(
+            json!({ "id": "s", "name": "s", "kind": "server", "status": "online", "working": 1 }),
+        );
+        let mut stage = MachineStage::new(&m, &ink()).expect("a stage");
+        let working = rgba(ink().lamp(Lamp::Working));
+        let row = |stage: &MachineStage| {
+            stage.frame().animated.expect("the tables").machine_statuses[SLOT]
+        };
+        assert_eq!(row(&stage), working);
+        m.status = "offline".into();
+        stage.update(&m);
+        assert_eq!(row(&stage), rgba(ink().lamp(Lamp::Offline)));
     }
 
     #[test]
@@ -546,7 +419,7 @@ mod tests {
         let m = machine(
             json!({ "id": "l", "name": "l", "kind": "laptop", "vendor": "dell", "memory_mib": 16384 }),
         );
-        let mut stage = MachineStage::new(&m, None).expect("a stage");
+        let mut stage = MachineStage::new(&m, &ink()).expect("a stage");
         let theta = stage.orbit.theta;
         assert_eq!(stage.step(0.016, 1.5, false), Motion::Ambient);
         assert!(stage.orbit.theta > theta, "auto-rotate turns the camera");
@@ -588,7 +461,7 @@ mod tests {
             .iter()
             .find(|m| m.id == id)
             .expect("the fixture machine");
-        let stage = MachineStage::new(m, None).expect("a stage");
+        let stage = MachineStage::new(m, &ink()).expect("a stage");
         let mut renderer = Renderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
         renderer.thumbnail(&stage, 64, 64).expect("the readback")
     }
@@ -672,7 +545,7 @@ mod tests {
         let m = machine(
             json!({ "id": "l", "name": "l", "kind": "laptop", "vendor": "dell", "memory_mib": 16384 }),
         );
-        let mut stage = MachineStage::new(&m, None).expect("a stage");
+        let mut stage = MachineStage::new(&m, &ink()).expect("a stage");
         assert_eq!(stage.step(0.5, 1.5, true), Motion::Rest);
     }
 }

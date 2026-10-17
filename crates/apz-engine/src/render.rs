@@ -11,8 +11,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
-use super::fleet::{FleetInstances, PacketInstance, RingInstance, WRAP_PERIOD};
-use super::hardware::{CUTAWAY_OPACITY, over_area};
+use super::fleet::WRAP_PERIOD;
 use super::scene::{
     Draw, DrawKind, Fade, Frame, Frustum, Geo, Shading, Side, Texture, merge, world_sphere,
 };
@@ -137,7 +136,7 @@ const PASS_OVERLAY: usize = 3;
 const PASS_BLIT: usize = 4;
 
 /// The programs a draw can select, counted per draw in `Pipeline::programs` (the index of each: [`program_index`]).
-const PROGRAM_COUNT: usize = 7;
+const PROGRAM_COUNT: usize = 8;
 
 fn program_index(prog: Prog) -> usize {
     match prog {
@@ -148,6 +147,7 @@ fn program_index(prog: Prog) -> usize {
         Prog::Outline => 4,
         Prog::Sky => 5,
         Prog::Points => 6,
+        Prog::Line => 7,
     }
 }
 
@@ -329,6 +329,21 @@ fn perf_passes(counts: [u32; 5]) {
 const SHADOW_SIZE: u32 = 2048;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADER: &str = include_str!("floor.wgsl");
+/// The animation shader of the baked fan spins and status lights (`vs_spin`, `vs_machine`).
+const HW_ANIM_WGSL: &str = include_str!("shaders/hw_anim.wgsl");
+
+/// The opacity a cutaway fades to while it stands between the eye and the focus, or over the plaza area.
+const CUTAWAY_OPACITY: f32 = 0.15;
+
+/// Whether a cutaway part (`part_min`..`part_max`) stands over the plaza area (`area_min`..`area_max`): its footprint
+/// overlaps the area's in world x and z, and its top is above the area's floor.
+fn over_area(part_min: Vec3, part_max: Vec3, area_min: Vec3, area_max: Vec3) -> bool {
+    part_max.y > area_min.y
+        && part_min.x < area_max.x
+        && part_max.x > area_min.x
+        && part_min.z < area_max.z
+        && part_max.z > area_min.z
+}
 
 /// Overlays: a textured rectangle per instance, in the widget's NDC.
 const OVERLAY: &str = r"
@@ -431,6 +446,8 @@ enum Prog {
     Outline,
     Sky,
     Points,
+    /// A line list (`DrawKind::Lines`): unlit, nudged toward the camera.
+    Line,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -498,258 +515,6 @@ struct Targets {
     /// The resolved picture's texture (the card probe copies its corner from it).
     resolve_tex: wgpu::Texture,
     blit_group: wgpu::BindGroup,
-}
-
-/// The Machines view's instanced animation (`fleet_anim.wgsl`): the cable packets (one instance per slot) and the
-/// status rings (one per machine), each one draw. The globals (camera and clock) are written every frame; the
-/// instances are uploaded only when they change.
-struct FleetGpu {
-    module: wgpu::ShaderModule,
-    layout: wgpu::BindGroupLayout,
-    globals: wgpu::Buffer,
-    group: wgpu::BindGroup,
-    /// The base meshes as triangle lists: a unit sphere (a packet) and a unit ring (a status ring).
-    packet_mesh: wgpu::Buffer,
-    packet_verts: u32,
-    ring_mesh: wgpu::Buffer,
-    ring_verts: u32,
-    /// The instance buffers and their instance counts.
-    packet_rows: (wgpu::Buffer, u32),
-    ring_rows: (wgpu::Buffer, u32),
-    /// The instances last uploaded: a frame with equal instances uploads nothing.
-    uploaded: Option<Arc<FleetInstances>>,
-    /// Whether this frame draws the animation, and the pipelines with the sample count they were built for.
-    shown: bool,
-    pipelines: Option<(u32, wgpu::RenderPipeline, wgpu::RenderPipeline)>,
-}
-
-/// The uniform block of `fleet_anim.wgsl` (`Globals`): the camera's view-projection and the clock (x: seconds).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct FleetGlobals {
-    view_proj: [[f32; 4]; 4],
-    time: [f32; 4],
-}
-
-impl FleetGpu {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("fleet animation"),
-            source: wgpu::ShaderSource::Wgsl(crate::fleet::FLEET_ANIM_WGSL.into()),
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("fleet animation"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fleet animation globals"),
-            size: std::mem::size_of::<FleetGlobals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fleet animation"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            }],
-        });
-        let packet = unit_sphere(8, 6);
-        let ring = unit_ring(64);
-        FleetGpu {
-            packet_mesh: vertex_buffer(
-                device,
-                queue,
-                "fleet packet mesh",
-                bytemuck::cast_slice(&packet[..]),
-            ),
-            packet_verts: packet.len() as u32,
-            ring_mesh: vertex_buffer(
-                device,
-                queue,
-                "fleet ring mesh",
-                bytemuck::cast_slice(&ring[..]),
-            ),
-            ring_verts: ring.len() as u32,
-            packet_rows: (vertex_buffer(device, queue, "fleet packets", &[]), 0),
-            ring_rows: (vertex_buffer(device, queue, "fleet rings", &[]), 0),
-            module,
-            layout,
-            globals,
-            group,
-            uploaded: None,
-            shown: false,
-            pipelines: None,
-        }
-    }
-
-    /// This frame: the globals (the clock wrapped at `WRAP_PERIOD`), the instances when they changed, and the
-    /// pipelines for `samples` (built once per sample count).
-    fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        samples: u32,
-        view_proj: Mat4,
-        time: f32,
-        animated: Option<&Arc<FleetInstances>>,
-    ) {
-        let globals = FleetGlobals {
-            view_proj: view_proj.to_cols_array_2d(),
-            time: [time % WRAP_PERIOD, 0.0, 0.0, 0.0],
-        };
-        queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        self.shown = animated.is_some();
-        let Some(inst) = animated else { return };
-        if self.uploaded.as_deref() != Some(&**inst) {
-            replace_rows(
-                &mut self.packet_rows,
-                device,
-                queue,
-                "fleet packets",
-                bytemuck::cast_slice(&inst.packets[..]),
-                inst.packets.len() as u32,
-            );
-            replace_rows(
-                &mut self.ring_rows,
-                device,
-                queue,
-                "fleet rings",
-                bytemuck::cast_slice(&inst.rings[..]),
-                inst.rings.len() as u32,
-            );
-            self.uploaded = Some(Arc::clone(inst));
-        }
-        if self.pipelines.as_ref().map(|p| p.0) != Some(samples) {
-            let (packet, ring) = self.build(device, format, samples);
-            self.pipelines = Some((samples, packet, ring));
-        }
-    }
-
-    /// The packet pipeline (additive, depth read only) and the ring pipeline (opaque), for `samples` samples.
-    fn build(
-        &self,
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        samples: u32,
-    ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("fleet animation"),
-            bind_group_layouts: &[&self.layout],
-            push_constant_ranges: &[],
-        });
-        let additive = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::SrcAlpha,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
-        let packet = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fleet packets"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &self.module,
-                entry_point: Some("vs_packet"),
-                compilation_options: Default::default(),
-                buffers: &[fleet_base_layout(), fleet_packet_layout()],
-            },
-            primitive: Default::default(),
-            depth_stencil: Some(fleet_depth(false)),
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &self.module,
-                entry_point: Some("fs_color"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(additive),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
-        let ring = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fleet rings"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &self.module,
-                entry_point: Some("vs_ring"),
-                compilation_options: Default::default(),
-                buffers: &[fleet_base_layout(), fleet_ring_layout()],
-            },
-            primitive: Default::default(),
-            // fleet.ts's rings are transparent (their opacity pulses) and write no depth.
-            depth_stencil: Some(fleet_depth(false)),
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &self.module,
-                entry_point: Some("fs_color"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None,
-            cache: None,
-        });
-        (packet, ring)
-    }
-
-    /// Draws the packets and then the rings, one instanced draw each. Returns the draws issued.
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> usize {
-        let Some((_, packet, ring)) = &self.pipelines else {
-            return 0;
-        };
-        if !self.shown {
-            return 0;
-        }
-        let mut issued = 0;
-        if self.packet_rows.1 > 0 {
-            pass.set_pipeline(packet);
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.set_vertex_buffer(0, self.packet_mesh.slice(..));
-            pass.set_vertex_buffer(1, self.packet_rows.0.slice(..));
-            pass.draw(0..self.packet_verts, 0..self.packet_rows.1);
-            issued += 1;
-        }
-        if self.ring_rows.1 > 0 {
-            pass.set_pipeline(ring);
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.set_vertex_buffer(0, self.ring_mesh.slice(..));
-            pass.set_vertex_buffer(1, self.ring_rows.0.slice(..));
-            pass.draw(0..self.ring_verts, 0..self.ring_rows.1);
-            issued += 1;
-        }
-        issued
-    }
 }
 
 /// The GPU-animated batches (`hw_anim.wgsl`): fan spins and LED blinks, each batch an indexed draw in the main
@@ -837,7 +602,7 @@ impl AnimGpu {
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hardware animation"),
-            source: wgpu::ShaderSource::Wgsl(crate::hardware::HW_ANIM_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(HW_ANIM_WGSL.into()),
         });
         let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hardware animation"),
@@ -1094,120 +859,6 @@ fn anim_pipeline(
     })
 }
 
-fn fleet_depth(write: bool) -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: DEPTH,
-        depth_write_enabled: write,
-        depth_compare: wgpu::CompareFunction::LessEqual,
-        stencil: Default::default(),
-        bias: Default::default(),
-    }
-}
-
-/// The base vertex buffer of both animation draws: one position per vertex (`pos` at location 0).
-fn fleet_base_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
-    wgpu::VertexBufferLayout {
-        array_stride: 12,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &ATTRS,
-    }
-}
-
-/// `PacketInstance` per instance: from, to, params, color (`PacketIn` locations 1 to 4).
-fn fleet_packet_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![1 => Float32x3, 2 => Float32x3, 3 => Float32x4, 4 => Float32x4];
-    wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<PacketInstance>() as u64,
-        step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &ATTRS,
-    }
-}
-
-/// `RingInstance` per instance: centre, pulse, color (`RingIn` locations 1 to 3).
-fn fleet_ring_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![1 => Float32x4, 2 => Float32x4, 3 => Float32x4];
-    wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<RingInstance>() as u64,
-        step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &ATTRS,
-    }
-}
-
-/// A unit sphere as a triangle list, `slices` around and `stacks` down.
-fn unit_sphere(slices: u32, stacks: u32) -> Vec<[f32; 3]> {
-    use std::f32::consts::{PI, TAU};
-    let at = |i: u32, j: u32| {
-        let (theta, phi) = (
-            PI * j as f32 / stacks as f32,
-            TAU * i as f32 / slices as f32,
-        );
-        [
-            theta.sin() * phi.cos(),
-            theta.cos(),
-            theta.sin() * phi.sin(),
-        ]
-    };
-    let mut out = Vec::new();
-    for j in 0..stacks {
-        for i in 0..slices {
-            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
-            out.extend([a, b, c, a, c, d]);
-        }
-    }
-    out
-}
-
-/// A status ring in the ground plane as a triangle list of `segments` quads: each vertex is its direction (x, z on the
-/// unit circle) and y 0 on the inner edge, 1 on the outer (`vs_ring` lays the band out from the machine's footprint).
-fn unit_ring(segments: u32) -> Vec<[f32; 3]> {
-    use std::f32::consts::TAU;
-    let at = |i: u32, edge: f32| {
-        let a = TAU * i as f32 / segments as f32;
-        [a.cos(), edge, a.sin()]
-    };
-    let mut out = Vec::new();
-    for i in 0..segments {
-        let (o0, o1, n0, n1) = (at(i, 1.0), at(i + 1, 1.0), at(i, 0.0), at(i + 1, 0.0));
-        out.extend([o0, n0, o1, o1, n0, n1]);
-    }
-    out
-}
-
-/// A vertex or instance buffer holding `bytes` (an empty one when there are none).
-fn vertex_buffer(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    bytes: &[u8],
-) -> wgpu::Buffer {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: (bytes.len() as u64).max(4),
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    if !bytes.is_empty() {
-        queue.write_buffer(&buffer, 0, bytes);
-    }
-    buffer
-}
-
-/// Replaces an instance buffer with `bytes` (`count` instances), destroying the old one.
-fn replace_rows(
-    slot: &mut (wgpu::Buffer, u32),
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    bytes: &[u8],
-    count: u32,
-) {
-    let old = std::mem::replace(slot, (vertex_buffer(device, queue, label, bytes), count));
-    old.0.destroy();
-}
-
 /// The renderer's GPU state, shared by every floor primitive (the host keeps one).
 pub struct Pipeline {
     format: wgpu::TextureFormat,
@@ -1260,7 +911,6 @@ pub struct Pipeline {
     fade_alpha: HashMap<u32, f32>,
     fade_time: Option<f32>,
     /// The Machines view instanced animation (`fleet_anim.wgsl`).
-    fleet: FleetGpu,
     /// The GPU-animated batches of the statics (`hw_anim.wgsl`: fan spins, LED blinks), drawn in the main pass.
     anim: AnimGpu,
     physical: Rect,
@@ -1582,7 +1232,6 @@ impl Pipeline {
             static_textures: HashSet::new(),
             fade_alpha: HashMap::new(),
             fade_time: None,
-            fleet: FleetGpu::new(device, queue),
             anim: AnimGpu::new(device, &globals_layout, &shadow_globals_layout),
             physical: Rect::default(),
             background: wgpu::Color::BLACK,
@@ -1648,7 +1297,7 @@ impl Pipeline {
                 } else {
                     wgpu::FilterMode::Linear
                 },
-                anisotropy_clamp: if nearest { 1 } else { 4 },
+                anisotropy_clamp: if nearest { 1 } else { 16 },
                 ..Default::default()
             })
         })
@@ -1657,6 +1306,15 @@ impl Pipeline {
     fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &Texture) {
         let levels = if tex.nearest {
             vec![(tex.width, tex.height, tex.rgba.to_vec())]
+        } else if !tex.mips.is_empty() {
+            // The file's own chain (a KTX2 texture, filtered offline): level 0, then each level halved.
+            let mut levels = vec![(tex.width, tex.height, tex.rgba.to_vec())];
+            let (mut w, mut h) = (tex.width, tex.height);
+            for level in &tex.mips {
+                (w, h) = ((w / 2).max(1), (h / 2).max(1));
+                levels.push((w, h, level.to_vec()));
+            }
+            levels
         } else {
             mip_chain(tex.width, tex.height, &tex.rgba)
         };
@@ -1802,6 +1460,7 @@ impl Pipeline {
             ),
             Prog::Sky => ("vs_sky", "fs_sky", vec![mesh_layout(), row_layout()]),
             Prog::Points => ("vs_points", "fs_basic", vec![row_layout()]),
+            Prog::Line => ("vs_line", "fs_basic", vec![mesh_layout(), row_layout()]),
         };
         let blend = match key.blend {
             Blend::Opaque => None,
@@ -1834,6 +1493,11 @@ impl Pipeline {
                 buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
+                topology: if key.prog == Prog::Line {
+                    wgpu::PrimitiveTopology::LineList
+                } else {
+                    wgpu::PrimitiveTopology::TriangleList
+                },
                 cull_mode,
                 ..Default::default()
             },
@@ -2011,7 +1675,7 @@ struct Stamp {
 fn bounds_visible(d: &Draw, volume: &Frustum) -> bool {
     match &d.kind {
         DrawKind::Points(_) => true,
-        DrawKind::Mesh | DrawKind::Outline => {
+        DrawKind::Mesh | DrawKind::Outline | DrawKind::Lines => {
             let (c, r) = world_sphere(&d.geo, d.model);
             volume.sphere_visible(c, r)
         }
@@ -2222,6 +1886,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     let prog = match (&draw.kind, m.shading) {
         (DrawKind::Outline | DrawKind::OutlineInstanced(..), _) => Prog::Outline,
         (DrawKind::Points(_), _) => Prog::Points,
+        (DrawKind::Lines, _) => Prog::Line,
         (_, Shading::Sky { .. }) => Prog::Sky,
         (_, Shading::Grass) => Prog::Grass,
         (_, Shading::Basic) => Prog::Basic,
@@ -2230,7 +1895,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     };
     let cull = match (prog, m.side) {
         (Prog::Outline, _) | (Prog::Sky, _) => 2,
-        (Prog::Points, _) => 0,
+        (Prog::Points, _) | (Prog::Line, _) => 0,
         (_, Side::Front) => 1,
         (_, Side::Back) => 2,
         (_, Side::Double) => 0,
@@ -2248,7 +1913,7 @@ fn key_of(draw: &Draw, alpha: f32) -> Key {
     // surface of the cutaway shows, as three.js's per-mesh sort did.
     let depth_write = match prog {
         Prog::Outline => true,
-        Prog::Sky => false,
+        Prog::Sky | Prog::Line => false,
         _ => m.depth_write && !m.additive,
     };
     Key {
@@ -2311,7 +1976,7 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
         robot: hues,
     };
     match &draw.kind {
-        DrawKind::Mesh => vec![row(draw.model, m.color.to_array(), uv)],
+        DrawKind::Mesh | DrawKind::Lines => vec![row(draw.model, m.color.to_array(), uv)],
         DrawKind::Outline => vec![row(draw.model, world_ink, uv)],
         DrawKind::Instanced(instances, count) => instances
             .iter()
@@ -2408,7 +2073,11 @@ impl Primitive {
                 None
             }
         });
-        let flat = (w.background, w.background, w.background);
+        // fs_sky writes its colours raw (the painted sky's were authored so), so a flat background goes in as its
+        // sRGB values: the sky then meets the clear colour, which is encoded.
+        let [r, g, b] = w.background.to_srgb();
+        let raw_bg = super::scene::Color { r, g, b };
+        let flat = (raw_bg, raw_bg, raw_bg);
         let (sky_top, sky_horizon, sky_ground) = if w.flat_background {
             flat
         } else {
@@ -2455,18 +2124,9 @@ impl Primitive {
             machine_status: machine_rows(
                 f.animated.as_deref().map(|x| x.machine_statuses.as_slice()),
             ),
-            leds: crate::hardware::led_colours(),
+            leds: crate::fleet::led_colours(),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
-        p.fleet.prepare(
-            device,
-            queue,
-            p.format,
-            samples,
-            proj * view,
-            f.time,
-            f.animated.as_ref(),
-        );
         p.anim.prepare(
             device,
             queue,
@@ -2953,11 +2613,6 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                 None => {}
             }
         }
-        for _ in 0..p.fleet.draw(&mut pass) {
-            p.count(PASS_MESH);
-        }
-        // The fleet's instanced draws leave their own group at 0; the animated hardware reads the floor's globals.
-        pass.set_bind_group(0, &p.globals_group, &[]);
         for _ in 0..p.anim.draw(&mut pass) {
             p.count(PASS_MESH);
         }
@@ -2986,8 +2641,9 @@ mod tests {
 
     #[test]
     fn draw_stats_split_the_passes_and_keep_outline_apart_from_the_main_pass() {
-        // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points].
-        let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4]);
+        // Passes [shadow, mesh, quad, overlay, blit]; programs [toon, grass, basic, shadow catcher, outline, sky, points,
+        // line].
+        let stats = DrawStats::from_counts([1, 10, 4, 3, 1], [2, 1, 3, 0, 4, 0, 4, 0]);
         assert_eq!(stats.total, 19);
         assert_eq!(stats.shadow, 1);
         assert_eq!(stats.outline, 4);

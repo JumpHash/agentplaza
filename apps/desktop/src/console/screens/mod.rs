@@ -123,9 +123,8 @@ pub enum Id {
     /// One model's page, by its id.
     LabModelDetail(String),
     LabBreeders,
-    /// The engine's labs (the web's hidden `#/robot-lab`, `#/room-lab`, `#/hardware-lab`): not in the sidebar.
+    /// The engine's labs (the web's hidden `#/robot-lab`, `#/hardware-lab`): not in the sidebar.
     RobotLab,
-    RoomLab,
     HardwareLab,
     /// The IDE, not in the sidebar: one workspace by its id (`agent:<cid>` or `repo:<name>@<ref>`), or the picker when none.
     Ide(Option<String>),
@@ -378,9 +377,6 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::RobotLab => {
             engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab)
         }
-        Id::RoomLab => {
-            engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Room).map(Msg::EngineLab)
-        }
         Id::HardwareLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Hardware)
             .map(Msg::EngineLab),
         Id::Society => society::load(&mut screens.society, ctx).map(Msg::Society),
@@ -495,7 +491,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
         Id::Floor => floor::subscription(&screens.floor).map(Msg::Floor),
-        Id::RobotLab | Id::RoomLab | Id::HardwareLab => {
+        Id::RobotLab | Id::HardwareLab => {
             engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
         }
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
@@ -546,7 +542,7 @@ pub fn view<'a>(
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::Floor => floor::view(&screens.floor, ctx).map(Msg::Floor),
-        Id::RobotLab | Id::RoomLab | Id::HardwareLab => {
+        Id::RobotLab | Id::HardwareLab => {
             engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab)
         }
         Id::Society => society::view(&screens.society, ctx).map(Msg::Society),

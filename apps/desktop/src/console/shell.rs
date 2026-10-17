@@ -503,7 +503,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Library
             | Id::Floor
             | Id::RobotLab
-            | Id::RoomLab
             | Id::HardwareLab
             | Id::Ide(_)
             | Id::Society
@@ -923,7 +922,6 @@ fn top_bar_title(current: &Id) -> &'static str {
         .or_else(|| super::screens::lab::Section::of(current).map(|_| "Lab"))
         .or(match current {
             super::screens::Id::RobotLab => Some("Robot lab"),
-            super::screens::Id::RoomLab => Some("Room lab"),
             super::screens::Id::HardwareLab => Some("Hardware lab"),
             super::screens::Id::Ide(_) => Some("IDE"),
             _ => None,
