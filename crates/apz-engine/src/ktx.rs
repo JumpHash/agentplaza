@@ -23,7 +23,11 @@ pub fn texture_from_ktx2(bytes: &[u8]) -> Result<Texture, String> {
     let zstd = match header.supercompression_scheme {
         None => false,
         Some(SupercompressionScheme::Zstandard) => true,
-        Some(other) => return Err(format!("KTX2 supercompression {other:?} is not zstd (2) or none (0)")),
+        Some(other) => {
+            return Err(format!(
+                "KTX2 supercompression {other:?} is not zstd (2) or none (0)"
+            ));
+        }
     };
     let (width, height) = (header.pixel_width, header.pixel_height);
     if width == 0 || height == 0 {
@@ -70,7 +74,8 @@ fn level_size(width: u32, height: u32, level: u32) -> (u32, u32) {
 /// size the caller checks for.
 fn decode_zstd(data: &[u8], expected: usize) -> Result<Vec<u8>, String> {
     let mut source = data;
-    let decoder = ruzstd::decoding::StreamingDecoder::new(&mut source).map_err(|e| format!("zstd: {e:?}"))?;
+    let decoder =
+        ruzstd::decoding::StreamingDecoder::new(&mut source).map_err(|e| format!("zstd: {e:?}"))?;
     let mut out = Vec::with_capacity(expected);
     decoder
         .take(expected as u64 + 1)
@@ -96,8 +101,14 @@ mod tests {
             let side = (1024usize >> (i + 1)).max(1);
             assert_eq!(mip.len(), side * side * 4, "mip level {}", i + 1);
         }
-        assert!(t.rgba.chunks_exact(4).any(|p| p[0] < 16), "a dark texel in level 0");
-        assert!(t.rgba.chunks_exact(4).any(|p| p[0] > 24), "a lighter texel in level 0");
+        assert!(
+            t.rgba.chunks_exact(4).any(|p| p[0] < 16),
+            "a dark texel in level 0"
+        );
+        assert!(
+            t.rgba.chunks_exact(4).any(|p| p[0] > 24),
+            "a lighter texel in level 0"
+        );
     }
 
     #[test]

@@ -41,7 +41,11 @@ pub fn feature_edges(positions: &[[f32; 3]], indices: &[u32], threshold_deg: f32
         let n = [normal[0] / len, normal[1] / len, normal[2] / len];
 
         let corners = [canonical[i0], canonical[i1], canonical[i2]];
-        for (x, y) in [(corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[0])] {
+        for (x, y) in [
+            (corners[0], corners[1]),
+            (corners[1], corners[2]),
+            (corners[2], corners[0]),
+        ] {
             if x == y {
                 continue;
             }
@@ -67,7 +71,11 @@ fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {

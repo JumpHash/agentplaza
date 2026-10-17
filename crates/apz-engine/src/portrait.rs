@@ -123,6 +123,7 @@ pub fn frame(spec: &PortraitSpec, aspect: f32, stage: bool) -> Frame {
             near: 0.1,
             far: 50.0,
             aspect,
+            ortho: false,
         },
         world,
         statics: Arc::new(Vec::new()),

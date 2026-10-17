@@ -615,8 +615,8 @@ pub struct Node {
     pub rest: bool,
     /// `userData.walk`: robots walk over it (rugs, floor markings): it has no footprint.
     pub walk: bool,
-    /// The hardware detail level this node is under: 0 none, 1 medium, 2 fine. A part of level 1 or 2 shows by the
-    /// camera's distance to its own box (`hardware::Built::frame_detail`), which sets its `visible`.
+    /// The detail level this node is under: 0 none, 1 medium, 2 fine. A part of level 1 or 2 shows by the camera's
+    /// distance to its own box, which sets its `visible`.
     pub lod: u8,
     /// The cutaway this node belongs to (0: none). Its draws fade while they stand between the
     /// camera and the focus (see [`Fade`]).
@@ -974,7 +974,8 @@ pub fn world_sphere(geo: &Geometry, m: Mat4) -> (Vec3, f32) {
     )
 }
 
-/// A perspective camera looking at `target` (three's `PerspectiveCamera` + `lookAt`).
+/// A camera looking at `target` (three's `PerspectiveCamera` + `lookAt`), or an orthographic one (`ortho`) whose view
+/// is as tall as the perspective one's at the target's distance, so its framing and zoom match.
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub eye: Vec3,
@@ -985,6 +986,8 @@ pub struct Camera {
     pub far: f32,
     /// Width / height.
     pub aspect: f32,
+    /// Orthographic: parallel rays, no perspective (the Machines view's isometric grid).
+    pub ortho: bool,
 }
 
 impl Camera {
@@ -994,6 +997,14 @@ impl Camera {
 
     /// Projection with wgpu's 0..1 depth.
     pub fn projection(&self) -> Mat4 {
+        if self.ortho {
+            let dist = self.eye.distance(self.target);
+            let half_h = dist * (self.fov.to_radians() / 2.0).tan();
+            let half_w = half_h * self.aspect.max(1e-3);
+            // Parallel rays: the volume starts as far behind the eye as the target is in front of it, so a close zoom
+            // never clips the scene around the target (the far sky stays out).
+            return Mat4::orthographic_rh(-half_w, half_w, -half_h, half_h, -dist, self.far);
+        }
         Mat4::perspective_rh(
             self.fov.to_radians(),
             self.aspect.max(1e-3),

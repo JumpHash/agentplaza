@@ -1,257 +1,162 @@
-//! The hardware lab (`APZ_HW_LAB`), as the web's `#/hardware-lab` on the engine: one hardware model on the machines'
-//! ground under the floor's light, its state set by the env. Env, all optional except the first:
-//!   APZ_HW_LAB      a model id, e.g. board/workstation or exterior/workstation
-//!   APZ_HW_GPUS     the GPUs, 0..2 (default 0)
-//!   APZ_HW_STATUS   online | draining | offline | revoked (default online)
-//!   APZ_HW_WORKING  how many agents are busy, 0..6 (default 0): the activity is min(1, working / 4)
-//!   APZ_HW_OPEN     how far it is opened, 0..1 (default 0)
-//!   APZ_HW_TRACES   1 shows the copper traces and their pulses (default 0)
-//!   APZ_HW_CAM      iso (default) | top | front | side | anchor (the model's own anchor view, when it has one)
-//!   APZ_HW_PARAMS   the model's params, `name=value` pairs joined by commas (any numeric key the model reads; gpus
-//!                   is APZ_HW_GPUS)
-//! The readout (`Lab::info`) is the model's validation: its errors, or "<model>: no errors".
+//! The hardware lab (`APZ_HW_LAB`): the machine model kit on the machines' ground, one model or the whole line-up, in a
+//! style, at a level of detail and with its status light set by the env. Env, all optional except the first:
+//!   APZ_HW_LAB      a kit model id (`hub`, `server`, `rack`, `gpu`, `tower`, `edge`, `mini`, `studio`, `laptop`,
+//!                   `phone`), or `all` for every model in a row
+//!   APZ_HW_LOD      the level of detail, 0 (full) to 2 (block); default 0
+//!   APZ_HW_STYLE    ink | blueprint | night (default ink)
+//!   APZ_HW_THEME    light | dark (default dark)
+//!   APZ_HW_STATUS   working | idle | strained | offline (default working)
+//!   APZ_HW_CAM      iso (default) | front | side | back | top
+//!   APZ_HW_ORTHO    1 draws with the orthographic camera (the 2D views); default perspective
+//! The readout (`Lab::info`) names the models shown, with their sizes, the level and the style.
 
 use glam::Vec3;
 use serde_json::{Value, json};
 
 use super::controls::FOV_DEG;
-use super::hardware::{self, Params, State, Status};
-use super::props::Anim;
-use super::scene::Obj;
+use super::fleet::{FleetInstances, MACHINE_SLOTS, rgba};
+use super::kit::{self, KitModel};
+use super::style::{Lamp, Palette, Style};
 use super::world::Floor;
 
-/// The model on the machines' ground: its state, its traces and pulses when shown, and its atom when it has an anchor.
-pub struct Lab {
-    built: hardware::Built,
-    pulses: Option<hardware::Pulses>,
-    atom: Option<Atom>,
-    exterior: bool,
-    state: State,
-    info: Value,
-}
+/// The gap between two models of the line-up, in kit units.
+const GAP: f32 = 0.8;
+/// The fans' turn rate, radians per second (the fleet's idle rate).
+const FAN_RATE: f32 = std::f32::consts::TAU * 2.0;
 
-/// The plaza's atom under the model's root: its node (for the exterior's glow) and its animation, called each frame.
-struct Atom {
-    node: Obj,
-    anim: Anim,
+/// The models on the machines' ground, each bound to its own row of the GPU tables, with their lamp.
+pub struct Lab {
+    count: usize,
+    lamp: Lamp,
+    palette: Palette,
+    fan_angle: f32,
+    info: Value,
 }
 
 fn var(name: &str) -> Option<String> {
     crate::env_var(name).filter(|v| !v.is_empty())
 }
 
-/// A finite number from the env, clamped to `lo..=hi`; the fallback when unset or unreadable.
-fn number(name: &str, lo: f32, hi: f32, fallback: f32) -> f32 {
-    var(name)
-        .and_then(|s| s.trim().parse::<f32>().ok())
-        .filter(|v| v.is_finite())
-        .map_or(fallback, |v| v.clamp(lo, hi))
-}
-
-fn status(s: Option<String>) -> Status {
-    match s.as_deref() {
-        Some("draining") => Status::Draining,
-        Some("offline") => Status::Offline,
-        Some("revoked") => Status::Revoked,
-        _ => Status::Online,
+/// The lamp a status name sets (working when unset or unknown).
+fn lamp_of(s: Option<&str>) -> Lamp {
+    match s {
+        Some("idle") => Lamp::Idle,
+        Some("strained") => Lamp::Strained,
+        Some("offline") => Lamp::Offline,
+        _ => Lamp::Working,
     }
 }
 
-/// The model's params: the GPUs (APZ_HW_GPUS), then each `name=value` of APZ_HW_PARAMS. A pair that does not read as a
-/// finite number is left out, and `gpus` is the GPUs' own.
-fn params_of(gpus: f32, extra: Option<&str>) -> Params {
-    let mut params = Params::default().with("gpus", f64::from(gpus));
-    for pair in extra.unwrap_or("").split(',') {
-        let Some((name, value)) = pair.split_once('=') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() || name == "gpus" {
-            continue;
-        }
-        if let Some(v) = value.trim().parse::<f64>().ok().filter(|v| v.is_finite()) {
-            params = params.with(name, v);
-        }
-    }
-    params
-}
-
-/// The camera's direction from the model's centre, as the web's frameSphere names it (iso is the default).
+/// The camera's direction from the line-up's centre (iso is the default).
 fn direction(cam: &str) -> Vec3 {
     match cam {
         "top" => Vec3::new(0.0, 1.0, 0.0001),
         "front" => Vec3::Z,
+        "back" => Vec3::NEG_Z,
         "side" => Vec3::X,
         _ => Vec3::new(0.8, 0.6, 1.0),
     }
 }
 
-/// The camera's eye and target for `cam`: the model's anchor view when `anchor` names one, else the preset framed on the
-/// model's size (its half-diagonal, 40 degrees of field, 0.9 of the frame).
-fn view(model: &hardware::Model, cam: &str) -> ([f32; 3], [f32; 3]) {
-    if cam == "anchor"
-        && let Some(c) = model.anchors.camera
-    {
-        return (c.at, c.look);
+/// The models `APZ_HW_LAB` names: one by id, or every model for `all`. Empty for an unknown id.
+fn chosen(name: &str) -> Vec<&'static KitModel> {
+    if name == "all" {
+        kit::models().iter().collect()
+    } else {
+        kit::model(name).into_iter().collect()
     }
-    let [w, h, d] = model.size;
-    let centre = Vec3::new(0.0, h / 2.0, 0.0);
-    let radius = Vec3::new(w, h, d).length() / 2.0;
-    let dist = radius.max(1.0) / (FOV_DEG / 2.0).to_radians().sin() * 0.9;
-    let eye = centre + direction(cam).normalize() * dist;
-    (eye.to_array(), centre.to_array())
 }
 
-/// The model, when `APZ_HW_LAB` names one: it joins the floor's root at the origin, and the camera frames it. None
-/// otherwise (or for an unknown model), so the floor is then the machines' own view.
+/// The lab, when `APZ_HW_LAB` names a kit model or `all`: the models stand in a row along x on the floor's ground, in
+/// the palette of `APZ_HW_STYLE` and `APZ_HW_THEME`, and the camera frames the row. None otherwise (or for an unknown
+/// model), so the floor is then the machines' own view.
 pub fn build(floor: &mut Floor) -> Option<Lab> {
     let name = var("APZ_HW_LAB")?;
-    let model = hardware::model(&name)?;
-    let params = params_of(
-        number("APZ_HW_GPUS", 0.0, 2.0, 0.0).round(),
-        var("APZ_HW_PARAMS").as_deref(),
-    );
-    let state = State {
-        status: status(var("APZ_HW_STATUS")),
-        activity: (number("APZ_HW_WORKING", 0.0, 6.0, 0.0) / 4.0).min(1.0),
-        open: number("APZ_HW_OPEN", 0.0, 1.0, 0.0),
-    };
-    night_stage(floor);
-    let built = hardware::build(model, &params);
-    // hardware-lab.ts placed the atom under the model's group with the Floor's own colours (ATOM_PALETTE): the same here,
-    // as the layout's boards do. Its node is the child place_atom appends (layout.rs reads it the same way).
-    let before = built.root.get().children.len();
-    let anim = hardware::place_atom(model, &built.root, &floor.fleet_palette());
-    let node = built.root.get().children.get(before).cloned();
-    let atom = match (anim, node) {
-        (Some(anim), Some(node)) => Some(Atom { node, anim }),
-        _ => None,
-    };
-    floor.root.add(&built.root);
-    let pulses = if var("APZ_HW_TRACES").is_some_and(|t| t == "1") {
-        let traces = hardware::traces(model);
-        floor.root.add(&traces);
-        let pulses = hardware::Pulses::new(model);
-        floor.root.add(&pulses.obj);
-        Some(pulses)
-    } else {
-        None
-    };
-    floor.statics_dirty = true; // the model's static parts are baked
-    let (eye, target) = view(
-        model,
-        &var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string()),
-    );
-    floor.orbit.look(eye.into(), target.into());
-    // hardware-lab.ts's OrbitControls: any polar angle, a distance from 0.5 to 1000.
-    floor.orbit.unlimited(0.5, 1000.0);
-    let errors = hardware::validate(model, &name);
-    let summary = if errors.is_empty() {
-        format!("{name}: no errors")
-    } else {
-        errors.join("\n")
-    };
-    let info = json!({ "kind": "hardware", "model": name, "errors": errors, "summary": summary });
-    let exterior = model.view == hardware::View::Exterior;
-    let mut lab = Lab {
-        built,
-        pulses,
-        atom,
-        exterior,
-        state,
-        info,
-    };
-    lab.step(0.0, 0.0);
-    Some(lab)
-}
-
-/// The web hardware lab's stage (hardware-lab.ts): its night sky (the floor's dome), no plaza scenery, a flat ground of
-/// 0x1d2140 under a 120-unit grid (three's GridHelper: the centre lines 0x3b4566, the rest 0x242a48), its lights.
-fn night_stage(floor: &mut Floor) {
-    use crate::scene::{Color, Mat, Obj};
-    use std::f32::consts::FRAC_PI_2;
-    floor.stars.set_visible(false);
-    floor.planet.set_visible(false);
-    floor.dust.set_visible(false);
-    floor.ground.set_visible(false);
-    let ground = Obj::mesh(
-        &crate::geometry::plane(800.0, 800.0, 1, 1),
-        &crate::toon::toon_mat(crate::scene::Material {
-            color: Color::hex(0x1d2140),
-            ..Default::default()
-        }),
-    );
-    ground
-        .set_rotation(-FRAC_PI_2, 0.0, 0.0)
-        .set_position(0.0, -0.01, 0.0)
-        .set_shadows(false, true);
-    floor.root.add(&ground);
-    let (centre, line) = (
-        Mat::basic(Color::hex(0x3b4566)),
-        Mat::basic(Color::hex(0x242a48)),
-    );
-    let grid = Obj::group();
-    for k in 0..=120 {
-        let at = k as f32 - 60.0;
-        let mat = if k == 60 { &centre } else { &line };
-        let along_x = Obj::mesh(&crate::geometry::plane(120.0, 0.05, 1, 1), mat);
-        along_x
-            .set_rotation(-FRAC_PI_2, 0.0, 0.0)
-            .set_position(0.0, 0.002, at);
-        let along_z = Obj::mesh(&crate::geometry::plane(0.05, 120.0, 1, 1), mat);
-        along_z
-            .set_rotation(-FRAC_PI_2, 0.0, 0.0)
-            .set_position(at, 0.002, 0.0);
-        // three's GridHelper is lines: they neither cast nor take a shadow.
-        along_x.set_shadows(false, false);
-        along_z.set_shadows(false, false);
-        grid.add(&along_x);
-        grid.add(&along_z);
+    let models = chosen(&name);
+    if models.is_empty() {
+        return None;
     }
-    floor.root.add(&grid);
+    let lod = var("APZ_HW_LOD")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(2);
+    let style = var("APZ_HW_STYLE")
+        .as_deref()
+        .and_then(Style::parse)
+        .unwrap_or_default();
+    let dark = var("APZ_HW_THEME").as_deref() != Some("light");
+    let palette = Palette::of(style, dark);
+    floor.apply_palette(&palette);
+
+    let width: f32 = models.iter().map(|m| m.size.x).sum::<f32>() + GAP * (models.len() - 1) as f32;
+    let mut x = -width / 2.0;
+    let mut height: f32 = 0.0;
+    let mut depth: f32 = 0.0;
+    let mut shown = Vec::new();
+    for (slot, model) in models.iter().enumerate().take(MACHINE_SLOTS) {
+        let inst = model.instantiate(lod, &palette);
+        kit::set_machine(&inst.root, slot);
+        inst.root.set_position(x + model.size.x / 2.0, 0.0, 0.0);
+        floor.root.add(&inst.root);
+        x += model.size.x + GAP;
+        height = height.max(model.size.y);
+        depth = depth.max(model.size.z);
+        shown.push(json!({ "id": model.id, "kind": model.kind, "size": model.size.to_array() }));
+    }
     floor.statics_dirty = true;
-    let world = &mut floor.world;
-    world.fog_near = 1.0e6;
-    world.fog_far = 2.0e6;
-    world.hemi_sky = Color::hex(0x9fb0ff);
-    world.hemi_ground = Color::hex(0x2a1d52);
-    world.hemi_intensity = 1.15;
-    world.sun_color = Color::hex(0xd2ddff);
-    world.sun_intensity = 2.0;
-    // hardware-lab.ts's sun shadow camera: 60 each way, near 1, far 200.
-    world.shadow_extent = 60.0;
-    world.shadow_near = 1.0;
-    world.shadow_far = 200.0;
-    // hardware-lab.ts drew through the perf meter: the shadow map every third frame.
-    world.shadow_every = 3;
+
+    let cam = var("APZ_HW_CAM").unwrap_or_else(|| "iso".to_string());
+    let centre = Vec3::new(0.0, height / 2.0, 0.0);
+    let radius = Vec3::new(width, height, depth).length() / 2.0;
+    let dist = radius.max(1.0) / (FOV_DEG / 2.0).to_radians().sin() * 0.9;
+    floor
+        .orbit
+        .look(centre + direction(&cam).normalize() * dist, centre);
+    floor.orbit.unlimited(0.5, 1000.0);
+    floor.orbit.ortho = var("APZ_HW_ORTHO").as_deref() == Some("1");
+
+    let info = json!({
+        "kind": "hardware",
+        "models": shown,
+        "lod": lod,
+        "style": style.name(),
+        "dark": dark,
+        "summary": format!("{name}: {} model(s), lod{lod}, {}", models.len(), style.name()),
+    });
+    Some(Lab {
+        count: models.len().min(MACHINE_SLOTS),
+        lamp: lamp_of(var("APZ_HW_STATUS").as_deref()),
+        palette,
+        fan_angle: 0.0,
+        info,
+    })
 }
 
 impl Lab {
-    /// The readout the page shows: the model's validation (its errors, or "no errors"), as JSON.
+    /// The readout the page shows: the models, the level and the style, as JSON.
     pub fn info(&self) -> &Value {
         &self.info
     }
 
-    /// Per frame: the model's detail parts show by the camera's eye (see `Built::frame_detail`). `top` is the scene the
-    /// lab's model sits under. True when a part switched.
-    pub fn frame_detail(&mut self, eye: Vec3, top: &Obj) -> bool {
-        top.world_matrix_of(&self.built.root)
-            .is_some_and(|world| self.built.frame_detail(eye, world))
+    /// Advances the fans by `dt` seconds.
+    pub fn step(&mut self, dt: f32, _clock: f32) {
+        self.fan_angle = (self.fan_angle + FAN_RATE * dt) % std::f32::consts::TAU;
     }
 
-    /// Advances the model by `dt` seconds (the fans turn by it) at the ambient clock `clock` in seconds (the LEDs and
-    /// the pulses read it).
-    pub fn step(&mut self, dt: f32, clock: f32) {
-        self.built.update(dt, clock, &self.state);
-        if let Some(pulses) = self.pulses.as_mut() {
-            pulses.update(dt, self.state.activity);
+    /// The GPU tables for the models shown: each one's row has the fan angle, the busy flag and the lamp's colour.
+    pub fn instances(&self) -> FleetInstances {
+        let mut out = FleetInstances {
+            machine_angles: vec![0.0; MACHINE_SLOTS],
+            machine_states: vec![[0.0; 4]; MACHINE_SLOTS],
+            machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS],
+        };
+        let busy = if self.lamp == Lamp::Working { 1.0 } else { 0.0 };
+        for slot in 0..self.count {
+            out.machine_angles[slot] = self.fan_angle;
+            out.machine_states[slot] = [busy, busy, 0.0, 0.0];
+            out.machine_statuses[slot] = rgba(self.palette.lamp(self.lamp));
         }
-        if let Some(atom) = self.atom.as_mut() {
-            (atom.anim)(clock);
-            // An exterior's atom glows through its window only while the machine is online (hardware-lab.ts).
-            atom.node
-                .set_visible(!self.exterior || self.state.status == Status::Online);
-        }
+        out
     }
 }
 
@@ -259,33 +164,46 @@ impl Lab {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_params_read_as_name_value_pairs_and_the_gpus_are_their_own() {
-        let p = params_of(
-            1.0,
-            Some("amd=1,studio=0.5,gpus=2,bad,x=NaN, pcb_top = 0.336"),
+    fn lab_with(vars: &[(&str, &str)]) -> Option<Lab> {
+        let mut floor = Floor::machines();
+        crate::set_env_overrides(
+            vars.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         );
-        assert_eq!(p.values.get("gpus"), Some(&1.0));
-        assert_eq!(p.values.get("amd"), Some(&1.0));
-        assert_eq!(p.values.get("studio"), Some(&0.5));
-        assert_eq!(p.values.get("pcb_top"), Some(&0.336));
-        assert!(!p.values.contains_key("x") && !p.values.contains_key("bad"));
+        let lab = build(&mut floor);
+        crate::set_env_overrides(std::collections::BTreeMap::new());
+        lab
     }
 
     #[test]
-    fn the_readout_is_the_models_validation() {
-        let name = "exterior/workstation";
-        let mut floor = Floor::new();
-        let mut vars = std::collections::BTreeMap::new();
-        vars.insert("APZ_HW_LAB".to_string(), name.to_string());
-        vars.insert("APZ_HW_CAM".to_string(), "anchor".to_string());
-        vars.insert("APZ_HW_PARAMS".to_string(), "amd=1,studio=0".to_string());
-        crate::set_env_overrides(vars);
-        let lab = build(&mut floor);
-        crate::set_env_overrides(std::collections::BTreeMap::new());
-        let lab = lab.expect("the lab builds");
-        let want = hardware::validate(hardware::model(name).expect("embedded"), name);
-        assert_eq!(lab.info()["errors"], json!(want));
-        assert_eq!(lab.info()["kind"], "hardware");
+    fn the_lab_shows_one_model_or_the_whole_kit() {
+        let one = lab_with(&[("APZ_HW_LAB", "server"), ("APZ_HW_LOD", "1")]).expect("the server");
+        assert_eq!(one.info()["models"].as_array().unwrap().len(), 1);
+        assert_eq!(one.info()["lod"], 1);
+        let all =
+            lab_with(&[("APZ_HW_LAB", "all"), ("APZ_HW_STYLE", "blueprint")]).expect("the kit");
+        assert_eq!(
+            all.info()["models"].as_array().unwrap().len(),
+            kit::models().len()
+        );
+        assert_eq!(all.info()["style"], "blueprint");
+        assert!(lab_with(&[("APZ_HW_LAB", "toaster")]).is_none());
+    }
+
+    #[test]
+    fn each_model_lights_its_own_row_in_the_lamp_colour() {
+        let lab =
+            lab_with(&[("APZ_HW_LAB", "all"), ("APZ_HW_STATUS", "offline")]).expect("the kit");
+        let inst = lab.instances();
+        let offline = rgba(Palette::of(Style::default(), true).lamp(Lamp::Offline));
+        for slot in 0..kit::models().len() {
+            assert_eq!(inst.machine_statuses[slot], offline);
+            assert_eq!(
+                inst.machine_states[slot][0], 0.0,
+                "an offline machine is not busy"
+            );
+        }
+        assert_eq!(inst.machine_statuses[kit::models().len()], [0.0; 4]);
     }
 }

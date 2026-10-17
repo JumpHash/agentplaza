@@ -23,6 +23,8 @@ use glam::Vec3;
 pub const POLAR: f32 = 0.95;
 /// The camera's turn about y.
 pub const AZIMUTH: f32 = FRAC_PI_4;
+/// The plan view's turn about y (the Machines grid): its zones read left to right, with their sides in view.
+pub const PLAN_AZIMUTH: f32 = 0.42;
 /// Dust motes drifting over the ground.
 const DUST_N: usize = 90;
 
@@ -227,7 +229,9 @@ impl Floor {
                 .filter(|c| !c.get().dynamic)
                 .flat_map(|c| scene::rigs(c, root_world))
                 .collect();
-            self.statics_version += 1;
+            // Process-unique, as every scene's statics version is: the renderer keys its caches on it, and the machine
+            // stage and the portraits draw through the same renderer.
+            self.statics_version = scene::next_id();
             self.statics_dirty = false;
         }
         // Only the moving parts are walked: the root's dynamic children and the dynamic subtrees inside the baked ones.
@@ -262,6 +266,43 @@ impl Floor {
         }
     }
 
+    /// Takes `palette`'s look: its background as a flat clear colour, its ground as the ground's plain colour, and the
+    /// night sky (the stars, the planet, the dust) only in the Night style.
+    pub fn apply_palette(&mut self, palette: &crate::style::Palette) {
+        self.world.background = palette.background;
+        self.world.flat_background = true;
+        self.world.fog_color = palette.background;
+        if let scene::Kind::Mesh { mat, .. } = &self.ground.get().kind {
+            let mut m = mat.get();
+            m.color = palette.ground;
+            m.map = None;
+        }
+        let night = palette.style == crate::style::Style::Night;
+        // Night keeps the floor's moonlit blues; the paper styles are lit white, so their colours read true.
+        let lit = if night {
+            World::default()
+        } else {
+            World {
+                hemi_sky: Color::hex(0xffffff),
+                hemi_ground: Color::hex(0xb8bcc4),
+                hemi_intensity: 1.35,
+                sun_color: Color::hex(0xffffff),
+                sun_intensity: 2.2,
+                ..World::default()
+            }
+        };
+        self.world.hemi_sky = lit.hemi_sky;
+        self.world.hemi_ground = lit.hemi_ground;
+        self.world.hemi_intensity = lit.hemi_intensity;
+        self.world.sun_color = lit.sun_color;
+        self.world.sun_intensity = lit.sun_intensity;
+        // A style draws the grid as a plan on a flat ground: the sky's stars, planet and dust stay out of it.
+        self.stars.set_visible(false);
+        self.planet.set_visible(false);
+        self.dust.set_visible(false);
+        self.statics_dirty = true;
+    }
+
     /// The palette the fleet scene is built with: the scene's colours.
     pub fn fleet_palette(&self) -> PropPalette {
         let c = &self.colors;
@@ -285,6 +326,33 @@ impl Floor {
         );
         let target = Vec3::from(centre);
         let dist = fit_distance(radius, aspect).max(self.orbit.min_distance);
+        self.orbit.look(target + dir * dist, target);
+    }
+
+    /// Frames `points` in an `aspect` stage for the orthographic plan view: from [`POLAR`] and [`PLAN_AZIMUTH`], their
+    /// projected outline fills [`MACHINES_FILL`] of the view by its tighter side, centred. No points: nothing changes.
+    pub fn fit_points(&mut self, points: &[[f32; 3]], aspect: f32) {
+        if points.is_empty() {
+            return;
+        }
+        let dir = Vec3::new(
+            POLAR.sin() * PLAN_AZIMUTH.sin(),
+            POLAR.cos(),
+            POLAR.sin() * PLAN_AZIMUTH.cos(),
+        );
+        let right = Vec3::Y.cross(dir).normalize();
+        let up = dir.cross(right);
+        let centre = points.iter().map(|p| Vec3::from(*p)).sum::<Vec3>() / points.len() as f32;
+        let (mut u, mut v) = ((f32::MAX, f32::MIN), (f32::MAX, f32::MIN));
+        for p in points {
+            let d = Vec3::from(*p) - centre;
+            let (cu, cv) = (d.dot(right), d.dot(up));
+            u = (u.0.min(cu), u.1.max(cu));
+            v = (v.0.min(cv), v.1.max(cv));
+        }
+        let target = centre + right * (u.0 + u.1) / 2.0 + up * (v.0 + v.1) / 2.0;
+        let half_h = ((v.1 - v.0) / 2.0).max((u.1 - u.0) / 2.0 / aspect.max(1e-3)) / MACHINES_FILL;
+        let dist = half_h / (FOV_DEG / 2.0).to_radians().tan();
         self.orbit.look(target + dir * dist, target);
     }
 }

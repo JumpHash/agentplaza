@@ -19,7 +19,6 @@ pub mod engine;
 pub mod fleet;
 pub mod geometry;
 pub mod gpus;
-pub mod hardware;
 pub mod hardware_lab;
 pub mod input;
 pub mod kit;

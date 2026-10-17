@@ -149,9 +149,14 @@ impl Palette {
             Shading::Toon
         };
         let emissive_intensity = if self.style == Style::Night { 2.0 } else { 1.0 };
+        // Flat shading draws no emissive: a flat palette's lights take their colour as the base colour too.
         let lit = |lamp: Lamp| Material {
             shading,
-            color: Color::BLACK,
+            color: if self.flat {
+                self.lamp(lamp)
+            } else {
+                Color::BLACK
+            },
             emissive: self.lamp(lamp),
             emissive_intensity,
             ..Material::default()

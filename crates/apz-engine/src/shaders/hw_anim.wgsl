@@ -4,10 +4,9 @@
 //   vs_spin:  the part turns about `pivot` on `axis` at `rps` revolutions per second, from `phase` radians
 //             at time 0. The rest pose is the baked position, so the angle is phase + TAU * rps * t.
 //   vs_blink: the emissive term is `glow` for the first half of each `period` (shifted by `phase` seconds)
-//             and `glow * off` for the second half, as hardware.rs `Built::update` does.
+//             and `glow * off` for the second half.
 // The clock is g.counts.z, the host's clock wrapped at WRAP_PERIOD (3600 s): a spin is seamless across
 // the wrap only when its rps is a multiple of 1 / WRAP_PERIOD, so the baked rps must be quantised so.
-// hardware.rs `spin_point_shader` and `blink_emissive_shader` mirror these formulas in Rust.
 //
 // The lighting, fog and encoding are the floor's (floor.wgsl): the same Globals block and bind group 0
 // (render.rs `Globals`, the floor's globals layout), and copies of its ramp, sun_shadow, attenuation,
@@ -304,7 +303,7 @@ struct MachineIn {
     @location(6) lift: f32,         // the lift slot (SpinIn's)
 }
 
-// vs_machine: hardware.rs `Built::update`'s rules for the tag, from the machine's row.
+// vs_machine: a kit part's colour from its machine's row (`kit::KitModel::instantiate` tags the parts).
 //   status:   colour = the status colour; emissive = the status colour x (glow, or 1 without one).
 //   activity: colour = the baked colour, kept; emissive = its own emissive colour x glow, x 1 while busy in the
 //             first 0.4 s of each 0.8 s and x 0.1 otherwise (hardware.ts attach).
