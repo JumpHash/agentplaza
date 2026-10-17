@@ -1,0 +1,106 @@
+# Comments on a pull request with its gate run's (pr.yml) results, one comment per kind of check:
+#
+#   Tests         every platform's tests: passed, failed and time, and each failure's output
+#   Lint          rustfmt, clippy, cargo deny, and the migrations check
+#   Web console   type-check, build with the wasm engine, tests
+#
+# The hub API's comment comes with its report (api-report.yml). Each comment is updated in place
+# when the pull request runs again, and a past run's can be posted again by hand (run-id).
+#
+# Trust: this runs from main with write access, after a run that may be a fork's. The jobs' results
+# artifacts hold only data (.github/ci/results.py), which main's check-comments.py reads as untrusted
+# input: names and output go into code spans and blocks, capped in length. The pull request is found
+# from the run's commit, not from anything in the artifacts.
+name: Check results
+run-name: "Check results: ${{ github.event.workflow_run.display_title || format('run {0}, by hand', inputs.run-id) }}"
+
+on:
+  workflow_run:
+    workflows: [Checks]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: "The gate run (Checks) whose results to post again"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: check-results-${{ github.event.workflow_run.head_sha || inputs.run-id }}
+  cancel-in-progress: false
+
+jobs:
+  comment:
+    name: Comment on the pull request
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
+    # The light runner: a download, a small script and a few API calls.
+    runs-on: [self-hosted, light]
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Main's code: the comment renderer.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          sparse-checkout: .github/ci
+      - name: The gate run
+        env:
+          DISPATCHED: ${{ inputs.run-id }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          WR_URL: ${{ github.event.workflow_run.html_url }}
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DISPATCHED" ]; then
+            case "$DISPATCHED" in *[!0-9]*) echo "::error::run-id is a number"; exit 1 ;; esac
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DISPATCHED" \
+              --jq '"RUN_ID=\(.id)\nRUN_URL=\(.html_url)\nEVENT=\(.event)\nHEAD_SHA=\(.head_sha)"' >> "$GITHUB_ENV"
+          else
+            printf 'RUN_ID=%s\nRUN_URL=%s\nEVENT=%s\nHEAD_SHA=%s\n' "$WR_ID" "$WR_URL" "$WR_EVENT" "$WR_SHA" >> "$GITHUB_ENV"
+          fi
+      - name: The pull request
+        id: pr
+        run: |
+          set -euo pipefail
+          [ "$EVENT" = pull_request ] || { echo "a $EVENT run: no pull request to comment on"; exit 0; }
+          # Closed ones too, so a past run's results can be posted again.
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state all --search "$HEAD_SHA" --json number,headRefOid \
+            --jq "[.[] | select(.headRefOid == \"$HEAD_SHA\")][0].number // empty")
+          [ -n "$pr" ] || { echo "no pull request has head $HEAD_SHA"; exit 0; }
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+      - name: The results (data only)
+        if: steps.pr.outputs.number != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with: { pattern: "results-*", run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}", path: results }
+      - name: Comment
+        if: steps.pr.outputs.number != ''
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          [ -d results ] || { echo "the run kept no results (nothing it checks changed)"; exit 0; }
+          python3 trusted/.github/ci/check-comments.py results "$RUN_URL" "$HEAD_SHA" > comments.json
+          # This bot's comments on the pull request, by their first line (the marker).
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | {id, marker: (.body | split("\n")[0])}' > existing.json
+          jq -c '.[]' comments.json | while read -r comment; do
+            marker=$(jq -r .marker <<< "$comment")
+            jq -r .body <<< "$comment" > body.md
+            id=$(jq -rs --arg m "$marker" '[.[] | select(.marker == $m)][0].id // empty' existing.json)
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@body.md > /dev/null
+              echo "updated $marker"
+            else
+              gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md > /dev/null
+              echo "posted $marker"
+            fi
+          done

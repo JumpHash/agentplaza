@@ -10,6 +10,13 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 fail-fast = false
 failure-output = "immediate-final"
 
+# The results the pull request's Tests comment shows (.github/ci/results.py, check-results.yml):
+# <target-dir>/nextest/ci/junit.xml, with each failure's output.
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
 # arm64 Linux tests run natively on the arm64 runners, but under qemu-user when x86_64 tests and packages arm64 in
 # one run (.github/ci/Dockerfile), 15 to 50 times slower: a test there is killed after 10 minutes rather than 2,
 # so the long layout and world tests can finish.

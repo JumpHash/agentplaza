@@ -25,10 +25,32 @@ jobs:
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
       # Type-checked, then built with the wasm engine or the job fails (build.mjs honours APZ_REQUIRE_ENGINE).
-      - name: Build and test the console
-        run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run typecheck && npm run build && npm test'
+      # Each part's output is kept (tee, with pipefail from `shell: bash`) for the Web console comment.
+      - name: Install and type-check
+        id: typecheck
+        shell: bash
+        run: .github/ci/in-image.sh 'cd apps/web && npm ci && npm run typecheck' 2>&1 | tee console-typecheck.log
+      - name: Build, with the wasm engine
+        id: build
+        shell: bash
+        run: .github/ci/in-image.sh 'cd apps/web && npm run build' 2>&1 | tee console-build.log
         env:
           APZ_REQUIRE_ENGINE: "1"
+      - name: Test
+        id: test
+        shell: bash
+        run: .github/ci/in-image.sh 'cd apps/web && npm test' 2>&1 | tee console-test.log
+      # The pull request's Web console comment (check-results.yml) is made from these.
+      - name: Results for the pull request
+        if: always()
+        run: >-
+          python3 .github/ci/results.py results console "Web console"
+          --part "type-check=${{ steps.typecheck.outcome }}:console-typecheck.log"
+          --part "build (with the wasm engine)=${{ steps.build.outcome }}:console-build.log"
+          --part "tests=${{ steps.test.outcome }}:console-test.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: results-console, path: results, retention-days: 7 }
       # Only a release ships it; a pull request, queue or nightly run only tests.
       - uses: actions/cache/save@v4
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'

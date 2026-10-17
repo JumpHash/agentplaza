@@ -122,9 +122,23 @@ jobs:
           for _ in $(seq 60); do docker exec "$NET-pg" pg_isready -U apz -q && break; sleep 1; done
           echo "APZ_CI_NETWORK=$NET" >> "$GITHUB_ENV"
           echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
+      # The build directory persists: a report from an earlier run must not pass for this one's.
+      - name: Clear the last test report
+        if: inputs.tests
+        run: rm -f "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target/nextest/ci/junit.xml"
       - name: Test
+        id: test
         if: inputs.tests
         run: .github/ci/in-image.sh "cargo nextest run ${{ env.PACKAGES }} --locked --cargo-profile ${{ matrix.arch == 'x86_64' && 'release' || 'checked' }} --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
+      # The pull request's Tests comment (check-results.yml) is made from these.
+      - name: Results for the pull request
+        if: always() && inputs.tests
+        run: >-
+          python3 .github/ci/results.py results tests "Linux ${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }}"
+          --junit "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target/nextest/ci/junit.xml" --part "tests=${{ steps.test.outcome }}"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.tests
+        with: { name: "results-linux-${{ matrix.arch }}", path: results, retention-days: 7 }
       - name: Build the binaries
         if: inputs.package
         run: >-
