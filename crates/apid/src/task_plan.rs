@@ -296,7 +296,9 @@ pub fn post(
     let project = projects
         .get(pid)
         .ok_or_else(|| format!("no project {pid}"))?;
-    if !matches!(project.stage.as_str(), "implementation" | "review") {
+    // In maintenance a delivered project takes the work the owner picked.
+    let maintained = project.in_maintenance() && !project.archived;
+    if !maintained && !matches!(project.stage.as_str(), "implementation" | "review") {
         return Err(format!(
             "project {pid} is at {}: tasks can be posted only once its plan is approved",
             project.stage

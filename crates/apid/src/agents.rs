@@ -1122,7 +1122,11 @@ struct SpawnBody {
 
 #[derive(Deserialize)]
 struct TextBody {
+    #[serde(default)]
     text: String,
+    /// The owner's files (ids from `PUT /v1/files`) that go with a chat turn.
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1372,19 +1376,34 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(b) => b,
         Err(resp) => return resp,
     };
-    if let Err(e) = check_chat_text(&b.text) {
+    let text = if b.text.trim().is_empty() && !b.attachments.is_empty() {
+        "(files attached)".to_string()
+    } else {
+        b.text
+    };
+    if let Err(e) = check_chat_text(&text) {
         return Response::error(400, &e);
     }
     if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
         return resp;
     }
+    // The owner's files go with the turn: the agent may read them from now on, and the prompt says where they are.
+    let files = match crate::deliverables::attach(app, &b.attachments, agent.cid) {
+        Ok(files) => files,
+        Err(e) => return Response::error(400, &e),
+    };
+    let prompt = if files.is_empty() {
+        text
+    } else {
+        format!("{text}\n\n{files}")
+    };
     let thread = format!("op-{}", agent.cid);
     let work = app.work.enqueue(
         app,
         agent.cid,
         WorkKind::Chat,
         thread,
-        b.text,
+        prompt,
         Origin {
             owner: true,
             ..Origin::default()

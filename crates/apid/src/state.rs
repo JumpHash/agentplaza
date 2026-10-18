@@ -141,6 +141,10 @@ pub struct App {
     pub weft: crate::weft_hub::Weft,
     /// The git platforms the owner authorized (GitHub, GitLab, Forgejo) and what the plaza may use there.
     pub platforms: crate::platforms::Store,
+    /// Projects in maintenance: their signals, map, proposals and sweeps.
+    pub maintenance: crate::maintenance::Store,
+    /// Where each project runs.
+    pub environments: crate::environments::Store,
     /// The review graph's runs and recipes (review_graph), at `<state-dir>/review-graph.json`.
     pub reviews: crate::review_graph::Reviews,
     /// Postgres, the plaza's state of record (memory is the working copy).
@@ -272,6 +276,8 @@ impl App {
             harness: crate::harness_control::Store::load(&config.state_dir),
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::load(&config.state_dir),
+            maintenance: crate::maintenance::Store::load(&config.state_dir),
+            environments: crate::environments::Store::load(&config.state_dir),
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
             unfurl: crate::unfurl::Cache::default(),
@@ -405,6 +411,7 @@ impl App {
         spawn_component_savers(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
+        crate::maintenance::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         // On loopback the hub serves plain HTTP as before. Bound anywhere else it is a hub other
         // machines reach: always HTTPS, with the certificate made on first start (its SHA-256 is

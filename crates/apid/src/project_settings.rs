@@ -436,7 +436,8 @@ fn budget_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(e) => return Response::error(400, &format!("bad body: {e}")),
     };
-    if project.archived || project.stage == "delivered" {
+    // A delivered project in maintenance still funds the work the owner picks.
+    if project.archived || (project.stage == "delivered" && !project.in_maintenance()) {
         return Response::error(
             409,
             &format!(

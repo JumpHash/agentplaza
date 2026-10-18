@@ -503,6 +503,7 @@ pub(crate) fn decide_approval(
         "sanction" => crate::sanctions::decided(app, &item, approve, action),
         "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
+        "deploy" => crate::environments::decided(app, &item, approve),
         _ => {
             // A held engine call gets the decision pushed to it. The agent is told in chat only when
             // no call is waiting, or the push did not reach it (the decision must not be lost).

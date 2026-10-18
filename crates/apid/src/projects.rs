@@ -142,6 +142,48 @@ pub struct Project {
     /// The owner archived it: its agents went back to the bench, and nothing more is done for it.
     #[serde(default)]
     pub archived: bool,
+    /// How the project is worked: one of [`MODES`] (`build` unless the owner changed it).
+    #[serde(default = "build_mode")]
+    pub mode: String,
+}
+
+fn build_mode() -> String {
+    "build".into()
+}
+
+/// A way of working a project: its id, its name in the consoles, and what it means for the agents.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ModeDef {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub summary: &'static str,
+}
+
+/// The modes a project can be in. A new mode is a row here and the behaviour that reads it.
+pub const MODES: &[ModeDef] = &[
+    ModeDef {
+        id: "build",
+        label: "Build",
+        summary: "The project is being made: agents plan the work, post tasks and build them.",
+    },
+    ModeDef {
+        id: "maintenance",
+        label: "Maintenance",
+        summary: "The project is (nearly) finished: agents read its analytics, user reports and feedback, keep a map \
+                  of it and propose work with its impact and value. Nothing runs until the owner picks a proposal.",
+    },
+];
+
+/// Whether `mode` is one of [`MODES`].
+pub fn is_mode(mode: &str) -> bool {
+    MODES.iter().any(|m| m.id == mode)
+}
+
+impl Project {
+    /// True when the project is in maintenance: its work is what the owner picked from the proposals.
+    pub fn in_maintenance(&self) -> bool {
+        self.mode == "maintenance"
+    }
 }
 
 /// Who is acting: an agent (cid, name, role) or the owner (cid 0, role "owner").
@@ -324,6 +366,7 @@ impl Store {
                 updated_ms: now,
                 paused: false,
                 archived: false,
+                mode: build_mode(),
             };
             items.push(project.clone());
             Ok(project)
@@ -377,6 +420,49 @@ impl Store {
                 p.history.push(event(&Actor::owner(), what, "", now));
                 p.updated_ms = now;
             }
+            Ok(p.clone())
+        })
+    }
+
+    /// Puts project `id` in `mode` (one of [`MODES`]). Back to build, a delivered project opens again at
+    /// implementation, so its agents can work on it; maintenance keeps its stage.
+    pub fn set_mode(&self, id: &str, mode: &str) -> Result<Project, String> {
+        if !is_mode(mode) {
+            let known: Vec<&str> = MODES.iter().map(|m| m.id).collect();
+            return Err(format!(
+                "unknown mode {mode:?}: use one of {}",
+                known.join(", ")
+            ));
+        }
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.mode != mode {
+                let now = now_ms();
+                p.mode = mode.to_string();
+                let mut note = format!("now in {mode}");
+                if mode == "build" && p.stage == "delivered" {
+                    p.stage = "implementation".into();
+                    note.push_str(", open again at implementation");
+                }
+                p.history.push(event(&Actor::owner(), "mode", &note, now));
+                p.updated_ms = now;
+            }
+            Ok(p.clone())
+        })
+    }
+
+    /// Marks an adopted project delivered: it was finished before the plaza knew it.
+    pub fn mark_delivered(&self, id: &str, note: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            let now = now_ms();
+            p.stage = "delivered".into();
+            p.history
+                .push(event(&Actor::owner(), "advanced", note, now));
+            p.updated_ms = now;
             Ok(p.clone())
         })
     }
@@ -893,8 +979,9 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents go back to the bench, and the rest of its budget to the plaza.
-            if project.stage == "delivered" {
+            // Delivered: the project's agents go back to the bench, and the rest of its budget to the plaza (in
+            // maintenance they stay: the project is still looked after).
+            if project.stage == "delivered" && !project.in_maintenance() {
                 crate::membership::release_project(app, &project.id);
                 crate::project_settings::return_rest(app, &project.id);
             }
@@ -1051,6 +1138,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(
             RouteDoc::new("Archive a project: its agents go back to the bench").errors(&[404, 409]),
         )
+        .get("/v1/project-modes", |_, _, _| Response::json(200, &MODES))
+        .doc(RouteDoc::new("List the modes a project can be in"))
+        .post("/v1/projects/{id}/mode", mode_route)
+        .doc(
+            RouteDoc::new("Put a project in a mode: build or maintenance").errors(&[400, 404, 409]),
+        )
         .post("/v1/projects/{id}/approve", approve_route)
         .doc(RouteDoc::new("Approve a project's current stage").errors(&[409]))
         .post("/v1/projects/{id}/veto", veto_route)
@@ -1083,6 +1176,33 @@ fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     };
     app.bus.publish("project", &project);
     Response::json(201, &project)
+}
+
+/// `POST /v1/projects/{id}/mode` `{mode}`: the owner changes how the project is worked. Into maintenance, its
+/// watchers sweep at once (they map the project first); back to build, a delivered project opens again.
+fn mode_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    if app.projects.get(id).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+    let Some(mode) = body.get("mode").and_then(Value::as_str) else {
+        return Response::error(400, "missing mode");
+    };
+    if !is_mode(mode) {
+        return Response::error(400, &format!("unknown mode {mode:?}"));
+    }
+    let project = match app.projects.set_mode(id, mode) {
+        Ok(project) => project,
+        Err(e) => return Response::error(409, &e),
+    };
+    if project.in_maintenance() {
+        crate::maintenance::entered(app, id);
+    }
+    // A delivered project in maintenance, or one open again for build, has work for its members again.
+    app.work.dispatch_idle(app);
+    app.bus.publish("project", &project);
+    Response::json(200, &project)
 }
 
 /// A change the owner makes to a project's life.

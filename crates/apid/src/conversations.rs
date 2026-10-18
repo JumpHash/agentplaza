@@ -54,6 +54,9 @@ pub struct Message {
     /// How an answer's work ended: `done`, `failed` or `stopped`. None on the owner's messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The files the owner attached: `[{id, name, size, type}]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Value>,
 }
 
 /// One conversation with the orchestrator.
@@ -254,6 +257,7 @@ fn owner_message(text: &str, now: u64) -> Message {
         at_ms: now,
         work: 0,
         status: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -383,17 +387,34 @@ fn queue(
     })
 }
 
-/// Opens a conversation with the orchestrator and queues its first message `text`. `mcp`: it came over the hub's
-/// MCP server.
-pub fn open(app: &App, text: &str, mcp: bool) -> Result<Conversation, (u16, String)> {
-    crate::agents::check_chat_text(text).map_err(|e| (400, e))?;
+/// Opens a conversation with the orchestrator and queues its first message `text`, with the owner's attachments
+/// (file ids). `mcp`: it came over the hub's MCP server.
+pub fn open_with(
+    app: &App,
+    text: &str,
+    attachments: &[String],
+    mcp: bool,
+) -> Result<Conversation, (u16, String)> {
+    let text = with_files_text(text, attachments);
+    crate::agents::check_chat_text(&text).map_err(|e| (400, e))?;
     let agent = orchestrator(app)?;
     reachable(app, &agent)?;
+    let files = crate::deliverables::attach(app, attachments, agent.cid).map_err(|e| (400, e))?;
     let opened = app
         .conversations
-        .open(agent.cid, text, apz_plaza::now_ms())
+        .open(agent.cid, &text, apz_plaza::now_ms())
         .map_err(|e| (500, format!("conversations not saved: {e}")))?;
-    let conversation = queue(app, &opened.id, agent.cid, text, OWNER, mcp)?;
+    if !attachments.is_empty() {
+        let views = crate::deliverables::attachment_views(app, attachments);
+        app.conversations.update(&opened.id, |c| {
+            if let Some(first) = c.messages.first_mut() {
+                first.attachments = views;
+            }
+            Ok(())
+        })?;
+    }
+    let prompt = join_files(&text, &files);
+    let conversation = queue(app, &opened.id, agent.cid, &prompt, OWNER, mcp)?;
     app.bus
         .publish("owner_conversation", &view(app, &conversation));
     Ok(conversation)
@@ -401,6 +422,37 @@ pub fn open(app: &App, text: &str, mcp: bool) -> Result<Conversation, (u16, Stri
 
 /// Adds the owner's `text` to conversation `id` and queues it for its orchestrator.
 pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (u16, String)> {
+    say_with(app, id, text, &[], mcp)
+}
+
+/// A message with no words but files says so.
+fn with_files_text(text: &str, attachments: &[String]) -> String {
+    if text.trim().is_empty() && !attachments.is_empty() {
+        "(files attached)".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+/// The prompt: the owner's words, then the lines about the attached files.
+fn join_files(text: &str, files: &str) -> String {
+    if files.is_empty() {
+        text.to_string()
+    } else {
+        format!("{text}\n\n{files}")
+    }
+}
+
+/// [`say`], with the owner's attachments (file ids).
+pub fn say_with(
+    app: &App,
+    id: &str,
+    text: &str,
+    attachments: &[String],
+    mcp: bool,
+) -> Result<Conversation, (u16, String)> {
+    let text = with_files_text(text, attachments);
+    let text = text.as_str();
     crate::agents::check_chat_text(text).map_err(|e| (400, e))?;
     let conversation = app
         .conversations
@@ -425,8 +477,13 @@ pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (
     let now = apz_plaza::now_ms();
     // The owner's edits of the draft since the orchestrator last read it are pointed out with this message.
     let mut note = None;
+    let files =
+        crate::deliverables::attach(app, attachments, conversation.cid).map_err(|e| (400, e))?;
+    let views = crate::deliverables::attachment_views(app, attachments);
     app.conversations.update(id, |c| {
-        c.push(owner_message(text, now));
+        let mut message = owner_message(text, now);
+        message.attachments = views;
+        c.push(message);
         if let Some(draft) = &c.draft
             && draft.revision > c.draft_seen
             && draft.updated_by == OWNER
@@ -442,6 +499,7 @@ pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (
         ),
         None => text.to_string(),
     };
+    let prompt = join_files(&prompt, &files);
     let conversation = queue(app, id, agent.cid, &prompt, OWNER, mcp)?;
     app.bus
         .publish("owner_conversation", &view(app, &conversation));
@@ -465,6 +523,7 @@ pub fn notify(app: &App, id: &str, shown: &str, prompt: &str) {
         at_ms: apz_plaza::now_ms(),
         work: 0,
         status: None,
+        attachments: Vec::new(),
     };
     if let Err((_, e)) = app.conversations.update(id, |c| {
         c.push(message);
@@ -499,6 +558,7 @@ pub fn work_ended(app: &App, item: &WorkItem, status: &str, summary: &str) {
         at_ms: apz_plaza::now_ms(),
         work: item.id,
         status: Some(status.to_string()),
+        attachments: Vec::new(),
     };
     let added = app.conversations.update(id, |c| {
         c.push(answer);
@@ -544,12 +604,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
 
 #[derive(Deserialize)]
 struct TextBody {
+    #[serde(default)]
     text: String,
+    /// The owner's files (ids from `PUT /v1/files`) that go with the message.
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
-fn text_body(req: &Request) -> Result<String, Response> {
+fn text_body(req: &Request) -> Result<(String, Vec<String>), Response> {
     req.json::<TextBody>()
-        .map(|body| body.text)
+        .map(|body| (body.text, body.attachments))
         .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
@@ -573,10 +637,10 @@ fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     Response::json(200, &rows)
 }
 
-/// Body: `{text}`, the first message.
+/// Body: `{text, attachments?}`, the first message.
 fn open_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     match text_body(req) {
-        Ok(text) => answer(app, open(app, &text, false), 201),
+        Ok((text, files)) => answer(app, open_with(app, &text, &files, false), 201),
         Err(refused) => refused,
     }
 }
@@ -626,10 +690,10 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     answer(app, result, 200)
 }
 
-/// Body: `{text}`.
+/// Body: `{text, attachments?}`.
 fn message_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     match text_body(req) {
-        Ok(text) => answer(app, say(app, p.get("id"), &text, false), 200),
+        Ok((text, files)) => answer(app, say_with(app, p.get("id"), &text, &files, false), 200),
         Err(refused) => refused,
     }
 }
@@ -674,6 +738,7 @@ mod tests {
             at_ms: 30,
             work,
             status: Some("done".into()),
+            attachments: Vec::new(),
         }
     }
 
@@ -715,6 +780,7 @@ mod tests {
                     at_ms: 31,
                     work: 42,
                     status: None,
+                    attachments: Vec::new(),
                 });
                 Ok(())
             })

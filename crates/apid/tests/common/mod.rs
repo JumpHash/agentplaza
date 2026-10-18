@@ -135,6 +135,27 @@ impl Hub {
         }
     }
 
+    /// The owner's call with a raw body (a file's bytes) of `content_type`.
+    pub fn send_bytes(
+        &self,
+        method: &str,
+        path: &str,
+        bytes: &[u8],
+        content_type: &str,
+    ) -> (u16, Value) {
+        let reply = apz_http::client::send_with(
+            self.port,
+            method,
+            path,
+            &[("content-type", content_type)],
+            Some(bytes),
+            CALL_TIMEOUT,
+        )
+        .unwrap_or_else(|err| panic!("{method} {path}: {err}\n{}", self.log()));
+        let value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        (reply.status, value)
+    }
+
     fn send(
         &self,
         method: &str,

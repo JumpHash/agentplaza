@@ -981,6 +981,31 @@ struct ConnectBody {
     export: bool,
 }
 
+/// Connects repository `repo` of authorization `id` to `project`, as the connect route does: for adopting a project
+/// that lives on a platform already ([`crate::adopt`]).
+pub fn connect_project(
+    app: &App,
+    id: &str,
+    repo: &str,
+    project: &str,
+    sign: bool,
+) -> Result<Value, (u16, String)> {
+    let integ = app
+        .platforms
+        .integration(id)
+        .ok_or((404, format!("no authorization {id}")))?;
+    connect(
+        app,
+        &integ,
+        &ConnectBody {
+            repo: repo.to_string(),
+            project: project.to_string(),
+            sign,
+            export: false,
+        },
+    )
+}
+
 /// A granted repository joins a project: the connection (with the owner as the author), the history imported
 /// when the project's repo has none, the signing key registered when asked.
 fn connect(app: &App, integ: &Integration, body: &ConnectBody) -> Result<Value, (u16, String)> {

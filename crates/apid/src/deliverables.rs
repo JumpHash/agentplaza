@@ -370,6 +370,92 @@ pub fn routes(router: Router<App>) -> Router<App> {
             agent_get_route,
         )
         .doc(RouteDoc::new("Let an agent download a file it can read").errors(&[404]))
+        .route("PUT", "/v1/files", owner_put_route)
+        .doc(
+            RouteDoc::new("Upload a file of the owner's to attach to a message (?name=)")
+                .status(201)
+                .errors(&[400, 413, 500]),
+        )
+}
+
+/// The owner's attachments: at most this big.
+const MAX_ATTACHMENT: usize = 100 << 20;
+
+/// `PUT /v1/files?name=&title=`: a file the owner attaches to a chat or a conversation. It is private (only the
+/// owner reads it) until a message carries it: then the agent it goes to may read it ([`attach`]).
+fn owner_put_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let Some(raw) = req.query_param("name") else {
+        return Response::error(400, "name is required");
+    };
+    let name = match clean_name(&decode(raw)) {
+        Ok(name) => name,
+        Err(e) => return Response::error(400, &e),
+    };
+    if req.body.is_empty() {
+        return Response::error(400, "the body is empty");
+    }
+    if req.body.len() > MAX_ATTACHMENT {
+        return Response::error(
+            413,
+            &format!("an attachment is at most {} MiB", MAX_ATTACHMENT >> 20),
+        );
+    }
+    let upload = Upload {
+        kind: "attachment".to_string(),
+        audience: "private".to_string(),
+        allowed: Vec::new(),
+        title: query(req, "title").unwrap_or_else(|| name.clone()),
+        description: None,
+        task: None,
+        content_type: optional(req.header("content-type"))
+            .filter(|t| t != "application/octet-stream")
+            .unwrap_or_else(|| guess_type(&name).to_string()),
+        author: "owner".to_string(),
+        author_cid: 0,
+        name,
+    };
+    match app.deliverables.add(upload, &req.body) {
+        Ok(item) => {
+            app.bus.publish("file", &item);
+            Response::json(201, &item)
+        }
+        Err(e) => Response::error(500, &e),
+    }
+}
+
+/// The owner's attachments `ids` go with a message to agent `cid`: the agent may read each from now on. Answers the
+/// lines the message's prompt carries about them, or why one cannot go.
+pub fn attach(app: &App, ids: &[String], cid: u64) -> Result<String, String> {
+    if ids.is_empty() {
+        return Ok(String::new());
+    }
+    if ids.len() > 20 {
+        return Err("at most 20 attachments a message".into());
+    }
+    let mut lines = vec!["Attached files (read one with plaza_get_file, or download http://plaza.gateway/files/<id>):".to_string()];
+    for id in ids {
+        let meta = app
+            .deliverables
+            .meta(id)
+            .ok_or_else(|| format!("no file {id}"))?;
+        if meta.author_cid != 0 {
+            return Err(format!("file {id} is not the owner's"));
+        }
+        app.deliverables.grant(id, 0, &[cid])?;
+        lines.push(format!(
+            "- {} ({}, {} bytes): id {}",
+            meta.title, meta.content_type, meta.size, meta.id
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// The attachments as the console shows them on a message: `[{id, name, size, type}]`.
+pub fn attachment_views(app: &App, ids: &[String]) -> Vec<serde_json::Value> {
+    ids.iter()
+        .filter_map(|id| app.deliverables.meta(id))
+        .map(|m| json!({ "id": m.id, "name": m.title, "size": m.size, "type": m.content_type }))
+        .collect()
 }
 
 /// Every deliverable, or only one `kind` when the query names it.

@@ -86,6 +86,12 @@ const ALWAYS: &[&str] = &[
     "weft_show",
     "weft_blame",
     "weft_map",
+    "plaza_maintenance",
+    "plaza_maintenance_map",
+    "plaza_maintenance_propose",
+    "plaza_maintenance_signal",
+    "plaza_environments",
+    "plaza_deploy",
 ];
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
@@ -163,6 +169,8 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::society::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::projects::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::maintenance::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::environments::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
@@ -203,6 +211,20 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     );
     specs.extend(crate::library::specs_for(app, agent.cid));
     specs.extend(crate::mcp::specs_for_agent(app, agent));
+    // A project's maintenance and environment tools are offered only where they apply: the maintenance tools on a
+    // project in maintenance, the environment tools on one that has environments.
+    let project = app
+        .members
+        .project_of(agent.cid)
+        .and_then(|id| app.projects.get(&id));
+    let maintained = project.as_ref().is_some_and(|p| p.in_maintenance());
+    let has_envs = project
+        .as_ref()
+        .is_some_and(|p| !crate::environments::list(app, &p.id).is_empty());
+    specs.retain(|spec| {
+        (maintained || !crate::maintenance::TOOLS.contains(&spec.name.as_str()))
+            && (has_envs || !crate::environments::TOOLS.contains(&spec.name.as_str()))
+    });
     // The engines offered are the owner's enabled ones (`engines_enabled`).
     let enabled = app.settings.get().engines_enabled;
     for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
@@ -763,6 +785,8 @@ fn spec(name: &str) -> Option<ToolSpec> {
             let (description, input_schema) = crate::society::spec(other)
                 .or_else(|| crate::toolbox::spec(other))
                 .or_else(|| crate::projects::spec(other))
+                .or_else(|| crate::maintenance::spec(other))
+                .or_else(|| crate::environments::spec(other))
                 .or_else(|| crate::harness_control::spec(other))
                 .or_else(|| crate::agent_proposals::spec(other))
                 .or_else(|| crate::drafts::spec(other))
@@ -1274,6 +1298,12 @@ fn host_call(
         other if crate::projects::TOOLS.contains(&other) => {
             crate::projects::run(app, agent, other, input)
         }
+        other if crate::maintenance::TOOLS.contains(&other) => {
+            crate::maintenance::run(app, agent, other, input)
+        }
+        other if crate::environments::TOOLS.contains(&other) => {
+            crate::environments::run(app, agent, other, input)
+        }
         other if crate::harness_control::TOOLS.contains(&other) => {
             crate::harness_control::run(app, agent, other, input)
         }
@@ -1374,7 +1404,8 @@ fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
     match app.projects.get(pid) {
         None => Err(format!("no project {pid}")),
         Some(p) if p.archived => Err(format!("project {pid} is archived: it takes no new tasks")),
-        Some(_) => Ok(()),
+        // In maintenance the project's work is what the owner picked from the proposals.
+        Some(_) => crate::maintenance::refuse_agent_tasks(app, pid),
     }
 }
 

@@ -17,6 +17,7 @@
 )]
 
 mod acp;
+mod adopt;
 mod agent_proposals;
 mod agents;
 mod api;
@@ -35,6 +36,7 @@ mod e2b_obs;
 mod e2b_tpl;
 mod egress_inject;
 mod engine_feed;
+mod environments;
 mod events;
 mod fleet;
 mod foundry;
@@ -50,6 +52,7 @@ mod library;
 mod lifecycle;
 mod llm_proxy;
 mod looks;
+mod maintenance;
 mod mcp;
 mod membership;
 mod memory;
@@ -64,6 +67,7 @@ mod placement;
 mod platforms;
 mod plaza;
 mod prices;
+mod project_files;
 mod project_settings;
 mod projects;
 mod prompts;
