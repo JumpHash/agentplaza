@@ -1,0 +1,31 @@
+meta {
+  name: Land the uploaded file on main as one change
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/files
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Add the hello file",
+    "folder": "docs",
+    "files": [{"path": "hello.txt", "hash": "{{fileHash}}"}]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 5000
+  res.body.files: eq 1
+  res.body.title: eq "Add the hello file"
+  res.body.landed.change: isString
+}

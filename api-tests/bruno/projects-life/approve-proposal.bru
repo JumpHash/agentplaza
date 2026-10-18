@@ -1,0 +1,35 @@
+meta {
+  name: Answer 404 when approving a proposal that does not exist
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/maintenance/proposals/{{proposal}}/approve
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"note": "Do it"}
+}
+
+vars:pre-request {
+  proposal: mp999
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: eq "no such proposal"
+}
+
+docs {
+  The scratch hub has no agents, so the watchers never propose anything and no proposal exists: this checks the 404.
+  On a hub where they have proposed one, set `proposal` to its id (mp1, mp2 ...) from GET maintenance; approving a
+  waiting proposal answers 200 with state approved and the task it became.
+}

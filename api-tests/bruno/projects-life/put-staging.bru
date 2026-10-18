@@ -1,0 +1,31 @@
+meta {
+  name: Put a staging environment that tracks main
+  type: http
+  seq: 12
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/environments/staging
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "staging",
+    "url": "https://staging.example.com",
+    "track": "main"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.name: eq "staging"
+  res.body.track: eq "main"
+  res.body.protected: eq false
+}

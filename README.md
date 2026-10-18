@@ -150,6 +150,7 @@ the desktop app.
   talked into being with the orchestrator: it drafts the tasks, the team and the budget beside the conversation, and
   Start opens, staffs and plans it at once. A project overrides the plaza's settings for its agents (models, effort,
   limits, permissions, budget), and the consoles switch between projects.
+- **Projects after launch.** A project is in build or maintenance. In maintenance its agents read its feedback, reports and analytics, keep a map of it and propose work with its value and risk; the owner picks each proposal. Environments run deploys, and protected ones wait for the owner. A project that exists can be brought in from a git platform, a git address or a folder, and files can be dropped into projects and chats (`docs/guide/projects-after-launch.md`).
 - **The IDE.** A workspace for the agents' repositories, modelled on Coral and t3code (`docs/design/ide.md`). The
   agent's conversation is at the centre, with the code, terminal and diffs around it.
 - **Governance.** The board for posts and replies, the council for motions and votes, and the laws. The laws are

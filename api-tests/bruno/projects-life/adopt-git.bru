@@ -1,0 +1,51 @@
+meta {
+  name: Bring in a finished project from a git address
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/adopt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Scratch shop",
+    "goal": "A finished storefront, kept up after launch",
+    "kind": "code",
+    "mode": "maintenance",
+    "finished": true,
+    "source": { "git": "https://git.invalid/scratch/shop.git", "branch": "main" },
+    "environments": [
+      { "name": "production", "kind": "production", "url": "https://shop.example.com" }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 30000
+  res.body.project.mode: eq "maintenance"
+  res.body.environments: isArray
+  res.body.problems: isArray
+}
+
+tests {
+  test("the project opens with its production environment, which is protected", function () {
+    const b = res.getBody();
+    expect(b.project.id).to.match(/^pr\d+$/);
+    expect(b.environments.map((e) => e.name)).to.eql(["production"]);
+    expect(b.environments[0].track).to.eql("releases");
+    expect(b.environments[0].protected).to.eql(true);
+  });
+}
+
+script:post-response {
+  bru.setVar("projectId", res.getBody().project.id);
+}

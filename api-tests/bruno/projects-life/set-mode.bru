@@ -1,0 +1,26 @@
+meta {
+  name: Put the project back in build
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "build"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "build"
+  res.body.stage: eq "implementation"
+}
