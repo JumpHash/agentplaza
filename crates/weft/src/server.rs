@@ -53,6 +53,7 @@ use crate::wire;
 pub struct Hub {
     pub store: Store,
     pub derived: Derived,
+    pub lander: crate::landing::Lander,
     stopped: AtomicBool,
     /// Every (repo, path) a blob has appeared at, for path rules on object reads.
     paths_of: Mutex<(u64, HashMap<Hash, BTreeSet<(String, String)>>)>,
@@ -65,6 +66,7 @@ impl Hub {
         Ok(Arc::new(Hub {
             store,
             derived,
+            lander: Default::default(),
             stopped: AtomicBool::new(false),
             paths_of: Mutex::new((0, HashMap::new())),
         }))
@@ -75,6 +77,7 @@ impl Hub {
         Arc::new(Hub {
             store,
             derived,
+            lander: Default::default(),
             stopped: AtomicBool::new(false),
             paths_of: Mutex::new((0, HashMap::new())),
         })
@@ -114,6 +117,51 @@ impl Hub {
                     _ => {}
                 }
                 hub.derived.runtime.unload_idle(Duration::from_secs(600));
+            }
+        });
+    }
+
+    /// Lands what is queued, as it comes, without waiting on re-checks (a plaza without apid, and tests).
+    pub fn start_auto_land(self: &Arc<Self>) {
+        let hub = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(300));
+                let Some(hub) = hub.upgrade() else { return };
+                if hub.stopped() {
+                    continue;
+                }
+                let queues: Vec<(String, String)> = {
+                    let st = hub.store.state();
+                    st.repos
+                        .values()
+                        .flat_map(|r| {
+                            r.queues
+                                .iter()
+                                .filter(|(_, q)| !q.is_empty())
+                                .map(|(k, _)| (r.name.clone(), k.clone()))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect()
+                };
+                for (repo, reference) in queues {
+                    for _ in 0..8 {
+                        match hub.lander.step(
+                            &hub.store,
+                            &hub.derived,
+                            &repo,
+                            &reference,
+                            crate::landing::Options::default(),
+                        ) {
+                            Ok(crate::landing::Step::Landed { .. }) => continue,
+                            Ok(_) => break,
+                            Err(e) => {
+                                eprintln!("weft: landing {repo}:{reference}: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
     }
@@ -579,6 +627,51 @@ pub fn router() -> Router<H> {
                 Err(e) => fail(404, e),
             }
         })
+        .post("/v1/repos/{repo}/queue/step", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let reference = v["ref"].as_str().unwrap_or("main").to_string();
+            let mut opts = crate::landing::Options { recheck: v["recheck"].as_bool().unwrap_or(false), ..Default::default() };
+            if let Some(ms) = v["stall_ms"].as_u64() {
+                opts.stall_ms = ms;
+            }
+            match h.lander.step(&h.store, &h.derived, p.get("repo"), &reference, opts) {
+                Ok(step) => ok(json!(step)),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/repos/{repo}/queue/report", |h: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Ok(digest) = serde_json::from_value::<Hash>(v["digest"].clone()) else { return fail(400, "report needs a digest") };
+            if h.lander.report(&digest, v["ok"].as_bool().unwrap_or(false)) { ok(json!({ "reported": digest })) } else { fail(404, "no such candidate") }
+        })
+        .get("/v1/repos/{repo}/queue/candidates", |h: &H, req, p| {
+            let reference = q(req, "ref").unwrap_or_else(|| "main".into());
+            ok(json!({ "candidates": h.lander.candidates(p.get("repo"), &reference) }))
+        })
+        .get("/v1/repos/{repo}/refs/{ref}", |h: &H, _, p| match crate::landing::chain(&h.store, p.get("repo"), p.get("ref")) {
+            Ok(c) => ok(json!({ "repo": p.get("repo"), "ref": p.get("ref"), "revisions": c })),
+            Err(e) => fail(404, e),
+        })
+        .post("/v1/changes/{change}/revert", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let author = match caller(req) {
+                Ok(a) => a,
+                Err(r) => return r,
+            };
+            match crate::landing::revert(&h.store, &h.derived, p.get("change"), author, v["reason"].as_str().unwrap_or("")) {
+                Ok(name) => ok(json!({ "change": name, "reverts": p.get("change") })),
+                Err(e) => refused(e),
+            }
+        })
         .post("/v1/hub", |h: &H, req, _| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
@@ -773,6 +866,14 @@ pub fn router() -> Router<H> {
                 Ok(v) => v,
                 Err(e) => return fail(400, format!("not JSON: {e}")),
             };
+            if let Some(d) = v["candidate"].as_str() {
+                // A landing candidate's tree, for the re-check.
+                let Ok(digest) = d.parse::<Hash>() else { return fail(400, "not a digest") };
+                return match h.lander.candidate_tree(&h.store, &digest) {
+                    Ok(tree) => ok(json!({ "candidate": d, "files": tree.iter().map(|(path, e)| json!({ "path": path, "hash": e.hash, "mode": e.mode })).collect::<Vec<_>>() })),
+                    Err(e) => fail(404, e),
+                };
+            }
             let Some(rev) = v["revision"].as_str() else { return fail(400, "want needs a revision") };
             let repo = match rev_repo(h, rev) {
                 Ok(r) => r,

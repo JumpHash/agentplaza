@@ -237,6 +237,7 @@ const HUB_KINDS: &[&str] = &[
     "release.propose",
     "release.export",
     "abandon",
+    "lane.rebase",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -926,6 +927,25 @@ impl State {
                             exported: BTreeMap::new(),
                         },
                     );
+                }
+                s
+            }
+            "lane.rebase" => {
+                let r: LaneRebase = parse(&stmt.body, kind)?;
+                let c = self.change(&r.change)?;
+                if matches!(c.state, ChangeState::Landed | ChangeState::Abandoned) {
+                    return Err(format!("{} is {:?}; it cannot move", r.change, c.state));
+                }
+                if r.onto != "root" && !self.revisions.contains_key(&r.onto) {
+                    return Err(format!("no revision {}", r.onto));
+                }
+                let s = format!("{} now starts from {} ({})", r.change, r.onto, r.reason);
+                if !dry {
+                    let c = self.change_mut(&r.change)?;
+                    c.base = r.onto;
+                    if c.state == ChangeState::Conflict {
+                        c.state = ChangeState::Open;
+                    }
                 }
                 s
             }

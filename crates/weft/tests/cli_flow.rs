@@ -43,15 +43,17 @@ impl Run {
     }
 }
 
-fn serve(args: &[&str], port_file: &Path) -> (Child, u16) {
-    let child = Command::new(WEFT)
-        .args(args)
-        .arg("--port-file")
-        .arg(port_file)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
+fn serve(args: &[&str], port_file: &Path) -> (Kill, u16) {
+    let child = Kill(
+        Command::new(WEFT)
+            .args(args)
+            .arg("--port-file")
+            .arg(port_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
     let start = Instant::now();
     loop {
         if let Some(p) = std::fs::read_to_string(port_file)
@@ -125,7 +127,7 @@ fn a_research_lane_through_the_cli_and_a_node_cache() {
         ],
         &dir.join("hub.port"),
     );
-    let _hub = Kill(hub);
+    let _hub = hub;
     let hub_url = format!("http://127.0.0.1:{port}/v1");
     run.env = vec![
         ("WEFT_HUB".into(), hub_url.clone()),
@@ -318,7 +320,7 @@ fn a_research_lane_through_the_cli_and_a_node_cache() {
         ],
         &dir.join("cache.port"),
     );
-    let _cache = Kill(cache);
+    let _cache = cache;
     let via_cache = format!("http://127.0.0.1:{cport}/v1");
     let other = dir.join("other-vm");
     run.ok(

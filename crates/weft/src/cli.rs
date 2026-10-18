@@ -19,7 +19,7 @@ use crate::workdir::{self, Lane, Workdir};
 
 pub const USAGE: &str = "weft: AgentPlaza's version control
 
-  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--port-file F]
+  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--port-file F] [--auto-land]
   weft serve --cache --dir <dir> --upstream <url> [--port N] [--token-file F] [--upstream-token-file F] [--max-mb N]
   weft init --state <dir> --plaza <name> --owner-key <file> --hub-key <file>
   weft keys new <file> | keys show <file> | keys certify <public-hex> --actor agent:<cid> [--name N --role R --project P]
@@ -60,6 +60,8 @@ const SWITCHES: &[&str] = &[
     "dry-run",
     "force",
     "help",
+    "auto-land",
+    "recheck",
 ];
 
 impl Args {
@@ -578,6 +580,9 @@ fn serve(cx: &Ctx) -> Result<(), String> {
         };
         let hub = crate::server::Hub::open(&state, hub_key)?;
         hub.start_deriving();
+        if a.has("auto-land") {
+            hub.start_auto_land();
+        }
         crate::server::spawn(hub, port, token).map_err(|e| e.to_string())?
     };
     let port = handle.port();

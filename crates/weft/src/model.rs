@@ -254,6 +254,15 @@ pub struct Abandon {
     pub reason: String,
 }
 
+/// `lane.rebase`: the change's next revisions start from `onto` (after a clash, or when the lane below it landed).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LaneRebase {
+    pub change: String,
+    pub onto: RevId,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// `undo`: undoes an earlier op, where that makes sense.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Undo {
