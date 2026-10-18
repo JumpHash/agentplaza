@@ -1,0 +1,26 @@
+meta {
+  name: List only the tasks that can be claimed now
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks?ready=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tasks: isArray
+}
+
+tests {
+  test("the first task is ready and the one after it is not listed", function () {
+    const ids = res.getBody().tasks.map((task) => task.id);
+    expect(res.getBody().tasks.every((task) => task.ready)).to.equal(true);
+    expect(ids).to.include(bru.getVar("firstTaskId"));
+    expect(ids).to.not.include(bru.getVar("secondTaskId"));
+  });
+}

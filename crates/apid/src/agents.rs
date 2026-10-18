@@ -977,7 +977,8 @@ pub fn check_chat_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The API view of an agent: its fields, resolved model, tier, work, queue.
+/// The API view of an agent: its fields, resolved model, tier, work, queue, and its current step
+/// ([`crate::steps`]).
 pub(crate) fn view(app: &App, agent: &Agent) -> Value {
     let has_role_model = app.settings.get().role_models.contains_key(&agent.role);
     let mut v = serde_json::to_value(agent).unwrap_or(Value::Null);
@@ -991,6 +992,7 @@ pub(crate) fn view(app: &App, agent: &Agent) -> Value {
         obj.insert("role_label".into(), json!(role_label(&agent.role)));
         obj.insert("work".into(), json!(app.work.current(agent.cid)));
         obj.insert("queue".into(), json!(app.work.queued(agent.cid).len()));
+        obj.insert("step".into(), json!(crate::steps::of(agent.cid)));
     }
     v
 }

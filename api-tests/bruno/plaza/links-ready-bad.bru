@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a ready filter that is not true or false
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks?ready=maybe
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

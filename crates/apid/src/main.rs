@@ -75,6 +75,8 @@ mod society;
 mod spawned;
 mod state;
 mod stations;
+mod steps;
+mod task_graph;
 mod toolbox;
 mod toolbox_survey;
 mod tools;

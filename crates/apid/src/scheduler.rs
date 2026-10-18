@@ -145,6 +145,17 @@ impl Lanes {
     }
 
     /// Whether an item for plaza task `task` is in flight or waiting.
+    /// The agent whose lane holds work item `work`, in flight or waiting.
+    fn holder_of(&self, work: u64) -> Option<u64> {
+        self.lanes.iter().find_map(|(cid, lane)| {
+            lane.current
+                .iter()
+                .chain(lane.queue.iter())
+                .any(|item| item.id == work)
+                .then_some(*cid)
+        })
+    }
+
     fn holds_task(&self, task: &str) -> bool {
         self.lanes.values().any(|lane| {
             lane.current
@@ -244,6 +255,17 @@ impl Queues {
     pub fn current(&self, cid: u64) -> Option<WorkItem> {
         // contract
         self.locked().current(cid)
+    }
+
+    /// The reviewer on `task` while it awaits a verdict: the agent whose lane holds its review.
+    pub fn reviewer_of(&self, task: &str) -> Option<u64> {
+        let work = self
+            .reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(task)
+            .map(|review| review.work)?;
+        self.locked().holder_of(work)
     }
 
     /// Items waiting behind the current one.
@@ -1488,6 +1510,19 @@ mod tests {
             vec![3]
         );
         assert_eq!(lanes.current(7).map(|i| i.id), Some(1));
+    }
+
+    #[test]
+    fn a_work_item_is_found_in_the_lane_that_holds_it() {
+        let mut lanes = Lanes::default();
+        lanes.push(item(1, 7, None));
+        lanes.push(item(2, 7, None));
+        lanes.push(item(3, 8, None));
+        assert!(lanes.start_next(7, 0).is_some());
+        assert_eq!(lanes.holder_of(1), Some(7), "in flight");
+        assert_eq!(lanes.holder_of(2), Some(7), "waiting");
+        assert_eq!(lanes.holder_of(3), Some(8));
+        assert_eq!(lanes.holder_of(4), None);
     }
 
     #[test]

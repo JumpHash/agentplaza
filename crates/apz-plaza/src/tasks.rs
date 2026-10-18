@@ -80,7 +80,7 @@
 //! `TaskLifecycle.tla`'s release, not a transition either model lacks.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use serde::{Deserialize, Serialize};
 
@@ -624,6 +624,11 @@ struct TaskInner {
     /// change only while the task is open ([`TaskLedger::relink`]); a claimed
     /// or finished task keeps the links it had.
     after: Vec<Link>,
+    /// The tasks that run after this one: the other end of their links, kept
+    /// by the ledger as links are made and changed. When this task ends, each
+    /// of them that is still open is announced again, since it may now be
+    /// ready, or blocked. Weak, so a task does not keep the tasks after it.
+    dependents: Vec<Weak<Task>>,
 }
 
 /// A task another one runs after. The link holds the task itself, so a task
@@ -647,6 +652,15 @@ impl std::fmt::Debug for Link {
 /// The ids of the tasks `after` links to, in order.
 fn link_ids(after: &[Link]) -> Vec<String> {
     after.iter().map(|Link(task)| task.id.clone()).collect()
+}
+
+/// Announces each of `dependents` that still exists and is open. The caller
+/// holds no task's lock: a dependent's event reads the state of the task that
+/// just ended.
+fn announce(dependents: &[Weak<Task>]) {
+    for dependent in dependents.iter().filter_map(Weak::upgrade) {
+        dependent.announce();
+    }
 }
 
 /// Where a task's links stand.
@@ -899,14 +913,10 @@ impl Task {
         }
         let assignee = agent.assignee_id();
         inner.state = TaskState::Claimed;
-        inner.assignee_id = Some(assignee.clone());
+        inner.assignee_id = Some(assignee);
         inner.agent_cid = Some(agent.cid);
         inner.updated_at = now_ms();
-        self.events.publish(Event::Task {
-            id: self.id.clone(),
-            state: TaskState::Claimed.as_str(),
-            assignee: Some(assignee),
-        });
+        self.events.publish(self.event(&inner));
         Ok(())
     }
 
@@ -927,11 +937,7 @@ impl Task {
         inner.agent_cid = None;
         inner.note = Some(note.to_string());
         inner.updated_at = now_ms();
-        self.events.publish(Event::Task {
-            id: self.id.clone(),
-            state: to.as_str(),
-            assignee: None,
-        });
+        self.events.publish(self.event(&inner));
         Ok(())
     }
 
@@ -952,12 +958,7 @@ impl Task {
         inner.state = to;
         inner.note = note;
         inner.updated_at = now_ms();
-        let assignee = inner.assignee_id.clone();
-        self.events.publish(Event::Task {
-            id: self.id.clone(),
-            state: to.as_str(),
-            assignee,
-        });
+        self.events.publish(self.event(&inner));
         Ok(())
     }
 
@@ -984,12 +985,10 @@ impl Task {
         inner.outcome = to.outcome();
         inner.note = note;
         inner.updated_at = now_ms();
-        let assignee = inner.assignee_id.clone();
-        self.events.publish(Event::Task {
-            id: self.id.clone(),
-            state: to.as_str(),
-            assignee,
-        });
+        self.events.publish(self.event(&inner));
+        let dependents = inner.dependents.clone();
+        drop(inner);
+        announce(&dependents);
         Ok(())
     }
 
@@ -1009,13 +1008,35 @@ impl Task {
         inner.state = to;
         inner.outcome = to.outcome();
         inner.updated_at = now_ms();
-        let assignee = inner.assignee_id.clone();
-        self.events.publish(Event::Task {
-            id: self.id.clone(),
-            state: to.as_str(),
-            assignee,
-        });
+        self.events.publish(self.event(&inner));
+        let dependents = inner.dependents.clone();
+        drop(inner);
+        announce(&dependents);
         Ok(())
+    }
+
+    /// The `task` event for this task as `inner` holds it: its state, its
+    /// claim, its project and whether it is ready. Built under the task's own
+    /// lock, so an open task reads its links' states as its view does.
+    fn event(&self, inner: &TaskInner) -> Event {
+        Event::Task {
+            id: self.id.clone(),
+            state: inner.state.as_str(),
+            assignee: inner.assignee_id.clone(),
+            agent_cid: inner.agent_cid,
+            project: self.project.clone(),
+            ready: inner.state == TaskState::Open && LinkStates::of(&inner.after).all_done(),
+        }
+    }
+
+    /// Publishes this task's `task` event again while it is open: a task it
+    /// runs after ended, or its links changed, so it may now be ready or
+    /// blocked.
+    fn announce(&self) {
+        let inner = self.lock();
+        if inner.state == TaskState::Open {
+            self.events.publish(self.event(&inner));
+        }
     }
 
     /// Refunds whatever this task's escrow holds, if anything. A task with no
@@ -1089,6 +1110,7 @@ impl TaskLedger {
         // a cycle: nothing runs after it yet.
         let after = resolve(&inner.tasks, &checked.after, checked.project.as_deref())
             .map_err(CreateError::Invalid)?;
+        let upstreams: Vec<Arc<Task>> = after.iter().map(|Link(task)| Arc::clone(task)).collect();
         if inner.tasks.len() >= MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
@@ -1129,16 +1151,19 @@ impl TaskLedger {
                 note: None,
                 updated_at: now,
                 after,
+                dependents: Vec::new(),
             }),
         });
         inner.tasks.push(Arc::clone(&task));
+        // Each task it runs after learns of it, so it is announced when that
+        // one ends.
+        for upstream in &upstreams {
+            upstream.lock().dependents.push(Arc::downgrade(&task));
+        }
         // The task is registered under the ledger's lock, so a subscriber sees
         // it appear exactly once and in order.
-        self.events.publish(Event::Task {
-            id: task.id.clone(),
-            state: TaskState::Open.as_str(),
-            assignee: None,
-        });
+        let event = task.event(&task.lock());
+        self.events.publish(event);
         Ok(task)
     }
 
@@ -1186,9 +1211,30 @@ impl TaskLedger {
         if locked.state != TaskState::Open {
             return Err(not_open(locked.state));
         }
-        locked.after = links;
+        let upstreams: Vec<Arc<Task>> = links
+            .iter()
+            .map(|Link(linked)| Arc::clone(linked))
+            .collect();
+        let old = std::mem::replace(&mut locked.after, links);
         locked.updated_at = now_ms();
         drop(locked);
+        // The tasks it ran after forget it, and the ones it runs after now
+        // learn of it, one lock at a time.
+        let weak = Arc::downgrade(&task);
+        for Link(upstream) in &old {
+            upstream
+                .lock()
+                .dependents
+                .retain(|dependent| !dependent.ptr_eq(&weak));
+        }
+        for upstream in &upstreams {
+            upstream.lock().dependents.push(Weak::clone(&weak));
+        }
+        self.events.publish(Event::TaskLink {
+            task: task.id.clone(),
+            after: upstreams.iter().map(|linked| linked.id.clone()).collect(),
+        });
+        task.announce();
         Ok(task)
     }
 
@@ -1374,6 +1420,7 @@ impl Task {
                 note: record.note,
                 updated_at: record.updated_at,
                 after: Vec::new(),
+                dependents: Vec::new(),
             }),
         }
     }
@@ -1521,11 +1568,15 @@ impl TaskLedger {
             tasks.iter().map(|task| (task.id.as_str(), task)).collect();
         for (task, ids) in tasks.iter().zip(after) {
             // `check_ledger_snapshot` found every id among the tasks.
-            task.lock().after = ids
+            let links: Vec<Link> = ids
                 .iter()
                 .filter_map(|id| by_id.get(id.as_str()))
                 .map(|linked| Link(Arc::clone(linked)))
                 .collect();
+            for Link(upstream) in &links {
+                upstream.lock().dependents.push(Arc::downgrade(task));
+            }
+            task.lock().after = links;
         }
         let mut inner = self.lock();
         inner.next_seq = snapshot.next_seq;
@@ -1988,9 +2039,9 @@ mod tests {
             frames,
             vec![
                 "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":100000,\"task\":null}\n\n",
-                "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null}\n\n",
-                "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\"}\n\n",
-                "event: task\ndata: {\"id\":\"t1\",\"state\":\"done\",\"assignee\":\"builder\"}\n\n",
+                "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":true}\n\n",
+                "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\",\"agent_cid\":100,\"project\":null,\"ready\":false}\n\n",
+                "event: task\ndata: {\"id\":\"t1\",\"state\":\"done\",\"assignee\":\"builder\",\"agent_cid\":100,\"project\":null,\"ready\":false}\n\n",
             ]
         );
 
@@ -2002,14 +2053,14 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("the open event")
                 .frame(),
-            "event: task\ndata: {\"id\":\"t2\",\"state\":\"open\",\"assignee\":null}\n\n"
+            "event: task\ndata: {\"id\":\"t2\",\"state\":\"open\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":true}\n\n"
         );
         assert_eq!(
             receiver
                 .recv_timeout(Duration::from_secs(1))
                 .expect("the withdrawn event")
                 .frame(),
-            "event: task\ndata: {\"id\":\"t2\",\"state\":\"withdrawn\",\"assignee\":null}\n\n"
+            "event: task\ndata: {\"id\":\"t2\",\"state\":\"withdrawn\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":false}\n\n"
         );
     }
 
@@ -2766,5 +2817,112 @@ mod tests {
             assert!(refused.contains(refusal), "{refused}");
             assert_eq!(views(&ledger), before, "a refused restore changes nothing");
         }
+    }
+
+    /// The task events a subscriber holds, as (id, state, ready), oldest first.
+    fn announced(receiver: &std::sync::mpsc::Receiver<Event>) -> Vec<(String, &'static str, bool)> {
+        receiver
+            .try_iter()
+            .filter_map(|event| match event {
+                Event::Task {
+                    id, state, ready, ..
+                } => Some((id, state, ready)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_task_that_ends_announces_the_open_tasks_that_run_after_it() {
+        let events = EventBus::new();
+        let receiver = events.subscribe();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let base = create(&ledger, "base");
+        linked(&ledger, "next", &["t1"], None).expect("linked");
+        let dropped = linked(&ledger, "dropped", &["t1"], None).expect("linked");
+        dropped.withdraw().expect("open -> withdrawn");
+        assert_eq!(
+            announced(&receiver),
+            vec![
+                ("t1".to_string(), "open", true),
+                ("t2".to_string(), "open", false),
+                ("t3".to_string(), "open", false),
+                ("t3".to_string(), "withdrawn", false),
+            ],
+            "a task is announced as it is created, not ready while it waits"
+        );
+
+        run(&base, FinishOutcome::Done);
+        assert_eq!(
+            announced(&receiver),
+            vec![
+                ("t1".to_string(), "claimed", false),
+                ("t1".to_string(), "done", false),
+                ("t2".to_string(), "open", true),
+            ],
+            "the open task after it is announced ready, and the withdrawn one is not announced"
+        );
+
+        // A link that fails announces its task too: still open, blocked.
+        let flaky = create(&ledger, "flaky");
+        linked(&ledger, "after the flaky one", &["t4"], None).expect("linked");
+        run(&flaky, FinishOutcome::Failed);
+        assert_eq!(
+            announced(&receiver).last(),
+            Some(&("t5".to_string(), "open", false))
+        );
+        assert_eq!(ledger.find("t5").expect("t5").view().blocked_by, vec!["t4"]);
+    }
+
+    #[test]
+    fn a_relink_publishes_the_new_links_and_moves_the_announcements() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        let first = create(&ledger, "first");
+        let second = create(&ledger, "second");
+        linked(&ledger, "third", &["t1"], None).expect("linked");
+        let receiver = events.subscribe();
+
+        ledger
+            .relink("t3", &["t2".to_string()])
+            .expect("an open task relinks");
+        let frames: Vec<String> = receiver.try_iter().map(|event| event.frame()).collect();
+        assert_eq!(
+            frames,
+            vec![
+                "event: task_link\ndata: {\"task\":\"t3\",\"after\":[\"t2\"]}\n\n",
+                "event: task\ndata: {\"id\":\"t3\",\"state\":\"open\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":false}\n\n",
+            ]
+        );
+
+        // t1 no longer announces t3 when it ends; t2 does.
+        run(&first, FinishOutcome::Done);
+        assert!(
+            announced(&receiver).iter().all(|(id, _, _)| id == "t1"),
+            "t3 no longer runs after t1"
+        );
+        run(&second, FinishOutcome::Done);
+        assert_eq!(
+            announced(&receiver).last(),
+            Some(&("t3".to_string(), "open", true))
+        );
+    }
+
+    #[test]
+    fn a_restored_task_announces_the_tasks_that_run_after_it() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        create(&ledger, "first");
+        linked(&ledger, "second", &["t1"], None).expect("linked");
+        let restored =
+            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
+        restored.restore(&ledger.snapshot()).expect("restores");
+        let receiver = events.subscribe();
+
+        run(&restored.find("t1").expect("t1"), FinishOutcome::Done);
+        assert_eq!(
+            announced(&receiver).last(),
+            Some(&("t2".to_string(), "open", true))
+        );
     }
 }
