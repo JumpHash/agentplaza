@@ -13,7 +13,7 @@ pub mod e2b;
 pub mod egress;
 pub mod engine_lab;
 pub mod floor;
-pub mod git;
+pub mod history;
 pub mod ide;
 pub mod ide_chat;
 pub mod ide_chrome;
@@ -88,7 +88,8 @@ pub enum Id {
     Prompts,
     Skills,
     Tasks,
-    Git,
+    /// Weft's history: the repositories, their changes, and their releases.
+    History,
     Library,
     Approvals,
     Society,
@@ -120,8 +121,6 @@ pub enum Id {
     ProjectTab(String, projects::Tab),
     /// One tab of the Work screen: a project's id, or the tasks outside projects (`work::LOOSE`).
     WorkOn(String),
-    /// One repository's page, on the Git screen, by its name.
-    Repo(String),
     /// One agent's page.
     Agent(u64),
     /// The Lab: its overview (the section strip's first tab).
@@ -151,7 +150,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Projects, "Projects", "Plaza", "projects"),
     (Id::Work, "Work", "Plaza", "commit"),
     (Id::Tasks, "Tasks", "Plaza", "tasks"),
-    (Id::Git, "Git", "Plaza", "git"),
+    (Id::History, "History", "Plaza", "clock"),
     (Id::Library, "Library", "Plaza", "library"),
     (Id::Approvals, "Approvals", "Plaza", "approval"),
     (Id::Machines, "Machines", "Plaza", "machine"),
@@ -189,7 +188,7 @@ pub struct Screens {
     pub prompts: prompts::State,
     pub skills: skills::State,
     pub tasks: tasks::State,
-    pub git: git::State,
+    pub history: history::State,
     pub library: library::State,
     pub approvals: approvals::State,
     pub engine_lab: engine_lab::State,
@@ -232,7 +231,7 @@ pub enum Msg {
     Prompts(prompts::Msg),
     Skills(skills::Msg),
     Tasks(tasks::Msg),
-    Git(git::Msg),
+    History(history::Msg),
     Library(library::Msg),
     Approvals(approvals::Msg),
     EngineLab(engine_lab::Msg),
@@ -276,7 +275,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Prompts(m) => prompts::go(m),
         Msg::Skills(m) => skills::go(m),
         Msg::Tasks(m) => tasks::go(m),
-        Msg::Git(m) => git::go(m),
+        Msg::History(m) => history::go(m),
         Msg::Library(m) => library::go(m),
         Msg::Approvals(m) => approvals::go(m),
         Msg::EngineLab(_) => None,
@@ -319,7 +318,6 @@ pub fn scope_home(id: &Id) -> Id {
         Id::Task(_) => Id::Tasks,
         Id::Project(_) | Id::ProjectTab(..) => Id::Projects,
         Id::WorkOn(_) => Id::Work,
-        Id::Repo(_) => Id::Git,
         Id::LabJobDetail(_) => Id::LabJobs,
         Id::LabModelDetail(_) => Id::LabModels,
         Id::Ide(_) => Id::Ide(None),
@@ -374,13 +372,6 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
         }
         Id::WorkOn(tab) => screens.work = work::opened(tab.clone()),
         Id::Ide(Some(workspace)) => screens.ide.preselect = Some(workspace.clone()),
-        Id::Repo(repo) => {
-            screens.git = git::State {
-                repo: repo.clone(),
-                tab: git::Tab::Code,
-                ..Default::default()
-            }
-        }
         _ => {}
     }
     // Metrics loads when opened, but is not polled (see `poll`).
@@ -416,7 +407,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Prompts => prompts::load(&mut screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::load(&mut screens.skills, ctx).map(Msg::Skills),
         Id::Tasks | Id::Task(_) => tasks::load(&mut screens.tasks, ctx).map(Msg::Tasks),
-        Id::Git | Id::Repo(_) => git::load(&mut screens.git, ctx).map(Msg::Git),
+        Id::History => history::load(&mut screens.history, ctx).map(Msg::History),
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
         Id::RobotLab => {
@@ -475,7 +466,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Prompts(m) => prompts::update(&mut screens.prompts, m, ctx).map(Msg::Prompts),
         Msg::Skills(m) => skills::update(&mut screens.skills, m, ctx).map(Msg::Skills),
         Msg::Tasks(m) => tasks::update(&mut screens.tasks, m, ctx).map(Msg::Tasks),
-        Msg::Git(m) => git::update(&mut screens.git, m, ctx).map(Msg::Git),
+        Msg::History(m) => history::update(&mut screens.history, m, ctx).map(Msg::History),
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
         Msg::EngineLab(m) => {
@@ -540,6 +531,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Agents => agents::subscription(ctx).map(Msg::Agents),
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
+        Id::History => history::subscription(ctx).map(Msg::History),
         Id::RobotLab | Id::HardwareLab => {
             engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
         }
@@ -593,7 +585,7 @@ pub fn view<'a>(
         Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::view(&screens.skills, ctx).map(Msg::Skills),
         Id::Tasks | Id::Task(_) => tasks::view(&screens.tasks, ctx).map(Msg::Tasks),
-        Id::Git | Id::Repo(_) => git::view(&screens.git, ctx).map(Msg::Git),
+        Id::History => history::view(&screens.history, ctx).map(Msg::History),
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::RobotLab | Id::HardwareLab => {

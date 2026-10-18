@@ -15,6 +15,7 @@ import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 import { claimant, shortSpan, waitsByRole } from './work-model';
+import { reviewPanel } from './review-graph';
 
 // The task budget's default and minimum: the hub's apz_plaza::tasks constants (DEFAULT_TASK_BUDGET,
 // MIN_TASK_BUDGET). The web console cannot import Rust, so these mirror them; keep them in step.
@@ -28,6 +29,8 @@ const LANES = [
   { label: 'Failed or withdrawn', idle: 'Nothing failed or withdrawn.' },
 ];
 const FAILED = new Set(['failed', 'withdrawn', 'cancelled']);
+// The states a task has been through the review in: its panel shows in the drawer.
+const REVIEW_STATES = new Set(['awaiting_review', 'rework', 'done', 'failed']);
 const TIMELINE_KINDS = new Set(['work_start', 'tool_request', 'work_end', 'error']);
 
 /** The lane for a state; unknown non-final states count as in progress. */
@@ -39,6 +42,7 @@ function columnOf(state: string): number {
 }
 
 function stateTone(state: string): Tone {
+  if (state === 'rework') return 'warn';
   switch (columnOf(state)) {
     case 0:
       return 'info';
@@ -53,7 +57,9 @@ function stateTone(state: string): Tone {
 
 const str = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
 const titleOf = (goal: string): string => goal.split('\n').find((l) => l.trim())?.trim() ?? 'Untitled task';
-const labelOf = (state: string): string => state.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+/** The words of a state: a few have their own (the review sends a task back to its worker as "Sent back"). */
+const STATE_LABELS: Record<string, string> = { rework: 'Sent back' };
+const labelOf = (state: string): string => STATE_LABELS[state] ?? state.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const cidName = (cid: number): string => {
   const a = agents.get().find((x) => x.cid === cid);
   return a ? agentName(a) : `agent ${cid}`;
@@ -592,6 +598,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       t.acceptance ? h('section.tk-block', null, h('h3.tk-label', null, 'Acceptance'), h('div.tk-prose', null, renderMarkdown(t.acceptance, { embeds }))) : null,
       t.note ? h('section.tk-block', null, h('h3.tk-label', null, 'Result'), h('div.tk-result', null, renderMarkdown(t.note, { embeds }))) : null,
       t.outcome && t.outcome !== t.note ? h('section.tk-block', null, h('h3.tk-label', null, 'Outcome'), h('div.tk-result', null, renderMarkdown(t.outcome, { embeds }))) : null,
+      // The review of the change, once it is sealed: its verdict, the readings, the graph (Expert for the tables).
+      REVIEW_STATES.has(t.state) ? h('section.tk-block', null, h('h3.tk-label', null, 'Review'), reviewPanel(t.id)) : null,
     );
     const side = h(
       'aside.tk-side',

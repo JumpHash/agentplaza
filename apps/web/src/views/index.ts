@@ -12,7 +12,8 @@ import { mount as egressCredentials } from './egress-credentials';
 import { mount as council } from './council';
 import { mount as files } from './files';
 import { mount as machines } from './machines';
-import { mount as git } from './git';
+import { mount as history } from './history';
+import { mount as recipes } from './recipes';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
 import { mount as robotLab } from './robot-lab';
@@ -56,7 +57,8 @@ export const SCREENS: Screen[] = [
   { key: 'projects', label: 'Projects', icon: 'projects', section: 'Plaza', mount: projects },
   { key: 'work', label: 'Work', icon: 'commit', section: 'Plaza', mount: work },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
-  { key: 'git', label: 'Git', icon: 'git', section: 'Plaza', mount: git },
+  { key: 'history', label: 'History', icon: 'git', section: 'Plaza', mount: history },
+  { key: 'recipes', label: 'Recipes', icon: 'rules', section: 'Plaza', mount: recipes },
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
   { key: 'machines', label: 'Machines', icon: 'machine', section: 'Plaza', mount: machines },

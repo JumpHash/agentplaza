@@ -616,13 +616,12 @@ pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> =
     std::sync::LazyLock::new(iced::widget::Id::unique);
 
 /// Whether the sidebar entry `entry` is the screen that shows `current`: a task opened from a project is
-/// shown by the Tasks screen, and a repo by the Git screen.
+/// shown by the Tasks screen.
 fn shows(entry: &Id, current: &Id) -> bool {
     entry == current
         || matches!(
             (entry, current),
             (Id::Tasks, Id::Task(_))
-                | (Id::Git, Id::Repo(_))
                 | (Id::Projects, Id::Project(_))
                 | (Id::Projects, Id::ProjectTab(..))
                 | (Id::Work, Id::WorkOn(_))
@@ -642,8 +641,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::ProjectTab(..)
             | Id::Tasks
             | Id::Task(_)
-            | Id::Git
-            | Id::Repo(_)
             | Id::Library
             | Id::RobotLab
             | Id::HardwareLab

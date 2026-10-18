@@ -325,7 +325,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       sections.push(
         card(
           'Repository',
-          h('div', { style: 'display: flex; gap: 12px; align-items: center; flex-wrap: wrap' }, h('a.pj-link', { href: href('git', name) }, p.repo), button('Open repo', () => void openRepo(name), { size: 'sm', icon: 'square-code', title: 'Open the repository in the IDE, at its default branch' })),
+          h('div', { style: 'display: flex; gap: 12px; align-items: center; flex-wrap: wrap' }, h('a.pj-link', { href: href('history', name) }, p.repo), button('Open repo', () => void openRepo(name), { size: 'sm', icon: 'square-code', title: 'Open the repository in the IDE, at its default branch' })),
         ),
       );
     }

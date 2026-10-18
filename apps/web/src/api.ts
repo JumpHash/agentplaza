@@ -1039,7 +1039,8 @@ export interface Approval {
   kind: string; subject: string; detail: unknown;
 }
 /** What the owner does on a sanction escalation: acknowledge it, lift the suspension, or record a retirement. */
-export type ApprovalAction = 'acknowledge' | 'lift' | 'retire';
+/** A sanction's `acknowledge`, `lift` or `retire`; a review card's `rework` (Send back). */
+export type ApprovalAction = 'acknowledge' | 'lift' | 'retire' | 'rework';
 
 /** A sanction on the register. `lifted` is set once the owner has lifted it; `owner_action` is the owner's latest decision on the record. */
 export interface Sanction {

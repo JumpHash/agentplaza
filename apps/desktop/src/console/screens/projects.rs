@@ -1064,7 +1064,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     ];
     if let Some(repo) = &p.repo {
         let repo_card: Element<'a, Msg> = column![
-            link(repo, Msg::Go(Id::Repo(repo.clone()))),
+            link(repo, Msg::Go(Id::History)),
             ui::btn_sm(
                 "Open repo",
                 Some("square-code"),

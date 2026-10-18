@@ -173,7 +173,7 @@ fn path_of(source: Source) -> &'static str {
         Source::Machine => "/v1/machine",
         Source::Vault => "/v1/vault",
         Source::Providers => "/v1/providers",
-        Source::Git => "/v1/git",
+        Source::Git => "/v1/weft",
     }
 }
 
@@ -483,33 +483,24 @@ fn hub_checks(state: &State) -> Vec<CheckRow> {
     }
 
     rows.push(match got(slot(state, Source::Git)) {
-        Got::Pending => pending("Git host"),
-        Got::Value(v) if v.get("git").is_some_and(Value::is_object) => {
-            let git = &v["git"];
-            if flag(git, "configured") {
-                check(
-                    "Git host",
-                    Tone::Ok,
-                    format!("org {}", str_at(git, "org")),
-                    None,
-                )
-            } else {
-                check(
-                    "Git host",
-                    Tone::Warn,
-                    "the git host is not configured",
-                    Some((
-                        "Set FORGEJO_URL and FORGEJO_TOKEN for the hub, then restart apid",
-                        Id::Git,
-                    )),
-                )
-            }
-        }
-        _ => check(
-            "Git host",
+        Got::Pending => pending("Weft"),
+        Got::Value(v) if v["running"] == Value::Bool(true) => check(
+            "Weft",
+            Tone::Ok,
+            format!("version control running ({})", str_at(v, "mode")),
+            Some(("Open History", Id::History)),
+        ),
+        Got::Value(v) => check(
+            "Weft",
             Tone::Warn,
-            "could not ask the git host",
-            Some(("Open Git", Id::Git)),
+            format!("version control is not running: {}", str_at(v, "why")),
+            None,
+        ),
+        _ => check(
+            "Weft",
+            Tone::Warn,
+            "could not ask the hub about Weft",
+            Some(("Open History", Id::History)),
         ),
     });
 

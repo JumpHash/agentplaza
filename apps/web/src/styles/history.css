@@ -1,0 +1,868 @@
+/* The History screen: the repositories, a repository's changes as the line of main with its open lanes beside it,
+   a change's sign-off chain, the releases, the map and the files. Square corners and the console's tokens; mono only
+   for code, ids and keys. Orange is the owner's hand (their ruling, their buttons) and nothing else. */
+
+.history,
+.history * {
+  border-radius: 0;
+}
+
+.history {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  padding-bottom: 32px;
+  min-width: 0;
+}
+/* Grid children may shrink: the chain and the code scroll inside their own boxes, not the page. */
+.history > *,
+.history .hx-chains,
+.history .hx-chain-wrap,
+.history .card,
+.history .card-body {
+  min-width: 0;
+}
+.history .hx-faint {
+  color: var(--ink-3);
+  font-size: 13px;
+  margin: 0;
+}
+.history p {
+  margin: 0;
+}
+.history .hx-line {
+  font: var(--type-prose);
+  color: var(--ink);
+  margin: 0;
+  max-width: 78ch;
+}
+.history .hx-line.needs {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  font-weight: 600;
+}
+.history .hx-desc {
+  color: var(--ink-2);
+  max-width: 78ch;
+}
+.history .hx-back {
+  color: var(--ink-3);
+  font-size: 13px;
+  text-decoration: none;
+}
+.history .hx-back:hover {
+  color: var(--ink);
+}
+.history .hx-titlebox {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.history .hx-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.history .hx-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.history .hx-meta-line code,
+.history code {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: none;
+}
+.history .hx-sub {
+  font: var(--type-meta);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 12px 0 6px;
+}
+
+/* Repositories */
+.history .hx-repos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.history a.hx-repo {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+}
+.history a.hx-repo:hover {
+  background: var(--hover);
+}
+.history .hx-repo-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.history .hx-repo-top h2 {
+  font: var(--type-section);
+  margin: 0;
+}
+.history .hx-repo-head,
+.history .hx-counts {
+  color: var(--ink-2);
+  font-size: 13px;
+  margin: 0;
+}
+.history .hx-conns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Changes: the query bar, then the lane graph */
+.history .hx-changes {
+  display: grid;
+  gap: 14px;
+}
+.history .hx-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.history .hx-bar .input {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.history .hx-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.history .hx-presets .btn {
+  min-height: 30px;
+  font-size: 13px;
+}
+.history .hx-presets .btn.on,
+.history .hx-presets .btn[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--sheet);
+}
+
+.history .hx-graph {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: 920px;
+}
+.history .hx-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 46px;
+}
+.history .hx-rail {
+  position: relative;
+}
+.history .hx-rail::before,
+.history .hx-rail::after {
+  content: "";
+  position: absolute;
+}
+/* The line of main runs from the head down through the landed changes. */
+.history .hx-head .hx-rail::before,
+.history .hx-main .hx-rail::before {
+  left: 17px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink-3);
+}
+.history .hx-main:last-child .hx-rail::before {
+  bottom: 50%;
+}
+/* An open lane branches off the head: a dashed link up to the line, a tick to its dot. */
+.history .hx-lane .hx-rail::before {
+  left: 17px;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed var(--ink-3);
+}
+.history .hx-lane .hx-rail::after {
+  left: 18px;
+  top: 22px;
+  width: 12px;
+  border-top: 2px dashed var(--ink-3);
+}
+
+.history .hx-dot {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--ink-3);
+  background: var(--sheet);
+  flex: none;
+}
+.history .hx-rail .hx-dot {
+  position: absolute;
+  top: 16px;
+  left: 12px;
+  z-index: 1;
+}
+.history .hx-lane .hx-rail .hx-dot {
+  left: 25px;
+}
+.history .hx-dot.is-head {
+  width: 12px;
+  height: 12px;
+  left: 11px;
+  top: 14px;
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.history .hx-dot.is-ok {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.history .hx-dot.is-info {
+  background: var(--info);
+  border-color: var(--info);
+}
+.history .hx-dot.is-warn {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+.history .hx-dot.is-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.history .hx-dot.is-muted {
+  border-color: var(--ink-3);
+}
+.history .hx-dot.is-owner,
+.history .hx-dot.is-console {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.history .hx-dot.is-owner {
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.history .hx-dot.is-pending {
+  border-color: var(--rule);
+  background: var(--sheet);
+}
+
+.history a.hx-body {
+  display: grid;
+  gap: 4px;
+  padding: 9px 12px 9px 6px;
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.history a.hx-body:hover {
+  background: var(--hover);
+}
+.history .hx-line-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.history .hx-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.history .hx-title {
+  font: var(--type-item);
+  overflow-wrap: anywhere;
+}
+.history .hx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.history .hx-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  border: 1px solid var(--rule);
+  padding: 1px 7px;
+  font-size: 12px;
+  color: var(--ink-2);
+  max-width: 100%;
+}
+.history .hx-chip-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.history .hx-chip-more {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.history .hx-meta {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.history .hx-head {
+  min-height: 34px;
+}
+.history .hx-main-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px 0;
+  font: var(--type-meta);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The sign-off chain: one row of dots per round */
+.history .hx-chains {
+  display: grid;
+  gap: 18px;
+}
+.history .hx-chain-label {
+  font: var(--type-meta);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.history .hx-chain-note {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.history .hx-chain {
+  display: flex;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 0;
+  overflow-x: auto;
+}
+.history .hx-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 96px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 4px;
+  text-align: center;
+}
+.history .hx-step + .hx-step::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: -50%;
+  width: 100%;
+  border-top: 2px solid var(--rule);
+}
+.history .hx-step-dots {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  min-height: 22px;
+  align-items: center;
+  background: var(--sheet);
+  padding: 0 4px;
+}
+.history .hx-step-dots .hx-dot {
+  width: 12px;
+  height: 12px;
+}
+.history .hx-step.is-pending .hx-step-label {
+  color: var(--ink-3);
+}
+.history .hx-step-label {
+  font: var(--type-item);
+  font-size: 13px;
+}
+.history .hx-step-who {
+  color: var(--ink-3);
+  font-size: 12px;
+  min-height: 1em;
+}
+.history .hx-console {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  border: 1px solid var(--accent);
+  padding: 1px 5px;
+}
+
+/* Intents, revisions, records */
+.history .hx-intents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+.history .hx-intent {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  display: grid;
+  gap: 4px;
+}
+.history .hx-intent:last-child {
+  border-bottom: 0;
+}
+.history .hx-intent-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.history .hx-intent p {
+  color: var(--ink-2);
+  font-size: 14px;
+}
+.history .hx-covers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.history .hx-revs {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.history .hx-records {
+  display: grid;
+  gap: 0;
+}
+.history .hx-record {
+  border-bottom: 1px solid var(--rule-faint);
+  padding: 8px 0;
+}
+.history .hx-record summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  font-size: 13px;
+}
+.history .hx-rec-type {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+.history .hx-record p {
+  margin: 6px 0 0;
+}
+.history .hx-json {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  padding: 8px 10px;
+  margin: 6px 0 0;
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre;
+}
+
+/* The change tree and the diff */
+.history .hx-tree-view,
+.history .hx-diffs {
+  display: grid;
+  gap: 8px;
+}
+.history .hx-tfile,
+.history .hx-dfile {
+  border-bottom: 1px solid var(--rule-faint);
+  padding: 4px 0;
+}
+.history .hx-tfile summary,
+.history .hx-dfile summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.history .hx-op {
+  display: inline-block;
+  width: 1.2em;
+  text-align: center;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.history .hx-op.op-add {
+  color: var(--ok);
+}
+.history .hx-op.op-chg {
+  color: var(--info);
+}
+.history .hx-op.op-del {
+  color: var(--danger);
+}
+.history .hx-op.op-mv {
+  color: var(--warn);
+}
+.history .hx-syms {
+  list-style: none;
+  margin: 6px 0 4px 22px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.history .hx-prov,
+.history .hx-touch {
+  color: var(--ink-3);
+  font-size: 12px;
+  margin-left: 8px;
+}
+.history .hx-diff {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  margin: 6px 0 0;
+  padding: 8px 0;
+  overflow: auto;
+  max-height: 480px;
+}
+.history .hx-hunk {
+  color: var(--info);
+  padding: 2px 10px;
+}
+.history .hx-dl {
+  white-space: pre;
+  padding: 0 10px;
+}
+.history .hx-dl.add {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+.history .hx-dl.del {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+.history .hx-dop {
+  display: inline-block;
+  width: 1.2em;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+/* Releases */
+.history .hx-releases {
+  display: grid;
+  gap: 16px;
+}
+.history .hx-release-meta {
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.history .hx-release-meta a {
+  color: var(--ink-2);
+}
+.history .hx-notes {
+  font-size: 14px;
+  max-width: 78ch;
+}
+.history .hx-artifacts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.history .hx-artifact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  font-size: 13px;
+}
+.history .hx-art-name {
+  font-weight: 600;
+}
+.history .hx-links {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+}
+.history .hx-links a,
+.history .hx-exports a {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.history .hx-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+.history .hx-export {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.history .hx-exports {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* Map */
+.history .hx-stack {
+  display: grid;
+  gap: 16px;
+}
+.history .hx-comps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.history .hx-comp {
+  border: 1px solid var(--rule);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.history .hx-comp h3 {
+  font: var(--type-item);
+  margin: 0;
+}
+.history .hx-comp-name {
+  color: var(--ink-3);
+}
+.history .hx-paths,
+.history .hx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.history .hx-paths code {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.history .hx-conns-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.history .hx-conn {
+  display: grid;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.history .hx-conn:last-child {
+  border-bottom: 0;
+}
+.history .hx-conn-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.history .hx-remote {
+  color: var(--ink-2);
+  word-break: break-all;
+  font-size: 12px;
+}
+.history .hx-where {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.history .hx-where .input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.history .hx-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  font-size: 13px;
+}
+.history .hx-hits li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+/* Files */
+.history .hx-files {
+  display: grid;
+  grid-template-columns: minmax(200px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.history .hx-tree-col {
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  padding: 8px;
+}
+.history .hx-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 12px;
+  display: grid;
+  gap: 1px;
+}
+.history .hx-tree > li {
+  min-width: 0;
+}
+.history .hx-tree details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 0;
+  color: var(--ink-2);
+}
+.history .hx-file {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 3px 6px;
+  font: 13px var(--sans);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.history .hx-file:hover {
+  background: var(--hover);
+}
+.history .hx-file.on {
+  background: var(--hover);
+  font-weight: 600;
+}
+.history .hx-size {
+  color: var(--ink-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.history .hx-viewer {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+.history .hx-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.history .hx-viewer-head code {
+  overflow-wrap: anywhere;
+}
+.history .hx-code {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid var(--rule);
+  overflow: auto;
+  max-height: 70vh;
+  background: var(--sheet);
+}
+.history .hx-code-line {
+  display: flex;
+  white-space: pre;
+  min-width: max-content;
+}
+.history .hx-code-line.run-1 {
+  background: var(--hover);
+}
+.history .hx-gutter {
+  flex: none;
+  width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-3);
+  padding: 0 10px;
+  border-right: 1px solid var(--rule-faint);
+  font-size: 11px;
+  line-height: 1.8;
+  user-select: none;
+}
+.history .hx-ln {
+  flex: none;
+  width: 3.6em;
+  text-align: right;
+  padding-right: 10px;
+  color: var(--ink-3);
+  user-select: none;
+}
+.history .hx-src {
+  padding-right: 12px;
+}
+
+/* Phones: the columns stack; the chain scrolls sideways rather than squeezing */
+@media (max-width: 760px) {
+  .history .hx-files {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .history .hx-tree-col {
+    max-height: 40vh;
+  }
+  .history .hx-gutter {
+    width: 150px;
+  }
+  .history .hx-chain {
+    margin: 0 -4px;
+    padding-bottom: 6px;
+  }
+  .history .hx-step {
+    min-width: 88px;
+  }
+  .history .hx-repos {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .history .hx-comps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
