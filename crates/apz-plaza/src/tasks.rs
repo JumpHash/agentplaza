@@ -13,7 +13,7 @@
 //!
 //! | v0 state | schema state | meaning |
 //! |---|---|---|
-//! | `open` | `draft` → `ready` | created and claimable (v0 creates tasks ready) |
+//! | `open` | `draft` → `ready` | created; claimable once every task it runs after is done (a task with no links at once) |
 //! | `claimed` | `assigned` | bound to a live agent; `assignee_id` is set |
 //! | `awaiting_review` | `verifying` | the claiming agent reports the work done; it waits for a reviewer's verdict |
 //! | `done` | `accepted` | the work is accepted: a reviewer passes it, the owner approves it, or a claim is finished as done |
@@ -34,9 +34,15 @@
 //!   else, 0053). A claim the agent reports done moves to `awaiting_review`
 //!   and waits there for a reviewer's verdict; the scheduler holds that review,
 //!   so `verifier_id` is always null.
-//! * **No bids, dependencies, rework, change sets or tree.** The schema's
-//!   `parent_id`/`root_id`/`task_deps`/`change_sets` are a later slice; v0's
-//!   tasks are roots with no dependencies.
+//! * **Links, but no tree.** A task may run after other tasks (`after`, the
+//!   schema's `task_deps`): it is *ready*, and only then claimable, once every
+//!   one of them is `done` — `TaskLifecycle.tla`'s `DepsAcceptedBeforeWork`.
+//!   Links stay inside a project (the schema keeps them inside a task tree),
+//!   number at most [`MAX_AFTER`] per task, and never close a cycle. A link that
+//!   fails or is withdrawn does not cascade: the task stays `open`, names the
+//!   link in `blocked_by`, and waits to be relinked or withdrawn. No bids,
+//!   rework, change sets or tree: the schema's `parent_id`/`root_id`/
+//!   `change_sets` are a later slice, and v0's tasks are roots.
 //! * **Who may finish is recorded, not enforced.** The claim binds the task to
 //!   the claiming agent's CID and role; the finish body carries no CID and the
 //!   v0 HTTP surface has no authenticated caller, so v0 records the claim and
@@ -44,10 +50,12 @@
 //!   identity slice (device keys, agent certificates) is what turns that into
 //!   an enforced check.
 //! * **Persistence is apid's job.** The ledger is held in memory and apid
-//!   snapshots it (`snapshot` / `restore`) into Postgres or the state dir. The
-//!   schema's tables, its `updated_at` trigger and its append-only `task_events`
-//!   are a later slice. Every transition does publish to the event bus, so the console
-//!   sees the ledger live, and [`MAX_TASKS`] bounds what the process holds.
+//!   snapshots it (`snapshot` / `restore`) into Postgres when it has one
+//!   (without, the ledger lasts as long as the process); a task's links and
+//!   project are in its record, and a record from before them loads with none. The schema's tables (`task_deps` among them), its
+//!   `updated_at` trigger and its append-only `task_events` are a later slice.
+//!   Every transition does publish to the event bus, so the console sees the
+//!   ledger live, and [`MAX_TASKS`] bounds what the process holds.
 //!
 //! # The task's escrow
 //!
@@ -71,6 +79,7 @@
 //! terminal task performs is `docs/formal/Economy.tla`'s `Close` and
 //! `TaskLifecycle.tla`'s release, not a transition either model lacks.
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -92,6 +101,13 @@ pub const MAX_TEXT: usize = 4096;
 
 /// The most a role name may be, in bytes.
 pub const MAX_ROLE: usize = 64;
+
+/// The most a project id may be, in bytes.
+pub const MAX_PROJECT: usize = 64;
+
+/// The most tasks one task may run after. A plan's task lists are short; the
+/// bound keeps a bad request cheap to check.
+pub const MAX_AFTER: usize = 32;
 
 /// The states noded v0 gives a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,7 +217,7 @@ impl std::fmt::Display for RefusedTransition {
 impl std::error::Error for RefusedTransition {}
 
 /// Why a claim was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimError {
     /// No live agent of this node has that guest CID: the CID is unknown, or
     /// its VM is not running right now. A claim is only ever accepted from an
@@ -213,12 +229,24 @@ pub enum ClaimError {
     /// The task's state machine does not allow the claim (it is already
     /// claimed, or it has ended).
     Refused(RefusedTransition),
+    /// The task is open but not ready: it runs after tasks that are not done.
+    /// No task is worked on before everything it runs after is accepted
+    /// (`TaskLifecycle.tla`'s `DepsAcceptedBeforeWork`).
+    Waiting {
+        /// The task's id.
+        task: String,
+        /// The tasks it runs after that are not done yet.
+        waiting_on: Vec<String>,
+        /// The tasks it runs after that ended without being done (failed or
+        /// withdrawn).
+        blocked_by: Vec<String>,
+    },
 }
 
 impl ClaimError {
-    /// The HTTP status this error is reported as. Both refusals are conflicts
-    /// with the node's state (no live agent, or a task that is not open), not
-    /// malformed requests.
+    /// The HTTP status this error is reported as. Every refusal is a conflict
+    /// with the node's state (no live agent, a task that is not open, or one
+    /// that waits on others), not a malformed request.
     pub fn status(&self) -> u16 {
         409
     }
@@ -231,11 +259,97 @@ impl std::fmt::Display for ClaimError {
                 write!(formatter, "no live agent has guest CID {cid}")
             }
             ClaimError::Refused(refused) => refused.fmt(formatter),
+            ClaimError::Waiting {
+                task,
+                waiting_on,
+                blocked_by,
+            } => {
+                let mut parts = Vec::new();
+                if !waiting_on.is_empty() {
+                    let verb = if waiting_on.len() == 1 { "is" } else { "are" };
+                    parts.push(format!("{}, which {verb} not done yet", names(waiting_on)));
+                }
+                if !blocked_by.is_empty() {
+                    parts.push(format!(
+                        "{}, which ended without being done",
+                        names(blocked_by)
+                    ));
+                }
+                write!(formatter, "task {task} runs after {}", parts.join(", and "))
+            }
         }
     }
 }
 
 impl std::error::Error for ClaimError {}
+
+/// Why a task's links could not be changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkError {
+    /// No task has that id.
+    NotFound(String),
+    /// The links are outside the ledger's contract: a task that does not
+    /// exist, one in another project, one named twice, or more than
+    /// [`MAX_AFTER`].
+    Invalid(String),
+    /// The links would close a cycle: the ids around it, from the task back to
+    /// itself, each running after the next.
+    Cycle(Vec<String>),
+    /// The task is not open: a claimed or finished task keeps the links it
+    /// had.
+    NotOpen {
+        /// The task's id.
+        task: String,
+        /// The state it is in.
+        state: TaskState,
+    },
+}
+
+impl LinkError {
+    /// The HTTP status this error is reported as: an unknown task is not
+    /// found, links outside the contract (a cycle among them) are a bad
+    /// request, and a task that is no longer open is a conflict with its state.
+    pub fn status(&self) -> u16 {
+        match self {
+            LinkError::NotFound(_) => 404,
+            LinkError::Invalid(_) | LinkError::Cycle(_) => 400,
+            LinkError::NotOpen { .. } => 409,
+        }
+    }
+}
+
+impl std::fmt::Display for LinkError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinkError::NotFound(id) => write!(formatter, "no task with id {id}"),
+            LinkError::Invalid(reason) => write!(formatter, "{reason}"),
+            LinkError::Cycle(cycle) => match cycle.split_first() {
+                Some((first, rest)) => write!(
+                    formatter,
+                    "the links would close a cycle: {first} runs after {}",
+                    rest.join(", which runs after ")
+                ),
+                None => write!(formatter, "the links would close a cycle"),
+            },
+            LinkError::NotOpen { task, state } => write!(
+                formatter,
+                "task {task} is {}: only an open task's links can change",
+                state.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LinkError {}
+
+/// Task ids as a sentence lists them: `t1`, `t1 and t2`, `t1, t2 and t3`.
+fn names(ids: &[String]) -> String {
+    match ids {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
 
 /// Why a task could not be created.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +465,17 @@ pub struct CreateTask {
     /// gate a claim on it (the assignment engine that would is a later slice).
     #[serde(default)]
     pub role: Option<String>,
+    /// The tasks this one runs after, by id (the schema's `task_deps`): it is
+    /// ready to be claimed once every one of them is done. Each must exist
+    /// already and be in this task's project (or, for a task in no project, in
+    /// none); at most [`MAX_AFTER`], none named twice.
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// The project the task is for (`pr<n>`), when it is one's. The ledger
+    /// keeps the id, so a task names its project; apid checks that the project
+    /// exists and its plan is approved, and links the task to it.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// A create request's fields, checked.
@@ -359,11 +484,14 @@ struct Checked {
     acceptance: Option<String>,
     budget: u64,
     role: Option<String>,
+    after: Vec<String>,
+    project: Option<String>,
 }
 
 impl CreateTask {
     /// Checks the request and returns the fields a task keeps, or says why the
-    /// request is outside the ledger's contract.
+    /// request is outside the ledger's contract. Whether the tasks `after`
+    /// names exist, and in which project, is the ledger's check ([`resolve`]).
     fn checked(&self) -> Result<Checked, String> {
         let budget = self.budget.unwrap_or(0);
         // The schema's `budget_credits` is a bigint.
@@ -375,8 +503,26 @@ impl CreateTask {
             acceptance: optional_text("acceptance", &self.acceptance, MAX_TEXT)?,
             budget,
             role: optional_text("role", &self.role, MAX_ROLE)?,
+            after: checked_after(&self.after)?,
+            project: optional_text("project", &self.project, MAX_PROJECT)?,
         })
     }
+}
+
+/// A task's links, checked for what needs no ledger: at most [`MAX_AFTER`],
+/// and no task named twice.
+fn checked_after(after: &[String]) -> Result<Vec<String>, String> {
+    if after.len() > MAX_AFTER {
+        return Err(format!(
+            "after may name at most {MAX_AFTER} tasks, not {}",
+            after.len()
+        ));
+    }
+    let mut seen = HashSet::new();
+    if let Some(repeat) = after.iter().find(|id| !seen.insert(id.as_str())) {
+        return Err(format!("after names {repeat} twice"));
+    }
+    Ok(after.to_vec())
 }
 
 /// A required text field: present, not blank, and within its bound.
@@ -474,6 +620,64 @@ struct TaskInner {
     note: Option<String>,
     /// When the task last changed, in milliseconds since the Unix epoch.
     updated_at: u64,
+    /// The tasks this one runs after, in the order they were named. They
+    /// change only while the task is open ([`TaskLedger::relink`]); a claimed
+    /// or finished task keeps the links it had.
+    after: Vec<Link>,
+}
+
+/// A task another one runs after. The link holds the task itself, so a task
+/// reads whether it is ready without going through the ledger.
+///
+/// The locks: a task reads its links' states while it holds its own lock (to
+/// build its view, or to claim), so one task's lock is only ever waited for
+/// under another's along a link, from a task to one it runs after. Links never
+/// close a cycle, so those waits cannot either. The ledger's lock is taken
+/// before a task's, never under one.
+#[derive(Clone)]
+struct Link(Arc<Task>);
+
+impl std::fmt::Debug for Link {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The id alone: the linked task's own links would repeat down the graph.
+        formatter.write_str(&self.0.id)
+    }
+}
+
+/// The ids of the tasks `after` links to, in order.
+fn link_ids(after: &[Link]) -> Vec<String> {
+    after.iter().map(|Link(task)| task.id.clone()).collect()
+}
+
+/// Where a task's links stand.
+#[derive(Default)]
+struct LinkStates {
+    /// The linked tasks not done yet: open, claimed or awaiting review.
+    waiting_on: Vec<String>,
+    /// The linked tasks that ended without being done: failed or withdrawn.
+    blocked_by: Vec<String>,
+}
+
+impl LinkStates {
+    /// Each link's state, read under the linked task's own lock.
+    fn of(after: &[Link]) -> Self {
+        let mut states = Self::default();
+        for Link(task) in after {
+            match task.lock().state {
+                TaskState::Done => {}
+                TaskState::Failed | TaskState::Withdrawn => states.blocked_by.push(task.id.clone()),
+                TaskState::Open | TaskState::Claimed | TaskState::AwaitingReview => {
+                    states.waiting_on.push(task.id.clone());
+                }
+            }
+        }
+        states
+    }
+
+    /// Whether every link is done.
+    fn all_done(&self) -> bool {
+        self.waiting_on.is_empty() && self.blocked_by.is_empty()
+    }
 }
 
 /// One task: what the API reports about it, and the state behind the lock.
@@ -489,6 +693,8 @@ pub struct Task {
     budget: u64,
     /// The role the task was created for, when it named one.
     role: Option<String>,
+    /// The project the task was created for, when it named one.
+    project: Option<String>,
     /// The treasury entry that minted this task's budget into its escrow, when
     /// it had one: set once, when the task was created, and never changed. The
     /// agora reads it as a call's `escrow_entry`.
@@ -521,8 +727,20 @@ pub struct TaskView<'a> {
     pub budget: u64,
     /// The role the task was created for, or `null`.
     pub role: Option<&'a str>,
+    /// The project the task is for, or `null`.
+    pub project: Option<&'a str>,
+    /// The ids of the tasks this one runs after.
+    pub after: Vec<String>,
     /// The task's state.
     pub state: &'static str,
+    /// Whether the task can be claimed now: it is open and every task in
+    /// `after` is done.
+    pub ready: bool,
+    /// While the task is open: the tasks in `after` not done yet.
+    pub waiting_on: Vec<String>,
+    /// While the task is open: the tasks in `after` that failed or were
+    /// withdrawn. The task stays open; it waits to be relinked or withdrawn.
+    pub blocked_by: Vec<String>,
     /// How the task ended, in the schema's outcome enum, or `null` while it
     /// lives.
     pub outcome: Option<&'static str>,
@@ -593,6 +811,25 @@ impl Task {
         self.lock().state == TaskState::Open
     }
 
+    /// The project the task was created for, when it named one.
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+
+    /// The ids of the tasks this one runs after, in the order they were named.
+    pub fn after(&self) -> Vec<String> {
+        link_ids(&self.lock().after)
+    }
+
+    /// Whether the task can be claimed now: it is open and every task it runs
+    /// after is done (a task with no links is ready while it is open). The
+    /// scheduler hands out ready tasks only, and a claim on an open task that
+    /// is not ready is refused ([`ClaimError::Waiting`]).
+    pub fn is_ready(&self) -> bool {
+        let inner = self.lock();
+        inner.state == TaskState::Open && LinkStates::of(&inner.after).all_done()
+    }
+
     /// The treasury entry that minted this task's budget into its escrow, when
     /// it had a budget. The agora records it as a call's `escrow_entry`: at v0
     /// a task's escrow is funded by its own mint, not by a parent task's
@@ -604,13 +841,27 @@ impl Task {
     /// The task as the API reports it.
     pub fn view(&self) -> TaskView<'_> {
         let inner = self.lock();
+        let open = inner.state == TaskState::Open;
+        // The links' states matter while the task waits to be claimed. A
+        // claimed task's links were all done when it was claimed, and done is
+        // final.
+        let links = if open {
+            LinkStates::of(&inner.after)
+        } else {
+            LinkStates::default()
+        };
         TaskView {
             id: &self.id,
             goal: &self.goal,
             acceptance: self.acceptance.as_deref(),
             budget: self.budget,
             role: self.role.as_deref(),
+            project: self.project.as_deref(),
+            after: link_ids(&inner.after),
             state: inner.state.as_str(),
+            ready: open && links.all_done(),
+            waiting_on: links.waiting_on,
+            blocked_by: links.blocked_by,
             outcome: inner.outcome,
             assignee_id: inner.assignee_id.clone(),
             verifier_id: inner.verifier_id.clone(),
@@ -624,16 +875,26 @@ impl Task {
     /// Binds the task to `agent`, whose liveness this task's caller has already
     /// established against the node's register.
     ///
-    /// Only an `open` task can be claimed: a second claim on a claimed task is
-    /// refused by the state machine, like every other transition. A refused
-    /// claim changes nothing.
-    pub fn claim(&self, agent: &ConnectedAgent) -> Result<(), RefusedTransition> {
+    /// Only a ready task can be claimed: an `open` one whose links are all
+    /// done. A second claim on a claimed task is refused by the state machine,
+    /// like every other transition, and a claim on an open task that still
+    /// waits on its links is refused with what it waits on. A refused claim
+    /// changes nothing.
+    pub fn claim(&self, agent: &ConnectedAgent) -> Result<(), ClaimError> {
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(TaskState::Claimed) {
-            return Err(RefusedTransition {
+            return Err(ClaimError::Refused(RefusedTransition {
                 from,
                 to: TaskState::Claimed,
+            }));
+        }
+        let links = LinkStates::of(&inner.after);
+        if !links.all_done() {
+            return Err(ClaimError::Waiting {
+                task: self.id.clone(),
+                waiting_on: links.waiting_on,
+                blocked_by: links.blocked_by,
             });
         }
         let assignee = agent.assignee_id();
@@ -824,6 +1085,10 @@ impl TaskLedger {
     pub fn create(&self, request: &CreateTask) -> Result<Arc<Task>, CreateError> {
         let checked = request.checked().map_err(CreateError::Invalid)?;
         let mut inner = self.lock();
+        // The links name tasks that exist already, so a new task cannot close
+        // a cycle: nothing runs after it yet.
+        let after = resolve(&inner.tasks, &checked.after, checked.project.as_deref())
+            .map_err(CreateError::Invalid)?;
         if inner.tasks.len() >= MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
@@ -850,6 +1115,7 @@ impl TaskLedger {
             acceptance: checked.acceptance,
             budget: checked.budget,
             role: checked.role,
+            project: checked.project,
             escrow_entry: entry,
             created_at: now,
             events: Arc::clone(&self.events),
@@ -862,6 +1128,7 @@ impl TaskLedger {
                 verifier_id: None,
                 note: None,
                 updated_at: now,
+                after,
             }),
         });
         inner.tasks.push(Arc::clone(&task));
@@ -885,11 +1152,144 @@ impl TaskLedger {
         self.lock().tasks.clone()
     }
 
+    /// Replaces the links of the open task `id` with `after`, held to the
+    /// rules a create holds them to, and refused when they would close a cycle.
+    /// Returns the task. Every link change holds the ledger's lock, so two
+    /// relinks cannot close a cycle between them.
+    pub fn relink(&self, id: &str, after: &[String]) -> Result<Arc<Task>, LinkError> {
+        let after = checked_after(after).map_err(LinkError::Invalid)?;
+        let inner = self.lock();
+        let task = inner
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .cloned()
+            .ok_or_else(|| LinkError::NotFound(id.to_string()))?;
+        let links =
+            resolve(&inner.tasks, &after, task.project.as_deref()).map_err(LinkError::Invalid)?;
+        let not_open = |state: TaskState| LinkError::NotOpen {
+            task: id.to_string(),
+            state,
+        };
+        let state = task.lock().state;
+        if state != TaskState::Open {
+            return Err(not_open(state));
+        }
+        // The walk takes the other tasks' locks one at a time, with this
+        // task's lock not held: a view of a task that runs after this one holds
+        // its own lock while it waits for this one's.
+        if let Some(cycle) = cycle_through(&task, &links) {
+            return Err(LinkError::Cycle(cycle));
+        }
+        let mut locked = task.lock();
+        // The scheduler may have claimed it while the links were checked.
+        if locked.state != TaskState::Open {
+            return Err(not_open(locked.state));
+        }
+        locked.after = links;
+        locked.updated_at = now_ms();
+        drop(locked);
+        Ok(task)
+    }
+
+    /// Of the tasks `after` names, the ones that are not done: what a task
+    /// created with these links would wait on. An id that names no task is
+    /// left out; the create refuses it.
+    pub fn not_done(&self, after: &[String]) -> Vec<String> {
+        let tasks = self.list();
+        after
+            .iter()
+            .filter(|id| {
+                tasks
+                    .iter()
+                    .any(|task| task.id == **id && task.lock().state != TaskState::Done)
+            })
+            .cloned()
+            .collect()
+    }
+
     fn lock(&self) -> MutexGuard<'_, LedgerInner> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// The tasks `after` names, out of `tasks`, as links for a task in `project`:
+/// each must exist, and be in the same project (or, for a task in no project,
+/// in none).
+fn resolve(
+    tasks: &[Arc<Task>],
+    after: &[String],
+    project: Option<&str>,
+) -> Result<Vec<Link>, String> {
+    after
+        .iter()
+        .map(|id| {
+            let task = tasks
+                .iter()
+                .find(|task| task.id == *id)
+                .ok_or_else(|| format!("after names {id}, which is not a task"))?;
+            if task.project.as_deref() != project {
+                return Err(format!(
+                    "{id} is in {}, and this task is in {}: a task runs after tasks of its own project only",
+                    in_project(task.project.as_deref()),
+                    in_project(project)
+                ));
+            }
+            Ok(Link(Arc::clone(task)))
+        })
+        .collect()
+}
+
+/// Where a task is, as an error names it: `project pr2`, or `no project`.
+fn in_project(project: Option<&str>) -> String {
+    match project {
+        Some(project) => format!("project {project}"),
+        None => "no project".to_string(),
+    }
+}
+
+/// The cycle `task` would close by running after `after`: the ids around it,
+/// from `task` back to itself, each running after the next, or `None` when
+/// the links close none.
+///
+/// A breadth-first walk along the links from the tasks `after` names, so the
+/// cycle it reports is a shortest one. Each task's links are read under that
+/// task's lock, one task at a time; the caller holds the ledger's lock, which
+/// every link change takes, so the links cannot change during the walk.
+fn cycle_through(task: &Task, after: &[Link]) -> Option<Vec<String>> {
+    // Each task the walk reached, and the task it reached it from.
+    let mut reached_from: HashMap<String, String> = HashMap::new();
+    let mut queue: VecDeque<(String, Arc<Task>)> = after
+        .iter()
+        .map(|Link(next)| (task.id.clone(), Arc::clone(next)))
+        .collect();
+    while let Some((from, next)) = queue.pop_front() {
+        if reached_from.contains_key(&next.id) {
+            continue;
+        }
+        reached_from.insert(next.id.clone(), from);
+        if next.id == task.id {
+            // Back from `task` along the way the walk came, then turned around.
+            let mut cycle = vec![task.id.clone()];
+            let mut at = &reached_from[&task.id];
+            while *at != task.id {
+                cycle.push(at.clone());
+                at = &reached_from[at];
+            }
+            cycle.push(task.id.clone());
+            cycle.reverse();
+            return Some(cycle);
+        }
+        let links = next.lock().after.clone();
+        queue.extend(
+            links
+                .into_iter()
+                .map(|Link(upstream)| (next.id.clone(), upstream)),
+        );
+    }
+    None
 }
 
 /// The ledger's state as a snapshot holds it: the id counter and every task's
@@ -919,6 +1319,12 @@ struct TaskRecord {
     agent_cid: Option<u64>,
     note: Option<String>,
     updated_at: u64,
+    /// The task's project; none in a record from before tasks had one.
+    #[serde(default)]
+    project: Option<String>,
+    /// The ids of the tasks it runs after; none in a record from before links.
+    #[serde(default)]
+    after: Vec<String>,
 }
 
 impl Task {
@@ -939,10 +1345,14 @@ impl Task {
             agent_cid: inner.agent_cid,
             note: inner.note.clone(),
             updated_at: inner.updated_at,
+            project: self.project.clone(),
+            after: link_ids(&inner.after),
         }
     }
 
-    /// Rebuilds a live task from its record, over the given bus and treasury.
+    /// Rebuilds a live task from its record, over the given bus and treasury,
+    /// without its links: a link holds the task it names, so the ledger links
+    /// the tasks once they are all rebuilt.
     fn from_record(record: TaskRecord, events: &Arc<EventBus>, treasury: &Arc<Treasury>) -> Self {
         Self {
             id: record.id,
@@ -950,6 +1360,7 @@ impl Task {
             acceptance: record.acceptance,
             budget: record.budget,
             role: record.role,
+            project: record.project,
             escrow_entry: record.escrow_entry,
             created_at: record.created_at,
             events: Arc::clone(events),
@@ -962,6 +1373,7 @@ impl Task {
                 verifier_id: record.verifier_id,
                 note: record.note,
                 updated_at: record.updated_at,
+                after: Vec::new(),
             }),
         }
     }
@@ -970,7 +1382,10 @@ impl Task {
 /// The invariants a ledger snapshot must hold before it may replace a ledger:
 /// at most [`MAX_TASKS`] tasks, each with the canonical id `t<n>` and no id
 /// repeated, and an id counter at least the largest `n`, so the next create
-/// cannot hand out an id that is already taken.
+/// cannot hand out an id that is already taken. The links are held to the
+/// rules a create holds them to: each names a task of the snapshot in the same
+/// project, at most [`MAX_AFTER`] and none twice, and together they close no
+/// cycle.
 fn check_ledger_snapshot(snapshot: &LedgerSnapshot) -> Result<(), String> {
     if snapshot.tasks.len() > MAX_TASKS {
         return Err(format!(
@@ -978,7 +1393,7 @@ fn check_ledger_snapshot(snapshot: &LedgerSnapshot) -> Result<(), String> {
             snapshot.tasks.len()
         ));
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut largest = 0;
     for record in &snapshot.tasks {
         let seq = record
@@ -998,7 +1413,78 @@ fn check_ledger_snapshot(snapshot: &LedgerSnapshot) -> Result<(), String> {
             snapshot.next_seq
         ));
     }
+    let projects: HashMap<&str, Option<&str>> = snapshot
+        .tasks
+        .iter()
+        .map(|record| (record.id.as_str(), record.project.as_deref()))
+        .collect();
+    for record in &snapshot.tasks {
+        checked_after(&record.after)
+            .map_err(|reason| format!("the snapshot's task {}: {reason}", record.id))?;
+        for id in &record.after {
+            match projects.get(id.as_str()) {
+                None => {
+                    return Err(format!(
+                        "the snapshot's task {} runs after {id}, which the snapshot does not hold",
+                        record.id
+                    ));
+                }
+                Some(project) if *project != record.project.as_deref() => {
+                    return Err(format!(
+                        "the snapshot's task {} runs after {id}, which is in another project",
+                        record.id
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if let Some(id) = never_ready(&snapshot.tasks) {
+        return Err(format!(
+            "the snapshot's links close a cycle: task {id} could never be ready"
+        ));
+    }
     Ok(())
+}
+
+/// A task the records' links keep from ever being ready, because a cycle runs
+/// through it or through a task it runs after, or `None` when the links close
+/// no cycle. Kahn's sort: a task is taken once every task it runs after is
+/// taken, and what is left once nothing more can be taken is on a cycle or
+/// behind one. The caller has checked that every link names a record, once.
+fn never_ready(records: &[TaskRecord]) -> Option<&str> {
+    let mut left: HashMap<&str, usize> = records
+        .iter()
+        .map(|record| (record.id.as_str(), record.after.len()))
+        .collect();
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for record in records {
+        for id in &record.after {
+            dependents
+                .entry(id.as_str())
+                .or_default()
+                .push(record.id.as_str());
+        }
+    }
+    let mut takeable: Vec<&str> = records
+        .iter()
+        .filter(|record| record.after.is_empty())
+        .map(|record| record.id.as_str())
+        .collect();
+    while let Some(id) = takeable.pop() {
+        for dependent in dependents.get(id).into_iter().flatten() {
+            if let Some(count) = left.get_mut(dependent) {
+                *count -= 1;
+                if *count == 0 {
+                    takeable.push(dependent);
+                }
+            }
+        }
+    }
+    records
+        .iter()
+        .map(|record| record.id.as_str())
+        .find(|id| left.get(id).is_some_and(|count| *count > 0))
 }
 
 impl TaskLedger {
@@ -1020,11 +1506,27 @@ impl TaskLedger {
         let snapshot: LedgerSnapshot = serde_json::from_str(json)
             .map_err(|err| format!("the snapshot does not parse: {err}"))?;
         check_ledger_snapshot(&snapshot)?;
+        // The tasks first, then their links: a record names its links by id,
+        // and a link holds the task it names.
+        let mut after = Vec::with_capacity(snapshot.tasks.len());
         let tasks: Vec<Arc<Task>> = snapshot
             .tasks
             .into_iter()
-            .map(|record| Arc::new(Task::from_record(record, &self.events, &self.treasury)))
+            .map(|mut record| {
+                after.push(std::mem::take(&mut record.after));
+                Arc::new(Task::from_record(record, &self.events, &self.treasury))
+            })
             .collect();
+        let by_id: HashMap<&str, &Arc<Task>> =
+            tasks.iter().map(|task| (task.id.as_str(), task)).collect();
+        for (task, ids) in tasks.iter().zip(after) {
+            // `check_ledger_snapshot` found every id among the tasks.
+            task.lock().after = ids
+                .iter()
+                .filter_map(|id| by_id.get(id.as_str()))
+                .map(|linked| Link(Arc::clone(linked)))
+                .collect();
+        }
         let mut inner = self.lock();
         inner.next_seq = snapshot.next_seq;
         inner.tasks = tasks;
@@ -1055,6 +1557,8 @@ mod tests {
                 acceptance: None,
                 budget: None,
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect("a task inside the contract")
     }
@@ -1067,6 +1571,8 @@ mod tests {
                 acceptance: None,
                 budget: Some(budget),
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect("a budgeted task inside the contract")
     }
@@ -1135,10 +1641,10 @@ mod tests {
             .expect_err("a claimed task cannot be claimed again");
         assert_eq!(
             refused,
-            RefusedTransition {
+            ClaimError::Refused(RefusedTransition {
                 from: TaskState::Claimed,
                 to: TaskState::Claimed
-            }
+            })
         );
         assert_eq!(
             refused.to_string(),
@@ -1309,6 +1815,8 @@ mod tests {
                 acceptance: None,
                 budget: None,
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect_err("the ledger is full");
         assert_eq!(refused, CreateError::Full { max: MAX_TASKS });
@@ -1333,6 +1841,8 @@ mod tests {
                 acceptance: None,
                 budget: None,
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect_err("the withdrawn task still counts");
         assert_eq!(refused_again, CreateError::Full { max: MAX_TASKS });
@@ -1348,6 +1858,8 @@ mod tests {
                     acceptance: acceptance.map(String::from),
                     budget,
                     role: role.map(String::from),
+                    after: Vec::new(),
+                    project: None,
                 }
             };
 
@@ -1421,6 +1933,8 @@ mod tests {
                 acceptance: Some("the suite is green".to_string()),
                 budget: Some(5),
                 role: Some("builder".to_string()),
+                after: Vec::new(),
+                project: None,
             })
             .expect("a task");
         task.claim(&agent(100, "builder")).expect("claim");
@@ -1441,6 +1955,11 @@ mod tests {
         assert_eq!(view["verifier_id"], serde_json::Value::Null);
         assert_eq!(view["agent_cid"], 100);
         assert_eq!(view["note"], "done");
+        assert_eq!(view["project"], serde_json::Value::Null);
+        assert_eq!(view["after"], serde_json::json!([]));
+        assert_eq!(view["ready"], false, "a done task is not ready: it is over");
+        assert_eq!(view["waiting_on"], serde_json::json!([]));
+        assert_eq!(view["blocked_by"], serde_json::json!([]));
         assert!(view["updated_at"].as_u64().expect("updated_at") >= created_at);
 
         let list = serde_json::to_value(TasksView {
@@ -1702,6 +2221,8 @@ mod tests {
                 acceptance: None,
                 budget: Some(5),
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect_err("the treasury cannot open the escrow");
         assert!(
@@ -1800,6 +2321,449 @@ mod tests {
             behind.to_string(),
         ] {
             assert!(ledger.restore(&garbage).is_err(), "{garbage}");
+            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+        }
+    }
+
+    /// A task that runs after `after`, in `project`.
+    fn linked(
+        ledger: &TaskLedger,
+        goal: &str,
+        after: &[&str],
+        project: Option<&str>,
+    ) -> Result<Arc<Task>, CreateError> {
+        ledger.create(&CreateTask {
+            goal: goal.to_string(),
+            acceptance: None,
+            budget: None,
+            role: None,
+            after: after.iter().map(|id| id.to_string()).collect(),
+            project: project.map(str::to_string),
+        })
+    }
+
+    /// Claims `task` for a builder and finishes it as `outcome`.
+    fn run(task: &Task, outcome: FinishOutcome) {
+        task.claim(&agent(100, "builder"))
+            .expect("a ready task is claimed");
+        task.finish(outcome, None).expect("a claim finishes");
+    }
+
+    #[test]
+    fn a_task_is_ready_once_every_task_it_runs_after_is_done() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let schema = create(&ledger, "write the schema");
+        let api = create(&ledger, "write the API");
+        let console = linked(&ledger, "build the console", &["t1", "t2"], None).expect("linked");
+
+        let view = console.view();
+        assert_eq!(view.after, vec!["t1", "t2"]);
+        assert!(!view.ready);
+        assert_eq!(view.waiting_on, vec!["t1", "t2"]);
+        assert!(view.blocked_by.is_empty());
+        assert!(!console.is_ready());
+        assert!(
+            schema.is_ready() && api.is_ready(),
+            "a task with no links is ready"
+        );
+
+        let refused = console
+            .claim(&agent(101, "builder"))
+            .expect_err("a task is not claimed before its links are done");
+        assert_eq!(
+            refused,
+            ClaimError::Waiting {
+                task: "t3".to_string(),
+                waiting_on: vec!["t1".to_string(), "t2".to_string()],
+                blocked_by: Vec::new(),
+            }
+        );
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "task t3 runs after t1 and t2, which are not done yet"
+        );
+        assert_eq!(
+            console.view().state,
+            "open",
+            "a refused claim changes nothing"
+        );
+        assert_eq!(console.view().agent_cid, None);
+
+        run(&schema, FinishOutcome::Done);
+        assert_eq!(console.view().waiting_on, vec!["t2"]);
+
+        // Claimed and awaiting review are not done: done means accepted.
+        api.claim(&agent(102, "builder")).expect("claim");
+        assert_eq!(console.view().waiting_on, vec!["t2"]);
+        api.await_review(Some("built".to_string()))
+            .expect("claimed -> awaiting_review");
+        assert!(!console.is_ready());
+        assert_eq!(
+            console
+                .claim(&agent(101, "builder"))
+                .unwrap_err()
+                .to_string(),
+            "task t3 runs after t2, which is not done yet"
+        );
+        api.finish(FinishOutcome::Done, Some("pass".to_string()))
+            .expect("awaiting_review -> done");
+
+        let view = console.view();
+        assert!(view.ready);
+        assert!(view.waiting_on.is_empty() && view.blocked_by.is_empty());
+        console
+            .claim(&agent(101, "builder"))
+            .expect("every link is done");
+        let view = console.view();
+        assert_eq!(view.state, "claimed");
+        assert!(!view.ready, "a claimed task is not ready: it is taken");
+        assert_eq!(view.after, vec!["t1", "t2"], "the links stay as history");
+    }
+
+    #[test]
+    fn a_link_that_fails_or_is_withdrawn_blocks_its_task_and_nothing_cascades() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let flaky = create(&ledger, "flaky upstream");
+        let dropped = create(&ledger, "dropped upstream");
+        let pending = create(&ledger, "still to do");
+        let after_flaky = budgeted(&ledger, "after the flaky one", 40);
+        ledger
+            .relink("t4", &["t1".to_string()])
+            .expect("an open task relinks");
+        let after_all =
+            linked(&ledger, "after all three", &["t1", "t2", "t3"], None).expect("linked");
+
+        run(&flaky, FinishOutcome::Failed);
+        dropped.withdraw().expect("open -> withdrawn");
+
+        let view = after_flaky.view();
+        assert_eq!(view.state, "open", "a failed link fails nothing on its own");
+        assert!(!view.ready);
+        assert!(view.waiting_on.is_empty());
+        assert_eq!(view.blocked_by, vec!["t1"]);
+        assert_eq!(
+            ledger.treasury().escrow_balance("t4"),
+            40,
+            "the blocked task keeps its escrow"
+        );
+        let refused = after_flaky
+            .claim(&agent(101, "builder"))
+            .expect_err("blocked");
+        assert_eq!(
+            refused.to_string(),
+            "task t4 runs after t1, which ended without being done"
+        );
+
+        let view = after_all.view();
+        assert_eq!(view.waiting_on, vec!["t3"]);
+        assert_eq!(view.blocked_by, vec!["t1", "t2"]);
+        assert_eq!(
+            after_all
+                .claim(&agent(101, "builder"))
+                .unwrap_err()
+                .to_string(),
+            "task t5 runs after t3, which is not done yet, and t1 and t2, which ended without being done"
+        );
+
+        // The blocked task can still be withdrawn on purpose, or relinked and run.
+        after_all.withdraw().expect("a blocked task is withdrawn");
+        assert_eq!(after_all.view().blocked_by, Vec::<String>::new());
+        ledger
+            .relink("t4", &["t3".to_string()])
+            .expect("relinked past the failed task");
+        run(&pending, FinishOutcome::Done);
+        assert!(after_flaky.is_ready());
+    }
+
+    #[test]
+    fn links_are_held_to_the_contract_and_a_refused_create_hands_out_no_id() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let free = create(&ledger, "in no project");
+        let planned = linked(&ledger, "in pr1", &[], Some("pr1")).expect("a project's task");
+        assert_eq!(planned.project(), Some("pr1"));
+        assert_eq!(planned.view().project, Some("pr1"));
+        assert_eq!(free.project(), None);
+
+        let invalid = |after: &[&str], project: Option<&str>| {
+            let refused = linked(&ledger, "refused", after, project).expect_err("refused");
+            assert_eq!(refused.status(), 400, "{refused}");
+            refused.to_string()
+        };
+        assert_eq!(
+            invalid(&["t9"], None),
+            "after names t9, which is not a task"
+        );
+        assert_eq!(invalid(&["t1", "t1"], None), "after names t1 twice");
+        assert_eq!(
+            invalid(&["t1"], Some("pr1")),
+            "t1 is in no project, and this task is in project pr1: a task runs after tasks of its own project only"
+        );
+        assert_eq!(
+            invalid(&["t2"], None),
+            "t2 is in project pr1, and this task is in no project: a task runs after tasks of its own project only"
+        );
+        assert_eq!(
+            invalid(&["t2"], Some("pr2")),
+            "t2 is in project pr1, and this task is in project pr2: a task runs after tasks of its own project only"
+        );
+        assert_eq!(invalid(&[], Some("")), "project must not be empty");
+        assert_eq!(
+            invalid(&[], Some(&"p".repeat(MAX_PROJECT + 1))),
+            format!("project must be at most {MAX_PROJECT} bytes")
+        );
+        let too_many: Vec<String> = (1..=MAX_AFTER + 1).map(|n| format!("t{n}")).collect();
+        let too_many: Vec<&str> = too_many.iter().map(String::as_str).collect();
+        assert_eq!(
+            invalid(&too_many, None),
+            format!(
+                "after may name at most {MAX_AFTER} tasks, not {}",
+                MAX_AFTER + 1
+            )
+        );
+        assert_eq!(ledger.list().len(), 2, "no refused request created a task");
+
+        // The same project's tasks link, and the next id is the next one.
+        let next = linked(&ledger, "after pr1's first", &["t2"], Some("pr1")).expect("linked");
+        assert_eq!(next.id(), "t3");
+        assert_eq!(next.after(), vec!["t2"]);
+
+        // MAX_AFTER links are inside the contract.
+        let roots: Vec<String> = (0..MAX_AFTER)
+            .map(|index| create(&ledger, &format!("root {index}")).id().to_string())
+            .collect();
+        let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+        let wide = linked(&ledger, "after many", &roots, None).expect("the bound is inside");
+        assert_eq!(wide.after().len(), MAX_AFTER);
+    }
+
+    #[test]
+    fn a_relink_that_would_close_a_cycle_is_refused_with_the_cycle() {
+        let ledger = TaskLedger::new(EventBus::new());
+        create(&ledger, "design");
+        linked(&ledger, "build", &["t1"], None).expect("linked");
+        linked(&ledger, "test", &["t2"], None).expect("linked");
+        let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+
+        let refused = ledger
+            .relink("t1", &ids(&["t3"]))
+            .expect_err("t1 cannot run after what runs after it");
+        assert_eq!(refused, LinkError::Cycle(ids(&["t1", "t3", "t2", "t1"])));
+        assert_eq!(refused.status(), 400);
+        assert_eq!(
+            refused.to_string(),
+            "the links would close a cycle: t1 runs after t3, which runs after t2, which runs after t1"
+        );
+        let refused = ledger
+            .relink("t1", &ids(&["t1"]))
+            .expect_err("a task cannot run after itself");
+        assert_eq!(refused, LinkError::Cycle(ids(&["t1", "t1"])));
+        assert_eq!(
+            refused.to_string(),
+            "the links would close a cycle: t1 runs after t1"
+        );
+        let refused = ledger
+            .relink("t2", &ids(&["t3"]))
+            .expect_err("a two-task cycle");
+        assert_eq!(refused, LinkError::Cycle(ids(&["t2", "t3", "t2"])));
+        assert!(
+            ledger.find("t1").expect("t1").after().is_empty(),
+            "a refused relink changes nothing"
+        );
+        assert_eq!(ledger.find("t2").expect("t2").after(), vec!["t1"]);
+
+        // The shortest cycle is the one reported.
+        linked(&ledger, "ship", &["t1", "t3"], None).expect("linked");
+        assert_eq!(
+            ledger.relink("t1", &ids(&["t4"])).unwrap_err(),
+            LinkError::Cycle(ids(&["t1", "t4", "t1"]))
+        );
+
+        // A relink that closes no cycle replaces the links whole.
+        let test = ledger.relink("t3", &ids(&["t1"])).expect("no cycle");
+        assert_eq!(test.after(), vec!["t1"]);
+        ledger
+            .relink("t2", &ids(&["t3"]))
+            .expect("t3 no longer runs after t2");
+        assert_eq!(ledger.find("t2").expect("t2").view().waiting_on, vec!["t3"]);
+        assert!(
+            ledger
+                .relink("t3", &[])
+                .expect("unlinked")
+                .after()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_an_open_tasks_links_change() {
+        let ledger = TaskLedger::new(EventBus::new());
+        let first = create(&ledger, "first");
+        let second = create(&ledger, "second");
+        linked(&ledger, "planned", &[], Some("pr1")).expect("a project's task");
+        second.claim(&agent(100, "builder")).expect("claim");
+
+        let refused = ledger
+            .relink("t2", &["t1".to_string()])
+            .expect_err("a claimed task keeps its links");
+        assert_eq!(
+            refused,
+            LinkError::NotOpen {
+                task: "t2".to_string(),
+                state: TaskState::Claimed
+            }
+        );
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "task t2 is claimed: only an open task's links can change"
+        );
+
+        let refused = ledger.relink("t9", &[]).expect_err("no such task");
+        assert_eq!(refused, LinkError::NotFound("t9".to_string()));
+        assert_eq!(refused.status(), 404);
+
+        for (id, after) in [
+            ("t1", vec!["t9".to_string()]),
+            ("t1", vec!["t2".to_string(), "t2".to_string()]),
+            ("t3", vec!["t1".to_string()]),
+        ] {
+            let refused = ledger.relink(id, &after).expect_err("outside the contract");
+            assert!(matches!(refused, LinkError::Invalid(_)), "{refused}");
+            assert_eq!(refused.status(), 400);
+        }
+        assert!(first.after().is_empty());
+    }
+
+    #[test]
+    fn a_pass_that_claims_ready_tasks_claims_them_in_link_order() {
+        // The scheduler's pass (apid's `assign_tasks`) over a diamond: design,
+        // then build and docs side by side, then the release after both.
+        let ledger = TaskLedger::new(EventBus::new());
+        create(&ledger, "design");
+        linked(&ledger, "build", &["t1"], None).expect("linked");
+        linked(&ledger, "docs", &["t1"], None).expect("linked");
+        linked(&ledger, "release", &["t2", "t3"], None).expect("linked");
+        let ready = |ledger: &TaskLedger| -> Vec<String> {
+            ledger
+                .list()
+                .iter()
+                .filter(|task| task.is_ready())
+                .map(|task| task.id().to_string())
+                .collect()
+        };
+
+        assert_eq!(ready(&ledger), vec!["t1"]);
+        let mut order = Vec::new();
+        // One idle worker: each pass claims the first ready task, which is done before the next pass.
+        while let Some(task) = ledger.list().into_iter().find(|task| task.is_ready()) {
+            for upstream in task.after() {
+                assert_eq!(
+                    ledger.find(&upstream).expect("a link").state(),
+                    "done",
+                    "{} is claimed before {upstream} is done",
+                    task.id()
+                );
+            }
+            order.push(task.id().to_string());
+            run(&task, FinishOutcome::Done);
+            if order == ["t1"] {
+                assert_eq!(
+                    ready(&ledger),
+                    vec!["t2", "t3"],
+                    "both sides are ready at once"
+                );
+            }
+            if order == ["t1", "t2"] {
+                assert_eq!(ready(&ledger), vec!["t3"], "the release waits on the docs");
+                assert_eq!(ledger.find("t4").expect("t4").view().waiting_on, vec!["t3"]);
+            }
+        }
+        assert_eq!(order, vec!["t1", "t2", "t3", "t4"]);
+        assert!(ledger.list().iter().all(|task| task.state() == "done"));
+    }
+
+    #[test]
+    fn links_survive_a_snapshot_and_link_the_restored_tasks() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        linked(&ledger, "plan", &[], Some("pr1")).expect("a project's task");
+        linked(&ledger, "build", &["t1"], Some("pr1")).expect("linked");
+        create(&ledger, "unrelated");
+        run(&ledger.find("t3").expect("t3"), FinishOutcome::Done);
+        let before = views(&ledger);
+        assert_eq!(before[1]["after"], serde_json::json!(["t1"]));
+        assert_eq!(before[1]["project"], "pr1");
+        assert_eq!(before[1]["waiting_on"], serde_json::json!(["t1"]));
+
+        let restored =
+            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
+        restored.restore(&ledger.snapshot()).expect("restores");
+        assert_eq!(views(&restored), before);
+
+        // The restored link holds the restored task, not the old ledger's.
+        run(&restored.find("t1").expect("t1"), FinishOutcome::Done);
+        assert!(restored.find("t2").expect("t2").is_ready());
+        assert!(
+            !ledger.find("t2").expect("t2").is_ready(),
+            "the old ledger is untouched"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_from_before_links_loads_with_none() {
+        let ledger = TaskLedger::new(EventBus::new());
+        create(&ledger, "old work");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
+        let record = value["tasks"][0].as_object_mut().expect("a record");
+        record.remove("after");
+        record.remove("project");
+
+        let restored = TaskLedger::new(EventBus::new());
+        restored
+            .restore(&value.to_string())
+            .expect("an old record restores");
+        let task = restored.find("t1").expect("t1");
+        let view = task.view();
+        assert!(view.after.is_empty());
+        assert_eq!(view.project, None);
+        assert!(view.ready);
+    }
+
+    #[test]
+    fn a_snapshot_whose_links_break_the_rules_is_refused() {
+        let ledger = TaskLedger::new(EventBus::new());
+        create(&ledger, "first");
+        linked(&ledger, "second", &["t1"], None).expect("linked");
+        linked(&ledger, "third", &[], Some("pr1")).expect("a project's task");
+        let before = views(&ledger);
+        let value: serde_json::Value =
+            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
+        let with = |task: usize, after: serde_json::Value| {
+            let mut changed = value.clone();
+            changed["tasks"][task]["after"] = after;
+            changed.to_string()
+        };
+
+        for (garbage, refusal) in [
+            (
+                with(1, serde_json::json!(["t9"])),
+                "which the snapshot does not hold",
+            ),
+            (
+                with(1, serde_json::json!(["t3"])),
+                "which is in another project",
+            ),
+            (
+                with(1, serde_json::json!(["t1", "t1"])),
+                "after names t1 twice",
+            ),
+            (with(0, serde_json::json!(["t2"])), "close a cycle"),
+            (with(1, serde_json::json!(["t2"])), "close a cycle"),
+        ] {
+            let refused = ledger.restore(&garbage).expect_err("refused");
+            assert!(refused.contains(refusal), "{refused}");
             assert_eq!(views(&ledger), before, "a refused restore changes nothing");
         }
     }

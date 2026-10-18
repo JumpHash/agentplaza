@@ -2247,6 +2247,8 @@ mod tests {
                 acceptance: Some("the board shows the note".to_string()),
                 budget: Some(500),
                 role: Some("builder".to_string()),
+                after: Vec::new(),
+                project: None,
             })
             .expect("a roled task inside the contract");
         let mayor = agent(100, "mayor");
@@ -2330,6 +2332,8 @@ mod tests {
                 acceptance: None,
                 budget: Some(1),
                 role: Some("builder".to_string()),
+                after: Vec::new(),
+                project: None,
             })
             .expect("a task");
         let builder = agent(101, "builder");
@@ -2359,6 +2363,8 @@ mod tests {
                 acceptance: Some("the suite is green".to_string()),
                 budget: Some(1),
                 role: Some("builder".to_string()),
+                after: Vec::new(),
+                project: None,
             })
             .expect("the ledger takes a goal at its cap");
         let seed = social.seed_award(&task, &agent(100, "mayor"), &agent(101, "builder"));
