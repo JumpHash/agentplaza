@@ -1309,7 +1309,8 @@ fn plaza_operations(
     };
     match tool {
         // The town is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
-        "plaza_post_task" => {
+        // Posting a plan's whole list creates tasks as posting one does.
+        "plaza_post_task" | "plaza_tasks_post" => {
             let town = Entity {
                 ty: "Town".into(),
                 id: TOWN.into(),
@@ -2090,13 +2091,21 @@ mod tests {
     #[test]
     fn a_tool_is_checked_as_the_operation_it_performs() {
         // (role, tool, input, operation the laws see, permit that allows it, must be permitted outright)
-        let cases: [(&str, &str, Json, &str, Option<&str>, bool); 6] = [
+        let cases: [(&str, &str, Json, &str, Option<&str>, bool); 7] = [
             (
                 crate::settings::ORCHESTRATOR_ROLE,
                 "plaza_post_task",
                 json!({"title": "t", "body": "b"}),
                 "task.create",
                 None,
+                true,
+            ),
+            (
+                crate::settings::ORCHESTRATOR_ROLE,
+                "plaza_tasks_post",
+                json!({"project": "pr1", "tasks": [{"key": "1.1", "goal": "g"}]}),
+                "task.create",
+                Some("S-003c"),
                 true,
             ),
             (

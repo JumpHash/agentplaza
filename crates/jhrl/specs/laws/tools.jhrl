@@ -36,12 +36,12 @@ law "T-003" "Only the orchestrator plans and delegates" {
   tier statute
   enforcement preventive
   severity info
-  statement "Only an orchestrator-tier agent may list the agents, post, assign, cancel and read the results of tasks, and open projects."
+  statement "Only an orchestrator-tier agent may list the agents, post tasks (one, or a project's whole list), change which tasks a task runs after, assign, cancel and read the results of tasks, and open projects."
   rationale "Planning and delegation for the whole plaza sit with one tier; workers take the work they bid for (T-004)."
   permit tool.call
   principal is Agent
   resource is Tool
-  when (resource.name in ["plaza_agents", "plaza_post_task", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_project_open"]) and principal.tier == "orchestrator"
+  when (resource.name in ["plaza_agents", "plaza_post_task", "plaza_tasks_post", "plaza_task_link", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_project_open"]) and principal.tier == "orchestrator"
 }
 
 law "T-004" "Workers bid on tasks" {
