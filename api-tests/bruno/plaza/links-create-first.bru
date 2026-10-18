@@ -1,0 +1,29 @@
+meta {
+  name: Create a task others will run after
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Draft the plan",
+    "budget": 200
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.after: isArray
+  res.body.ready: eq true
+}
+
+script:post-response {
+  bru.setVar("firstTaskId", res.getBody().id);
+}

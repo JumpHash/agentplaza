@@ -70,7 +70,9 @@ impl Plaza for FakePlaza {
         if input["goal"] == "" {
             Err("goal must be a non-empty string".into())
         } else {
-            Ok(json!({ "id": "t2", "goal": input["goal"] }))
+            Ok(
+                json!({ "id": "t2", "goal": input["goal"], "after": input["after"], "project": input["project"] }),
+            )
         }
     }
 
@@ -132,12 +134,17 @@ impl Plaza for FakePlaza {
     }
 
     fn tasks(&self) -> Vec<Value> {
-        // The ledger's own rows: t1 open, t2 claimed by cid 1 (a coder), t3 by cid 2 (no role, so cid:2).
+        // The ledger's own rows: t1 open, t2 claimed by cid 1 (a coder) and naming project pr2, t3 by
+        // cid 2 (no role, so cid:2).
         let ledger = TaskLedger::new(Arc::new(EventBus::default()));
-        let claimants = [None, Some((1_u64, Some("coder"))), Some((2, None))];
+        let claimants = [
+            (None, None),
+            (Some((1_u64, Some("coder"))), Some("pr2")),
+            (Some((2, None)), None),
+        ];
         claimants
             .into_iter()
-            .map(|claimant| {
+            .map(|(claimant, project)| {
                 let task = ledger
                     .create(&CreateTask {
                         goal: "Ship".into(),
@@ -145,7 +152,7 @@ impl Plaza for FakePlaza {
                         budget: None,
                         role: None,
                         after: Vec::new(),
-                        project: None,
+                        project: project.map(String::from),
                     })
                     .expect("a task");
                 if let Some((cid, role)) = claimant {
@@ -184,6 +191,30 @@ impl Plaza for FakePlaza {
         self.projects()
             .into_iter()
             .find(|project| project["id"] == id)
+    }
+
+    fn project_graph(&self, id: &str) -> Option<Value> {
+        // pr1's plan: t1 first, then t2 after it.
+        if id != "pr1" {
+            return None;
+        }
+        let ledger = TaskLedger::new(Arc::new(EventBus::default()));
+        for after in [Vec::new(), vec!["t1".to_string()]] {
+            ledger
+                .create(&CreateTask {
+                    goal: "Ship".into(),
+                    acceptance: None,
+                    budget: None,
+                    role: Some("coder".into()),
+                    after,
+                    project: Some("pr1".into()),
+                })
+                .expect("a task");
+        }
+        let tasks = ledger.list();
+        let views: Vec<_> = tasks.iter().map(|task| task.view()).collect();
+        let graph = crate::task_graph::build("pr1", "implementation", &views, |_| None, |_| None);
+        serde_json::to_value(graph).ok()
     }
 
     fn approvals(&self) -> Vec<Value> {
@@ -484,6 +515,7 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
         "list_board",
         "list_projects",
         "get_project",
+        "project_graph",
         "list_approvals",
         "list_machines",
         "treasury_summary",
@@ -1011,6 +1043,11 @@ fn list_tasks_filters_by_state_project_and_claimant() {
     assert_eq!(ids(json!({ "status": "open" })), ["t1"]);
     assert_eq!(ids(json!({ "status": "claimed" })), ["t2", "t3"]);
     assert_eq!(ids(json!({ "project": "pr1" })), ["t1", "t3"]);
+    assert_eq!(
+        ids(json!({ "project": "pr2" })),
+        ["t2"],
+        "a task that names its project is that project's"
+    );
     assert!(
         ids(json!({ "project": "pr9" })).is_empty(),
         "a project that does not exist has no tasks"
@@ -1149,6 +1186,55 @@ fn create_task_files_a_task_and_refuses_an_empty_title() {
         tool_call("create_task", json!({ "title": "" })),
     ));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
+    // The links and the project go to the plaza as the console's New task sends them.
+    let linked = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call(
+            "create_task",
+            json!({ "title": "Ship it", "after": ["t1"], "project": "pr1" }),
+        ),
+    ));
+    assert_eq!(linked["result"]["isError"], false, "{linked}");
+    assert_eq!(
+        linked["result"]["structuredContent"]["after"],
+        json!(["t1"])
+    );
+    assert_eq!(linked["result"]["structuredContent"]["project"], "pr1");
+}
+
+#[test]
+fn project_graph_lays_out_a_projects_tasks_and_refuses_an_unknown_project() {
+    let h = harness(true);
+    let (token, _) = h.mint(Scope::Observe, &[], None);
+    let session = h.session(&token);
+    let body = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("project_graph", json!({ "project": "pr1" })),
+    ));
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let graph = &body["result"]["structuredContent"];
+    assert_eq!(graph["project"], "pr1");
+    assert_eq!(graph["edges"], json!([["t1", "t2"]]));
+    assert_eq!(graph["frontier"], json!(["t1"]));
+    assert_eq!(graph["longest_chain"], json!(["t1", "t2"]));
+    assert_eq!(graph["tasks"][1]["depth"], 1);
+    assert_eq!(
+        graph["waiting"],
+        json!([{ "role": "coder", "tasks": ["t1"] }])
+    );
+    assert_eq!(
+        body["result"]["content"][0]["text"],
+        "2 tasks: 1 being worked on or ready, 1 waiting for an agent, 2 in the longest chain left."
+    );
+
+    let unknown = body_of(&h.call(
+        &token,
+        Some(&session),
+        tool_call("project_graph", json!({ "project": "pr9" })),
+    ));
+    assert_eq!(unknown["result"]["isError"], true, "{unknown}");
 }
 
 /// Open mode, the listener's TLS, and the peer rules (docs/design/hub-mcp.md, "Auth modes").

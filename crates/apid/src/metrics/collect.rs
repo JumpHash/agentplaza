@@ -141,6 +141,7 @@ fn prune_agent_states(m: &Metrics, app: &App, now_ms: u64) {
             )
             .add(ms as f64);
         super::lock(&FORGET).push(cid);
+        crate::steps::forget(cid);
     }
 }
 
@@ -540,6 +541,8 @@ pub fn turn_end(app: &App, cid: u64, ms: f64, ok: bool) {
 /// An agent changed state (`streaming`, `first_token`, `tools`, `approval`, `idle`, `asleep`): the time in the
 /// previous state is added to `agent.state_ms`.
 pub fn agent_state(app: &App, cid: u64, state: &str) {
+    // The same change is the agent's current step, for its view and the `agent_step` event.
+    crate::steps::state(app, cid, state);
     let now = wall_ms();
     let previous = super::lock(&AGENT_STATES).insert(cid, (state.to_string(), now));
     if let Some((previous_state, since)) = previous {

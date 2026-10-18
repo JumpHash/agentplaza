@@ -23,6 +23,9 @@ pub trait Plaza: Sync {
     fn board(&self, limit: usize) -> Value;
     fn projects(&self) -> Vec<Value>;
     fn project(&self, id: &str) -> Option<Value>;
+    /// A project's task graph, as `GET /v1/projects/{id}/graph` returns it; `None` for a project that
+    /// does not exist.
+    fn project_graph(&self, id: &str) -> Option<Value>;
     fn approvals(&self) -> Vec<Value>;
     fn machines(&self) -> Vec<Value>;
     fn treasury(&self, journal_limit: usize) -> Value;
@@ -259,6 +262,7 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &observe::ListBoard,
     &observe::ListProjects,
     &observe::GetProject,
+    &observe::ProjectGraph,
     &observe::ListApprovals,
     &observe::ListMachines,
     &observe::TreasurySummary,

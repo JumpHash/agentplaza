@@ -538,6 +538,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             input,
         } => {
             remember_tool(cid, &call, &name);
+            crate::steps::tool(app, cid, &name);
             Some(tool_request(app, cid, &agent, work, call, &name, &input))
         }
         GuestMessage::ToolReport {

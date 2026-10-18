@@ -30,6 +30,7 @@ pub struct GetTask;
 pub struct ListBoard;
 pub struct ListProjects;
 pub struct GetProject;
+pub struct ProjectGraph;
 pub struct ListApprovals;
 pub struct ListMachines;
 pub struct TreasurySummary;
@@ -174,6 +175,10 @@ impl Plaza for App {
         self.projects
             .get(id)
             .and_then(|project| serde_json::to_value(project).ok())
+    }
+
+    fn project_graph(&self, id: &str) -> Option<Value> {
+        crate::task_graph::of_project(self, id).and_then(|graph| serde_json::to_value(graph).ok())
     }
 
     fn approvals(&self) -> Vec<Value> {
@@ -584,8 +589,9 @@ fn keep(rows: Vec<Value>, field: &str, wanted: Option<&Value>) -> Vec<Value> {
     }
 }
 
-/// The task rows of project `wanted` (the ids in its `tasks`), when a project is given. A project
-/// that does not exist has none.
+/// The task rows of project `wanted`, when a project is given: the rows that name it, and the ones
+/// whose ids it lists in its `tasks` (a task posted before tasks named their project is only listed
+/// there). A project that does not exist and that no task names has none.
 fn in_project(plaza: &dyn Plaza, rows: Vec<Value>, wanted: Option<&Value>) -> Vec<Value> {
     let Some(wanted) = wanted.filter(|wanted| !wanted.is_null()) else {
         return rows;
@@ -596,7 +602,7 @@ fn in_project(plaza: &dyn Plaza, rows: Vec<Value>, wanted: Option<&Value>) -> Ve
         .map(|project| project["tasks"].clone());
     let ids = tasks.as_ref().and_then(Value::as_array);
     rows.into_iter()
-        .filter(|row| ids.is_some_and(|ids| ids.contains(&row["id"])))
+        .filter(|row| &row["project"] == wanted || ids.is_some_and(|ids| ids.contains(&row["id"])))
         .collect()
 }
 
@@ -854,7 +860,7 @@ impl Tool for ListTasks {
     }
 
     fn description(&self) -> &'static str {
-        "The plaza's tasks: id, goal, state, budget, role, assignee and outcome. Filter by status (the task's state), project or assignee; page with next_cursor."
+        "The plaza's tasks: id, goal, state, budget, role, project, the tasks each runs after (after) and whether it can be claimed now (ready, waiting_on, blocked_by), assignee and outcome. Filter by status (the task's state), project or assignee; page with next_cursor."
     }
 
     fn input_schema(&self) -> Value {
@@ -862,7 +868,7 @@ impl Tool for ListTasks {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "description": "a task state: open, claimed, awaiting_review, done, failed or withdrawn" },
-                "project": { "type": "string", "description": "a project id: the tasks the project lists" },
+                "project": { "type": "string", "description": "a project id: the tasks that name it, or that it lists" },
                 "assignee": { "type": ["integer", "string"], "description": "the claiming agent: its cid, or the task's assignee_id (its role, or cid:<n>)" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
                 "cursor": { "type": "string" },
@@ -884,7 +890,7 @@ impl Tool for ListTasks {
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
         // A row is the ledger's task view: its status is `state`, its claimant `agent_cid` and
-        // `assignee_id`, and it names no project (a project lists its tasks' ids).
+        // `assignee_id`, and its project `project` (a project also lists its tasks' ids).
         let rows = keep(ctx.plaza.tasks(), "state", args.get("status"));
         let rows = in_project(ctx.plaza, rows, args.get("project"));
         let assignee = args.get("assignee");
@@ -918,7 +924,7 @@ impl Tool for GetTask {
     }
 
     fn description(&self) -> &'static str {
-        "One task in detail: goal, acceptance, budget, role, state, outcome, assignee, note, and when it was created and last changed."
+        "One task in detail: goal, acceptance, budget, role, project, the tasks it runs after (after, ready, waiting_on, blocked_by), state, outcome, assignee, note, and when it was created and last changed."
     }
 
     fn input_schema(&self) -> Value {
@@ -1081,6 +1087,72 @@ impl Tool for GetProject {
 
     fn summary(&self, out: &Value) -> String {
         format!("Project {}.", out["name"].as_str().unwrap_or("unnamed"))
+    }
+}
+
+impl Tool for ProjectGraph {
+    fn name(&self) -> &'static str {
+        "project_graph"
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::Observe
+    }
+
+    fn description(&self) -> &'static str {
+        "A project's tasks in the order their after links let them run: each task's depth, state, readiness, claimant, reviewer and the step its agent is at now; the links as [from, to] edges; the frontier (being worked on or ready); the longest chain still to finish; and the ready tasks waiting for an agent, by role."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "project": { "type": "string", "description": "a project id" } },
+            "required": ["project"],
+            "additionalProperties": false,
+        })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "description": "the graph, as GET /v1/projects/{id}/graph returns it",
+            "properties": {
+                "project": { "type": "string" },
+                "stage": { "type": "string" },
+                "tasks": { "type": "array", "items": { "type": "object" } },
+                "edges": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+                "frontier": { "type": "array", "items": { "type": "string" } },
+                "longest_chain": { "type": "array", "items": { "type": "string" } },
+                "waiting": { "type": "array", "items": { "type": "object" } },
+            },
+            "required": ["project", "stage", "tasks", "edges", "frontier", "longest_chain", "waiting"],
+        })
+    }
+
+    fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
+        let id = args
+            .get("project")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "project must be a string".to_string())?;
+        ctx.plaza
+            .project_graph(id)
+            .ok_or_else(|| format!("no project with id {id}"))
+    }
+
+    fn summary(&self, out: &Value) -> String {
+        let count = |key: &str| out[key].as_array().map_or(0, Vec::len);
+        let waiting: usize = out["waiting"].as_array().map_or(0, |groups| {
+            groups
+                .iter()
+                .map(|group| group["tasks"].as_array().map_or(0, Vec::len))
+                .sum()
+        });
+        format!(
+            "{} tasks: {} being worked on or ready, {waiting} waiting for an agent, {} in the longest chain left.",
+            count("tasks"),
+            count("frontier"),
+            count("longest_chain")
+        )
     }
 }
 

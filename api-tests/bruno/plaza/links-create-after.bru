@@ -1,0 +1,41 @@
+meta {
+  name: Create a task that runs after another
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Build what the plan says",
+    "budget": 200,
+    "after": ["{{firstTaskId}}"]
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.state: eq "open"
+  res.body.ready: eq false
+}
+
+tests {
+  test("it waits on the task it runs after", function () {
+    const body = res.getBody();
+    const first = bru.getVar("firstTaskId");
+    expect(body.after).to.deep.equal([first]);
+    expect(body.waiting_on).to.deep.equal([first]);
+    expect(body.blocked_by).to.deep.equal([]);
+    expect(body.project).to.equal(null);
+  });
+}
+
+script:post-response {
+  bru.setVar("secondTaskId", res.getBody().id);
+}

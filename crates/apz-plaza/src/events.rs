@@ -23,7 +23,10 @@
 //! data: {"run":"r1","vm":0,"offset":120,"text":"[    0.000000] Linux version…"}
 //!
 //! event: task
-//! data: {"id":"t1","state":"claimed","assignee":"builder"}
+//! data: {"id":"t1","state":"claimed","assignee":"builder","agent_cid":100,"project":"pr1","ready":false}
+//!
+//! event: task_link
+//! data: {"task":"t3","after":["t1","t2"]}
 //!
 //! event: treasury
 //! data: {"entry":1,"kind":"mint","amount":500,"task":"t1"}
@@ -73,14 +76,22 @@ pub enum Event {
         offset: u64,
         text: String,
     },
-    /// A task changed state (or the task was created, as `open`): `assignee`
-    /// is the schema's `assignee_id` once a claimed agent has one, and `null`
-    /// while nobody does.
+    /// A task changed state (or the task was created, as `open`), or a task it
+    /// runs after ended, which makes it ready or blocked: `assignee` is the
+    /// schema's `assignee_id` once a claimed agent has one, and `null` while
+    /// nobody does; `agent_cid` is the claiming agent's guest CID; `project`
+    /// the project the task is for; `ready` whether it can be claimed now.
     Task {
         id: String,
         state: &'static str,
         assignee: Option<String>,
+        agent_cid: Option<u64>,
+        project: Option<String>,
+        ready: bool,
     },
+    /// An open task's links changed: `after` is the whole new list of the
+    /// tasks it runs after.
+    TaskLink { task: String, after: Vec<String> },
     /// A treasury entry was posted: the double-entry journal grew. `entry` is
     /// the entry's id, `kind` the schema's entry kind, `amount` the entry's
     /// size (its credited total, which equals its debited total), and `task`
@@ -178,14 +189,35 @@ impl Event {
                 id,
                 state,
                 assignee,
+                agent_cid,
+                project,
+                ready,
             } => format!(
-                "{{\"id\":{},\"state\":{},\"assignee\":{}}}",
+                "{{\"id\":{},\"state\":{},\"assignee\":{},\"agent_cid\":{},\"project\":{},\"ready\":{}}}",
                 quote(id),
                 quote(state),
                 match assignee {
                     Some(assignee) => quote(assignee),
                     None => "null".to_string(),
-                }
+                },
+                match agent_cid {
+                    Some(cid) => cid.to_string(),
+                    None => "null".to_string(),
+                },
+                match project {
+                    Some(project) => quote(project),
+                    None => "null".to_string(),
+                },
+                ready
+            ),
+            Event::TaskLink { task, after } => format!(
+                "{{\"task\":{},\"after\":[{}]}}",
+                quote(task),
+                after
+                    .iter()
+                    .map(|id| quote(id))
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
             Event::Treasury {
                 entry,
@@ -262,6 +294,7 @@ impl Event {
             Event::Vm { .. } => "vm",
             Event::Serial { .. } => "serial",
             Event::Task { .. } => "task",
+            Event::TaskLink { .. } => "task_link",
             Event::Treasury { .. } => "treasury",
             Event::Agora { .. } => "agora",
             Event::Board { .. } => "board",
@@ -380,18 +413,40 @@ mod tests {
                 id: "t1".to_string(),
                 state: "open",
                 assignee: None,
+                agent_cid: None,
+                project: None,
+                ready: true,
             }
             .frame(),
-            "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null}\n\n"
+            "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":true}\n\n"
         );
         assert_eq!(
             Event::Task {
                 id: "t1".to_string(),
                 state: "claimed",
                 assignee: Some("builder".to_string()),
+                agent_cid: Some(100),
+                project: Some("pr1".to_string()),
+                ready: false,
             }
             .frame(),
-            "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\"}\n\n"
+            "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\",\"agent_cid\":100,\"project\":\"pr1\",\"ready\":false}\n\n"
+        );
+        assert_eq!(
+            Event::TaskLink {
+                task: "t3".to_string(),
+                after: vec!["t1".to_string(), "t2".to_string()],
+            }
+            .frame(),
+            "event: task_link\ndata: {\"task\":\"t3\",\"after\":[\"t1\",\"t2\"]}\n\n"
+        );
+        assert_eq!(
+            Event::TaskLink {
+                task: "t3".to_string(),
+                after: Vec::new(),
+            }
+            .data(),
+            "{\"task\":\"t3\",\"after\":[]}"
         );
         assert_eq!(
             Event::Treasury {
@@ -519,11 +574,18 @@ mod tests {
                 id: "t1".to_string(),
                 state: "claimed",
                 assignee: Some("a\"b\\c\nd".to_string()),
+                agent_cid: Some(7),
+                project: Some("p\"r\n1".to_string()),
+                ready: false,
             }
             .frame();
             assert!(
                 frame.contains("\"assignee\":\"a\\\"b\\\\c\\nd\""),
                 "the frame escapes the assignee: {frame}"
+            );
+            assert!(
+                frame.contains("\"project\":\"p\\\"r\\n1\""),
+                "the frame escapes the project: {frame}"
             );
             assert_eq!(frame.matches("data: ").count(), 1);
         }

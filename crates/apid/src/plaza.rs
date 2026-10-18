@@ -6,14 +6,15 @@
 
 use std::sync::Arc;
 
-use apz_http::{Request, Response, RouteDoc, Router};
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::ConnectedAgent;
 use apz_plaza::agora::{self, Agora};
 use apz_plaza::council::{self, Council, DecideRequest, ProposeRequest, VoteRequest};
 use apz_plaza::events::EventBus;
 use apz_plaza::social::{self, ContactRequest, PostRequest, Presence, ReadRequest, Social};
 use apz_plaza::tasks::{
-    ClaimError, ClaimRequest, CreateTask, FinishRequest, TaskLedger, TasksView, resolve_budget,
+    ClaimError, ClaimRequest, CreateTask, FinishRequest, Task, TaskLedger, TasksView,
+    resolve_budget,
 };
 use apz_plaza::treasury::{self, Treasury};
 use apz_proto::wire::WorkKind;
@@ -76,8 +77,8 @@ impl Plaza {
 /// `/v1/conversations…`, `/v1/motions…`, `/v1/agents/{cid}/contacts`.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/tasks", |app, _, _| list_tasks(app))
-        .doc(RouteDoc::new("List the tasks"))
+        .get("/v1/tasks", list_tasks)
+        .doc(RouteDoc::new("List the tasks").errors(&[400]))
         .post("/v1/tasks", |app, req, _| create_task(app, &req.body))
         .doc(
             RouteDoc::new("Create a task")
@@ -86,6 +87,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .get("/v1/tasks/{id}", |app, _, p| get_task(app, p.get("id")))
         .doc(RouteDoc::new("Get a task").errors(&[404]))
+        .route("PATCH", "/v1/tasks/{id}", |app, req, p| {
+            relink_task(app, p.get("id"), &req.body)
+        })
+        .doc(RouteDoc::new("Relink an open task").errors(&[400, 404, 409]))
         .delete("/v1/tasks/{id}", |app, _, p| {
             withdraw_task(app, p.get("id"))
         })
@@ -239,12 +244,46 @@ struct Assignee {
     assignee: Option<u64>,
 }
 
-fn list_tasks(app: &App) -> Response {
-    let tasks = app.plaza.tasks.list();
+/// `GET /v1/tasks`: every task, oldest first. `?project=<id>` keeps the project's tasks
+/// ([`project_tasks`]), and `?ready=true` (or `false`) the ones that can (or cannot) be claimed now.
+fn list_tasks(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let ready = match req.query_param("ready") {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(other) => {
+            return Response::error(400, &format!("ready must be true or false, not {other:?}"));
+        }
+    };
+    let tasks = match req.query_param("project") {
+        Some(pid) => project_tasks(app, pid),
+        None => app.plaza.tasks.list(),
+    };
     let view = TasksView {
-        tasks: tasks.iter().map(|task| task.view()).collect(),
+        tasks: tasks
+            .iter()
+            .map(|task| task.view())
+            .filter(|view| ready.is_none_or(|ready| view.ready == ready))
+            .collect(),
     };
     Response::json(200, &view)
+}
+
+/// The ledger's tasks for project `pid`, oldest first: the ones that name it, and the ones its record
+/// lists (a task posted before tasks named their project is only listed there). None for a project
+/// that does not exist and that no task names.
+pub(crate) fn project_tasks(app: &App, pid: &str) -> Vec<Arc<Task>> {
+    let listed = app
+        .projects
+        .get(pid)
+        .map(|project| project.tasks)
+        .unwrap_or_default();
+    app.plaza
+        .tasks
+        .list()
+        .into_iter()
+        .filter(|task| task.project() == Some(pid) || listed.iter().any(|id| id == task.id()))
+        .collect()
 }
 
 /// `GET /v1/treasury`: balances (derived from the journal), totals and v0's
@@ -558,6 +597,29 @@ pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
         );
     }
     Response::json(201, &task.view())
+}
+
+/// The `PATCH /v1/tasks/{id}` body: the whole new list of the tasks it runs after.
+#[derive(Debug, Deserialize)]
+struct Relink {
+    after: Vec<String>,
+}
+
+/// `PATCH /v1/tasks/{id}` `{after}`: replaces an open task's links. They are held to the rules a
+/// create holds them to, and links that would close a cycle are a 400 that names it; a task that is
+/// no longer open keeps its links (409).
+fn relink_task(app: &App, id: &str, body: &[u8]) -> Response {
+    if app.plaza.tasks.find(id).is_none() {
+        return Response::error(404, &format!("no task with id {id}"));
+    }
+    let request: Relink = match parse(body, "relink") {
+        Ok(request) => request,
+        Err(refused) => return refused,
+    };
+    match app.plaza.tasks.relink(id, &request.after) {
+        Ok(task) => Response::json(200, &task.view()),
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+    }
 }
 
 /// `GET /v1/tasks/{id}`: one task.

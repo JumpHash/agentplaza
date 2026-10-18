@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 for relinking an unknown task
+  type: http
+  seq: 17
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/t999999
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "after": []
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

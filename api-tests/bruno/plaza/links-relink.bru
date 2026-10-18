@@ -1,0 +1,30 @@
+meta {
+  name: Relink an open task
+  type: http
+  seq: 16
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{secondTaskId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "after": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ready: eq true
+}
+
+tests {
+  test("the task runs after nothing now", function () {
+    expect(res.getBody().after).to.deep.equal([]);
+    expect(res.getBody().waiting_on).to.deep.equal([]);
+  });
+}

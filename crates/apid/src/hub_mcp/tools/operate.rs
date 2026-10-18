@@ -382,7 +382,7 @@ impl Tool for CreateTask {
     }
 
     fn description(&self) -> &'static str {
-        "Files a task, the same as the console's New task: the budget rule applies, and the task is open for the plaza to claim."
+        "Files a task, the same as the console's New task: the budget rule applies, and the task is open for the plaza to claim once every task it runs after (after) is done. A task for a project needs the project's plan approved, and runs after that project's tasks only."
     }
 
     fn input_schema(&self) -> Value {
@@ -393,6 +393,13 @@ impl Tool for CreateTask {
                 "acceptance": { "type": "string" },
                 "role": { "type": "string" },
                 "budget": { "type": "integer", "minimum": 0 },
+                "after": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "maxItems": 32,
+                    "description": "the ids of the tasks it runs after",
+                },
+                "project": { "type": "string", "description": "the project it is for (pr<n>)" },
             },
             "required": ["title"],
             "additionalProperties": false,
@@ -405,7 +412,7 @@ impl Tool for CreateTask {
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
         let mut request = json!({ "goal": text_arg(args, "title")? });
-        for key in ["acceptance", "role", "budget"] {
+        for key in ["acceptance", "role", "budget", "after", "project"] {
             if let Some(value) = args.get(key) {
                 request[key] = value.clone();
             }
