@@ -233,6 +233,9 @@ pub struct CheckedPost {
     pub task: Option<String>,
     /// The driver that acted for the agent.
     pub posted_by: String,
+    /// The project the post belongs to, or `None` for the whole board. It is not on the wire: the
+    /// hub sets it to the author's project, and an award's note carries its task's.
+    pub project: Option<String>,
 }
 
 impl PostRequest {
@@ -250,6 +253,7 @@ impl PostRequest {
                 Some(driver) => tasks::required_text("posted_by", driver, MAX_POSTED_BY)?,
                 None => DEFAULT_POSTED_BY.to_string(),
             },
+            project: None,
         })
     }
 }
@@ -840,7 +844,7 @@ impl Social {
             comments: Vec::new(),
             attachments: Vec::new(),
             owner: false,
-            project: None,
+            project: post.project,
             mentions: Vec::new(),
         };
         inner.posts.push(post.clone());
@@ -1274,6 +1278,10 @@ impl Social {
             posted_by: Some(clamp(&awarder.assignee_id(), MAX_POSTED_BY)),
         }
         .checked()
+        .map(|post| CheckedPost {
+            project: task.project().map(str::to_string),
+            ..post
+        })
         .map_err(SocialError::Invalid)
         .and_then(|post| self.post(awarder, post));
         if let Err(refused) = &note {

@@ -661,6 +661,7 @@ pub fn view<'a>(side: &'a Side, _ctx: &'a Ctx) -> Element<'a, SideMsg> {
 fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let source = match side.model_source.as_str() {
         "agent" => "set for this agent",
+        "project" => "from its project",
         "role" => "from role",
         _ => "default",
     };

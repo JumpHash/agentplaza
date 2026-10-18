@@ -88,7 +88,7 @@
       {
         "screen": "agents",
         "title": "Agents",
-        "body": "Your agents. Start and stop them, and open one for its details, its model and its tools."
+        "body": "Your agents. Each works on one project at a time; the ones on no project wait on the bench and use nothing. Open one for its details, its model and its tools."
       },
       {
         "screen": "floor",
@@ -98,7 +98,7 @@
       {
         "screen": "projects",
         "title": "Projects and tasks",
-        "body": "Projects hold the work and tasks are its pieces. Agents pick them up and report back here."
+        "body": "Start a project in a conversation with the orchestrator (New project, in the switcher at the top): it drafts the tasks, the team and the budget, and you start it. The switcher shows one project, or all of them."
       },
       {
         "screen": "approvals",

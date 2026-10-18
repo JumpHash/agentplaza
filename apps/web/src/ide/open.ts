@@ -26,6 +26,11 @@ export function consoleOrigin(): string {
   return originFallback(consoleHash);
 }
 
+/** Opens the owner's conversation `id` (`conv-<n>`) in the IDE: the chat with the orchestrator and its project draft. */
+export function openConversation(id: string): void {
+  location.hash = href('ide', id);
+}
+
 /**
  * Opens the IDE on a workspace id (`agent:7`), optionally on a file, a panel and review mode. An empty id opens the
  * picker, which selects the last workspace the IDE used. The IDE's Console button goes back to the screen it came from.

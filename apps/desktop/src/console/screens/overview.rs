@@ -1,5 +1,6 @@
 //! The Overview screen (parity with the web console's `overview` view): the plaza at a glance,
 //! the orchestrator's chat box, the activity feed, the projects with their flow lines, and the fleet.
+//! Under a project it is that project's: its agents, its tasks, its stage and budget, its activity.
 //!
 //! The web view is pushed the transcript bus. A screen has no event stream here, so the feed is
 //! polled: every load reads each agent's transcript after the last entry seen.
@@ -59,6 +60,8 @@ pub struct State {
     /// A load is in flight; hub events that arrive meanwhile only mark `again`.
     loading: bool,
     again: bool,
+    /// Under a project, the credits left in its own budget (None: it is funded from the plaza's).
+    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +86,7 @@ pub struct Snapshot {
     agents: Vec<Agent>,
     feed: Vec<(u64, Vec<Entry>)>,
     projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
+    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,7 +101,6 @@ struct Overview {
 struct Counts {
     total: u64,
     working: u64,
-    offline: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,6 +115,25 @@ struct Agent {
     /// What it is doing now: a step waiting on an approval makes its task the owner's square.
     #[serde(default)]
     step: Option<model::Step>,
+    /// The project it works on (None: the bench, or the orchestrator).
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    kind: String,
+}
+
+impl Agent {
+    /// Shown under `project` (None: All projects): its member, or the orchestrator.
+    fn in_scope(&self, project: Option<&str>) -> bool {
+        project.is_none_or(|p| self.project.as_deref() == Some(p) || self.tier == "orchestrator")
+    }
+
+    /// On no project, and neither the orchestrator nor a model-only agent.
+    fn on_bench(&self) -> bool {
+        self.project.as_deref().is_none_or(str::is_empty)
+            && self.tier != "orchestrator"
+            && self.kind != "model"
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,12 +176,14 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.loading = true;
     let client = ctx.client.clone();
     let cursors = state.cursors.clone();
+    let scope = ctx.project.clone();
     client::task(
         move || {
             let overview: Overview = client.get("/v1/overview")?;
             let agents: Vec<Agent> = client.get("/v1/agents")?;
             let mut feed = Vec::with_capacity(agents.len());
-            for a in &agents {
+            // Under a project, the activity of its agents (and the orchestrator) only.
+            for a in agents.iter().filter(|a| a.in_scope(scope.as_deref())) {
                 let path = match cursors.get(&a.cid) {
                     Some(after) => {
                         format!("/v1/agents/{}/transcript?after={after}&limit=200", a.cid)
@@ -169,11 +193,19 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 let entries: Vec<Entry> = client.get(&path)?;
                 feed.push((a.cid, entries));
             }
+            let budget = scope.as_deref().and_then(|p| {
+                let b: Value = client.get(&format!("/v1/projects/{p}/budget")).ok()?;
+                b["own"]
+                    .as_bool()
+                    .unwrap_or(false)
+                    .then(|| b["balance"].as_i64().unwrap_or(0))
+            });
             Ok(Snapshot {
                 overview,
                 agents,
                 feed,
-                projects: read_projects(&client),
+                projects: read_projects(&client, scope.as_deref()),
+                budget,
             })
         },
         Msg::Loaded,
@@ -202,6 +234,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.overview = Some(snap.overview);
             state.agents = snap.agents;
             state.projects = snap.projects;
+            state.budget = snap.budget;
             // The roster was read after the steps the events brought, so its own are as new.
             state.steps.clear();
             state.error = None;
@@ -285,10 +318,12 @@ fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let stats = match &state.overview {
-        Some(o) => stat_row(o),
-        None => empty("alert", "apid is unreachable", "Start apid, then reload."),
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    let scope = ctx.project.as_deref();
+    let stats = match (&state.overview, scope) {
+        (Some(_), Some(p)) => project_stats(state, p),
+        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.on_bench()).count()),
+        (None, _) => empty("alert", "apid is unreachable", "Start apid, then reload."),
     };
     let mut page = column![stats].spacing(26);
     if let Some(e) = &state.error {
@@ -302,19 +337,98 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .spacing(22),
     );
     page = page.push(projects(state));
-    page = page.push(fleet(&state.agents));
-    ui::sheet(ui::view_head("Overview", vec![]), page.into())
+    let fleet_agents: Vec<&Agent> = state.agents.iter().filter(|a| a.in_scope(scope)).collect();
+    page = page.push(fleet(fleet_agents));
+    let title = match scope {
+        Some(p) => format!(
+            "Overview · {}",
+            state
+                .projects
+                .as_ref()
+                .and_then(|(list, _)| list.iter().find(|x| x.id == p))
+                .map_or(p, |x| x.title.as_str())
+        ),
+        None => "Overview".to_string(),
+    };
+    // The page scrolls under its head (the shell leaves the Overview's scrolling to it): on a short window the
+    // figures, the projects and the fleet keep their height instead of being squeezed out.
+    let page = page.padding(Padding {
+        top: 0.0,
+        right: 14.0,
+        bottom: 0.0,
+        left: 0.0,
+    });
+    ui::sheet(ui::view_head(&title, vec![]), ui::scroll(page).into())
 }
 
-/// The projects and the ledger, for the Projects card; None when the hub would not say.
-fn read_projects(client: &client::Client) -> Option<(Vec<model::Project>, Vec<model::Task>)> {
+/// The projects and the ledger, for the Projects card; None when the hub would not say. Under a project, that
+/// project and its tasks.
+fn read_projects(
+    client: &client::Client,
+    scope: Option<&str>,
+) -> Option<(Vec<model::Project>, Vec<model::Task>)> {
     #[derive(Deserialize)]
     struct Tasks {
         tasks: Vec<model::Task>,
     }
-    let projects: Vec<model::Project> = client.get("/v1/projects").ok()?;
-    let tasks = client.get::<Tasks>("/v1/tasks").ok()?.tasks;
+    let mut projects: Vec<model::Project> = client.get("/v1/projects").ok()?;
+    let path = match scope {
+        Some(p) => format!("/v1/tasks?project={}", client::enc(p)),
+        None => "/v1/tasks".to_string(),
+    };
+    let tasks = client.get::<Tasks>(&path).ok()?.tasks;
+    if let Some(p) = scope {
+        projects.retain(|x| x.id == p);
+    }
     Some((projects, tasks))
+}
+
+/// Under a project, its figures: its agents, its open tasks, its stage, its budget.
+fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
+    let team: Vec<&Agent> = state
+        .agents
+        .iter()
+        .filter(|a| a.project.as_deref() == Some(project))
+        .collect();
+    let working = team.iter().filter(|a| a.status == "working").count();
+    let (tasks, p) = match &state.projects {
+        Some((list, tasks)) => (tasks.as_slice(), list.iter().find(|x| x.id == project)),
+        None => (&[][..], None),
+    };
+    let open = tasks
+        .iter()
+        .filter(|t| matches!(t.state.as_str(), "open" | "claimed"))
+        .count();
+    let done = tasks.iter().filter(|t| t.state == "done").count();
+    let (stage, life) = match p {
+        Some(p) => (
+            model::stage_label(&p.stage),
+            if p.paused {
+                "paused"
+            } else if p.archived {
+                "archived"
+            } else {
+                "in progress"
+            },
+        ),
+        None => ("—".to_string(), ""),
+    };
+    let (budget, budget_sub) = match state.budget {
+        Some(b) => (ui::thousands(b), "credits left"),
+        None => ("—".to_string(), "from the plaza"),
+    };
+    row![
+        stat(
+            "Agents",
+            team.len().to_string(),
+            format!("{working} working")
+        ),
+        stat("Open tasks", open.to_string(), format!("{done} done")),
+        stat("Stage", stage, life.to_string()),
+        stat("Budget", budget, budget_sub.to_string()),
+    ]
+    .spacing(22)
+    .into()
 }
 
 /// A line per project still in progress: its title, its stage and its flow line, opening it on the Work screen.
@@ -330,7 +444,7 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
             false,
         );
     };
-    let active: Vec<&model::Project> = list.iter().filter(|p| p.stage != "delivered").collect();
+    let active: Vec<&model::Project> = list.iter().filter(|p| p.live()).collect();
     if active.is_empty() {
         return card(
             card_title("Projects"),
@@ -404,7 +518,7 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
     card(card_title("Projects"), column(rows).into(), true)
 }
 
-fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
+fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
     let open =
         o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
     let done = o.tasks.get("done").copied().unwrap_or(0);
@@ -412,10 +526,7 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
         stat(
             "Agents",
             o.agents.total.to_string(),
-            format!(
-                "{} working · {} offline",
-                o.agents.working, o.agents.offline
-            )
+            format!("{} working · {bench} on the bench", o.agents.working)
         ),
         stat("Open tasks", open.to_string(), format!("{done} done")),
         stat(
@@ -433,13 +544,19 @@ fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {
     .into()
 }
 
-/// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line.
+/// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line. A value with words in it
+/// (a stage, a model) is set at the section size on one line, as the web's `.value-text`, so it keeps to its tile.
 fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
-    let body = column![
+    let figure = if value.chars().any(char::is_alphabetic) {
         text(value)
-            .font(ui::SANS_BOLD)
-            .size(34.0)
-            .color(crate::theme::palette().ink),
+            .font(ui::SANS_SEMIBOLD)
+            .size(crate::theme::TYPE_SECTION)
+            .wrapping(Wrapping::None)
+    } else {
+        text(value).font(ui::SANS_BOLD).size(34.0)
+    };
+    let body = column![
+        figure.color(crate::theme::palette().ink),
         text(label.to_string())
             .font(SANS_MEDIUM)
             .size(10.5)
@@ -458,7 +575,6 @@ fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
             left: 16.0,
         })
         .width(Length::FillPortion(1))
-        .height(Length::Fill)
         .style(rule_box)
         .into()
 }
@@ -614,7 +730,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
     card(card_title("Activity"), body, true)
 }
 
-fn fleet<'a>(agents: &'a [Agent]) -> Element<'a, Msg> {
+fn fleet<'a>(agents: Vec<&'a Agent>) -> Element<'a, Msg> {
     if agents.is_empty() {
         return card(
             card_title("Fleet"),

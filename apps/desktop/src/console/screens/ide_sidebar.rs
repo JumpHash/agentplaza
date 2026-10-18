@@ -1,6 +1,9 @@
-//! The IDE's left sidebar: a search field, the projects as collapsible groups of agents and repos (Coral's
-//! grouping), each agent's status dot, name, current task and unread count, a hover card with what the agent
-//! is, and "+ New agent" at the foot. Rows come from the roster `ide.rs` loads (`ide_model` groups and reads them).
+//! The IDE's left sidebar: a search field, the owner's conversations with the orchestrator, the projects as
+//! collapsible groups of agents and repos (Coral's grouping), each agent's status dot, name, current task and unread
+//! count, a hover card with what the agent is, and "+ New conversation" and "+ New agent" at the foot. In project
+//! mode (the IDE opened under a project) it is that project's: its head with the way to its tasks, board, work and
+//! settings, its conversation, and its agents and repo only. Rows come from the roster `ide.rs` loads (`ide_model`
+//! groups and reads them).
 
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
@@ -12,10 +15,15 @@ use iced::widget::{Space, Stack, button, column, container, row, text, text_inpu
 use iced::{Alignment, Element, Length};
 use std::str::FromStr;
 
+use super::Id;
 use super::ide::{self, Msg, State};
 use super::ide_model::{self, AgentRow, Dot, Group};
-use crate::console::ui;
+use crate::console::{scope, shell, ui};
 use crate::theme;
+use serde_json::Value;
+
+/// How many conversations the sidebar lists.
+const CONVERSATIONS: usize = 6;
 
 /// The status dot's diameter, and the rule drawn through a finished agent's name.
 const DOT: f32 = 9.0;
@@ -63,16 +71,27 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         .filter(|w| w.kind == "station")
         .map(|w| w.id.clone())
         .collect();
-    let groups = ide_model::groups(&agents, &st.projects, &repos, &stations);
+    // In project mode, the project's group alone.
+    let groups = match &st.project {
+        Some(project) => ide_model::project_group(&agents, &st.projects, &repos, project),
+        None => ide_model::groups(&agents, &st.projects, &repos, &stations),
+    };
     let unread = super::board::unread(&st.board, st.board_seen_ms);
 
     let mut list = column![].spacing(6);
+    for row in conversation_rows(st) {
+        list = list.push(row);
+    }
     if let Some(error) = &st.roster_error {
         list = list.push(ui::error_line(error));
     } else if !st.roster_loaded {
         list = list.push(ui::faint("Loading agents…"));
     } else if groups.is_empty() {
-        list = list.push(ui::faint("No agents yet. Make one with + New agent."));
+        list = list.push(ui::faint(if st.project.is_some() {
+            "Nobody works on this project yet: add agents from the bench in its Team tab."
+        } else {
+            "Nothing yet. Start with a conversation: + New conversation, below."
+        }));
     }
     let selected_cid = match st.ide.workspace {
         Some(apz_ide::WorkspaceId::Agent(cid)) => Some(cid),
@@ -106,23 +125,127 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         }
     }
 
-    let footer = button(
-        row![
-            ui::icon("plus", 14.0, theme::palette().ink_2),
-            ui::sans("New agent", 12.5, theme::palette().ink)
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .on_press(Msg::NewAgent)
-    .width(Length::Fill)
-    .padding([7, 10])
-    .style(theme::register_row(false));
+    let foot = |label: &'static str, msg: Msg| {
+        button(
+            row![
+                ui::icon("plus", 14.0, theme::palette().ink_2),
+                ui::sans(label, 12.5, theme::palette().ink)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .on_press(msg)
+        .width(Length::Fill)
+        .padding([7, 10])
+        .style(theme::register_row(false))
+    };
+    let footer = column![
+        foot("New conversation", Msg::NewProject),
+        foot("New agent", Msg::NewAgent)
+    ]
+    .spacing(4);
 
-    column![search, ui::scroll(list).height(Length::Fill), footer]
-        .spacing(10)
-        .height(Length::Fill)
+    let mut col = column![search].spacing(10).height(Length::Fill);
+    if let Some(project) = &st.project {
+        col = col.push(project_head(project));
+    }
+    col.push(ui::scroll(list).height(Length::Fill))
+        .push(footer)
         .into()
+}
+
+/// In project mode: the project's title, and the way to its tasks, board, work and settings in the console.
+fn project_head(project: &str) -> Element<'static, Msg> {
+    let go = |to: Id| Msg::Shell(shell::Msg::Scope(Some(project.to_string()), Some(to)));
+    let links = row![
+        ui::text_link("Tasks", go(Id::Tasks)),
+        ui::text_link("Board", go(Id::Board)),
+        ui::text_link("Work", go(Id::WorkOn(project.to_string()))),
+        ui::text_link(
+            "Settings",
+            go(Id::ProjectTab(
+                project.to_string(),
+                super::projects::Tab::Settings
+            ))
+        ),
+    ]
+    .spacing(12);
+    container(
+        column![
+            ui::sans(scope::title(project), 14.0, theme::palette().ink),
+            links
+        ]
+        .spacing(6),
+    )
+    .padding([4, 6])
+    .width(Length::Fill)
+    .into()
+}
+
+/// The conversations: the newest few (in project mode, the ones of the project), under their own heading.
+fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
+    let q = st.sidebar_query.trim().to_lowercase();
+    let shown: Vec<&Value> = st
+        .conversations
+        .iter()
+        .filter(|c| {
+            st.project
+                .as_deref()
+                .is_none_or(|p| c["project"].as_str() == Some(p))
+        })
+        .filter(|c| {
+            q.is_empty()
+                || c["title"]
+                    .as_str()
+                    .is_some_and(|t| t.to_lowercase().contains(&q))
+        })
+        .take(CONVERSATIONS)
+        .collect();
+    if shown.is_empty() {
+        return Vec::new();
+    }
+    let open = st.conversation.as_ref().map(|c| c.id.as_str());
+    let mut rows: Vec<Element<'static, Msg>> = vec![ui::label("Conversations").into()];
+    for c in shown {
+        let id = c["id"].as_str().unwrap_or("").to_string();
+        let pending = c["pending"].as_u64().unwrap_or(0) > 0;
+        let meta = if pending {
+            "answering…".to_string()
+        } else if let Some(p) = c["project"].as_str() {
+            scope::title(p)
+        } else if let Some(r) = c["draft"]["revision"].as_u64() {
+            format!("draft · revision {r}")
+        } else {
+            ide_model::ago(ide::now_ms(), c["updated_ms"].as_u64().unwrap_or(0))
+        };
+        let dot = if pending { Dot::Working } else { Dot::Idle };
+        let body = column![
+            row![
+                dot_mark(dot),
+                text(ui::ellipsize(c["title"].as_str().unwrap_or(&id), 34))
+                    .font(Font {
+                        weight: Weight::Medium,
+                        ..theme::SANS
+                    })
+                    .size(13.0)
+                    .color(theme::palette().ink)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            ui::faint(meta).size(11.5),
+        ]
+        .spacing(2);
+        let selected = open == Some(id.as_str());
+        rows.push(
+            button(body)
+                .on_press(Msg::OpenConversation(id))
+                .width(Length::Fill)
+                .padding([5, 8])
+                .style(theme::register_row(selected))
+                .into(),
+        );
+    }
+    rows
 }
 
 /// An agent's last finished work, for its status dot: the transcript's last outcome for the agent on screen (the

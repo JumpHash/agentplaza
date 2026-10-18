@@ -1,0 +1,39 @@
+meta {
+  name: Open a project for the tasks
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "Release notes",
+    "goal": "Write and check the notes for the next release"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.stage: eq "implementation"
+  res.body.approved_by: eq "owner"
+  res.body.paused: eq false
+  res.body.archived: eq false
+}
+
+tests {
+  test("the owner's project has an id and no tasks yet", function () {
+    const body = res.getBody();
+    expect(body.id).to.match(/^pr\d+$/);
+    expect(body.tasks).to.deep.equal([]);
+  });
+}
+
+script:post-response {
+  bru.setVar("projectId", res.getBody().id);
+}

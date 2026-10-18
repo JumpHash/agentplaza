@@ -1,0 +1,18 @@
+meta {
+  name: Pause a project
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.paused: eq true
+  res.body.archived: eq false
+}

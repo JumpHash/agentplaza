@@ -124,13 +124,26 @@ impl Default for ToolPolicy {
     }
 }
 
-/// Who may use the server. Both lists default to nobody.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Who may use the server. The role and node lists default to nobody; the project list to every project (and the
+/// agents on none, such as the orchestrator), so a server from before projects keeps its users.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Access {
     #[serde(default)]
     pub roles: Pick,
     #[serde(default)]
     pub nodes: Pick,
+    #[serde(default = "Pick::all")]
+    pub projects: Pick,
+}
+
+impl Default for Access {
+    fn default() -> Self {
+        Self {
+            roles: Pick::default(),
+            nodes: Pick::default(),
+            projects: Pick::All,
+        }
+    }
 }
 
 /// `"all"` or a list of names.
@@ -148,6 +161,11 @@ impl Default for Pick {
 }
 
 impl Pick {
+    /// Everything picked.
+    pub fn all() -> Self {
+        Pick::All
+    }
+
     /// Whether `name` is picked.
     pub fn admits(&self, name: &str) -> bool {
         match self {
@@ -414,6 +432,11 @@ pub fn validate(server: &McpServer) -> Result<(), Invalid> {
         (
             "access.nodes",
             &server.access.nodes,
+            role_or_node as fn(&str) -> bool,
+        ),
+        (
+            "access.projects",
+            &server.access.projects,
             role_or_node as fn(&str) -> bool,
         ),
     ] {
@@ -694,6 +717,7 @@ mod tests {
             access: Access {
                 roles: Pick::All,
                 nodes: Pick::All,
+                projects: Pick::All,
             },
             limits: Limits::default(),
             allow_private: false,

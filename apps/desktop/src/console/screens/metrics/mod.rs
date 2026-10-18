@@ -1560,6 +1560,7 @@ mod tests {
         let (url, refreshes) = serve_tokens_hub();
         let ctx = Ctx {
             client: crate::console::client::Client::new(&url, None, None),
+            project: None,
         };
         let fixture = apz_metrics_view::fixture::Fixture::new(FIXTURE_NOW);
         let mut q = ViewQuery::new("tokens", "global", "24h");

@@ -4,6 +4,7 @@
 // Above them, the agents the orchestrator has proposed to spawn, to review or reject.
 
 import '../styles/approvals.css';
+import { inScope, projectTitle, scope } from '../scope';
 import { api, type AgentProposal, type Approval, type ApprovalAction } from '../api';
 import { href } from '../router';
 import { agentName } from '../roles';
@@ -49,11 +50,13 @@ const PROPOSAL_LABEL: Record<AgentProposal['state'], string> = {
 };
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
+  // Under a project, the approvals its agents asked for (and the orchestrator's, which works on every project).
+  const inProject = scope.get();
   const proposals = h('section.proposals', { style: 'display:none' });
   const pending = h('div.approvals-pending');
   const decided = h('div.approvals-history');
   root.append(
-    h('div.view-head', null, h('h1', null, 'Approvals')),
+    h('div.view-head', null, h('h1', null, 'Approvals', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null)),
     proposals,
     pending,
     h('h2.approvals-subhead', null, 'Decided'),
@@ -79,8 +82,14 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const render = (): void => {
     if (!loaded) return;
     if (failed) return replace(pending, empty('alert', 'Could not load approvals.'));
-    const waiting = items.filter((a) => a.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
-    const past = items.filter((a) => a.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
+    const roster = agents.get();
+    const shown = items.filter((a) => {
+      if (!inProject || a.cid === 0) return true;
+      const agent = roster.find((x) => x.cid === a.cid);
+      return !agent || inScope(agent, inProject);
+    });
+    const waiting = shown.filter((a) => a.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
+    const past = shown.filter((a) => a.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
     replace(
       pending,
       waiting.length

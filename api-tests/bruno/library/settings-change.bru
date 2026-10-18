@@ -1,0 +1,25 @@
+meta {
+  name: Override a project's effort and task budget
+  type: http
+  seq: 30
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "effort": "high",
+    "task_budget": 3000
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.effort: eq "high"
+  res.body.task_budget: eq 3000
+}

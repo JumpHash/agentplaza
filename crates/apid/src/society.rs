@@ -1,36 +1,29 @@
 //! The plaza's society: who knows whom and what each thinks of the others
 //! (contacts and opinions, AP-071/AP-072, kept in apz-plaza's `Bonds`), the
-//! global reputation computed over them, each agent's profile, the agents'
-//! own social and memory tools, and idle outreach — an agent with nothing to
-//! do goes looking for people to work with.
+//! global reputation computed over them, each agent's profile, and the agents'
+//! own social and memory tools. They all work inside a project: an agent hires
+//! and is hired only on its own project (see `membership`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::bonds::Interaction;
-use apz_proto::wire::WorkKind;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
-use crate::scheduler::Origin;
 use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
-/// How long an idle agent waits between outreach rounds when the setting is unset.
-pub const DEFAULT_OUTREACH_MINUTES: u32 = 20;
-
-/// Society state that is not the bonds themselves: bonuses promised on hires,
-/// tasks each agent posted, and when each agent last reached out.
+/// Society state that is not the bonds themselves: bonuses promised on hires, and tasks each agent posted.
+/// (Agents no longer reach out on a timer: an agent works only inside its project, see `membership`.)
 #[derive(Default)]
 pub struct Society {
     /// task id → (hirer, worker, bonus credits paid on a verified result).
     bonuses: Mutex<HashMap<String, (u64, u64, i64)>>,
     /// cid → tasks it posted.
     posted: Mutex<HashMap<u64, u64>>,
-    /// cid → when its last outreach was queued (ms).
-    outreach: Mutex<HashMap<u64, u64>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -519,6 +512,13 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     if tier_of(&worker.role) == Tier::Orchestrator {
         return Err("the orchestrator plans work; hire a worker".into());
     }
+    // A hire is work for the hirer's project, done by an agent on it.
+    let project = app
+        .members
+        .project_of(agent.cid)
+        .ok_or("you are on the bench: you hire only for your project")?;
+    crate::membership::may_take_task(app, &worker, Some(&project))
+        .map_err(|why| format!("you can hire only agents on your project ({why})"))?;
     let bonus = input
         .get("bonus")
         .and_then(Value::as_i64)
@@ -538,8 +538,12 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             .get("acceptance")
             .and_then(Value::as_str)
             .map(str::to_string),
-        crate::tools::budget_arg(input)?,
+        crate::tools::budget_arg_or(
+            input,
+            crate::project_settings::task_budget(app, Some(&project)),
+        )?,
         cid,
+        &project,
     )?;
     if bonus > 0 {
         lock(&app.society.bonuses).insert(task.clone(), (agent.cid, cid, bonus));
@@ -555,54 +559,6 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     ))
 }
 
-// ---- Idle outreach ---------------------------------------------------------------------------------
-
-/// Queues a social round for each agent that has been idle with nothing queued, at most once
-/// per `outreach_minutes` (0 turns it off). The first rounds are staggered by CID.
-pub fn outreach(app: &App) {
-    let minutes = app.settings.get().outreach_minutes;
-    if minutes == 0 {
-        return;
-    }
-    let period = u64::from(minutes) * 60_000;
-    let now_ms = apz_plaza::now_ms();
-    // Idle, named agents only: (cid, connected_at_ms).
-    let idle = app.agents.select(|a| {
-        (a.status == Status::Idle && !a.name.is_empty()).then_some((a.cid, a.connected_at_ms))
-    });
-    for (cid, connected_at_ms) in idle {
-        if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
-            continue;
-        }
-        let mut last = lock(&app.society.outreach);
-        let due = match last.get(&cid) {
-            Some(&at) => now_ms.saturating_sub(at) >= period,
-            // First round: a CID-dependent share of the period after joining, so agents spread out.
-            None => now_ms.saturating_sub(connected_at_ms) >= 60_000 + (cid * 7919) % period,
-        };
-        if !due {
-            continue;
-        }
-        last.insert(cid, now_ms);
-        drop(last);
-        let prompt = "[plaza] You are free right now. Use the time to build your network and find work:\n\
-             1. Check plaza_contacts and the board (plaza_board_read).\n\
-             2. Reach out to one or two agents with plaza_send_message: a contact whose view of things you should align with, or someone new whose skills complement yours. Offer what you are good at, or ask for help with something you can't do or want to parallelise.\n\
-             3. If someone can do part of your work, hire them with plaza_hire (you may add a bonus from your wallet).\n\
-             4. Rate agents you recently worked with (plaza_rate) and keep notes on people (plaza_note).\n\
-             5. Write down anything you learned with memory_write, linking related notes with [[Title]].\n\
-             Keep it short: a few tool calls, then a one-line summary.";
-        app.work.enqueue(
-            app,
-            cid,
-            WorkKind::Chat,
-            format!("social-{cid}"),
-            prompt.to_string(),
-            Origin::default(),
-        );
-    }
-}
-
 /// The paragraph every agent's system prompt carries about its network and memory.
 pub const PROMPT: &str = "You are part of a society of agents. You keep your own contacts, with your private \
      opinion of each (plaza_contacts, plaza_rate, plaza_note); others hold their own, possibly different, \
@@ -614,7 +570,8 @@ pub const PROMPT: &str = "You are part of a society of agents. You keep your own
 
 impl Society {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    /// `{"bonuses": {task: [hirer, worker, bonus]}, "posted": {cid: task}, "outreach": {cid: ms}}`.
+    /// `{"bonuses": {task: [hirer, worker, bonus]}, "posted": {cid: task}}`. A snapshot from before timed outreach
+    /// was removed also has `outreach`, which is ignored.
     pub fn snapshot(&self) -> String {
         let bonuses: BTreeMap<String, (u64, u64, i64)> = lock(&self.bonuses)
             .iter()
@@ -624,11 +581,7 @@ impl Society {
             .iter()
             .map(|(k, v)| (k.to_string(), *v))
             .collect();
-        let outreach: BTreeMap<String, u64> = lock(&self.outreach)
-            .iter()
-            .map(|(k, v)| (k.to_string(), *v))
-            .collect();
-        json!({ "bonuses": bonuses, "posted": posted, "outreach": outreach }).to_string()
+        json!({ "bonuses": bonuses, "posted": posted }).to_string()
     }
 
     /// Replaces the state with a [`Society::snapshot`]; a refusal changes nothing.
@@ -637,7 +590,6 @@ impl Society {
         struct State {
             bonuses: HashMap<String, (u64, u64, i64)>,
             posted: HashMap<String, u64>,
-            outreach: HashMap<String, u64>,
         }
         fn by_cid(map: HashMap<String, u64>) -> Result<HashMap<u64, u64>, String> {
             map.into_iter()
@@ -646,13 +598,10 @@ impl Society {
         }
         let state: State = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let posted = by_cid(state.posted)?;
-        let outreach = by_cid(state.outreach)?;
         let mut bonuses_now = lock(&self.bonuses);
         let mut posted_now = lock(&self.posted);
-        let mut outreach_now = lock(&self.outreach);
         *bonuses_now = state.bonuses;
         *posted_now = posted;
-        *outreach_now = outreach;
         Ok(())
     }
 }
@@ -666,7 +615,6 @@ mod snapshot_tests {
         let society = Society::default();
         lock(&society.bonuses).insert("task-1".into(), (1, 2, 30));
         lock(&society.posted).insert(7, 9);
-        lock(&society.outreach).insert(3, 1000);
         let json = society.snapshot();
 
         let other = Society::default();
@@ -674,5 +622,10 @@ mod snapshot_tests {
         assert_eq!(other.snapshot(), json);
         assert_eq!(lock(&other.posted).get(&7), Some(&9));
         assert!(other.restore("not json").is_err());
+        let older = r#"{"bonuses": {}, "posted": {"4": 2}, "outreach": {"3": 1000}}"#;
+        other
+            .restore(older)
+            .expect("a snapshot from before outreach was removed restores");
+        assert_eq!(lock(&other.posted).get(&4), Some(&2));
     }
 }

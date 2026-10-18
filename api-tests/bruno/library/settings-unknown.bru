@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown project's settings
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

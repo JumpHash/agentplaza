@@ -566,6 +566,9 @@ fn sweep_once(app: &App) {
         status: Status,
         connected_at_ms: u64,
         role: String,
+        /// It may not work now (on the bench, or its project paused): its held work keeps it neither awake
+        /// nor woken, and it sleeps after a minute (`membership`).
+        benched: bool,
     }
     let roster = app.agents.select(|a| {
         Some(Row {
@@ -573,12 +576,15 @@ fn sweep_once(app: &App) {
             status: a.status,
             connected_at_ms: a.connected_at_ms,
             role: a.role.clone(),
+            benched: crate::membership::held(app, a).is_some(),
         })
     });
     for agent in roster {
         let cid = agent.cid;
         on_roster.insert(cid);
-        let busy = app.work.current(cid).is_some() || !app.work.queued(cid).is_empty();
+        // Held work does not count: it waits for the agent's project, not for the agent.
+        let busy =
+            app.work.current(cid).is_some() || (!agent.benched && !app.work.queued(cid).is_empty());
         match agent.status {
             Status::Asleep | Status::Dozing if busy => {
                 // Queued work for a napping agent (a failed wake, or work restored after a restart) gets
@@ -607,6 +613,7 @@ fn sweep_once(app: &App) {
                     stop_all,
                     // Only an agent that passes the cheap checks asks noded for its VM.
                     placed: true,
+                    benched: agent.benched,
                 };
                 if should_sleep(&check) {
                     check.placed = place(app, cid).is_ok();
@@ -687,19 +694,30 @@ pub struct SleepCheck<'a> {
     pub stop_all: bool,
     /// Its VM is placed on this node (`lifecycle::place` succeeds).
     pub placed: bool,
+    /// It may not work now: it is on the bench, or its project is paused (`membership`).
+    pub benched: bool,
 }
+
+/// How long an agent on the bench stays awake before it sleeps.
+pub const BENCH_GRACE_MS: u64 = 60_000;
 
 /// Whether the sweeper puts this agent to sleep: idle or dozing, with nothing to do, nothing waiting on
 /// the owner, its idle time at least `idle_sleep_min` minutes (0 never), its role not one that never
 /// sleeps, the plaza not held, and a VM to snapshot.
 pub fn should_sleep(check: &SleepCheck) -> bool {
+    // An agent on the bench does nothing, so it sleeps after a minute rather than its idle minutes.
+    let idle_enough = if check.benched {
+        check.idle_ms >= BENCH_GRACE_MS
+    } else {
+        check.idle_ms >= u64::from(check.idle_sleep_min) * 60_000
+    };
     matches!(check.status, Status::Idle | Status::Dozing)
         && !check.busy
         && !check.approval_pending
         && !check.stop_all
         && check.placed
         && check.idle_sleep_min > 0
-        && check.idle_ms >= u64::from(check.idle_sleep_min) * 60_000
+        && idle_enough
         && !check.never_roles.iter().any(|role| role == check.role)
 }
 
@@ -1022,6 +1040,7 @@ mod tests {
             never_roles: never,
             stop_all: false,
             placed: true,
+            benched: false,
         }
     }
 
@@ -1128,6 +1147,23 @@ mod tests {
             c.idle_sleep_min = 0;
             c.idle_ms = u64::MAX / 2;
             assert!(!should_sleep(&c), "0 means agents never sleep on their own");
+        }
+
+        // an_agent_on_the_bench_sleeps_after_a_minute: it does nothing, so it does not wait its idle minutes.
+        {
+            let never = vec!["orchestrator".to_string()];
+            let mut c = check(&never);
+            c.benched = true;
+            c.idle_ms = BENCH_GRACE_MS;
+            assert!(should_sleep(&c), "a bench agent sleeps after a minute");
+            c.idle_ms = BENCH_GRACE_MS - 1;
+            assert!(!should_sleep(&c), "not before its minute");
+            c.idle_ms = BENCH_GRACE_MS;
+            c.idle_sleep_min = 0;
+            assert!(
+                !should_sleep(&c),
+                "the owner's 0 (never sleep) still holds on the bench"
+            );
         }
 
         // a_role_that_never_sleeps_stays_awake: a role on the never-sleep list stays awake.

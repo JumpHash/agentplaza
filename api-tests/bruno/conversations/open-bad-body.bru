@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a conversation with no text
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/owner/conversations
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "message": "hello"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

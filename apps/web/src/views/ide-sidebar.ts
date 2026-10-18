@@ -7,8 +7,12 @@
 // Nothing here is shared with the shell.
 
 import css from '../styles/ide-sidebar.css';
-import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project, type StationView, type Task } from '../api';
-import { agents } from '../store';
+import { api, ideApi, type Agent, type IdeWorkspaceInfo, type OwnerConversationSummary, type Project, type StationView, type Task } from '../api';
+import { openConversation } from '../ide/open';
+import { hrefIn } from '../router';
+import { projectTitle, scope } from '../scope';
+import { agents, on } from '../store';
+import { openNewProject } from '../ui/new-project';
 import { ago } from '../ui/components';
 import { h, icon } from '../ui/dom';
 import { matchingRows, NONE_GID, sharedNames, sidebarGroups, type SidebarGroup } from '../ide/groups';
@@ -111,6 +115,10 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   let workspaces: IdeWorkspaceInfo[] = [];
   /** The workstations' own records: the account each one's agents act as, which the workspace list does not carry. */
   let stationViews: StationView[] = [];
+  /** The owner's conversations with the orchestrator, newest first: where a project is set up. */
+  let conversations: OwnerConversationSummary[] = [];
+  /** In project mode (the IDE opened under a project), the sidebar is that project's. */
+  const inProject = scope.get();
   let selected: string | null = null;
   let query = '';
   let disposed = false;
@@ -151,11 +159,27 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     type: 'button',
     onclick: () => opts.onNewAgent(),
   }, '+ New agent');
+  const newConversation = h('button.ide-side-new', {
+    type: 'button',
+    title: 'Set a project up in a conversation with the orchestrator',
+    onclick: () => openNewProject(),
+  }, '+ New conversation');
+
+  // In project mode: the project, and its tasks, board, work and settings in the console.
+  const projectName = h('strong', null, projectTitle(inProject));
+  const projectHead = inProject
+    ? h('div.ide-side-project', null,
+        projectName,
+        h('span.ide-side-links', null,
+          ...(['tasks', 'board', 'work', 'settings'] as const).map((k) =>
+            h('a', { href: k === 'settings' ? hrefIn(inProject, 'projects', inProject, 'settings') : k === 'work' ? hrefIn(inProject, 'work', inProject) : hrefIn(inProject, k) }, k.charAt(0).toUpperCase() + k.slice(1)))))
+    : null;
 
   const el = h('div.ide-side', null,
     h('div.ide-side-top', null, search),
+    ...(projectHead ? [projectHead] : []),
     list,
-    h('div.ide-side-foot', null, newBtn));
+    h('div.ide-side-foot', null, newConversation, newBtn));
 
   /** Coalesces store and poll updates into one render per task. */
   function schedule(): void {
@@ -408,14 +432,43 @@ export function sidebar(opts: SidebarOpts): Sidebar {
         warn ? h('span.ide-side-warn', { title: 'The agents work in the owner’s own account on this machine' }, warn) : null));
   }
 
+  /** The conversations: the newest few, and the one this project was started from in project mode. */
+  function conversationRows(q: string): HTMLElement[] {
+    const shown = conversations
+      .filter((c) => !inProject || c.project === inProject)
+      .filter((c) => !q || c.title.toLowerCase().includes(q))
+      .slice(0, 6);
+    if (!shown.length) return [];
+    return [
+      h('div.ide-side-subhead', null, 'Conversations'),
+      ...shown.map((c) =>
+        h('button.ide-side-row', {
+          type: 'button',
+          'data-key': `conv:${c.id}`,
+          'data-status': c.pending ? 'working' : 'idle',
+          title: c.last ? c.last.text : c.title,
+          onclick: () => openConversation(c.id),
+        },
+          h('span.ide-side-mark', null, h('span.ide-side-dot')),
+          h('span.ide-side-body', null,
+            h('span.ide-side-name', null, c.title),
+            h('span.ide-side-meta', null,
+              c.pending ? 'answering…' : c.project ? projectTitle(c.project) : c.draft ? `draft · revision ${c.draft.revision}` : ago(c.updated_ms))))),
+    ];
+  }
+
   /** Rebuilds the list, keeping the focused row focused by its key. */
   function render(): void {
     const active = document.activeElement;
     const focusKey = active instanceof HTMLElement && list.contains(active) ? active.dataset.key : undefined;
     const q = query.toLowerCase();
     const hasProjects = projects.length > 0;
-    const nodes: HTMLElement[] = [];
+    // The title, once the project list has it (the header is built before the list loads).
+    if (inProject) projectName.textContent = projects.find((p) => p.id === inProject)?.title ?? projectTitle(inProject);
+    const nodes: HTMLElement[] = [...conversationRows(q)];
     for (const g of sidebarGroups(agents.get(), projects, tasks, workspaces)) {
+      // In project mode, only the project's own group (its agents and its repositories).
+      if (inProject && g.gid !== `p:${inProject}`) continue;
       const v = matchingRows(g, q);
       if (!v) continue;
       const open = isOpen(g, q, hasProjects);
@@ -432,7 +485,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     }
     if (!nodes.length) {
       nodes.push(h('div.ide-side-empty', null,
-        q ? 'No matches.' : 'No agents yet. Start one with New agent below.'));
+        q ? 'No matches.' : inProject ? 'Nobody works on this project yet: add agents from the bench in its Team tab.' : 'Nothing yet. Start with a conversation: New conversation, below.'));
     }
     els.clear();
     for (const n of nodes) if (n.dataset.key) els.set(n.dataset.key, n);
@@ -442,21 +495,28 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   async function load(): Promise<void> {
-    const [p, w, t, s] = await Promise.all([
+    const [p, w, t, s, c] = await Promise.all([
       api.projects().catch(() => null),
       ideApi.workspaces().catch(() => null),
       api.tasks().catch(() => null),
       api.stations().catch(() => null),
+      api.ownerConversations().catch(() => null),
     ]);
     if (disposed) return;
     if (p) projects = p;
     if (w) workspaces = w;
     if (t) tasks = t;
     if (s) stationViews = s;
+    if (c) conversations = c;
     schedule();
   }
 
   const unwatch = agents.watch(() => schedule());
+  const offConversation = on('owner_conversation', () => void api.ownerConversations().then((c) => {
+    if (disposed) return;
+    conversations = c;
+    schedule();
+  }).catch(() => undefined));
   document.addEventListener('keydown', onDocKey);
   void load();
   const poll = window.setInterval(() => void load(), POLL_MS);
@@ -476,6 +536,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     dispose() {
       disposed = true;
       unwatch();
+      offConversation();
       window.clearInterval(poll);
       hideCard();
       document.removeEventListener('keydown', onDocKey);

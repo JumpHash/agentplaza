@@ -1,7 +1,7 @@
 meta {
   name: Create a task that runs after another
   type: http
-  seq: 12
+  seq: 13
 }
 
 post {
@@ -14,7 +14,8 @@ body:json {
   {
     "goal": "Build what the plan says",
     "budget": 200,
-    "after": ["{{firstTaskId}}"]
+    "after": ["{{firstTaskId}}"],
+    "project": "{{projectId}}"
   }
 }
 
@@ -32,7 +33,7 @@ tests {
     expect(body.after).to.deep.equal([first]);
     expect(body.waiting_on).to.deep.equal([first]);
     expect(body.blocked_by).to.deep.equal([]);
-    expect(body.project).to.equal(null);
+    expect(body.project).to.equal(bru.getVar("projectId"));
   });
 }
 

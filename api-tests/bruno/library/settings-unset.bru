@@ -1,0 +1,29 @@
+meta {
+  name: Set a project's effort back to the plaza's
+  type: http
+  seq: 34
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "effort": null
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.task_budget: eq 3000
+}
+
+tests {
+  test("a null setting goes back to the plaza's", function () {
+    expect(res.getBody()).to.not.have.property("effort");
+  });
+}

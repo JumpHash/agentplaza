@@ -1,0 +1,22 @@
+meta {
+  name: Read a project's settings, none set yet
+  type: http
+  seq: 29
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a project starts with no overrides", function () {
+    expect(res.getBody()).to.deep.equal({});
+  });
+}

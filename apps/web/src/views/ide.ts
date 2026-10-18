@@ -33,6 +33,8 @@ import { disposeTerminal } from './ide-term-host';
 import { leaveIde, onKey, runPaletteItem } from './ide-keys';
 import { renderAll, renderRightTabs, renderStatus, renderTop } from './ide-render';
 import { NARROW_QUERY } from '../ide/layout';
+import { isConversationId } from '../ide/conversation-model';
+import { mountConversation } from './ide-conversation';
 
 const STYLE_ID = 'apz-ide-style';
 
@@ -59,6 +61,8 @@ function applyStartPanel(c: IdeCtx, startPanel: string | null, query: URLSearchP
 }
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
+  // A conversation with the orchestrator is a workspace of its own: the chat and the project it drafts.
+  if (isConversationId(params[0])) return mountConversation(root, params[0]);
   ensureStyle();
   root.classList.add('ide-host');
   const query = new URLSearchParams(location.hash.split('?')[1] ?? '');

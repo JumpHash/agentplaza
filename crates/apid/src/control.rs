@@ -1,5 +1,5 @@
 //! The plaza's master switch. STOP ALL cancels every agent's running work and holds the plaza:
-//! nothing new is dispatched (queued work, loops, outreach, task assignment) until the owner
+//! nothing new is dispatched (queued work, loops, task assignment) until the owner
 //! resumes. The agents' VMs stay up and their queues are kept. Saved in Postgres ("control").
 //!
 //! GET  /v1/plaza/state   → {paused, since_ms, by, reason, cancelled}
@@ -32,7 +32,7 @@ impl Control {
     pub fn state(&self) -> PlazaState {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
     }
-    /// True while the plaza is held: the scheduler, loops, outreach and task assignment check it.
+    /// True while the plaza is held: the scheduler, loops and task assignment check it.
     pub fn paused(&self) -> bool {
         self.state().paused
     }

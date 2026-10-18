@@ -37,6 +37,7 @@ description: Fill and flatten PDF forms. Use when the task involves a PDF with f
 
 **Which skills an agent gets (bindings):**
 - `role:<role>`: the agents of that role.
+- `project:<id>`: the agents working on that project.
 - `plaza`: every agent.
 - None: the skill stays in the library but is not handed to any agent.
 

@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when moving an unknown task into a project
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/t999/move
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "project": "{{projectId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

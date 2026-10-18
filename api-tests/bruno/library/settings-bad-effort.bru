@@ -1,0 +1,23 @@
+meta {
+  name: Refuse an effort the plaza does not know
+  type: http
+  seq: 31
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "effort": "enormous"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

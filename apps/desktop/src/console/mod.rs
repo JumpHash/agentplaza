@@ -18,6 +18,7 @@ pub mod floor_engine;
 pub mod hubs;
 pub mod icons;
 pub mod lab_api;
+pub mod new_project;
 pub mod onboard;
 pub mod picker;
 // The rich content of agent text: chips, hover cards, inline images (docs/design/workspace.md, section 3).
@@ -25,6 +26,8 @@ pub(crate) mod render_card;
 pub mod rich;
 // The human labels of the role names (the web's roles.ts).
 pub mod roles;
+// The project the console is scoped to: one project, or All projects (the web's scope.ts).
+pub mod scope;
 pub mod screens;
 pub mod services;
 pub mod setup;
@@ -35,10 +38,21 @@ pub mod workstation_setup;
 
 use iced::{Element, Subscription, Task};
 
-/// What every screen needs: the hub client.
+/// What every screen needs: the hub client, and the project the console is scoped to.
 #[derive(Clone)]
 pub struct Ctx {
     pub client: client::Client,
+    /// The project the top bar's switcher chose, or None for All projects: the screens show that project's agents,
+    /// tasks, board and approvals ([`scope`]).
+    pub project: Option<String>,
+}
+
+impl Ctx {
+    /// A console on the hub `client` talks to, scoped to the project remembered for that hub.
+    pub fn new(client: client::Client) -> Ctx {
+        let project = scope::remembered(client.base());
+        Ctx { client, project }
+    }
 }
 
 pub struct Console {
@@ -103,9 +117,16 @@ fn boot() -> (Console, Task<Msg>) {
     let Ok(url) = std::env::var("APZ_CONNECT") else {
         return (console, Task::batch([task.map(Msg::Boot), info]));
     };
-    let ctx = Ctx {
-        client: client::Client::new(&url, None, std::env::var("APZ_TOKEN").ok()),
-    };
+    let mut ctx = Ctx::new(client::Client::new(
+        &url,
+        None,
+        std::env::var("APZ_TOKEN").ok(),
+    ));
+    // `APZ_SCOPE=<project id>` opens the console scoped to that project (a capture hook; empty: All projects).
+    if let Ok(project) = std::env::var("APZ_SCOPE") {
+        ctx.project = Some(project.trim().to_string()).filter(|p| !p.is_empty());
+    }
+    console.shell.project = ctx.project.clone();
     if let Ok(name) = std::env::var("APZ_SCREEN") {
         if let Some((id, ..)) = screens::NAV
             .iter()
@@ -153,7 +174,18 @@ fn boot() -> (Console, Task<Msg>) {
     }
     // `APZ_PROJECT=<id>` and `APZ_TASK=<id>` open that project's page and that task's page (capture hooks).
     if let Ok(project) = std::env::var("APZ_PROJECT") {
-        console.shell.current = screens::Id::Project(project);
+        // `APZ_PROJECT_TAB=team|settings` opens that tab of its page.
+        console.shell.current = match std::env::var("APZ_PROJECT_TAB")
+            .ok()
+            .and_then(|tab| screens::projects::Tab::named(&tab))
+        {
+            Some(tab) => screens::Id::ProjectTab(project, tab),
+            None => screens::Id::Project(project),
+        };
+    }
+    // `APZ_NEW_PROJECT=<goal>` opens the New project dialog with that goal typed in (a capture hook).
+    if let Ok(goal) = std::env::var("APZ_NEW_PROJECT") {
+        console.shell.new_project = Some(new_project::Form::with_goal(goal));
     }
     if let Ok(task) = std::env::var("APZ_TASK") {
         console.shell.current = screens::Id::Task(task);
@@ -266,7 +298,8 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             let (task, connected) = boot::update(&mut console.boot, msg);
             let mut tasks = vec![task.map(Msg::Boot)];
             if let Some(client) = connected {
-                let ctx = Ctx { client };
+                let ctx = Ctx::new(client);
+                console.shell.project = ctx.project.clone();
                 tasks.push(
                     screens::open(&mut console.screens, console.shell.current.clone(), &ctx)
                         .map(Msg::Screen),
@@ -277,6 +310,8 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             }
             Task::batch(tasks)
         }
+        // The switcher (or a new project) changes the scope: the console reopens on it.
+        Msg::Shell(shell::Msg::Scope(project, to)) => set_scope(console, project, to),
         Msg::Shell(msg) => {
             let Some(ctx) = console.ctx.clone() else {
                 return Task::none();
@@ -324,6 +359,12 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
         // The IDE's chrome offers the theme switch and the held strip's Resume: the shell owns both.
         Msg::Screen(screens::Msg::Ide(screens::ide::Msg::Shell(msg))) => {
             update_app(console, Msg::Shell(msg))
+        }
+        // New project, from a screen (the Projects screen, the IDE): the shell's dialog opens.
+        Msg::Screen(screens::Msg::Projects(screens::projects::Msg::NewProject))
+        | Msg::Screen(screens::Msg::Ide(screens::ide::Msg::NewProject)) => {
+            console.shell.new_project = Some(new_project::Form::default());
+            Task::none()
         }
         // The Setup screen replays the wizard or the tour (the console owns both).
         Msg::Screen(screens::Msg::Setup(screens::setup::Msg::Wizard)) => {
@@ -397,6 +438,22 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
             ])
         }
     }
+}
+
+/// Scopes the console to `project` (None: All projects), remembers it for this hub, and opens `to`, or else the
+/// screen on show: a screen's own item (one agent, one task) belonged to the old scope, so its list opens instead.
+fn set_scope(console: &mut Console, project: Option<String>, to: Option<screens::Id>) -> Task<Msg> {
+    let Some(ctx) = console.ctx.as_mut() else {
+        return Task::none();
+    };
+    ctx.project = project.clone();
+    scope::remember(ctx.client.base(), project.as_deref());
+    console.shell.project = project;
+    let ctx = ctx.clone();
+    screens::rescope(&mut console.screens);
+    let id = to.unwrap_or_else(|| screens::scope_home(&console.shell.current));
+    console.shell.current = id.clone();
+    screens::open(&mut console.screens, id, &ctx).map(Msg::Screen)
 }
 
 /// The `APZ_PICK` pick, sent after a short wait so the screen has laid its sections out (the pick measures them).

@@ -1,0 +1,17 @@
+meta {
+  name: List the conversations with the archived ones
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/owner/conversations?archived=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

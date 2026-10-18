@@ -1,4 +1,4 @@
-//! `agentplaza tasks`: Tasks: the work queue.
+//! `agentplaza tasks`: Tasks: the work queue. Every task belongs to a project and goes only to that project's agents.
 
 use clap::Subcommand;
 use serde_json::{Value, json};
@@ -13,11 +13,14 @@ const TIMELINE_KINDS: [&str; 4] = ["work_start", "tool_request", "work_end", "er
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// List them, with their lane and assignee.
+    /// List them, with their project, lane and assignee.
     List {
         /// Only this lane: open, in-progress, done or failed.
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(LANES))]
         lane: Option<String>,
+        /// Only this project's tasks (its id, such as `pr3`).
+        #[arg(long)]
+        project: Option<String>,
     },
     /// One task in full: its goal, acceptance, budget and outcome.
     Show {
@@ -36,10 +39,13 @@ pub enum Cmd {
         /// The project's id (`pr1`), or `outside` for the tasks outside projects.
         project: String,
     },
-    /// Create a task. Without --assign the scheduler chooses the worker.
+    /// Create a task in a project. Without --assign the scheduler chooses the worker among the project's agents.
     Create {
         /// The title (the first line of the goal).
         title: String,
+        /// The project it belongs to (required): its id, such as `pr3`. The project's plan must be approved.
+        #[arg(long)]
+        project: Option<String>,
         /// The details under the title; `-` reads stdin.
         #[arg(long)]
         details: Option<String>,
@@ -50,12 +56,21 @@ pub enum Cmd {
         #[arg(long)]
         role: Option<String>,
         /// The budget in credits, the escrow that pays the worker's work. Omit it for the
-        /// hub's default (2000); the hub refuses a budget under 200.
+        /// project's default, else the hub's (2000); the hub refuses a budget under 200.
         #[arg(long)]
         budget: Option<u64>,
-        /// Assign it now to this agent (its cid).
+        /// Assign it now to this agent (its cid): one of the project's agents.
         #[arg(long)]
         assign: Option<i64>,
+    },
+    /// Move a task from before projects into a project, with the tasks linked to it (links stay inside a project). A
+    /// task never leaves its project once it has one.
+    Move {
+        /// The task's id.
+        id: String,
+        /// The project it moves into.
+        #[arg(long)]
+        project: String,
     },
     /// Assign an open task to an idle worker agent (by its cid).
     Assign {
@@ -91,6 +106,14 @@ fn lane_of(state: &str) -> &'static str {
         "done" => "done",
         "failed" | "withdrawn" | "cancelled" => "failed",
         _ => "in-progress",
+    }
+}
+
+/// The project a task belongs to, or "-" for a task from before projects (`tasks move` puts it in one).
+fn project_of(t: &Value) -> String {
+    match ctx::s(t, "project") {
+        "" => "-".to_string(),
+        project => project.to_string(),
     }
 }
 
@@ -334,16 +357,20 @@ fn graph_lines(g: &Value) -> Vec<String> {
     lines
 }
 
+/// What `tasks create` says without `--project`: a task belongs to a project, and how to find or open one.
+const NO_PROJECT: &str = "a task belongs to a project: name it with --project <id> (`agentplaza projects list` shows them; `agentplaza projects create` or `agentplaza chat` opens one)";
+
 /// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
-/// is left out, so the hub applies its default (the CLI holds no copy of it).
+/// is left out, so the hub applies its default (the project's, else the plaza's; the CLI holds no copy of them).
 fn create_body(
+    project: &str,
     goal: String,
     acceptance: Option<String>,
     role: Option<String>,
     budget: Option<u64>,
     assign: Option<i64>,
 ) -> Value {
-    let mut body = json!({ "goal": goal });
+    let mut body = json!({ "project": project, "goal": goal });
     if let Some(budget) = budget {
         body["budget"] = json!(budget);
     }
@@ -361,8 +388,12 @@ fn create_body(
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
-        Cmd::List { lane } => {
-            let hub = ctx.client.get("/v1/tasks")?;
+        Cmd::List { lane, project } => {
+            let path = match &project {
+                Some(id) => format!("/v1/tasks?project={}", ctx::seg(id)),
+                None => "/v1/tasks".to_string(),
+            };
+            let hub = ctx.client.get(&path)?;
             let tasks: Vec<Value> = array_at(&hub, "tasks")
                 .iter()
                 .filter(|t| {
@@ -377,6 +408,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .map(|t| {
                         vec![
                             ctx::s(t, "id").to_string(),
+                            project_of(t),
                             lane_of(ctx::s(t, "state")).to_string(),
                             ctx::s(t, "state").to_string(),
                             ctx::text(t, "role"),
@@ -385,7 +417,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         ]
                     })
                     .collect();
-                ctx::table(&["id", "lane", "state", "role", "agent", "title"], &rows);
+                ctx::table(
+                    &["id", "project", "lane", "state", "role", "agent", "title"],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -395,6 +430,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&t, |t| {
                 ctx::fields(&[
                     ("id", ctx::text(t, "id")),
+                    ("project", project_of(t)),
                     ("state", ctx::text(t, "state")),
                     ("role", ctx::text(t, "role")),
                     ("budget", ctx::text(t, "budget")),
@@ -468,12 +504,17 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Create {
             title,
+            project,
             details,
             acceptance,
             role,
             budget,
             assign,
         } => {
+            let project = project
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .ok_or(NO_PROJECT)?;
             let title = title.trim().to_string();
             if title.is_empty() {
                 return Err("a task needs a title".into());
@@ -490,10 +531,36 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .filter(|a| !a.trim().is_empty())
                 .map(|a| ctx::text_arg(&a))
                 .transpose()?;
-            let body = create_body(goal, acceptance, role, budget, assign);
+            let body = create_body(&project, goal, acceptance, role, budget, assign);
             let t = ctx.client.post("/v1/tasks", &body)?;
             ctx.out(&t, |t| {
-                println!("created task {} ({})", ctx::s(t, "id"), ctx::s(t, "state"))
+                println!(
+                    "created task {} in project {project} ({})",
+                    ctx::s(t, "id"),
+                    ctx::s(t, "state")
+                )
+            });
+            Ok(())
+        }
+        Cmd::Move { id, project } => {
+            let moved = ctx.client.post(
+                &format!("/v1/tasks/{}/move", ctx::seg(&id)),
+                &json!({ "project": project }),
+            )?;
+            ctx.out(&moved, |m| {
+                let ids: Vec<&str> = array_at(m, "moved")
+                    .iter()
+                    .map(|t| ctx::s(t, "id"))
+                    .collect();
+                println!(
+                    "moved {} into project {}",
+                    if ids.is_empty() {
+                        id.clone()
+                    } else {
+                        ids.join(", ")
+                    },
+                    ctx::s(m, "project")
+                );
             });
             Ok(())
         }
@@ -527,13 +594,44 @@ mod tests {
 
     #[test]
     fn create_omits_the_budget_when_none_is_given() {
-        let bare = create_body("t".into(), None, None, None, None);
+        let bare = create_body("pr3", "t".into(), None, None, None, None);
         assert!(bare.get("budget").is_none(), "no budget field: {bare}");
         assert_eq!(bare["goal"], "t");
-        let budgeted = create_body("t".into(), None, None, Some(500), Some(7));
+        assert_eq!(bare["project"], "pr3");
+        let budgeted = create_body("pr3", "t".into(), None, None, Some(500), Some(7));
         assert_eq!(budgeted["budget"], 500);
         assert_eq!(budgeted["assignee"], 7);
         assert!(budgeted.get("acceptance").is_none());
+    }
+
+    #[test]
+    fn create_without_a_project_says_how_to_name_one() {
+        // The refusal comes before any request, so no hub is needed.
+        let ctx = Ctx {
+            client: crate::ctx::Client::new("http://127.0.0.1:9", None, None),
+            json: false,
+            rich: rich::Mode::default(),
+        };
+        let create = Cmd::Create {
+            title: "Fix the flaky tests".into(),
+            project: None,
+            details: None,
+            acceptance: None,
+            role: None,
+            budget: None,
+            assign: None,
+        };
+        let refused = run(&ctx, create).unwrap_err();
+        assert!(
+            refused.starts_with("a task belongs to a project: name it with --project <id>"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_task_names_its_project_or_none() {
+        assert_eq!(project_of(&json!({ "id": "t1", "project": "pr3" })), "pr3");
+        assert_eq!(project_of(&json!({ "id": "t1", "project": null })), "-");
     }
 
     /// A project's graph as `GET /v1/projects/{id}/graph` gives it.

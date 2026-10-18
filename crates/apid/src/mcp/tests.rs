@@ -97,6 +97,7 @@ fn stdio_server(id: &str, env: &[(&str, Setting)]) -> McpServer {
         access: Access {
             roles: Pick::All,
             nodes: Pick::All,
+            projects: Pick::All,
         },
         limits: Limits::default(),
         allow_private: false,
@@ -560,28 +561,52 @@ fn access_admits_the_listed_roles_and_nodes_only() {
     server.access = Access {
         roles: Pick::Only(vec!["builder".into()]),
         nodes: Pick::Only(vec!["n1".into()]),
+        projects: Pick::All,
     };
-    assert!(allowed(&server, "builder", Some("n1")));
-    assert!(!allowed(&server, "reviewer", Some("n1")));
-    assert!(!allowed(&server, "builder", Some("n2")));
+    assert!(allowed(&server, "builder", Some("n1"), Some("pr1")));
+    assert!(!allowed(&server, "reviewer", Some("n1"), Some("pr1")));
+    assert!(!allowed(&server, "builder", Some("n2"), Some("pr1")));
     assert!(
-        !allowed(&server, "builder", None),
+        !allowed(&server, "builder", None, Some("pr1")),
         "a caller with no known node is refused"
     );
     server.access = Access::default();
     assert!(
-        !allowed(&server, "builder", Some("n1")),
+        !allowed(&server, "builder", Some("n1"), Some("pr1")),
         "an empty access list admits nobody"
     );
     server.access = Access {
         roles: Pick::All,
         nodes: Pick::All,
+        projects: Pick::All,
     };
     server.enabled = false;
     assert!(
-        !allowed(&server, "builder", Some("n1")),
+        !allowed(&server, "builder", Some("n1"), Some("pr1")),
         "a disabled server is offered to nobody"
     );
+}
+
+#[test]
+fn access_by_project_lets_in_that_projects_agents_only() {
+    let mut server = stdio_server("fixture", &[]);
+    server.access = Access {
+        roles: Pick::All,
+        nodes: Pick::All,
+        projects: Pick::Only(vec!["pr4".into()]),
+    };
+    assert!(allowed(&server, "builder", Some("n1"), Some("pr4")));
+    assert!(!allowed(&server, "builder", Some("n1"), Some("pr5")));
+    assert!(
+        !allowed(&server, "orchestrator", Some("n1"), None),
+        "a server kept to projects is not the plaza-wide agents'"
+    );
+    // A server from before projects names none, and stays open to every project.
+    let old: Access =
+        serde_json::from_value(serde_json::json!({"roles": "all", "nodes": "all"})).unwrap();
+    assert_eq!(old.projects, Pick::All);
+    server.access = old;
+    assert!(allowed(&server, "orchestrator", Some("n1"), None));
 }
 
 fn tool(name: &str, annotations: serde_json::Value) -> ToolInfo {

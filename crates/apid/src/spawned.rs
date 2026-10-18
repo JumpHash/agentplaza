@@ -33,12 +33,28 @@ pub struct Registry {
     pub models: BTreeMap<u64, String>,
 }
 
+/// A spawned run still waiting for its first hello: its role, model override and project.
+#[derive(Debug, Clone)]
+struct Pending {
+    role: String,
+    model: Option<String>,
+    project: Option<String>,
+}
+
+/// What a hello brings: the agent's model override, and on a pending spawn's first hello, the project it
+/// was spawned for.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Arrival {
+    pub model: Option<String>,
+    pub project: Option<String>,
+}
+
 /// The registry and its file, plus the spawns still waiting for their hello.
 pub struct Store {
     path: PathBuf,
     registry: Mutex<Registry>,
-    /// `(role, model)` per spawned run, matched by role in arrival order.
-    pending: Mutex<VecDeque<(String, Option<String>)>>,
+    /// One per spawned run, matched by role in arrival order.
+    pending: Mutex<VecDeque<Pending>>,
     /// The role each node booted a guest CID with from its fleet manifest, as noded reports it in its runs
     /// (refreshed by the reconcile pass; not saved: noded reports it again after a restart).
     fleet: Mutex<BTreeMap<u64, String>>,
@@ -92,27 +108,37 @@ impl Store {
         fleet.insert(cid, role.to_owned()).as_deref() != Some(role)
     }
 
-    /// The operator asked noded for one more run of `role`; its first hello of that role is it.
-    pub fn expect(&self, role: &str, model: Option<String>) {
+    /// The operator asked noded for one more run of `role`; its first hello of that role is it. A
+    /// `project` is the one its agent joins at that hello.
+    pub fn expect(&self, role: &str, model: Option<String>, project: Option<String>) {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back((role.to_owned(), model));
+            .push_back(Pending {
+                role: role.to_owned(),
+                model,
+                project,
+            });
     }
 
-    /// A session said hello. A first hello of a pending spawn is recorded; returns the
-    /// model override to apply to the agent.
-    pub fn hello(&self, cid: u64, role: &str) -> Option<String> {
+    /// A session said hello. A first hello of a pending spawn is recorded; returns the model
+    /// override to apply to the agent, and the project it was spawned for (on that first hello only).
+    pub fn hello(&self, cid: u64, role: &str) -> Arrival {
         let known = self.guard().spawned.iter().any(|entry| entry.cid == cid);
+        let mut project = None;
         if !known {
             let claimed = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-                let index = pending
-                    .iter()
-                    .position(|(wanted, _)| wanted.as_str() == role);
+                let index = pending.iter().position(|wanted| wanted.role == role);
                 index.and_then(|i| pending.remove(i))
             };
-            if let Some((_, model)) = claimed {
+            if let Some(Pending {
+                model,
+                project: wanted,
+                ..
+            }) = claimed
+            {
+                project = wanted;
                 let entry = Entry {
                     cid,
                     role: role.to_owned(),
@@ -130,7 +156,10 @@ impl Store {
                 }
             }
         }
-        self.model_for(cid)
+        Arrival {
+            model: self.model_for(cid),
+            project,
+        }
     }
 
     /// Sets (or clears) the model override of `cid`, and its spawned entry's model.
@@ -240,7 +269,7 @@ mod snapshot_tests {
         let dir = std::env::temp_dir().join(format!("apid-spawned-snap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(dir.join("spawned.json"));
-        store.expect("worker", Some("model-a".into()));
+        store.expect("worker", Some("model-a".into()), None);
         store.hello(42, "worker");
         store.set_name(42, "Ada").unwrap();
         let json = store.snapshot();
@@ -270,10 +299,31 @@ mod tests {
         assert!(!store.note_fleet_role(200, "architect"));
         assert_eq!(store.role_of(200).as_deref(), Some("architect"));
         // An operator spawn's recorded role wins over the fleet's.
-        store.expect("builder", None);
+        store.expect("builder", None, None);
         store.hello(201, "builder");
         store.note_fleet_role(201, "qa");
         assert_eq!(store.role_of(201).as_deref(), Some("builder"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_spawn_for_a_project_brings_it_on_the_first_hello_only() {
+        let dir = std::env::temp_dir().join(format!("apid-spawned-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(dir.join("spawned.json"));
+        store.expect("builder", None, Some("pr2".into()));
+        store.expect("qa", None, None);
+        assert_eq!(
+            store.hello(300, "qa"),
+            Arrival::default(),
+            "a spawn without a project waits on the bench"
+        );
+        assert_eq!(store.hello(301, "builder").project.as_deref(), Some("pr2"));
+        assert_eq!(
+            store.hello(301, "builder").project,
+            None,
+            "a reconnect joins nothing again"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -285,8 +335,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let store = Store::load(path.clone());
-        store.expect("worker", Some("model-a".into()));
-        assert_eq!(store.hello(42, "worker").as_deref(), Some("model-a"));
+        store.expect("worker", Some("model-a".into()), None);
+        assert_eq!(store.hello(42, "worker").model.as_deref(), Some("model-a"));
         store.set_name(42, "Ada").unwrap();
         store.set_model(7, Some("model-b")).unwrap();
 

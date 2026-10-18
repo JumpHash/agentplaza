@@ -62,10 +62,11 @@ usage: noded [--port PORT] [--kernel PATH] [--initrd PATH] [--uds-dir DIR]
   --no-workspace   no workspace volume and no default persist directory: the
                    guests have no block device, as before
   --agents MANIFEST  roles manifest (docs/agents/initial-roles.json): the
-                   daemon boots one long-lived keepalive VM per role at
-                   startup, in slot order (alphabetical if no role has a slot),
-                   and registers them as
-                   one run (default: no fleet)
+                   daemon boots one long-lived keepalive VM per role of the
+                   manifest's `fleet` list (every role without one; the shipped
+                   manifest boots the orchestrator alone) at startup, in slot
+                   order (alphabetical if no role has a slot), and registers
+                   them as one run (default: no fleet)
   --agents-cid-base N   first guest CID of the fleet: a role with slot s gets
                         N + s (default 100)
   --agents-memory-mib N guest memory per agent VM, in MiB (default 1024)

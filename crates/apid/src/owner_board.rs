@@ -70,8 +70,9 @@ impl ProjectIndex {
 
 /// `POST /v1/board/posts` `{subject?, body, project?, mentions?}`: the owner posts. A post for a
 /// project must name an existing one. Each agent the post mentions is sent a message through its
-/// work queue, unless the post's board is paused: then the post is stored only, and the agent sees
-/// it through its unread cursor.
+/// work queue, unless the post's board is paused, or the agent does not work now (it is on the bench,
+/// or its project is paused): then the post is stored only, and the agent sees it through its unread
+/// cursor.
 fn owner_post(app: &App, body: &[u8]) -> Response {
     let request: OwnerPostRequest = match parse(body, "board post") {
         Ok(request) => request,
@@ -119,7 +120,10 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
         "[plaza board] The owner posted {} \"{}\"{scope} and mentioned you:\n{}\nIf it needs an answer, reply on the thread with plaza_board_comment.",
         post.id, post.subject, post.body
     );
-    for cid in reached {
+    for cid in reached
+        .into_iter()
+        .filter(|&cid| crate::membership::held_cid(app, cid).is_none())
+    {
         app.work.enqueue(
             app,
             cid,
@@ -132,17 +136,14 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
     Response::json(201, &post)
 }
 
-/// The agents on a project: its orchestrator (an owner-opened project has none) and the agents that
-/// hold its tasks.
+/// The agents on a project: its orchestrator (an owner-opened project has none) and its members.
 fn project_members(app: &App, project: &Project) -> Vec<u64> {
-    let holders = project.tasks.iter().filter_map(|task| {
-        app.plaza
-            .tasks
-            .find(task)
-            .and_then(|task| task.view().agent_cid)
-    });
     let lead = (project.lead_cid != 0).then_some(project.lead_cid);
-    dedup(lead.into_iter().chain(holders).collect())
+    dedup(
+        lead.into_iter()
+            .chain(app.members.members(&project.id))
+            .collect(),
+    )
 }
 
 /// The guest CIDs a post's mentions reach. `all` is every member of the post's project (`members`,

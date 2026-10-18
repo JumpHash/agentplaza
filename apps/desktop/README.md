@@ -23,7 +23,8 @@ console runs as wasm; `console/floor_engine.rs` is the iced adapter. There is no
 `?wasm` switch: the engine is the 3D view on both.
 
 Layout: `src/console/` — `mod.rs` (the app), `boot.rs` (the chooser), `services.rs` (local
-services), `shell.rs` (sidebar, top bar, STOP ALL), `client.rs` (the hub client), `ui.rs` (the
+services), `shell.rs` (sidebar, top bar with the project switcher, STOP ALL), `scope.rs` (the project the console
+is scoped to), `new_project.rs` (the New project dialog), `client.rs` (the hub client), `ui.rs` (the
 design kit), `icons.rs` (the web console's lucide icons), `floor_engine.rs` (the 3D engine's
 adapter), `picker.rs` (the model picker), `rich.rs` (chips and hover cards for agent text),
 `screens/` (one module per screen, with its tests beside it). `src/theme.rs` holds the palette and

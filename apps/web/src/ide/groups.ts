@@ -1,5 +1,6 @@
-// The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent belongs to every project it
-// leads and every project with a task it is an assignee of; the agents in none sit in "No project".
+// The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent belongs to the project it
+// works on (its membership), and the orchestrator to every project it leads; an agent from before membership, to the
+// projects holding a task it is an assignee of. The agents in none sit in "No project" (for a worker, the bench).
 import type { Agent, IdeWorkspaceInfo, Project, Task } from '../api';
 import { currentTask } from './view';
 
@@ -38,7 +39,9 @@ export function byRecent(projects: Project[]): Project[] {
  * The projects an agent belongs to, most recently active first: the ones it leads, and the ones holding a task it is an
  * assignee of (it claimed the task, or it is working on it now).
  */
-export function projectsOf(agent: Pick<Agent, 'cid' | 'work'>, projects: Project[], tasks: Task[]): Project[] {
+export function projectsOf(agent: Pick<Agent, 'cid' | 'work' | 'project'>, projects: Project[], tasks: Task[]): Project[] {
+  // A member is its project's, and only its project's.
+  if (agent.project) return projects.filter((p) => p.id === agent.project);
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const hits = projects.filter(
     (p) =>
@@ -49,7 +52,7 @@ export function projectsOf(agent: Pick<Agent, 'cid' | 'work'>, projects: Project
 }
 
 /** The project an agent is shown under first: its most recently active one, or null. */
-export function projectOf(agent: Pick<Agent, 'cid' | 'work'>, projects: Project[], tasks: Task[]): Project | null {
+export function projectOf(agent: Pick<Agent, 'cid' | 'work' | 'project'>, projects: Project[], tasks: Task[]): Project | null {
   return projectsOf(agent, projects, tasks)[0] ?? null;
 }
 
