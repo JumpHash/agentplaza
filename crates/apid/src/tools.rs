@@ -167,8 +167,8 @@ pub fn runs(name: &str) -> Option<Runs> {
     }
 }
 
-/// The tool specs an agent of `role` is offered (its grants + plaza tools).
-pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
+/// The tool specs an agent of `role` on `project` is offered (its grants + plaza tools + the connectors that let it in).
+pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<ToolSpec> {
     // contract
     let granted = crate::roles_custom::tools_of(app, role);
     let mut specs: Vec<ToolSpec> = offered(role, &granted)
@@ -177,7 +177,7 @@ pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
         .collect();
     // A connector tool is offered only when the laws permit it (C-004a holds back the irreversible ones).
     specs.extend(
-        crate::connectors::specs_for(app, role)
+        crate::connectors::specs_for(app, role, project)
             .into_iter()
             .filter(|spec| permitted(role, &spec.name)),
     );
@@ -186,7 +186,11 @@ pub fn specs_for(app: &App, role: &str) -> Vec<ToolSpec> {
 
 /// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
 pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let mut specs = specs_for(app, &agent.role);
+    let mut specs = specs_for(
+        app,
+        &agent.role,
+        app.members.project_of(agent.cid).as_deref(),
+    );
     specs.extend(crate::library::specs_for(app, agent.cid));
     specs.extend(crate::mcp::specs_for_agent(app, agent));
     // The engines offered are the owner's enabled ones (`engines_enabled`).
@@ -1083,8 +1087,6 @@ fn host_call(
                     ));
                 }
             }
-            // An unfunded task would stop at its first model call: give it a working default.
-            let budget = budget_arg(input)?;
             let role = input
                 .get("role")
                 .and_then(Value::as_str)
@@ -1110,6 +1112,10 @@ fn host_call(
                     p.stage
                 ));
             }
+            // An unfunded task would stop at its first model call: give it a working default, the project's when it
+            // sets one.
+            let budget =
+                budget_arg_or(input, crate::project_settings::task_budget(app, Some(pid)))?;
             // The assignee works on the project: checked before the task exists, so a refusal posts nothing.
             if let Some(cid) = input.get("assignee").and_then(Value::as_u64) {
                 let target = app
@@ -1161,7 +1167,13 @@ fn host_call(
                     .map_err(|e| {
                         format!("`tasks` must be a list of {{key, goal, acceptance?, role?, budget?, after?}}: {e}")
                     })?;
-            let posted = crate::task_plan::post(&app.projects, &app.plaza.tasks, project, &tasks)?;
+            let posted = crate::task_plan::post(
+                &app.projects,
+                &app.plaza.tasks,
+                project,
+                &tasks,
+                crate::project_settings::task_budget(app, Some(project)),
+            )?;
             for task in &posted {
                 app.work.note_poster(&task.id, agent.cid);
                 crate::society::note_posted(app, agent.cid);
@@ -1469,11 +1481,11 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
 }
 
 /// A task's `budget` argument, through the one default and minimum in
-/// [`resolve_budget`]: absent (or null) → the default; a number under the minimum,
-/// 0 included, or a value that is not a whole number → refused.
-pub fn budget_arg(input: &Value) -> Result<u64, String> {
+/// [`resolve_budget`]: absent (or null) → `default` (a project's `task_budget`), else the plaza's default; a number
+/// under the minimum, 0 included, or a value that is not a whole number → refused.
+pub fn budget_arg_or(input: &Value, default: Option<u64>) -> Result<u64, String> {
     let requested = match input.get("budget") {
-        None | Some(Value::Null) => None,
+        None | Some(Value::Null) => default,
         Some(value) => Some(
             value
                 .as_u64()
@@ -1862,20 +1874,27 @@ mod tests {
     fn a_tool_task_takes_the_default_budget_and_refuses_below_the_minimum() {
         use apz_plaza::tasks::DEFAULT_TASK_BUDGET;
         let default = DEFAULT_TASK_BUDGET as u64;
-        assert_eq!(budget_arg(&json!({})), Ok(default));
-        assert_eq!(budget_arg(&json!({"budget": null})), Ok(default));
-        assert_eq!(budget_arg(&json!({"budget": 200})), Ok(200));
-        assert_eq!(budget_arg(&json!({"budget": 5000})), Ok(5000));
+        assert_eq!(budget_arg_or(&json!({}), None), Ok(default));
+        assert_eq!(
+            budget_arg_or(&json!({}), Some(3000)),
+            Ok(3000),
+            "a project's default"
+        );
+        assert_eq!(budget_arg_or(&json!({"budget": 500}), Some(3000)), Ok(500));
+        assert_eq!(budget_arg_or(&json!({"budget": null}), None), Ok(default));
+        assert_eq!(budget_arg_or(&json!({"budget": 200}), None), Ok(200));
+        assert_eq!(budget_arg_or(&json!({"budget": 5000}), None), Ok(5000));
         for low in [100, 0] {
-            let refusal = budget_arg(&json!({"budget": low})).expect_err("below the minimum");
+            let refusal =
+                budget_arg_or(&json!({"budget": low}), None).expect_err("below the minimum");
             assert!(
                 refusal.contains("minimum of 200"),
                 "names the minimum: {refusal}"
             );
             assert!(refusal.contains("wallet is not debited"), "{refusal}");
         }
-        assert!(budget_arg(&json!({"budget": -5})).is_err());
-        assert!(budget_arg(&json!({"budget": "lots"})).is_err());
+        assert!(budget_arg_or(&json!({"budget": -5}), None).is_err());
+        assert!(budget_arg_or(&json!({"budget": "lots"}), None).is_err());
     }
 
     /// Agents never run anything on the host: the host-side tools are the

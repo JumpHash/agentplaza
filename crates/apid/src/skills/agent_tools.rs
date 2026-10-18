@@ -23,9 +23,18 @@ pub const MAX_RESPONSE: usize = 256 * 1024;
 /// The live skills `role` may use: the plaza's and the role's, one per name, sorted by name. Each carries the name
 /// and description of its PUBLISHED version (a newer draft may rename or redescribe the skill; agents only ever see
 /// what is live), read from that version's SKILL.md.
-fn available(skills: &Skills, role: &str) -> Result<Vec<(Skill, VersionMeta)>, String> {
+fn available(
+    skills: &Skills,
+    role: &str,
+    project: Option<&str>,
+) -> Result<Vec<(Skill, VersionMeta)>, String> {
     let mut by_name: BTreeMap<String, (Skill, VersionMeta)> = BTreeMap::new();
-    for binding in ["plaza".to_string(), format!("role:{role}")] {
+    // The plaza's, the role's, and the project's when the agent works on one.
+    let mut bindings = vec!["plaza".to_string(), format!("role:{role}")];
+    if let Some(project) = project {
+        bindings.push(format!("project:{project}"));
+    }
+    for binding in bindings {
         for (mut skill, meta) in skills.store().bound(&binding)? {
             if meta.version != skill.latest_version
                 && let Some(live) = skills.store().version(&skill.id, meta.version)?
@@ -42,12 +51,12 @@ fn available(skills: &Skills, role: &str) -> Result<Vec<(Skill, VersionMeta)>, S
 
 /// The `## Skills` section of an agent's system prompt, or `None` when it has no skills. A library that cannot be
 /// read leaves the section out; the skill tools report the error when asked.
-pub fn prompt_section(app: &App, role: &str) -> Option<String> {
-    section(&app.skills, role)
+pub fn prompt_section(app: &App, role: &str, project: Option<&str>) -> Option<String> {
+    section(&app.skills, role, project)
 }
 
-fn section(skills: &Skills, role: &str) -> Option<String> {
-    let found = available(skills, role).ok()?;
+fn section(skills: &Skills, role: &str, project: Option<&str>) -> Option<String> {
+    let found = available(skills, role, project).ok()?;
     if found.is_empty() {
         return None;
     }
@@ -84,14 +93,23 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 /// Runs skill tool `name` for `agent`; the text the model reads.
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     match name {
-        "plaza_skills" => list(&app.skills, &agent.role),
-        "plaza_skill_read" => read(&app.skills, &agent.role, input),
+        "plaza_skills" => list(
+            &app.skills,
+            &agent.role,
+            app.members.project_of(agent.cid).as_deref(),
+        ),
+        "plaza_skill_read" => read(
+            &app.skills,
+            &agent.role,
+            app.members.project_of(agent.cid).as_deref(),
+            input,
+        ),
         other => Err(format!("{other} is not a skill tool")),
     }
 }
 
-fn list(skills: &Skills, role: &str) -> Result<String, String> {
-    let found = available(skills, role)?;
+fn list(skills: &Skills, role: &str, project: Option<&str>) -> Result<String, String> {
+    let found = available(skills, role, project)?;
     if found.is_empty() {
         return Ok("No skills are available to you.".to_string());
     }
@@ -102,13 +120,18 @@ fn list(skills: &Skills, role: &str) -> Result<String, String> {
     Ok(cap(lines.join("\n")))
 }
 
-fn read(skills: &Skills, role: &str, input: &Value) -> Result<String, String> {
+fn read(
+    skills: &Skills,
+    role: &str,
+    project: Option<&str>,
+    input: &Value,
+) -> Result<String, String> {
     let name = input
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
         .ok_or("missing or empty string `name`")?;
-    let (skill, meta) = available(skills, role)?
+    let (skill, meta) = available(skills, role, project)?
         .into_iter()
         .find(|(skill, _)| skill.name == name)
         .ok_or_else(|| format!("no skill named {name} is available to you"))?;
@@ -217,7 +240,7 @@ mod tests {
         add(&skills, "review-notes", &["role:reviewer"], true);
         add(&skills, "draft-only", &["plaza"], false);
         let names = |role: &str| -> Vec<String> {
-            available(&skills, role)
+            available(&skills, role, None)
                 .expect("lists")
                 .into_iter()
                 .map(|(skill, _)| skill.name)
@@ -225,12 +248,27 @@ mod tests {
         };
         assert_eq!(names("builder"), ["house-style", "pdf-forms"]);
         assert_eq!(names("reviewer"), ["house-style", "review-notes"]);
+        // A project's skills are its agents' only.
+        add(&skills, "release-checklist", &["project:pr4"], true);
+        let on = |project: Option<&str>| -> Vec<String> {
+            available(&skills, "builder", project)
+                .expect("lists")
+                .into_iter()
+                .map(|(skill, _)| skill.name)
+                .collect()
+        };
+        assert_eq!(
+            on(Some("pr4")),
+            ["house-style", "pdf-forms", "release-checklist"]
+        );
+        assert_eq!(on(Some("pr5")), ["house-style", "pdf-forms"]);
+        assert_eq!(on(None), ["house-style", "pdf-forms"]);
         assert!(
-            list(&skills, "builder")
+            list(&skills, "builder", None)
                 .expect("lists")
                 .contains("pdf-forms — ")
         );
-        let fetch = |role: &str, input: Value| read(&skills, role, &input);
+        let fetch = |role: &str, input: Value| read(&skills, role, None, &input);
         assert!(
             fetch("builder", json!({"name": "pdf-forms"}))
                 .expect("reads")
@@ -259,7 +297,7 @@ mod tests {
             )
             .is_err()
         );
-        let text = section(&skills, "reviewer").expect("a section");
+        let text = section(&skills, "reviewer", None).expect("a section");
         assert!(
             text.starts_with("## Skills") && text.contains("review-notes: Does review-notes work.")
         );

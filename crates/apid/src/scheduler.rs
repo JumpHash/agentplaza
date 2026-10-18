@@ -510,10 +510,11 @@ impl Queues {
     /// Gives each task awaiting review, with no reviewer on it yet, to the next idle reviewer. A task
     /// that has waited past the review timeout with none gets one owner approval (kind `review`).
     pub fn assign_reviews(&self, app: &App) {
-        let timeout_ms = u64::from(app.settings.get().review_timeout_minutes) * 60_000;
         let now = apz_plaza::now_ms();
         for task in app.plaza.tasks.list() {
             let view = task.view();
+            // A project's tasks wait as long as the project says, else the plaza.
+            let timeout_ms = crate::project_settings::review_timeout_ms(app, view.project);
             if view.state != TaskState::AwaitingReview.as_str() {
                 continue;
             }
@@ -913,6 +914,12 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     };
     // A task that already ended refuses the finish; that is not an error here.
     let _ = task.finish(outcome, Some(summary.to_string()));
+    // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
+    if let Some(pid) = task.project()
+        && crate::membership::project_state(app, pid) == crate::membership::ProjectState::Over
+    {
+        crate::project_settings::return_rest(app, pid);
+    }
 }
 
 /// Puts a task back in the queue when the owner takes the workstation its worker was using (the lease is released

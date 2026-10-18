@@ -544,7 +544,8 @@ impl Store {
 }
 
 /// The reasoning efforts a settings `effort` may name. `None` (unset) is the provider's own default.
-const EFFORT_LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub(crate) const EFFORT_LEVELS: [&str; 7] =
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Whether `model` may run for `tier` under `policy` (always in dev mode). The error names the
 /// tier's list.

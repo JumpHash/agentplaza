@@ -895,9 +895,10 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents go back to the bench.
+            // Delivered: the project's agents go back to the bench, and the rest of its budget to the plaza.
             if project.stage == "delivered" {
                 crate::membership::release_project(app, &project.id);
+                crate::project_settings::return_rest(app, &project.id);
             }
             answer(app, &project, stage_hint(&project.stage))
         }
@@ -1108,7 +1109,17 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
         Err(e) => return Response::error(409, &e),
     };
     if project.archived {
+        // Nothing more is done for it: its open tasks are withdrawn (their escrow back in its budget), its agents go
+        // back to the bench, and the rest of its budget goes to the plaza.
+        for task in &project.tasks {
+            if let Some(task) = app.plaza.tasks.find(task)
+                && task.is_open()
+            {
+                let _ = task.withdraw();
+            }
+        }
         crate::membership::release_project(app, id);
+        crate::project_settings::return_rest(app, id);
     } else if !project.paused {
         // Resumed: its agents' waiting work goes out.
         app.work.dispatch_idle(app);

@@ -272,10 +272,19 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
             ));
         }
     }
+    let settings = settings_of(draft);
+    if let Err(why) = &settings {
+        found.push(format!("the settings: {why}"));
+    } else if let Ok(settings) = &settings
+        && let Err(why) = crate::project_settings::check(app, settings)
+    {
+        found.push(format!("the settings: {why}"));
+    }
+    let task_budget = settings.ok().and_then(|s| s.task_budget);
     let needed: u64 = draft
         .tasks
         .iter()
-        .map(|task| apz_plaza::tasks::resolve_budget(task.budget).unwrap_or(0))
+        .map(|task| apz_plaza::tasks::resolve_budget(task.budget.or(task_budget)).unwrap_or(0))
         .sum();
     if let Some(budget) = draft.budget
         && budget < needed
@@ -284,7 +293,25 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
             "the budget is {budget} credits, and the tasks alone need {needed}"
         ));
     }
+    if let Some(budget) = draft.budget
+        && i128::from(budget) > app.plaza.treasury.plaza_budget_balance()
+    {
+        found.push(format!(
+            "the budget is {budget} credits, more than the plaza's budget holds"
+        ));
+    }
     found
+}
+
+/// The draft's settings as a project's overrides (none set when it has none).
+fn settings_of(draft: &Draft) -> Result<crate::project_settings::ProjectSettings, String> {
+    if draft.settings.is_null() {
+        return Ok(crate::project_settings::ProjectSettings::default());
+    }
+    crate::project_settings::merged(
+        &crate::project_settings::ProjectSettings::default(),
+        &draft.settings,
+    )
 }
 
 fn name_of(agent: &Agent) -> String {
@@ -562,8 +589,28 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         return Err((500, e));
     }
 
-    // 2. Its tasks: the ledger creates them all or none.
-    let posted = match task_plan::post(&app.projects, &app.plaza.tasks, &pid, &draft.tasks) {
+    // 2. Its settings, and its budget set aside: its tasks are funded from it.
+    let settings = settings_of(&draft).unwrap_or_default();
+    let task_budget = settings.task_budget;
+    if let Err(e) = app.project_settings.set(&pid, settings) {
+        undo(app, &pid, &[]);
+        return Err((500, format!("the project's settings were not saved: {e}")));
+    }
+    if let Some(budget) = draft.budget
+        && let Err(e) = crate::project_settings::fund(app, &pid, budget)
+    {
+        undo(app, &pid, &[]);
+        return Err((409, e));
+    }
+
+    // 3. Its tasks: the ledger creates them all or none.
+    let posted = match task_plan::post(
+        &app.projects,
+        &app.plaza.tasks,
+        &pid,
+        &draft.tasks,
+        task_budget,
+    ) {
         Ok(posted) => posted,
         Err(e) => {
             undo(app, &pid, &[]);
@@ -572,7 +619,7 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
     };
     let task_ids: Vec<String> = posted.iter().map(|task| task.id.clone()).collect();
 
-    // 3. The team: the new agents (they join at their first hello), then the ones from the bench.
+    // 4. The team: the new agents (they join at their first hello), then the ones from the bench.
     let mut spawned = Vec::new();
     for seat in &draft.team {
         let new = seat.count.saturating_sub(seat.bench.len() as u32);
@@ -644,8 +691,9 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
     Ok((app.conversations.get(id).unwrap_or(started), done))
 }
 
-/// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn, and the project is archived,
-/// which sends its agents back to the bench (and spawned ones arriving later stay there).
+/// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn (their escrow back in its budget),
+/// the project is archived, which sends its agents back to the bench (and spawned ones arriving later stay there),
+/// and its budget goes back to the plaza.
 fn undo(app: &App, pid: &str, tasks: &[String]) {
     for id in tasks {
         if let Some(task) = app.plaza.tasks.find(id) {
@@ -656,6 +704,7 @@ fn undo(app: &App, pid: &str, tasks: &[String]) {
         eprintln!("apid: project {pid} of a failed start not archived: {e}");
     }
     crate::membership::release_project(app, pid);
+    crate::project_settings::return_rest(app, pid);
     if let Some(project) = app.projects.get(pid) {
         app.bus.publish("project", &project);
     }

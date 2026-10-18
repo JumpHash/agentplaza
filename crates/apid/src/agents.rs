@@ -514,8 +514,23 @@ pub fn connected_agent(agent: &Agent) -> apz_plaza::ConnectedAgent {
 /// The agent's resolved model.
 pub fn model_of(app: &App, agent: &Agent) -> String {
     // contract
-    app.settings
-        .resolve(&agent.role, agent.model_override.as_deref())
+    resolved_model(app, agent).0
+}
+
+/// The model agent `agent` runs, and where it comes from: its own override (`agent`), its project's model for its
+/// role or default (`project`), the plaza's model for its role (`role`), else the plaza's default (`default`).
+pub fn resolved_model(app: &App, agent: &Agent) -> (String, &'static str) {
+    if let Some(model) = &agent.model_override {
+        return (model.clone(), "agent");
+    }
+    if let Some(model) = crate::project_settings::model_for(app, agent) {
+        return (model, "project");
+    }
+    let has_role_model = app.settings.get().role_models.contains_key(&agent.role);
+    (
+        app.settings.resolve(&agent.role, None),
+        model_source(false, has_role_model),
+    )
 }
 
 /// The agent's profile: name, role, model, system prompt, tools, limits.
@@ -523,31 +538,49 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // contract
     let role_prompt = crate::roles_custom::prompt_for(app, &agent.role);
     let role_prompt = role_prompt.as_str();
-    // The orchestrator's or the mayor's per-agent limits, over the plaza's defaults.
+    // The orchestrator's or the mayor's per-agent limits, over the project's, over the plaza's defaults.
     let limits = app.harness.limits(agent.cid);
+    let project = crate::project_settings::of_agent(app, agent.cid).unwrap_or_default();
+    let project_rules = app
+        .members
+        .project_of(agent.cid)
+        .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
+        .map(|rules| render_vars(&rules, agent));
     AgentProfile {
         name: agent.name.clone(),
         role: agent.role.clone(),
         model: model_of(app, agent),
         system: with_project(
             with_skills(
-                with_house_rules(
-                    render_vars(&system_prompt(agent, role_prompt), agent),
-                    app.prompts
-                        .bound_body("plaza")
-                        .map(|rules| render_vars(&rules, agent)),
+                with_project_rules(
+                    with_house_rules(
+                        render_vars(&system_prompt(agent, role_prompt), agent),
+                        app.prompts
+                            .bound_body("plaza")
+                            .map(|rules| render_vars(&rules, agent)),
+                    ),
+                    project_rules,
                 ),
-                crate::skills::agent_tools::prompt_section(app, &agent.role),
+                crate::skills::agent_tools::prompt_section(
+                    app,
+                    &agent.role,
+                    app.members.project_of(agent.cid).as_deref(),
+                ),
             ),
             crate::membership::prompt_section(app, agent.cid, &agent.role),
         ),
         tools: crate::tools::specs_for_agent(app, agent),
-        max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
+        max_turns: limits
+            .max_turns
+            .or(project.max_turns)
+            .unwrap_or(app.settings.get().max_turns),
         compress_at: limits
             .compress_at
+            .or(project.compress_at)
             .unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
         keep_recent: limits
             .keep_recent
+            .or(project.keep_recent)
             .unwrap_or(crate::harness_control::DEFAULT_KEEP_RECENT),
         // Every engine runs over ACP. With the owner's `acp_v2` on, the engines are offered the ACP v2
         // draft first (`acp2`); v1 is the default.
@@ -588,6 +621,19 @@ fn with_house_rules(system: String, rules: Option<String>) -> String {
     match rules {
         Some(rules) if !rules.trim().is_empty() => {
             format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim())
+        }
+        _ => system,
+    }
+}
+
+/// Appends the AGENTS.md bound to the agent's project (`project:<id>`), when there is one.
+fn with_project_rules(system: String, rules: Option<String>) -> String {
+    match rules {
+        Some(rules) if !rules.trim().is_empty() => {
+            format!(
+                "{system}\n\n## Project rules (AGENTS.md)\n\n{}",
+                rules.trim()
+            )
         }
         _ => system,
     }
@@ -1023,14 +1069,11 @@ pub fn check_chat_text(text: &str) -> Result<(), String> {
 /// The API view of an agent: its fields, resolved model, tier, work, queue, and its current step
 /// ([`crate::steps`]).
 pub(crate) fn view(app: &App, agent: &Agent) -> Value {
-    let has_role_model = app.settings.get().role_models.contains_key(&agent.role);
+    let (model, source) = resolved_model(app, agent);
     let mut v = serde_json::to_value(agent).unwrap_or(Value::Null);
     if let Some(obj) = v.as_object_mut() {
-        obj.insert("model".into(), json!(model_of(app, agent)));
-        obj.insert(
-            "model_source".into(),
-            json!(model_source(agent.model_override.is_some(), has_role_model)),
-        );
+        obj.insert("model".into(), json!(model));
+        obj.insert("model_source".into(), json!(source));
         obj.insert("tier".into(), json!(tier_of(&agent.role)));
         obj.insert("role_label".into(), json!(role_label(&agent.role)));
         obj.insert("work".into(), json!(app.work.current(agent.cid)));

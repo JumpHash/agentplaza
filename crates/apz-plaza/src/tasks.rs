@@ -85,7 +85,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::treasury::{PostError, Treasury};
+use crate::treasury::{PLAZA_OWNER, PostError, Treasury};
 use crate::{ConnectedAgent, now_ms};
 
 /// The most tasks the ledger holds. v0 never removes a task (a task ends
@@ -1177,7 +1177,7 @@ impl TaskLedger {
             let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
             entry = Some(
                 self.treasury
-                    .fund_task(&id, amount)
+                    .fund_task_from(&id, amount, &self.budget_for(checked.project.as_deref()))
                     .map_err(CreateError::Treasury)?,
             );
         }
@@ -1267,7 +1267,11 @@ impl TaskLedger {
             }
             // `checked` bounds the budget to `i64::MAX`.
             let amount = i64::try_from(task.budget).unwrap_or(i64::MAX);
-            match self.treasury.fund_task(id, amount) {
+            match self.treasury.fund_task_from(
+                id,
+                amount,
+                &self.budget_for(task.project.as_deref()),
+            ) {
                 Ok(entry) => entries.push(Some(entry)),
                 Err(refused) => {
                     for (funded, entry) in ids.iter().zip(&entries) {
@@ -1350,6 +1354,15 @@ impl TaskLedger {
                 dependents: Vec::new(),
             }),
         })
+    }
+
+    /// The town budget a task of `project` is funded from: the project's own once its budget is set aside, else
+    /// the plaza's.
+    fn budget_for(&self, project: Option<&str>) -> String {
+        match project {
+            Some(project) if self.treasury.has_town_budget(project) => project.to_string(),
+            _ => PLAZA_OWNER.to_string(),
+        }
     }
 
     /// The task with that id, if there is one.

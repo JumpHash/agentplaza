@@ -63,6 +63,7 @@ mod payments;
 mod placement;
 mod plaza;
 mod prices;
+mod project_settings;
 mod projects;
 mod prompts;
 mod providers;

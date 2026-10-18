@@ -721,19 +721,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// One connector's operator settings. Empty `roles` means every role.
+/// One connector's operator settings. Empty `roles` means every role, and empty `projects` every project (and the
+/// agents on none, such as the orchestrator).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Setting {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
     roles: Vec<String>,
+    #[serde(default)]
+    projects: Vec<String>,
 }
 
 #[derive(Deserialize)]
 struct Patch {
     enabled: Option<bool>,
     roles: Option<Vec<String>>,
+    projects: Option<Vec<String>>,
+}
+
+/// Whether `setting`'s project list lets in an agent on `project` (`None`: on none).
+fn admits_project(setting: &Setting, project: Option<&str>) -> bool {
+    setting.projects.is_empty()
+        || project.is_some_and(|p| setting.projects.iter().any(|id| id == p))
 }
 
 pub struct Store {
@@ -863,6 +873,7 @@ impl Store {
             "configured": self.configured(c),
             "enabled": setting.enabled,
             "roles": setting.roles,
+            "projects": setting.projects,
             "custom": is_custom(c.id),
             "proposer": self.proposer_of(c.id),
         })
@@ -881,6 +892,13 @@ impl Store {
                 .into_iter()
                 .map(|r| r.trim().to_string())
                 .filter(|r| !r.is_empty())
+                .collect();
+        }
+        if let Some(projects) = patch.projects {
+            entry.projects = projects
+                .into_iter()
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
                 .collect();
         }
         save(&self.dir.join("connectors.json"), &next).map_err(io_failure)?;
@@ -1096,6 +1114,20 @@ pub fn call(
         None => OnBehalf::Owner { node: None },
     };
     let plan = gate(&app.connectors, role, connector, action, &on_behalf)?;
+    // An agent's call is held to the connector's projects too; the owner's and the console's are not.
+    if let Some((cid, _)) = agent {
+        let project = app.members.project_of(cid);
+        if !admits_project(
+            &app.connectors.setting(plan.connector.id),
+            project.as_deref(),
+        ) {
+            return Err(format!(
+                "`{}` is kept to other projects than {}",
+                plan.connector.id,
+                project.as_deref().unwrap_or("none")
+            ));
+        }
+    }
     match execute(plan.connector, plan.action, &plan.values, input)? {
         Reply::Text(text) => Ok(text),
         Reply::Binary {
@@ -1751,6 +1783,7 @@ mod tests {
                 Patch {
                     enabled: Some(true),
                     roles: None,
+                    projects: None,
                 },
             )
             .unwrap();
@@ -1765,6 +1798,7 @@ mod tests {
                 Patch {
                     enabled: None,
                     roles: Some(vec!["researcher".into()]),
+                    projects: None,
                 },
             )
             .unwrap();
@@ -1805,13 +1839,16 @@ pub fn risk_of(name: &str) -> Option<&'static str> {
 }
 
 /// The connector tools `role` is offered now: enabled, configured, and open to the role.
-pub fn specs_for(app: &App, role: &str) -> Vec<apz_proto::chat::ToolSpec> {
+pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<apz_proto::chat::ToolSpec> {
     let store = &app.connectors;
     catalog()
         .into_iter()
         .filter(|c| {
             let setting = store.setting(c.id);
-            setting.enabled && store.configured(c) && (setting.roles.is_empty() || setting.roles.iter().any(|r| r == role))
+            setting.enabled
+                && store.configured(c)
+                && (setting.roles.is_empty() || setting.roles.iter().any(|r| r == role))
+                && admits_project(&setting, project)
         })
         .flat_map(|c| c.actions.iter().map(move |a| (c, a)))
         .map(|(c, a)| apz_proto::chat::ToolSpec {

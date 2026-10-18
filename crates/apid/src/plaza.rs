@@ -556,7 +556,15 @@ fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
 /// (implementation or review, as for an agent's `plaza_post_task`) and that is not archived. The task is linked
 /// there, its `after` stays inside that project, and an assignee must work on it.
 pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
-    let request: CreateTask = match parse(body, "create").and_then(with_budget) {
+    let mut request: CreateTask = match parse(body, "create") {
+        Ok(request) => request,
+        Err(refused) => return refused,
+    };
+    // A task that names no budget gets its project's, when the project sets one.
+    if request.budget.is_none() {
+        request.budget = crate::project_settings::task_budget(app, request.project.as_deref());
+    }
+    let request = match with_budget(request) {
         Ok(request) => request,
         Err(refused) => return refused,
     };

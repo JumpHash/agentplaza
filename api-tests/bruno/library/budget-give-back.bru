@@ -1,0 +1,23 @@
+meta {
+  name: Give some of a project's budget back to the plaza
+  type: http
+  seq: 38
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/budget
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "credits": -400
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.balance: eq 600
+}

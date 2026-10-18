@@ -729,6 +729,35 @@ impl Inner {
             .find(|account| account.kind == kind && account.owner_ref == owner)
     }
 
+    /// The town budget `task_id`'s escrow was funded from: the owner of the `town_budget` its latest funding
+    /// `subcontract` debited, else the plaza's.
+    fn funding_budget(&self, task_id: &str) -> String {
+        let escrow = self
+            .find_account(AccountKind::TaskEscrow, task_id)
+            .map(|account| account.id);
+        self.entries
+            .iter()
+            .rev()
+            .filter(|entry| {
+                entry.kind == EntryKind::Subcontract
+                    && entry
+                        .postings
+                        .iter()
+                        .any(|p| Some(p.account_id) == escrow && p.amount > 0)
+            })
+            .find_map(|entry| {
+                entry.postings.iter().find_map(|posting| {
+                    let account = self
+                        .accounts
+                        .iter()
+                        .find(|account| account.id == posting.account_id)?;
+                    (account.kind == AccountKind::TownBudget && posting.amount < 0)
+                        .then(|| account.owner_ref.clone())
+                })
+            })
+            .unwrap_or_else(|| PLAZA_OWNER.to_string())
+    }
+
     /// The kind of the account with that id, if it exists.
     fn account_kind(&self, id: u64) -> Option<AccountKind> {
         self.accounts
@@ -1106,20 +1135,99 @@ impl Treasury {
     /// (the plaza's `town_budget` debited, the task's escrow credited). Refused
     /// when the budget would go negative.
     pub fn fund_task(&self, task_id: &str, amount: i64) -> Result<u64, PostError> {
+        self.fund_task_from(task_id, amount, PLAZA_OWNER)
+    }
+
+    /// Funds `task_id`'s escrow from the town budget of `budget`: the plaza's ([`PLAZA_OWNER`]) or a project's. A
+    /// `subcontract` entry, refused when that budget would go negative. The refund returns to the same budget.
+    pub fn fund_task_from(
+        &self,
+        task_id: &str,
+        amount: i64,
+        budget: &str,
+    ) -> Result<u64, PostError> {
         if amount <= 0 {
             return Err(PostError::NonPositive { amount });
         }
+        let memo = if budget == PLAZA_OWNER {
+            "task budget funded from the plaza".to_string()
+        } else {
+            format!("task budget funded from {budget}")
+        };
         let spec = EntrySpec::new(
             EntryKind::Subcontract,
             vec![
-                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, -amount),
+                PostingSpec::new(AccountKind::TownBudget, budget, -amount),
                 PostingSpec::new(AccountKind::TaskEscrow, task_id, amount),
             ],
         )
         .task(task_id)
         .root(task_id)
-        .memo("task budget funded from the plaza");
+        .memo(&memo);
         self.post(&spec)
+    }
+
+    /// Whether `owner` has a town budget of its own: a project whose budget was set aside ([`Treasury::move_budget`]).
+    pub fn has_town_budget(&self, owner: &str) -> bool {
+        self.lock()
+            .find_account(AccountKind::TownBudget, owner)
+            .is_some()
+    }
+
+    /// The balance of `owner`'s town budget, 0 when it has none.
+    pub fn town_budget_balance(&self, owner: &str) -> i128 {
+        let inner = self.lock();
+        inner
+            .find_account(AccountKind::TownBudget, owner)
+            .map_or(0, |account| inner.balance(account.id))
+    }
+
+    /// Moves `amount` credits from `from`'s town budget to `to`'s: a `budget_move` entry, the owner's operation (the
+    /// daily transfer cap is the agents'). Refused when `from`'s budget would go negative.
+    pub fn move_budget(&self, from: &str, to: &str, amount: i64) -> Result<u64, PostError> {
+        if amount <= 0 {
+            return Err(PostError::NonPositive { amount });
+        }
+        let chain = if from == PLAZA_OWNER { to } else { from };
+        let spec = EntrySpec::new(
+            EntryKind::BudgetMove,
+            vec![
+                PostingSpec::new(AccountKind::TownBudget, from, -amount),
+                PostingSpec::new(AccountKind::TownBudget, to, amount),
+            ],
+        )
+        .root(chain)
+        .memo(&format!("budget moved from {from} to {to}"));
+        self.post(&spec)
+    }
+
+    /// Moves all of `owner`'s town budget back to the plaza's (a project that is over); the entry, or `None` when
+    /// nothing is left. The balance is read and the move posted under one lock.
+    pub fn return_town_budget(&self, owner: &str) -> Result<Option<u64>, PostError> {
+        if owner == PLAZA_OWNER {
+            return Ok(None);
+        }
+        let mut inner = self.lock();
+        let Some(account) = inner.find_account(AccountKind::TownBudget, owner) else {
+            return Ok(None);
+        };
+        let balance = inner.balance(account.id);
+        let Ok(amount) = i64::try_from(balance) else {
+            return Ok(None);
+        };
+        if amount <= 0 {
+            return Ok(None);
+        }
+        let spec = EntrySpec::new(
+            EntryKind::BudgetMove,
+            vec![
+                PostingSpec::new(AccountKind::TownBudget, owner, -amount),
+                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, amount),
+            ],
+        )
+        .root(owner)
+        .memo(&format!("{owner}'s budget returned to the plaza"));
+        self.append(&mut inner, &spec).map(Some)
     }
 
     /// Charges `credits` of real spend: a `spend` entry, from the task's escrow
@@ -1210,8 +1318,8 @@ impl Treasury {
         self.post(&spec)
     }
 
-    /// Refunds what `task_id`'s escrow still holds back to the plaza's budget: a
-    /// `refund` entry (task_escrow debited, the plaza's `town_budget` credited).
+    /// Refunds what `task_id`'s escrow still holds back to the budget it was funded from (the plaza's, or a
+    /// project's): a `refund` entry (task_escrow debited, that `town_budget` credited).
     /// Returns the entry's id, or `None` when there is nothing to refund (no
     /// escrow, or a balance of zero), in which case no entry is posted.
     ///
@@ -1236,16 +1344,22 @@ impl Treasury {
                 credit_limit: account.credit_limit,
             });
         };
+        let budget = inner.funding_budget(task_id);
+        let memo = if budget == PLAZA_OWNER {
+            "task budget returned to the plaza".to_string()
+        } else {
+            format!("task budget returned to {budget}")
+        };
         let spec = EntrySpec::new(
             EntryKind::Refund,
             vec![
                 PostingSpec::new(AccountKind::TaskEscrow, task_id, -amount),
-                PostingSpec::new(AccountKind::TownBudget, PLAZA_OWNER, amount),
+                PostingSpec::new(AccountKind::TownBudget, &budget, amount),
             ],
         )
         .task(task_id)
         .root(task_id)
-        .memo("task budget returned to the plaza");
+        .memo(&memo);
         self.append(&mut inner, &spec).map(Some)
     }
 
@@ -2427,6 +2541,51 @@ mod tests {
             );
             assert_eq!(treasury.escrow_balance("t1"), 100);
         }
+    }
+
+    #[test]
+    fn a_projects_budget_funds_its_tasks_and_takes_their_refunds() {
+        let treasury = new_treasury();
+        let plaza = treasury.plaza_budget_balance();
+        treasury
+            .move_budget(PLAZA_OWNER, "pr1", 2000)
+            .expect("the owner sets pr1's budget aside");
+        assert!(treasury.has_town_budget("pr1"));
+        assert!(!treasury.has_town_budget("pr2"));
+        assert_eq!(treasury.town_budget_balance("pr1"), 2000);
+        assert_eq!(treasury.plaza_budget_balance(), plaza - 2000);
+        treasury
+            .fund_task_from("t1", 500, "pr1")
+            .expect("a pr1 task funded from pr1");
+        treasury
+            .fund_task("t2", 300)
+            .expect("another from the plaza");
+        assert_eq!(treasury.town_budget_balance("pr1"), 1500);
+        let refused = treasury
+            .fund_task_from("t3", 1501, "pr1")
+            .expect_err("pr1 has 1500 left");
+        assert!(
+            matches!(refused, PostError::Overdrawn { .. }),
+            "{refused:?}"
+        );
+        // Each refund goes back where its escrow came from.
+        treasury.refund_task_to_budget("t1").expect("t1 refunded");
+        treasury.refund_task_to_budget("t2").expect("t2 refunded");
+        assert_eq!(treasury.town_budget_balance("pr1"), 2000);
+        assert_eq!(treasury.plaza_budget_balance(), plaza - 2000);
+        // An archived project's rest goes back to the plaza; nothing is left to move after.
+        assert!(
+            treasury
+                .return_town_budget("pr1")
+                .expect("returned")
+                .is_some()
+        );
+        assert_eq!(treasury.town_budget_balance("pr1"), 0);
+        assert_eq!(treasury.plaza_budget_balance(), plaza);
+        assert_eq!(treasury.return_town_budget("pr1").expect("no-op"), None);
+        assert_eq!(treasury.return_town_budget("pr9").expect("no-op"), None);
+        assert!(treasury.move_budget(PLAZA_OWNER, "pr1", 0).is_err());
+        treasury.verify_journal().expect("the journal holds");
     }
 
     #[test]

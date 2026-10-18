@@ -708,11 +708,13 @@ fn model_call(
         };
     }
     request.model = model.clone();
+    // The project's effort and answer length fill in before the plaza's.
+    let project = crate::project_settings::of_agent(app, cid).unwrap_or_default();
     if request.max_tokens == 0 {
-        request.max_tokens = settings.max_tokens;
+        request.max_tokens = project.max_tokens.unwrap_or(settings.max_tokens);
     }
     if request.effort.is_none() {
-        request.effort = settings.effort.clone();
+        request.effort = project.effort.or_else(|| settings.effort.clone());
     }
     let tool_names: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
     app.transcripts.record(

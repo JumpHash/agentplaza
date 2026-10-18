@@ -296,12 +296,14 @@ pub struct Posted {
 /// Posts project `pid`'s task list whole. The project's plan must be approved (implementation or
 /// review); the list is checked ([`check`], where a link may also name a task that exists); then
 /// the ledger creates every task or none, in an order where each comes after the tasks it runs
-/// after, and each is linked to the project. Returns the tasks in the list's order.
+/// after, and each is linked to the project. A task that names no budget gets `default_budget`
+/// (the project's), else the plaza's default. Returns the tasks in the list's order.
 pub fn post(
     projects: &Store,
     ledger: &TaskLedger,
     pid: &str,
     tasks: &[Planned],
+    default_budget: Option<u64>,
 ) -> Result<Vec<Posted>, String> {
     let project = projects
         .get(pid)
@@ -329,7 +331,7 @@ pub fn post(
     let mut batch = Vec::with_capacity(tasks.len());
     for &at in &order {
         let task = &tasks[at];
-        let budget = resolve_budget(task.budget)
+        let budget = resolve_budget(task.budget.or(default_budget))
             .map_err(|refusal| format!("task {}: {refusal}", task.key.trim()))?;
         let (own, existing): (Vec<&str>, Vec<&str>) = task
             .after
@@ -598,7 +600,7 @@ mod tests {
             .expect("tasks");
         // Posting before approval is refused, and creates nothing.
         assert!(
-            post(&projects, &ledger, pid, &list)
+            post(&projects, &ledger, pid, &list, None)
                 .unwrap_err()
                 .contains("only once its plan is approved")
         );
@@ -612,7 +614,7 @@ mod tests {
         projects.approve(pid, &mayor, "go").expect("approved");
 
         // Posted: all four at once, each running after what its line names.
-        let posted = post(&projects, &ledger, pid, &list).expect("posted");
+        let posted = post(&projects, &ledger, pid, &list, None).expect("posted");
         let keyed: Vec<(&str, &str, bool)> = posted
             .iter()
             .map(|task| (task.key.as_str(), task.id.as_str(), task.ready))
@@ -705,7 +707,7 @@ mod tests {
 
         let mut list = vec![planned("a", "write", &[]), planned("b", "check", &["a"])];
         list[1].budget = Some(10);
-        let refused = post(&projects, &ledger, pid, &list).unwrap_err();
+        let refused = post(&projects, &ledger, pid, &list, None).unwrap_err();
         assert!(
             refused.starts_with("task b: a budget of 10 credits is below the minimum"),
             "{refused}"
@@ -713,14 +715,14 @@ mod tests {
         list[1].budget = None;
         list[1].role = Some("r".repeat(65));
         assert_eq!(
-            post(&projects, &ledger, pid, &list).unwrap_err(),
+            post(&projects, &ledger, pid, &list, None).unwrap_err(),
             "task b: role must be at most 64 bytes",
             "the ledger's refusal names the task by its key"
         );
         assert!(ledger.list().is_empty());
         assert!(projects.get(pid).expect("the project").tasks.is_empty());
         list[1].role = None;
-        let posted = post(&projects, &ledger, pid, &list).expect("posted");
+        let posted = post(&projects, &ledger, pid, &list, None).expect("posted");
         let ids: Vec<&str> = posted.iter().map(|task| task.id.as_str()).collect();
         assert_eq!(ids, vec!["t1", "t2"], "the refused lists took no ids");
         assert_eq!(posted[1].after, vec!["t1"]);

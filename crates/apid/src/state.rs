@@ -133,6 +133,8 @@ pub struct App {
     pub members: crate::membership::Members,
     /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
     pub conversations: crate::conversations::Store,
+    /// Each project's overrides of the plaza's settings (`project_settings`).
+    pub project_settings: crate::project_settings::Store,
     /// Loops and per-agent harness limits.
     pub harness: crate::harness_control::Store,
     /// The plaza's git host (Forgejo) and the agents' identities on it.
@@ -259,6 +261,9 @@ impl App {
             members: crate::membership::Members::load(config.state_dir.join("members.json")),
             conversations: crate::conversations::Store::load(
                 config.state_dir.join("conversations.json"),
+            ),
+            project_settings: crate::project_settings::Store::load(
+                config.state_dir.join("project-settings.json"),
             ),
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),

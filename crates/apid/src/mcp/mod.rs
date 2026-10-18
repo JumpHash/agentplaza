@@ -255,12 +255,16 @@ pub fn risk_for(server: &McpServer, tool: &ToolInfo) -> Risk {
         .unwrap_or_else(|| auto_risk(tool))
 }
 
-/// Whether a server is offered to `role` on `node`: enabled, and both its access lists admit them.
-/// A caller with no known node is refused.
-pub fn allowed(server: &McpServer, role: &str, node: Option<&str>) -> bool {
+/// Whether a server is offered to `role` on `node`, working on `project`: enabled, and its access lists admit them.
+/// A caller with no known node is refused, and one on no project only by a server open to every project.
+pub fn allowed(server: &McpServer, role: &str, node: Option<&str>, project: Option<&str>) -> bool {
     server.enabled
         && server.access.roles.admits(role)
         && node.is_some_and(|n| server.access.nodes.admits(n))
+        && match project {
+            Some(project) => server.access.projects.admits(project),
+            None => server.access.projects == crate::mcp::config::Pick::All,
+        }
 }
 
 /// The tool specs an agent is offered: each allowed tool of each server the agent may use, that the laws
@@ -270,7 +274,8 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     let laws = crate::laws::global();
     let mut specs = Vec::new();
     for server in app.mcp.store.list() {
-        if !allowed(&server, &agent.role, node.as_deref()) {
+        let project = app.members.project_of(agent.cid);
+        if !allowed(&server, &agent.role, node.as_deref(), project.as_deref()) {
             continue;
         }
         let tools = app.mcp.store.tools_of(&server.id);
@@ -314,9 +319,10 @@ pub fn call_for_agent(
         .owner_of_cid(agent.cid)
         .map(|n| n.id)
         .ok_or("your node is not known")?;
-    if !allowed(&server, &agent.role, Some(&node)) {
+    let project = app.members.project_of(agent.cid);
+    if !allowed(&server, &agent.role, Some(&node), project.as_deref()) {
         return Err(format!(
-            "{name} is not available to the {} role on this node",
+            "{name} is not available to the {} role on this node and project",
             agent.role
         ));
     }

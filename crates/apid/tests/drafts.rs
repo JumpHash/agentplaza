@@ -117,7 +117,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
             { "role": "builder", "count": 1, "bench": [BUILDER] },
             { "role": "qa", "count": 1 },
         ],
-        "budget": 5000,
+        "budget": 9000,
     });
     let written = tool(&hub, asked, "plaza_project_draft", draft.clone());
     assert!(
@@ -140,11 +140,11 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
     let (status, edited) = hub.call(
         "PATCH",
         &format!("/v1/owner/conversations/{id}/draft"),
-        Some(json!({ "revision": 1, "budget": 4000 })),
+        Some(json!({ "revision": 1, "budget": 8000 })),
     );
     assert_eq!(status, 200, "{edited}");
     assert_eq!(edited["draft"]["revision"], 2);
-    assert_eq!(edited["draft"]["budget"], 4000);
+    assert_eq!(edited["draft"]["budget"], 8000);
     let stale = tool(&hub, asked, "plaza_project_draft", draft);
     assert!(text(&stale["output"]).contains("revision 2"), "{stale}");
     let (_, read) = hub.call("GET", &format!("/v1/owner/conversations/{id}/draft"), None);
@@ -182,6 +182,9 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
     assert!(text(&project["goal"]).contains("release-0.9"), "{project}");
     let (_, builder) = hub.call("GET", &format!("/v1/agents/{BUILDER}"), None);
     assert_eq!(builder["project"], pid.as_str(), "{builder}");
+    // Its budget was set aside, and its two tasks (2000 each, the default) are funded from it.
+    let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
+    assert_eq!(budget["balance"], 4000, "{budget}");
     let spawn = noded
         .seen()
         .into_iter()
@@ -254,5 +257,10 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         project["tasks"].as_array().map(Vec::len),
         Some(3),
         "{project}\n{posted}"
+    );
+    let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
+    assert_eq!(
+        budget["balance"], 2000,
+        "the third task drew on the project's budget too: {budget}"
     );
 }

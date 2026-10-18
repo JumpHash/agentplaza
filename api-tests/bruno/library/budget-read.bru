@@ -1,0 +1,19 @@
+meta {
+  name: Read a project's budget, none set aside yet
+  type: http
+  seq: 36
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.own: eq false
+  res.body.balance: eq 0
+  res.body.plaza: isNumber
+}

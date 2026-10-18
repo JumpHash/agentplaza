@@ -538,7 +538,10 @@ fn hire(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             .get("acceptance")
             .and_then(Value::as_str)
             .map(str::to_string),
-        crate::tools::budget_arg(input)?,
+        crate::tools::budget_arg_or(
+            input,
+            crate::project_settings::task_budget(app, Some(&project)),
+        )?,
         cid,
         &project,
     )?;
