@@ -20,6 +20,10 @@ pub struct AgentRow {
     pub task: Option<String>,
     pub last_seen_ms: u64,
     pub tokens: u64,
+    /// The project it works on (None: on the bench, or the orchestrator).
+    pub project: Option<String>,
+    /// The orchestrator: it works on every project.
+    pub orchestrator: bool,
 }
 
 fn text(v: &Value, key: &str) -> String {
@@ -55,6 +59,12 @@ pub fn parse_agent(v: &Value) -> Option<AgentRow> {
         task,
         last_seen_ms: v.get("last_seen_ms").and_then(Value::as_u64).unwrap_or(0),
         tokens: usage("input_tokens") + usage("output_tokens"),
+        project: v
+            .get("project")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
+        orchestrator: text(v, "tier") == "orchestrator",
     })
 }
 
@@ -70,10 +80,18 @@ pub struct ProjectRow {
     pub members: BTreeSet<u64>,
 }
 
-/// Reads one project; the agents are the `by_cid` of its documents, critiques and history.
+/// Reads one project; the agents are its lead (the orchestrator of a project it opened) and the `by_cid` of its
+/// documents, critiques and history.
 pub fn parse_project(v: &Value) -> Option<ProjectRow> {
     let id = v.get("id")?.as_str()?.to_string();
     let mut members = BTreeSet::new();
+    if let Some(lead) = v
+        .get("lead_cid")
+        .and_then(Value::as_u64)
+        .filter(|c| *c != 0)
+    {
+        members.insert(lead);
+    }
     for key in ["docs", "critiques", "history"] {
         for item in v.get(key).and_then(Value::as_array).into_iter().flatten() {
             if let Some(cid) = item.get("by_cid").and_then(Value::as_u64) {
@@ -100,6 +118,39 @@ pub fn parse_project(v: &Value) -> Option<ProjectRow> {
         tasks,
         members,
     })
+}
+
+/// The sidebar in project mode (the IDE opened under a project): that project's group alone, with its agents (its
+/// members, and the orchestrator, which works on every project) and its repo. Empty until the project is listed.
+pub fn project_group(
+    agents: &[AgentRow],
+    projects: &[ProjectRow],
+    repos: &[(String, String)],
+    project: &str,
+) -> Vec<Group> {
+    let Some(p) = projects.iter().find(|p| p.id == project) else {
+        return Vec::new();
+    };
+    vec![Group {
+        key: format!("project:{project}"),
+        title: if p.title.is_empty() {
+            p.id.clone()
+        } else {
+            p.title.clone()
+        },
+        project: Some(project.to_string()),
+        agents: agents
+            .iter()
+            .filter(|a| a.project.as_deref() == Some(project) || a.orchestrator)
+            .map(|a| a.cid)
+            .collect(),
+        repos: repos
+            .iter()
+            .filter(|(_, name)| p.repo.as_deref() == Some(name.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect(),
+        stations: Vec::new(),
+    }]
 }
 
 /// One task as the Tasks tab counts it (`GET /v1/tasks`), and the agent that claimed it, if one did.
@@ -157,9 +208,10 @@ impl Group {
 }
 
 /// The sidebar's groups: each project that has an agent or a repo, in the order given; then the workstations (after
-/// the projects, as the web IDE has them); then the agents no project names, under "Other agents". `repos` are
-/// (workspace id, repo name) pairs; a repo no project owns goes under "Repositories", last. `stations` are the
-/// workstations' workspace ids.
+/// the projects, as the web IDE has them); then the agents no project names, under "Other agents". An agent is under
+/// the project it works on, and only that one; an agent on none, under a project that names it (its documents,
+/// critiques and history). `repos` are (workspace id, repo name) pairs; a repo no project owns goes under
+/// "Repositories", last. `stations` are the workstations' workspace ids.
 pub fn groups(
     agents: &[AgentRow],
     projects: &[ProjectRow],
@@ -172,8 +224,12 @@ pub fn groups(
     for project in projects {
         let members: Vec<u64> = agents
             .iter()
+            .filter(|a| match &a.project {
+                Some(p) => *p == project.id,
+                None => project.members.contains(&a.cid),
+            })
             .map(|a| a.cid)
-            .filter(|cid| project.members.contains(cid) && !placed.contains(cid))
+            .filter(|cid| !placed.contains(cid))
             .collect();
         let mut owned: Vec<String> = Vec::new();
         for (id, name) in repos {
@@ -922,6 +978,48 @@ mod tests {
         );
         assert_eq!(row.task.as_deref(), Some("Fix the parser"));
         assert!(parse_agent(&json!({"name": "no cid"})).is_none());
+    }
+
+    #[test]
+    fn an_agent_is_under_the_project_it_works_on_and_project_mode_shows_that_one() {
+        let agent = |cid: u64, project: Option<&str>, orchestrator: bool| {
+            let mut a =
+                parse_agent(&json!({ "cid": cid, "name": format!("a{cid}"), "project": project }))
+                    .expect("an agent");
+            a.orchestrator = orchestrator;
+            a
+        };
+        // Ada works on p2 though she wrote p1's brief; Bo, on no project, wrote p1's; the orchestrator leads p2.
+        let agents = vec![
+            agent(1, Some("p2"), false),
+            agent(2, None, false),
+            agent(9, None, true),
+        ];
+        let p1 = parse_project(
+            &json!({ "id": "p1", "title": "One", "docs": [{ "by_cid": 1 }, { "by_cid": 2 }] }),
+        )
+        .expect("p1");
+        let p2 =
+            parse_project(&json!({ "id": "p2", "title": "Two", "repo": "two", "lead_cid": 9 }))
+                .expect("p2");
+        let projects = vec![p1, p2];
+        let repos = vec![("repo:two@main".to_string(), "two".to_string())];
+        let g = groups(&agents, &projects, &repos, &[]);
+        assert_eq!(g[0].agents, vec![2], "p1: its author on no project");
+        assert_eq!(
+            g[1].agents,
+            vec![1, 9],
+            "p2: its member (not under p1, whose brief she wrote), and its lead"
+        );
+        let mode = project_group(&agents, &projects, &repos, "p2");
+        assert_eq!(mode.len(), 1);
+        assert_eq!(
+            mode[0].agents,
+            vec![1, 9],
+            "its member and the orchestrator"
+        );
+        assert_eq!(mode[0].repos, vec!["repo:two@main".to_string()]);
+        assert!(project_group(&agents, &projects, &repos, "p9").is_empty());
     }
 
     #[test]

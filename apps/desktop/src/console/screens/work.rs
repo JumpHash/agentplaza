@@ -176,7 +176,9 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     }
     state.loading = true;
     let hub = ctx.client.clone();
-    let (current, wanted) = (state.current.clone(), state.wanted.clone());
+    // A tab asked for, else the project the console is scoped to.
+    let wanted = state.wanted.clone().or_else(|| ctx.project.clone());
+    let current = state.current.clone();
     client::task(move || snapshot(&hub, current, wanted), Msg::Loaded)
 }
 

@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{Ctx, client, rich, ui};
+use crate::console::{Ctx, client, rich, scope, ui};
 use crate::theme::SANS;
 
 const SANS_SEMIBOLD: Font = Font {
@@ -254,12 +254,22 @@ fn prefetch_posts(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
-/// Loads the board and the agent names (called when it opens and on every poll tick).
+/// The `project` query a scoped board adds to its calls (empty under All projects).
+fn project_query(ctx: &Ctx, sep: char) -> String {
+    ctx.project
+        .as_deref()
+        .map(|p| format!("{sep}project={}", client::enc(p)))
+        .unwrap_or_default()
+}
+
+/// Loads the board and the agent names (called when it opens and on every poll tick). Under a project the board is
+/// its board: its agents' posts.
 pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let board = ctx.client.clone();
     let agents = ctx.client.clone();
+    let path = format!("/v1/board{}", project_query(ctx, '?'));
     Task::batch([
-        client::task(move || board.get::<Value>("/v1/board"), Msg::Loaded),
+        client::task(move || board.get::<Value>(&path), Msg::Loaded),
         client::task(move || agents.call("GET", "/v1/agents", None), Msg::Agents),
     ])
 }
@@ -437,7 +447,9 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.compose.posting = true;
             let client = ctx.client.clone();
-            let body = json!({ "body": &text, "mentions": mentions_in(&text) });
+            // Under a project, the owner's post goes to its board.
+            let body =
+                json!({ "body": &text, "mentions": mentions_in(&text), "project": ctx.project });
             let sent = text.clone();
             client::task(
                 move || client.post::<Value>("/v1/board/posts", &body),
@@ -462,7 +474,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Pause => {
             let client = ctx.client.clone();
-            let body = json!({ "on": !state.paused });
+            let body = json!({ "on": !state.paused, "project": ctx.project });
             client::task(
                 move || client.post::<Value>("/v1/board/pause", &body),
                 Msg::Paused,
@@ -481,24 +493,31 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         },
-        Msg::Export => Task::perform(
-            async {
-                rfd::AsyncFileDialog::new()
-                    .set_title("Save the board as Markdown")
-                    .set_file_name("agentplaza-board-all.md")
-                    .add_filter("Markdown", &["md"])
-                    .save_file()
-                    .await
-                    .map(|file| file.path().to_path_buf())
-            },
-            Msg::ExportPicked,
-        ),
+        Msg::Export => {
+            let name = format!(
+                "agentplaza-board-{}.md",
+                ctx.project.as_deref().unwrap_or("all")
+            );
+            Task::perform(
+                async move {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Save the board as Markdown")
+                        .set_file_name(name)
+                        .add_filter("Markdown", &["md"])
+                        .save_file()
+                        .await
+                        .map(|file| file.path().to_path_buf())
+                },
+                Msg::ExportPicked,
+            )
+        }
         Msg::ExportPicked(None) => Task::none(),
         Msg::ExportPicked(Some(path)) => {
             let c = ctx.client.clone();
+            let export = format!("/v1/board/export?format=md{}", project_query(ctx, '&'));
             client::task(
                 move || {
-                    let bytes = raw_get(&c, "/v1/board/export?format=md")?;
+                    let bytes = raw_get(&c, &export)?;
                     std::fs::write(&path, &bytes)
                         .map_err(|e| format!("The file could not be written: {e}"))?;
                     Ok(path.display().to_string())
@@ -617,7 +636,7 @@ fn agent_names(list: &Value) -> HashMap<u64, String> {
         .collect()
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let options = author_options(state);
     let selected = options.iter().find(|a| a.cid == state.author).cloned();
     let picker =
@@ -627,7 +646,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .padding(6.0)
         .width(Length::Fixed(260.0));
     let head = ui::view_head(
-        "Board",
+        &scope::heading("Board", ctx.project.as_deref()),
         vec![picker.into(), search.into(), pause_bar(state.paused)],
     );
 

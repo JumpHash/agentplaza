@@ -1,7 +1,9 @@
 //! The Tasks screen (parity with the web console's `tasks` view): every task on a four-lane
 //! board, and one task in full (goal, acceptance, result, facts, the assignee's timeline).
 //! Posting a task, assigning it and withdrawing it are the actions the web offers. The screen
-//! polls every 4 s; elapsed times are drawn at each poll.
+//! polls every 4 s; elapsed times are drawn at each poll. Under a project the board is that
+//! project's tasks; every new task belongs to a project, and a task from before projects can be
+//! moved into one.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -22,7 +24,7 @@ use serde_json::{Value, json};
 use super::work_model as model;
 use super::{Id, ide};
 use crate::console::ui::{self, Tone};
-use crate::console::{Ctx, client, events, rich, roles};
+use crate::console::{Ctx, client, events, rich, roles, scope};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
@@ -106,6 +108,9 @@ pub struct AgentRecord {
     /// "llm" or "model".
     #[serde(default)]
     pub kind: String,
+    /// The project it works on: a project's task goes only to its agents.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,6 +141,8 @@ pub struct Snapshot {
     agents: Vec<AgentRecord>,
     activity: Vec<(u64, String)>,
     detail: Option<Detail>,
+    /// Every project (None when the hub would not list them): titles, and the ones that take tasks.
+    projects: Option<Vec<Value>>,
 }
 
 /// A choice in a pick list: the value it stands for (`key`) and the text it shows.
@@ -170,6 +177,8 @@ impl fmt::Display for Pick {
 /// The new-task form, as the web's modal holds it.
 #[derive(Debug)]
 struct Draft {
+    /// The project the task is for (None: no project takes tasks yet, and the form says so).
+    project: Option<scope::Pick>,
     title: String,
     details: text_editor::Content,
     acceptance: text_editor::Content,
@@ -180,8 +189,9 @@ struct Draft {
 }
 
 impl Draft {
-    fn new() -> Draft {
+    fn new(project: Option<scope::Pick>) -> Draft {
         Draft {
+            project,
             title: String::new(),
             details: text_editor::Content::new(),
             acceptance: text_editor::Content::new(),
@@ -213,6 +223,23 @@ pub struct State {
     again: bool,
     /// The board shows only the tasks that can be claimed now.
     ready_only: bool,
+    /// Every project: their titles, and the ones that take tasks.
+    projects: Vec<Value>,
+    /// A line for the last move into a project.
+    note: Option<String>,
+}
+
+/// The projects that take tasks now: live, their plan approved.
+fn taking_tasks(projects: &[Value]) -> Vec<scope::Pick> {
+    scope::picks(projects)
+        .into_iter()
+        .filter(|p| {
+            projects.iter().any(|x| {
+                x["id"].as_str() == Some(p.id.as_str())
+                    && matches!(x["stage"].as_str(), Some("implementation" | "review"))
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +261,10 @@ pub enum Msg {
     FormRole(Pick),
     FormBudget(String),
     FormAssignee(Pick),
+    FormProject(scope::Pick),
+    /// Moves the open task (from before projects) into a project, with the tasks linked to it.
+    Move(scope::Pick),
+    Moved(Result<Value, String>),
     Submit,
     Created(Result<TaskRecord, String>),
     Assign(Pick),
@@ -298,6 +329,14 @@ pub fn opened(id: String) -> State {
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     fetch(ctx, state.selected.clone())
+}
+
+/// The idle workers on `project`: a project's task goes only to its agents.
+fn idle_members<'a>(agents: &'a [AgentRecord], project: Option<&str>) -> Vec<&'a AgentRecord> {
+    idle_workers(agents)
+        .into_iter()
+        .filter(|a| project.is_some() && a.project.as_deref() == project)
+        .collect()
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -372,6 +411,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.kbd = clamp(state.kbd, visible(state).count());
             }
             state.agents = snap.agents;
+            if let Some(projects) = snap.projects {
+                state.projects = projects;
+            }
             state.detail = if state.selected.is_some() {
                 snap.detail
             } else {
@@ -387,15 +429,59 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Open(id) => {
             state.selected = Some(id.clone());
             state.detail = None;
+            state.note = None;
             fetch(ctx, Some(id))
         }
         Msg::Back => {
             state.selected = None;
             state.detail = None;
+            state.note = None;
             fetch(ctx, None)
         }
         Msg::NewTask => {
-            state.draft = Some(Draft::new());
+            // Every task belongs to a project whose plan is approved: the one the console shows, or one picked.
+            let open = taking_tasks(&state.projects);
+            let project = open
+                .iter()
+                .find(|p| ctx.project.as_deref() == Some(p.id.as_str()))
+                .or(open.first())
+                .cloned();
+            state.draft = Some(Draft::new(project));
+            Task::none()
+        }
+        Msg::FormProject(p) => {
+            if let Some(d) = state.draft.as_mut() {
+                d.project = Some(p);
+                // The assignee is one of that project's idle agents.
+                d.assignee = Pick::scheduler();
+            }
+            Task::none()
+        }
+        Msg::Move(p) => {
+            let Some(id) = state.selected.clone() else {
+                return Task::none();
+            };
+            let hub = ctx.client.clone();
+            client::task(
+                move || {
+                    hub.post::<Value>(&format!("/v1/tasks/{id}/move"), &json!({ "project": p.id }))
+                },
+                Msg::Moved,
+            )
+        }
+        Msg::Moved(Ok(v)) => {
+            let n = v["moved"].as_array().map_or(0, Vec::len);
+            let title = scope::title_in(&state.projects, v["project"].as_str().unwrap_or(""));
+            state.note = Some(if n > 1 {
+                format!("Moved {n} linked tasks into {title}")
+            } else {
+                format!("Moved into {title}")
+            });
+            state.error = None;
+            fetch(ctx, state.selected.clone())
+        }
+        Msg::Moved(Err(e)) => {
+            state.error = Some(e);
             Task::none()
         }
         Msg::CloseForm => {
@@ -488,6 +574,9 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(d) = state.draft.as_ref() else {
         return Task::none();
     };
+    let Some(project) = d.project.as_ref().map(|p| p.id.clone()) else {
+        return Task::none();
+    };
     if d.posting || d.title.trim().is_empty() {
         return Task::none();
     }
@@ -519,7 +608,7 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     } else {
         format!("{title}\n\n{details}")
     };
-    let mut body = json!({ "goal": goal });
+    let mut body = json!({ "goal": goal, "project": project });
     if let Some(budget) = budget {
         body["budget"] = json!(budget);
     }
@@ -560,11 +649,20 @@ fn settled(state: &mut State, ctx: &Ctx, done: Result<Value, String>) -> Task<Ms
 /// assignees) or the open task and its timeline. Runs off the UI thread.
 fn fetch(ctx: &Ctx, selected: Option<String>) -> Task<Msg> {
     let hub = ctx.client.clone();
-    client::task(move || snapshot(&hub, selected), Msg::Loaded)
+    let scope = ctx.project.clone();
+    client::task(
+        move || snapshot(&hub, selected, scope.as_deref()),
+        Msg::Loaded,
+    )
 }
 
-fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, String> {
+fn snapshot(
+    hub: &client::Client,
+    selected: Option<String>,
+    scope: Option<&str>,
+) -> Result<Snapshot, String> {
     let agents: Vec<AgentRecord> = hub.get("/v1/agents")?;
+    let projects = hub.get::<Vec<Value>>("/v1/projects").ok();
     if let Some(id) = selected {
         let task: Option<TaskRecord> = hub.get(&format!("/v1/tasks/{id}")).ok();
         let timeline = match task.as_ref().and_then(|t| t.agent_cid) {
@@ -576,9 +674,15 @@ fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, 
             agents,
             activity: Vec::new(),
             detail: Some(Detail { task, timeline }),
+            projects,
         });
     }
-    let tasks = hub.get::<TasksReply>("/v1/tasks")?.tasks;
+    // Under a project the board is that project's tasks; under All projects, every task.
+    let path = match scope {
+        Some(p) => format!("/v1/tasks?project={}", client::enc(p)),
+        None => "/v1/tasks".to_string(),
+    };
+    let tasks = hub.get::<TasksReply>(&path)?.tasks;
     let mut activity: Vec<(u64, String)> = Vec::new();
     for cid in tasks
         .iter()
@@ -597,6 +701,7 @@ fn snapshot(hub: &client::Client, selected: Option<String>) -> Result<Snapshot, 
         agents,
         activity,
         detail: None,
+        projects,
     })
 }
 
@@ -876,10 +981,13 @@ fn role_options(agents: &[AgentRecord]) -> Vec<Pick> {
     options
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(e) = state.error.as_deref() {
         parts.push(ui::error_line(e));
+    }
+    if let Some(n) = state.note.as_deref() {
+        parts.push(ui::faint(n).into());
     }
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
     if state.selected.is_some() {
@@ -916,7 +1024,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         bottom: 0.0,
         left: 0.0,
     });
-    ui::sheet(ui::view_head("Tasks", actions), ui::scroll(page).into())
+    let title = match ctx.project.as_deref() {
+        Some(p) => format!("Tasks · {}", scope::title_in(&state.projects, p)),
+        None => "Tasks".to_string(),
+    };
+    ui::sheet(ui::view_head(&title, actions), ui::scroll(page).into())
 }
 
 /// The head strip: a figure for each lane, and how many agents are working now.
@@ -1351,6 +1463,26 @@ fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
 
 /// The new-task form, shown above the board.
 fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
+    let Some(project) = d.project.as_ref() else {
+        return ui::card(
+            "New task",
+            column![
+                ui::prose("A task belongs to a project, and no project takes tasks yet. Open one first: New project, in the project switcher."),
+                row![
+                    Space::new().width(Length::Fill),
+                    ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::CloseForm))
+                ],
+            ]
+            .spacing(14)
+            .into(),
+        );
+    };
+    let project_pick = pick_list(
+        taking_tasks(&state.projects),
+        Some(project.clone()),
+        Msg::FormProject,
+    )
+    .width(Length::Fill);
     let title = text_input("What should get done?", &d.title)
         .on_input(Msg::FormTitle)
         .style(theme::input)
@@ -1375,10 +1507,14 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         .style(theme::input)
         .padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
-    assignee_options.extend(idle_workers(&state.agents).into_iter().map(|a| Pick {
-        key: a.cid.to_string(),
-        label: agent_name(&state.agents, a.cid),
-    }));
+    assignee_options.extend(
+        idle_members(&state.agents, Some(project.id.as_str()))
+            .into_iter()
+            .map(|a| Pick {
+                key: a.cid.to_string(),
+                label: agent_name(&state.agents, a.cid),
+            }),
+    );
     let assignee = pick_list(
         assignee_options,
         Some(d.assignee.clone()),
@@ -1393,6 +1529,7 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         (!d.posting).then_some(Msg::Submit),
     );
     let body = column![
+        section("Project", project_pick.into()),
         section("Title", title.into()),
         section("Details", details.into()),
         section("Acceptance", acceptance.into()),
@@ -1430,7 +1567,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     };
 
     let open = t.state == "open";
-    let assign_options: Vec<Pick> = idle_workers(&state.agents)
+    let assign_options: Vec<Pick> = idle_members(&state.agents, t.project.as_deref())
         .into_iter()
         .map(|a| Pick {
             key: a.cid.to_string(),
@@ -1457,12 +1594,40 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
     .spacing(8);
-    if let Some(project) = t.project.as_deref() {
-        // The project's flow on the Work screen, where this task stands among the others.
-        facts = facts.push(kv(
-            "Project",
-            ui::link(project, Msg::Go(Id::WorkOn(project.to_string())), true),
-        ));
+    match t.project.as_deref() {
+        // The project's page, and its flow on the Work screen, where this task stands among the others.
+        Some(project) => {
+            facts = facts.push(kv(
+                "Project",
+                row![
+                    ui::text_link(
+                        &scope::title_in(&state.projects, project),
+                        Msg::Go(Id::Project(project.to_string())),
+                    ),
+                    ui::faint("·"),
+                    ui::text_link("its work", Msg::Go(Id::WorkOn(project.to_string()))),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into(),
+            ));
+        }
+        // A task from before projects does not run until it moves into one.
+        None => {
+            let mut outside = column![ui::faint(
+                "Outside projects: it does not run until it moves into one"
+            )]
+            .spacing(6);
+            let into = taking_tasks(&state.projects);
+            if !into.is_empty() {
+                outside = outside.push(
+                    pick_list(into, None::<scope::Pick>, Msg::Move)
+                        .placeholder("Move into a project…")
+                        .width(Length::Fill),
+                );
+            }
+            facts = facts.push(kv("Project", outside.into()));
+        }
     }
     if !t.after.is_empty() {
         facts = facts.push(kv(

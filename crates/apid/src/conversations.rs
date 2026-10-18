@@ -85,11 +85,12 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    /// The owner's messages still waiting for an answer, by work item.
+    /// The messages still waiting for the orchestrator's answer, by work item: the owner's, and the plaza's notices
+    /// (a project started, a task ended), which it answers in the conversation too.
     pub fn pending(&self) -> Vec<u64> {
         self.messages
             .iter()
-            .filter(|m| m.from == OWNER && m.work != 0)
+            .filter(|m| (m.from == OWNER || m.from == PLAZA) && m.work != 0)
             .map(|m| m.work)
             .filter(|work| {
                 !self
@@ -376,6 +377,8 @@ fn queue(
         if !c.works.contains(&work) {
             c.works.push(work);
         }
+        // The message now names its work item: the conversation changed, so a view of it says when.
+        c.updated_ms = c.updated_ms.max(apz_plaza::now_ms());
         Ok(())
     })
 }
@@ -703,6 +706,27 @@ mod tests {
             .unwrap();
         assert_eq!(answered.pending(), Vec::<u64>::new());
         assert_eq!(answered.updated_ms, 30);
+        // A plaza notice the orchestrator is told of waits for its answer as the owner's messages do.
+        let noticed = conversations
+            .update("conv-1", |c| {
+                c.push(Message {
+                    from: PLAZA.into(),
+                    text: "You started project pr1".into(),
+                    at_ms: 31,
+                    work: 42,
+                    status: None,
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(noticed.pending(), [42]);
+        let told = conversations
+            .update("conv-1", |c| {
+                c.push(answer_to(42, "On it."));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(told.pending(), Vec::<u64>::new());
         // The other conversation is untouched, and the newest is listed first.
         assert_eq!(conversations.get("conv-2").unwrap().messages.len(), 1);
         let ids: Vec<String> = conversations.list().into_iter().map(|c| c.id).collect();

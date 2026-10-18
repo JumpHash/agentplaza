@@ -6,7 +6,7 @@
 import convCss from '../styles/ide-conversation.css';
 import { api, type Delta, type OwnerConversation, type OwnerConversationSummary, type OwnerMessage, type ProjectDraft } from '../api';
 import { afterText, budgetText, settingsLine, startBlock, streamed, teamLine } from '../ide/conversation-model';
-import { consoleOrigin, openConversation } from '../ide/open';
+import { consoleOrigin } from '../ide/open';
 import { hrefIn } from '../router';
 import { roleLabel } from '../roles';
 import { projectTitle, refreshProjects } from '../scope';
@@ -317,11 +317,4 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     document.removeEventListener('keydown', onKey);
     root.classList.remove('cv-host');
   };
-}
-
-/** Opens the newest conversation, or the dialog to start one when there is none. */
-export async function openLatestConversation(): Promise<void> {
-  const list = await api.ownerConversations().catch(() => []);
-  if (list[0]) openConversation(list[0].id);
-  else openNewProject();
 }
