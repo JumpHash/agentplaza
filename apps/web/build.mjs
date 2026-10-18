@@ -81,6 +81,20 @@ if (existsSync(join(repoRoot, 'crates/apz-ide-web/Cargo.toml'))) {
   console.log('ide: crates/apz-ide-web is not there yet, skipped');
 }
 
+// The task graph's layout (crates/apz-graph-web), packed the same way for the Work screen, which loads it on first
+// use. Only its name is defined here.
+let graphJsName = null;
+let graphWasmName = null;
+let graphSizes = null;
+if (existsSync(join(repoRoot, 'crates/apz-graph-web/Cargo.toml'))) {
+  const graph = packWeb('web-graph');
+  graphJsName = graph.js;
+  graphWasmName = graph.wasm;
+  graphSizes = { bytes: graph.bytes, gzip: graph.gzip, brotli: graph.brotli, wasmOpt: graph.wasm_opt };
+} else {
+  console.log('graph: crates/apz-graph-web is not there yet, skipped');
+}
+
 // The IDE screen (views/ide.ts) is loaded on first visit, with CodeMirror: esbuild splits it into a chunk beside main
 // (`splitting`, esm). Its stylesheet is not in the start CSS either: this plugin makes `styles/ide.css` a string the view
 // inserts when it first opens. The IDE terminal (views/ide-terminal.ts) is in that chunk too, so its stylesheet and
@@ -114,6 +128,7 @@ const result = await esbuild.build({
     __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
     __APZ_ENGINE_WASM__: JSON.stringify(engineWasmName),
     __APZ_IDE_JS__: JSON.stringify(ideJsName),
+    __APZ_GRAPH_JS__: JSON.stringify(graphJsName),
   },
   entryNames: '[name]-[hash]',
   metafile: true,
@@ -191,4 +206,8 @@ if (engineSizes) {
 if (ideSizes) {
   const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[ideSizes.wasmOpt];
   console.log(`dist/${ideWasmName}  ${kb(ideSizes.bytes)}  br ${kb(ideSizes.brotli)}  gzip -9 ${kb(ideSizes.gzip)}  (${opt})`);
+}
+if (graphSizes) {
+  const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[graphSizes.wasmOpt];
+  console.log(`dist/${graphWasmName}  ${kb(graphSizes.bytes)}  br ${kb(graphSizes.brotli)}  gzip -9 ${kb(graphSizes.gzip)}  (${opt})`);
 }

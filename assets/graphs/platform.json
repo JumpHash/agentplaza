@@ -1,0 +1,550 @@
+{
+  "about": "A wider plan: a design, three builds and their tests side by side, an integration after the tests, docs after the design, and a release after the integration and the docs (a long skip).",
+  "graph": {
+    "edges": [
+      [
+        "design",
+        "api"
+      ],
+      [
+        "design",
+        "web"
+      ],
+      [
+        "design",
+        "cli"
+      ],
+      [
+        "api",
+        "api-test"
+      ],
+      [
+        "web",
+        "web-test"
+      ],
+      [
+        "cli",
+        "cli-test"
+      ],
+      [
+        "api-test",
+        "integrate"
+      ],
+      [
+        "web-test",
+        "integrate"
+      ],
+      [
+        "cli-test",
+        "integrate"
+      ],
+      [
+        "design",
+        "docs"
+      ],
+      [
+        "integrate",
+        "release"
+      ],
+      [
+        "docs",
+        "release"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Design the platform",
+        "id": "design",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Build the API",
+        "id": "api",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Build the web app",
+        "id": "web",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Build the CLI",
+        "id": "cli",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Test the API",
+        "id": "api-test",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Test the web app",
+        "id": "web-test",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Test the CLI",
+        "id": "cli-test",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Integrate and run end to end",
+        "id": "integrate",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Write the docs",
+        "id": "docs",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Release",
+        "id": "release",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "design",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 201.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "api",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 24.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "web",
+        "row": 1,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 142.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "cli",
+        "row": 2,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 260.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "docs",
+        "row": 3,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 378.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "api-test",
+        "row": 0,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 83.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "web-test",
+        "row": 1,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 201.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "cli-test",
+        "row": 2,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 319.0
+      },
+      {
+        "column": 3,
+        "height": 104.0,
+        "id": "integrate",
+        "row": 0,
+        "width": 232.0,
+        "x": 858.0,
+        "y": 201.0
+      },
+      {
+        "column": 4,
+        "height": 104.0,
+        "id": "release",
+        "row": 0,
+        "width": 232.0,
+        "x": 1136.0,
+        "y": 201.0
+      }
+    ],
+    "columns": [
+      [
+        "design"
+      ],
+      [
+        "api",
+        "web",
+        "cli",
+        "docs"
+      ],
+      [
+        "api-test",
+        "web-test",
+        "cli-test"
+      ],
+      [
+        "integrate"
+      ],
+      [
+        "release"
+      ]
+    ],
+    "height": 506.0,
+    "routes": [
+      {
+        "from": "design",
+        "points": [
+          [
+            256.0,
+            253.0
+          ],
+          [
+            279.0,
+            253.0
+          ],
+          [
+            279.0,
+            76.0
+          ],
+          [
+            302.0,
+            76.0
+          ]
+        ],
+        "to": "api"
+      },
+      {
+        "from": "design",
+        "points": [
+          [
+            256.0,
+            253.0
+          ],
+          [
+            279.0,
+            253.0
+          ],
+          [
+            279.0,
+            194.0
+          ],
+          [
+            302.0,
+            194.0
+          ]
+        ],
+        "to": "web"
+      },
+      {
+        "from": "design",
+        "points": [
+          [
+            256.0,
+            253.0
+          ],
+          [
+            279.0,
+            253.0
+          ],
+          [
+            279.0,
+            312.0
+          ],
+          [
+            302.0,
+            312.0
+          ]
+        ],
+        "to": "cli"
+      },
+      {
+        "from": "api",
+        "points": [
+          [
+            534.0,
+            76.0
+          ],
+          [
+            557.0,
+            76.0
+          ],
+          [
+            557.0,
+            135.0
+          ],
+          [
+            580.0,
+            135.0
+          ]
+        ],
+        "to": "api-test"
+      },
+      {
+        "from": "web",
+        "points": [
+          [
+            534.0,
+            194.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            557.0,
+            253.0
+          ],
+          [
+            580.0,
+            253.0
+          ]
+        ],
+        "to": "web-test"
+      },
+      {
+        "from": "cli",
+        "points": [
+          [
+            534.0,
+            312.0
+          ],
+          [
+            557.0,
+            312.0
+          ],
+          [
+            557.0,
+            371.0
+          ],
+          [
+            580.0,
+            371.0
+          ]
+        ],
+        "to": "cli-test"
+      },
+      {
+        "from": "api-test",
+        "points": [
+          [
+            812.0,
+            135.0
+          ],
+          [
+            835.0,
+            135.0
+          ],
+          [
+            835.0,
+            253.0
+          ],
+          [
+            858.0,
+            253.0
+          ]
+        ],
+        "to": "integrate"
+      },
+      {
+        "from": "web-test",
+        "points": [
+          [
+            812.0,
+            253.0
+          ],
+          [
+            858.0,
+            253.0
+          ]
+        ],
+        "to": "integrate"
+      },
+      {
+        "from": "cli-test",
+        "points": [
+          [
+            812.0,
+            371.0
+          ],
+          [
+            835.0,
+            371.0
+          ],
+          [
+            835.0,
+            253.0
+          ],
+          [
+            858.0,
+            253.0
+          ]
+        ],
+        "to": "integrate"
+      },
+      {
+        "from": "design",
+        "points": [
+          [
+            256.0,
+            253.0
+          ],
+          [
+            279.0,
+            253.0
+          ],
+          [
+            279.0,
+            430.0
+          ],
+          [
+            302.0,
+            430.0
+          ]
+        ],
+        "to": "docs"
+      },
+      {
+        "from": "integrate",
+        "points": [
+          [
+            1090.0,
+            253.0
+          ],
+          [
+            1136.0,
+            253.0
+          ]
+        ],
+        "to": "release"
+      },
+      {
+        "from": "docs",
+        "points": [
+          [
+            534.0,
+            430.0
+          ],
+          [
+            1113.0,
+            430.0
+          ],
+          [
+            1113.0,
+            253.0
+          ],
+          [
+            1136.0,
+            253.0
+          ]
+        ],
+        "to": "release"
+      }
+    ],
+    "width": 1392.0
+  }
+}

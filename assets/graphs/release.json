@@ -1,0 +1,304 @@
+{
+  "about": "The examples' release plan, as the read model gives it: two fixes side by side, notes after the first, a review after the second, QA after the second fix and its review, and the release after the notes and QA. t12 -> t15 and t13 -> t16 skip a column.",
+  "graph": {
+    "edges": [
+      [
+        "t11",
+        "t13"
+      ],
+      [
+        "t12",
+        "t14"
+      ],
+      [
+        "t12",
+        "t15"
+      ],
+      [
+        "t14",
+        "t15"
+      ],
+      [
+        "t13",
+        "t16"
+      ],
+      [
+        "t15",
+        "t16"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Patch the flaky scheduler test",
+        "id": "t11",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "builder",
+        "state": "done",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Land the sanction fix",
+        "id": "t12",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "builder",
+        "state": "claimed",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Write the release notes",
+        "id": "t13",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "release",
+        "state": "claimed",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Security review of the sanction fix",
+        "id": "t14",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "security-reviewer",
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "QA pass on staging",
+        "id": "t15",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "qa",
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Publish release 0.9",
+        "id": "t16",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "release",
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t11",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 24.0
+      },
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t12",
+        "row": 1,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 142.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t13",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 24.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t14",
+        "row": 1,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 142.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "t15",
+        "row": 0,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 83.0
+      },
+      {
+        "column": 3,
+        "height": 104.0,
+        "id": "t16",
+        "row": 0,
+        "width": 232.0,
+        "x": 858.0,
+        "y": 83.0
+      }
+    ],
+    "columns": [
+      [
+        "t11",
+        "t12"
+      ],
+      [
+        "t13",
+        "t14"
+      ],
+      [
+        "t15"
+      ],
+      [
+        "t16"
+      ]
+    ],
+    "height": 270.0,
+    "routes": [
+      {
+        "from": "t11",
+        "points": [
+          [
+            256.0,
+            76.0
+          ],
+          [
+            302.0,
+            76.0
+          ]
+        ],
+        "to": "t13"
+      },
+      {
+        "from": "t12",
+        "points": [
+          [
+            256.0,
+            194.0
+          ],
+          [
+            302.0,
+            194.0
+          ]
+        ],
+        "to": "t14"
+      },
+      {
+        "from": "t12",
+        "points": [
+          [
+            256.0,
+            194.0
+          ],
+          [
+            279.0,
+            194.0
+          ],
+          [
+            279.0,
+            253.0
+          ],
+          [
+            557.0,
+            253.0
+          ],
+          [
+            557.0,
+            135.0
+          ],
+          [
+            580.0,
+            135.0
+          ]
+        ],
+        "to": "t15"
+      },
+      {
+        "from": "t14",
+        "points": [
+          [
+            534.0,
+            194.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            557.0,
+            135.0
+          ],
+          [
+            580.0,
+            135.0
+          ]
+        ],
+        "to": "t15"
+      },
+      {
+        "from": "t13",
+        "points": [
+          [
+            534.0,
+            76.0
+          ],
+          [
+            835.0,
+            76.0
+          ],
+          [
+            835.0,
+            135.0
+          ],
+          [
+            858.0,
+            135.0
+          ]
+        ],
+        "to": "t16"
+      },
+      {
+        "from": "t15",
+        "points": [
+          [
+            812.0,
+            135.0
+          ],
+          [
+            858.0,
+            135.0
+          ]
+        ],
+        "to": "t16"
+      }
+    ],
+    "width": 1114.0
+  }
+}

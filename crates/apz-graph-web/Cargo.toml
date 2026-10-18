@@ -1,0 +1,24 @@
+[package]
+name = "apz-graph-web"
+description = "The task graph layout for the browser: a wasm-bindgen crate of JSON-in, JSON-out bindings over apz-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "apz_graph_web"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+apz-graph = { path = "../apz-graph" }
+serde_json.workspace = true
+
+# The browser only: the binding exists on the wasm target alone (see src/lib.rs). Native tests run the JSON layer in model.rs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The same wasm-bindgen as apz-engine-web, apz-ide-web and apz-pack (Cargo.lock pins it).
+wasm-bindgen = "=0.2.129"
+
+[lints]
+workspace = true

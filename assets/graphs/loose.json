@@ -1,0 +1,99 @@
+{
+  "about": "Links the layout cannot draw (to an unknown task, a task after itself) are left out, so these tasks stand in one column.",
+  "graph": {
+    "edges": [
+      [
+        "t1",
+        "nope"
+      ],
+      [
+        "t2",
+        "t2"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "one",
+        "id": "t1",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "two",
+        "id": "t2",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "three",
+        "id": "t3",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t1",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 24.0
+      },
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t2",
+        "row": 1,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 142.0
+      },
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t3",
+        "row": 2,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 260.0
+      }
+    ],
+    "columns": [
+      [
+        "t1",
+        "t2",
+        "t3"
+      ]
+    ],
+    "height": 388.0,
+    "routes": [],
+    "width": 280.0
+  }
+}
