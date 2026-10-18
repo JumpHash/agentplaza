@@ -155,7 +155,13 @@ impl Ctx {
         if let Some(a) = self.env("as", "WEFT_AS") {
             headers.push((crate::wire::CALLER.to_string(), a));
         }
-        Client::new(&self.hub_url()?, self.env("bearer", "WEFT_BEARER"), headers)
+        let mut c = Client::new(&self.hub_url()?, self.env("bearer", "WEFT_BEARER"), headers)?;
+        // A hub with its own certificate: the SHA-256 of its DER, in hex (`--pin`, `WEFT_PIN`).
+        if let Some(pin) = self.env("pin", "WEFT_PIN") {
+            let bytes = crate::hash::unhex(pin.trim()).map_err(|_| "the pin is not hex")?;
+            c.target.pin = Some(bytes.try_into().map_err(|_| "the pin is a SHA-256 (64 hex digits)")?);
+        }
+        Ok(c)
     }
 
     pub fn key(&self) -> Result<Option<KeyPair>, String> {

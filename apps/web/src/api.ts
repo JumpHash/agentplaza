@@ -12,7 +12,8 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** One JSON request to the hub; the screens' own API modules (api-weft.ts, api-review.ts) call through it. */
+export async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
@@ -35,7 +36,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
  * A request whose answer is not JSON (a picture, a file's bytes) or whose body is raw bytes. Errors are thrown as
  * `call` throws them, so the callers see the same `ApiError`.
  */
-async function raw(method: string, path: string, body?: BodyInit, contentType?: string): Promise<Response> {
+export async function raw(method: string, path: string, body?: BodyInit, contentType?: string): Promise<Response> {
   const res = await fetch(path, { method, headers: contentType ? { 'content-type': contentType } : {}, body });
   if (!res.ok) {
     if (res.status === 401) window.dispatchEvent(new CustomEvent('apz-auth-required'));
