@@ -981,12 +981,8 @@ fn host_call(
                     (to.cid, from.cid)
                 };
                 let origin = Origin {
-                    task: None,
-                    motion: None,
                     from_cid: Some(from.cid),
-                    owner: false,
-                    mcp: false,
-                    acp: false,
+                    ..Origin::default()
                 };
                 let _ = app.work.enqueue(
                     app,
@@ -1379,11 +1375,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let origin = Origin {
         task: Some(task.id().to_string()),
-        motion: None,
-        from_cid: None,
-        owner: false,
-        mcp: false,
-        acp: false,
+        ..Origin::default()
     };
     let _ = app.work.enqueue(
         app,

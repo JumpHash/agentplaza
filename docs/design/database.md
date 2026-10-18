@@ -106,6 +106,7 @@ registered `.route` or match-arm path (the list of 239 paths was taken from `cra
 | 37 | transcript (table) | `transcript.rs` `KEEP=5_000` in memory; table `transcript(cid, seq, work, kind, at_ms, data)` | per record | every agent record | `/v1/agents/{cid}/transcript` |
 | 38 | infraction (table) | `infraction(id, cid, law, at_ms, tool, detail)` | per infraction | per violation | `/v1/infractions`, `/v1/agents/{cid}/infractions` |
 | 39 | members | `BTreeMap<cid, Membership{project, since_ms}>` (`membership.rs`); an agent with no entry is on the bench; `members.json` without a database | one per agent on a project | join, leave, a project archived or delivered | `/v1/projects/{id}/members`, `/{id}/members/{cid}`, `/{id}/suggested-members`, `/v1/agents?project=` |
+| 40 | conversations | `Saved{next, items: Vec<Conversation{id, title, cid, messages: Vec<Message{from, text, at_ms, work, status}>, works, created_ms, updated_ms, archived, project}>}` (`conversations.rs`); `KEEP=500`, `MAX_MESSAGES=1000`; `conversations.json` without a database | per conversation, messages embedded | each message and answer | `/v1/owner/conversations`, `/{id}`, `/{id}/messages`, `/{id}/transcript` |
 
 Non-component state that must move too: `hub_auth.rs` sessions (`SignIn`, `:178`), `git-users.json`
 (`git.rs:56`), approvals `permissions.json` (`approvals.rs:109`), the foundry `state.json`, HF

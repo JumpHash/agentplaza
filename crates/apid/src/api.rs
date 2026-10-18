@@ -100,6 +100,7 @@ pub fn router() -> Router<App> {
     let router = crate::toolbox::routes(router);
     let router = crate::projects::routes(router);
     let router = crate::membership::routes(router);
+    let router = crate::conversations::routes(router);
     let router = crate::harness_control::routes(router);
     let router = crate::git::routes(router);
     let router = crate::unfurl::routes(router);

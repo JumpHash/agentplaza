@@ -118,6 +118,25 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// The agent's entries on `thread` with `seq > after`, oldest first, at most `limit`: those of the work items
+    /// whose `work_start` names the thread (a conversation's or an editor session's turns, without the others').
+    pub fn on_thread(&self, cid: u64, thread: &str, after: u64, limit: usize) -> Vec<Entry> {
+        let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(log) = agents.get(&cid) else {
+            return Vec::new();
+        };
+        let works: std::collections::HashSet<u64> = log
+            .iter()
+            .filter(|e| e.kind == "work_start" && e.data["thread"].as_str() == Some(thread))
+            .map(|e| e.work)
+            .collect();
+        log.iter()
+            .filter(|e| e.seq > after && works.contains(&e.work))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     /// The agent's newest `n` entries, oldest first (fewer when the log is shorter).
     pub fn last(&self, cid: u64, n: usize) -> Vec<Entry> {
         let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
@@ -208,6 +227,33 @@ mod tests {
         assert_eq!(store.after(7, first, 10).len(), 1);
         assert_eq!(store.search(7, "readme", 10).len(), 1);
         assert!(store.after(9, 0, 10).is_empty());
+    }
+
+    #[test]
+    fn a_thread_keeps_its_own_work_items_turns() {
+        let (store, bus) = (Store::default(), Bus::default());
+        store.record(&bus, 9, 1, "work_start", json!({"thread": "conv-1"}));
+        store.record(&bus, 9, 2, "work_start", json!({"thread": "conv-2"}));
+        store.record(&bus, 9, 1, "model_request", json!({}));
+        store.record(&bus, 9, 2, "model_request", json!({}));
+        let last = store.record(&bus, 9, 1, "work_end", json!({"status": "done"}));
+        let first: Vec<(u64, String)> = store
+            .on_thread(9, "conv-1", 0, 10)
+            .into_iter()
+            .map(|e| (e.work, e.kind))
+            .collect();
+        assert_eq!(
+            first,
+            [
+                (1, "work_start".to_string()),
+                (1, "model_request".to_string()),
+                (1, "work_end".to_string())
+            ]
+        );
+        assert_eq!(store.on_thread(9, "conv-2", 0, 10).len(), 2);
+        assert!(store.on_thread(9, "conv-1", last, 10).is_empty());
+        assert!(store.on_thread(9, "conv-3", 0, 10).is_empty());
+        assert!(store.on_thread(4, "conv-1", 0, 10).is_empty());
     }
 
     #[test]

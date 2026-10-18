@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown conversation
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/owner/conversations/conv-999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

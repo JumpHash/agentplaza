@@ -219,13 +219,16 @@ impl Tool for MessageOrchestrator {
     }
 
     fn description(&self) -> &'static str {
-        "Sends the owner's message to the orchestrator, as a chat in the owner's thread."
+        "Sends the owner's message to the orchestrator: in one of the owner's conversations when `conversation` names it (conv-<n>; the answer is added to it), else as a chat in the owner's thread."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": { "text": { "type": "string", "minLength": 1 } },
+            "properties": {
+                "text": { "type": "string", "minLength": 1 },
+                "conversation": { "type": "string", "description": "the owner's conversation to send it in (conv-<n>)" },
+            },
             "required": ["text"],
             "additionalProperties": false,
         })
@@ -240,7 +243,12 @@ impl Tool for MessageOrchestrator {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        ctx.plaza.message_orchestrator(text_arg(args, "text")?)
+        let conversation = args
+            .get("conversation")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty());
+        ctx.plaza
+            .message_orchestrator(text_arg(args, "text")?, conversation)
     }
 
     fn summary(&self, out: &Value) -> String {

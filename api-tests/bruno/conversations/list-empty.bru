@@ -1,0 +1,23 @@
+meta {
+  name: List the owner's conversations on a hub with none
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/owner/conversations
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("there is no conversation yet", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

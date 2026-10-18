@@ -24,6 +24,7 @@ mod approvals;
 mod autoscale;
 mod connectors;
 mod control;
+mod conversations;
 mod db;
 mod decisions;
 mod deliverables;

@@ -46,6 +46,9 @@ pub struct Origin {
     /// True when the owner's message came from an editor over ACP (`/v1/acp`).
     #[serde(default)]
     pub acp: bool,
+    /// The owner's conversation with the orchestrator this message is in (`conversations`): its answer goes there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +310,7 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
         );
+        crate::conversations::work_ended(app, &item, state, summary);
         if let Some(task) = item.origin.task.as_deref() {
             // A worker's done is a claim: the task waits for a reviewer's verdict, and its
             // escrow stays held until then (see `assign_reviews`).
@@ -419,6 +423,7 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": "stopped" }),
         );
+        crate::conversations::work_ended(app, &item, "stopped", reason);
         if let Some(task) = item.origin.task.as_deref() {
             settle_task(app, task, WorkStatus::Stopped, reason);
         }
@@ -462,6 +467,7 @@ impl Queues {
                 "work",
                 &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
             );
+            crate::conversations::work_ended(app, &item, "failed", "agent went offline");
             if let Some(task) = item.origin.task.as_deref() {
                 settle_task(app, task, WorkStatus::Failed, "agent went offline");
             }

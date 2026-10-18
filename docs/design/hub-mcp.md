@@ -117,7 +117,7 @@ namespace them.
 | Tool | Input | Effect |
 |---|---|---|
 | `create_task` | `title`, `project`, `acceptance?`, `role?`, `budget?`, `after?` (task ids, at most 32) | Files a task in a project, the same as the console's New task: open for the project's agents to claim once every task in `after` is done. Every task belongs to a project whose plan is approved. |
-| `message_orchestrator` | `text` | Sends the owner's message to the orchestrator. It is recorded as coming over MCP. |
+| `message_orchestrator` | `text`, `conversation?` | Sends the owner's message to the orchestrator: in the owner's conversation `conversation` (`conv-<n>`, whose answer is added to it), else in the owner's own thread. It is recorded as coming over MCP. |
 | `tell_agent` | `cid`, `text` | Sends a note to one agent (`/v1/agents/{cid}/tell`). |
 | `post_board` | `text`, `reply_to?` | Posts, or comments, on the board as the owner. |
 | `stop_agent` | `cid`, `reason` | Stops one agent's current work; the agent stays. |

@@ -1443,6 +1443,14 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
         .query_param("limit")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(200);
+    // `thread=` keeps one thread's turns: a conversation's, an editor session's, the owner's chat.
+    if let Some(thread) = req.query_param("thread").filter(|t| !t.is_empty()) {
+        return Response::json(
+            200,
+            &app.transcripts
+                .on_thread(agent.cid, thread, after, limit.min(1000)),
+        );
+    }
     Response::json(
         200,
         &app.transcripts.after(agent.cid, after, limit.min(1000)),

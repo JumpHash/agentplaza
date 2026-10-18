@@ -223,7 +223,19 @@ impl Plaza for App {
             .collect()
     }
 
-    fn message_orchestrator(&self, text: &str) -> Result<Value, String> {
+    fn message_orchestrator(
+        &self,
+        text: &str,
+        conversation: Option<&str>,
+    ) -> Result<Value, String> {
+        if let Some(id) = conversation {
+            let said = crate::conversations::say(self, id, text, true).map_err(|(_, e)| e)?;
+            return Ok(json!({
+                "work": said.works.last().copied().unwrap_or(0),
+                "cid": said.cid,
+                "conversation": said.id,
+            }));
+        }
         crate::agents::check_chat_text(text)?;
         let cid = self
             .agents
