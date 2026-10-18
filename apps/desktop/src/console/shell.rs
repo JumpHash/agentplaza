@@ -601,6 +601,7 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
                         "Stop all",
                         "stop",
                         crate::theme::palette().crit,
+                        crate::theme::palette().sheet,
                         wrap(Msg::StopGo)
                     ),
                 ]
@@ -623,6 +624,7 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
                     "Resume",
                     "play",
                     crate::theme::palette().signal,
+                    Color::WHITE,
                     wrap(Msg::ResumeGo)
                 ),
             ]
@@ -959,6 +961,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         "Open IDE",
         "square-code",
         crate::theme::palette().signal,
+        Color::WHITE,
         wrap(Msg::OpenIde),
     ));
     let (theme_label, theme_icon) = if crate::theme::is_light() {
@@ -985,6 +988,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             "Resume",
             "play",
             crate::theme::palette().signal,
+            Color::WHITE,
             wrap(Msg::Resume),
         ));
     } else {
@@ -992,6 +996,7 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             "Stop all",
             "stop",
             crate::theme::palette().crit,
+            crate::theme::palette().sheet,
             wrap(Msg::StopAll),
         ));
     }
@@ -1055,15 +1060,21 @@ fn hollow_mark<'a, M: 'a>(tone: Color) -> Element<'a, M> {
     .into()
 }
 
-/// A header button at the web's `.btn` size: 36 px high, 14 px sides, 11.5 px mono, white on `fill` with an
-/// ink border. `ui::btn` is 29 px high, so the top bar draws its own.
-fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M) -> Element<'a, M> {
+/// A header button at the web's `.btn` size: 36 px high, 14 px sides, 11.5 px mono, `on` (label and icon) on `fill`
+/// with an ink border. `ui::btn` is 29 px high, so the top bar draws its own.
+fn top_btn<'a, M: Clone + 'a>(
+    label: &str,
+    icon_name: &str,
+    fill: Color,
+    on: Color,
+    msg: M,
+) -> Element<'a, M> {
     let inner = row![
-        ui::icon(icon_name, 14.0, Color::WHITE),
+        ui::icon(icon_name, 14.0, on),
         text(label.to_string())
             .font(ui::SANS_MEDIUM)
             .size(crate::theme::TYPE_UI)
-            .color(Color::WHITE)
+            .color(on)
     ]
     .spacing(7)
     .align_y(Alignment::Center);
@@ -1072,7 +1083,7 @@ fn top_btn<'a, M: Clone + 'a>(label: &str, icon_name: &str, fill: Color, msg: M)
         .on_press(msg)
         .style(move |_: &Theme, _: button::Status| button::Style {
             background: Some(fill.into()),
-            text_color: Color::WHITE,
+            text_color: on,
             border: Border {
                 color: crate::theme::palette().ink,
                 width: 1.0,
@@ -1158,6 +1169,7 @@ fn held_banner<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Eleme
                 "Resume",
                 "play",
                 crate::theme::palette().signal,
+                Color::WHITE,
                 wrap(Msg::Resume)
             ),
         ]

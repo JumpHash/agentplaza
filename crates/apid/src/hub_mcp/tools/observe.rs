@@ -584,6 +584,22 @@ fn keep(rows: Vec<Value>, field: &str, wanted: Option<&Value>) -> Vec<Value> {
     }
 }
 
+/// The task rows of project `wanted` (the ids in its `tasks`), when a project is given. A project
+/// that does not exist has none.
+fn in_project(plaza: &dyn Plaza, rows: Vec<Value>, wanted: Option<&Value>) -> Vec<Value> {
+    let Some(wanted) = wanted.filter(|wanted| !wanted.is_null()) else {
+        return rows;
+    };
+    let tasks = wanted
+        .as_str()
+        .and_then(|id| plaza.project(id))
+        .map(|project| project["tasks"].clone());
+    let ids = tasks.as_ref().and_then(Value::as_array);
+    rows.into_iter()
+        .filter(|row| ids.is_some_and(|ids| ids.contains(&row["id"])))
+        .collect()
+}
+
 /// A transcript entry, with a tool result cut to the cap and a preview kept.
 fn capped(mut entry: Value) -> Value {
     let kind = entry["kind"].as_str().unwrap_or_default();
@@ -838,16 +854,16 @@ impl Tool for ListTasks {
     }
 
     fn description(&self) -> &'static str {
-        "The plaza's tasks: id, title, status, assignee, project, bids and deadline. Filter by status, project or assignee; page with next_cursor."
+        "The plaza's tasks: id, goal, state, budget, role, assignee and outcome. Filter by status (the task's state), project or assignee; page with next_cursor."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "status": { "type": "string" },
-                "project": { "type": "string" },
-                "assignee": { "type": ["integer", "string"] },
+                "status": { "type": "string", "description": "a task state: open, claimed, awaiting_review, done, failed or withdrawn" },
+                "project": { "type": "string", "description": "a project id: the tasks the project lists" },
+                "assignee": { "type": ["integer", "string"], "description": "the claiming agent: its cid, or the task's assignee_id (its role, or cid:<n>)" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
                 "cursor": { "type": "string" },
             },
@@ -867,9 +883,17 @@ impl Tool for ListTasks {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let rows = keep(ctx.plaza.tasks(), "status", args.get("status"));
-        let rows = keep(rows, "project", args.get("project"));
-        let rows = keep(rows, "assignee", args.get("assignee"));
+        // A row is the ledger's task view: its status is `state`, its claimant `agent_cid` and
+        // `assignee_id`, and it names no project (a project lists its tasks' ids).
+        let rows = keep(ctx.plaza.tasks(), "state", args.get("status"));
+        let rows = in_project(ctx.plaza, rows, args.get("project"));
+        let assignee = args.get("assignee");
+        let claimant = if assignee.is_some_and(Value::is_string) {
+            "assignee_id"
+        } else {
+            "agent_cid"
+        };
+        let rows = keep(rows, claimant, assignee);
         page(rows, args, "tasks")
     }
 
@@ -894,7 +918,7 @@ impl Tool for GetTask {
     }
 
     fn description(&self) -> &'static str {
-        "One task in detail, with its transitions."
+        "One task in detail: goal, acceptance, budget, role, state, outcome, assignee, note, and when it was created and last changed."
     }
 
     fn input_schema(&self) -> Value {
@@ -924,7 +948,7 @@ impl Tool for GetTask {
         format!(
             "Task {}: {}.",
             out["id"].as_str().unwrap_or("?"),
-            out["status"].as_str().unwrap_or("status unknown")
+            out["state"].as_str().unwrap_or("status unknown")
         )
     }
 }

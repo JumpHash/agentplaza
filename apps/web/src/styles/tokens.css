@@ -58,6 +58,8 @@
   --info-ink: #2d5f8a;
   --hover: #e6eae2;
   --print: 2px 2px 0 var(--ink);
+  /* The printed offset's colour, for the offsets --print and --shadow do not cover. */
+  --shade: var(--ink);
 
   /* The component vocabulary, mapped onto the register. */
   --bg: var(--paper);
@@ -149,4 +151,5 @@
   --hover: #182036;
   --print: 2px 2px 0 #000;
   --shadow: 3px 3px 0 #000;
+  --shade: #000;
 }

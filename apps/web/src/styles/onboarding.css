@@ -25,7 +25,7 @@
   padding: 14px 16px;
   background: var(--sheet);
   border: 1px solid var(--ink);
-  box-shadow: 6px 6px 0 var(--ink);
+  box-shadow: 6px 6px 0 var(--shade);
 }
 .tour-card::before {
   content: "";

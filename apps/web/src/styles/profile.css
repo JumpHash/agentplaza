@@ -73,7 +73,7 @@
 .prof-inf-ago { white-space: nowrap; }
 .prof-inf-more {
   align-self: flex-start; font: 600 12px var(--sans); color: var(--ink); background: var(--paper);
-  border: 2px solid var(--ink); border-radius: 0; padding: 4px 10px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink);
+  border: 2px solid var(--ink); border-radius: 0; padding: 4px 10px; cursor: pointer; box-shadow: var(--print);
 }
 .prof-inf-more:hover { color: var(--signal-ink); }
 @media (max-width: 600px) {

@@ -13,7 +13,7 @@
   background: var(--surface);
   color: var(--text);
   border-left: 2px solid var(--text);
-  box-shadow: -6px 0 0 var(--text);
+  box-shadow: -6px 0 0 var(--shade);
   outline: none;
   animation: mcp-logs-in 160ms ease-out;
 }

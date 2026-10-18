@@ -734,7 +734,7 @@ fn views(app: &App) -> Vec<NodeView> {
 }
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
-/// `memory_mib` comes from /proc on Linux; elsewhere it is the text "not available on this platform".
+/// `memory_mib` comes from /proc on Linux; elsewhere it is null, which the consoles show as unknown.
 pub(crate) fn local_summary() -> Value {
     let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     let host = std::fs::read_to_string("/etc/hostname")
@@ -763,7 +763,7 @@ fn memory_mib() -> Value {
 
 #[cfg(not(target_os = "linux"))]
 fn memory_mib() -> Value {
-    Value::from("not available on this platform")
+    Value::Null
 }
 
 #[derive(Default, Deserialize)]
@@ -1335,6 +1335,12 @@ mod tests {
         let mut revoked = fresh.clone();
         revoked.revoked = true;
         assert!(!view(revoked, &[], NOW).online);
+    }
+
+    #[test]
+    fn the_hub_reports_its_memory_in_mib_or_as_unknown_never_as_text() {
+        let memory = &local_summary()["memory_mib"];
+        assert!(memory.is_u64() || memory.is_null(), "{memory}");
     }
 
     /// End to end with real crypto: token → redeem → node. Needs apz-trust's `JoinToken` (T1),
