@@ -626,6 +626,69 @@ pub fn open_lane(
     }
 }
 
+/// The lane an editor session's agent works in (`acp/<session>`, the agent's, never queued): opened the first time
+/// on the editor's lane (`branch`, the owner's latest mirror of the editor's project), the same lane after. `None`
+/// without Weft, or before the editor has mirrored the project.
+pub fn session_lane(
+    app: &App,
+    repo: &str,
+    branch: &str,
+    session: &str,
+    cid: u64,
+) -> Option<apz_proto::wire::WorkLane> {
+    if !app.weft.running() {
+        return None;
+    }
+    let key = format!("acp/{session}");
+    let lane = |change: String| {
+        Some(apz_proto::wire::WorkLane {
+            change,
+            repo: repo.to_string(),
+        })
+    };
+    if let Some(l) = app.weft.lane_of(&key) {
+        return lane(l);
+    }
+    let enc = weft::server::percent_encode;
+    let open = app
+        .weft
+        .get(&format!(
+            "/repos/{}/log?q={}&limit=200",
+            enc(repo),
+            enc("open()")
+        ))
+        .ok()?;
+    let titled = |title: &str| {
+        open["changes"]
+            .as_array()?
+            .iter()
+            .find(|c| c["title"].as_str() == Some(title))
+            .and_then(|c| c["change"].as_str())
+            .map(str::to_string)
+    };
+    let change = match titled(&key) {
+        Some(c) => c,
+        None => {
+            let editor = titled(branch)?;
+            let r = app.weft.post("/lanes", &json!({ "repo": repo, "title": key, "author": { "kind": "agent", "cid": cid }, "stacked_on": editor }));
+            match r {
+                Ok(v) => v["change"].as_str()?.to_string(),
+                Err(e) => {
+                    eprintln!("apid: no lane for editor session {session}: {e}");
+                    return None;
+                }
+            }
+        }
+    };
+    app.weft
+        .lanes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, change.clone());
+    let _ = agent_key(app, cid);
+    lane(change)
+}
+
 /// A claimed task's work for its worker: the lane opened (or found), and the prompt told where it is.
 pub fn task_work(
     app: &App,

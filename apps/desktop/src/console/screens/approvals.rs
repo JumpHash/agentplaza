@@ -246,7 +246,7 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         .filter(|t| !t.is_empty())
         .map(String::as_str)
         .collect();
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &refs).map(Msg::Rich)
 }
 
@@ -438,7 +438,7 @@ fn in_scope(state: &State, cid: u64, scope: Option<&str>) -> bool {
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let page = page(state, &rctx, ctx.project.as_deref());
     if state.wizard.open {
         Stack::new()

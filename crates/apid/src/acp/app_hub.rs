@@ -2,10 +2,11 @@
 
 use std::sync::mpsc::Receiver;
 
-use apz_proto::wire::{Control, WorkKind};
+use apz_proto::wire::{Control, WorkKind, WorkLane};
 use serde_json::{Value, json};
 
-use super::agent::{Hub, RepoFile, RepoPull};
+use super::agent::{Hub, RepoFile, SessionChange};
+use super::store::RepoLink;
 use crate::agents::{Agent, Status};
 use crate::approvals::{Mode, State};
 use crate::events::Frame;
@@ -16,7 +17,7 @@ use crate::transcript::Entry;
 
 /// How many transcript entries one read takes from the log.
 const ENTRY_PAGE: usize = 1000;
-/// How many changed files one pull request reports.
+/// How many changed files one session change reports.
 const PULL_FILES: usize = 50;
 /// The largest text read from either side of a changed file; a bigger file is not reported.
 const PULL_TEXT: usize = 256 * 1024;
@@ -54,7 +55,13 @@ impl Hub for AppHub<'_> {
         self.app.bus.subscribe()
     }
 
-    fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String> {
+    fn chat(
+        &self,
+        cid: u64,
+        thread: &str,
+        text: &str,
+        lane: Option<WorkLane>,
+    ) -> Result<u64, String> {
         let agent = self
             .app
             .agents
@@ -67,6 +74,7 @@ impl Hub for AppHub<'_> {
         let origin = Origin {
             owner: true,
             acp: true,
+            lane,
             ..Origin::default()
         };
         Ok(self.app.work.enqueue(
@@ -282,16 +290,20 @@ impl Hub for AppHub<'_> {
         self.app.settings.get().acp_write_back
     }
 
-    fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull> {
-        // The editor's lane in Weft (`editor/<branch>`, the owner's, never landed): its latest draft against the
-        // revision it started from.
+    fn session_lane(&self, cid: u64, session: &str, repo: &RepoLink) -> Option<WorkLane> {
+        crate::weft_hub::session_lane(self.app, &repo.name, &repo.branch, session, cid)
+    }
+
+    fn session_change(&self, name: &str, head: &str) -> Option<SessionChange> {
+        // The session's lane in Weft (`acp/<session>`, the agent's, opened on the editor's lane): its latest
+        // draft against the revision that draft started from.
         let c = self.app.weft.client("owner").ok()?;
         let enc = weft::server::percent_encode;
         let open = c
             .get(&format!(
                 "/repos/{}/log?q={}&limit=200",
                 enc(name),
-                enc("author(owner) & open()")
+                enc("open()")
             ))
             .ok()?;
         let lane = open["changes"]
@@ -331,8 +343,12 @@ impl Hub for AppHub<'_> {
                 new_text,
             });
         }
-        Some(RepoPull {
-            url: format!("#/history/{name}/change/{change}"),
+        Some(SessionChange {
+            url: format!(
+                "{}/#/history/{}/change/{change}",
+                self.app.config.public_url.trim_end_matches('/'),
+                enc(name)
+            ),
             number: weft::model::parse_change(&change).ok()?,
             files,
         })

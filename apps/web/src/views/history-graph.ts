@@ -27,7 +27,9 @@ export function laneGraph(repo: string, main: WeftChangeSummary[], lanes: WeftCh
 
 function laneRow(repo: string, c: WeftChangeSummary, kind: 'lane' | 'main', name: Namer): HTMLElement {
   const tone = kind === 'main' ? 'ok' : changeStateTone(c.state);
-  const who = [c.author ? name(c.author) : '', c.at_ms ? ago(c.at_ms) : ''].filter(Boolean).join(' · ');
+  // An imported change is by its git author (`Name <email>`), shown by name.
+  const author = c.imported ? c.imported.author.replace(/\s*<[^>]*>$/, '') : c.author ? name(c.author) : '';
+  const who = [author, c.imported ? 'imported' : '', c.at_ms ? ago(c.at_ms) : ''].filter(Boolean).join(' · ');
   const chips = intentChips(c);
   return h(
     'li',

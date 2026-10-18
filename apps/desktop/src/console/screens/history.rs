@@ -97,6 +97,24 @@ pub struct ChangeRow {
     pub rounds: u64,
     pub at_ms: u64,
     pub intents: Vec<Intent>,
+    /// Set for a change imported from git: its commit and its author (`Name <email>`).
+    pub imported: Option<ImportedRow>,
+}
+
+/// Where an imported change in the log came from.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ImportedRow {
+    pub git: String,
+    pub author: String,
+}
+
+/// Where an imported change came from: its git commit and author.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Import {
+    pub git: String,
+    pub author_name: String,
 }
 
 /// One change, as `GET /v1/weft/changes/{change}` answers it.
@@ -111,6 +129,8 @@ pub struct ChangeDetail {
     pub intents: BTreeMap<String, Vec<Intent>>,
     pub revisions: Vec<Revision>,
     pub records: Vec<Record>,
+    /// Set for a change imported from git.
+    pub import: Option<Import>,
 }
 
 /// A revision of a change: a draft, a sealed round, or the landed one.
@@ -451,6 +471,15 @@ fn change_of(revision: &str) -> &str {
 
 /// The line at the top of a change's page: where it stands, and what it needs from the owner, in plain words.
 fn summary(detail: &ChangeDetail, steps: &[Step]) -> String {
+    if let Some(i) = &detail.import
+        && steps.is_empty()
+    {
+        let short: String = i.git.chars().take(7).collect();
+        return format!(
+            "Imported from git ({short}), by {}: written before Weft, so it has no sign-off.",
+            i.author_name
+        );
+    }
     let last = steps.last();
     let waiting_owner = matches!(last, Some(s) if s.stage == Stage::Gate && s.outcome == "owner");
     let sent_back = matches!(last, Some(s) if s.outcome == "rework");
@@ -464,6 +493,14 @@ fn summary(detail: &ChangeDetail, steps: &[Step]) -> String {
         _ if steps.is_empty() => "Being written.".to_string(),
         _ => format!("In review, round {}.", detail.rounds.len().max(1)),
     }
+}
+
+/// A git author's name, without the `<email>`.
+fn author_name(author: &str) -> &str {
+    author
+        .split_once(" <")
+        .map_or(author, |(name, _)| name)
+        .trim()
 }
 
 /// The intents of a change's latest round.
@@ -1037,11 +1074,12 @@ fn change_row<'a>(c: &ChangeRow) -> Element<'a, Msg> {
         .on_press(Msg::OpenChange(c.change.clone()))
         .style(theme::register_row(false))
         .width(Length::Fill);
-    let meta = ui::faint(format!(
-        "{} · {}",
-        plural(c.rounds, "round", "rounds"),
-        approvals::ago(c.at_ms as i64)
-    ));
+    // An imported change has no rounds: it says whose commit it was instead.
+    let origin = match &c.imported {
+        Some(i) => format!("imported · {}", author_name(&i.author)),
+        None => plural(c.rounds, "round", "rounds"),
+    };
+    let meta = ui::faint(format!("{origin} · {}", approvals::ago(c.at_ms as i64)));
     row![open, meta]
         .spacing(16)
         .align_y(Alignment::Center)
@@ -1363,6 +1401,27 @@ mod tests {
 
     fn record(v: Value) -> Record {
         serde_json::from_value(v).expect("a record of the hub's shape")
+    }
+
+    #[test]
+    fn an_imported_change_says_where_it_came_from_and_whose_it_was() {
+        // As the hub answers a change imported from git: no records, its commit and author kept.
+        let detail: ChangeDetail = serde_json::from_value(json!({
+            "change": "w-3", "title": "Priority queues", "state": "landed", "rounds": [], "records": [],
+            "import": { "git": "18db19d7cfc09a1947dbd25d6692408d7288ecf9", "author_name": "Ada Owner", "author_email": "ada@example.test" }
+        }))
+        .expect("a change of the hub's shape");
+        assert_eq!(
+            summary(&detail, &chain(&detail.records)),
+            "Imported from git (18db19d), by Ada Owner: written before Weft, so it has no sign-off."
+        );
+        let row: ChangeRow = serde_json::from_value(json!({
+            "change": "w-3", "title": "Priority queues", "state": "landed",
+            "imported": { "git": "18db19d", "author": "Ada Owner <ada@example.test>" }
+        }))
+        .expect("a log row of the hub's shape");
+        assert_eq!(author_name(&row.imported.unwrap().author), "Ada Owner");
+        assert_eq!(author_name("plain"), "plain");
     }
 
     #[test]

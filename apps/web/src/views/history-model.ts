@@ -363,10 +363,16 @@ export function movedConnection(connections: WeftConnection[]): WeftConnection |
 }
 
 /** A repo's one line for the owner: a moved remote first, then the rulings waiting, else that nothing waits. */
-export function repoLine(repo: Pick<WeftRepo, 'name' | 'refs' | 'connections'>, waiting: number): { text: string; needsYou: boolean } {
+export function repoLine(
+  repo: Pick<WeftRepo, 'name' | 'refs' | 'connections' | 'releases'>,
+  waiting: number,
+): { text: string; needsYou: boolean } {
   const moved = movedConnection(repo.connections);
   if (moved) return { text: `${moved.id} moved on its own. Adopt it to bring its commits in.`, needsYou: true };
   if (waiting > 0) return { text: `${plural(waiting, 'change')} waiting for your ruling.`, needsYou: true };
+  // A proposed release waits for the owner's signature; an imported one never does.
+  const unsigned = (repo.releases ?? []).filter((r) => !r.signed && !r.imported).map((r) => r.version);
+  if (unsigned.length) return { text: `${unsigned.join(', ')} ${unsigned.length === 1 ? 'waits' : 'wait'} for your signature.`, needsYou: true };
   return { text: `main is at ${headOf(repo)}. Nothing waits for you.`, needsYou: false };
 }
 

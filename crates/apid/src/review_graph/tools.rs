@@ -1,7 +1,7 @@
 //! The agents' review and Weft tools.
 //!
 //! Review (`review_*`) works on the step the calling agent was given; `recipe_propose` is the orchestrator's.
-//! Weft (`weft_*`) replaces `plaza_git`: a worker reads and describes its own lane; anyone reads their project's
+//! Weft (`weft_*`): a worker reads and describes its own lane; anyone reads their project's
 //! history within the path rules. No tool lands, releases, exports, moves a ref or undoes another's op.
 
 use serde_json::{Value, json};
@@ -156,12 +156,15 @@ fn repo_of(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     }
 }
 
-/// The lane of the task the agent is working on.
+/// The lane of the work the agent is doing: its item's own (a task's, an editor session's), else its task's.
 fn own_lane(app: &App, agent: &Agent) -> Result<String, String> {
     let item = app
         .work
         .current(agent.cid)
         .ok_or("you are not working on a task")?;
+    if let Some(lane) = item.origin.lane {
+        return Ok(lane.change);
+    }
     let task = item.origin.task.ok_or("your current work is not a task")?;
     app.weft
         .lane_of(&task)

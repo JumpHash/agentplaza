@@ -675,7 +675,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   const v2Box = input({ type: 'checkbox' });
   const boxes = { acp_enabled: acpBox, acp_write_back: writeBackBox, acp_v2: v2Box };
   let acpSaving = false;
-  // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the pull request.
+  // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the change.
   // The v2 switch is not greyed out by Editors: the engines inside the VMs speak v2 too.
   const drawAcpSwitches = (): void => {
     acpBox.disabled = acpSaving;
@@ -705,7 +705,7 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     void saveAcpFlag(
       'acp_write_back',
       writeBackBox.checked,
-      writeBackBox.checked ? 'The editor will offer to apply pull requests' : 'The editor will not offer to apply pull requests',
+      writeBackBox.checked ? "The editor will offer to apply agents' changes" : "The editor will not offer to apply agents' changes",
     ),
   );
   v2Box.addEventListener('change', () =>
@@ -805,13 +805,13 @@ export function mountHubTab(root: HTMLElement): Cleanup {
         null,
         "Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine: the editor's MCP servers and files stay local.",
       ),
-      h('label.hub-switch', null, writeBackBox, h('span', null, "Offer to apply an agent's pull request to the editor's project")),
+      h('label.hub-switch', null, writeBackBox, h('span', null, "Offer to apply an agent's change to the editor's project")),
       h(
         'p.mcp-muted',
         null,
         'With ',
         h('code', null, 'agentplaza acp --repo'),
-        ', the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.',
+        ", the agent works in a lane of its own on the editor's project, mirrored in Weft. When this is on, the editor asks you whether to apply the files it changed; the editor writes them, the agent never does.",
       ),
       h('label.hub-switch', null, v2Box, h('span', null, 'Speak the ACP v2 draft')),
       h(

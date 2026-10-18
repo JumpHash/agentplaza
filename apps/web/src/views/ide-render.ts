@@ -11,7 +11,6 @@ import { CENTRE_LABEL, paintTabs, setCrumb, type RightView } from './ide-frame';
 import { LANG_LABEL, type StatusInfo } from './ide-chrome';
 import { changesPanel, checkpointsPanel } from './ide-side';
 import { treeRows } from './ide-files';
-import { renderGit } from './ide-git';
 import { openFromChanges, openTab, renderBanners, renderTabs } from './ide-editing';
 import { baseValue, basesOf, markViewed, setBase } from './ide-data';
 import { renderTerminal } from './ide-term-host';
@@ -86,7 +85,6 @@ export function renderTop(c: IdeCtx): void {
   const active = c.state?.active ?? null;
   const t = active !== null ? c.tabsByPath.get(active) : undefined;
   c.dom.saveBtn.disabled = !(c.ws?.writable && t?.buf.dirty && !t.buf.saving);
-  renderGit(c);
 }
 
 /** The centre's editor and diff: the editor shows the active file or a note; the diff shows the changes. */

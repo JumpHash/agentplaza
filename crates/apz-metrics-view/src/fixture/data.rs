@@ -153,11 +153,11 @@ const VOLUMES: &[(&str, &str, &str, f64)] = &[
 /// (id, label, node). The stores of the hub's node are services too; their ids are `store:<label>`.
 const SERVICES: &[(&str, &str, &str)] = &[
     ("n0:apid", "apid (hub)", "n0"),
-    ("n0:forgejo", "forgejo (hub)", "n0"),
+    ("n0:weft", "weft (hub)", "n0"),
     ("n1:noded", "noded (n1)", "n1"),
     ("n2:noded", "noded (n2)", "n2"),
     ("store:garage (objects)", "garage (objects)", "n0"),
-    ("store:forgejo (git)", "forgejo (git)", "n0"),
+    ("store:weft (store)", "weft (store)", "n0"),
     ("store:postgres · plaza", "postgres · plaza", "n0"),
     (
         "store:postgres · metrics chunks",
@@ -182,7 +182,7 @@ const MB: f64 = 1_000_000.0;
 /// (id, bytes held) of each store.
 const STORES: &[(&str, f64)] = &[
     ("store:garage (objects)", 180.0 * GIB),
-    ("store:forgejo (git)", 6.0 * GIB),
+    ("store:weft (store)", 6.0 * GIB),
     ("store:postgres · plaza", 850.0 * MB),
     ("store:postgres · metrics chunks", 640.0 * MB),
     ("store:postgres · metrics 1m", 210.0 * MB),
@@ -1164,7 +1164,7 @@ fn store_bytes(id: &str) -> f64 {
 fn service_weight(id: &str) -> f64 {
     match entity_of(id, "service") {
         "n0:apid" => 1.0,
-        "n0:forgejo" => 0.6,
+        "n0:weft" => 0.6,
         _ => 0.8,
     }
 }

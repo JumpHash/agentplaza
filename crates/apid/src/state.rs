@@ -137,8 +137,6 @@ pub struct App {
     pub project_settings: crate::project_settings::Store,
     /// Loops and per-agent harness limits.
     pub harness: crate::harness_control::Store,
-    /// The plaza's git host (Forgejo) and the agents' identities on it.
-    pub forge: crate::git::Forge,
     /// Weft, the plaza's version control: `weft serve` beside the hub, and apid as its door (weft_hub.rs).
     pub weft: crate::weft_hub::Weft,
     /// The review graph's runs and recipes (review_graph), at `<state-dir>/review-graph.json`.
@@ -270,7 +268,6 @@ impl App {
                 config.state_dir.join("project-settings.json"),
             ),
             harness: crate::harness_control::Store::load(&config.state_dir),
-            forge: crate::git::Forge::load(&config.state_dir, &env),
             weft: crate::weft_hub::Weft::default(),
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),

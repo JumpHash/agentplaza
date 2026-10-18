@@ -9,7 +9,6 @@
 //! surface's: [`RichAction::route`] names the screen an action opens, and the IDE handles [`RichAction::OpenPath`].
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_rich::{AgentName, Ctx, Ref, Span};
@@ -228,54 +227,13 @@ pub fn apply(cards: &mut Cards, ev: Ev) {
     }
 }
 
-/// The plaza's git host, as the hub's overview last named it: the forge's web origin (`git_host`). None when the hub
-/// has none. The shell keeps it from each overview load, and every surface's classifier context reads it, so a plaza
-/// git link is a chip on the desktop as it is on the web.
-static PLAZA_GIT_HOST: RwLock<Option<String>> = RwLock::new(None);
-
-/// Keeps the plaza's git host from a `/v1/overview` answer.
-pub fn set_plaza_git_host(overview: &Value) {
-    if let Ok(mut slot) = PLAZA_GIT_HOST.write() {
-        *slot = git_host_of(overview);
-    }
-}
-
-/// The `git_host` of a `/v1/overview` answer, trimmed. Null, empty, or absent (an older hub) is None.
-pub fn git_host_of(overview: &Value) -> Option<String> {
-    overview
-        .get("git_host")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map(str::to_string)
-}
-
-/// The classifier's context for a surface: its project and repository, its workspace's paths (the IDE only), the
-/// roster the cards hold, the plaza's git host, and the hub's own host (its `/v1/files` and `/v1/library` links are
-/// library references).
-pub fn context(
-    cards: &Cards,
-    project: Option<&str>,
-    project_repo: Option<&str>,
-    paths: Option<&BTreeSet<String>>,
-) -> RichCtx {
-    let plaza_git_host = PLAZA_GIT_HOST.read().ok().and_then(|slot| slot.clone());
-    build_context(cards, project, project_repo, paths, plaza_git_host)
-}
-
-fn build_context(
-    cards: &Cards,
-    project: Option<&str>,
-    project_repo: Option<&str>,
-    paths: Option<&BTreeSet<String>>,
-    plaza_git_host: Option<String>,
-) -> RichCtx {
+/// The classifier's context for a surface: its project, its workspace's paths (the IDE only), the roster the cards
+/// hold, and the hub's own host (its `/v1/files` and `/v1/library` links are library references).
+pub fn context(cards: &Cards, project: Option<&str>, paths: Option<&BTreeSet<String>>) -> RichCtx {
     Ctx {
         project: project.map(str::to_string),
-        project_repo: project_repo.map(str::to_string),
         paths: paths.cloned().unwrap_or_default(),
         agents: cards.roster.clone(),
-        plaza_git_host,
         hub_host: cards.hub.clone(),
     }
 }
@@ -530,7 +488,6 @@ fn unfurls(r: &Ref) -> bool {
             | Ref::Html { .. }
             | Ref::Link { .. }
             | Ref::MentionAll
-            | Ref::PlazaGitRun { .. }
     )
 }
 
@@ -722,7 +679,7 @@ fn chip<'a, M: Clone + 'a>(
         .into()
 }
 
-/// A chip's glyph: the GitHub mark, the plaza's (the AgentPlaza mark), an agent's status dot, a task or file icon.
+/// A chip's glyph: the GitHub mark, an agent's status dot, a task or file icon.
 fn glyph<'a, M: 'a>(r: &Ref, accent: Color) -> Element<'a, M> {
     let p = theme::palette();
     match r {
@@ -734,13 +691,6 @@ fn glyph<'a, M: 'a>(r: &Ref, accent: Color) -> Element<'a, M> {
         | Ref::GithubRelease { .. }
         | Ref::GithubRun { .. }
         | Ref::Gist { .. } => ui::brand_logo("github", 12.0),
-        Ref::PlazaGitPull { .. }
-        | Ref::PlazaGitIssue { .. }
-        | Ref::PlazaGitCommit { .. }
-        | Ref::PlazaGitRepo { .. }
-        | Ref::PlazaGitFile { .. }
-        | Ref::PlazaGitRelease { .. }
-        | Ref::PlazaGitRun { .. } => ui::hive(12.0),
         Ref::Agent { .. } => container(Space::new())
             .width(Length::Fixed(8.0))
             .height(Length::Fixed(8.0))
@@ -797,10 +747,7 @@ pub fn chip_tone(r: &Ref, card: Option<&Value>) -> ChipTone {
             .unwrap_or("")
     };
     match r {
-        Ref::GithubPull { .. }
-        | Ref::PlazaGitPull { .. }
-        | Ref::GithubIssue { .. }
-        | Ref::PlazaGitIssue { .. } => match field("state") {
+        Ref::GithubPull { .. } | Ref::GithubIssue { .. } => match field("state") {
             "open" => ChipTone::Ok,
             "draft" => ChipTone::Draft,
             "merged" => ChipTone::Merged,
@@ -855,24 +802,15 @@ pub fn action_for(r: &Ref, raw: &str, ctx: &RichCtx) -> Option<RichAction> {
         Ref::Image { url } | Ref::Video { url } | Ref::Html { url } | Ref::Link { url } => {
             RichAction::OpenUrl(url.clone())
         }
-        other => RichAction::OpenUrl(web_url(other, raw, ctx)?),
+        other => RichAction::OpenUrl(web_url(other, raw)?),
     })
 }
 
-/// The web page of a GitHub or plaza git reference: the link the author wrote when it is https, else the page the
-/// reference names.
-fn web_url(r: &Ref, raw: &str, ctx: &RichCtx) -> Option<String> {
+/// The web page of a GitHub reference: the link the author wrote when it is https, else the page the reference names.
+fn web_url(r: &Ref, raw: &str) -> Option<String> {
     if let Some(url) = written_url(raw) {
         return Some(url);
     }
-    let plaza = ctx.plaza_git_host.as_deref().map(|h| {
-        let h = h.trim_end_matches('/');
-        if h.starts_with("http://") || h.starts_with("https://") {
-            h.to_string()
-        } else {
-            format!("https://{h}")
-        }
-    });
     let gh = "https://github.com";
     Some(match r {
         Ref::GithubPull {
@@ -904,38 +842,6 @@ fn web_url(r: &Ref, raw: &str, ctx: &RichCtx) -> Option<String> {
             format!("{gh}/{owner}/{repo}/{kind}/{reference}/{path}{anchor}")
         }
         Ref::Gist { id } => format!("https://gist.github.com/{id}"),
-        Ref::PlazaGitPull {
-            owner,
-            repo,
-            number,
-        } => format!("{}/{owner}/{repo}/pulls/{number}", plaza?),
-        Ref::PlazaGitIssue {
-            owner,
-            repo,
-            number,
-        } => format!("{}/{owner}/{repo}/issues/{number}", plaza?),
-        Ref::PlazaGitCommit { owner, repo, sha } => {
-            format!("{}/{owner}/{repo}/commit/{sha}", plaza?)
-        }
-        Ref::PlazaGitRepo { owner, repo } => format!("{}/{owner}/{repo}", plaza?),
-        Ref::PlazaGitRelease { owner, repo, tag } => {
-            format!("{}/{owner}/{repo}/releases/tag/{tag}", plaza?)
-        }
-        Ref::PlazaGitFile {
-            owner,
-            repo,
-            reference,
-            path,
-            line,
-            ..
-        } => {
-            let anchor = line.map(|n| format!("#L{n}")).unwrap_or_default();
-            format!(
-                "{}/{owner}/{repo}/src/branch/{reference}/{path}{anchor}",
-                plaza?
-            )
-        }
-        Ref::PlazaGitRun { .. } => return None,
         _ => return None,
     })
 }
@@ -986,13 +892,13 @@ fn reason(answer: &Value) -> &'static str {
 
 fn card_body<'a, M: 'a>(r: &Ref, card: &Value) -> Element<'a, M> {
     let items = match r {
-        Ref::GithubPull { .. } | Ref::PlazaGitPull { .. } => pull_lines(card),
-        Ref::GithubIssue { .. } | Ref::PlazaGitIssue { .. } => issue_lines(card),
-        Ref::GithubCommit { .. } | Ref::PlazaGitCommit { .. } => commit_lines(card),
-        Ref::GithubRepo { .. } | Ref::PlazaGitRepo { .. } => repo_lines(card),
-        Ref::GithubFile { .. } | Ref::PlazaGitFile { .. } => file_lines(card),
-        Ref::GithubRelease { .. } | Ref::PlazaGitRelease { .. } => release_lines(card),
-        Ref::GithubRun { .. } | Ref::PlazaGitRun { .. } => run_lines(card),
+        Ref::GithubPull { .. } => pull_lines(card),
+        Ref::GithubIssue { .. } => issue_lines(card),
+        Ref::GithubCommit { .. } => commit_lines(card),
+        Ref::GithubRepo { .. } => repo_lines(card),
+        Ref::GithubFile { .. } => file_lines(card),
+        Ref::GithubRelease { .. } => release_lines(card),
+        Ref::GithubRun { .. } => run_lines(card),
         Ref::Gist { .. } => gist_lines(card),
         Ref::Agent { .. } => agent_lines(card),
         Ref::Task { .. } => task_lines(card),
@@ -1388,7 +1294,6 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn pull(number: u64) -> Ref {
         Ref::GithubPull {
@@ -1523,80 +1428,6 @@ mod tests {
             Some(RichAction::OpenUrl(
                 "https://github.com/o/r/blob/main/a.rs#L10".into()
             ))
-        );
-        let plaza = Ref::PlazaGitPull {
-            owner: "o".into(),
-            repo: "r".into(),
-            number: 3,
-        };
-        assert_eq!(
-            action_for(&plaza, "PR #3", &c),
-            None,
-            "no plaza host is known, so no page"
-        );
-        let with_host = Ctx {
-            plaza_git_host: Some("git.example.test".into()),
-            ..Ctx::default()
-        };
-        assert_eq!(
-            action_for(&plaza, "PR #3", &with_host),
-            Some(RichAction::OpenUrl(
-                "https://git.example.test/o/r/pulls/3".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn the_plaza_git_host_is_the_overviews_git_host() {
-        assert_eq!(
-            git_host_of(&json!({"git_host": "https://git.example.test"})),
-            Some("https://git.example.test".into())
-        );
-        assert_eq!(
-            git_host_of(&json!({"git_host": " https://git.example.test/ "})),
-            Some("https://git.example.test/".into()),
-            "the value is trimmed"
-        );
-        assert_eq!(git_host_of(&json!({"git_host": null})), None);
-        assert_eq!(git_host_of(&json!({"git_host": ""})), None);
-        assert_eq!(
-            git_host_of(&json!({"agents": {}})),
-            None,
-            "an older hub's overview has no git_host"
-        );
-    }
-
-    #[test]
-    fn a_plaza_link_is_a_plaza_reference_once_the_context_knows_the_host() {
-        let cards = Cards::default();
-        let url = "https://git.example.test/o/r/pulls/3";
-        let known = build_context(
-            &cards,
-            None,
-            Some("o/r"),
-            None,
-            Some("https://git.example.test".into()),
-        );
-        assert_eq!(
-            known.plaza_git_host.as_deref(),
-            Some("https://git.example.test")
-        );
-        assert_eq!(
-            apz_rich::classify_url(url, &known),
-            Some(Ref::PlazaGitPull {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 3,
-            }),
-            "the link is a chip"
-        );
-        let unknown = build_context(&cards, None, Some("o/r"), None, None);
-        assert!(
-            matches!(
-                apz_rich::classify_url(url, &unknown),
-                Some(Ref::Link { .. })
-            ),
-            "with no host it stays an ordinary link"
         );
     }
 

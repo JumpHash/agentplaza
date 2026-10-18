@@ -2,42 +2,41 @@
 //!
 //! - `agent:<cid>`: the owner's view of an agent's `/workspace`, reached through the agent's own `ide_*` tools
 //!   (`crates/agent-harness/src/ide.rs`). The harness takes the checkpoints and checks the real filesystem.
-//! - `repo:<name>@<ref>`: a project's repo on the plaza's git host, at one branch. Reads come from the Forgejo
-//!   API, and an edit is a commit on that branch through the contents API, as the admin (the token the Git
-//!   screen uses). A checkpoint is a commit. Only project repos are offered; the platform's own source repo
-//!   never is (`PLATFORM_REPOS`).
+//! - `repo:<name>@<ref>`: a project's repo in Weft, on `main`. Reads come from main's head, and an edit is the
+//!   owner's edit, which lands at once (signed for the owner by the hub). A checkpoint is a landing. Only project
+//!   repos are offered; the platform's own source repo never is (`PLATFORM_REPOS`).
 //! - `station:<id>`: an online workstation's work folder (docs/design/workstations.md section 3). Its files, runs
 //!   and terminals go to the workstation's daemon over its live link, which scopes them to its work folder. A
 //!   workstation has no checkpoints, so it has no changes, no restore and no branch. STOP ALL refuses every
 //!   operation on it.
 //!
 //! Every route checks its paths with `apz_ide::path` before anything is sent. This module logs each owner
-//! action (a write, a branch, a pull request, a restore, a run and its stop) to the append-only audit (the
+//! action (a write, a restore, a run and its stop) to the append-only audit (the
 //! `ide_audit` table in Postgres; `<state-dir>/ide-audit.jsonl` with no database, see `db`) and publishes an
 //! `ide` bus event. Owner actions do not pass the laws classifier. The owner is the principal, so no write
 //! needs an approval.
 //!
 //! Routes (owner-only: the hub's gate in `hub_auth` covers every `/v1` path). The agent kind answers through
-//! the agent's tools, the repo kind through Forgejo:
+//! the agent's tools, the repo kind through Weft:
 //!
 //! | route | agent | repo | station |
 //! |---|---|---|---|
-//! | `GET /v1/ide/workspaces` | agents with a VM | project repos at their default branch | online workstations |
-//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | contents API, 500 per page | `files list` |
-//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | contents API, text only, 1 MiB | `files read` (chunks) |
-//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | commit `owner edit: <path>` on the branch | `files write`, audited in both logs |
-//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>`: its file list, then each file at both refs, diffed here | 501 (no checkpoints) |
-//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | the branch's recent commits | `{checkpoints: [], reason}` |
-//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (use git revert) | 501 |
+//! | `GET /v1/ide/workspaces` | agents with a VM | project repos, on main | online workstations |
+//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | main's files, 500 per page | `files list` |
+//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | main's file, text only, 1 MiB | `files read` (chunks) |
+//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | an owner edit that lands at once | `files write`, audited in both logs |
+//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | main against the landing before it (or `base`, a revision or change): Weft's diff | 501 (no checkpoints) |
+//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | what landed, newest first | `{checkpoints: [], reason}` |
+//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (revert the change in History) | 501 |
 //! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 | `files search` |
 //! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 501 | `run start/poll/stop` |
-//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | opens a pull request from the branch (201, its row) | 400 |
-//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | a new branch from the ref (201, `{id}`) | 400 |
+//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | 410 (gone with the git host) | 400 |
+//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | 410 | 400 |
 //! | `GET /v1/ide/audit?workspace=&limit=` | (audit log) | (audit log) | (audit log) |
 //!
 //! A tell that fails maps to: 404 unknown agent, 409 no session, 504 no answer in time, 403 a tool the
 //! agent's role does not grant, 400 a refusal (`ok: false`) with the agent's text, and 502 anything else. A
-//! forge answer keeps its status and message. A station answer maps to: 409 STOP ALL, not linked or draining,
+//! Weft answer keeps its status and message. A station answer maps to: 409 STOP ALL, not linked or draining,
 //! 504 no answer in time, 400 a refusal. A write that finds the file moved answers 409
 //! `{error: "conflict", current_hash}` in every kind.
 
@@ -90,8 +89,7 @@ const NO_CHECKPOINTS: &str =
 type Reply = Result<Value, Response>;
 
 /// What the routes need from the world: the agents' tool calls, the database (the audit lives there), the bus,
-/// the git host and the projects' repos. The live hub implements it with the fleet, the app and the forge; the
-/// tests with a fake.
+/// Weft and the projects' repos. The live hub implements it with the fleet and the app; the tests with a fake.
 pub trait Host {
     /// One tool call on agent `cid`: the gateway's status and body (vsockd's `/tell` answer).
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
@@ -116,7 +114,7 @@ pub trait Host {
     fn frozen(&self) -> bool;
 }
 
-/// The live hub: tells go through the fleet, and the database, the bus, the forge and the projects are the app's.
+/// The live hub: tells go through the fleet, and the database, the bus, Weft and the projects are the app's.
 struct Live<'a>(&'a App);
 
 impl Host for Live<'_> {
@@ -169,15 +167,7 @@ impl Host for Live<'_> {
             .projects
             .list()
             .into_iter()
-            .filter_map(|project| {
-                let full = project.repo?;
-                // A repo recorded with the old git host's organisation keeps its name.
-                Some(
-                    full.strip_prefix("agentplaza/")
-                        .unwrap_or(&full)
-                        .to_string(),
-                )
-            })
+            .filter_map(|project| project.repo)
             .collect()
     }
 
@@ -473,7 +463,7 @@ fn record(host: &dyn Host, row: Value, data: Value) -> Result<(), Response> {
     Ok(())
 }
 
-/// A path, cleaned by `check`. A refused path is 400 and nothing is sent to the agent or the forge.
+/// A path, cleaned by `check`. A refused path is 400 and nothing is sent to the agent or Weft.
 fn checked(
     raw: Option<&str>,
     check: fn(&str) -> Result<String, PathError>,
@@ -1368,7 +1358,8 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
             &format!("nothing has landed on {}", ws.git_ref),
         ));
     }
-    let (label, base_rev) = match base {
+    // `work_start` is an agent workspace's base; on a repo, as with none, it is the landing before main's head.
+    let (label, base_rev) = match base.filter(|b| !matches!(*b, "" | "work_start")) {
         Some(raw) => {
             if let Some(rev) = raw.strip_prefix("rev:") {
                 (raw.to_string(), rev.to_string())
@@ -2252,6 +2243,11 @@ mod tests {
         let changes = repo_changes(&fake, &ws, None).unwrap();
         assert_eq!(changes["base"], "rev:w-3.l");
         assert_eq!(changes["checkpoint"], "w-4.l");
+        assert_eq!(
+            repo_changes(&fake, &ws, Some("work_start")).unwrap()["base"],
+            "rev:w-3.l",
+            "the IDE's default base is the landing before, as with none"
+        );
         let diff = changes["diff"].as_str().unwrap();
         assert!(
             diff.contains("+fn b() {}") && diff.contains("Binary files"),

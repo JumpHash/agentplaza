@@ -48,9 +48,6 @@ enum Command {
     /// Tasks: the work queue, each task in a project.
     #[command(subcommand)]
     Tasks(cmd::tasks::Cmd),
-    /// Git: the plaza's repositories, branches and changes.
-    #[command(subcommand)]
-    Git(cmd::git::Cmd),
     /// Weft: the plaza's version control (history, lanes, releases, git export)
     Weft(cmd::weft::Args),
     /// Review recipes
@@ -126,7 +123,7 @@ enum Command {
     /// status, leave.
     #[command(subcommand)]
     Workstation(cmd::workstation::Cmd),
-    /// What a local plaza needs on this machine (Docker, Postgres, Forgejo, Garage, the ports): check it,
+    /// What a local plaza needs on this machine (Docker, Postgres, Garage, the ports): check it,
     /// and fix the missing parts after you confirm what the fix runs.
     Setup(cmd::setup::Args),
     /// STOP ALL and resume: the plaza's master switch.
@@ -215,7 +212,6 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Agents(c) => cmd::agents::run(&ctx, c),
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
-        Command::Git(c) => cmd::git::run(&ctx, c),
         Command::Weft(args) => cmd::weft::run(&ctx, args),
         Command::Recipes(c) => cmd::recipes::run(&ctx, c),
         Command::Ide(c) => cmd::ide::run(&ctx, c),

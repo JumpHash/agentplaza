@@ -38,7 +38,6 @@ mod engine_feed;
 mod events;
 mod fleet;
 mod foundry;
-mod git;
 mod harness_control;
 mod hub_auth;
 mod hub_mcp;

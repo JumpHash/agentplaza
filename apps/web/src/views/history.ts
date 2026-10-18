@@ -236,11 +236,15 @@ async function reposView(): Promise<Built> {
   const repos = scopedRepos(await weft.repos(), scope.get());
   const waiting = await Promise.all(repos.map((r) => weft.log(r.name, 'needs(owner)', 200).then((l) => l.total).catch(() => 0)));
   const total = waiting.reduce((a, b) => a + b, 0);
+  // Proposed releases wait for the owner's signature (imported ones never do).
+  const unsigned = repos.reduce((n, r) => n + (r.releases ?? []).filter((x) => !x.signed && !x.imported).length, 0);
   const line = total
     ? `${plural(total, 'change')} waiting for your ruling.`
-    : repos.length
-      ? `${plural(repos.length, 'repository')}. Nothing waits for you.`
-      : 'No repositories yet.';
+    : unsigned
+      ? `${plural(unsigned, 'release')} waiting for your signature.`
+      : repos.length
+        ? `${plural(repos.length, 'repository')}. Nothing waits for you.`
+        : 'No repositories yet.';
   const body = repos.length
     ? h(
         'div.hx-repos',
@@ -248,7 +252,7 @@ async function reposView(): Promise<Built> {
         repos.map((r, i) => repoCard(r, waiting[i] ?? 0)),
       )
     : empty('git', 'No repositories yet', 'A project’s repository shows here once it has one.');
-  return { sig: JSON.stringify([repos, waiting]), node: wrap(pageHead('History'), lineEl(line, total > 0), body) };
+  return { sig: JSON.stringify([repos, waiting]), node: wrap(pageHead('History'), lineEl(line, total + unsigned > 0), body) };
 }
 
 function repoCard(r: WeftRepo, waiting: number): HTMLElement {
@@ -711,14 +715,20 @@ async function changeView(c: Ctx, repoName: string, name: string): Promise<Built
       null,
       h('code', null, change.change),
       change.task ? ` · task ${change.task}` : null,
-      ` · ${nameOfLabel(change.author)}`,
+      ` · ${change.import ? change.import.author_name : nameOfLabel(change.author)}`,
+      change.import ? h('span.hx-faint', null, ' · imported from git ', h('code', { title: change.import.git }, change.import.git.slice(0, 7))) : null,
       change.stacked_on ? ` · stacked on ${change.stacked_on}` : null,
       ' ',
       badge(changeStateLabel(change.state), changeStateTone(change.state)),
       verified,
     ),
     lineEl(status.text, status.needsYou),
-    card('Sign-off', signOffView(signOffChain(change.records), nameOfLabel)),
+    card(
+      'Sign-off',
+      change.import && !change.records.length
+        ? h('p.hx-faint', null, 'Imported from git: written before Weft, so it has no sign-off.')
+        : signOffView(signOffChain(change.records), nameOfLabel),
+    ),
     card('Intents', intentsView(intents)),
   ];
   if (c.expert) {

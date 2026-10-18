@@ -26,7 +26,7 @@ const EFFORT_OPTS: { value: string; label: string }[] = [{ value: '', label: 'Mo
 const TOOL_GROUPS: { group: string; tools: string[] }[] = [
   { group: 'Code & files', tools: ['code_engine', 'tool_package'] },
   { group: 'Plaza', tools: ['plaza_hire'] },
-  { group: 'Git', tools: ['plaza_git'] },
+  { group: 'Weft', tools: ['weft_status', 'weft_diff', 'weft_describe', 'weft_log'] },
 ];
 const MIN_BUDGET = 200;
 const MAX_BUDGET = 50000;

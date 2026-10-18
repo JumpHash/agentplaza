@@ -1,5 +1,4 @@
-//! URL recognition: which http(s) URLs are references. GitHub, the plaza's git host (the same route shapes,
-//! Forgejo's `src/branch/...` as well as GitHub's `blob/...`), the hub's own library and file routes, and media
+//! URL recognition: which http(s) URLs are references. GitHub, the hub's own library and file routes, and media
 //! by extension. Everything else is a plain link. Pure.
 
 use crate::{Ctx, Ref};
@@ -7,12 +6,6 @@ use crate::{Ctx, Ref};
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"];
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mov"];
 const HTML_EXTENSIONS: &[&str] = &["html"];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Forge {
-    GitHub,
-    Plaza,
-}
 
 /// The lowercase host of a URL or of a bare host, without userinfo or port. "" when there is none.
 pub fn host_of(text: &str) -> String {
@@ -66,8 +59,6 @@ pub fn classify_url(url: &str, ctx: &Ctx) -> Option<Ref> {
     }
     let line = fragment.and_then(line_of_fragment);
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let trailing_slash = path.ends_with('/');
-    let plaza = host_of(ctx.plaza_git_host.as_deref().unwrap_or(""));
     let hub = host_of(ctx.hub_host.as_deref().unwrap_or(""));
 
     // The first route that recognises the URL wins; the host decides which routes apply.
@@ -76,12 +67,7 @@ pub fn classify_url(url: &str, ctx: &Ctx) -> Option<Ref> {
         .flatten()
         .or_else(|| {
             (host == "github.com" || host == "www.github.com")
-                .then(|| forge(&segments, Forge::GitHub, line, trailing_slash))
-                .flatten()
-        })
-        .or_else(|| {
-            (!plaza.is_empty() && host == plaza)
-                .then(|| forge(&segments, Forge::Plaza, line, trailing_slash))
+                .then(|| forge(&segments, line))
                 .flatten()
         })
         .or_else(|| {
@@ -125,7 +111,7 @@ fn gist(segments: &[&str]) -> Option<Ref> {
         .then(|| Ref::Gist { id: id.to_string() })
 }
 
-fn forge(segments: &[&str], host: Forge, line: Option<u32>, trailing_slash: bool) -> Option<Ref> {
+fn forge(segments: &[&str], line: Option<u32>) -> Option<Ref> {
     let (owner, repo, rest) = match segments {
         [owner, repo, rest @ ..] => (*owner, *repo, rest),
         _ => return None,
@@ -133,95 +119,34 @@ fn forge(segments: &[&str], host: Forge, line: Option<u32>, trailing_slash: bool
     if !valid_name(owner) || !valid_name(repo) {
         return None;
     }
-    let plaza = host == Forge::Plaza;
     let (owner, repo) = (owner.to_string(), repo.to_string());
     match rest {
-        [] => Some(if plaza {
-            Ref::PlazaGitRepo { owner, repo }
-        } else {
-            Ref::GithubRepo { owner, repo }
+        [] => Some(Ref::GithubRepo { owner, repo }),
+        ["pull" | "pulls", n] => number(n).map(|number| Ref::GithubPull {
+            owner,
+            repo,
+            number,
         }),
-        ["pull" | "pulls", n] => number(n).map(|number| {
-            if plaza {
-                Ref::PlazaGitPull {
-                    owner,
-                    repo,
-                    number,
-                }
-            } else {
-                Ref::GithubPull {
-                    owner,
-                    repo,
-                    number,
-                }
-            }
+        ["issues" | "issue", n] => number(n).map(|number| Ref::GithubIssue {
+            owner,
+            repo,
+            number,
         }),
-        ["issues" | "issue", n] => number(n).map(|number| {
-            if plaza {
-                Ref::PlazaGitIssue {
-                    owner,
-                    repo,
-                    number,
-                }
-            } else {
-                Ref::GithubIssue {
-                    owner,
-                    repo,
-                    number,
-                }
-            }
+        ["commit", sha] if is_hex(sha, 7, 40) => Some(Ref::GithubCommit {
+            owner,
+            repo,
+            sha: (*sha).to_string(),
         }),
-        ["commit", sha] if is_hex(sha, 7, 40) => Some(if plaza {
-            Ref::PlazaGitCommit {
-                owner,
-                repo,
-                sha: (*sha).to_string(),
-            }
-        } else {
-            Ref::GithubCommit {
-                owner,
-                repo,
-                sha: (*sha).to_string(),
-            }
+        ["releases", "tag", tag] if !tag.is_empty() => Some(Ref::GithubRelease {
+            owner,
+            repo,
+            tag: percent_decode(tag),
         }),
-        ["releases", "tag", tag] if !tag.is_empty() => Some(if plaza {
-            Ref::PlazaGitRelease {
-                owner,
-                repo,
-                tag: percent_decode(tag),
-            }
-        } else {
-            Ref::GithubRelease {
-                owner,
-                repo,
-                tag: percent_decode(tag),
-            }
-        }),
-        ["actions", "runs", id] => number(id).map(|id| {
-            if plaza {
-                Ref::PlazaGitRun { owner, repo, id }
-            } else {
-                Ref::GithubRun { owner, repo, id }
-            }
-        }),
-        ["blob", reference, path @ ..] if !plaza && !path.is_empty() => {
-            Some(file(owner, repo, reference, path, false, line, plaza))
+        ["actions", "runs", id] => number(id).map(|id| Ref::GithubRun { owner, repo, id }),
+        ["blob", reference, path @ ..] if !path.is_empty() => {
+            Some(file(owner, repo, reference, path, false, line))
         }
-        ["tree", reference, path @ ..] if !plaza => {
-            Some(file(owner, repo, reference, path, true, None, plaza))
-        }
-        ["src", "branch" | "commit" | "tag", reference, path @ ..] if plaza => {
-            let dir = path.is_empty() || trailing_slash;
-            Some(file(
-                owner,
-                repo,
-                reference,
-                path,
-                dir,
-                if dir { None } else { line },
-                plaza,
-            ))
-        }
+        ["tree", reference, path @ ..] => Some(file(owner, repo, reference, path, true, None)),
         _ => None,
     }
 }
@@ -233,28 +158,14 @@ fn file(
     path: &[&str],
     dir: bool,
     line: Option<u32>,
-    plaza: bool,
 ) -> Ref {
-    let reference = percent_decode(reference);
-    let path = percent_decode(&path.join("/"));
-    if plaza {
-        Ref::PlazaGitFile {
-            owner,
-            repo,
-            reference,
-            path,
-            line,
-            dir,
-        }
-    } else {
-        Ref::GithubFile {
-            owner,
-            repo,
-            reference,
-            path,
-            line,
-            dir,
-        }
+    Ref::GithubFile {
+        owner,
+        repo,
+        reference: percent_decode(reference),
+        path: percent_decode(&path.join("/")),
+        line,
+        dir,
     }
 }
 
@@ -294,7 +205,7 @@ fn is_hex(text: &str, min: usize, max: usize) -> bool {
     (min..=max).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// A GitHub or Forgejo owner, repository or library name.
+/// A GitHub owner, repository or library name.
 pub(crate) fn valid_name(text: &str) -> bool {
     !text.is_empty()
         && text != "."
@@ -394,7 +305,10 @@ mod tests {
                 plain("https://github.com/o/r/PULL/3"),
                 Ref::Link { .. }
             ));
-            assert_eq!(host_of("https://Git.Plaza.test:3000/x"), "git.plaza.test");
+            assert_eq!(
+                host_of("https://Git.Example.test:3000/x"),
+                "git.example.test"
+            );
         }
         // media_and_hub_routes: media extensions, raw GitHub images and hub library tools.
         {
@@ -426,31 +340,6 @@ mod tests {
                     url: "https://other.test/v1/files/abc".into()
                 })
             );
-        }
-        // plaza_routes_use_the_configured_host_only: Plaza git routes need the configured host.
-        {
-            let ctx = Ctx {
-                plaza_git_host: Some("git.plaza.test".into()),
-                ..Ctx::default()
-            };
-            assert_eq!(
-                classify_url(
-                    "https://git.plaza.test/agentplaza/pr-1/src/branch/main/a.rs#L4",
-                    &ctx
-                ),
-                Some(Ref::PlazaGitFile {
-                    owner: "agentplaza".into(),
-                    repo: "pr-1".into(),
-                    reference: "main".into(),
-                    path: "a.rs".into(),
-                    line: Some(4),
-                    dir: false
-                })
-            );
-            assert!(matches!(
-                plain("https://git.plaza.test/o/r/pulls/2"),
-                Ref::Link { .. }
-            ));
         }
         // invalid_names_and_non_http_urls_are_not_routes: bad schemes, empty hosts and odd names are not routes.
         {

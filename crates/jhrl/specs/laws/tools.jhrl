@@ -29,7 +29,7 @@ law "T-002" "Every agent may use the plaza's shared tools" {
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "plaza_git", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_get_file", "plaza_set_name", "plaza_pay", "plaza_money", "plaza_connector_propose", "plaza_contacts", "plaza_rate", "plaza_note", "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list"]
+  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_get_file", "plaza_set_name", "plaza_pay", "plaza_money", "plaza_connector_propose", "plaza_contacts", "plaza_rate", "plaza_note", "plaza_hire", "memory_write", "memory_read", "memory_search", "memory_list"]
 }
 
 law "T-003" "Only the orchestrator plans and delegates" {

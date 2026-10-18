@@ -109,7 +109,7 @@ Service start and stop is in `console/services.rs`. Feature-level parity with th
 checked here.
 
 Native iced, same design language as the web console (`apps/web/DESIGN.md`).
-- **Startup chooser:** *Start locally* (starts Postgres/Forgejo/Garage if present, apid, vsockd,
+- **Startup chooser:** *Start locally* (starts Postgres/Garage if present, apid, vsockd,
   noded on this machine), *Host a hub*, *Join a hub* (paste a token; starts apz-link, noded,
   vsockd), *Connect to a hub* (URL + owner token, console only).
   - The choice is remembered.

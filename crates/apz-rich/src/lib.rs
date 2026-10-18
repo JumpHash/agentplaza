@@ -14,22 +14,21 @@
 //!   `{"kind":"ref","value":{"raw":"#528","r":{"kind":"task","number":528},"text":null}}`.
 //! - Ref: `{"kind":"<snake_case kind>", ...fields}`, every field always present (`null` when absent). One example
 //!   per kind is in the table on [`Ref`].
-//! - Ctx: `{"project":null,"project_repo":null,"paths":[],"agents":[],"plaza_git_host":null,"hub_host":null}`,
-//!   every field optional. `paths` lists the workspace's files, and folders with a trailing `/`.
+//! - Ctx: `{"project":null,"paths":[],"agents":[],"hub_host":null}`, every field optional. `paths` lists the
+//!   workspace's files, and folders with a trailing `/`.
 //! - A vector: `{"name","text","ctx","spans"}`; `tests/vectors.json` is an array of them.
 //!
 //! # Rules that are not obvious
 //! - Bare URLs are `https?://` followed by non-space characters, with trailing `.,;:!?'"*_)]` removed (the web
 //!   renderer's rule, `apps/web/src/ui/markdown.ts`). Scheme and host compare case-insensitively; paths do not.
 //!   `www.` without a scheme is not a link.
-//! - `#N` is a task only when `ctx.project` is set. `PR #N` and `pull #N` are plaza git pulls of
-//!   `ctx.project_repo` ("owner/repo"), or text when it is unset. `task #N` is always a task.
+//! - `#N` is a task only when `ctx.project` is set. `task #N` is always a task. `PR #N` and `pull #N` are text,
+//!   and their `#N` is not a task.
 //! - `@Name` is an agent only when `Name` is in `ctx.agents` (exact, case-sensitive); `@all` is `mention_all`.
 //! - A path is recognised only when it is in `ctx.paths`: a file as given, a folder with or without its `/`.
 //!   `path:12` and `path#L12` give the line.
-//! - GitHub and plaza git: `github.com`, `www.github.com` and `ctx.plaza_git_host` (host only, no port). The
-//!   branch in `blob/<ref>/...` is the first segment after `blob`: a branch name with a `/` is read as the ref.
-//!   The fragment `#L10` or `#L10-L20` gives the line.
+//! - GitHub: `github.com` and `www.github.com`. The branch in `blob/<ref>/...` is the first segment after `blob`:
+//!   a branch name with a `/` is read as the ref. The fragment `#L10` or `#L10-L20` gives the line.
 //! - Hub library links: `/v1/files/<id>` (a deliverable) and `/v1/library/<name>/<version>` (a library tool),
 //!   relative or on `ctx.hub_host`.
 
@@ -49,14 +48,10 @@ pub use url::{classify_url, host_of};
 pub struct Ctx {
     /// The project in view (its id, such as `pr12`). Presence makes `#N` a task.
     pub project: Option<String>,
-    /// The project's repository on the plaza git host, "owner/repo". Makes `PR #N` a plaza git pull.
-    pub project_repo: Option<String>,
     /// The workspace's known paths: files, and folders with a trailing `/`.
     pub paths: BTreeSet<String>,
     /// The agents that `@Name` may name.
     pub agents: Vec<AgentName>,
-    /// The plaza's git host (a host or an origin). Its links are plaza git references.
-    pub plaza_git_host: Option<String>,
     /// The hub's own host. Its `/v1/files` and `/v1/library` links are library references.
     pub hub_host: Option<String>,
 }
@@ -95,7 +90,6 @@ pub enum Span {
 /// | `github_release` | `{"kind":"github_release","owner":"o","repo":"r","tag":"v1"}` | owner, repo, tag |
 /// | `github_run` | `{"kind":"github_run","owner":"o","repo":"r","id":9}` | owner, repo, id |
 /// | `gist` | `{"kind":"gist","id":"abc123"}` | id |
-/// | `plaza_git_pull`, `plaza_git_issue`, `plaza_git_commit`, `plaza_git_repo`, `plaza_git_file`, `plaza_git_release`, `plaza_git_run` | as the GitHub kinds | as the GitHub kinds |
 /// | `agent` | `{"kind":"agent","name":"Ada","cid":null}` or `{"kind":"agent","name":null,"cid":42}` | name or cid |
 /// | `mention_all` | `{"kind":"mention_all"}` | none |
 /// | `task` | `{"kind":"task","number":528}` | number |
@@ -150,44 +144,6 @@ pub enum Ref {
     Gist {
         id: String,
     },
-    PlazaGitPull {
-        owner: String,
-        repo: String,
-        number: u64,
-    },
-    PlazaGitIssue {
-        owner: String,
-        repo: String,
-        number: u64,
-    },
-    PlazaGitCommit {
-        owner: String,
-        repo: String,
-        sha: String,
-    },
-    PlazaGitRepo {
-        owner: String,
-        repo: String,
-    },
-    PlazaGitFile {
-        owner: String,
-        repo: String,
-        #[serde(rename = "ref")]
-        reference: String,
-        path: String,
-        line: Option<u32>,
-        dir: bool,
-    },
-    PlazaGitRelease {
-        owner: String,
-        repo: String,
-        tag: String,
-    },
-    PlazaGitRun {
-        owner: String,
-        repo: String,
-        id: u64,
-    },
     Agent {
         name: Option<String>,
         cid: Option<u64>,
@@ -235,32 +191,13 @@ pub fn label(r: &Ref) -> String {
             owner,
             repo,
             number,
-        }
-        | Ref::PlazaGitPull {
-            owner,
-            repo,
-            number,
-        }
-        | Ref::PlazaGitIssue {
-            owner,
-            repo,
-            number,
         } => format!("{owner}/{repo} #{number}"),
-        Ref::GithubCommit { owner, repo, sha } | Ref::PlazaGitCommit { owner, repo, sha } => {
+        Ref::GithubCommit { owner, repo, sha } => {
             let short: String = sha.chars().take(7).collect();
             format!("{owner}/{repo} @{short}")
         }
-        Ref::GithubRepo { owner, repo } | Ref::PlazaGitRepo { owner, repo } => {
-            format!("{owner}/{repo}")
-        }
+        Ref::GithubRepo { owner, repo } => format!("{owner}/{repo}"),
         Ref::GithubFile {
-            repo,
-            path,
-            line,
-            dir,
-            ..
-        }
-        | Ref::PlazaGitFile {
             repo,
             path,
             line,
@@ -273,12 +210,8 @@ pub fn label(r: &Ref) -> String {
                 None => format!("{repo}: {shown}"),
             }
         }
-        Ref::GithubRelease { owner, repo, tag } | Ref::PlazaGitRelease { owner, repo, tag } => {
-            format!("{owner}/{repo} release {tag}")
-        }
-        Ref::GithubRun { owner, repo, id } | Ref::PlazaGitRun { owner, repo, id } => {
-            format!("{owner}/{repo} run {id}")
-        }
+        Ref::GithubRelease { owner, repo, tag } => format!("{owner}/{repo} release {tag}"),
+        Ref::GithubRun { owner, repo, id } => format!("{owner}/{repo} run {id}"),
         Ref::Gist { id } => format!("gist {id}"),
         Ref::Agent {
             name: Some(name), ..

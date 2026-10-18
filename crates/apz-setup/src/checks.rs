@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 const SERVICES: [&str; 3] = ["apid", "vsockd", "noded"];
 const PORTS: [u16; 3] = [7700, 8899, 19080];
 const POSTGRES: &str = "agentplaza-postgres";
-const FORGEJO: &str = "agentplaza-forgejo";
 const POSTGRES_CREATE: &str = "Create the container agentplaza-postgres (Postgres 17, data in the volume agentplaza-postgres, on 127.0.0.1:5434) and record its address in ~/.config/agentplaza/keys.env";
-const FORGEJO_CREATE: &str = "Create the container agentplaza-forgejo (Forgejo 11, data in the volume agentplaza-forgejo, on 127.0.0.1:3300), its admin and API token, and record them in ~/.config/agentplaza/keys.env";
 const GARAGE_CREATE: &str = "Create the container agentplaza-garage (Garage 1.0, the S3 object store, on 127.0.0.1:3900; data in the volumes agentplaza-garage-meta and agentplaza-garage-data), the bucket agentplaza and a key for it, and record the endpoint and the key in ~/.config/agentplaza/keys.env";
 const WHP_QUERY: &str =
     "(Get-CimInstance Win32_OptionalFeature -Filter \"Name='HypervisorPlatform'\").InstallState";
@@ -43,14 +41,6 @@ pub fn check_with(env: &Env, dirs: &[PathBuf], hypervisor: Check, ports: Check) 
             POSTGRES,
             docker_up,
             POSTGRES_CREATE,
-        ),
-        container_check(
-            env,
-            Need::Forgejo,
-            "Forgejo",
-            FORGEJO,
-            docker_up,
-            FORGEJO_CREATE,
         ),
         garage(env, docker_up),
         hypervisor,
@@ -582,7 +572,6 @@ mod tests {
                 Need::Docker,
                 Need::DockerRunning,
                 Need::Postgres,
-                Need::Forgejo,
                 Need::Garage,
                 Need::Hypervisor,
                 Need::Ports,
@@ -602,7 +591,7 @@ mod tests {
             row(&checks, Need::DockerRunning).detail,
             "install Docker first"
         );
-        for need in [Need::Postgres, Need::Forgejo, Need::Garage] {
+        for need in [Need::Postgres, Need::Garage] {
             let check = row(&checks, need);
             assert_eq!(check.detail, "needs Docker running", "{need:?}");
             assert!(
@@ -680,12 +669,11 @@ mod tests {
     }
 
     #[test]
-    fn postgres_and_forgejo_report_their_containers() {
+    fn postgres_reports_its_container() {
         let dir = scratch("checks-containers");
         let mock = docker_up(Some(Output::ok("true\n")));
         let checks = rows(&mock, &dir, None);
         assert_eq!(row(&checks, Need::Postgres).state, State::Ok);
-        assert_eq!(row(&checks, Need::Forgejo).state, State::Ok);
         let calls = mock.calls();
         assert!(
             calls.contains(&"docker inspect -f {{.State.Running}} agentplaza-postgres".to_string())

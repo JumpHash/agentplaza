@@ -1,5 +1,4 @@
-//! The plaza's containers, Postgres, Forgejo and Garage, and their settings in apid's keys.env (see
-//! `lib.rs`).
+//! The plaza's containers, Postgres and Garage, and their settings in apid's keys.env (see `lib.rs`).
 //!
 //! Secrets live only in keys.env (`<home>/.config/agentplaza/keys.env`, mode 0600 on Unix), in
 //! Garage's config file beside it (also 0600), and in the containers' own settings. They never reach
@@ -15,7 +14,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const POSTGRES: &str = "agentplaza-postgres";
-const FORGEJO: &str = "agentplaza-forgejo";
 pub(crate) const GARAGE: &str = "agentplaza-garage";
 /// The image of Garage, the S3 object store (its `garage` program runs inside the container).
 const GARAGE_IMAGE: &str = "dxflrs/garage:v1.0.1";
@@ -102,144 +100,6 @@ pub fn postgres(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
         Duration::from_secs(1),
     )?;
     log("Postgres is ready on 127.0.0.1:5434".to_string());
-    Ok(())
-}
-
-/// Creates (or starts) `agentplaza-forgejo`, its admin and token, and records them in keys.env.
-///
-/// An existing container is started if it is stopped, and its token must already be in keys.env.
-/// A new container gets an admin user `plaza` with a fresh password, and an access token; both
-/// go to keys.env.
-pub fn forgejo(env: &Env, log: &mut dyn FnMut(String)) -> Result<(), String> {
-    keys_file(env)?;
-    let existed = running_state(env, log, FORGEJO);
-    match existed {
-        Some(running) => {
-            if get_key(env, "FORGEJO_TOKEN").is_none() {
-                return Err(format!(
-                    "the container exists but its token is not in keys.env: remove the container \
-                     (docker rm -f {FORGEJO}) and set it up again"
-                ));
-            }
-            if !running {
-                run_docker(env, log, &["start", FORGEJO], &[])?;
-            }
-        }
-        None => {
-            run_docker(env, log, &["volume", "create", "agentplaza-forgejo"], &[])?;
-            run_docker(
-                env,
-                log,
-                &[
-                    "run",
-                    "-d",
-                    "--name",
-                    FORGEJO,
-                    "--restart",
-                    "unless-stopped",
-                    "-p",
-                    "127.0.0.1:3300:3000",
-                    "-v",
-                    "agentplaza-forgejo:/data",
-                    "-e",
-                    "FORGEJO__security__INSTALL_LOCK=true",
-                    "-e",
-                    "FORGEJO__server__ROOT_URL=http://127.0.0.1:3300/",
-                    "-e",
-                    "FORGEJO__server__HTTP_PORT=3000",
-                    "-e",
-                    "FORGEJO__service__DISABLE_REGISTRATION=true",
-                    "codeberg.org/forgejo/forgejo:11",
-                ],
-                &[],
-            )?;
-        }
-    }
-    wait_until(
-        env,
-        log,
-        &[
-            "exec",
-            FORGEJO,
-            "wget",
-            "-q",
-            "-O-",
-            "http://127.0.0.1:3000/api/v1/version",
-        ],
-        Duration::from_secs(120),
-        Duration::from_secs(2),
-    )?;
-    if existed.is_none() {
-        let pw = secret()?;
-        let created = run_docker(
-            env,
-            log,
-            &[
-                "exec",
-                "-u",
-                "git",
-                FORGEJO,
-                "forgejo",
-                "admin",
-                "user",
-                "create",
-                "--admin",
-                "--username",
-                "plaza",
-                "--password",
-                pw.as_str(),
-                "--email",
-                "plaza@agentplaza.local",
-                "--must-change-password=false",
-            ],
-            &[pw.as_str()],
-        );
-        // The admin's password is recorded only when this run created the admin: an existing one
-        // keeps its own (the token below is what apid uses).
-        let created = match created {
-            Ok(_) => true,
-            Err(e) if e.to_lowercase().contains("already exists") => {
-                log("the admin user plaza already exists: continuing".to_string());
-                false
-            }
-            Err(e) => return Err(e),
-        };
-        let token_name = format!("apid-{}", &secret()?[..8]);
-        let token = run_docker(
-            env,
-            log,
-            &[
-                "exec",
-                "-u",
-                "git",
-                FORGEJO,
-                "forgejo",
-                "admin",
-                "user",
-                "generate-access-token",
-                "--username",
-                "plaza",
-                "--token-name",
-                token_name.as_str(),
-                "--scopes",
-                "all",
-                "--raw",
-            ],
-            &[],
-        )?;
-        if token.is_empty() {
-            return Err("Forgejo did not return an access token".to_string());
-        }
-        let mut keys = vec![
-            ("FORGEJO_URL", "http://127.0.0.1:3300"),
-            ("FORGEJO_TOKEN", token.as_str()),
-        ];
-        if created {
-            keys.push(("FORGEJO_ADMIN_PASSWORD", pw.as_str()));
-        }
-        set_keys(env, &keys)?;
-    }
-    log("Forgejo is ready on http://127.0.0.1:3300 (admin: plaza)".to_string());
     Ok(())
 }
 
@@ -606,6 +466,7 @@ fn push_line(out: &mut String, (name, value): (&str, &str)) {
     out.push('\n');
 }
 
+/// `existing` without its lines for a key that starts with `prefix`; every other line is kept as it is.
 /// The value of `name` in the KEY=VALUE lines of `text`; `None` when missing or empty.
 fn lookup(text: &str, name: &str) -> Option<String> {
     text.lines()
@@ -626,8 +487,8 @@ mod tests {
             (
                 "replaces a present key, appends a missing one, keeps other lines",
                 "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=old\n\nOTHER=x\n",
-                &[("APZ_DATABASE_URL", "new"), ("FORGEJO_TOKEN", "t")],
-                "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=new\n\nOTHER=x\nFORGEJO_TOKEN=t\n",
+                &[("APZ_DATABASE_URL", "new"), ("APZ_S3_REGION", "garage")],
+                "# keys\nANTHROPIC_API_KEY=sk-1\nAPZ_DATABASE_URL=new\n\nOTHER=x\nAPZ_S3_REGION=garage\n",
             ),
             (
                 "merges into an empty file",
@@ -781,47 +642,6 @@ mod tests {
         };
         let err = postgres(&env, &mut |_| {}).unwrap_err();
         assert!(err.contains("docker rm -f agentplaza-postgres"), "{err}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn forgejo_creates_the_admin_and_token_and_records_them_redacted() {
-        let dir = scratch("provision-forgejo");
-        let mock = docker_says(|args| {
-            if args.first() == Some(&"inspect") {
-                Some(Output::failed("No such object"))
-            } else if args.contains(&"generate-access-token") {
-                Some(Output::ok("tok-forgejo-1\n"))
-            } else {
-                None
-            }
-        });
-        let env = Env {
-            runner: &mock,
-            keys: Some(dir.join("keys.env")),
-            user: None,
-        };
-        let mut log = Vec::new();
-        forgejo(&env, &mut |l| log.push(l)).unwrap();
-
-        let keys = keys_text(&dir);
-        let admin_pw =
-            lookup(&keys, "FORGEJO_ADMIN_PASSWORD").expect("the admin password is recorded");
-        assert_eq!(
-            lookup(&keys, "FORGEJO_TOKEN"),
-            Some("tok-forgejo-1".to_string())
-        );
-        assert_eq!(
-            lookup(&keys, "FORGEJO_URL"),
-            Some("http://127.0.0.1:3300".to_string())
-        );
-        assert!(log.iter().all(|line| !line.contains(&admin_pw)), "{log:?}");
-        assert!(
-            log.iter().any(|line| line.contains("--password ***")),
-            "{log:?}"
-        );
-        let calls = mock.calls();
-        assert!(call_with(&calls, "admin user create").contains(&format!("--password {admin_pw}")));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -986,10 +806,6 @@ mod tests {
         };
         assert_eq!(
             postgres(&env, &mut |_| {}).unwrap_err(),
-            "the home directory is not set"
-        );
-        assert_eq!(
-            forgejo(&env, &mut |_| {}).unwrap_err(),
             "the home directory is not set"
         );
         assert_eq!(

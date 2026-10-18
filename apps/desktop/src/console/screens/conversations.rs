@@ -170,7 +170,7 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         .as_ref()
         .map(|t| t.messages.iter().map(|m| m.text.as_str()).collect())
         .unwrap_or_default();
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
@@ -463,7 +463,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let pairs = group_pairs(&state.conversations);
     let current = current_index(&pairs, state.selected.as_deref());
 

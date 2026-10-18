@@ -191,6 +191,15 @@ eq(headOf(repo), 'w-1.l', 'the head of main is its ref');
 eq(headOf({ refs: {} }), 'root', 'before anything landed the head is root');
 eq(repoLine(repo, 0), { text: 'main is at w-1.l. Nothing waits for you.', needsYou: false }, 'a quiet repo says so');
 eq(repoLine(repo, 2), { text: '2 changes waiting for your ruling.', needsYou: true }, 'waiting rulings are counted');
+const releasing = {
+  ...repo,
+  releases: [
+    { version: 'v0.1.0', signed: false, imported: true, from: 'w-1.l' },
+    { version: 'v0.2.0', signed: false, from: 'w-1.l' },
+  ],
+};
+eq(repoLine(releasing, 0), { text: 'v0.2.0 waits for your signature.', needsYou: true }, 'a proposed release waits for the owner; an imported one does not');
+eq(repoLine(releasing, 1).text, '1 change waiting for your ruling.', 'a ruling comes before a signature');
 const moved = { ...repo, connections: [{ id: 'origin', remote: 'x', platform: 'git', branch: 'main', state: 'moved', detail: '', head: null, exported: 1, author: 'a' }] };
 eq(repoLine(moved, 3), { text: 'origin moved on its own. Adopt it to bring its commits in.', needsYou: true }, 'a moved remote comes first');
 eq(

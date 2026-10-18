@@ -1500,7 +1500,7 @@ pub fn repo_view(st: &State, r: &crate::state::Repo) -> Value {
     json!({
         "name": r.name, "project": r.project, "description": r.description, "refs": refs, "queues": queues, "rules": r.rules,
         "connections": r.connections.values().map(|c| json!({ "id": c.conn.id, "remote": c.conn.remote, "platform": c.conn.platform, "branch": c.conn.branch, "state": c.state, "detail": c.detail, "head": c.head, "exported": c.exported.len(), "author": format!("{} <{}>", c.conn.author_name, c.conn.author_email) })).collect::<Vec<_>>(),
-        "releases": r.releases.values().map(|x| json!({ "version": x.propose.version, "signed": x.signed.is_some(), "from": x.propose.from })).collect::<Vec<_>>(),
+        "releases": r.releases.values().map(|x| json!({ "version": x.propose.version, "signed": x.signed.is_some(), "imported": x.propose.imported.is_some(), "from": x.propose.from })).collect::<Vec<_>>(),
         "open_changes": open, "landed": landed,
     })
 }

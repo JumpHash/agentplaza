@@ -158,8 +158,8 @@ fn on_rich(action: rich::RichAction) -> Msg {
     Msg::Rich(rich::Ev::Action(action))
 }
 
-/// The rich context of the IDE's chat: the workspace's files and folders (a folder with its `/`), the project the
-/// workspace belongs to, and its repository.
+/// The rich context of the IDE's chat: the workspace's files and folders (a folder with its `/`), and the project the
+/// workspace belongs to.
 pub fn rich_ctx(st: &State) -> rich::RichCtx {
     let paths: BTreeSet<String> = st
         .tree
@@ -174,12 +174,7 @@ pub fn rich_ctx(st: &State) -> rich::RichCtx {
         })
         .collect();
     let project = ide::selected_project(st);
-    rich::context(
-        &st.cards,
-        project.map(|p| p.id.as_str()),
-        project.and_then(|p| p.repo.as_deref()),
-        Some(&paths),
-    )
+    rich::context(&st.cards, project.map(|p| p.id.as_str()), Some(&paths))
 }
 
 /// The texts of the transcript that rich content reads: the prompts and the text blocks of the replies.
@@ -788,7 +783,7 @@ mod tests {
         ];
         let view = ide_model::engine_view(&entries, "c1");
         let (rctx, cards) = (
-            rich::context(&rich::Cards::default(), None, None, None),
+            rich::context(&rich::Cards::default(), None, None),
             rich::Cards::default(),
         );
         // The block draws with a check to decide, and with no check and no approval id it still draws.

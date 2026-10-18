@@ -1,5 +1,5 @@
 //! `agentplaza setup`: what a local plaza needs on this machine (Docker, its daemon, Postgres,
-//! Forgejo, Garage, the services, the ports), and fixing the missing ones. A fix runs only after
+//! Garage, the services, the ports), and fixing the missing ones. A fix runs only after
 //! the user confirms it, having seen what it will do. The checks and fixes are `apz-setup`'s; the
 //! TUI's Dependencies step uses the same crate.
 
@@ -13,14 +13,14 @@ use crate::ctx::{self, Client};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Fix one requirement: services, docker, docker-running, postgres, forgejo, garage, hypervisor or ports.
+    /// Fix one requirement: services, docker, docker-running, postgres, garage, hypervisor or ports.
     #[arg(long, value_name = "NEED", conflicts_with = "fix_all")]
     fix: Option<Need>,
     /// Fix every missing requirement that has a fix, in the order of the checklist.
     #[arg(long)]
     fix_all: bool,
     /// Also check the hub the way the web and the desktop Setup do: reachable, identity, service, node,
-    /// network, machine, vault, model providers, default model and git host. `--hub NAME` checks the
+    /// network, machine, vault, model providers, default model and Weft. `--hub NAME` checks the
     /// saved hub (or URL) NAME; a bare `--hub` checks the hub the global `--hub` names, else the default.
     #[arg(long, num_args = 0..=1, default_missing_value = "", conflicts_with_all = ["fix", "fix_all"])]
     hub: Option<String>,
@@ -190,7 +190,7 @@ pub fn hub_checks(client: &Client) -> Vec<HubCheck> {
     let machine = client.get("/v1/machine").ok();
     let vault = client.get("/v1/vault").ok();
     let providers = client.get("/v1/providers").ok();
-    let git = client.get("/v1/git").ok();
+    let weft = client.get("/v1/weft").ok();
     let link = client.get("/v1/node-link").ok();
 
     let mut rows = vec![reachable_row(&overview), identity_row(identity.as_ref())];
@@ -205,7 +205,7 @@ pub fn hub_checks(client: &Client) -> Vec<HubCheck> {
     if let Ok(over) = &overview {
         rows.push(default_model_row(over));
     }
-    rows.push(git_row(git.as_ref()));
+    rows.push(weft_row(weft.as_ref()));
     rows
 }
 
@@ -530,30 +530,24 @@ fn default_model_row(over: &Value) -> HubCheck {
     }
 }
 
-fn git_row(git: Option<&Value>) -> HubCheck {
-    let Some(g) = git else {
-        return HubCheck::new(
-            "Git host",
-            HubState::Warning,
-            "could not ask the git host",
-            None,
-        );
+/// Weft, the plaza's version control: running, or the reason it is not (the hub's `why`).
+fn weft_row(weft: Option<&Value>) -> HubCheck {
+    const LABEL: &str = "Weft";
+    let Some(w) = weft else {
+        return HubCheck::new(LABEL, HubState::Warning, "could not ask Weft", None);
     };
-    if flag(g, "configured") {
-        HubCheck::new(
-            "Git host",
-            HubState::Ok,
-            format!("org {}", ctx::s(g, "org")),
-            None,
-        )
-    } else {
-        HubCheck::new(
-            "Git host",
-            HubState::Warning,
-            "the git host is not configured",
-            Some("set FORGEJO_URL and FORGEJO_TOKEN for the hub, then restart apid"),
-        )
+    if flag(w, "running") {
+        let detail = match ctx::s(w, "mode") {
+            "" => "running".to_string(),
+            mode => format!("running ({mode})"),
+        };
+        return HubCheck::new(LABEL, HubState::Ok, detail, None);
     }
+    let why = match ctx::s(w, "why") {
+        "" => "not running",
+        why => why,
+    };
+    HubCheck::new(LABEL, HubState::Warning, why, None)
 }
 
 fn print_hub(rows: &[HubCheck]) {
@@ -697,5 +691,25 @@ mod tests {
         let value = hub_to_json(&rows);
         assert_eq!(value[0]["state"], "warning");
         assert_eq!(value[0]["fix"], "set it");
+    }
+
+    #[test]
+    fn the_weft_row_says_whether_weft_runs_and_why_not() {
+        let running = weft_row(Some(
+            &json!({ "running": true, "mode": "serve", "port": 7700 }),
+        ));
+        assert_eq!(running.label, "Weft");
+        assert_eq!(running.state, HubState::Ok);
+        assert_eq!(running.detail, "running (serve)");
+
+        let stopped = weft_row(Some(
+            &json!({ "running": false, "why": "weft serve is not started" }),
+        ));
+        assert_eq!(stopped.state, HubState::Warning);
+        assert_eq!(stopped.detail, "weft serve is not started");
+
+        let unknown = weft_row(None);
+        assert_eq!(unknown.state, HubState::Warning);
+        assert_eq!(unknown.detail, "could not ask Weft");
     }
 }

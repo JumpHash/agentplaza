@@ -12,7 +12,6 @@ pub mod decide;
 pub mod e2b;
 pub mod egress;
 pub mod events;
-pub mod git;
 pub mod hub;
 pub mod ide;
 pub mod lab;

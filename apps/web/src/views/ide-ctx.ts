@@ -1,5 +1,5 @@
 // The shared state of the IDE screen. The controller (views/ide.ts) makes one IdeCtx per mount and hands it to the modules
-// that split it: layout, selection, data, editing, panels, keys, git and rendering. A module reads and writes the fields
+// that split it: layout, selection, data, editing, panels, keys and rendering. A module reads and writes the fields
 // directly. Where a call would otherwise import back into a module that imports it (the data loader opens a file; the
 // editor paints the shell), it goes through `act`, which the controller wires. So no two of these modules import each other.
 

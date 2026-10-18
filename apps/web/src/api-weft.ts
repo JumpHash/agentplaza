@@ -20,6 +20,8 @@ export interface WeftStatus {
   running: boolean;
   mode: string;
   port: number;
+  /** Why Weft is not running, when it is not. */
+  why?: string;
 }
 
 /** A git remote a repo exports to: `in-step`, `moved` (the remote changed on its own), `adopting`, or `error`. */
@@ -39,6 +41,8 @@ export interface WeftConnection {
 export interface WeftReleaseRef {
   version: string;
   signed: boolean;
+  /** Recorded from a git tag at import: there is nothing for the owner to sign. */
+  imported?: boolean;
   from: string;
 }
 

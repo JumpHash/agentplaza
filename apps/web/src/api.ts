@@ -96,8 +96,6 @@ export interface Overview {
   agents: { total: number; idle: number; working: number; offline: number };
   tasks: Record<string, number>;
   default_model: string; orchestrator_model: string; dev_models: boolean; hub: boolean; noded: boolean;
-  /** The plaza's git host's web origin, for the rich links in agent text (null when the forge is not configured). */
-  git_host: string | null;
 }
 
 export type Auth = 'none' | { env: string } | { secret: string } | { command: string };
@@ -201,7 +199,7 @@ export interface Settings {
   vm_auto_checkpoints: boolean;
   /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */
   acp_enabled: boolean;
-  /** ACP: the editor offers to apply an agent's pull request to the editor's project (`agentplaza acp --repo`). */
+  /** ACP: the editor offers to apply an agent's change to the editor's project (`agentplaza acp --repo`). */
   acp_write_back?: boolean;
   /** ACP: editors and coding engines that ask for protocol 2 get the ACP v2 draft; everything else stays on v1. */
   acp_v2?: boolean;
@@ -316,15 +314,6 @@ export interface OwnerConversationSummary {
   draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
 }
 export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[]; joined: number[]; spawned: { role: string; count: number }[] }
-export interface GitRepo { name: string; description: string; default_branch: string; updated_at: string; size_kb: number; open_prs: number; project: string | null }
-export interface GitBranch { name: string; commit: { id: string; message: string; author: string; at: string } }
-export interface GitCommit { id: string; short: string; message: string; author: string; at: string; additions: number; deletions: number }
-export interface GitEntry { name: string; path: string; kind: 'file' | 'dir'; size: number }
-export interface GitFile { path: string; ref: string; size: number; text: string | null; binary: boolean }
-/** A pull request row; `comments` is the count of its discussion, which the detail carries in full. A merged pull request is closed, with `merged` true; older hubs omit `merged`. */
-export interface GitPull { number: number; title: string; state: string; author: string; head: string; base: string; created_at: string; updated_at: string; comments: number; review: 'approved' | 'changes_requested' | 'pending'; mergeable: boolean; merged?: boolean; merged_at?: string | null }
-export interface GitComment { author: string; body: string; at: string }
-export interface GitPullDetail extends GitPull { body: string; diff: string; reviews: { author: string; state: string; body: string; at: string }[]; discussion: GitComment[]; files: { path: string; additions: number; deletions: number }[] }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
@@ -778,20 +767,6 @@ export const api = {
   /** Starts the drafted project at `revision`, the one the owner looked at. */
   startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
-  git: () => get<{ configured: boolean; org: string }>('/v1/git'),
-  gitRepos: () => get<GitRepo[]>('/v1/git/repos'),
-  gitCreateRepo: (name: string, description: string) => post<GitRepo>('/v1/git/repos', { name, description }),
-  gitBranches: (repo: string) => get<GitBranch[]>(`/v1/git/repos/${repo}/branches`),
-  gitCommits: (repo: string, ref = '', limit = 30) => get<GitCommit[]>(`/v1/git/repos/${repo}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}`),
-  gitTree: (repo: string, ref = '', path = '') => get<GitEntry[]>(`/v1/git/repos/${repo}/tree?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
-  gitFile: (repo: string, ref: string, path: string) => get<GitFile>(`/v1/git/repos/${repo}/file?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
-  gitPulls: (repo: string, state: 'open' | 'closed' | 'all' = 'open', page = 1, limit = 50) => get<GitPull[]>(`/v1/git/repos/${repo}/pulls?state=${state}&page=${page}&limit=${limit}`),
-  gitOpenPull: (repo: string, title: string, head: string, base: string, body = '') => post<GitPull>(`/v1/git/repos/${repo}/pulls`, { title, head, base, body }),
-  gitPull: (repo: string, n: number) => get<GitPullDetail>(`/v1/git/repos/${repo}/pulls/${n}`),
-  gitComment: (repo: string, n: number, body: string) => post<GitComment>(`/v1/git/repos/${repo}/pulls/${n}/comments`, { body }),
-  gitSetPullState: (repo: string, n: number, state: 'open' | 'closed') => post<GitPull>(`/v1/git/repos/${repo}/pulls/${n}/state`, { state }),
-  gitReview: (repo: string, n: number, event: 'APPROVE' | 'APPROVED' | 'REQUEST_CHANGES' | 'COMMENT', body: string) => post<unknown>(`/v1/git/repos/${repo}/pulls/${n}/review`, { event, body }),
-  gitMerge: (repo: string, n: number, style: 'merge' | 'squash' | 'rebase' = 'merge') => post<unknown>(`/v1/git/repos/${repo}/pulls/${n}/merge`, { style }),
   loops: () => get<HarnessLoop[]>('/v1/loops'),
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
   stopLoop: (id: string) => del<HarnessLoop>(`/v1/loops/${id}`),

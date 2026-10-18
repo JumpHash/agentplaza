@@ -27,8 +27,8 @@
 .iw-crumb-part { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iw-crumb-part:last-of-type { color: var(--ink); font-weight: 600; }
 .iw-crumb-sep { flex: none; color: var(--ink-3); }
-.iw-state, .iw-git, .iw-held { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
-.iw-state:empty, .iw-git:empty, .iw-held:empty { display: none; }
+.iw-state, .iw-held { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
+.iw-state:empty, .iw-held:empty { display: none; }
 .iw-theme { margin-left: auto; }
 
 /* Icon buttons: 32px square, quiet until hovered or pressed. */

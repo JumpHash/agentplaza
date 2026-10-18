@@ -8,7 +8,7 @@ this page disagree, fix one of them in the same change. The
 
 | process | crate | listens | owns |
 |---|---|---|---|
-| `apid` (the **hub**) | `crates/apid` | `127.0.0.1:7700` HTTP (`--port`; `--bind` and `--tls` serve HTTPS off loopback) | **The control plane.** The plaza state (agents, tasks, treasury, agora, board, conversations, council, sanctions), the laws, the model providers and their keys (the vault), the model gateway, agent transcripts, the scheduler, the public `/v1` API, the event socket `/v1/ws`, the git host (Forgejo), the Library, MCP servers and the hub's own MCP server, the IDE, rich-content unfurls, the Lab (Foundry), the workstation registry, the VM sleep, checkpoint and move logic ([`design/vm-snapshots.md`](design/vm-snapshots.md)), the egress credential rules ([`design/egress-credentials.md`](design/egress-credentials.md)), the E2B sandbox API ([`design/e2b.md`](design/e2b.md)), and the web console's static files. The consoles talk only to `apid`. |
+| `apid` (the **hub**) | `crates/apid` | `127.0.0.1:7700` HTTP (`--port`; `--bind` and `--tls` serve HTTPS off loopback) | **The control plane.** The plaza state (agents, tasks, treasury, agora, board, conversations, council, sanctions), the laws, the model providers and their keys (the vault), the model gateway, agent transcripts, the scheduler, the public `/v1` API, the event socket `/v1/ws`, the version control (Weft), the Library, MCP servers and the hub's own MCP server, the IDE, rich-content unfurls, the Lab (Foundry), the workstation registry, the VM sleep, checkpoint and move logic ([`design/vm-snapshots.md`](design/vm-snapshots.md)), the egress credential rules ([`design/egress-credentials.md`](design/egress-credentials.md)), the E2B sandbox API ([`design/e2b.md`](design/e2b.md)), and the web console's static files. The consoles talk only to `apid`. |
 | `noded` | `crates/noded` | `127.0.0.1:8899` HTTP | **One machine's VMs.** Agent VMs (spawn, kill, the fleet booted with `--agents`), workstation VMs, training jobs, serial capture, machine facts, VM events. It also sleeps and wakes VMs, takes checkpoints and forks, keeps the warm templates, and moves a sleeping VM's files to or from another node ([`design/vm-snapshots.md`](design/vm-snapshots.md)). No plaza state. |
 | `vsockd` (the node's relay) | `crates/vsockd` | one Unix socket per guest CID (`{uds-dir}/vm{cid}_{port}`); `127.0.0.1:19080` HTTP | **Guest sessions on one node.** Binds each session to the CID its socket names, keeps v2 sessions alive, relays v3 agent-loop lines to `apid` and back, and serves the guest's egress on vsock port 5001, and the E2B gateway for sandboxes when `--e2b-port` is set ([`design/e2b.md`](design/e2b.md)). No policy, no plaza state. Its source comments still call it "the hub"; this page uses *hub* for `apid` only. |
 | `apz-vmm` | `crates/vmm` (package `vmm`) | — | One jailed VM process (KVM, Hypervisor.framework, WHP). It takes and restores snapshots on KVM ([`design/vm-snapshots.md`](design/vm-snapshots.md)). |
@@ -41,7 +41,7 @@ without the flag (tests, development) keeps an open API and says so in its log.
 | console | where | notes |
 |---|---|---|
 | web | `apps/web` | TypeScript, esbuild; CI builds `dist/` once per commit (it is not committed). Served by `apid`. CSP; text is set with `textContent` only. |
-| desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the containers for Postgres 17 and Forgejo 11. |
+| desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the container for Postgres 17. |
 | CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza chat` to talk a project into being with the orchestrator, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
 
 All three use the same `apid` API. The **Machines** screen's 3D (the grid of machines and each machine's own view)
@@ -288,8 +288,8 @@ project it drafts (see *Owner conversations*).
 
 ## Rich content
 
-References in agent text (GitHub and plaza git pull requests, issues, commits and
-files, agents, tasks, Library files) become chips with hover cards.
+References in agent text (GitHub pull requests, issues, commits and files, agents,
+tasks, Library files) become chips with hover cards.
 `crates/apz-rich` classifies the references; `apid`'s `unfurl` module resolves
 them: `POST /v1/unfurl` (a batch) and `GET /v1/unfurl` (one).
 
@@ -366,22 +366,20 @@ servers are not connected (the session says so), and the hub never calls the edi
 `fs/*` or `terminal/*`: nothing reaches the owner's machine through the editor. An
 editor can prompt, watch and approve; it is not a host an agent can reach.
 
-**Repository mirror.** `agentplaza acp --repo <name>` mirrors the editor's project to a plaza
-repository before each session and each prompt, on branch `editor/<branch>` (`editor/detached-<sha>`
-for a detached HEAD). It pushes the committed HEAD only, and the session is told when the editor had
-uncommitted changes. The CLI sends the link as `_meta.agentplaza.repo` on `session/new`,
-`session/load`, `session/resume` and `session/prompt`. Git's push goes through a relay the CLI runs
-on loopback (`apps/cli/src/cmd/acp_git.rs`): it answers only under a random path prefix and only for
-that one repository, and it forwards each request on the CLI's own pinned client, so git never holds
-the owner token. The hub's owner routes `GET/POST /v1/git/smart/<repo>/{info/refs,git-upload-pack,git-receive-pack}`
-relay the smart-HTTP to the forge as its admin (`crates/apid/src/git.rs`). The agent works on
-`acp/<session>` cloned from that branch and opens a pull request into `editor/<branch>`; the pull
-request comes back to the editor as a `tool_call` of diffs.
+**Repository mirror.** `agentplaza acp --repo <name>` mirrors the editor's project into the plaza
+repository's Weft before each session and each prompt: the committed HEAD becomes the latest draft of
+the editor lane `editor/<branch>` (`editor/detached-<sha>` for a detached HEAD; the owner's, never
+landed), uploading only the objects the hub lacks (`apps/cli/src/cmd/acp_weft.rs`). The session is
+told when the editor had uncommitted changes. The CLI sends the link as `_meta.agentplaza.repo` on
+`session/new`, `session/load`, `session/resume` and `session/prompt`. The session's agent works in a
+lane of its own, `acp/<session>`, stacked on the editor lane and checked out in its VM like a task's
+lane (each turn a draft); the files that lane changed come back to the editor as a `tool_call` of
+diffs, with a link to the change in History.
 
 **Write-back.** Off by default: the owner sets `acp_write_back` in `/v1/settings`
 (`crates/apid/src/settings.rs`). With it on, and only for a caller that may govern, an editor that
-advertised `fs.writeTextFile` is asked after the pull request's `tool_call` whether to apply its files
-(`session/request_permission`, id `apply-pr-<n>`, 10 minutes to answer). On apply the editor gets one
+advertised `fs.writeTextFile` is asked after the change's `tool_call` whether to apply its files
+(`session/request_permission`, id `apply-w-<n>`, 10 minutes to answer). On apply the editor gets one
 `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`. Deleted files are
 left for the owner. The agent never writes the project itself.
 
@@ -656,7 +654,7 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | hub as MCP server | `/v1/hub-mcp`, `/v1/hub-mcp/tokens`, `/v1/hub-mcp/calls`; the MCP endpoint itself is `POST /mcp` (bearer token) |
 | editors (ACP) | `GET /v1/acp` (WebSocket, subprotocol `apz.acp.v1`, owner or operate/govern token route, off until `acp_enabled`), `GET /v1/acp/sessions` |
 | vault | `/v1/vault` (`/seal`, `/unseal`, `/recovery`, `/rekey`, `/import`), `/v1/vault/secrets` (`/{id}`, `/value`, `/test`, `/rollback`), `/v1/vault/slots`, `/v1/vault/consumers`, `/v1/vault/audit` |
-| git (the plaza's Forgejo) | `/v1/git`, `/v1/git/repos/{repo}` (`branches`, `commits`, `file`, `tree`, `pulls`, `pulls/{n}` with `merge`, `review`, `comments`, `state`), `/v1/git/smart/{repo}/{info/refs,git-upload-pack,git-receive-pack}` (the smart-HTTP of the ACP repository mirror, owner only) |
+| weft (the plaza's version control) | `/v1/weft/...` (the owner door to `weft serve`: repos, changes, revisions, log, blame, queue, releases, artifacts, console), `/v1/recipes`, `/v1/reviews/{run}`, and `/v1/tasks/{id}/reviews` |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
 | workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults` |

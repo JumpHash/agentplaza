@@ -37,7 +37,6 @@ const ALWAYS: &[&str] = &[
     "plaza_projects",
     "plaza_project_attach",
     "plaza_project_critique",
-    "plaza_git",
     "submit_claim",
     "transcript_search",
     "plaza_tasks",
@@ -168,7 +167,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
-        "plaza_git" => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
@@ -766,7 +764,6 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 .or_else(|| crate::toolbox::spec(other))
                 .or_else(|| crate::projects::spec(other))
                 .or_else(|| crate::harness_control::spec(other))
-                .or_else(|| crate::git::spec(other))
                 .or_else(|| crate::agent_proposals::spec(other))
                 .or_else(|| crate::drafts::spec(other))
                 .or_else(|| crate::review_graph::tools::spec(other))
@@ -1280,7 +1277,6 @@ fn host_call(
         other if crate::harness_control::TOOLS.contains(&other) => {
             crate::harness_control::run(app, agent, other, input)
         }
-        "plaza_git" => crate::git::run(app, agent, input),
         other if crate::stations::tools::TOOLS.contains(&other) => {
             crate::stations::tools::run(app, agent, other, input)
         }
