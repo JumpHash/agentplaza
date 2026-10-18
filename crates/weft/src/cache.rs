@@ -22,7 +22,8 @@ use crate::wire;
 
 pub struct Cache {
     dir: PathBuf,
-    upstream: Client,
+    /// Where misses go (`None` for a cache another process fills: apz-link's, on a joined node).
+    upstream: Option<Client>,
     max_bytes: u64,
     bytes: AtomicU64,
     /// Last use of each object, by a counter (not a clock), for eviction.
@@ -34,6 +35,19 @@ pub struct Cache {
 
 impl Cache {
     pub fn open(dir: &Path, upstream: Client, max_bytes: u64) -> Result<Arc<Cache>, String> {
+        Cache::open_with(dir, Some(upstream), max_bytes)
+    }
+
+    /// The objects on disk only; whoever holds it fetches the misses.
+    pub fn objects(dir: &Path, max_bytes: u64) -> Result<Arc<Cache>, String> {
+        Cache::open_with(dir, None, max_bytes)
+    }
+
+    fn open_with(
+        dir: &Path,
+        upstream: Option<Client>,
+        max_bytes: u64,
+    ) -> Result<Arc<Cache>, String> {
         let objects = dir.join("objects");
         std::fs::create_dir_all(&objects).map_err(|e| format!("{}: {e}", objects.display()))?;
         let mut used = HashMap::new();
@@ -131,9 +145,12 @@ impl Cache {
 
     /// The upstream client for one request: the caller it names goes along.
     fn up(&self, req: &Request) -> Client {
+        let upstream = self.upstream.clone().unwrap_or_else(|| {
+            Client::new("http://127.0.0.1:9/v1", None, vec![]).expect("a fixed URL parses")
+        });
         match req.header(wire::CALLER) {
-            Some(c) => self.upstream.clone().with_header(wire::CALLER, c),
-            None => self.upstream.clone(),
+            Some(c) => upstream.with_header(wire::CALLER, c),
+            None => upstream,
         }
     }
 

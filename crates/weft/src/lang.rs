@@ -6,8 +6,12 @@
 //! and unloads it when it has been idle. Nothing is loaded up front.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[cfg(feature = "packs")]
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+#[cfg(feature = "packs")]
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -320,6 +324,7 @@ fn extract(query: &tree_sitter::Query, tree: &tree_sitter::Tree, source: &[u8]) 
 }
 
 /// A name as people read it: one line, at most 80 characters.
+#[cfg(feature = "packs")]
 fn short_name(text: &str) -> String {
     let one = collapse(text);
     match one.char_indices().nth(80) {
@@ -328,6 +333,7 @@ fn short_name(text: &str) -> String {
     }
 }
 
+#[cfg(feature = "packs")]
 fn collapse(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut space = false;

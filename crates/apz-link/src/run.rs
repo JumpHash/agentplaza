@@ -128,6 +128,10 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
         token: InternalToken::file(dir.join("internal-token")),
         ..local
     };
+    // The node's Weft cache, shared by its VMs (see forward.rs).
+    if let Err(err) = forward::set_weft_cache(&dir.join("weft-cache")) {
+        eprintln!("apz-link: no Weft cache on this node: {err}");
+    }
     let identity = Arc::new(identity);
     let key = Arc::new(key);
     let _forwarder =
