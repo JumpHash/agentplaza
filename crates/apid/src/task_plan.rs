@@ -237,26 +237,27 @@ pub fn read_doc(
     let repo = project
         .repo
         .as_deref()
-        .ok_or("the project has no repo on the plaza's git host")?;
-    let encoded: Vec<String> = path
-        .trim_start_matches('/')
-        .split('/')
-        .map(encode_segment)
-        .collect();
-    let mut url = format!("/api/v1/repos/{repo}/raw/{}", encoded.join("/"));
-    if let Some(commit) = commit {
-        url.push_str(&format!("?ref={}", encode_segment(commit)));
-    }
-    let (status, body) = app.forge.quick_get(&url)?;
-    if status != 200 {
-        return Err(format!("the git host answered {status} for {path}"));
-    }
-    let text = match body {
-        Value::String(text) => text,
-        // A file that happens to be JSON comes back parsed.
-        other => other.to_string(),
+        .ok_or("the project has no repo in Weft")?;
+    let repo = repo.strip_prefix("agentplaza/").unwrap_or(repo);
+    // The document on main, or at the revision (or landed change) the plan names.
+    let rev = match commit {
+        Some(c) if c.starts_with("w-") && !c.contains('.') => format!("{c}.l"),
+        Some(c) => c.to_string(),
+        None => app
+            .weft
+            .get(&format!("/repos/{}", weft::server::percent_encode(repo)))?["refs"]["main"]
+            .as_str()
+            .unwrap_or("root")
+            .to_string(),
     };
-    text_of(text.as_bytes())
+    let client = app.weft.client("owner")?;
+    let bytes = client
+        .get_bytes(&format!(
+            "/revisions/{rev}/file?path={}",
+            weft::server::percent_encode(path.trim_start_matches('/'))
+        ))
+        .map_err(|e| format!("Weft has no {path} in {repo} at {rev}: {e}"))?;
+    text_of(&bytes)
 }
 
 /// The bytes as text, refused when they are not UTF-8 or too long to be a task list.
@@ -268,19 +269,6 @@ fn text_of(bytes: &[u8]) -> Result<String, String> {
         ));
     }
     String::from_utf8(bytes.to_vec()).map_err(|_| "the document is not UTF-8 text".to_string())
-}
-
-/// One path segment, percent-encoded for a URL.
-fn encode_segment(segment: &str) -> String {
-    segment
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
 }
 
 /// One task of a posted list: its key, the id the ledger gave it, the ids it runs after, and
@@ -522,10 +510,15 @@ mod tests {
     }
 
     #[test]
-    fn a_repo_path_is_encoded_for_the_git_host() {
-        assert_eq!(encode_segment("tasks.md"), "tasks.md");
-        assert_eq!(encode_segment("my plan#1.md"), "my%20plan%231.md");
-        assert_eq!(encode_segment("main"), "main");
+    fn a_repo_path_is_encoded_for_weft() {
+        assert_eq!(
+            weft::server::percent_encode("docs/tasks.md"),
+            "docs/tasks.md"
+        );
+        assert_eq!(
+            weft::server::percent_encode("my plan#1.md"),
+            "my%20plan%231.md"
+        );
     }
 
     fn actor(cid: u64, role: &str) -> Actor {

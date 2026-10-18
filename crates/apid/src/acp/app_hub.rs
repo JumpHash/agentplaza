@@ -9,7 +9,6 @@ use super::agent::{Hub, RepoFile, RepoPull};
 use crate::agents::{Agent, Status};
 use crate::approvals::{Mode, State};
 use crate::events::Frame;
-use crate::git::{ORG, contents_path, forge_on, seg};
 use crate::scheduler::Origin;
 use crate::settings::{Tier, tier_of};
 use crate::state::App;
@@ -17,8 +16,6 @@ use crate::transcript::Entry;
 
 /// How many transcript entries one read takes from the log.
 const ENTRY_PAGE: usize = 1000;
-/// How many pages of open pull requests are read, 50 to a page, when looking for a session's.
-const PULL_PAGES: u64 = 10;
 /// How many changed files one pull request reports.
 const PULL_FILES: usize = 50;
 /// The largest text read from either side of a changed file; a bigger file is not reported.
@@ -286,42 +283,44 @@ impl Hub for AppHub<'_> {
     }
 
     fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull> {
-        let forge = &self.app.forge;
-        let pr = open_pull_of(forge, name, head)?;
-        let number = pr["number"].as_u64()?;
-        // The diff is against the merge base, so the old side is read there, not at the base branch's
-        // tip, which may have moved on; the new side is the head commit.
-        let base = pr["merge_base"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or(pr["base"]["ref"].as_str())?;
-        let head_at = pr["head"]["sha"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or(pr["head"]["ref"].as_str())?;
-        // A forge that cannot list the files still leaves the pull request reported, without diffs.
-        let changed = forge_on(
-            forge,
-            "GET",
-            &format!("/api/v1/repos/{ORG}/{}/pulls/{number}/files", seg(name)),
-            None,
-            None,
-        )
-        .unwrap_or(Value::Null);
+        // The editor's lane in Weft (`editor/<branch>`, the owner's, never landed): its latest draft against the
+        // revision it started from.
+        let c = self.app.weft.client("owner").ok()?;
+        let enc = weft::server::percent_encode;
+        let open = c
+            .get(&format!(
+                "/repos/{}/log?q={}&limit=200",
+                enc(name),
+                enc("author(owner) & open()")
+            ))
+            .ok()?;
+        let lane = open["changes"]
+            .as_array()?
+            .iter()
+            .find(|ch| ch["title"].as_str() == Some(head))?
+            .clone();
+        let change = lane["change"].as_str()?.to_string();
+        let detail = c.get(&format!("/changes/{change}")).ok()?;
+        let rev = detail["drafts"].as_array()?.last()?.as_str()?.to_string();
+        let base = c.get(&format!("/revisions/{rev}")).ok()?["base"]
+            .as_str()?
+            .to_string();
+        // Weft that cannot list the files still leaves the lane reported, without diffs.
+        let changed = c
+            .get(&format!("/revisions/{rev}/diff"))
+            .unwrap_or(Value::Null);
         let mut files = Vec::new();
-        for change in changed.as_array().into_iter().flatten() {
+        for f in changed["files"].as_array().into_iter().flatten() {
             if files.len() == PULL_FILES {
                 break;
             }
-            let Some(path) = change["filename"].as_str() else {
+            let Some(path) = f["path"].as_str() else {
                 continue;
             };
-            let old_path = change["previous_filename"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(path);
-            let old = side(forge, name, old_path, base);
-            let new = side(forge, name, path, head_at);
+            if f["binary"] == true {
+                continue;
+            }
+            let (old, new) = (side(&c, &base, path), side(&c, &rev, path));
             let (old_text, new_text) = match (old, new) {
                 (Side::Skip, _) | (_, Side::Skip) | (Side::Absent, Side::Absent) => continue,
                 (old, new) => (old.text(), new.text()),
@@ -333,8 +332,8 @@ impl Hub for AppHub<'_> {
             });
         }
         Some(RepoPull {
-            url: pr["html_url"].as_str().unwrap_or_default().to_string(),
-            number,
+            url: format!("#/history/{name}/change/{change}"),
+            number: weft::model::parse_change(&change).ok()?,
             files,
         })
     }
@@ -344,35 +343,12 @@ impl Hub for AppHub<'_> {
     }
 }
 
-/// The open pull request of repository `repo` whose head branch is `head`, as Forgejo lists it; None
-/// when there is none, or when the forge does not answer.
-fn open_pull_of(forge: &crate::git::Forge, repo: &str, head: &str) -> Option<Value> {
-    for page in 1..=PULL_PAGES {
-        let path = format!(
-            "/api/v1/repos/{ORG}/{}/pulls?state=open&page={page}&limit=50",
-            seg(repo)
-        );
-        let rows = forge_on(forge, "GET", &path, None, None).ok()?;
-        let rows = rows.as_array()?;
-        if let Some(pr) = rows
-            .iter()
-            .find(|p| p["head"]["ref"].as_str() == Some(head))
-        {
-            return Some(pr.clone());
-        }
-        if rows.is_empty() {
-            break;
-        }
-    }
-    None
-}
-
 /// What a changed file holds on one side of its diff.
 enum Side {
     /// Not on that side: the file was added or removed.
     Absent,
     Text(String),
-    /// Not reported: a directory, binary or too big, or the forge did not answer.
+    /// Not reported: a directory, binary or too big, or Weft did not answer.
     Skip,
 }
 
@@ -385,24 +361,18 @@ impl Side {
     }
 }
 
-/// `path` at `reference` (a commit or a branch) on repository `repo`.
-fn side(forge: &crate::git::Forge, repo: &str, path: &str, reference: &str) -> Side {
-    let raw = match forge_on(
-        forge,
-        "GET",
-        &contents_path(repo, path, Some(reference)),
-        None,
-        None,
-    ) {
-        Ok(raw) => raw,
-        Err(failure) if failure.status == 404 => return Side::Absent,
-        Err(_) => return Side::Skip,
-    };
-    if raw.is_array() {
-        return Side::Skip;
+/// `path` at revision `rev`, from Weft.
+fn side(c: &weft::client::Client, rev: &str, path: &str) -> Side {
+    if rev == "root" {
+        return Side::Absent;
     }
-    let Ok(bytes) = crate::git::base64_decode(raw["content"].as_str().unwrap_or_default()) else {
-        return Side::Skip;
+    let bytes = match c.get_bytes(&format!(
+        "/revisions/{rev}/file?path={}",
+        weft::server::percent_encode(path)
+    )) {
+        Ok(b) => b,
+        Err(e) if e.contains("(404)") => return Side::Absent,
+        Err(_) => return Side::Skip,
     };
     if bytes.len() > PULL_TEXT {
         return Side::Skip;

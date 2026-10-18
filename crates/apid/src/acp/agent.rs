@@ -81,7 +81,7 @@ pub trait Hub: Sync {
     /// Sets agent `cid`'s model, when its tier allows it.
     fn set_model(&self, cid: u64, model: &str) -> Result<(), String>;
     /// The open pull request of repository `name` whose head branch is `head`, with its changed text
-    /// files. None when there is none, or when the forge does not answer: the turn then reports no
+    /// files. None when there is none, or when Weft does not answer: the turn then reports no
     /// pull request rather than failing.
     fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull>;
     /// Whether the owner has turned on write-back: an editor that can write files may apply a pull
