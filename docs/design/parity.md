@@ -32,6 +32,7 @@ Audited on 2026-10-13 against the code (each row checked by the hub endpoints bo
 | 16 | Shell | Toasts, a theme switch, conversation search and pagination, task withdraw, connector secret clear | done |
 | 17 | Prompts | The prompt library: list, editor, versions, compare, publish, history, rules | done in both apps (e91d418); the desktop checks locally with the same `apz-prompt` crate |
 | 18 | Skills | The skill library: list, New, Import (zip, .skill; a folder on the desktop), From GitHub, Export, the editor (file tree, preview, findings, versions, compare, history, rules, bindings, publish, GitHub update) | done in both apps (8fb8bab); the desktop checks locally with `apz-skill` |
+| 19 | Work | The project as one flow (`apps/web/src/views/work.ts`): the plan column, the tasks laid out by `crates/apz-graph` in the order their `after` links allow, delivery; Waiting, Blocked and Needs you on the cards; the task drawer; "Only what needs me"; state columns when no task has a link. Beside it: the Overview's flow lines; on the Tasks screen, "waits on" chips, the Ready filter and the ready tasks nobody has claimed, by role | open: the desktop's screen is Graph 6/6, drawn from the same layout crate |
 
 ## Web gaps (desktop has it)
 

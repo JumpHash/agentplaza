@@ -25,6 +25,9 @@ import { acpSnippets, hubOrigin, setupSnippets } from '../src/views/hub-mcp-snip
 import { DEFAULT_ENGINES, ENGINES, toggleEngine } from '../src/views/engines-model';
 import { ENV_NAME_RE, limitsProblem, matchingPreset, ownRowProblem, specsOfBag } from '../src/views/mcp-common';
 import { wrapIde, type IdeGlue } from '../src/ide/wasm';
+import { wrapGraph, type GraphGlue, type Layout } from '../src/graph/wasm';
+import { cardLine, compose, flowSegments, listed, looseGraph, needsMe, pathOf, planCards, shortSpan, stepText, waitsByRole, waitsForOwner, workState, type WorkState } from '../src/views/work-model';
+import type { GraphTask } from '../src/api';
 import { activitySplit, approvalIdIn, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
 import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
@@ -1719,6 +1722,138 @@ sectionEnd('metrics charts tests: ok');
   keeper.stop();
 }
 sectionEnd('metrics state tests: ok');
+
+
+// The task graph layout's typed wrapper: only the ids and the links cross, and the layout comes back parsed. The harness
+// cannot load the built wasm; apz-graph-web's own tests cover the JSON layer, and the wasm was checked in a browser.
+{
+  const sent: { graph: string; options: string }[] = [];
+  const glue: GraphGlue = {
+    default: async () => undefined,
+    layout: (graph, options) => {
+      sent.push({ graph, options });
+      if (options.includes('"card_width":0')) throw new Error('card_width must be more than 0');
+      return JSON.stringify({ width: 10, height: 20, columns: [['t1']], cards: [], routes: [] });
+    },
+  };
+  const graph = wrapGraph(glue);
+  const task: GraphTask = { id: 't1', goal: 'Ship', role: null, depth: 0, state: 'open', ready: true, blocked_by: [], agent_cid: null, reviewer_cid: null, step: null };
+  eq(graph.layout({ tasks: [task], edges: [] }).height, 20, 'graph: the layout comes back parsed');
+  eq(sent[0], { graph: '{"tasks":[{"id":"t1"}],"edges":[]}', options: '' }, 'graph: only ids and links cross, options default to the desk');
+  graph.layout({ tasks: [task], edges: [] }, { card_width: 420 });
+  eq(sent[1]?.options, '{"card_width":420}', 'graph: options cross as JSON');
+  let refusal = '';
+  try {
+    graph.layout({ tasks: [task], edges: [] }, { card_width: 0 });
+  } catch (e) {
+    refusal = (e as Error).message;
+  }
+  eq(refusal, 'card_width must be more than 0', 'graph: a refusal reaches the caller with its message');
+}
+sectionEnd('graph wrapper tests: ok');
+
+// The Work screen's pure parts (src/views/work-model.ts): what a task is to the screen, its line, the flow line, what
+// "Only what needs me" keeps, and the map's geometry.
+{
+  const now = 1_000_000;
+  const node = (id: string, over: Partial<GraphTask> = {}): GraphTask => ({
+    id, goal: `Goal of ${id}\nmore`, role: null, depth: 0, state: 'open', ready: false, blocked_by: [], agent_cid: null, reviewer_cid: null, step: null, ...over,
+  });
+  eq(workState({ state: 'open', ready: true, blocked_by: [] }), 'ready', 'work: an open ready task is ready');
+  eq(workState({ state: 'open', ready: false, blocked_by: [] }), 'waiting', 'work: an open task waiting on links');
+  eq(workState({ state: 'open', ready: false, blocked_by: ['t1'] }), 'blocked', 'work: a failed link blocks');
+  eq(workState({ state: 'claimed', ready: false, blocked_by: [] }, { stage: 'tool', tool: 'bash', since_ms: 0 }), 'working', 'work: a claim at work');
+  eq(workState({ state: 'claimed', ready: false, blocked_by: [] }, { stage: 'approval', tool: 'plaza_pay', since_ms: 0 }), 'needs-you', 'work: a claim waiting on the owner needs you');
+  eq(workState({ state: 'awaiting_review', ready: false, blocked_by: [] }), 'review', 'work: awaiting review');
+  eq(['done', 'failed', 'withdrawn'].map((state) => workState({ state, ready: false, blocked_by: [] })), ['done', 'failed', 'withdrawn'], 'work: ended states');
+  eq(listed(['a']), 'a', 'listed: one');
+  eq(listed(['a', 'b', 'c']), 'a, b and c', 'listed: three');
+  eq([shortSpan(40_000), shortSpan(12 * 60_000), shortSpan(3 * 3_600_000), shortSpan(2 * 86_400_000)], ['40s', '12m', '3h', '2d'], 'short spans');
+  eq(stepText({ stage: 'tool', tool: 'bash', since_ms: now - 120_000 }, now), 'Running bash · 2m', 'a step names its tool and its time');
+  eq(stepText({ stage: 'approval', tool: 'plaza_pay', since_ms: now }, now), 'Waits for you to approve plaza_pay · 0s', 'an approval step names the tool');
+  eq(stepText(null, now), '', 'no step, no text');
+
+  const edges: [string, string][] = [['t1', 't3'], ['t2', 't3'], ['t3', 't4']];
+  const states = new Map([['t1', 'done'], ['t2', 'claimed'], ['t3', 'open'], ['t4', 'open']]);
+  const ctx = {
+    edges,
+    stateOf: (id: string) => states.get(id),
+    taskName: (id: string) => `T${id.slice(1)}`,
+    nameOf: (cid: number) => (cid === 7 ? 'Ada' : `agent ${cid}`),
+    stepOf: (cid: number) => (cid === 7 ? { stage: 'thinking' as const, tool: null, since_ms: now - 5_000 } : null),
+    now,
+  };
+  eq(cardLine(node('t3'), 'waiting', ctx), 'After T2', 'work: a waiting card names the links not done yet');
+  eq(cardLine(node('t5', { blocked_by: ['t1', 't2'] }), 'blocked', ctx), 'Blocked: T1 and T2 did not finish', 'work: a blocked card names the links that ended');
+  eq(cardLine(node('t2', { state: 'claimed', agent_cid: 7 }), 'working', ctx), 'Ada · Thinking · 5s', 'work: a working card names its agent and step');
+  const asks = { ...ctx, stepOf: () => ({ stage: 'approval' as const, tool: 'plaza_pay', since_ms: now - 120_000 }) };
+  eq(cardLine(node('t2', { state: 'claimed', agent_cid: 7 }), 'needs-you', asks), 'Approve plaza_pay · Ada · 2m', 'work: a card that needs you leads with the decision');
+  eq(cardLine(node('t6', { role: 'qa' }), 'ready', ctx), 'Any QA agent can claim it', 'work: a ready card names the role that can claim it');
+  eq(cardLine(node('t6', { role: 'orchestrator' }), 'ready', ctx), 'Any Orchestrator agent can claim it', 'work: a role is a name, with no article to get wrong');
+  eq(cardLine(node('t6'), 'ready', ctx), 'Any agent can claim it', 'work: a ready card with no role');
+  eq(cardLine(node('t6', { role: 'qa' }), 'ready', { ...ctx, readyAt: () => now - 300_000 }), 'Unclaimed for 5m', 'work: a ready card says how long nobody has claimed it');
+  eq(cardLine(node('t6', { state: 'awaiting_review', reviewer_cid: 9 }), 'review', ctx), 'Reviewed by agent 9', 'work: a card in review names its reviewer');
+
+  const ws = new Map<string, WorkState>([['t1', 'done'], ['t2', 'needs-you'], ['t3', 'waiting'], ['t4', 'waiting'], ['t5', 'ready']]);
+  eq([...needsMe(ws, edges)].sort(), ['t2', 't3', 't4'], 'work: only what needs me keeps the decision and the work after it');
+  eq(needsMe(new Map([['t1', 'done']]), edges).size, 0, 'work: nothing waits on the owner, nothing is kept');
+
+  const project = {
+    id: 'pr1', title: 'Release', goal: 'g', kind: 'other', stage: 'implementation', lead_cid: 1, owner_approval: false, repo: null,
+    docs: [{ kind: 'brief', title: 'The brief', file: 'f1', repo_path: null, commit: null, summary: 's', by_cid: 1, by: 'Ada', at_ms: 0 }],
+    critiques: [{ by_cid: 3, by: 'Cy', verdict: 'approve', text: 'ok', revision: 1, at_ms: 0 }], revision: 1, approved_by: 'Mayor',
+    tasks: ['t1', 't2'], history: [], created_ms: 0, updated_ms: 0,
+  } as Project;
+  const taskRow = (id: string, over: Partial<Task> = {}): Task => ({
+    id, state: 'open', goal: id, acceptance: null, role: null, budget: 2000, assignee_id: null, agent_cid: null, note: null, outcome: null,
+    created_at: 0, updated_at: 0, project: 'pr1', after: [], ready: true, waiting_on: [], blocked_by: [], ...over,
+  });
+  const segs = flowSegments(project, [taskRow('t1', { state: 'done' }), taskRow('t2', { ready: false, waiting_on: ['t1'] })]);
+  eq(segs.map((x) => `${x.kind}:${x.state}`), ['plan:done', 'plan:done', 'plan:done', 'plan:done', 'plan:done', 'task:done', 'task:waiting', 'end:later', 'end:later'], 'work: a building project’s flow line');
+  eq(flowSegments(null, [taskRow('t9')]).map((x) => x.kind), ['task'], 'work: tasks outside projects have task squares only');
+  const cards = planCards(project);
+  eq(cards.map((c) => c.state), ['done', 'done', 'done', 'done', 'done'], 'work: an approved plan is done');
+  eq(cards[4]?.title, 'Approved by Mayor', 'work: the approval names who approved');
+  eq(planCards({ ...project, stage: 'approval', approved_by: null, owner_approval: true })[4]?.state, 'you', 'work: a plan waiting on the owner is the owner’s');
+  const asking = { ...project, stage: 'critique', approved_by: null, owner_approval: true, tasks: [] } as Project;
+  eq(flowSegments(asking, []).map((x) => x.state), ['done', 'done', 'done', 'current', 'you', 'later', 'later'], 'work: the flow line shows the approval waiting on the owner');
+  eq(flowSegments({ ...asking, owner_approval: false }, [])[4]?.state, 'later', 'work: the mayor’s approval is not the owner’s');
+  const claimed = [taskRow('t1', { state: 'claimed', ready: false, agent_cid: 7 }), taskRow('t2', { state: 'claimed', ready: false, agent_cid: 8 })];
+  const deciding = (cid: number) => (cid === 7 ? { stage: 'approval' as const, tool: 'plaza_pay', since_ms: 0 } : { stage: 'tool' as const, tool: 'bash', since_ms: 0 });
+  eq(flowSegments(project, claimed, deciding).filter((x) => x.kind === 'task').map((x) => x.state), ['needs-you', 'working'], 'work: with the steps, a task waiting on the owner is the owner’s square');
+  eq(flowSegments(project, claimed).filter((x) => x.kind === 'task').map((x) => x.state), ['working', 'working'], 'work: without the steps, a claim is at work');
+  eq([waitsForOwner(asking, []), waitsForOwner(project, claimed, deciding), waitsForOwner(project, claimed), waitsForOwner(null, claimed, deciding)], [true, true, false, true], 'work: a plan or a task can wait on the owner, in a project or outside');
+
+  const waits = waitsByRole(
+    [
+      taskRow('t1', { state: 'done', updated_at: 5_000 }),
+      taskRow('t2', { role: 'qa', after: ['t1'], created_at: 1_000 }),
+      taskRow('t3', { role: 'qa', created_at: 2_000 }),
+      taskRow('t4', { created_at: 7_000 }),
+      taskRow('t5', { role: 'qa', ready: false, created_at: 0 }),
+      taskRow('t6', { role: 'qa', state: 'claimed', ready: false, created_at: 0 }),
+    ],
+    10_000,
+  );
+  eq(waits, [{ role: 'qa', count: 2, waited: 8_000 }, { role: null, count: 1, waited: 3_000 }], 'work: ready tasks nobody claimed, by role, waiting since posted or since their last link finished');
+
+  const layout: Layout = {
+    width: 300, height: 100, columns: [['t1'], ['t2']],
+    cards: [{ id: 't1', column: 0, row: 0, x: 10, y: 10, width: 100, height: 80 }, { id: 't2', column: 1, row: 0, x: 160, y: 10, width: 100, height: 80 }],
+    routes: [{ from: 't1', to: 't2', points: [[110, 50], [160, 50]] }],
+  };
+  const geo = compose(layout, { plan: { width: 50, height: 200, anchor: 190 }, delivery: { width: 40, height: 60 }, gap: 20 });
+  eq([geo.width, geo.height], [50 + 20 + 300 + 20 + 40, 200], 'work: the map holds the plan, the graph and delivery');
+  eq(geo.graph, { x: 70, y: 50 }, 'work: the graph is centred on the tallest part');
+  eq(geo.posted, ['M50 190H60V100H80'], 'work: the plan posts the first column');
+  eq(geo.delivered, ['M330 100H380V100H390'], 'work: the last tasks lead to delivery');
+  eq(pathOf([[1, 2], [3, 2]], 10, 20), 'M11 22L13 22', 'work: a route moves onto the map');
+
+  const loose = looseGraph([taskRow('t1', { project: null }), taskRow('t2', { project: null, after: ['t1', 't7'] }), taskRow('t3')]);
+  eq(loose.tasks.map((t) => t.id), ['t1', 't2'], 'work: tasks outside projects only');
+  eq(loose.edges, [['t1', 't2']], 'work: links among them only');
+}
+sectionEnd('work screen tests: ok');
 
 if (failedSections.length) {
   console.error(`${failedSections.length} section(s) failed: ${failedSections.join(', ')}`);

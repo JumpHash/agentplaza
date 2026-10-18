@@ -31,6 +31,7 @@ import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
+import { mount as work } from './work';
 import { mount as workstations } from './workstations';
 import { lazyMount } from './lazy';
 
@@ -53,6 +54,7 @@ export const SCREENS: Screen[] = [
   { key: 'prompts', label: 'Prompts', icon: 'edit', section: 'Plaza', mount: prompts },
   { key: 'skills', label: 'Skills', icon: 'wrench', section: 'Plaza', mount: skills },
   { key: 'projects', label: 'Projects', icon: 'projects', section: 'Plaza', mount: projects },
+  { key: 'work', label: 'Work', icon: 'commit', section: 'Plaza', mount: work },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
   { key: 'git', label: 'Git', icon: 'git', section: 'Plaza', mount: git },
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },

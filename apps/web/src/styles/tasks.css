@@ -16,6 +16,11 @@
 .tasks-view .tk-fig b { font: 700 40px/1 var(--sans); font-variant-numeric: tabular-nums; color: var(--ink); }
 .tasks-view .tk-fig span { font: 500 11px var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
 
+.tasks-view .tk-waits { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 10px 0; border-bottom: 1px solid var(--rule); font: 500 12px var(--sans); color: var(--ink-3); }
+.tasks-view .tk-waits-label { color: var(--ink-3); }
+.tasks-view .tk-wait { color: var(--ink-2); }
+.tasks-view .tk-wait b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
 @media (max-width: 760px) {
   .tasks-view .tk-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tasks-view .tk-fig, .tasks-view .tk-fig + .tk-fig { border-right: 0; padding-left: 0; }
@@ -149,3 +154,13 @@
   .tasks-view *::before,
   .tasks-view *::after { animation: none !important; transition: none !important; }
 }
+
+/* Whether an open task can be claimed, or what it waits on, as chips that open the task named (views/tasks.ts waitsOn);
+   the Ready filter. */
+.tasks-view .task-open { display: grid; min-width: 0; }
+.tasks-view .task-waits { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 4px; font: 12px var(--sans); }
+.tasks-view .task-ready { color: var(--info); font-weight: 500; }
+.tasks-view .task-chip { padding: 0 5px; border: 1px solid var(--rule); color: var(--ink-2); font: 11px var(--mono); text-decoration: none; }
+.tasks-view .task-chip:hover { border-color: var(--ink-3); color: var(--ink); }
+.tasks-view .task-chip.bad { border-color: var(--crit); color: var(--crit); }
+.tasks-view .tk-filter { display: inline-flex; align-items: center; gap: 6px; font: var(--type-ui); color: var(--ink-2); cursor: pointer; white-space: nowrap; }
