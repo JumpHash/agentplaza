@@ -37,7 +37,10 @@ concurrency:
 jobs:
   comment:
     name: Comment on the pull request
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'pull_request'
+    # A gate run that ran no job (a draft pull request) has no results to post.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'skipped')
     # The light runner: a download, a small script and a few API calls.
     runs-on: [self-hosted, light]
     timeout-minutes: 10
