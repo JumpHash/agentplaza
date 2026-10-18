@@ -178,10 +178,11 @@ pub struct Placed {
 }
 
 /// The hub's own noded as it answered: `/v1/machine` and `/v1/machine/stats`, each None when
-/// noded did not answer.
+/// noded did not answer; and whether the owner stopped `n0` (`mover`).
 pub struct HubReport {
     pub machine: Option<Value>,
     pub stats: Option<Value>,
+    pub stopped: bool,
 }
 
 /// The fleet for the Machines view (`GET /v1/fleet`): the hub's own machine (`n0`, from its
@@ -197,6 +198,7 @@ pub fn fleet(app: &App) -> Value {
     let hub = HubReport {
         machine: answered("/v1/machine"),
         stats: answered("/v1/machine/stats"),
+        stopped: app.nodes.is_stopped(LOCAL),
     };
     // Agents that are offline are not running anywhere, so they are not placed.
     let placed: Vec<Placed> = app
@@ -299,12 +301,15 @@ pub fn station_rows(_now_ms: u64, stations: &Value) -> (Vec<Value>, Vec<Value>) 
 
 /// The fleet JSON from its facts (pure): `machines` (the hub first, then every node in order)
 /// and `links` (one per node, to `n0`). A node is reachable when it is not revoked and was
-/// seen within `OFFLINE_AFTER_MS`. Status: revoked, else draining, else online or offline.
+/// seen within `OFFLINE_AFTER_MS`. Status: revoked, else draining (stopped by the owner, `n0` too),
+/// else online or offline.
 /// The hub's stats come from its noded; a remote node's come from its last heartbeat (`null` until
 /// one carries them), since its noded is reached only through the command queue.
 pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed]) -> Value {
     let hub_machine = hub.machine.clone().unwrap_or(Value::Null);
-    let hub_status = if hub.machine.is_some() {
+    let hub_status = if hub.stopped {
+        "draining"
+    } else if hub.machine.is_some() {
         "online"
     } else {
         "offline"
@@ -486,6 +491,7 @@ mod tests {
             stats: Some(
                 json!({ "cpu_percent": 7.5, "mem_used_mib": 18000, "load": [0.1, 0.2, 0.3] }),
             ),
+            stopped: false,
         }
     }
 
@@ -593,10 +599,20 @@ mod tests {
         let down = HubReport {
             machine: None,
             stats: None,
+            stopped: false,
         };
         let view = assemble(NOW, &down, &[], &[]);
         let hub_row = &view["machines"][0];
         assert_eq!(hub_row["status"], "offline");
+        let stopped = HubReport {
+            stopped: true,
+            ..hub()
+        };
+        assert_eq!(
+            assemble(NOW, &stopped, &[], &[])["machines"][0]["status"],
+            "draining",
+            "a stopped hub machine is out of service like a stopped node"
+        );
         assert_eq!(hub_row["name"], "hub");
         assert_eq!(hub_row["kind"], Value::Null);
         assert_eq!(hub_row["stats"], Value::Null);
@@ -614,6 +630,7 @@ mod tests {
                 "name": "studio", "kind": "workstation", "vendor": "apple", "model": "Mac Studio (M2 Ultra)", "apple": apple,
             })),
             stats: None,
+            stopped: false,
         };
         let view = assemble(NOW, &mac, &[], &[]);
         let hub_row = &view["machines"][0];

@@ -634,14 +634,20 @@ pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
         .array("/v1/nodes")
         .iter()
         .map(|n| {
+            let hub = n.get("state").and_then(Value::as_str).unwrap_or("");
             let state = if flag(n.get("revoked")) {
-                "revoked"
-            } else if flag(n.get("draining")) {
-                "draining"
+                "revoked".to_string()
+            } else if hub == "stopping" {
+                match n.get("left").and_then(Value::as_u64) {
+                    Some(left) => format!("stopping ({left} to move)"),
+                    None => "stopping".to_string(),
+                }
+            } else if hub == "stopped" || (hub.is_empty() && flag(n.get("draining"))) {
+                "stopped".to_string()
             } else if flag(n.get("online")) {
-                "online"
+                "online".to_string()
             } else {
-                "offline"
+                "offline".to_string()
             };
             let memory = match n.pointer("/machine/memory_mib") {
                 Some(mib) if !mib.is_null() => format!("{} MiB", show(Some(mib))),
@@ -649,7 +655,7 @@ pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
             };
             vec![
                 show(n.get("name")),
-                state.to_string(),
+                state,
                 show(n.get("agents")),
                 show(n.pointer("/machine/cpus")),
                 memory,
@@ -665,7 +671,7 @@ pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
         rows,
         &[
             Constraint::Length(14),
-            Constraint::Length(10),
+            Constraint::Length(21),
             Constraint::Length(8),
             Constraint::Length(6),
             Constraint::Length(12),

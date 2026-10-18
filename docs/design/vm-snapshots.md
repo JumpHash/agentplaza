@@ -25,7 +25,8 @@ how.
 | node | `crates/noded/src/migrate.rs` | Export and import of a sleeping VM, in chunks. |
 | hub | `crates/apid/src/sleep.rs` | The idle rule, sleep, and wake before work. |
 | hub | `crates/apid/src/vm_snapshots.rs` | Checkpoints, rollback with a safety checkpoint, forks, automatic checkpoints. |
-| hub | `crates/apid/src/placement.rs` | Choosing a node for a new agent, moving an agent, draining a node. |
+| hub | `crates/apid/src/placement.rs` | Choosing a node for a new agent, moving an agent. |
+| hub | `crates/apid/src/mover.rs` | Stopping and resuming nodes: moving their agents off and back, rebalancing. |
 | guest | `crates/agent-harness/src/restore.rs` | Sets the guest's clock and mixes fresh entropy after a restore. |
 
 ## Snapshot format
@@ -222,10 +223,11 @@ The VM's cgroups sit under `agentplaza.slice`, in the user's systemd manager. Th
 unlimited, with the reason logged. Once a root exists, a limit that cannot be written fails the VM's start: the VM does
 not run without a limit it should have.
 
-## Placement, moves and drains
+## Placement, moves, stops and rebalancing
 
-**Placement.** A new agent goes to the node with the highest score (see "Warm templates"). Only a node with room for one
-agent is eligible. With none, the agent goes to `n0`, where noded says whether it fits.
+**Placement.** A new agent goes to the node with the highest score (see "Warm templates"). Only a node in service with
+room for one agent is eligible. With none, the agent goes to `n0`, where noded says whether it fits; when `n0` is
+stopped too, the spawn is refused.
 
 **Moving an agent** (`POST /v1/agents/{cid}/move {node}`) carries its VM between two nodes:
 
@@ -234,16 +236,34 @@ agent is eligible. With none, the agent goes to `n0`, where noded says whether i
 3. The files are copied in 4 MiB reads and written to the target in 512 KiB pieces. A piece that is all zeros is not
    sent: the hub reports the count, and the target leaves a hole. A sparse image crosses the wire at the size of its
    data.
-4. The target finishes the import into a sleeping run. The placement is recorded, the target's gateway serves the CID,
-   and the agent wakes on the target.
+4. The target finishes the import into a sleeping run. The placement is recorded and the target's gateway serves the
+   CID. The move then lets go of its claim on the agent, so a wake restores it on the target, and the agent wakes there.
 5. The source lets go of the agent: its gateway and its run.
 
 A failure before step 4 aborts the import and wakes the agent where it was. The hub never holds a whole image. Exports
 and imports live in memory and expire after their TTL, and an export holds its files open, so the bytes it hashed are
 the bytes it sends.
 
-**Draining.** `POST /v1/nodes/{id}/drain {on}` marks a node as draining. Every agent it runs is moved off, one at a
-time. The owner's console and `agentplaza nodes` expose it.
+Work queued for the agent does not refuse a move: it waits on the hub while the agent moves, and goes out once the
+agent is awake on the target. Work in flight refuses the move.
+
+**Stopping.** `POST /v1/nodes/{id}/stop {now?}` takes a node out of service, the hub's own machine `n0` included. No new
+agent is placed on it, and no agent moves to it. The work queued for its agents waits. The background mover
+(`crates/apid/src/mover.rs`) moves each agent to the machine with the most room for it, one at a time. A working agent
+moves when its turn ends. With `now`, its turn is interrupted, and the same work starts again on its new machine, in the
+workspace as it was. The transcript records `work_interrupted`, not a work end. An agent that cannot leave yet waits,
+with the reason on the node's view. That is the case when no machine in service has room, or when a move failed and is
+retried after 30 s. A stopping node with no agent left is stopped. Its machine can be turned off. The node stays out of
+service, online or not, until it is resumed.
+
+**Resuming.** `POST /v1/nodes/{id}/resume {rebalance?}` puts the node back in service, and the held work of its agents
+goes out. With `rebalance` (the default), the idle agents are spread over the machines in service once the node reports.
+Each machine's share is in proportion to its memory. A move takes an idle agent from the machine most over its share to
+the one most under it that has room. Moves go on only while those two are more than one agent apart, and a rebalance
+makes at most 16 moves.
+
+**Rebalancing.** `POST /v1/nodes/rebalance {dry_run?}` runs a rebalance at any time. It answers
+`{moves: [{cid, from, to}], started}`. With `dry_run`, `started` is false and no agent moves.
 
 | route | what it does |
 |---|---|
@@ -255,7 +275,10 @@ time. The owner's console and `agentplaza nodes` expose it.
 | `POST /v1/imports/{import}/finish` (noded) | Finishes the import into a sleeping run. |
 | `DELETE /v1/imports/{import}` (noded) | Drops an import and its staging directory. |
 | `POST /v1/agents/{cid}/move` (apid) | Moves the agent to `{node}`. Returns `{ok, from, to, bytes, ms}`. |
-| `POST /v1/nodes/{id}/drain` (apid) | `{on}`: drains the node or lifts the drain. |
+| `POST /v1/nodes/{id}/stop` (apid) | `{now?}`: stops the node. With `now`, working agents are interrupted at once. |
+| `POST /v1/nodes/{id}/resume` (apid) | `{rebalance?}`: puts the node back in service. |
+| `POST /v1/nodes/{id}/drain` (apid) | `{on}`: the older name. On stops the node, off resumes it. |
+| `POST /v1/nodes/rebalance` (apid) | `{dry_run?}`: runs a rebalance now. Answers `{moves, started}`. |
 
 ## Platform support
 

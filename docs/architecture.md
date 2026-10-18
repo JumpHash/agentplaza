@@ -660,7 +660,7 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
 | workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults` |
-| nodes | `/v1/nodes` (`/join`, `/codes`, `/{id}` with `/heartbeat`, `/commands`, `/results`, `/runs`, `/machine`, `/stats`, `/drain`, `/revoke`), `/v1/node-link` (`/join`, `/leave`) |
+| nodes | `/v1/nodes` (`/join`, `/codes`, `/rebalance`, `/{id}` with `/heartbeat`, `/commands`, `/results`, `/runs`, `/machine`, `/stats`, `/stop`, `/resume`, `/drain`, `/revoke`), `/v1/node-link` (`/join`, `/leave`) |
 | egress credentials | `/v1/egress/inject` (`GET`, `POST`; `/{id}` with `PATCH`, `DELETE`) ([`design/egress-credentials.md`](design/egress-credentials.md)) |
 | E2B sandboxes | `/v1/e2b/keys` (`GET`, `POST`; `/{id}` with `DELETE`), `/v1/e2b/sandboxes` (`GET`; `/{id}` with `DELETE`, `/pause`, `/resume`), and the SDK API under `/e2b` ([`design/e2b.md`](design/e2b.md)) |
 | VMs (proxied to `noded`) | `/v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/input`, `/v1/volumes` (`/{name}`), `/v1/templates` (`/{key}`); the VMs' checkpoints and forks are under `/v1/agents/{cid}` ([`design/vm-snapshots.md`](design/vm-snapshots.md)) |

@@ -108,7 +108,7 @@ enum Command {
     /// Machines: the VMs, their resources and runs.
     #[command(subcommand)]
     Machines(cmd::machines::Cmd),
-    /// The network's nodes: list, join codes, drain, revoke.
+    /// The network's nodes: list, join codes, stop and resume, rebalance, revoke.
     #[command(subcommand)]
     Nodes(cmd::nodes::Cmd),
     /// Workstations on the hub: list, join codes, leases, settings with the takeover policy, drain, revoke, audit.

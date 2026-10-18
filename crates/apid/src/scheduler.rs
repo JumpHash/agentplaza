@@ -5,7 +5,7 @@
 //! OWNER: slice "scheduler". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -203,6 +203,9 @@ pub struct Queues {
     rulings: Mutex<()>,
     /// task id → credits metered against it so far (its real cost).
     spend: Mutex<std::collections::HashMap<String, i64>>,
+    /// Work items interrupted to move their agent (`Queues::interrupt`): their end puts them back in the
+    /// queue instead of ending them.
+    interrupted: Mutex<BTreeSet<u64>>,
 }
 
 impl Default for Queues {
@@ -214,6 +217,7 @@ impl Default for Queues {
             reviews: Mutex::default(),
             rulings: Mutex::default(),
             spend: Mutex::default(),
+            interrupted: Mutex::default(),
         }
     }
 }
@@ -224,6 +228,13 @@ impl Queues {
         self.lanes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The interrupted items, recovered if a previous holder panicked.
+    fn interrupted(&self) -> MutexGuard<'_, BTreeSet<u64>> {
+        self.interrupted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Queues work for `cid` and sends it if the agent is idle; the work id.
@@ -284,6 +295,12 @@ impl Queues {
         let Some(item) = self.locked().finish(cid, work) else {
             return;
         };
+        let interrupted = self.interrupted().remove(&work);
+        // A turn interrupted for a move that ended anyway (done) ends as usual.
+        if interrupted && !matches!(status, WorkStatus::Done) {
+            self.resume_elsewhere(app, cid, item);
+            return;
+        }
         let state = status_str(status);
         // Stopped work was abandoned, so it counts as failed.
         let outcome = match status {
@@ -332,10 +349,57 @@ impl Queues {
         }
         self.review_lost(app, item.id, "reviewer ended without a verdict");
         app.agents.update(cid, |a| a.status = Status::Idle);
+        // An agent on a stopping node leaves it now that its turn is over.
+        if crate::mover::holds(app, cid) {
+            crate::mover::kick();
+        }
         self.dispatch(app, cid);
         set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
         // This agent is free now: it may be the reviewer a waiting task was waiting for.
         self.assign_reviews(app);
+    }
+
+    /// Interrupts `cid`'s turn so its work goes on on another machine (`mover`, a stop `now`): the item in
+    /// flight is cancelled, and when the agent ends it, it goes back to the front of the queue
+    /// ([`Queues::resume_elsewhere`]) instead of ending. True when the cancel reached the agent; false with
+    /// nothing in flight, or when it was interrupted already.
+    pub fn interrupt(&self, app: &App, cid: u64, reason: &str) -> bool {
+        let Some(item) = self.current(cid) else {
+            return false;
+        };
+        if !self.interrupted().insert(item.id) {
+            return false;
+        }
+        let sent = self.cancel(app, cid, reason);
+        if !sent {
+            self.interrupted().remove(&item.id);
+        }
+        sent
+    }
+
+    /// An item [`Queues::interrupt`] stopped goes back to the front of its agent's queue, marked as moved,
+    /// and starts again once the agent is on its new machine. It has not ended: no task settles and nobody
+    /// is told; the transcript says it was interrupted.
+    fn resume_elsewhere(&self, app: &App, cid: u64, mut item: WorkItem) {
+        item.prompt = resumed(&item.prompt, MOVED_PREFIX);
+        let work = item.id;
+        self.locked().requeue_front(item);
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            "work_interrupted",
+            json!({ "reason": "its machine is stopping; the work resumes on another machine" }),
+        );
+        app.bus.publish(
+            "work",
+            &json!({ "cid": cid, "work": work, "state": "interrupted" }),
+        );
+        app.agents.update(cid, |a| a.status = Status::Idle);
+        // Held while the agent is on its stopping node; sent at once if the owner resumed it meanwhile.
+        self.dispatch(app, cid);
+        set_queued_gauge(&app.metrics.registry, &self.locked(), cid);
+        crate::mover::kick();
     }
 
     /// Records that `cid` posted `task`, so it hears when the task ends.
@@ -466,6 +530,7 @@ impl Queues {
         // contract
         let drained = self.locked().drain(cid);
         for item in drained {
+            self.interrupted().remove(&item.id);
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -804,7 +869,11 @@ impl Queues {
         let held = agent
             .as_ref()
             .is_some_and(|a| crate::membership::held(app, a).is_some());
-        match dispatch_step(status, app.control.paused() || held) {
+        match dispatch_step(
+            status,
+            app.control.paused() || held,
+            crate::mover::holds(app, cid),
+        ) {
             DispatchStep::Hold => return,
             DispatchStep::Wake => {
                 crate::sleep::wake_with(app, cid, crate::sleep::WakePriority::Background);
@@ -869,7 +938,8 @@ pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<St
 #[derive(Debug, PartialEq, Eq)]
 enum DispatchStep {
     /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (on the bench, or its project
-    /// paused, see `membership`), or the agent is gone (or unknown).
+    /// paused, see `membership`), it is away (moving, or on a stopped node it leaves first:
+    /// `mover::holds`), or it is gone (or unknown).
     Hold,
     /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
     Wake,
@@ -877,10 +947,11 @@ enum DispatchStep {
     Send,
 }
 
-/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`).
-fn dispatch_step(status: Option<Status>, held: bool) -> DispatchStep {
+/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`); `away`: it is moving,
+/// or on a stopped node (`mover::holds`).
+fn dispatch_step(status: Option<Status>, held: bool, away: bool) -> DispatchStep {
     match status {
-        _ if held => DispatchStep::Hold,
+        _ if held || away => DispatchStep::Hold,
         None | Some(Status::Offline) => DispatchStep::Hold,
         Some(Status::Asleep | Status::Dozing) => DispatchStep::Wake,
         Some(Status::Idle | Status::Working) => DispatchStep::Send,
@@ -1182,7 +1253,8 @@ fn assign_tasks(app: &App) {
         }
         let members = app.members.members(&project);
         let role = task.role().map(str::to_string);
-        // A model agent (a promoted model, no VM) takes no task.
+        // A model agent (a promoted model, no VM) takes no task, and an agent on a stopped node is leaving it:
+        // a new task goes to one that can start on it now.
         let worker = app
             .agents
             .select(|a| {
@@ -1193,8 +1265,9 @@ fn assign_tasks(app: &App) {
                     && role.as_deref().is_none_or(|r| a.role == r))
                 .then_some(a.cid)
             })
-            .first()
-            .and_then(|&cid| app.agents.get(cid));
+            .into_iter()
+            .find(|&cid| !crate::mover::holds(app, cid))
+            .and_then(|cid| app.agents.get(cid));
         let Some(worker) = worker else {
             continue;
         };
@@ -1273,6 +1346,18 @@ struct Saved {
 
 /// Prefixed to work that was in flight when the plaza stopped, so the agent knows to pick it up.
 const RESUMED_PREFIX: &str = "[resumed after a plaza restart — continue from where you were; your workspace is as you left it]\n\n";
+/// Prefixed to work interrupted to move its agent off a stopping machine (`Queues::interrupt`). It also starts
+/// again where it was when the owner resumes the machine before the agent moves, so the mark says neither.
+const MOVED_PREFIX: &str = "[resumed after your turn was interrupted to move you off a stopping machine — continue from where you were; your workspace is as you left it]\n\n";
+
+/// `prompt` marked with `prefix`, once: a mark it already has (either one) gives way to the new one.
+fn resumed(prompt: &str, prefix: &str) -> String {
+    let bare = prompt
+        .strip_prefix(RESUMED_PREFIX)
+        .or_else(|| prompt.strip_prefix(MOVED_PREFIX))
+        .unwrap_or(prompt);
+    format!("{prefix}{bare}")
+}
 
 impl Queues {
     /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
@@ -1308,9 +1393,7 @@ impl Queues {
         for lane in lanes.lanes.values_mut() {
             if let Some(mut item) = lane.current.take() {
                 item.started_ms = None;
-                if !item.prompt.starts_with(RESUMED_PREFIX) {
-                    item.prompt = format!("{RESUMED_PREFIX}{}", item.prompt);
-                }
+                item.prompt = resumed(&item.prompt, RESUMED_PREFIX);
                 lane.queue.push_front(item);
             }
         }
@@ -1519,37 +1602,50 @@ mod tests {
     #[test]
     fn dispatch_on_an_asleep_agent_wakes_it_and_keeps_the_work_queued() {
         assert_eq!(
-            dispatch_step(Some(Status::Asleep), false),
+            dispatch_step(Some(Status::Asleep), false, false),
             DispatchStep::Wake
         );
         assert_eq!(
-            dispatch_step(Some(Status::Asleep), true),
+            dispatch_step(Some(Status::Asleep), true, false),
             DispatchStep::Hold,
             "STOP ALL holds even a wake"
         );
         assert_eq!(
-            dispatch_step(Some(Status::Dozing), false),
+            dispatch_step(Some(Status::Dozing), false, false),
             DispatchStep::Wake,
             "work for a dozing agent wakes it (an undoze), it is not sent to the paused VM"
         );
         assert_eq!(
-            dispatch_step(Some(Status::Dozing), true),
+            dispatch_step(Some(Status::Dozing), true, false),
             DispatchStep::Hold
         );
-        assert_eq!(dispatch_step(None, false), DispatchStep::Hold);
+        assert_eq!(dispatch_step(None, false, false), DispatchStep::Hold);
         assert_eq!(
-            dispatch_step(Some(Status::Offline), false),
+            dispatch_step(Some(Status::Offline), false, false),
             DispatchStep::Hold
         );
-        assert_eq!(dispatch_step(Some(Status::Idle), false), DispatchStep::Send);
         assert_eq!(
-            dispatch_step(Some(Status::Working), false),
+            dispatch_step(Some(Status::Idle), false, false),
             DispatchStep::Send
         );
         assert_eq!(
-            dispatch_step(Some(Status::Idle), true),
+            dispatch_step(Some(Status::Working), false, false),
+            DispatchStep::Send
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Idle), true, false),
             DispatchStep::Hold,
             "an agent on the bench (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Idle), false, true),
+            DispatchStep::Hold,
+            "an agent that is moving, or leaving a stopped node, starts nothing"
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Asleep), false, true),
+            DispatchStep::Hold,
+            "nor is it woken where it is: it wakes on its new node"
         );
 
         // A wake sends nothing: the item waits in the lane, not in flight, until the agent is idle.
@@ -1558,6 +1654,31 @@ mod tests {
         assert_eq!(lanes.queued(7).len(), 1);
         assert!(lanes.current(7).is_none());
         assert_eq!(lanes.start_next(7, 0).map(|i| i.id), Some(1));
+    }
+
+    #[test]
+    fn an_interrupted_item_goes_back_first_and_is_marked_once() {
+        let mut lanes = Lanes::default();
+        lanes.push(item(1, 7, Some("t1")));
+        lanes.push(item(2, 7, None));
+        let mut started = lanes.start_next(7, 5).expect("in flight");
+        assert_eq!(lanes.finish(7, 1).map(|i| i.id), Some(1));
+        started.prompt = resumed(&started.prompt, MOVED_PREFIX);
+        lanes.requeue_front(started);
+        let queued = lanes.queued(7);
+        assert_eq!(queued.iter().map(|i| i.id).collect::<Vec<_>>(), [1, 2]);
+        assert!(queued[0].started_ms.is_none());
+        assert!(lanes.current(7).is_none());
+        // Marked once, whichever mark it had: a restart's and a move's do not pile up.
+        let once = resumed(&queued[0].prompt, MOVED_PREFIX);
+        assert_eq!(once, queued[0].prompt);
+        let after_restart = resumed(&once, RESUMED_PREFIX);
+        assert!(after_restart.starts_with(RESUMED_PREFIX));
+        assert!(!after_restart.contains(MOVED_PREFIX));
+        assert_eq!(
+            resumed(&after_restart, MOVED_PREFIX),
+            format!("{MOVED_PREFIX}{}", item(1, 7, None).prompt)
+        );
     }
 
     #[test]

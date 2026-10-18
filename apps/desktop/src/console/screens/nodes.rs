@@ -1,6 +1,6 @@
 //! The Nodes screen (parity with the web console's `nodes` view): the machines in the plaza
-//! (drain, resume, revoke), the join codes that bring new ones in (each token shown once), and
-//! this hub's identity with the owner-token rotation. Reloads on the screen's poll.
+//! (stop, resume, rebalance, revoke), the join codes that bring new ones in (each token shown
+//! once), and this hub's identity with the owner-token rotation. Reloads on the screen's poll.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,7 +14,7 @@ use super::Id;
 use crate::console::services::{self, Mode};
 use crate::console::{Ctx, client, ui};
 
-/// The hub's own node: it is not drained or revoked from here.
+/// The hub's own node: it can be stopped and resumed from here, but not revoked.
 const HUB_NODE: &str = "n0";
 
 /// A machine's reported hardware.
@@ -23,6 +23,15 @@ pub struct Machine {
     pub cpus: Option<u64>,
     pub memory_mib: Option<u64>,
     pub host: Option<String>,
+}
+
+/// An agent that cannot leave a stopping machine yet, and why.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Waiting {
+    #[serde(default)]
+    pub cid: u64,
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// A machine in the plaza (`GET /v1/nodes`).
@@ -49,6 +58,15 @@ pub struct NodeView {
     pub online: bool,
     #[serde(default)]
     pub agents: u64,
+    /// "active", "stopping" or "stopped"; empty from an older hub.
+    #[serde(default)]
+    pub state: String,
+    /// Agents still to move off a stopping machine.
+    #[serde(default)]
+    pub left: u64,
+    /// Agents that cannot leave yet, and why.
+    #[serde(default)]
+    pub waiting: Vec<Waiting>,
 }
 
 /// A join code (`GET /v1/nodes/codes`); its token is never listed.
@@ -181,6 +199,12 @@ pub enum Dialog {
         minutes: u64,
         issued: Option<IssuedCode>,
     },
+    /// Stop a machine with `agents` on it: how it stops is chosen in the dialog.
+    ConfirmStop {
+        id: String,
+        name: String,
+        agents: u64,
+    },
     ConfirmRevoke {
         id: String,
         name: String,
@@ -222,12 +246,27 @@ pub enum Msg {
     NodesLoaded(Result<Vec<NodeView>, String>),
     CodesLoaded(Result<Vec<JoinCode>, String>),
     HubLoaded(Result<HubIdentity, String>),
-    /// Drain (`on`) or resume a machine.
-    Drain {
+    /// Stop a machine: `now` interrupts its turns in progress, otherwise they finish first.
+    Stop {
         id: String,
         name: String,
-        on: bool,
+        now: bool,
     },
+    /// Resume a stopped or stopping machine, and move agents back onto it.
+    Resume {
+        id: String,
+        name: String,
+    },
+    /// Open the stop confirmation for a machine with `agents` on it.
+    AskStop {
+        id: String,
+        name: String,
+        agents: u64,
+    },
+    /// Move agents to spread the load over the machines in service.
+    Rebalance,
+    /// The rebalance's reply: the moves it made, or its error.
+    Rebalanced(Result<Value, String>),
     AskRevoke {
         id: String,
         name: String,
@@ -328,19 +367,47 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.hub = settle(result);
             Task::none()
         }
-        Msg::Drain { id, name, on } => {
-            let notice = if on {
-                format!("{name} is draining")
+        Msg::Stop { id, name, now } => {
+            state.dialog = None;
+            let notice = if now {
+                format!("{name} is stopping: its agents move now")
             } else {
-                format!("{name} is back in service")
+                format!("{name} is stopping: its agents move as their turns end")
             };
-            let path = format!("/v1/nodes/{id}/drain");
-            let body = json!({ "on": on });
+            let path = format!("/v1/nodes/{id}/stop");
+            let body = json!({ "now": now });
             let client = ctx.client.clone();
             client::task(
                 move || client.call("POST", &path, Some(&body)),
                 move |r| Msg::Acted(r, notice.clone()),
             )
+        }
+        Msg::Resume { id, name } => {
+            let notice = format!("{name} is back in service: agents move onto it once it reports");
+            let path = format!("/v1/nodes/{id}/resume");
+            let body = json!({ "rebalance": true });
+            let client = ctx.client.clone();
+            client::task(
+                move || client.call("POST", &path, Some(&body)),
+                move |r| Msg::Acted(r, notice.clone()),
+            )
+        }
+        Msg::AskStop { id, name, agents } => {
+            state.dialog = Some(Dialog::ConfirmStop { id, name, agents });
+            state.error = None;
+            Task::none()
+        }
+        Msg::Rebalance => {
+            let body = json!({ "dry_run": false });
+            let client = ctx.client.clone();
+            client::task(
+                move || client.call("POST", "/v1/nodes/rebalance", Some(&body)),
+                Msg::Rebalanced,
+            )
+        }
+        Msg::Rebalanced(result) => {
+            let moved = result.as_ref().map_or(0, moved_count);
+            update(state, Msg::Acted(result, rebalance_notice(moved)), ctx)
         }
         Msg::AskRevoke { id, name } => {
             state.dialog = Some(Dialog::ConfirmRevoke { id, name });
@@ -627,12 +694,10 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
 
     let head = ui::view_head(
         "Nodes",
-        vec![ui::btn(
-            "Add a node",
-            None,
-            ui::Kind::Primary,
-            Some(Msg::OpenAdd),
-        )],
+        vec![
+            ui::btn("Rebalance", None, ui::Kind::Secondary, Some(Msg::Rebalance)),
+            ui::btn("Add a node", None, ui::Kind::Primary, Some(Msg::OpenAdd)),
+        ],
     );
     ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
 }
@@ -675,7 +740,7 @@ fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
             .spacing(2)
             .into(),
         ),
-        (2, ui::badge(state, tone)),
+        (2, ui::badge(&state, tone)),
         (
             2,
             ui::mono(
@@ -703,36 +768,59 @@ fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
     ])
 }
 
+/// A node's stop, resume and revoke buttons; the hub's own node is noted, and never revoked.
 fn node_actions<'a>(n: &'a NodeView) -> Element<'a, Msg> {
-    if n.id == HUB_NODE {
-        return ui::faint("this hub").into();
-    }
     if n.revoked {
         return Space::new().width(Length::Fill).into();
     }
-    row![
-        ui::btn(
-            if n.draining { "Resume" } else { "Drain" },
+    let (id, name) = (n.id.clone(), n.name.clone());
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if n.id == HUB_NODE {
+        parts.push(ui::faint("this hub").into());
+    }
+    if service_state(n) == "stopping" {
+        parts.push(ui::btn(
+            "Move now",
             None,
             ui::Kind::Secondary,
-            Some(Msg::Drain {
-                id: n.id.clone(),
-                name: n.name.clone(),
-                on: !n.draining
+            Some(Msg::Stop {
+                id: id.clone(),
+                name: name.clone(),
+                now: true,
             }),
-        ),
-        ui::btn(
+        ));
+    }
+    if matches!(service_state(n), "stopping" | "stopped") {
+        parts.push(ui::btn(
+            "Resume",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Resume {
+                id: id.clone(),
+                name: name.clone(),
+            }),
+        ));
+    } else {
+        parts.push(ui::btn(
+            "Stop",
+            None,
+            ui::Kind::DangerOutline,
+            Some(Msg::AskStop {
+                id: id.clone(),
+                name: name.clone(),
+                agents: n.agents,
+            }),
+        ));
+    }
+    if n.id != HUB_NODE {
+        parts.push(ui::btn(
             "Revoke",
             None,
             ui::Kind::Danger,
-            Some(Msg::AskRevoke {
-                id: n.id.clone(),
-                name: n.name.clone()
-            })
-        ),
-    ]
-    .spacing(8)
-    .into()
+            Some(Msg::AskRevoke { id, name }),
+        ));
+    }
+    row(parts).spacing(8).align_y(Alignment::Center).into()
 }
 
 /// The join codes, newest first, or the empty or failed state.
@@ -855,6 +943,46 @@ fn dialog_view<'a>(dialog: &'a Dialog) -> Element<'a, Msg> {
         Dialog::Add {
             issued: Some(made), ..
         } => ui::card("Add a node", issued_view(made)),
+        Dialog::ConfirmStop { id, name, agents } => ui::card(
+            &format!("Stop {name}?"),
+            column![
+                ui::prose(agents_move_line(*agents)),
+                ui::prose(if id == HUB_NODE {
+                    "This is the hub’s own machine: the hub keeps running, only its agents leave."
+                } else {
+                    "Once it is stopped, its machine can be turned off. Resume brings it back, and agents move onto it again."
+                }),
+                ui::faint(
+                    "Stop now interrupts the turns in progress; each one resumes on its agent’s new machine. Otherwise an agent that is working moves when its turn ends."
+                ),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
+                    ui::btn(
+                        "Stop after their turns",
+                        None,
+                        ui::Kind::Secondary,
+                        Some(Msg::Stop {
+                            id: id.clone(),
+                            name: name.clone(),
+                            now: false
+                        })
+                    ),
+                    ui::btn(
+                        "Stop now",
+                        None,
+                        ui::Kind::Danger,
+                        Some(Msg::Stop {
+                            id: id.clone(),
+                            name: name.clone(),
+                            now: true
+                        })
+                    ),
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .into(),
+        ),
         Dialog::ConfirmRevoke { id, name } => ui::card(
             &format!("Revoke {name}?"),
             column![
@@ -1174,10 +1302,26 @@ fn detail_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
         },
     };
     let close = ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Deselect));
+    let mut parts: Vec<Element<'a, Msg>> = vec![body];
+    if !node.waiting.is_empty() {
+        parts.push(waiting_view(&node.waiting));
+    }
+    parts.push(close);
     Some(ui::card(
         &node.name,
-        column![body, close].spacing(16).width(Length::Fill).into(),
+        column(parts).spacing(16).width(Length::Fill).into(),
     ))
+}
+
+/// The agents a stopping machine cannot move off yet, one line each with the reason.
+fn waiting_view<'a>(waiting: &'a [Waiting]) -> Element<'a, Msg> {
+    let lines: Vec<Element<'a, Msg>> = waiting
+        .iter()
+        .map(|w| ui::sans(waiting_line(w), 12.0, crate::theme::palette().ink).into())
+        .collect();
+    column![ui::label("Waiting to move"), column(lines).spacing(6)]
+        .spacing(8)
+        .into()
 }
 
 /// The machine's facts, laid out like the web's detail: CPU, memory, GPUs, arch and backend, then the rest.
@@ -1300,16 +1444,67 @@ fn or_dash(value: &str) -> &str {
     if value.is_empty() { "—" } else { value }
 }
 
+/// Where a node is in its stop: "stopping", "stopped" or "active". An older hub sends no state,
+/// so there a draining node reads as stopped.
+fn service_state(n: &NodeView) -> &str {
+    match n.state.as_str() {
+        "" if n.draining => "stopped",
+        "" => "active",
+        state => state,
+    }
+}
+
 /// The state a node shows, most urgent first.
-fn node_state(n: &NodeView) -> (&'static str, ui::Tone) {
+fn node_state(n: &NodeView) -> (String, ui::Tone) {
     if n.revoked {
-        ("revoked", ui::Tone::Danger)
-    } else if n.draining {
-        ("draining", ui::Tone::Warn)
-    } else if n.online {
-        ("online", ui::Tone::Ok)
+        return ("revoked".to_string(), ui::Tone::Danger);
+    }
+    match service_state(n) {
+        "stopping" => (
+            format!("stopping, {} to move", agents_text(n.left)),
+            ui::Tone::Warn,
+        ),
+        "stopped" => ("stopped".to_string(), ui::Tone::Info),
+        _ if n.online => ("online".to_string(), ui::Tone::Ok),
+        _ => ("offline".to_string(), ui::Tone::Muted),
+    }
+}
+
+/// A count of agents with its noun: "1 agent", "3 agents".
+fn agents_text(count: u64) -> String {
+    if count == 1 {
+        "1 agent".to_string()
     } else {
-        ("offline", ui::Tone::Muted)
+        format!("{count} agents")
+    }
+}
+
+/// The stop dialog's line on the agents that move off the node.
+fn agents_move_line(agents: u64) -> String {
+    let tail = "to the other machines in service, one at a time, and no new agent starts on it.";
+    match agents {
+        0 => "No new agent starts on it.".to_string(),
+        1 => format!("Its agent moves {tail}"),
+        n => format!("Its {n} agents move {tail}"),
+    }
+}
+
+/// A waiting agent's line: its CID, since the screen has no agent names, and why it cannot leave.
+fn waiting_line(w: &Waiting) -> String {
+    format!("Agent {}: {}", w.cid, w.reason)
+}
+
+/// How many agents a rebalance moved, from the hub's reply.
+fn moved_count(reply: &Value) -> usize {
+    reply["moves"].as_array().map_or(0, Vec::len)
+}
+
+/// The notice a rebalance leaves, by how many agents it moved.
+fn rebalance_notice(moved: usize) -> String {
+    match moved {
+        0 => "The agents are already spread over the machines.".to_string(),
+        1 => "Moving 1 agent to spread the load.".to_string(),
+        n => format!("Moving {n} agents to spread the load."),
     }
 }
 
@@ -1414,5 +1609,82 @@ mod tests {
             serde_json::from_str(r#"{"id":"n0"}"#).expect("partial machine JSON parses");
         assert!(m.gpus.is_empty() && m.runs.is_empty());
         assert_eq!(m.cpus, 0);
+    }
+
+    fn node(json: &str) -> NodeView {
+        serde_json::from_str(json).expect("node JSON parses")
+    }
+
+    #[test]
+    fn node_json_reads_the_stop_fields_and_tolerates_an_older_hub() {
+        let n = node(
+            r#"{"id":"n1","state":"stopping","left":2,"draining":true,"waiting":[{"cid":7,"reason":"no room"}]}"#,
+        );
+        assert_eq!(
+            (n.state.as_str(), n.left, n.waiting.len()),
+            ("stopping", 2, 1)
+        );
+        assert_eq!(n.waiting[0].cid, 7);
+        let old = node(r#"{"id":"n0"}"#);
+        assert!(old.state.is_empty() && old.waiting.is_empty());
+        assert_eq!(service_state(&old), "active");
+    }
+
+    #[test]
+    fn node_state_label_follows_the_stop_state() {
+        let one = node(r#"{"id":"n1","state":"stopping","left":1,"draining":true}"#);
+        assert_eq!(
+            node_state(&one),
+            ("stopping, 1 agent to move".to_string(), ui::Tone::Warn)
+        );
+        let three = node(r#"{"id":"n1","state":"stopping","left":3,"draining":true}"#);
+        assert_eq!(node_state(&three).0, "stopping, 3 agents to move");
+        let stopped = node(r#"{"id":"n1","state":"stopped","draining":true}"#);
+        assert_eq!(
+            node_state(&stopped),
+            ("stopped".to_string(), ui::Tone::Info)
+        );
+        let draining = node(r#"{"id":"n1","draining":true}"#);
+        assert_eq!(node_state(&draining).0, "stopped");
+        let revoked = node(r#"{"id":"n1","revoked":true,"state":"stopped"}"#);
+        assert_eq!(
+            node_state(&revoked),
+            ("revoked".to_string(), ui::Tone::Danger)
+        );
+        let online = node(r#"{"id":"n1","online":true}"#);
+        assert_eq!(node_state(&online), ("online".to_string(), ui::Tone::Ok));
+        let offline = node(r#"{"id":"n1"}"#);
+        assert_eq!(
+            node_state(&offline),
+            ("offline".to_string(), ui::Tone::Muted)
+        );
+    }
+
+    #[test]
+    fn waiting_line_names_the_agent_and_its_reason() {
+        let n = node(
+            r#"{"id":"n1","state":"stopping","waiting":[{"cid":42,"reason":"no machine has room"}]}"#,
+        );
+        assert_eq!(waiting_line(&n.waiting[0]), "Agent 42: no machine has room");
+    }
+
+    #[test]
+    fn stop_dialog_counts_the_agents_that_move() {
+        assert_eq!(agents_move_line(0), "No new agent starts on it.");
+        assert!(agents_move_line(1).starts_with("Its agent moves to the other machines"));
+        assert!(agents_move_line(4).starts_with("Its 4 agents move to the other machines"));
+    }
+
+    #[test]
+    fn rebalance_notice_reports_the_moves() {
+        assert_eq!(
+            rebalance_notice(0),
+            "The agents are already spread over the machines."
+        );
+        assert_eq!(rebalance_notice(1), "Moving 1 agent to spread the load.");
+        assert_eq!(rebalance_notice(3), "Moving 3 agents to spread the load.");
+        let reply = json!({"moves": [{"cid": 1, "from": "n1", "to": "n2"}], "started": true});
+        assert_eq!(moved_count(&reply), 1);
+        assert_eq!(moved_count(&json!({"started": false})), 0);
     }
 }

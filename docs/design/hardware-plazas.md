@@ -236,7 +236,7 @@ and no door faces a part or another room's wall.
 centre, nodes on a ring around it (sorted by id), spaced by their sizes. A cable from each node's
 `port` to the hub's (a sagging curve of short cylinder segments) with light packets travelling
 along it while the node is online (both ways, rate by agent activity). Under each machine a status
-ring: online `--ok`, draining amber, offline grey, revoked `--crit`; LEDs tagged `status` take the
+ring: online `--ok`, draining amber (stopped by the owner, n0 too), offline grey, revoked `--crit`; LEDs tagged `status` take the
 same colour, `activity` LEDs blink while its agents work, fans spin while online. A small tag above
 each machine: its name and a status square (like the Floor's compact labels). Hover lifts the
 machine slightly; click opens the popup.
@@ -269,7 +269,7 @@ its traces carry more pulses; a GPU running work shows its fans spinning faster.
     "model": "Mac Studio (M2 Ultra)",                              // the maker's model name (null when unknown)
     "apple": { "chip": "Apple M2 Ultra", "p_cores": 16, "e_cores": 8, "gpu_cores": 76,
                "neural_cores": 32, "unified_memory_gib": 192 },    // only on Macs
-    "status": "online",                                            // online | draining | offline | revoked
+    "status": "online",                                            // online | draining (stopped by the owner, n0 too) | offline | revoked
     "arch": "x86_64", "os": "linux", "backend": "kvm",
     "cpu": { "model": "AMD Ryzen 9 5900X", "cores": 12, "threads": 24 },
     "memory_mib": 128320,

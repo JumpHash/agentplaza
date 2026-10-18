@@ -343,6 +343,7 @@ impl App {
         crate::e2b::start(&app);
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
+        crate::mover::spawn(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));

@@ -69,7 +69,8 @@ documentation comment that is the reference for its contract.
 | `migrate.rs` | `noded` | Export and import of a sleeping VM, in chunks, with zeros left as holes |
 | `sleep.rs` | `apid` | The idle rule, sleep, and waking before work is delivered |
 | `vm_snapshots.rs` | `apid` | Checkpoints, rollback with a safety checkpoint, forks, automatic checkpoints |
-| `placement.rs` | `apid` | Choosing a node for a new agent, moving an agent, draining a node |
+| `placement.rs` | `apid` | Choosing a node for a new agent, moving an agent |
+| `mover.rs` | `apid` | Stopping and resuming nodes: moving their agents off and back, rebalancing |
 | `egress_inject.rs` | `apid` | Egress credential rules, the egress CA and leaves, the per-request decision |
 | `e2b.rs` | `apid` | The E2B-compatible sandbox API: keys, sandboxes, snapshots, the reaper |
 | `egress_tls.rs` | `vsockd` | TLS interception for hosts with a rule: header injection, framing, audit |

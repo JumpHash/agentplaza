@@ -1200,6 +1200,7 @@ pub fn spawn_agents(
     node: Option<&str>,
     project: Option<&str>,
 ) -> Result<Value, String> {
+    let chosen = node.is_none();
     let node = match node {
         Some(node) => node.to_string(),
         None => crate::placement::choose_node(app, role),
@@ -1209,9 +1210,15 @@ pub fn spawn_agents(
         match app.nodes.get(node) {
             None => return Err(format!("no node {node}")),
             Some(record) if record.revoked => return Err(format!("node {node} is revoked")),
-            Some(record) if record.draining => return Err(format!("node {node} is draining")),
             Some(_) => {}
         }
+    }
+    if app.nodes.is_stopped(node) {
+        return Err(if chosen {
+            format!("node {node} is stopped, and no machine in service has room for a new agent")
+        } else {
+            format!("node {node} is stopped")
+        });
     }
     if !crate::roles_custom::exists(app, role) {
         return Err(format!("unknown role {role}"));

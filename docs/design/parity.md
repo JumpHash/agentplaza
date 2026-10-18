@@ -121,7 +121,7 @@ feature, in the file or command named.
 | Machine checkpoints: list, take, restore, delete | `agent-detail.ts` (Machine checkpoints) | `agent.rs` (the checkpoints card) | `agentplaza agents checkpoints`, `checkpoint`, `rollback`, `checkpoint-delete` | Done in all three |
 | Fork an agent | `agent-detail.ts` (Fork…) | `agent.rs` (Fork) | `agentplaza agents fork` | Done in all three |
 | Move an agent to another node | `agent-detail.ts` (Move…) | `agent.rs` (Move…) | `agentplaza agents move` | Done in all three |
-| Drain and undrain a node | `apps/web/src/views/nodes.ts` | `apps/desktop/src/console/screens/nodes.rs` | `agentplaza nodes drain`, `undrain` | Done in all three |
+| Stop and resume a node; rebalance | `apps/web/src/views/nodes.ts` | `apps/desktop/src/console/screens/nodes.rs` | `agentplaza nodes stop`, `resume`, `rebalance` (`drain`, `undrain` kept) | Done in all three |
 | Sleep and checkpoint settings: `idle_sleep_min`, `sleep_never_roles`, `vm_auto_checkpoints` | `apps/web/src/views/models-policy.ts` | `apps/desktop/src/console/screens/models.rs` (Limits) | `agentplaza models policy set --idle-sleep-min --sleep-never-roles --vm-auto-checkpoints` | Done in all three |
 | Egress credential rules: list, create, enable, delete | `apps/web/src/views/egress-credentials.ts` | `apps/desktop/src/console/screens/egress.rs` | `agentplaza egress list`, `add`, `enable`, `disable`, `rm` | Done in all three |
 | E2B keys, sandboxes and templates | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume`, `e2b templates`, `delete-template` | Done in all three |
