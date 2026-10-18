@@ -32,6 +32,8 @@ Cargo workspace members (`Cargo.toml`), plus the non-Cargo parts.
 | [`crates/apz-board`](../crates/apz-board) | The hardware-board model shared by the desktop and the web (WASM) |
 | [`crates/apz-ide`](../crates/apz-ide) | The IDE model: workspaces, entries, buffers, diffs, path rules, state reducer |
 | [`crates/apz-ide-web`](../crates/apz-ide-web) | The browser bindings of the IDE model |
+| [`crates/apz-graph`](../crates/apz-graph) | The task graph's layout for the Work screen: columns by links, card order, routed links (golden fixtures in `assets/graphs`) |
+| [`crates/apz-graph-web`](../crates/apz-graph-web) | The browser bindings of the task graph layout |
 | [`crates/apz-rich`](../crates/apz-rich) | The rich-content classifier: which references become chips and hover cards |
 | [`crates/apz-skill`](../crates/apz-skill) | The skill library core: SKILL.md parsing, checks, zip import and export |
 | [`crates/apz-prompt`](../crates/apz-prompt) | The prompt library core: checks and scores for system prompts and AGENTS.md |

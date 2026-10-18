@@ -1,0 +1,146 @@
+{
+  "about": "A plan whose tasks were posted out of run order (a relinked plan): t1 now runs after t3.",
+  "graph": {
+    "edges": [
+      [
+        "t3",
+        "t1"
+      ],
+      [
+        "t2",
+        "t1"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "first posted, runs last",
+        "id": "t1",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "second posted",
+        "id": "t2",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "third posted, runs first",
+        "id": "t3",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t2",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 24.0
+      },
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t3",
+        "row": 1,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 142.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t1",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 83.0
+      }
+    ],
+    "columns": [
+      [
+        "t2",
+        "t3"
+      ],
+      [
+        "t1"
+      ]
+    ],
+    "height": 270.0,
+    "routes": [
+      {
+        "from": "t3",
+        "points": [
+          [
+            256.0,
+            194.0
+          ],
+          [
+            279.0,
+            194.0
+          ],
+          [
+            279.0,
+            135.0
+          ],
+          [
+            302.0,
+            135.0
+          ]
+        ],
+        "to": "t1"
+      },
+      {
+        "from": "t2",
+        "points": [
+          [
+            256.0,
+            76.0
+          ],
+          [
+            279.0,
+            76.0
+          ],
+          [
+            279.0,
+            135.0
+          ],
+          [
+            302.0,
+            135.0
+          ]
+        ],
+        "to": "t1"
+      }
+    ],
+    "width": 558.0
+  }
+}

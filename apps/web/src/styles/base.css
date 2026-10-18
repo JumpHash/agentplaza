@@ -96,7 +96,7 @@ code, pre, .mono { font-family: var(--mono); font-size: 13px; }
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   min-height: 36px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 0;
   background: var(--sheet); color: var(--ink); box-shadow: var(--print);
-  font: 600 13px/1.2 var(--sans); cursor: pointer; white-space: nowrap;
+  font: 600 13px/1.2 var(--sans); cursor: pointer; white-space: nowrap; text-decoration: none;
 }
 .btn:hover { background: var(--ink); color: var(--sheet); }
 .btn:active { transform: translate(2px, 2px); box-shadow: none; }

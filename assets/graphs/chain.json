@@ -1,0 +1,174 @@
+{
+  "about": "A straight chain: order the nodes, image them, join them, move the agents.",
+  "graph": {
+    "edges": [
+      [
+        "t41",
+        "t42"
+      ],
+      [
+        "t42",
+        "t43"
+      ],
+      [
+        "t43",
+        "t44"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Order six Raspberry Pi 5 nodes",
+        "id": "t41",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Image the new nodes",
+        "id": "t42",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Join the new nodes to the plaza",
+        "id": "t43",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Move the edge agents onto the new nodes",
+        "id": "t44",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t41",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 24.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t42",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 24.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "t43",
+        "row": 0,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 24.0
+      },
+      {
+        "column": 3,
+        "height": 104.0,
+        "id": "t44",
+        "row": 0,
+        "width": 232.0,
+        "x": 858.0,
+        "y": 24.0
+      }
+    ],
+    "columns": [
+      [
+        "t41"
+      ],
+      [
+        "t42"
+      ],
+      [
+        "t43"
+      ],
+      [
+        "t44"
+      ]
+    ],
+    "height": 152.0,
+    "routes": [
+      {
+        "from": "t41",
+        "points": [
+          [
+            256.0,
+            76.0
+          ],
+          [
+            302.0,
+            76.0
+          ]
+        ],
+        "to": "t42"
+      },
+      {
+        "from": "t42",
+        "points": [
+          [
+            534.0,
+            76.0
+          ],
+          [
+            580.0,
+            76.0
+          ]
+        ],
+        "to": "t43"
+      },
+      {
+        "from": "t43",
+        "points": [
+          [
+            812.0,
+            76.0
+          ],
+          [
+            858.0,
+            76.0
+          ]
+        ],
+        "to": "t44"
+      }
+    ],
+    "width": 1114.0
+  }
+}

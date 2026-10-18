@@ -1,0 +1,311 @@
+{
+  "about": "The release plan at the TV's sizes (420 x 206 cards, 70 and 24 gaps, 12 padding).",
+  "graph": {
+    "edges": [
+      [
+        "t11",
+        "t13"
+      ],
+      [
+        "t12",
+        "t14"
+      ],
+      [
+        "t12",
+        "t15"
+      ],
+      [
+        "t14",
+        "t15"
+      ],
+      [
+        "t13",
+        "t16"
+      ],
+      [
+        "t15",
+        "t16"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Patch the flaky scheduler test",
+        "id": "t11",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "builder",
+        "state": "done",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Land the sanction fix",
+        "id": "t12",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "builder",
+        "state": "claimed",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Write the release notes",
+        "id": "t13",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "release",
+        "state": "claimed",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Security review of the sanction fix",
+        "id": "t14",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "security-reviewer",
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "QA pass on staging",
+        "id": "t15",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "qa",
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Publish release 0.9",
+        "id": "t16",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": "release",
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 206.0,
+        "id": "t11",
+        "row": 0,
+        "width": 420.0,
+        "x": 12.0,
+        "y": 12.0
+      },
+      {
+        "column": 0,
+        "height": 206.0,
+        "id": "t12",
+        "row": 1,
+        "width": 420.0,
+        "x": 12.0,
+        "y": 242.0
+      },
+      {
+        "column": 1,
+        "height": 206.0,
+        "id": "t13",
+        "row": 0,
+        "width": 420.0,
+        "x": 502.0,
+        "y": 12.0
+      },
+      {
+        "column": 1,
+        "height": 206.0,
+        "id": "t14",
+        "row": 1,
+        "width": 420.0,
+        "x": 502.0,
+        "y": 242.0
+      },
+      {
+        "column": 2,
+        "height": 206.0,
+        "id": "t15",
+        "row": 0,
+        "width": 420.0,
+        "x": 992.0,
+        "y": 127.0
+      },
+      {
+        "column": 3,
+        "height": 206.0,
+        "id": "t16",
+        "row": 0,
+        "width": 420.0,
+        "x": 1482.0,
+        "y": 127.0
+      }
+    ],
+    "columns": [
+      [
+        "t11",
+        "t12"
+      ],
+      [
+        "t13",
+        "t14"
+      ],
+      [
+        "t15"
+      ],
+      [
+        "t16"
+      ]
+    ],
+    "height": 460.0,
+    "routes": [
+      {
+        "from": "t11",
+        "points": [
+          [
+            432.0,
+            115.0
+          ],
+          [
+            502.0,
+            115.0
+          ]
+        ],
+        "to": "t13"
+      },
+      {
+        "from": "t12",
+        "points": [
+          [
+            432.0,
+            345.0
+          ],
+          [
+            502.0,
+            345.0
+          ]
+        ],
+        "to": "t14"
+      },
+      {
+        "from": "t12",
+        "points": [
+          [
+            432.0,
+            345.0
+          ],
+          [
+            467.0,
+            345.0
+          ],
+          [
+            467.0,
+            460.0
+          ],
+          [
+            957.0,
+            460.0
+          ],
+          [
+            957.0,
+            230.0
+          ],
+          [
+            992.0,
+            230.0
+          ]
+        ],
+        "to": "t15"
+      },
+      {
+        "from": "t14",
+        "points": [
+          [
+            922.0,
+            345.0
+          ],
+          [
+            957.0,
+            345.0
+          ],
+          [
+            957.0,
+            230.0
+          ],
+          [
+            992.0,
+            230.0
+          ]
+        ],
+        "to": "t15"
+      },
+      {
+        "from": "t13",
+        "points": [
+          [
+            922.0,
+            115.0
+          ],
+          [
+            1447.0,
+            115.0
+          ],
+          [
+            1447.0,
+            230.0
+          ],
+          [
+            1482.0,
+            230.0
+          ]
+        ],
+        "to": "t16"
+      },
+      {
+        "from": "t15",
+        "points": [
+          [
+            1412.0,
+            230.0
+          ],
+          [
+            1482.0,
+            230.0
+          ]
+        ],
+        "to": "t16"
+      }
+    ],
+    "width": 1914.0
+  },
+  "options": {
+    "card_height": 206,
+    "card_width": 420,
+    "gap_x": 70,
+    "gap_y": 24,
+    "pad": 12
+  }
+}

@@ -1,0 +1,344 @@
+{
+  "about": "A link that must take the channel: x -> e skips a column whose three cards block both x's row and e's row.",
+  "graph": {
+    "edges": [
+      [
+        "a",
+        "b"
+      ],
+      [
+        "a",
+        "c"
+      ],
+      [
+        "a",
+        "d"
+      ],
+      [
+        "b",
+        "e"
+      ],
+      [
+        "c",
+        "e"
+      ],
+      [
+        "d",
+        "e"
+      ],
+      [
+        "x",
+        "e"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "a",
+        "id": "a",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "x",
+        "id": "x",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "b",
+        "id": "b",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "c",
+        "id": "c",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "d",
+        "id": "d",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "e",
+        "id": "e",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "a",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 83.0
+      },
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "x",
+        "row": 1,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 201.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "b",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 24.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "c",
+        "row": 1,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 142.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "d",
+        "row": 2,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 260.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "e",
+        "row": 0,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 142.0
+      }
+    ],
+    "columns": [
+      [
+        "a",
+        "x"
+      ],
+      [
+        "b",
+        "c",
+        "d"
+      ],
+      [
+        "e"
+      ]
+    ],
+    "height": 388.0,
+    "routes": [
+      {
+        "from": "a",
+        "points": [
+          [
+            256.0,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            76.0
+          ],
+          [
+            302.0,
+            76.0
+          ]
+        ],
+        "to": "b"
+      },
+      {
+        "from": "a",
+        "points": [
+          [
+            256.0,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            194.0
+          ],
+          [
+            302.0,
+            194.0
+          ]
+        ],
+        "to": "c"
+      },
+      {
+        "from": "a",
+        "points": [
+          [
+            256.0,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            135.0
+          ],
+          [
+            286.6666666666667,
+            312.0
+          ],
+          [
+            302.0,
+            312.0
+          ]
+        ],
+        "to": "d"
+      },
+      {
+        "from": "b",
+        "points": [
+          [
+            534.0,
+            76.0
+          ],
+          [
+            557.0,
+            76.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            580.0,
+            194.0
+          ]
+        ],
+        "to": "e"
+      },
+      {
+        "from": "c",
+        "points": [
+          [
+            534.0,
+            194.0
+          ],
+          [
+            580.0,
+            194.0
+          ]
+        ],
+        "to": "e"
+      },
+      {
+        "from": "d",
+        "points": [
+          [
+            534.0,
+            312.0
+          ],
+          [
+            557.0,
+            312.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            580.0,
+            194.0
+          ]
+        ],
+        "to": "e"
+      },
+      {
+        "from": "x",
+        "points": [
+          [
+            256.0,
+            253.0
+          ],
+          [
+            271.3333333333333,
+            253.0
+          ],
+          [
+            271.3333333333333,
+            371.0
+          ],
+          [
+            557.0,
+            371.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            580.0,
+            194.0
+          ]
+        ],
+        "to": "e"
+      }
+    ],
+    "width": 836.0
+  }
+}

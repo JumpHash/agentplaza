@@ -1,0 +1,16 @@
+[package]
+name = "apz-graph"
+description = "AgentPlaza task graph layout: where each task's card goes and how each link is drawn, for the Work screen on the web (wasm, apz-graph-web) and the desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

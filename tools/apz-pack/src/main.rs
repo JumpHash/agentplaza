@@ -4,7 +4,8 @@
 //! wasm-release profile, binds it with wasm-bindgen (web target, as a library at the version
 //! Cargo.lock pins), and writes the glue and the wasm into <dir> under content-hashed names, with
 //! `.br` and `.gz` siblings. `apz-pack web-ide --out <dir>` does the same for crates/apz-ide-web,
-//! the IDE model's bindings. Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
+//! the IDE model's bindings, and `apz-pack web-graph --out <dir>` for crates/apz-graph-web, the task
+//! graph's layout. Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
 //! that output only when it is smaller over the wire (brotli): an LTO'd opt-level z build can come
 //! out of -Oz smaller raw but larger compressed. Each prints one JSON line with the names and sizes.
 //!
@@ -35,6 +36,10 @@ const IDE: WebCrate = WebCrate {
     package: "apz-ide-web",
     lib: "apz_ide_web",
 };
+const GRAPH: WebCrate = WebCrate {
+    package: "apz-graph-web",
+    lib: "apz_graph_web",
+};
 
 /// Extensions that get precompressed siblings. Fonts and images are already compressed.
 const COMPRESSIBLE: [&str; 5] = ["js", "css", "wasm", "html", "svg"];
@@ -56,9 +61,13 @@ fn run(args: &[String]) -> Result<String, String> {
             web_crate(Path::new(out), &ENGINE)
         }
         [cmd, flag, out] if cmd == "web-ide" && flag == "--out" => web_crate(Path::new(out), &IDE),
+        [cmd, flag, out] if cmd == "web-graph" && flag == "--out" => {
+            web_crate(Path::new(out), &GRAPH)
+        }
         [cmd, dir] if cmd == "compress" => compress_dir(Path::new(dir)),
         _ => Err(
-            "usage: apz-pack web-engine|web-ide --out <dir> | apz-pack compress <dir>".to_string(),
+            "usage: apz-pack web-engine|web-ide|web-graph --out <dir> | apz-pack compress <dir>"
+                .to_string(),
         ),
     }
 }

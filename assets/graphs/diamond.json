@@ -1,0 +1,222 @@
+{
+  "about": "A diamond: an inventory, then the docs and an audit side by side, then the site after both.",
+  "graph": {
+    "edges": [
+      [
+        "t31",
+        "t32"
+      ],
+      [
+        "t31",
+        "t33"
+      ],
+      [
+        "t32",
+        "t34"
+      ],
+      [
+        "t33",
+        "t34"
+      ]
+    ],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Inventory the new MCP tools",
+        "id": "t31",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "done",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Refresh the connector kit docs",
+        "id": "t32",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Audit the docs for stale entries",
+        "id": "t33",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      },
+      {
+        "agent_cid": null,
+        "blocked_by": [],
+        "depth": 0,
+        "goal": "Publish the docs site",
+        "id": "t34",
+        "ready": false,
+        "reviewer_cid": null,
+        "role": null,
+        "state": "open",
+        "step": null
+      }
+    ],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [
+      {
+        "column": 0,
+        "height": 104.0,
+        "id": "t31",
+        "row": 0,
+        "width": 232.0,
+        "x": 24.0,
+        "y": 83.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t32",
+        "row": 0,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 24.0
+      },
+      {
+        "column": 1,
+        "height": 104.0,
+        "id": "t33",
+        "row": 1,
+        "width": 232.0,
+        "x": 302.0,
+        "y": 142.0
+      },
+      {
+        "column": 2,
+        "height": 104.0,
+        "id": "t34",
+        "row": 0,
+        "width": 232.0,
+        "x": 580.0,
+        "y": 83.0
+      }
+    ],
+    "columns": [
+      [
+        "t31"
+      ],
+      [
+        "t32",
+        "t33"
+      ],
+      [
+        "t34"
+      ]
+    ],
+    "height": 270.0,
+    "routes": [
+      {
+        "from": "t31",
+        "points": [
+          [
+            256.0,
+            135.0
+          ],
+          [
+            279.0,
+            135.0
+          ],
+          [
+            279.0,
+            76.0
+          ],
+          [
+            302.0,
+            76.0
+          ]
+        ],
+        "to": "t32"
+      },
+      {
+        "from": "t31",
+        "points": [
+          [
+            256.0,
+            135.0
+          ],
+          [
+            279.0,
+            135.0
+          ],
+          [
+            279.0,
+            194.0
+          ],
+          [
+            302.0,
+            194.0
+          ]
+        ],
+        "to": "t33"
+      },
+      {
+        "from": "t32",
+        "points": [
+          [
+            534.0,
+            76.0
+          ],
+          [
+            557.0,
+            76.0
+          ],
+          [
+            557.0,
+            135.0
+          ],
+          [
+            580.0,
+            135.0
+          ]
+        ],
+        "to": "t34"
+      },
+      {
+        "from": "t33",
+        "points": [
+          [
+            534.0,
+            194.0
+          ],
+          [
+            557.0,
+            194.0
+          ],
+          [
+            557.0,
+            135.0
+          ],
+          [
+            580.0,
+            135.0
+          ]
+        ],
+        "to": "t34"
+      }
+    ],
+    "width": 836.0
+  }
+}

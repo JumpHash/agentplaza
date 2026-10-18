@@ -474,6 +474,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apz-graph-web"
+version = "0.1.0"
+dependencies = [
+ "apz-graph",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "apz-http"
 version = "0.1.0"
 dependencies = [

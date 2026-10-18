@@ -1,13 +1,15 @@
 import { agentName, roleLabel } from '../roles';
 // Overview: the plaza at a glance — the orchestrator front and centre, the
-// fleet's state, and a live activity feed.
+// projects with their flow lines, the fleet's state, and a live activity feed.
 
-import { api, type Agent, type Entry } from '../api';
+import { api, type Agent, type AgentStep, type Entry, type Project, type Task } from '../api';
 import { go, href } from '../router';
 import { agents, on, overview } from '../store';
 import { ago, attempt, badge, button, card, clip, empty, stat, textarea } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
 import type { Cleanup } from './index';
+import { flowLine } from './work';
+import { FLOW_TASKS, flowSegments, planWaitsForOwner, waitsForOwner, type StepOf } from './work-model';
 
 const FEED_MAX = 40;
 
@@ -16,13 +18,36 @@ export function mount(root: HTMLElement): Cleanup {
   const orchestrator = h('div');
   const feed = h('ol.feed');
   const fleet = h('div');
+  const projects = h('div');
 
   root.append(
     h('div.view-head', null, h('h1', null, 'Overview')),
     stats,
     h('div.grid.cols-2.overview-main', null, orchestrator, card('Activity', feed, { flush: true })),
+    card('Projects', projects, { flush: true }),
     card('Fleet', fleet, { flush: true }),
   );
+
+  // The projects' flow lines, read again when a project or a task moves. The agents' steps come as they move: a task
+  // whose agent waits on the owner is the owner's square.
+  let projectsTimer = 0;
+  let drawn: { ps: Project[]; ts: Task[] } | null = null;
+  const steps = new Map<number, AgentStep | null>();
+  const stepOf: StepOf = (cid) => (steps.has(cid) ? steps.get(cid) : agents.get().find((a) => a.cid === cid)?.step);
+  const loadProjects = async (): Promise<void> => {
+    try {
+      const [ps, ts] = await Promise.all([api.projects(), api.tasks()]);
+      drawn = { ps, ts };
+      renderProjects(projects, ps, ts, stepOf);
+    } catch {
+      replace(projects, empty('alert', 'Projects are unavailable', 'apid did not answer; they come back with it.'));
+    }
+  };
+  const scheduleProjects = (): void => {
+    window.clearTimeout(projectsTimer);
+    projectsTimer = window.setTimeout(() => void loadProjects(), 300);
+  };
+  void loadProjects();
 
   const offs = [
     overview.watch((o) => {
@@ -41,9 +66,49 @@ export function mount(root: HTMLElement): Cleanup {
       renderFleet(fleet, list);
     }),
     on('transcript', (data) => pushFeed(feed, data as Entry)),
+    on('project', scheduleProjects),
+    on('task', scheduleProjects),
+    on('agent_step', (data) => {
+      const { cid, step } = data as { cid: number; step: AgentStep | null };
+      const decided = (stepOf(cid)?.stage === 'approval') !== (step?.stage === 'approval');
+      steps.set(cid, step);
+      if (decided && drawn) renderProjects(projects, drawn.ps, drawn.ts, stepOf);
+    }),
   ];
   replace(feed, h('li.feed-empty.faint', null, 'Waiting for activity…'));
-  return () => offs.forEach((off) => off());
+  return () => {
+    window.clearTimeout(projectsTimer);
+    offs.forEach((off) => off());
+  };
+}
+
+/** A line per project still in progress: its title, its stage and its flow line, opening its Work view. */
+function renderProjects(root: HTMLElement, list: Project[], tasks: Task[], stepOf: StepOf): void {
+  const active = list.filter((p) => p.stage !== 'delivered');
+  if (!active.length) {
+    replace(root, empty('projects', 'No projects in progress', 'Each goal you give the orchestrator becomes a project; its flow shows here.'));
+    return;
+  }
+  replace(
+    root,
+    h(
+      'div.ov-projects',
+      null,
+      active.map((p) => {
+        const own = tasks.filter((t) => t.project === p.id || p.tasks.includes(t.id));
+        const done = own.filter((t) => t.state === 'done').length;
+        const stage = p.stage.charAt(0).toUpperCase() + p.stage.slice(1);
+        const yours = planWaitsForOwner(p) ? 'waits for your approval' : waitsForOwner(p, own, stepOf) ? 'waits for you' : '';
+        return h(
+          'a.ov-project',
+          { href: href('work', p.id), 'data-key': `pj-${p.id}` },
+          h('span.ov-project-title', null, p.title),
+          h('span.faint', null, [stage, own.length ? `${done} of ${own.length} tasks done` : '', yours].filter(Boolean).join(' · ')),
+          flowLine(flowSegments(p, own, stepOf), Math.max(0, own.length - FLOW_TASKS)),
+        );
+      }),
+    ),
+  );
 }
 
 function renderOrchestrator(root: HTMLElement, orch: Agent | undefined): void {

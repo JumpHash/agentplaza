@@ -1,0 +1,19 @@
+{
+  "about": "No tasks: the layout is its padding.",
+  "graph": {
+    "edges": [],
+    "frontier": [],
+    "longest_chain": [],
+    "project": "pr1",
+    "stage": "implementation",
+    "tasks": [],
+    "waiting": []
+  },
+  "layout": {
+    "cards": [],
+    "columns": [],
+    "height": 48.0,
+    "routes": [],
+    "width": 48.0
+  }
+}
