@@ -62,6 +62,8 @@ pub mod treasury;
 pub mod vault;
 pub mod volumes;
 pub mod wizard;
+pub mod work;
+pub mod work_model;
 pub mod workstations;
 pub mod workstations_files;
 pub mod workstations_live;
@@ -78,6 +80,8 @@ pub enum Id {
     Overview,
     Agents,
     Projects,
+    /// A project as one flow: its plan, its tasks in the order their links let them run, and delivery.
+    Work,
     Prompts,
     Skills,
     Tasks,
@@ -107,6 +111,10 @@ pub enum Id {
     Setup,
     /// One task in full, on the Tasks screen, by its id.
     Task(String),
+    /// One project's page, on the Projects screen, by its id.
+    Project(String),
+    /// One tab of the Work screen: a project's id, or the tasks outside projects (`work::LOOSE`).
+    WorkOn(String),
     /// One repository's page, on the Git screen, by its name.
     Repo(String),
     /// One agent's page.
@@ -136,6 +144,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Prompts, "Prompts", "Plaza", "edit"),
     (Id::Skills, "Skills", "Plaza", "wrench"),
     (Id::Projects, "Projects", "Plaza", "projects"),
+    (Id::Work, "Work", "Plaza", "commit"),
     (Id::Tasks, "Tasks", "Plaza", "tasks"),
     (Id::Git, "Git", "Plaza", "git"),
     (Id::Library, "Library", "Plaza", "library"),
@@ -171,6 +180,7 @@ pub struct Screens {
     pub overview: overview::State,
     pub agents: agents::State,
     pub projects: projects::State,
+    pub work: work::State,
     pub prompts: prompts::State,
     pub skills: skills::State,
     pub tasks: tasks::State,
@@ -213,6 +223,7 @@ pub enum Msg {
     Overview(overview::Msg),
     Agents(agents::Msg),
     Projects(projects::Msg),
+    Work(work::Msg),
     Prompts(prompts::Msg),
     Skills(skills::Msg),
     Tasks(tasks::Msg),
@@ -256,6 +267,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Overview(m) => overview::go(m),
         Msg::Agents(m) => agents::go(m),
         Msg::Projects(m) => projects::go(m),
+        Msg::Work(m) => work::go(m),
         Msg::Prompts(m) => prompts::go(m),
         Msg::Skills(m) => skills::go(m),
         Msg::Tasks(m) => tasks::go(m),
@@ -325,6 +337,8 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
+        Id::Project(project) => screens.projects = projects::opened(project.clone()),
+        Id::WorkOn(tab) => screens.work = work::opened(tab.clone()),
         Id::Ide(Some(workspace)) => screens.ide.preselect = Some(workspace.clone()),
         Id::Repo(repo) => {
             screens.git = git::State {
@@ -361,7 +375,10 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
     match id {
         Id::Overview => overview::load(&mut screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::load(&mut screens.agents, ctx).map(Msg::Agents),
-        Id::Projects => projects::load(&mut screens.projects, ctx).map(Msg::Projects),
+        Id::Projects | Id::Project(_) => {
+            projects::load(&mut screens.projects, ctx).map(Msg::Projects)
+        }
+        Id::Work | Id::WorkOn(_) => work::load(&mut screens.work, ctx).map(Msg::Work),
         Id::Prompts => prompts::load(&mut screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::load(&mut screens.skills, ctx).map(Msg::Skills),
         Id::Tasks | Id::Task(_) => tasks::load(&mut screens.tasks, ctx).map(Msg::Tasks),
@@ -420,6 +437,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Overview(m) => overview::update(&mut screens.overview, m, ctx).map(Msg::Overview),
         Msg::Agents(m) => agents::update(&mut screens.agents, m, ctx).map(Msg::Agents),
         Msg::Projects(m) => projects::update(&mut screens.projects, m, ctx).map(Msg::Projects),
+        Msg::Work(m) => work::update(&mut screens.work, m, ctx).map(Msg::Work),
         Msg::Prompts(m) => prompts::update(&mut screens.prompts, m, ctx).map(Msg::Prompts),
         Msg::Skills(m) => skills::update(&mut screens.skills, m, ctx).map(Msg::Skills),
         Msg::Tasks(m) => tasks::update(&mut screens.tasks, m, ctx).map(Msg::Tasks),
@@ -504,7 +522,8 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
         Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
         Id::Rules => rules::subscription(ctx).map(Msg::Rules),
-        Id::Projects => projects::subscription(ctx).map(Msg::Projects),
+        Id::Projects | Id::Project(_) => projects::subscription(ctx).map(Msg::Projects),
+        Id::Work | Id::WorkOn(_) => work::subscription(ctx).map(Msg::Work),
         Id::Library => library::subscription(ctx).map(Msg::Library),
         Id::Tasks | Id::Task(_) => tasks::subscription(ctx).map(Msg::Tasks),
         Id::Approvals => approvals::subscription(ctx).map(Msg::Approvals),
@@ -531,7 +550,8 @@ pub fn view<'a>(
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
-        Id::Projects => projects::view(&screens.projects, ctx).map(Msg::Projects),
+        Id::Projects | Id::Project(_) => projects::view(&screens.projects, ctx).map(Msg::Projects),
+        Id::Work | Id::WorkOn(_) => work::view(&screens.work, ctx).map(Msg::Work),
         Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::view(&screens.skills, ctx).map(Msg::Skills),
         Id::Tasks | Id::Task(_) => tasks::view(&screens.tasks, ctx).map(Msg::Tasks),

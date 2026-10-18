@@ -107,6 +107,8 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "apz-engine",
+ "apz-graph",
+ "apz-graph-web",
  "apz-http",
  "apz-ide",
  "apz-metrics",

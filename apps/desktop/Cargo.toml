@@ -49,6 +49,8 @@ apz-http = { path = "../../crates/apz-http" }
 # The IDE terminal's emulator (the VT screen over vte; no UI, so it stays testable here).
 apz-vt = { path = "../../crates/apz-vt" }
 apz-plaza = { path = "../../crates/apz-plaza" }
+# The Work screen's layout: where each task's card goes and how each link is drawn, the same as the web's (its wasm).
+apz-graph = { path = "../../crates/apz-graph" }
 # The rich-content classifier: which references in agent text become chips and hover cards (console/rich.rs).
 apz-rich = { path = "../../crates/apz-rich" }
 apz-os = { path = "../../crates/apz-os" }
@@ -64,6 +66,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 rfd = "0.17"
 
 [dev-dependencies]
+# The web's layout binding, natively: the Work screen's test lays the fixtures out both ways and compares them.
+apz-graph-web = { path = "../../crates/apz-graph-web" }
 # iced's headless harness: it drives the same widgets and application the
 # binary runs, so the UI is verified on a host with no display to look at.
 iced_test = "0.14"

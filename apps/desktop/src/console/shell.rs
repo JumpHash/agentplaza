@@ -484,7 +484,10 @@ fn shows(entry: &Id, current: &Id) -> bool {
     entry == current
         || matches!(
             (entry, current),
-            (Id::Tasks, Id::Task(_)) | (Id::Git, Id::Repo(_))
+            (Id::Tasks, Id::Task(_))
+                | (Id::Git, Id::Repo(_))
+                | (Id::Projects, Id::Project(_))
+                | (Id::Work, Id::WorkOn(_))
         )
 }
 
@@ -497,6 +500,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
         Id::Overview
             | Id::Agents
             | Id::Projects
+            | Id::Project(_)
             | Id::Tasks
             | Id::Task(_)
             | Id::Git

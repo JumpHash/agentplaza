@@ -115,6 +115,7 @@ agentplaza agents create --role researcher --count 2  # create two researcher ag
 agentplaza agents list --status working             # the agents that are working (or idle, offline)
 agentplaza tasks create "Survey the open issues" --role researcher --details "List them, with the blockers"
 agentplaza tasks list                               # the work queue, with each task's lane and assignee
+agentplaza tasks graph pr1                          # a project's tasks in the order their links let them run
 agentplaza nodes code --label atlas --ttl 15        # hub: a one-time join code, valid for 15 minutes
 agentplaza node join <code>                         # the machine: join it to the hub as a node
 agentplaza nodes list                               # the nodes, with their state, agents and last seen

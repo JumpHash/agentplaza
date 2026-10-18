@@ -10,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Space, button, column, container, mouse_area, pick_list, row, text, text_editor, text_input,
+    Space, button, checkbox, column, container, mouse_area, pick_list, row, text, text_editor,
+    text_input,
 };
 use iced::{
     Alignment, Border, Color, Element, Font, Length, Padding, Subscription, Task, Theme, font,
@@ -18,9 +19,10 @@ use iced::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::work_model as model;
 use super::{Id, ide};
 use crate::console::ui::{self, Tone};
-use crate::console::{Ctx, client, events, rich};
+use crate::console::{Ctx, client, events, rich, roles};
 use crate::theme::{self};
 
 /// A card's goal: serif semibold, as the web's task title.
@@ -71,6 +73,21 @@ pub struct TaskRecord {
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
+    /// The project it is for, when it is one's.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// The tasks it runs after.
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// Open, and every task it runs after is done: it can be claimed now.
+    #[serde(default)]
+    pub ready: bool,
+    /// The tasks it runs after that are not done yet.
+    #[serde(default)]
+    pub waiting_on: Vec<String>,
+    /// The tasks it runs after that failed or were withdrawn.
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -194,6 +211,8 @@ pub struct State {
     /// A reload from a hub event is in flight, and whether another one was asked for meanwhile.
     reloading: bool,
     again: bool,
+    /// The board shows only the tasks that can be claimed now.
+    ready_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +250,8 @@ pub enum Msg {
     Event(events::Event),
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
     Rich(rich::Ev),
+    /// "Ready only": the board shows only the tasks that can be claimed now.
+    ReadyOnly(bool),
 }
 
 /// The navigation this message asks for, if any.
@@ -295,7 +316,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 // The card the arrow keys picked, else the card under the pointer.
                 let picked = state
                     .kbd
-                    .and_then(|i| board_order(&state.tasks).get(i).map(|t| t.id.clone()));
+                    .and_then(|i| board_order(visible(state)).get(i).map(|t| t.id.clone()));
                 if let Some(id) = picked.or_else(|| state.hovered.clone()) {
                     return update(state, Msg::Open(id), ctx);
                 }
@@ -304,8 +325,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Step(down) => {
             if state.selected.is_none() && state.draft.is_none() {
-                state.kbd = step(state.kbd, state.tasks.len(), down);
+                state.kbd = step(state.kbd, visible(state).count(), down);
             }
+            Task::none()
+        }
+        Msg::ReadyOnly(on) => {
+            state.ready_only = on;
+            state.kbd = clamp(state.kbd, visible(state).count());
             Task::none()
         }
         Msg::Event(event) => match event.kind.as_str() {
@@ -343,7 +369,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.tasks = snap.tasks;
                 state.activity = snap.activity.into_iter().collect();
                 // A poll may shrink the board: the keyboard's pick stays on a card that is there.
-                state.kbd = clamp(state.kbd, state.tasks.len());
+                state.kbd = clamp(state.kbd, visible(state).count());
             }
             state.agents = snap.agents;
             state.detail = if state.selected.is_some() {
@@ -591,9 +617,14 @@ fn lane_of(state: &str) -> usize {
     }
 }
 
+/// The tasks the board shows: all of them, or with "Ready only" the ones that can be claimed now.
+fn visible(state: &State) -> impl Iterator<Item = &TaskRecord> {
+    state.tasks.iter().filter(|t| !state.ready_only || t.ready)
+}
+
 /// The board's cards in the order the lanes show them: lane by lane, each lane newest first.
-fn board_order(tasks: &[TaskRecord]) -> Vec<&TaskRecord> {
-    let mut sorted: Vec<&TaskRecord> = tasks.iter().collect();
+fn board_order<'a>(tasks: impl IntoIterator<Item = &'a TaskRecord>) -> Vec<&'a TaskRecord> {
+    let mut sorted: Vec<&TaskRecord> = tasks.into_iter().collect();
     sorted.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
     (0..LANES.len())
         .flat_map(|lane| {
@@ -796,7 +827,7 @@ fn role_label(agents: &[AgentRecord], role: &str) -> String {
         .iter()
         .find(|a| a.role == role && !a.role_label.is_empty())
         .map(|a| a.role_label.clone())
-        .unwrap_or_else(|| role.to_string())
+        .unwrap_or_else(|| roles::label(role))
 }
 
 fn agent_name(agents: &[AgentRecord], cid: u64) -> String {
@@ -854,6 +885,14 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if state.selected.is_some() {
         parts.push(detail_page(state));
     } else {
+        actions.push(
+            checkbox(state.ready_only)
+                .label("Ready only")
+                .on_toggle(Msg::ReadyOnly)
+                .size(14.0)
+                .text_size(13.0)
+                .into(),
+        );
         actions.push(ui::btn(
             "New task",
             Some("plus"),
@@ -864,6 +903,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             parts.push(draft_form(state, d));
         }
         parts.push(summary(state));
+        if let Some(line) = waits(state) {
+            parts.push(line);
+        }
         parts.push(board(state));
     }
     // The page scrolls under its head: the lanes are as tall as their cards, not the window.
@@ -902,6 +944,134 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
     .into()
 }
 
+/// The ready tasks nobody has claimed, by the role they wait for, longest wait first: where the plaza is short of an
+/// agent (the web's line under the figures). Nothing when every ready task is taken.
+fn waits<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    let ledger: Vec<model::Task> = state
+        .tasks
+        .iter()
+        .map(|t| model::Task {
+            id: t.id.clone(),
+            state: t.state.clone(),
+            goal: String::new(),
+            role: t.role.clone(),
+            project: t.project.clone(),
+            after: t.after.clone(),
+            ready: t.ready,
+            blocked_by: t.blocked_by.clone(),
+            agent_cid: t.agent_cid,
+            note: None,
+            outcome: None,
+            created_at: t.created_at,
+            updated_at: t.updated_at,
+        })
+        .collect();
+    let groups = model::waits_by_role(&ledger, now_ms());
+    if groups.is_empty() {
+        return None;
+    }
+    let pal = crate::theme::palette();
+    let mut line = row![ui::sans("Ready, not claimed", 12.0, pal.ink_3)]
+        .spacing(18)
+        .align_y(Alignment::Center);
+    for g in groups {
+        let who = match g.role.as_deref() {
+            Some(role) => model::claimant(Some(role)),
+            None => "Any agent".to_string(),
+        };
+        let many = g.count > 1;
+        line = line.push(
+            row![
+                ui::sans(
+                    format!(
+                        "{who} · {} {} · {}",
+                        g.count,
+                        if many { "tasks" } else { "task" },
+                        if many { "longest" } else { "waited" }
+                    ),
+                    12.0,
+                    pal.ink_2
+                ),
+                text(model::short_span(g.waited))
+                    .font(SANS_BOLD)
+                    .size(12.0)
+                    .color(pal.ink),
+            ]
+            .spacing(4),
+        );
+    }
+    Some(ui::scroll_x(line).into())
+}
+
+/// Chips that open the tasks `ids` on this screen; `bad` marks the ones that ended without being done.
+fn task_chips<'a>(ids: &[String], bad: bool) -> Vec<Element<'a, Msg>> {
+    ids.iter()
+        .map(|id| {
+            let edge = if bad {
+                crate::theme::palette().crit
+            } else {
+                crate::theme::palette().rule
+            };
+            button(ui::mono(
+                id.clone(),
+                11.0,
+                if bad {
+                    crate::theme::palette().crit
+                } else {
+                    crate::theme::palette().ink_2
+                },
+            ))
+            .padding([0, 5])
+            .style(move |_: &Theme, status| button::Style {
+                background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                    .then(|| crate::theme::palette().hover.into()),
+                text_color: crate::theme::palette().ink,
+                border: Border {
+                    color: edge,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            })
+            .on_press(Msg::Open(id.clone()))
+            .into()
+        })
+        .collect()
+}
+
+/// Whether an open task can be claimed now, or what it waits on: the tasks it runs after that failed or were
+/// withdrawn, then the ones not done yet.
+fn waits_on<'a>(t: &TaskRecord) -> Option<Element<'a, Msg>> {
+    let pal = crate::theme::palette();
+    if t.ready {
+        return Some(
+            text("Ready to claim")
+                .font(ui::SANS_MEDIUM)
+                .size(12.0)
+                .color(pal.info)
+                .into(),
+        );
+    }
+    if t.blocked_by.is_empty() && t.waiting_on.is_empty() {
+        return None;
+    }
+    let label = if t.blocked_by.is_empty() {
+        "Waits on"
+    } else {
+        "Blocked by"
+    };
+    let mut line = row![ui::sans(label, 12.0, pal.ink_3)]
+        .spacing(4)
+        .align_y(Alignment::Center);
+    for chip in task_chips(&t.blocked_by, true)
+        .into_iter()
+        .chain(task_chips(&t.waiting_on, false))
+    {
+        line = line.push(chip);
+    }
+    Some(line.wrap().into())
+}
+
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
     column![
         ui::sans(value.to_string(), 22.0, crate::theme::palette().ink),
@@ -913,7 +1083,7 @@ fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
 
 /// The four lanes, each full height, with a line when empty.
 fn board<'a>(state: &'a State) -> Element<'a, Msg> {
-    let order = board_order(&state.tasks);
+    let order = board_order(visible(state));
     let picked: Option<&'a str> = state
         .kbd
         .and_then(|i| order.get(i).copied())
@@ -1041,10 +1211,16 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
             .spacing(8)
             .into()
         }
-        _ => meta_row(
-            meta_text(format!("budget {}", fmt_num(t.budget))),
-            meta_text(format!("created {}", ago(t.created_at))),
-        ),
+        _ => {
+            let meta = meta_row(
+                meta_text(format!("budget {}", fmt_num(t.budget))),
+                meta_text(format!("created {}", ago(t.created_at))),
+            );
+            match waits_on(t) {
+                Some(waits) => column![waits, meta].spacing(8).width(Length::Fill).into(),
+                None => meta,
+            }
+        }
     };
     let top = row![
         sans_text(t.id.clone(), 11.0, crate::theme::palette().ink_3),
@@ -1266,7 +1442,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         .as_deref()
         .map(|r| role_label(&state.agents, r))
         .unwrap_or_else(|| "Any role".to_string());
-    let facts = column![
+    let mut facts = column![
         kv(
             "State",
             ui::badge(&label_of(&t.state), tone_of_state(&t.state))
@@ -1281,6 +1457,36 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
     .spacing(8);
+    if let Some(project) = t.project.as_deref() {
+        // The project's flow on the Work screen, where this task stands among the others.
+        facts = facts.push(kv(
+            "Project",
+            ui::link(project, Msg::Go(Id::WorkOn(project.to_string())), true),
+        ));
+    }
+    if !t.after.is_empty() {
+        facts = facts.push(kv(
+            "Runs after",
+            row(task_chips(&t.after, false)).spacing(4).wrap().into(),
+        ));
+    }
+    if open && !t.blocked_by.is_empty() {
+        facts = facts.push(kv(
+            "Blocked by",
+            row(task_chips(&t.blocked_by, true))
+                .spacing(4)
+                .wrap()
+                .into(),
+        ));
+    } else if open && !t.waiting_on.is_empty() {
+        facts = facts.push(kv(
+            "Waits on",
+            row(task_chips(&t.waiting_on, false))
+                .spacing(4)
+                .wrap()
+                .into(),
+        ));
+    }
     let mut side_parts: Vec<Element<'a, Msg>> = vec![facts.into()];
     if let Some(cid) = t.agent_cid {
         // The work's changes since it began, in review mode (the IDE's default base).

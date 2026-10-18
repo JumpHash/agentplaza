@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{Ctx, client, ui};
+use crate::console::{Ctx, client, roles, ui};
 use crate::theme::{self};
 
 /// A motion as the hub reports it (`GET /v1/motions`).
@@ -347,36 +347,6 @@ fn vote_tone(vote: &str) -> ui::Tone {
     }
 }
 
-/// The human label for a role (the web's `roleLabel`); an unknown role shows as its raw name.
-fn role_label(role: &str) -> String {
-    let label = match role {
-        "orchestrator" => "Orchestrator",
-        "architect" => "Architect",
-        "auditor" => "Auditor",
-        "breeder" => "Breeder",
-        "builder" => "Builder",
-        "edge-operator" => "Edge operator",
-        "finance" => "Finance",
-        "incident" => "Incident",
-        "legal-agents-counsel" => "Legal · agents' counsel",
-        "legal-agents-defender" => "Legal · agents' defender",
-        "legal-agents-ombudsman" => "Legal · agents' ombudsman",
-        "legal-gov-judge" => "Legal · government judge",
-        "legal-gov-prosecutor" => "Legal · government prosecutor",
-        "librarian" => "Librarian",
-        "mayor" => "Mayor",
-        "mayor-office" => "Mayor · office",
-        "planner" => "Planner",
-        "qa" => "QA",
-        "release" => "Release",
-        "researcher" => "Researcher",
-        "reviewer" => "Reviewer",
-        "security-reviewer" => "Security reviewer",
-        other => return other.to_string(),
-    };
-    label.to_string()
-}
-
 /// A relative time since `ms` (the web's `ago`); "—" for no time.
 fn ago(ms: f64) -> String {
     if ms <= 0.0 {
@@ -429,7 +399,7 @@ fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
 
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
     row![
-        ui::faint(role_label(&v.seat)),
+        ui::faint(roles::label(&v.seat)),
         ui::badge(&v.vote, vote_tone(&v.vote)),
         container(ui::faint(v.reason.clone())).width(Length::Fill),
     ]
