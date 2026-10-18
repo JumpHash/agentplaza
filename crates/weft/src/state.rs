@@ -155,6 +155,7 @@ pub struct Revision {
     pub digest: Hash,
     pub tool_calls: Vec<String>,
     pub turn: Option<u64>,
+    pub model: Option<String>,
     pub actor: Actor,
     pub seq: u64,
     pub at_ms: u64,
@@ -527,13 +528,22 @@ impl State {
                 s
             }
             "revision.draft" | "revision.seal" => {
-                let (change, n, deltas, tool_calls, turn, sealed) = if kind == "revision.draft" {
-                    let d: Draft = parse(&stmt.body, kind)?;
-                    (d.change, d.n, d.deltas, d.tool_calls, d.turn, false)
-                } else {
-                    let s: Seal = parse(&stmt.body, kind)?;
-                    (s.change, s.n, s.deltas, s.tool_calls, None, true)
-                };
+                let (change, n, deltas, tool_calls, turn, model, sealed) =
+                    if kind == "revision.draft" {
+                        let d: Draft = parse(&stmt.body, kind)?;
+                        (
+                            d.change,
+                            d.n,
+                            d.deltas,
+                            d.tool_calls,
+                            d.turn,
+                            d.model,
+                            false,
+                        )
+                    } else {
+                        let s: Seal = parse(&stmt.body, kind)?;
+                        (s.change, s.n, s.deltas, s.tool_calls, None, s.model, true)
+                    };
                 check_deltas(&deltas)?;
                 let c = self.change(&change)?;
                 if stmt.actor != c.author && stmt.actor != Actor::Hub {
@@ -585,6 +595,7 @@ impl State {
                             digest: dg,
                             tool_calls,
                             turn,
+                            model,
                             actor: stmt.actor.clone(),
                             seq,
                             at_ms: stmt.at_ms,
@@ -810,6 +821,7 @@ impl State {
                             digest: dg,
                             tool_calls: vec![],
                             turn: None,
+                            model: None,
                             actor: Actor::Hub,
                             seq,
                             at_ms: stmt.at_ms,
@@ -869,6 +881,7 @@ impl State {
                             digest: dg,
                             tool_calls: vec![],
                             turn: None,
+                            model: None,
                             actor: Actor::Hub,
                             seq,
                             at_ms: i.at_ms,

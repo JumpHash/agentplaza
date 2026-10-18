@@ -1,0 +1,16 @@
+{
+  "name": "rust",
+  "version": 1,
+  "language": "rust",
+  "extensions": [
+    "rs"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-rust",
+    "version": "0.24.0",
+    "wasm": "tree-sitter-rust.wasm"
+  },
+  "query": "symbols.scm"
+}

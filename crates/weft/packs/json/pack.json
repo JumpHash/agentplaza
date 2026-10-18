@@ -1,0 +1,16 @@
+{
+  "name": "json",
+  "version": 1,
+  "language": "json",
+  "extensions": [
+    "json"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-json",
+    "version": "0.24.8",
+    "wasm": "tree-sitter-json.wasm"
+  },
+  "query": "symbols.scm"
+}

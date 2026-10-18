@@ -1,0 +1,17 @@
+{
+  "name": "markdown",
+  "version": 1,
+  "language": "markdown",
+  "extensions": [
+    "md",
+    "markdown"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "build": "@tree-sitter-grammars/tree-sitter-markdown",
+    "version": "0.3.2",
+    "dir": "tree-sitter-markdown"
+  },
+  "query": "symbols.scm"
+}

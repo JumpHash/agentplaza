@@ -139,6 +139,9 @@ pub struct Draft {
     pub tool_calls: Vec<String>,
     #[serde(default)]
     pub turn: Option<u64>,
+    /// The model the agent ran on this turn.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// `revision.seal`: the worker's finished revision (round `n`), deltas against the lane's base.
@@ -149,6 +152,8 @@ pub struct Seal {
     pub deltas: Vec<Delta>,
     #[serde(default)]
     pub tool_calls: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// One intent: a plain title and what it covers.

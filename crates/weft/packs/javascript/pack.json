@@ -1,0 +1,21 @@
+{
+  "name": "javascript",
+  "version": 1,
+  "language": "javascript",
+  "extensions": [
+    "js",
+    "mjs",
+    "cjs",
+    "jsx"
+  ],
+  "filenames": [],
+  "shebangs": [
+    "node"
+  ],
+  "source": {
+    "npm": "tree-sitter-javascript",
+    "version": "0.25.0",
+    "wasm": "tree-sitter-javascript.wasm"
+  },
+  "query": "symbols.scm"
+}

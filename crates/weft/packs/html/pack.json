@@ -1,0 +1,17 @@
+{
+  "name": "html",
+  "version": 1,
+  "language": "html",
+  "extensions": [
+    "html",
+    "htm"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-html",
+    "version": "0.23.2",
+    "wasm": "tree-sitter-html.wasm"
+  },
+  "query": "symbols.scm"
+}

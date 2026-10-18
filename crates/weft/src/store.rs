@@ -124,6 +124,14 @@ impl Store {
             return Err("the key id does not name the signing key".into());
         }
         key.verify(&signed.stmt, &signed.sig)?;
+        let missing = self.blobs.missing(&named_blobs(&stmt.kind, &stmt.body));
+        if !missing.is_empty() {
+            let list: Vec<String> = missing.iter().map(|h| h.short()).collect();
+            return Err(format!(
+                "missing blobs (upload them first): {}",
+                list.join(", ")
+            ));
+        }
         let probe = LogRecord {
             seq,
             prev: log.head(),
@@ -374,6 +382,27 @@ pub struct VerifyReport {
     pub signatures: usize,
     pub changes: usize,
     pub blobs: usize,
+}
+
+/// The blobs a statement names, which must be stored before it is accepted.
+pub fn named_blobs(kind: &str, body: &Value) -> Vec<Hash> {
+    let hash = |v: &Value| v.as_str().and_then(|s| s.parse::<Hash>().ok());
+    let mut out = Vec::new();
+    match kind {
+        "revision.draft" | "revision.seal" | "land" | "import" => {
+            for d in body["deltas"].as_array().into_iter().flatten() {
+                out.extend(hash(&d["after"]));
+            }
+        }
+        "pack.add" => out.extend(
+            [hash(&body["wasm"]), hash(&body["tags"])]
+                .into_iter()
+                .flatten(),
+        ),
+        "artifact.put" => out.extend(hash(&body["digest"])),
+        _ => {}
+    }
+    out
 }
 
 pub fn apply_deltas(tree: &mut Tree, deltas: &[Delta]) {

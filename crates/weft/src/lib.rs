@@ -8,12 +8,18 @@
 //! - [`blobs`]: file contents and artifacts by BLAKE3 hash.
 //! - [`state`]: the state rebuilt by replaying the log, and the rules for who may sign what.
 //! - [`store`]: the three kept consistent.
+//! - [`lang`], [`packsrc`]: language and format packs, loaded on demand.
+//! - [`diff`], [`derived`]: diffs and the data derived from the log: symbols, touches, lineage, change trees.
 
 pub mod blobs;
+pub mod derived;
+pub mod diff;
 pub mod hash;
 pub mod keys;
+pub mod lang;
 pub mod log;
 pub mod model;
+pub mod packsrc;
 pub mod record;
 pub mod state;
 pub mod store;
