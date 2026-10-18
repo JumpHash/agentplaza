@@ -1,5 +1,5 @@
-//! Where agents run: the node a new agent is placed on, the move of an agent to another node, and the
-//! drain of a node (every agent it runs is moved off, one at a time).
+//! Where agents run: the node a new agent is placed on, and the move of an agent to another node. A
+//! stopped node (`mover`) takes neither: its agents are moved off by the mover, one at a time.
 //!
 //! A move carries the agent's VM between two noded. The VM is put to sleep (`sleep::put_to_sleep`),
 //! its files are exported on the source (`POST /v1/runs/{run}/vms/{vm}/export`), copied in
@@ -7,7 +7,8 @@
 //! placement is recorded (`nodes::Store::set_override`, saved with the node store), the target's
 //! gateway serves the CID, the agent wakes on the target, and the source lets go of it (its gateway
 //! and its run). Any failure before the placement is recorded aborts the import and wakes the agent
-//! where it was.
+//! where it was. Work queued for the agent waits while it moves (`scheduler`'s dispatch holds a moving
+//! agent) and goes out once it is awake on the target; work in flight refuses the move.
 //!
 //! Routes (owner):
 //!   POST /v1/agents/{cid}/move  {node} → {ok, from, to, bytes, ms}
@@ -78,6 +79,12 @@ pub fn score(candidate: &Candidate) -> i64 {
 /// free is eligible. The highest score wins; a tie goes to `n0`, then to the earlier candidate. With
 /// no eligible candidate the agent goes to `n0`, where noded says whether it fits.
 pub fn choose(candidates: &[Candidate]) -> String {
+    pick(candidates).unwrap_or_else(|| LOCAL.to_string())
+}
+
+/// The best of the eligible candidates as [`choose`] ranks them (pure); None when no candidate has
+/// [`ADMIT_MIB`] free.
+pub fn pick(candidates: &[Candidate]) -> Option<String> {
     let mut best: Option<(i64, &Candidate)> = None;
     for candidate in candidates
         .iter()
@@ -94,28 +101,38 @@ pub fn choose(candidates: &[Candidate]) -> String {
             best = Some((s, candidate));
         }
     }
-    best.map_or_else(
-        || LOCAL.to_string(),
-        |(_, candidate)| candidate.node.clone(),
-    )
+    best.map(|(_, candidate)| candidate.node.clone())
 }
 
-/// The node a new agent of `role` goes to: among the nodes that report and are not draining (`n0`
+/// The node a new agent of `role` goes to: among the nodes that report and are in service (`n0`
 /// included), the best by [`choose`], with the memory reserved on each node (see [`reserved_mib`])
 /// taken off its free memory. The chosen node is then reserved for the new agent. A node whose
 /// machine stats did not answer is left out.
 pub fn choose_node(app: &App, role: &str) -> String {
-    let draining: BTreeSet<String> = app
-        .nodes
-        .list()
+    let chosen = choose(&candidates(app, role));
+    reserve(&chosen);
+    chosen
+}
+
+/// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service by
+/// [`pick`], reserved for it as a new agent's would be. None when none has room.
+pub fn target_for(app: &App, role: &str, from: &str) -> Option<String> {
+    let others: Vec<Candidate> = candidates(app, role)
         .into_iter()
-        .filter(|node| node.draining)
-        .map(|node| node.id)
+        .filter(|candidate| candidate.node != from)
         .collect();
+    let chosen = pick(&others)?;
+    reserve(&chosen);
+    Some(chosen)
+}
+
+/// The nodes that report and are in service, each as a candidate for an agent of `role`.
+fn candidates(app: &App, role: &str) -> Vec<Candidate> {
+    let stopped = app.nodes.stopped_ids();
     let now = Instant::now();
-    let candidates: Vec<Candidate> = fleet::reports(app)
+    fleet::reports(app)
         .into_iter()
-        .filter(|(node, _, _)| !draining.contains(node))
+        .filter(|(node, _, _)| !stopped.contains(node))
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
             Some(Candidate {
@@ -127,18 +144,20 @@ pub fn choose_node(app: &App, role: &str) -> String {
                 node,
             })
         })
-        .collect();
-    let chosen = choose(&candidates);
+        .collect()
+}
+
+/// Sets [`RESERVE_MIB`] aside on `node` for an agent placed or moved there.
+fn reserve(node: &str) {
     RESERVED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .push((chosen.clone(), now));
-    chosen
+        .push((node.to_string(), Instant::now()));
 }
 
 /// Memory reserved on `node` at `now`: [`RESERVE_MIB`] for each agent placed there less than
 /// [`RESERVE_FOR`] ago. Older reservations are dropped.
-fn reserved_mib(node: &str, now: Instant) -> u64 {
+pub(crate) fn reserved_mib(node: &str, now: Instant) -> u64 {
     let mut reserved = RESERVED.lock().unwrap_or_else(PoisonError::into_inner);
     reserved.retain(|(_, when)| now.saturating_duration_since(*when) <= RESERVE_FOR);
     let held = reserved.iter().filter(|(held, _)| held == node).count();
@@ -147,7 +166,7 @@ fn reserved_mib(node: &str, now: Instant) -> u64 {
 
 /// A node's memory as (total, used) in MiB: `n0`'s stats asked now, a joined node's from its last
 /// heartbeat. None when the stats did not answer.
-fn memory_of(app: &App, node: &str) -> Option<(u64, u64)> {
+pub(crate) fn memory_of(app: &App, node: &str) -> Option<(u64, u64)> {
     let (stats, machine_total) = if node == LOCAL {
         let Ok((200, stats)) = fleet::noded(app, LOCAL, "GET", "/v1/machine/stats", None) else {
             return None;
@@ -208,16 +227,20 @@ fn warm_for(templates: &Value, role: &str) -> bool {
     list.is_some_and(|items| items.iter().any(|item| item["role"].as_str() == Some(role)))
 }
 
-/// Why a move to `target` is refused (pure): the agent is already on it, or the node is unknown,
-/// revoked, draining or offline. `n0` is always there.
+/// Why a move to `target` is refused (pure): the agent is already on it, the node is stopped
+/// (`stopped`, `n0` included), or it is unknown, revoked or offline. `n0` is always there.
 pub fn target_refusal(
     from: &str,
     target: &str,
     record: Option<&Node>,
+    stopped: bool,
     now_ms: u64,
 ) -> Option<(u16, String)> {
     if target == from {
         return Some((409, format!("agent is already on {target}")));
+    }
+    if stopped {
+        return Some((409, format!("node {target} is stopped")));
     }
     if target == LOCAL {
         return None;
@@ -227,9 +250,6 @@ pub fn target_refusal(
     };
     if node.revoked {
         return Some((409, format!("node {target} is revoked")));
-    }
-    if node.draining {
-        return Some((409, format!("node {target} is draining")));
     }
     if now_ms.saturating_sub(node.last_seen_ms) >= OFFLINE_AFTER_MS {
         return Some((409, format!("node {target} is offline")));
@@ -417,35 +437,58 @@ struct Staged {
 }
 
 /// Moves agent `cid` to node `target` (see the module doc). The agent is asleep when the copy starts,
-/// and awake on the target when this returns Ok. Errors are the response for the caller.
+/// and awake on the target when this returns Ok. Errors are the response for the caller. Either way
+/// the agent's queued work goes out afterwards, where the agent now is.
 pub fn move_agent(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
+    let moved = move_claimed(app, cid, target);
+    app.work.dispatch_idle(app);
+    moved
+}
+
+/// [`move_agent`]'s move, with its claim on the agent held until it returns.
+fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
     let started = Instant::now();
-    let Some(agent) = app.agents.get(cid) else {
+    if app.agents.get(cid).is_none() {
         return Err(Response::error(404, &format!("no agent {cid}")));
-    };
+    }
     let from = fleet::node_of(app, cid);
     let record = app.nodes.get(target);
-    if let Some((status, message)) =
-        target_refusal(&from, target, record.as_ref(), apz_plaza::now_ms())
-    {
+    if let Some((status, message)) = target_refusal(
+        &from,
+        target,
+        record.as_ref(),
+        app.nodes.is_stopped(target),
+        apz_plaza::now_ms(),
+    ) {
         return Err(Response::error(status, &message));
     }
-    if let Some((status, message)) = status_refusal(cid, agent.status) {
-        return Err(Response::error(status, &message));
-    }
-    if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
-        return Err(Response::error(
-            409,
-            &format!("agent {cid} has work in flight or queued"),
-        ));
-    }
-    let (run, vm) = crate::lifecycle::place(app, cid)?;
-    let Some(_claim) = Claim::take(cid) else {
+    // The claim comes first: from here nothing is sent to the agent and no wake starts (the dispatch and
+    // `sleep::wake_with` hold a moving agent), so the checks below stay true while its files are copied.
+    let Some(claim) = Claim::take(cid) else {
         return Err(Response::error(
             409,
             &format!("agent {cid} is already moving"),
         ));
     };
+    let Some(agent) = app.agents.get(cid) else {
+        return Err(Response::error(404, &format!("no agent {cid}")));
+    };
+    if let Some((status, message)) = status_refusal(cid, agent.status) {
+        return Err(Response::error(status, &message));
+    }
+    if app.work.current(cid).is_some() {
+        return Err(Response::error(
+            409,
+            &format!("agent {cid} has work in flight; move it when it is idle"),
+        ));
+    }
+    if sleep::in_transition(cid) {
+        return Err(Response::error(
+            409,
+            &format!("agent {cid} is going to sleep or waking up; try again"),
+        ));
+    }
+    let (run, vm) = crate::lifecycle::place(app, cid)?;
     let was_asleep = agent.status == Status::Asleep;
     if !was_asleep {
         sleep::put_to_sleep(app, cid)?;
@@ -469,7 +512,12 @@ pub fn move_agent(app: &App, cid: u64, target: &str) -> Result<Moved, Response> 
     let (bytes, new_run) = match carried {
         Ok(carried) => carried,
         Err(message) => {
-            abort(app, cid, target, &staged, was_asleep);
+            abort(app, cid, target, &staged);
+            // The placement is back on the source: a wake from here on restores the agent there.
+            drop(claim);
+            if !was_asleep && let Err(err) = sleep::ensure_awake(app, cid, WAKE_WAIT) {
+                eprintln!("apid: move of agent {cid} aborted; it did not wake again: {err}");
+            }
             return Err(Response::error(
                 502,
                 &format!("move to {target} failed: {message}"),
@@ -477,11 +525,13 @@ pub fn move_agent(app: &App, cid: u64, target: &str) -> Result<Moved, Response> 
         }
     };
 
-    // The agent's run and VM are the target's now; it wakes there.
+    // The agent's run and VM are the target's now, and so is its placement: the claim goes, so the
+    // wake below (and any wake from here on) restores it there.
     app.agents.update(cid, |slot| {
         slot.run = Some(new_run.clone());
         slot.vm = Some(0);
     });
+    drop(claim);
     let woke = sleep::ensure_awake(app, cid, WAKE_WAIT);
 
     // The source lets go of the agent: its gateway stops serving the CID, and its run goes.
@@ -599,9 +649,9 @@ fn carry(
     Ok((bytes, new_run))
 }
 
-/// Undoes what a failed move took: the placement goes back (and is saved so), the target drops the
-/// copy and the CID, and an agent that was awake before the move is woken where it is.
-fn abort(app: &App, cid: u64, target: &str, staged: &Staged, was_asleep: bool) {
+/// Undoes what a failed move took: the placement goes back (and is saved so), and the target drops the
+/// copy and the CID. The caller wakes an agent that was awake before the move, where it is.
+fn abort(app: &App, cid: u64, target: &str, staged: &Staged) {
     if let Some(previous) = &staged.overridden {
         app.nodes.set_override(cid, previous.as_deref());
         log_failure("save the placement back", save_placements(app));
@@ -629,9 +679,6 @@ fn abort(app: &App, cid: u64, target: &str, staged: &Staged, was_asleep: bool) {
             "delete the target run",
             call(app, target, "DELETE", &format!("/v1/runs/{run}"), None),
         );
-    }
-    if !was_asleep && let Err(err) = sleep::ensure_awake(app, cid, WAKE_WAIT) {
-        eprintln!("apid: move of agent {cid} aborted; it did not wake again: {err}");
     }
 }
 
@@ -741,43 +788,11 @@ fn log_failure(what: &str, result: Result<impl Sized, String>) {
 }
 
 /// The text of an error response, for a log line.
-fn body_text(resp: &Response) -> String {
+pub(crate) fn body_text(resp: &Response) -> String {
     match &resp.body {
         Body::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         _ => String::new(),
     }
-}
-
-/// Drains `node` (it was just set draining): on a background thread, each agent it runs is moved to
-/// the node [`choose_node`] picks for its role, one at a time. A move that fails is logged and the
-/// agent stays where it is.
-pub fn spawn_drain(app: &App, node: &str) {
-    let Some(hub) = app.handle().upgrade() else {
-        eprintln!("apid: cannot drain {node}: the hub is not running");
-        return;
-    };
-    let node = node.to_string();
-    std::thread::spawn(move || {
-        let agents = hub
-            .agents
-            .select(|a| (a.status != Status::Offline).then(|| (a.cid, a.role.clone())));
-        for (cid, role) in agents {
-            if fleet::node_of(&hub, cid) != node {
-                continue;
-            }
-            let target = choose_node(&hub, &role);
-            match move_agent(&hub, cid, &target) {
-                Ok(moved) => eprintln!(
-                    "apid: drain of {node}: agent {cid} moved to {} ({} bytes, {} ms)",
-                    moved.to, moved.bytes, moved.ms
-                ),
-                Err(resp) => eprintln!(
-                    "apid: drain of {node}: agent {cid} stays: {}",
-                    body_text(&resp)
-                ),
-            }
-        }
-    });
 }
 
 /// Routes: `POST /v1/agents/{cid}/move`.
@@ -954,34 +969,53 @@ mod tests {
         let now = 1_000_000_000;
         let fresh = node_record("n1", now, false, false);
         assert_eq!(
-            target_refusal("n1", "n1", Some(&fresh), now).map(|r| r.0),
+            target_refusal("n1", "n1", Some(&fresh), false, now).map(|r| r.0),
             Some(409)
         );
         assert_eq!(
-            target_refusal("n0", "n2", None, now).map(|r| r.0),
+            target_refusal("n0", "n2", None, false, now).map(|r| r.0),
             Some(404)
         );
         let revoked = node_record("n1", now, false, true);
         assert_eq!(
-            target_refusal("n0", "n1", Some(&revoked), now).map(|r| r.0),
+            target_refusal("n0", "n1", Some(&revoked), false, now).map(|r| r.0),
             Some(409)
         );
-        let draining = node_record("n1", now, true, false);
+        let stopped = node_record("n1", now, true, false);
         assert_eq!(
-            target_refusal("n0", "n1", Some(&draining), now).map(|r| r.0),
-            Some(409)
+            target_refusal("n0", "n1", Some(&stopped), true, now),
+            Some((409, "node n1 is stopped".to_string()))
         );
         let silent = node_record("n1", now - OFFLINE_AFTER_MS, false, false);
         assert_eq!(
-            target_refusal("n0", "n1", Some(&silent), now).map(|r| r.0),
+            target_refusal("n0", "n1", Some(&silent), false, now).map(|r| r.0),
             Some(409)
         );
         assert_eq!(
-            target_refusal("n1", "n0", None, now),
+            target_refusal("n1", "n0", None, false, now),
             None,
             "n0 takes agents from a joined node"
         );
-        assert_eq!(target_refusal("n0", "n1", Some(&fresh), now), None);
+        assert_eq!(
+            target_refusal("n1", "n0", None, true, now),
+            Some((409, "node n0 is stopped".to_string())),
+            "unless the owner stopped it"
+        );
+        assert_eq!(target_refusal("n0", "n1", Some(&fresh), false, now), None);
+    }
+
+    #[test]
+    fn pick_takes_the_best_eligible_candidate_and_none_without_one() {
+        assert_eq!(pick(&[]), None);
+        assert_eq!(pick(&[candidate("n1", ADMIT_MIB - 1, 0, false)]), None);
+        assert_eq!(
+            pick(&[
+                candidate("n1", 2048, 0, false),
+                candidate("n2", 4096, 0, false)
+            ]),
+            Some("n2".to_string())
+        );
+        assert_eq!(choose(&[]), "n0", "a new agent still has n0 to go to");
     }
 
     #[test]

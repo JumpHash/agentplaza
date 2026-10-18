@@ -807,7 +807,12 @@ export const api = {
   joinCodes: () => get<JoinCode[]>('/v1/nodes/codes'),
   revokeJoinCode: (id: string) => del<unknown>(`/v1/nodes/codes/${id}`),
   revokeNode: (id: string) => post<NodeView>(`/v1/nodes/${id}/revoke`),
-  drainNode: (id: string, on: boolean) => post<NodeView>(`/v1/nodes/${id}/drain`, { on }),
+  /** Takes a node out of service (n0 too): its agents move to the other machines. `now` interrupts their turns, which resume where they go. */
+  stopNode: (id: string, now: boolean) => post<NodeView>(`/v1/nodes/${id}/stop`, { now }),
+  /** Puts a stopped node back in service; with `rebalance` (the default) agents move onto it once it reports. */
+  resumeNode: (id: string, rebalance = true) => post<NodeView>(`/v1/nodes/${id}/resume`, { rebalance }),
+  /** Spreads the idle agents over the machines in service, by memory. `dry_run` only says which moves it would make. */
+  rebalance: (dryRun = false) => post<Rebalance>('/v1/nodes/rebalance', { dry_run: dryRun }),
   nodeMachine: (id: string) => get<Machine>(`/v1/nodes/${id}/machine`),
   nodeRuns: (id: string) => get<unknown>(`/v1/nodes/${id}/runs`),
   nodeLink: () => get<NodeLink>('/v1/node-link'),
@@ -929,14 +934,22 @@ export interface NodeLink { joined: boolean; hub: string | null; node_id: string
 
 /** What the hub says about itself: anyone may ask. `fingerprint` is its TLS certificate's SHA-256 (base64url), null without TLS. */
 export interface HubIdentity { name: string; version: string; url: string; fingerprint: string | null; nodes: number }
-/** A machine in the plaza: `n0` is the hub's own. Agents on it have CIDs `cid_base` … `cid_base + cid_count - 1`. */
+/** A machine in the plaza: `n0` is the hub's own. Agents it starts get CIDs `cid_base` … `cid_base + cid_count - 1`; `agents` counts the ones it runs now, moved ones included. */
 export interface NodeView {
   id: string; name: string; public_key: string; cid_base: number; cid_count: number;
   joined_ms: number; last_seen_ms: number;
   /** The machine summary the node reported. `workstation_backends` lists `plaza`, and `qemu` when QEMU and its firmware are here. */
   machine: { cpus?: number; memory_mib?: number; host?: string; version?: string; workstation_backends?: string[]; vendor?: string | null; apple?: unknown } | null;
+  /** Out of service (stopping or stopped): the field's first name, from when this was only a drain. */
   draining: boolean; revoked: boolean; address: string; online: boolean; agents: number;
+  /** `stopping` while a stopped node still runs agents that must leave (`left`), `stopped` once none is left. */
+  state: NodeServiceState; left: number;
+  /** The agents that cannot leave a stopping node yet, and why. */
+  waiting: { cid: number; reason: string }[];
 }
+export type NodeServiceState = 'active' | 'stopping' | 'stopped';
+/** A rebalance: the moves it makes (or would, on a dry run), and whether they started. */
+export interface Rebalance { moves: { cid: number; from: string; to: string }[]; started: boolean }
 export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';
 export interface JoinCode { id: string; label: string; created_ms: number; expires_ms: number; state: JoinCodeState; used_by: string | null }
 

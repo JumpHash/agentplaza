@@ -47,6 +47,7 @@ import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
 import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
 import { movableNodes, moveText } from '../src/views/agent-detail';
+import { isStopped, nodeState, rebalanceText, waitingLines } from '../src/views/nodes';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
 import type { Entry as TreeEntry } from '../src/ide/types';
@@ -1602,7 +1603,38 @@ sectionEnd('sleep and checkpoint tests: ok');
     { id: 'n2', name: 'beta', draining: true, revoked: false },
     { id: 'n3', name: 'gamma', draining: false, revoked: true },
   ] as unknown as NodeView[];
-  eq(movableNodes(nodes).map((n) => n.id), ['n1'], 'move: a draining or revoked node is not offered');
+  eq(movableNodes(nodes).map((n) => n.id), ['n1'], 'move: a stopped or revoked node is not offered');
+  // Stop and resume: a node's state, why its agents wait, and what a rebalance did.
+  const nodeAt = (over: Partial<NodeView>): NodeView =>
+    ({ id: 'n1', name: 'alpha', draining: false, revoked: false, online: true, state: 'active', left: 0, waiting: [], ...over }) as NodeView;
+  eq(
+    [
+      nodeState(nodeAt({})).label,
+      nodeState(nodeAt({ online: false })).label,
+      nodeState(nodeAt({ draining: true, state: 'stopping', left: 2 })).label,
+      nodeState(nodeAt({ draining: true, state: 'stopping', left: 1 })).label,
+      nodeState(nodeAt({ draining: true, state: 'stopped', online: false })).label,
+      nodeState(nodeAt({ draining: true, state: undefined as unknown as NodeView['state'] })).label,
+      nodeState(nodeAt({ revoked: true, draining: true, state: 'stopped' })).label,
+    ],
+    ['online', 'offline', 'stopping, 2 agents to move', 'stopping, 1 agent to move', 'stopped', 'stopped', 'revoked'],
+    'nodes: a stopped node says so, on or off, and an older hub’s draining reads as stopped',
+  );
+  eq([isStopped(nodeAt({})), isStopped(nodeAt({ draining: true })), isStopped(nodeAt({ state: 'stopping' }))], [false, true, true], 'nodes: stopping and stopped are out of service');
+  eq(
+    waitingLines(nodeAt({ waiting: [{ cid: 1001, reason: 'finishing its turn first' }, { cid: 1002, reason: 'no machine in service has room for it' }] }), (cid) => (cid === 1001 ? 'Ada' : undefined)),
+    ['Ada: finishing its turn first', 'Agent 1002: no machine in service has room for it'],
+    'nodes: each waiting agent by name, else by CID, with its reason',
+  );
+  eq(
+    [
+      rebalanceText({ moves: [], started: false }),
+      rebalanceText({ moves: [{ cid: 1, from: 'n0', to: 'n1' }], started: true }),
+      rebalanceText({ moves: [{ cid: 1, from: 'n0', to: 'n1' }, { cid: 2, from: 'n0', to: 'n1' }], started: true }),
+    ],
+    ['The agents are already spread over the machines.', 'Moving 1 agent to spread the load.', 'Moving 2 agents to spread the load.'],
+    'nodes: a rebalance says how many agents move, or that none needs to',
+  );
   eq(moveText({ from: 'n1', to: 'n2', bytes: 3 * 1048576, ms: 2500 }, (id) => id.toUpperCase()), 'Moved from N1 to N2: 3.0 MB in 2.5 s.', 'move: the outcome names both nodes, the MB moved and the seconds');
 }
 sectionEnd('egress credentials and e2b tests: ok');

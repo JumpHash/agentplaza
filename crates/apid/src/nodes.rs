@@ -13,7 +13,10 @@
 //!   GET    /v1/nodes/codes                → [CodeView] (no secrets)
 //!   DELETE /v1/nodes/codes/{id}           → revokes an unused code
 //!   POST   /v1/nodes/{id}/revoke          → the node's signatures stop working at once
-//!   POST   /v1/nodes/{id}/drain  {on}     → no new agents are placed on it; on, its agents are moved off (`placement`)
+//!   POST   /v1/nodes/{id}/stop   {now?}   → out of service: its agents move to the other machines (`mover`)
+//!   POST   /v1/nodes/{id}/resume {rebalance?} → back in service, and agents move onto it (`mover`)
+//!   POST   /v1/nodes/{id}/drain  {on}     → the older name of stop (on) and resume (off)
+//!   POST   /v1/nodes/rebalance   {dry_run?} → spreads the idle agents over the machines (`mover`)
 //! Node routes (public, rate-limited / signed):
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
@@ -22,7 +25,7 @@
 //!   POST   /v1/nodes/{id}/metrics            (signed) {z} with a deflated, base64 metrics batch, or a bare batch
 //!                                            (`apz_metrics::wire::Batch`)
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -80,6 +83,8 @@ pub struct Node {
     /// The machine summary the node last reported (cpus, memory, host, version).
     #[serde(default)]
     pub machine: Value,
+    /// Out of service: the owner stopped it (`mover`). Its agents move off and no agent is placed on it
+    /// until it is resumed. The field keeps its first name, from when this was only a drain.
     #[serde(default)]
     pub draining: bool,
     #[serde(default)]
@@ -89,13 +94,35 @@ pub struct Node {
     pub address: String,
 }
 
-/// A node as the console lists it: the record plus "online" and its agents' count.
+/// A node as the console lists it: the record plus "online", its agents' count and its service state.
 #[derive(Debug, Clone, Serialize)]
 pub struct NodeView {
     #[serde(flatten)]
     pub node: Node,
     pub online: bool,
+    /// The agents it runs: moved agents count where they were moved to.
     pub agents: u32,
+    /// "active"; "stopping" while a stopped node still runs agents that are not offline; "stopped" once
+    /// none is left, when its machine can be turned off.
+    pub state: &'static str,
+    /// The agents that still have to leave a stopping node.
+    pub left: u32,
+    /// The ones of them that cannot leave yet, each with the reason (`mover`).
+    pub waiting: Vec<Waiting>,
+}
+
+/// An agent that waits to leave a stopping node, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Waiting {
+    pub cid: u64,
+    pub reason: String,
+}
+
+/// An agent as a node's view counts it: the node that runs it, and whether it is offline.
+#[derive(Debug, Clone)]
+pub struct Hosted {
+    pub node: String,
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +188,9 @@ struct Persisted {
     /// Saved with the rest, so a restart keeps every moved agent on its node.
     #[serde(default)]
     overrides: BTreeMap<u64, String>,
+    /// `n0` is out of service. The hub's own machine has no record here, so its flag has its own field.
+    #[serde(default)]
+    local_stopped: bool,
 }
 
 #[derive(Default)]
@@ -373,15 +403,43 @@ impl Store {
         node.revoked = true;
         Ok(node.clone())
     }
-    pub fn drain(&self, id: &str, on: bool) -> Result<Node, String> {
-        let mut p = self.inner.lock().map_err(|e| e.to_string())?;
+    /// Whether node `id` is out of service (stopping or stopped); `n0` included.
+    pub fn is_stopped(&self, id: &str) -> bool {
+        let Ok(p) = self.inner.lock() else {
+            return false;
+        };
+        if id == crate::fleet::LOCAL {
+            return p.local_stopped;
+        }
+        p.nodes.iter().any(|n| n.id == id && n.draining)
+    }
+    /// The nodes out of service, `n0` among them when it is.
+    pub fn stopped_ids(&self) -> BTreeSet<String> {
+        let Ok(p) = self.inner.lock() else {
+            return BTreeSet::new();
+        };
+        p.local_stopped
+            .then(|| crate::fleet::LOCAL.to_string())
+            .into_iter()
+            .chain(p.nodes.iter().filter(|n| n.draining).map(|n| n.id.clone()))
+            .collect()
+    }
+    /// Takes node `id` out of service (`on`) or puts it back; `n0` too. Returns whether it changed. A
+    /// revoked node is refused (409), an unknown one is 404.
+    pub fn set_stopped(&self, id: &str, on: bool) -> Result<bool, (u16, String)> {
+        let mut p = self.inner.lock().map_err(|e| (500, e.to_string()))?;
+        if id == crate::fleet::LOCAL {
+            return Ok(std::mem::replace(&mut p.local_stopped, on) != on);
+        }
         let node = p
             .nodes
             .iter_mut()
             .find(|n| n.id == id)
-            .ok_or("no such node")?;
-        node.draining = on;
-        Ok(node.clone())
+            .ok_or((404, format!("no node {id}")))?;
+        if node.revoked {
+            return Err((409, format!("node {id} is revoked")));
+        }
+        Ok(std::mem::replace(&mut node.draining, on) != on)
     }
     /// Checks a signed node request: known, not revoked, ts within skew, fresh nonce, valid
     /// signature. Records `last_seen_ms` and `address`. Returns the node.
@@ -614,26 +672,55 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn view(node: Node, cids: &[u64], now_ms: u64) -> NodeView {
+/// A node's view (pure): `hosted` is every agent with the node that runs it, `waiting` the agents
+/// that cannot leave it yet. Out of service, it is stopping while an agent that is not offline is
+/// still on it, and stopped once none is.
+pub(crate) fn view(node: Node, hosted: &[Hosted], waiting: Vec<Waiting>, now_ms: u64) -> NodeView {
     let online = !node.revoked && now_ms.saturating_sub(node.last_seen_ms) < OFFLINE_AFTER_MS;
-    let end = node.cid_base + node.cid_count;
-    let count = cids
-        .iter()
-        .filter(|&&cid| cid >= node.cid_base && cid < end)
-        .count();
+    let here = hosted.iter().filter(|agent| agent.node == node.id);
+    let count = here.clone().count();
+    let live = here.filter(|agent| !agent.offline).count();
+    let (state, left, waiting) = match (node.draining, live) {
+        (false, _) => ("active", 0, Vec::new()),
+        (true, 0) => ("stopped", 0, Vec::new()),
+        (true, live) => ("stopping", live, waiting),
+    };
     NodeView {
         node,
         online,
         agents: u32::try_from(count).unwrap_or(u32::MAX),
+        state,
+        left: u32::try_from(left).unwrap_or(u32::MAX),
+        waiting,
     }
 }
 
-fn view_of(app: &App, node: Node) -> NodeView {
-    view(
-        node,
-        &app.agents.select(|a| Some(a.cid)),
-        apz_plaza::now_ms(),
-    )
+/// Every agent with the node that runs it now (`fleet::node_of`).
+pub(crate) fn hosted(app: &App) -> Vec<Hosted> {
+    app.agents
+        .select(|a| Some((a.cid, a.status == crate::agents::Status::Offline)))
+        .into_iter()
+        .map(|(cid, offline)| Hosted {
+            node: crate::fleet::node_of(app, cid),
+            offline,
+        })
+        .collect()
+}
+
+/// One node's view as the console gets it.
+pub(crate) fn view_of(app: &App, node: Node) -> NodeView {
+    let waiting = crate::mover::waiting(&node.id);
+    view(node, &hosted(app), waiting, apz_plaza::now_ms())
+}
+
+/// The view of node `id` (`n0` included), None when there is no such node.
+pub(crate) fn view_by_id(app: &App, id: &str) -> Option<NodeView> {
+    let node = if id == crate::fleet::LOCAL {
+        local_record(app, local_up(app))
+    } else {
+        app.nodes.get(id)?
+    };
+    Some(view_of(app, node))
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -654,8 +741,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Revoke an unused join code").errors(&[404]))
         .post("/v1/nodes/{id}/revoke", revoke_route)
         .doc(RouteDoc::new("Revoke a node's access").errors(&[404]))
-        .post("/v1/nodes/{id}/drain", drain_route)
-        .doc(RouteDoc::new("Start or stop draining a node").errors(&[400, 404]))
         .post("/v1/nodes/join", join_route)
         .doc(
             RouteDoc::new("Join a new node with a join code")
@@ -676,19 +761,29 @@ pub fn routes(router: Router<App>) -> Router<App> {
 /// its noded answers. Its `machine` is its noded's view (`workstation_backends` among the facts)
 /// over the hub's own summary.
 pub(crate) fn local_node(app: &App) -> Node {
-    let now = apz_plaza::now_ms();
     let noded = app.noded.get("/v1/machine");
     let local_up = matches!(noded, Ok((200, _)));
-    let mut machine = local_summary();
+    let mut node = local_record(app, local_up);
     if let (Ok((200, serde_json::Value::Object(facts))), serde_json::Value::Object(summary)) =
-        (noded, &mut machine)
+        (noded, &mut node.machine)
     {
         for (key, value) in facts {
             summary.entry(key).or_insert(value);
         }
     }
+    node
+}
+
+/// Whether `n0`'s noded answers.
+fn local_up(app: &App) -> bool {
+    matches!(app.noded.get("/v1/machine"), Ok((200, _)))
+}
+
+/// `n0`'s record with the hub's own summary as its machine: seen now while its noded answers
+/// (`up`), out of service when the owner stopped it.
+fn local_record(app: &App, up: bool) -> Node {
     Node {
-        id: "n0".into(),
+        id: crate::fleet::LOCAL.into(),
         name: local_summary()["host"]
             .as_str()
             .unwrap_or("this hub")
@@ -697,9 +792,9 @@ pub(crate) fn local_node(app: &App) -> Node {
         cid_base: 0,
         cid_count: REMOTE_CID_BASE,
         joined_ms: 0,
-        last_seen_ms: if local_up { now } else { 0 },
-        machine,
-        draining: false,
+        last_seen_ms: if up { apz_plaza::now_ms() } else { 0 },
+        machine: local_summary(),
+        draining: app.nodes.is_stopped(crate::fleet::LOCAL),
         revoked: false,
         address: "loopback".into(),
     }
@@ -707,29 +802,15 @@ pub(crate) fn local_node(app: &App) -> Node {
 
 /// The plaza's machines: `n0`, the hub's own (never stored: it is always there, online while
 /// its noded answers), then every joined node.
-fn views(app: &App) -> Vec<NodeView> {
+pub(crate) fn views(app: &App) -> Vec<NodeView> {
     let now = apz_plaza::now_ms();
-    let cids = app.agents.select(|a| Some(a.cid));
-    let local_up = matches!(app.noded.get("/v1/machine"), Ok((200, _)));
-    let local = Node {
-        id: "n0".into(),
-        name: local_summary()["host"]
-            .as_str()
-            .unwrap_or("this hub")
-            .to_string(),
-        public_key: String::new(),
-        cid_base: 0,
-        cid_count: REMOTE_CID_BASE,
-        joined_ms: 0,
-        last_seen_ms: if local_up { now } else { 0 },
-        machine: local_summary(),
-        draining: false,
-        revoked: false,
-        address: "loopback".into(),
-    };
-    std::iter::once(local)
+    let hosted = hosted(app);
+    std::iter::once(local_record(app, local_up(app)))
         .chain(app.nodes.list())
-        .map(|node| view(node, &cids, now))
+        .map(|node| {
+            let waiting = crate::mover::waiting(&node.id);
+            view(node, &hosted, waiting, now)
+        })
         .collect()
 }
 
@@ -781,17 +862,14 @@ struct JoinBody {
     machine: Value,
 }
 
-#[derive(Default, Deserialize)]
-struct DrainBody {
-    on: Option<bool>,
-}
-
-fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
+pub(crate) fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
     req.json::<T>()
         .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
-fn parse_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, Response> {
+pub(crate) fn parse_or_default<T: DeserializeOwned + Default>(
+    req: &Request,
+) -> Result<T, Response> {
     if req.body.is_empty() {
         Ok(T::default())
     } else {
@@ -828,23 +906,6 @@ fn revoke_code_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 fn revoke_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     match app.nodes.revoke(p.get("id")) {
         Ok(node) => {
-            app.bus.publish("node", &node);
-            Response::json(200, &view_of(app, node))
-        }
-        Err(e) => Response::error(404, &e),
-    }
-}
-
-fn drain_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let body: DrainBody = match parse_or_default(req) {
-        Ok(body) => body,
-        Err(refusal) => return refusal,
-    };
-    match app.nodes.drain(p.get("id"), body.on.unwrap_or(true)) {
-        Ok(node) => {
-            if node.draining {
-                crate::placement::spawn_drain(app, &node.id);
-            }
             app.bus.publish("node", &node);
             Response::json(200, &view_of(app, node))
         }
@@ -1325,16 +1386,110 @@ mod tests {
         );
     }
 
+    fn hosted_on(_cid: u64, node: &str, offline: bool) -> Hosted {
+        Hosted {
+            node: node.into(),
+            offline,
+        }
+    }
+
     #[test]
-    fn views_count_agents_by_cid_range_and_mark_stale_nodes_offline() {
+    fn views_mark_stale_nodes_offline() {
         let fresh = node("n1");
         let mut stale = node("n2");
         stale.last_seen_ms = NOW - OFFLINE_AFTER_MS;
-        assert!(view(fresh.clone(), &[], NOW).online);
-        assert!(!view(stale, &[], NOW).online);
+        assert!(view(fresh.clone(), &[], Vec::new(), NOW).online);
+        assert!(!view(stale, &[], Vec::new(), NOW).online);
         let mut revoked = fresh.clone();
         revoked.revoked = true;
-        assert!(!view(revoked, &[], NOW).online);
+        assert!(!view(revoked, &[], Vec::new(), NOW).online);
+    }
+
+    #[test]
+    fn a_view_counts_the_agents_a_node_runs_now_moved_ones_included() {
+        // 1000 is in n1's range but was moved to n2; 1001 is n1's own; 5 was moved onto n1.
+        let hosted = [
+            hosted_on(1000, "n2", false),
+            hosted_on(1001, "n1", false),
+            hosted_on(5, "n1", true),
+        ];
+        assert_eq!(view(node("n1"), &hosted, Vec::new(), NOW).agents, 2);
+        let mut n2 = node("n2");
+        n2.cid_base = REMOTE_CID_BASE + CIDS_PER_NODE;
+        assert_eq!(view(n2, &hosted, Vec::new(), NOW).agents, 1);
+    }
+
+    #[test]
+    fn a_stopped_node_is_stopping_until_no_live_agent_is_left_on_it() {
+        let waiting = vec![Waiting {
+            cid: 1001,
+            reason: "no machine in service has room for it".into(),
+        }];
+        let active = view(
+            node("n1"),
+            &[hosted_on(1001, "n1", false)],
+            waiting.clone(),
+            NOW,
+        );
+        assert_eq!(
+            (active.state, active.left, active.waiting.len()),
+            ("active", 0, 0),
+            "a node in service waits for nothing"
+        );
+        let mut out = node("n1");
+        out.draining = true;
+        let stopping = view(
+            out.clone(),
+            &[hosted_on(1001, "n1", false), hosted_on(1002, "n1", true)],
+            waiting.clone(),
+            NOW,
+        );
+        assert_eq!((stopping.state, stopping.left), ("stopping", 1));
+        assert_eq!(stopping.waiting, waiting);
+        assert_eq!(stopping.agents, 2);
+        let stopped = view(out, &[hosted_on(1002, "n1", true)], waiting, NOW);
+        assert_eq!(
+            (stopped.state, stopped.left, stopped.waiting.len()),
+            ("stopped", 0, 0),
+            "an offline agent does not keep its node stopping"
+        );
+    }
+
+    #[test]
+    fn stopping_holds_for_joined_nodes_and_n0_and_is_refused_for_a_revoked_one() {
+        let store = Store::default();
+        let mut revoked = node("n2");
+        revoked.revoked = true;
+        store
+            .restore(
+                &serde_json::to_string(&serde_json::json!({
+                    "nodes": [node("n1"), revoked],
+                    "codes": [],
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(store.stopped_ids().is_empty());
+        assert_eq!(store.set_stopped("n1", true), Ok(true));
+        assert_eq!(store.set_stopped("n1", true), Ok(false), "no change");
+        assert_eq!(store.set_stopped("n0", true), Ok(true));
+        assert!(store.is_stopped("n1") && store.is_stopped("n0"));
+        assert_eq!(
+            store.stopped_ids().into_iter().collect::<Vec<_>>(),
+            ["n0", "n1"]
+        );
+        assert_eq!(store.set_stopped("n2", true).map_err(|e| e.0), Err(409));
+        assert_eq!(store.set_stopped("n9", true).map_err(|e| e.0), Err(404));
+        // n0's flag is saved with the rest, and a snapshot from before it reads as in service.
+        let saved = store.snapshot();
+        let again = Store::default();
+        again.restore(&saved).unwrap();
+        assert!(again.is_stopped("n0"));
+        assert_eq!(again.set_stopped("n0", false), Ok(true));
+        assert!(!again.is_stopped("n0"));
+        let before = Store::default();
+        before.restore(r#"{"nodes": [], "codes": []}"#).unwrap();
+        assert!(!before.is_stopped("n0"));
     }
 
     #[test]

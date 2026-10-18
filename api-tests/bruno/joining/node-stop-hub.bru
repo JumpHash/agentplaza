@@ -1,0 +1,30 @@
+meta {
+  name: Stopping the hub's own node n0 takes it out of service
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/stop
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "now": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.draining: eq true
+}
+
+tests {
+  test("the hub's node reports a stopping or stopped state", function () {
+    const body = res.getBody();
+    expect(["stopping", "stopped"]).to.include(body.state);
+  });
+}

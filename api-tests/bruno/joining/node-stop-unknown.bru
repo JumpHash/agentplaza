@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when stopping an unknown node
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/stop
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "now": false
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Resuming the hub's own node n0 puts it back in service
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/resume
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "rebalance": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.draining: eq false
+  res.body.state: eq "active"
+}

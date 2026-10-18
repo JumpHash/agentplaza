@@ -1,9 +1,11 @@
-// The Nodes screen: the machines that make up the plaza, the join codes that
+// The Nodes screen: the machines that make up the plaza, each stopped and
+// resumed on demand (its agents move to the other machines, and back when it
+// returns), a rebalance that spreads the agents over them, the join codes that
 // bring new ones in (each token shown once), this hub's own identity with the
 // owner-token rotation, and this hub joined to another network as a node.
 // Refreshes every few seconds.
 
-import { api, type Agent, type HubIdentity, type JoinCode, type MachineNode, type NodeLink, type NodeView } from '../api';
+import { api, type Agent, type HubIdentity, type JoinCode, type MachineNode, type NodeLink, type NodeView, type Rebalance } from '../api';
 import { ago, attempt, badge, button, card, empty, field, input, modal, select, table, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { isLive, KIND_LABEL, machineDetail, machineList, newRunState, normalizeMachines, specOf, type ListRow } from './machine-list';
@@ -15,11 +17,29 @@ const HUB_NODE = 'n0';
 const JOIN_TONE: Record<JoinCode['state'], Tone> = { active: 'ok', used: 'info', expired: 'muted', revoked: 'danger' };
 const JOIN_LABEL: Record<JoinCode['state'], string> = { active: 'Active', used: 'Used', expired: 'Expired', revoked: 'Revoked' };
 
-/** The state a node shows, most urgent first. */
-function nodeState(n: NodeView): { label: string; tone: Tone } {
+/** The state a node shows, most urgent first. A stopped node is stopped whether its machine is on or off. */
+export function nodeState(n: NodeView): { label: string; tone: Tone } {
   if (n.revoked) return { label: 'revoked', tone: 'danger' };
-  if (n.draining) return { label: 'draining', tone: 'warn' };
+  if (n.state === 'stopping') return { label: `stopping, ${n.left} ${n.left === 1 ? 'agent' : 'agents'} to move`, tone: 'warn' };
+  if (n.state === 'stopped' || n.draining) return { label: 'stopped', tone: 'info' };
   return n.online ? { label: 'online', tone: 'ok' } : { label: 'offline', tone: 'muted' };
+}
+
+/** Whether the owner took the node out of service (stopping or stopped). */
+export function isStopped(n: NodeView): boolean {
+  return n.draining || n.state === 'stopping' || n.state === 'stopped';
+}
+
+/** One line per agent that cannot leave a stopping node yet: its name (or CID) and why. */
+export function waitingLines(n: NodeView, nameOf: (cid: number) => string | undefined): string[] {
+  return (n.waiting ?? []).map((w) => `${nameOf(w.cid) ?? `Agent ${w.cid}`}: ${w.reason}`);
+}
+
+/** What a rebalance did, for its toast. */
+export function rebalanceText(r: Rebalance): string {
+  const n = r.moves.length;
+  if (!n) return 'The agents are already spread over the machines.';
+  return `Moving ${n} ${n === 1 ? 'agent' : 'agents'} to spread the load.`;
 }
 
 /** mm:ss left until a deadline, 00:00 once it has passed. */
@@ -61,7 +81,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const hubBody = h('div');
   const linkBody = h('div.node-link');
   root.append(
-    h('div.view-head.node-head', null, h('h1', null, 'Nodes'), button('Add a node', () => openAdd(), { kind: 'primary' })),
+    h(
+      'div.view-head.node-head',
+      null,
+      h('h1', null, 'Nodes'),
+      h(
+        'div.node-buttons',
+        null,
+        button('Rebalance', () => void rebalance(), { title: 'Spread the idle agents over the machines in service, by memory' }),
+        button('Add a node', () => openAdd(), { kind: 'primary' }),
+      ),
+    ),
     card('Machines in this plaza', list.el, { flush: true }),
     card('Join another network', linkBody),
     card('Join codes', codesBody, { flush: true }),
@@ -125,9 +155,57 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     renderLink();
   };
 
-  const drain = async (n: NodeView): Promise<void> => {
-    await attempt(() => api.drainNode(n.id, !n.draining), n.draining ? `${n.name} is back in service` : `${n.name} is draining`);
+  const stop = async (n: NodeView, now: boolean): Promise<void> => {
+    await attempt(() => api.stopNode(n.id, now), now ? `${n.name} is stopping: its agents move now` : `${n.name} is stopping: its agents move as their turns end`);
     void load();
+  };
+
+  const resume = async (n: NodeView): Promise<void> => {
+    await attempt(() => api.resumeNode(n.id), `${n.name} is back in service: agents move onto it once it reports`);
+    void load();
+  };
+
+  const rebalance = async (): Promise<void> => {
+    const r = await attempt(() => api.rebalance());
+    if (r) toast(rebalanceText(r));
+    void load();
+  };
+
+  const confirmStop = (n: NodeView): void => {
+    const hub = n.id === HUB_NODE;
+    const close = show(
+      `Stop ${n.name}?`,
+      h(
+        'div.stack',
+        null,
+        h(
+          'p',
+          null,
+          n.agents
+            ? `Its ${n.agents === 1 ? 'agent moves' : `${n.agents} agents move`} to the other machines in service, one at a time, and no new agent starts on it.`
+            : 'No new agent starts on it.',
+        ),
+        h('p', null, hub ? 'This is the hub’s own machine: the hub keeps running, only its agents leave.' : 'Once it is stopped, its machine can be turned off. Resume brings it back, and agents move onto it again.'),
+        h('p.faint', null, 'Stop now interrupts the turns in progress; each one resumes on its agent’s new machine. Otherwise an agent that is working moves when its turn ends.'),
+        h(
+          'div.node-buttons',
+          null,
+          button('Cancel', () => close()),
+          button('Stop after their turns', () => {
+            close();
+            void stop(n, false);
+          }),
+          button(
+            'Stop now',
+            () => {
+              close();
+              void stop(n, true);
+            },
+            { kind: 'danger' },
+          ),
+        ),
+      ),
+    );
   };
 
   const revoke = async (n: NodeView): Promise<void> => {
@@ -165,13 +243,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const nodeActions = (n: NodeView): HTMLElement | null => {
-    if (n.id === HUB_NODE) return h('span.faint', null, 'this hub');
     if (n.revoked) return null;
+    const hub = n.id === HUB_NODE;
     return h(
       'div.node-actions',
       null,
-      button(n.draining ? 'Resume' : 'Drain', () => void drain(n), { size: 'sm' }),
-      button('Revoke', () => confirmRevoke(n), { kind: 'danger', size: 'sm' }),
+      hub ? h('span.faint', null, 'this hub') : null,
+      isStopped(n) ? button('Resume', () => void resume(n), { size: 'sm' }) : button('Stop', () => confirmStop(n), { size: 'sm' }),
+      n.state === 'stopping' ? button('Move now', () => void stop(n, true), { size: 'sm', title: 'Interrupt the turns in progress: each resumes on its agent’s new machine' }) : null,
+      hub ? null : button('Revoke', () => confirmRevoke(n), { kind: 'danger', size: 'sm' }),
     );
   };
 
@@ -192,11 +272,13 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       ['Host', n.machine?.host ?? '—'],
       ['Version', n.machine?.version ?? '—'],
     ];
+    const waits = waitingLines(n, (cid) => agentsByCid.get(cid)?.name);
     return h(
       'div.stack',
       null,
       m ? machineDetail(m, agentsByCid, rs) : null,
       h('dl.node-facts', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+      waits.length ? h('div.stack', null, h('strong', null, 'Waiting to move'), h('ul.node-waiting', null, waits.map((line) => h('li', null, line)))) : null,
       h('div.node-buttons', null, nodeActions(n)),
     );
   };

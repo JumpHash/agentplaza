@@ -103,6 +103,13 @@ fn book() -> MutexGuard<'static, Book> {
     BOOK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Whether a sleep, a doze or a wake of `cid` is in flight: its VM is between two states, so it does
+/// not move now (`placement::move_agent`).
+pub fn in_transition(cid: u64) -> bool {
+    let book = book();
+    book.sleeping.contains(&cid) || book.waking.contains(&cid) || book.dozing.contains(&cid)
+}
+
 /// The answer when an agent is still waking after the wait.
 fn waking_response() -> Response {
     Response::error(503, "the agent is waking up, try again")
@@ -745,8 +752,10 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
         return Err(Response::error(409, &format!("agent {cid} is not idle")));
     };
     publish(app, cid);
-    // Work that came in after the check: it goes out after the wake below.
-    if app.work.current(cid).is_some() || !app.work.queued(cid).is_empty() {
+    // Work that came in after the check: it goes out after the wake below. An agent that is moving keeps
+    // its queued work while it sleeps: nothing is sent to it until it is awake on its new node.
+    let queued = !app.work.queued(cid).is_empty() && !crate::placement::is_moving(cid);
+    if app.work.current(cid).is_some() || queued {
         book().sleeping.remove(&cid);
         app.agents.update(cid, |agent| {
             if agent.status == Status::Asleep {

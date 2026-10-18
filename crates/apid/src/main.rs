@@ -52,6 +52,7 @@ mod looks;
 mod mcp;
 mod memory;
 mod metrics;
+mod mover;
 mod node_link;
 mod nodes;
 mod openapi;

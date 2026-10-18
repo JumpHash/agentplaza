@@ -84,7 +84,7 @@ fn print(r: &Value) {
                     vec![
                         ctx::s(n, "name").to_string(),
                         ctx::s(n, "address").to_string(),
-                        node_state(n).to_string(),
+                        node_state(n),
                         ctx::text(n, "agents"),
                     ]
                 })
@@ -123,14 +123,21 @@ fn tasks_line(tasks: &Value) -> String {
     parts.join(", ")
 }
 
-fn node_state(n: &Value) -> &'static str {
+/// As the node list shows it: a stopped node stays "stopped" even with its machine off.
+fn node_state(n: &Value) -> String {
+    let hub = ctx::s(n, "state");
     if n["revoked"].as_bool().unwrap_or(false) {
-        "revoked"
+        "revoked".to_string()
+    } else if hub == "stopping" {
+        match n["left"].as_u64() {
+            Some(left) => format!("stopping ({left} to move)"),
+            None => "stopping".to_string(),
+        }
+    } else if hub == "stopped" || (hub.is_empty() && n["draining"].as_bool().unwrap_or(false)) {
+        "stopped".to_string()
     } else if !n["online"].as_bool().unwrap_or(false) {
-        "offline"
-    } else if n["draining"].as_bool().unwrap_or(false) {
-        "draining"
+        "offline".to_string()
     } else {
-        "online"
+        "online".to_string()
     }
 }

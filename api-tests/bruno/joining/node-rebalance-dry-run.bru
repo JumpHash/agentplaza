@@ -1,0 +1,24 @@
+meta {
+  name: A dry-run rebalance lists its moves and starts none
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/rebalance
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "dry_run": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.started: eq false
+  res.body.moves: isArray
+}

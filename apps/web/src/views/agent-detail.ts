@@ -78,7 +78,7 @@ type Section = { root: HTMLElement; head: HTMLElement };
 type LiveTurn = { work: number; el: HTMLElement; text: Text; thinking: Text };
 type Tab = 'transcript' | 'memory';
 
-/** The nodes an agent's VM can move to: those that take work, so not draining and not revoked. */
+/** The nodes an agent's VM can move to: those in service, so not stopped and not revoked. */
 export function movableNodes(nodes: NodeView[]): NodeView[] {
   return nodes.filter((n) => !n.draining && !n.revoked);
 }
@@ -344,7 +344,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   };
 
   // Move: the VM goes to another node that takes work. The dialog lists those nodes and posts the move. A 409 (the
-  // agent is working, or the node is draining or revoked) is shown as the hub says it. The move can take seconds.
+  // agent is working, or the node is stopped or revoked) is shown as the hub says it. The move can take seconds.
   const moveDialog = (a: Agent): void => {
     const list = h('div.stack', null, h('p.muted', null, 'Loading the nodes...'));
     const problem = h('p.mcp-danger');
@@ -385,7 +385,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         nodeNames = new Map(all.map((n) => [n.id, n.name || n.id]));
         const nodes = movableNodes(all);
         if (!nodes.length) {
-          replace(list, h('p.muted', null, 'No node takes work right now: each one is draining or revoked.'));
+          replace(list, h('p.muted', null, 'No node takes work right now: each one is stopped or revoked.'));
           return;
         }
         replace(
