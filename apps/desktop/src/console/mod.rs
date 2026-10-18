@@ -23,6 +23,8 @@ pub mod picker;
 // The rich content of agent text: chips, hover cards, inline images (docs/design/workspace.md, section 3).
 pub(crate) mod render_card;
 pub mod rich;
+// The human labels of the role names (the web's roles.ts).
+pub mod roles;
 pub mod screens;
 pub mod services;
 pub mod setup;
@@ -145,6 +147,17 @@ fn boot() -> (Console, Task<Msg>) {
     if let Ok(job) = std::env::var("APZ_JOB") {
         console.shell.current = screens::Id::LabJobDetail(job);
     }
+    // `APZ_WORK=<project id|outside>` opens that tab of the Work screen (a capture hook; `APZ_WORK_TASK` below).
+    if let Ok(tab) = std::env::var("APZ_WORK") {
+        console.shell.current = screens::Id::WorkOn(tab);
+    }
+    // `APZ_PROJECT=<id>` and `APZ_TASK=<id>` open that project's page and that task's page (capture hooks).
+    if let Ok(project) = std::env::var("APZ_PROJECT") {
+        console.shell.current = screens::Id::Project(project);
+    }
+    if let Ok(task) = std::env::var("APZ_TASK") {
+        console.shell.current = screens::Id::Task(task);
+    }
     // `APZ_LAB_MODEL=<model id>`, `APZ_SCREEN=LabModels|LabBreeders|LabRecipes|LabDatasets` open the Lab screens the sidebar does not list (capture hooks).
     if let Ok(model) = std::env::var("APZ_LAB_MODEL") {
         console.shell.current = screens::Id::LabModelDetail(model);
@@ -219,6 +232,10 @@ fn boot() -> (Console, Task<Msg>) {
         reveal,
         info,
     ]);
+    // `APZ_WORK_TASK=<id>`: the Work screen opens with that task's drawer (a capture hook).
+    if let Ok(task) = std::env::var("APZ_WORK_TASK") {
+        screens::work::capture_select(&mut console.screens.work, task);
+    }
     console.ctx = Some(ctx);
     (console, tasks)
 }

@@ -29,6 +29,13 @@ pub enum Cmd {
         /// The task's id.
         id: String,
     },
+    /// A project's tasks in the order their links let them run: a column per step of the order (the Work screen's
+    /// columns), each task with its state and what it runs after; then the longest chain still to finish and the
+    /// ready tasks nobody has claimed.
+    Graph {
+        /// The project's id (`pr1`), or `outside` for the tasks outside projects.
+        project: String,
+    },
     /// Create a task. Without --assign the scheduler chooses the worker.
     Create {
         /// The title (the first line of the goal).
@@ -123,6 +130,208 @@ fn timeline_of(task_id: &str, entries: &[Value]) -> Vec<Value> {
         })
         .cloned()
         .collect()
+}
+
+/// A task's state as the Work screen says it: an open task is ready, waiting on the tasks it runs after, or blocked
+/// by one that failed or was withdrawn; a claim whose agent waits on an approval needs you.
+pub(crate) fn state_word(t: &Value) -> &str {
+    let blocked = t
+        .get("blocked_by")
+        .and_then(Value::as_array)
+        .is_some_and(|b| !b.is_empty());
+    let ready = t.get("ready").and_then(Value::as_bool).unwrap_or(false);
+    match ctx::s(t, "state") {
+        "open" if blocked => "blocked",
+        "open" if ready => "ready",
+        "open" => "waiting",
+        "claimed" if t.pointer("/step/stage").and_then(Value::as_str) == Some("approval") => {
+            "needs you"
+        }
+        "claimed" => "working",
+        "awaiting_review" => "in review",
+        other => other,
+    }
+}
+
+/// The read model's shape for the tasks outside projects, from the ledger: their links among themselves, and each
+/// task's depth (the longest run of links behind it), as `GET /v1/projects/{id}/graph` gives a project's.
+fn loose_graph(ledger: &Value) -> Value {
+    let loose: Vec<&Value> = array_at(ledger, "tasks")
+        .iter()
+        .filter(|t| t.get("project").is_none_or(Value::is_null))
+        .collect();
+    let ids: Vec<&str> = loose.iter().map(|t| ctx::s(t, "id")).collect();
+    let after = |t: &Value| -> Vec<String> {
+        array_at(t, "after")
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| ids.contains(id))
+            .map(str::to_string)
+            .collect()
+    };
+    // Depths by rounds: a task is one deeper than its deepest link; a cycle (the hub refuses them) stops at the count.
+    let mut depth: Vec<usize> = vec![0; loose.len()];
+    for _ in 0..loose.len() {
+        let mut moved = false;
+        for (at, t) in loose.iter().enumerate() {
+            let deepest = after(t)
+                .iter()
+                .filter_map(|id| ids.iter().position(|x| x == id))
+                .map(|up| depth[up] + 1)
+                .max()
+                .unwrap_or(0);
+            if deepest > depth[at] {
+                depth[at] = deepest;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let mut order: Vec<usize> = (0..loose.len()).collect();
+    order.sort_by_key(|&at| depth[at]);
+    let tasks: Vec<Value> = order
+        .iter()
+        .map(|&at| {
+            let mut t = loose[at].clone();
+            t["depth"] = json!(depth[at]);
+            t
+        })
+        .collect();
+    let edges: Vec<Value> = loose
+        .iter()
+        .flat_map(|t| {
+            after(t)
+                .into_iter()
+                .map(move |up| json!([up, ctx::s(t, "id")]))
+        })
+        .collect();
+    json!({ "project": "outside", "tasks": tasks, "edges": edges })
+}
+
+/// The graph as lines: a heading per column, a row per task (id, state, role, title, and what it runs after or is
+/// blocked by), then the longest chain still to finish and the ready tasks nobody has claimed.
+fn graph_lines(g: &Value) -> Vec<String> {
+    let tasks = array_at(g, "tasks");
+    if tasks.is_empty() {
+        let stage = ctx::s(g, "stage");
+        return vec![if ctx::s(g, "project") == "outside" {
+            "No tasks outside projects.".to_string()
+        } else if ["brief", "research", "proposal", "critique", "approval"].contains(&stage) {
+            format!(
+                "No tasks yet: the project is at {stage}, and its tasks are posted once its plan is approved."
+            )
+        } else {
+            "No tasks yet.".to_string()
+        }];
+    }
+    let edges: Vec<(&str, &str)> = array_at(g, "edges")
+        .iter()
+        .filter_map(|e| Some((e.get(0)?.as_str()?, e.get(1)?.as_str()?)))
+        .collect();
+    let cut = |s: &str, n: usize| -> String {
+        if s.chars().count() <= n {
+            s.to_string()
+        } else {
+            s.chars().take(n - 1).collect::<String>() + "…"
+        }
+    };
+    let row = |t: &Value| -> [String; 5] {
+        let id = ctx::s(t, "id");
+        let blocked: Vec<&str> = array_at(t, "blocked_by")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        let after: Vec<&str> = edges
+            .iter()
+            .filter(|(_, to)| *to == id)
+            .map(|(from, _)| *from)
+            .collect();
+        let links = if !blocked.is_empty() {
+            format!("blocked by {}", blocked.join(", "))
+        } else if !after.is_empty() {
+            format!("after {}", after.join(", "))
+        } else {
+            String::new()
+        };
+        let role = match ctx::s(t, "role") {
+            "" => "any role".to_string(),
+            role => role.to_string(),
+        };
+        [
+            id.to_string(),
+            state_word(t).to_string(),
+            role,
+            cut(title_of(ctx::s(t, "goal")), 48),
+            links,
+        ]
+    };
+    let rows: Vec<(u64, [String; 5])> = tasks
+        .iter()
+        .map(|t| (t.get("depth").and_then(Value::as_u64).unwrap_or(0), row(t)))
+        .collect();
+    let width = |i: usize| {
+        rows.iter()
+            .map(|(_, r)| r[i].chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let widths = [width(0), width(1), width(2), width(3)];
+    let mut lines = Vec::new();
+    let deepest = rows.iter().map(|(d, _)| *d).max().unwrap_or(0);
+    for column in 0..=deepest {
+        let members: Vec<&[String; 5]> = rows
+            .iter()
+            .filter(|(d, _)| *d == column)
+            .map(|(_, r)| r)
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        lines.push(if column == 0 {
+            "Column 1 · runs after nothing".to_string()
+        } else {
+            format!("Column {}", column + 1)
+        });
+        for r in members {
+            let mut line = String::from("  ");
+            for (i, w) in widths.iter().enumerate() {
+                line.push_str(&format!("{:<w$}  ", r[i], w = *w));
+            }
+            line.push_str(&r[4]);
+            lines.push(line.trim_end().to_string());
+        }
+    }
+    let chain: Vec<&str> = array_at(g, "longest_chain")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    if chain.len() > 1 {
+        lines.push(format!(
+            "Longest chain still to finish: {} ({} tasks)",
+            chain.join(" → "),
+            chain.len()
+        ));
+    }
+    let waiting: Vec<String> = array_at(g, "waiting")
+        .iter()
+        .map(|w| {
+            let ids: Vec<&str> = array_at(w, "tasks")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let role = match ctx::s(w, "role") {
+                "" => "any role",
+                role => role,
+            };
+            format!("{role} ({})", ids.join(", "))
+        })
+        .collect();
+    if !waiting.is_empty() {
+        lines.push(format!("Ready, not claimed: {}", waiting.join(" · ")));
+    }
+    lines
 }
 
 /// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
@@ -243,6 +452,20 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
+        Cmd::Graph { project } => {
+            let graph = if project == "outside" {
+                loose_graph(&ctx.client.get("/v1/tasks")?)
+            } else {
+                ctx.client
+                    .get(&format!("/v1/projects/{}/graph", ctx::seg(&project)))?
+            };
+            ctx.out(&graph, |g| {
+                for line in graph_lines(g) {
+                    println!("{line}");
+                }
+            });
+            Ok(())
+        }
         Cmd::Create {
             title,
             details,
@@ -311,6 +534,89 @@ mod tests {
         assert_eq!(budgeted["budget"], 500);
         assert_eq!(budgeted["assignee"], 7);
         assert!(budgeted.get("acceptance").is_none());
+    }
+
+    /// A project's graph as `GET /v1/projects/{id}/graph` gives it.
+    fn release() -> Value {
+        json!({
+            "project": "pr1", "stage": "implementation",
+            "tasks": [
+                { "id": "t1", "goal": "Survey the flaky tests", "role": "qa", "depth": 0, "state": "open", "ready": true, "blocked_by": [] },
+                { "id": "t2", "goal": "Fix the double-charge\nmore", "role": "builder", "depth": 0, "state": "claimed", "ready": false, "blocked_by": [],
+                  "agent_cid": 7, "step": { "stage": "approval", "tool": "plaza_pay", "since_ms": 0 } },
+                { "id": "t3", "goal": "Make the tests deterministic", "role": null, "depth": 1, "state": "open", "ready": false, "blocked_by": [] },
+                { "id": "t4", "goal": "Try the migration", "role": "qa", "depth": 1, "state": "open", "ready": false, "blocked_by": ["t9"] }
+            ],
+            "edges": [["t1", "t3"], ["t2", "t3"], ["t9", "t4"]],
+            "frontier": ["t1", "t2"],
+            "longest_chain": ["t1", "t3"],
+            "waiting": [{ "role": "qa", "tasks": ["t1"] }]
+        })
+    }
+
+    #[test]
+    fn a_graph_prints_a_column_per_step_of_the_order() {
+        let lines = graph_lines(&release());
+        assert_eq!(
+            lines,
+            [
+                "Column 1 · runs after nothing",
+                "  t1  ready      qa        Survey the flaky tests",
+                "  t2  needs you  builder   Fix the double-charge",
+                "Column 2",
+                "  t3  waiting    any role  Make the tests deterministic  after t1, t2",
+                "  t4  blocked    qa        Try the migration             blocked by t9",
+                "Longest chain still to finish: t1 → t3 (2 tasks)",
+                "Ready, not claimed: qa (t1)",
+            ]
+        );
+        assert_eq!(
+            graph_lines(&json!({ "project": "pr2", "stage": "critique", "tasks": [] })),
+            [
+                "No tasks yet: the project is at critique, and its tasks are posted once its plan is approved."
+            ]
+        );
+        assert_eq!(
+            graph_lines(&json!({ "project": "outside", "tasks": [] })),
+            ["No tasks outside projects."]
+        );
+    }
+
+    #[test]
+    fn the_tasks_outside_projects_get_their_depths_from_their_links() {
+        let ledger = json!({ "tasks": [
+            { "id": "t1", "goal": "a", "state": "open", "ready": true, "project": null, "after": [] },
+            { "id": "t2", "goal": "b", "state": "open", "ready": false, "project": null, "after": ["t1", "t5"] },
+            { "id": "t3", "goal": "c", "state": "open", "ready": false, "project": null, "after": ["t2"] },
+            { "id": "t5", "goal": "d", "state": "open", "ready": true, "project": "pr1", "after": [] }
+        ]});
+        let g = loose_graph(&ledger);
+        let depths: Vec<(String, u64)> = array_at(&g, "tasks")
+            .iter()
+            .map(|t| {
+                (
+                    ctx::s(t, "id").to_string(),
+                    t["depth"].as_u64().unwrap_or(99),
+                )
+            })
+            .collect();
+        assert_eq!(
+            depths,
+            [("t1".into(), 0), ("t2".into(), 1), ("t3".into(), 2)]
+        );
+        assert_eq!(g["edges"], json!([["t1", "t2"], ["t2", "t3"]]));
+    }
+
+    #[test]
+    fn a_task_says_its_state_as_the_work_screen_does() {
+        let graph = release();
+        let words: Vec<&str> = array_at(&graph, "tasks").iter().map(state_word).collect();
+        assert_eq!(words, ["ready", "needs you", "waiting", "blocked"]);
+        assert_eq!(
+            state_word(&json!({ "state": "awaiting_review" })),
+            "in review"
+        );
+        assert_eq!(state_word(&json!({ "state": "done" })), "done");
     }
 
     #[test]

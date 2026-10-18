@@ -162,6 +162,15 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
+/// The screen as it opens on one project's page (the Work screen's plan cards open it this way); the load that
+/// follows reads that project.
+pub fn opened(id: String) -> State {
+    State {
+        open: Some(id),
+        ..Default::default()
+    }
+}
+
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     match state.open.clone() {
@@ -727,9 +736,14 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             Some(Msg::OpenSendBack),
         ));
     }
-    if !actions.is_empty() {
-        body.push(row(actions).spacing(8).into());
-    }
+    // The project as one flow: its plan, its tasks in the order they run, delivery.
+    actions.push(ui::btn(
+        "Open in Work",
+        Some("commit"),
+        ui::Kind::Secondary,
+        Some(Msg::Go(Id::WorkOn(p.id.clone()))),
+    ));
+    body.push(row(actions).spacing(8).into());
 
     if let Some(note) = &state.approve {
         let field = text_input("A note for the team (optional)", note)
@@ -915,12 +929,19 @@ fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.tasks.is_empty() {
         return ui::faint("No tasks yet.").into();
     }
-    column(
-        p.tasks
-            .iter()
-            .map(|t| link(t, Msg::Go(Id::Task(t.clone())))),
-    )
-    .spacing(8)
+    column![
+        column(
+            p.tasks
+                .iter()
+                .map(|t| link(t, Msg::Go(Id::Task(t.clone())))),
+        )
+        .spacing(8),
+        link(
+            "See them in the order they run, in Work",
+            Msg::Go(Id::WorkOn(p.id.clone()))
+        ),
+    ]
+    .spacing(12)
     .into()
 }
 

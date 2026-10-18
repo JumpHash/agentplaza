@@ -94,7 +94,8 @@ impl Options {
 }
 
 impl Default for Options {
-    /// The desk Work screen's sizes.
+    /// The sizes for a caller that passes none, and for the fixtures that name none. The Work screens pass their own:
+    /// the web's `CARD` (apps/web/src/views/work.ts) and the desktop's `work::CARD`, which a desktop test holds equal.
     fn default() -> Self {
         Self {
             card_width: 232.0,

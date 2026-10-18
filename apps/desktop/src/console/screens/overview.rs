@@ -1,5 +1,5 @@
 //! The Overview screen (parity with the web console's `overview` view): the plaza at a glance,
-//! the orchestrator's chat box, the activity feed and the fleet.
+//! the orchestrator's chat box, the activity feed, the projects with their flow lines, and the fleet.
 //!
 //! The web view is pushed the transcript bus. A screen has no event stream here, so the feed is
 //! polled: every load reads each agent's transcript after the last entry seen.
@@ -19,6 +19,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::Id;
+use super::work::flow_line;
+use super::work_model::{self as model, FLOW_TASKS};
 use crate::console::{Ctx, client, ui};
 use crate::theme::{self};
 
@@ -45,6 +47,10 @@ pub struct State {
     overview: Option<Overview>,
     agents: Vec<Agent>,
     feed: Vec<Item>,
+    /// The projects and the ledger, for the projects' flow lines; None when the hub would not say.
+    projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
+    /// The agents' steps as `agent_step` events bring them, newer than the roster's until the next read.
+    steps: HashMap<u64, Option<model::Step>>,
     cursors: HashMap<u64, u64>,
     goal: text_editor::Content,
     sending: bool,
@@ -76,6 +82,7 @@ pub struct Snapshot {
     overview: Overview,
     agents: Vec<Agent>,
     feed: Vec<(u64, Vec<Entry>)>,
+    projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +109,9 @@ struct Agent {
     status: String,
     model: String,
     work: Option<Work>,
+    /// What it is doing now: a step waiting on an approval makes its task the owner's square.
+    #[serde(default)]
+    step: Option<model::Step>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -163,6 +173,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 overview,
                 agents,
                 feed,
+                projects: read_projects(&client),
             })
         },
         Msg::Loaded,
@@ -190,6 +201,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.feed.truncate(FEED_MAX);
             state.overview = Some(snap.overview);
             state.agents = snap.agents;
+            state.projects = snap.projects;
+            // The roster was read after the steps the events brought, so its own are as new.
+            state.steps.clear();
             state.error = None;
             return landed(state, ctx);
         }
@@ -199,7 +213,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             return landed(state, ctx);
         }
         Msg::Event(event) => {
-            if !matches!(event.kind.as_str(), "agent" | "work" | "transcript") {
+            if event.kind == "agent_step" {
+                if let Some(cid) = event.data.get("cid").and_then(Value::as_u64) {
+                    let step = event
+                        .data
+                        .get("step")
+                        .cloned()
+                        .and_then(|s| serde_json::from_value::<model::Step>(s).ok());
+                    state.steps.insert(cid, step);
+                }
+                return Task::none();
+            }
+            if !matches!(
+                event.kind.as_str(),
+                "agent" | "work" | "transcript" | "project" | "task"
+            ) {
                 return Task::none();
             }
             if state.loading {
@@ -273,8 +301,107 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         ]
         .spacing(22),
     );
+    page = page.push(projects(state));
     page = page.push(fleet(&state.agents));
     ui::sheet(ui::view_head("Overview", vec![]), page.into())
+}
+
+/// The projects and the ledger, for the Projects card; None when the hub would not say.
+fn read_projects(client: &client::Client) -> Option<(Vec<model::Project>, Vec<model::Task>)> {
+    #[derive(Deserialize)]
+    struct Tasks {
+        tasks: Vec<model::Task>,
+    }
+    let projects: Vec<model::Project> = client.get("/v1/projects").ok()?;
+    let tasks = client.get::<Tasks>("/v1/tasks").ok()?.tasks;
+    Some((projects, tasks))
+}
+
+/// A line per project still in progress: its title, its stage and its flow line, opening it on the Work screen.
+fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
+    let Some((list, tasks)) = &state.projects else {
+        return card(
+            card_title("Projects"),
+            empty(
+                "alert",
+                "Projects are unavailable",
+                "apid did not answer; they come back with it.",
+            ),
+            false,
+        );
+    };
+    let active: Vec<&model::Project> = list.iter().filter(|p| p.stage != "delivered").collect();
+    if active.is_empty() {
+        return card(
+            card_title("Projects"),
+            empty(
+                "projects",
+                "No projects in progress",
+                "Each goal you give the orchestrator becomes a project; its flow shows here.",
+            ),
+            false,
+        );
+    }
+    let step_of = |cid: u64| match state.steps.get(&cid) {
+        Some(step) => step.clone(),
+        None => state
+            .agents
+            .iter()
+            .find(|a| a.cid == cid)
+            .and_then(|a| a.step.clone()),
+    };
+    let rows = active.into_iter().map(|p| {
+        let own = model::tasks_of(p, tasks);
+        let done = own.iter().filter(|t| t.state == "done").count();
+        let yours = if model::plan_waits_for_owner(p) {
+            "waits for your approval"
+        } else if model::waits_for_owner(Some(p), &own, &step_of) {
+            "waits for you"
+        } else {
+            ""
+        };
+        let counted = if own.is_empty() {
+            String::new()
+        } else {
+            format!("{done} of {} tasks done", own.len())
+        };
+        let line = [model::stage_label(&p.stage), counted, yours.to_string()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let body = row![
+            container(
+                text(p.title.clone())
+                    .font(SANS_MEDIUM)
+                    .size(13.0)
+                    .color(crate::theme::palette().ink)
+                    .wrapping(Wrapping::None)
+            )
+            .width(Length::FillPortion(2))
+            .clip(true),
+            container(ui::faint(line).wrapping(Wrapping::None))
+                .width(Length::FillPortion(3))
+                .clip(true),
+            // A fixed width, so the columns line up from row to row: the longest line holds its 24 squares and "+N".
+            container(flow_line(
+                &model::flow_segments(Some(p), &own, &step_of),
+                own.len().saturating_sub(FLOW_TASKS)
+            ))
+            .width(Length::Fixed(320.0))
+            .align_x(iced::alignment::Horizontal::Right),
+        ]
+        .spacing(16)
+        .align_y(Vertical::Center);
+        let entry: Element<'a, Msg> = button(body)
+            .on_press(Msg::Go(Id::WorkOn(p.id.clone())))
+            .padding([10, 16])
+            .width(Length::Fill)
+            .style(theme::register_row(false))
+            .into();
+        column![entry, rule(crate::theme::palette().rule_faint)].into()
+    });
+    card(card_title("Projects"), column(rows).into(), true)
 }
 
 fn stat_row<'a>(o: &Overview) -> Element<'a, Msg> {

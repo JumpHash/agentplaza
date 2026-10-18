@@ -421,11 +421,22 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
         .wrapped("/v1/tasks", "tasks")
         .iter()
         .map(|t| {
+            // The tasks it runs after (the Work screen's links); "-" for none.
+            let after: Vec<&str> = t
+                .get("after")
+                .and_then(Value::as_array)
+                .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
             vec![
                 Cell::from(clip(&show(t.get("id")), 10)),
-                Cell::from(show(t.get("state"))),
+                Cell::from(crate::cmd::tasks::state_word(t).to_string()),
                 Cell::from(show(t.get("role"))),
                 Cell::from(show(t.get("agent_cid"))),
+                Cell::from(if after.is_empty() {
+                    "-".to_string()
+                } else {
+                    clip(&after.join(", "), 14)
+                }),
                 Cell::from(Line::from(rich::spans(&show(t.get("goal")), &rich_ctx))),
             ]
         })
@@ -434,13 +445,14 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
         frame,
         area,
         "tasks",
-        &["ID", "STATE", "ROLE", "AGENT", "GOAL"],
+        &["ID", "STATE", "ROLE", "AGENT", "AFTER", "GOAL"],
         rows,
         &[
             Constraint::Length(10),
             Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(7),
+            Constraint::Length(14),
             Constraint::Fill(1),
         ],
         app,
