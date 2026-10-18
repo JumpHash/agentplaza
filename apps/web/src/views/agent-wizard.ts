@@ -16,6 +16,8 @@ export interface WizardOptions {
   proposal?: AgentProposal;
   /** Called after a spawn, an approval or a rejection. */
   onDone?: () => void;
+  /** The project the spawned agents join at their first hello (else they wait on the bench). */
+  project?: string;
 }
 
 const STEPS = ['Purpose', 'Role', 'Tools & limits', 'Prompt', 'Review'];
@@ -291,9 +293,9 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
       if (d.mode === 'new') {
         const def = roleDefOf(d, model);
         await api.saveRole(def);
-        await api.spawnAgents(def.id, n, model);
+        await api.spawnAgents(def.id, n, model, opts.project);
       } else {
-        await api.spawnAgents(d.roleId, n, model);
+        await api.spawnAgents(d.roleId, n, model, opts.project);
       }
     }, `Spawned ${plural(n, 'agent')}`);
   };

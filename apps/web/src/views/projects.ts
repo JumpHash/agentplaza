@@ -7,7 +7,11 @@ import { api, PROJECT_STAGES, type Project, type ProjectCritique, type ProjectDo
 import { href } from '../router';
 import { openIde } from '../ide/open';
 import { on } from '../store';
-import { ago, attempt, badge, button, card, empty, field, modal, select, textarea, toast, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, card, empty, field, modal, select, tabs, textarea, toast, type Tone } from '../ui/components';
+import { openNewProject } from '../ui/new-project';
+import { isLive, refreshProjects } from '../scope';
+import { settingsTab } from './project-settings';
+import { teamTab } from './project-team';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
@@ -44,14 +48,21 @@ function track(stage: ProjectStage): HTMLElement {
   );
 }
 
+/** A project's life as a badge: paused or archived (a delivered one says so in its stage). */
+function lifeBadge(p: Project): HTMLElement | null {
+  if (p.archived) return badge('Archived', 'muted');
+  if (p.paused) return badge('Paused', 'warn');
+  return null;
+}
+
 function projectRow(p: Project): HTMLElement {
   return h(
     'a.pj-row',
-    { href: href('projects', p.id), 'data-key': p.id },
+    { href: href('projects', p.id), 'data-key': p.id, class: isLive(p) ? null : 'pj-over' },
     h(
       'div.pj-row-main',
       null,
-      h('div.pj-row-title', null, h('span.pj-title', null, p.title), badge(p.kind, 'muted')),
+      h('div.pj-row-title', null, h('span.pj-title', null, p.title), badge(p.kind, 'muted'), lifeBadge(p)),
       track(p.stage),
       h('div.pj-meta', null, `rev ${p.revision} · ${p.docs.length} docs · ${p.critiques.length} critiques · ${p.tasks.length} tasks`),
     ),
@@ -214,6 +225,32 @@ function openSendBack(p: Project, done: () => void): void {
   );
 }
 
+/** Archives the project once the owner confirms: nothing more is done for it. */
+function openArchive(p: Project, done: () => void): void {
+  const go = button(
+    'Archive',
+    () => {
+      void (async () => {
+        const ok = await attempt(() => api.archiveProject(p.id), `${p.title} archived`);
+        if (ok) {
+          close();
+          done();
+        }
+      })();
+    },
+    { kind: 'danger' },
+  );
+  const close = modal(
+    'Archive project?',
+    h(
+      'div.pj-form',
+      null,
+      h('p', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn, its agents go back to the bench, and the rest of its budget goes back to the plaza. Its history stays.`),
+      h('div.pj-form-actions', null, button('Cancel', () => close(), { kind: 'ghost' }), go),
+    ),
+  );
+}
+
 /** Opens a project's repository in the IDE at its default branch (the branch the repo list reports). */
 async function openRepo(name: string): Promise<void> {
   const repos = await attempt(() => api.gitRepos());
@@ -226,8 +263,16 @@ async function openRepo(name: string): Promise<void> {
   openIde(`repo:${name}@${repo.default_branch}`);
 }
 
+/** The detail page's tabs: its plan and history, the agents working on it, its settings and budget. */
+const TABS = [
+  { key: 'plan', label: 'Plan' },
+  { key: 'team', label: 'Team' },
+  { key: 'settings', label: 'Settings' },
+];
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   const id = params[0] || '';
+  const tab = TABS.some((t) => t.key === params[1]) ? params[1]! : 'plan';
   const screen = h('div.projects', null);
   root.append(screen);
 
@@ -237,29 +282,41 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let list: Project[] = [];
   let current: Project | null = null;
 
-  const listNodes = (): Node[] => [
-    h(
-      'div.view-head',
-      null,
-      h('h1', null, 'Projects'),
-      h('p.pj-intro', null, 'Every goal goes through brief, research, proposal, critique and approval before anything is built.'),
-    ),
-    list.length
-      ? h('div.pj-list', null, list.map(projectRow))
-      : empty('projects','No projects yet.', 'The orchestrator opens one for each goal you give it.'),
-  ];
+  const listNodes = (): Node[] => {
+    // The live projects first, newest first; the ones that are over after them.
+    const ordered = [...list].sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || b.created_ms - a.created_ms);
+    return [
+      h(
+        'div.view-head',
+        null,
+        h('h1', null, 'Projects'),
+        h('div.actions', null, button('New project', () => openNewProject(), { kind: 'primary', icon: 'plus' })),
+      ),
+      h('p.pj-intro', null, 'Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.'),
+      ordered.length
+        ? h('div.pj-list', null, ordered.map(projectRow))
+        : empty('projects', 'No projects yet.', 'Start one in a conversation with the orchestrator: it drafts the tasks, the team and the budget, and you start it.', button('New project', () => openNewProject(), { kind: 'primary', icon: 'plus' })),
+    ];
+  };
 
   const detailNodes = (p: Project): Node[] => {
     const approvable = APPROVABLE.includes(p.stage);
     const canSendBack = stageIndex(p.stage) > 0;
-    const refresh = (): void => void reload();
+    const refresh = (): void => {
+      void reload();
+      void refreshProjects();
+    };
+    const live = isLive(p);
     const actions: Node[] = [
       h(
         'div.pj-actions',
         null,
         approvable ? button('Approve plan', () => openApprove(p, refresh), { kind: 'primary' }) : null,
-        canSendBack ? button('Send back…', () => openSendBack(p, refresh)) : null,
+        canSendBack && live ? button('Send back…', () => openSendBack(p, refresh)) : null,
         h('a.btn', { href: href('work', p.id), title: 'The project as one flow: its plan, its tasks in order, delivery' }, icon('commit'), 'Open in Work'),
+        live && !p.paused ? button('Pause', () => void attempt(() => api.pauseProject(p.id), `${p.title} paused: its agents wait`).then(refresh), { title: 'Its agents stop taking work until you resume it' }) : null,
+        live && p.paused ? button('Resume', () => void attempt(() => api.resumeProject(p.id), `${p.title} resumed`).then(refresh), { kind: 'primary' }) : null,
+        live ? button('Archive…', () => openArchive(p, refresh), { kind: 'ghost' }) : null,
       ),
     ];
     const sections: Node[] = [card('Documents', docsBody(p)), card('Critiques', critiquesBody(p)), card('Tasks', tasksBody(p))];
@@ -273,6 +330,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       );
     }
     sections.push(card('History', historyBody(p)));
+    const body =
+      tab === 'team'
+        ? teamTab(p, refresh)
+        : tab === 'settings'
+          ? settingsTab(p)
+          : h('div.pj-sections', null, sections);
     return [
       h('div.pj-back-row', null, h('a.pj-back', { href: href('projects') }, '← All projects')),
       h(
@@ -284,13 +347,15 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
           null,
           badge(p.kind, 'muted'),
           badge(label(p.stage), 'accent'),
+          lifeBadge(p),
           p.approved_by ? h('span.pj-muted', null, `approved by ${p.approved_by}`) : null,
         ),
       ),
       h('p.pj-goal', null, p.goal),
       pipeline(p.stage),
       ...actions,
-      h('div.pj-sections', null, sections),
+      tabs(TABS, tab, (key) => (location.hash = href('projects', p.id, ...(key === 'plan' ? [] : [key])))),
+      body,
     ];
   };
 

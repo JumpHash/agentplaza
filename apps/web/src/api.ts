@@ -75,7 +75,11 @@ export interface WorkItem {
 
 export interface Agent {
   cid: number; name: string; role: string; role_label: string; tier: Tier; status: AgentStatus;
-  model: string; model_override: string | null; model_source: 'agent' | 'role' | 'default';
+  /** Where the model comes from: the agent's own override, its project's settings, the plaza's role model, the default. */
+  model: string; model_override: string | null; model_source: 'agent' | 'project' | 'role' | 'default';
+  /** The project it works on (null: on the bench, or the orchestrator, which works on every project), since when, and
+   * why it does not work now (on the bench, or its project paused), if it does not. */
+  project?: string | null; joined_ms?: number | null; held?: string | null;
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
   usage: Usage; work: WorkItem | null; queue: number; species?: string;
   kind: string;
@@ -274,7 +278,43 @@ export const PROJECT_STAGES: ProjectStage[] = ['brief', 'research', 'proposal', 
 export interface ProjectDoc { kind: string; title: string; file: string | null; repo_path: string | null; commit: string | null; summary: string; by_cid: number; by: string; at_ms: number }
 export interface ProjectCritique { by_cid: number; by: string; verdict: 'approve' | 'revise' | 'comment'; text: string; revision: number; at_ms: number }
 export interface ProjectEvent { at_ms: number; by_cid: number; by: string; what: string; note: string }
-export interface Project { id: string; title: string; goal: string; kind: 'code' | 'other'; stage: ProjectStage; lead_cid: number; owner_approval: boolean; repo: string | null; docs: ProjectDoc[]; critiques: ProjectCritique[]; revision: number; approved_by: string | null; tasks: string[]; history: ProjectEvent[]; created_ms: number; updated_ms: number }
+export interface Project { id: string; title: string; goal: string; kind: 'code' | 'other'; stage: ProjectStage; lead_cid: number; owner_approval: boolean; repo: string | null; docs: ProjectDoc[]; critiques: ProjectCritique[]; revision: number; approved_by: string | null; tasks: string[]; history: ProjectEvent[]; created_ms: number; updated_ms: number; paused?: boolean; archived?: boolean }
+/** A project's overrides of the plaza's settings; every field optional (unset: the plaza's). */
+export interface ProjectSettings {
+  default_model?: string; role_models?: Record<string, string>; effort?: string; max_tokens?: number; max_turns?: number;
+  compress_at?: number; keep_recent?: number; task_budget?: number; permission_mode?: 'autonomous' | 'ask' | 'read_only';
+  review_timeout_minutes?: number;
+}
+/** A setting the project's agents get, and where it comes from. */
+export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
+/** A project's budget: its own `town_budget` account (once credits are set aside), and the plaza's. */
+export interface ProjectBudget { project: string; own: boolean; balance: number; plaza: number }
+export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: ProjectBudget }
+/** An agent that holds tasks of a project from before membership, with those tasks. */
+export type SuggestedMember = Agent & { tasks: string[] };
+/** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
+ * work ended), or a plaza notice (a project started, a task ended). */
+export interface OwnerMessage { from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped' }
+export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
+/** One role on a draft's team: `count` agents, of which `bench` (guest CIDs) come from the bench and the rest are spawned. */
+export interface DraftSeat { role: string; count: number; bench?: number[]; model?: string }
+export interface ProjectDraft {
+  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[]; team: DraftSeat[];
+  budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
+  /** What still stops Start. */
+  problems: string[];
+}
+export interface OwnerConversation {
+  id: string; title: string; cid: number; messages: OwnerMessage[]; works: number[]; created_ms: number; updated_ms: number;
+  archived: boolean; project?: string; draft?: ProjectDraft; draft_seen: number; thread: string;
+  /** The owner's messages still waiting for an answer, by work item. */
+  pending: number[];
+}
+export interface OwnerConversationSummary {
+  id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
+  draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
+}
+export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[]; joined: number[]; spawned: { role: string; count: number }[] }
 export interface GitRepo { name: string; description: string; default_branch: string; updated_at: string; size_kb: number; open_prs: number; project: string | null }
 export interface GitBranch { name: string; commit: { id: string; message: string; author: string; at: string } }
 export interface GitCommit { id: string; short: string; message: string; author: string; at: string; additions: number; deletions: number }
@@ -631,8 +671,11 @@ export const api = {
   saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
   agents: () => get<Agent[]>('/v1/agents'),
+  /** A project's agents, or the bench (`bench`: the agents that could join a project and are on none). */
+  agentsOf: (project: string) => get<Agent[]>(`/v1/agents${query({ project })}`),
   agent: (cid: number) => get<Agent>(`/v1/agents/${cid}`),
-  spawnAgents: (role: string, count: number, model?: string) => post<unknown>('/v1/agents', { role, count, model }),
+  /** Spawns `count` agents of `role`; with a `project`, they join it at their first hello. */
+  spawnAgents: (role: string, count: number, model?: string, project?: string) => post<unknown>('/v1/agents', { role, count, model, project }),
   setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
   renameAgent: (cid: number, name: string) => patch<Agent>(`/v1/agents/${cid}`, { name }),
   killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
@@ -649,7 +692,10 @@ export const api = {
   tasksWhere: (q: { project?: string; ready?: boolean }) =>
     get<{ tasks: Task[] }>(`/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`).then((r) => r.tasks),
   task: (id: string) => get<Task>(`/v1/tasks/${id}`),
-  createTask: (t: { goal: string; acceptance?: string; role?: string; budget?: number; assignee?: number }) => post<Task>('/v1/tasks', t),
+  /** Every task belongs to a project. */
+  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; budget?: number; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
+  /** Moves a task from before projects into one, with the tasks linked to it. */
+  moveTask: (id: string, project: string) => post<{ project: string; moved: Task[] }>(`/v1/tasks/${encodeURIComponent(id)}/move`, { project }),
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
 
   board: () => get<{ posts: BoardPost[] }>('/v1/board').then((r) => r.posts),
@@ -702,6 +748,34 @@ export const api = {
   project: (id: string) => get<Project>(`/v1/projects/${id}`),
   projectGraph: (id: string) => get<ProjectGraph>(`/v1/projects/${encodeURIComponent(id)}/graph`),
   approveProject: (id: string, note = '') => post<Project>(`/v1/projects/${id}/approve`, { note }),
+  /** Opens a project for the owner, its plan the owner's. */
+  createProject: (p: { title: string; goal: string; kind?: 'code' | 'other' }) => post<Project>('/v1/projects', p),
+  pauseProject: (id: string) => post<Project>(`/v1/projects/${id}/pause`),
+  resumeProject: (id: string) => post<Project>(`/v1/projects/${id}/resume`),
+  archiveProject: (id: string) => post<Project>(`/v1/projects/${id}/archive`),
+  projectMembers: (id: string) => get<Agent[]>(`/v1/projects/${id}/members`),
+  addMember: (id: string, cid: number) => post<Agent>(`/v1/projects/${id}/members`, { cid }),
+  removeMember: (id: string, cid: number) => del<unknown>(`/v1/projects/${id}/members/${cid}`),
+  suggestedMembers: (id: string) => get<SuggestedMember[]>(`/v1/projects/${id}/suggested-members`),
+  projectSettings: (id: string) => get<ProjectSettings>(`/v1/projects/${id}/settings`),
+  /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
+  patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
+  effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
+  projectBudget: (id: string) => get<ProjectBudget>(`/v1/projects/${id}/budget`),
+  /** Positive sets credits aside from the plaza's budget; negative gives some back. */
+  moveProjectBudget: (id: string, credits: number) => post<ProjectBudget>(`/v1/projects/${id}/budget`, { credits }),
+  ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
+  ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
+  /** Starts a conversation with the orchestrator, `text` its first message. */
+  openConversation: (text: string) => post<OwnerConversation>('/v1/owner/conversations', { text }),
+  sayInConversation: (id: string, text: string) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, { text }),
+  patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
+  conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
+  conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
+  editDraft: (id: string, edit: Partial<Omit<ProjectDraft, 'problems' | 'updated_by' | 'updated_ms' | 'started_ms'>> & { revision: number }) =>
+    patch<OwnerConversation>(`/v1/owner/conversations/${id}/draft`, edit),
+  /** Starts the drafted project at `revision`, the one the owner looked at. */
+  startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   git: () => get<{ configured: boolean; org: string }>('/v1/git'),
   gitRepos: () => get<GitRepo[]>('/v1/git/repos'),

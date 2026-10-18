@@ -35,7 +35,7 @@ export function onConnection(fn: (up: boolean) => void): () => void {
   return () => connectionListeners.delete(fn);
 }
 
-const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide', 'engine', 'prompt', 'skill', 'station', 'lease_waiting', 'lease_granted', 'lease_released', 'lease_ended', 'lease_failed', 'lease_owner_input', 'station_takeover', 'station_give_back', 'station_sync_conflict', 'station_sync_paused', 'metrics', 'metrics.alert', 'board_paused', 'law', 'foundry', 'task_link', 'agent_step']);
+const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide', 'engine', 'prompt', 'skill', 'station', 'lease_waiting', 'lease_granted', 'lease_released', 'lease_ended', 'lease_failed', 'lease_owner_input', 'station_takeover', 'station_give_back', 'station_sync_conflict', 'station_sync_paused', 'metrics', 'metrics.alert', 'board_paused', 'law', 'foundry', 'task_link', 'agent_step', 'owner_conversation']);
 
 /** Opens the live layer (idempotent). It reconnects on its own until the page leaves. */
 export function connect(): void {

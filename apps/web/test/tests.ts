@@ -1,5 +1,6 @@
 // Pure-logic tests: run with `npm test`.
-import { parse, href, movedTo } from '../src/router';
+import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
+import { inScope, isLive, liveProjects, onBench } from '../src/scope';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
@@ -88,8 +89,18 @@ function eq(actual: unknown, expected: unknown, name: string): void {
 }
 
 
-eq(parse('#/agents/105'), { screen: 'agents', params: ['105'] }, 'route with a param');
-eq(parse(''), { screen: 'overview', params: [] }, 'empty route is the overview');
+eq(parse('#/agents/105'), { screen: 'agents', params: ['105'], project: null }, 'route with a param');
+eq(parse(''), { screen: 'overview', params: [], project: null }, 'empty route is the overview');
+// A project's route carries it first; the screen and its params follow as before.
+eq(parse('#/p/pr4/agents/105'), { screen: 'agents', params: ['105'], project: 'pr4' }, 'a scoped route names its project');
+eq(parse('#/p/pr4'), { screen: 'overview', params: [], project: 'pr4' }, "a project's front door is its overview");
+eq(parse('#/p'), { screen: 'p', params: [], project: null }, 'a lone p is a screen name, not a scope');
+eq(hrefIn('pr4', 'tasks', 't 1'), '#/p/pr4/tasks/t%201', 'a scoped link');
+eq(hrefIn(null, 'tasks'), '#/tasks', 'All projects is the plain route');
+setLinkScope('pr7');
+eq(href('work', 'pr7'), '#/p/pr7/work/pr7', 'links carry the scope of the route on screen');
+setLinkScope(null);
+eq(href('work'), '#/work', 'and none under All projects');
 eq(href('tasks', 't 1'), '#/tasks/t%201', 'href encodes params');
 eq(ago(1000, 31_000), '30s ago', 'ago seconds');
 eq(clip('abcdef', 4), 'abc…', 'clip');
@@ -234,7 +245,32 @@ eq(tweenArray([1], [1, 3], 1), [1, 3], 'tween: a missing entry counts as zero');
 eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 
 // Hardware models (assets/hardware): every file validates, the index lists every file, the loader builds them.
-eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [] }, 'a query is not part of the route');
+eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [], project: null }, 'a query is not part of the route');
+eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its project before a query');
+
+// ---- The project scope (scope.ts) ----
+{
+  const live = { archived: false, stage: 'implementation' as const };
+  eq(isLive(live), true, 'a project at work is live');
+  eq(isLive({ archived: true, stage: 'implementation' }), false, 'an archived one is not');
+  eq(isLive({ archived: false, stage: 'delivered' }), false, 'nor a delivered one');
+  const p = (id: string, created_ms: number, extra: Partial<Project> = {}) => ({ id, created_ms, archived: false, stage: 'implementation', ...extra }) as Project;
+  eq(
+    liveProjects([p('pr1', 1), p('pr2', 3), p('pr3', 2, { archived: true }), p('pr4', 4, { stage: 'delivered' })]).map((x) => x.id),
+    ['pr2', 'pr1'],
+    'the switcher offers the live projects, newest first',
+  );
+  const agent = (project: string | null, tier: 'worker' | 'orchestrator' = 'worker', kind = 'llm') => ({ project, tier, kind }) as unknown as Agent;
+  eq(inScope(agent('pr1'), 'pr1'), true, "a project's agent is in its scope");
+  eq(inScope(agent('pr2'), 'pr1'), false, "another project's is not");
+  eq(inScope(agent(null), 'pr1'), false, 'nor a bench agent');
+  eq(inScope(agent(null, 'orchestrator'), 'pr1'), true, 'the orchestrator works on every project');
+  eq(inScope(agent('pr2'), null), true, 'All projects shows everyone');
+  eq(onBench(agent(null)), true, 'no project is the bench');
+  eq(onBench(agent(null, 'orchestrator')), false, 'the orchestrator is never on the bench');
+  eq(onBench(agent(null, 'worker', 'model')), false, 'a model agent takes no work, so it is not on the bench');
+  eq(onBench(agent('pr1')), false, "a project's agent is not on the bench");
+}
 
 // Treasury: the range window, flow totals, chart data, journal paging merge and the party labels.
 const TDAY = 86_400_000;

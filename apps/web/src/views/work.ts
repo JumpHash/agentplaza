@@ -5,6 +5,7 @@
 // graph is unchanged, and done work dims in place. Tasks outside projects have a tab of their own.
 
 import '../styles/work.css';
+import { scope } from '../scope';
 import { api, PROJECT_STAGES, type AgentStep, type GraphTask, type Project, type ProjectGraph, type Task } from '../api';
 import { loadGraph, type GraphLayout, type Layout } from '../graph/wasm';
 import { agentName, roleLabel } from '../roles';
@@ -100,7 +101,8 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
 }
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
-  const wanted = params[0] ?? '';
+  // A tab named in the route, else the project the console is scoped to.
+  const wanted = params[0] ?? scope.get() ?? '';
   const screen = h('div.work-view', null);
   root.append(screen);
 

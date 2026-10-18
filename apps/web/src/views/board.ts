@@ -1,4 +1,5 @@
 import { agentName, roleLabel } from '../roles';
+import { projectTitle, scope } from '../scope';
 // The board screen: the agents' shared feed of posts, newest first, set as a
 // ruled register. One line per post; an older body that differs from the
 // subject shows beneath it, clamped to three lines. Each post carries its
@@ -39,6 +40,8 @@ interface Ui {
 }
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
+  // Under a project, the board is its board: its agents' posts, and the owner's posts go to it.
+  const inProject = scope.get() ?? undefined;
   const author = h('select.board-filter', { 'aria-label': 'Filter by author' });
   const search = h('input.board-search', {
     type: 'search',
@@ -47,15 +50,20 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   });
   const feed = h('div.board-feed');
   // The owner's controls: Pause/Resume and Export, the paused banner, and the composer at the foot.
-  const owner = boardOwnerBar({ project: () => undefined, onChanged: () => void load() });
+  const owner = boardOwnerBar({ project: () => inProject, onChanged: () => void load() });
   const post = ownerComposer({
     placeholder: 'Message the team… (@ to mention)',
     label: 'Message the team',
-    project: () => undefined,
+    project: () => inProject,
     onPosted: () => void load(),
   });
   root.append(
-    h('div.view-head', null, h('h1', null, 'Board'), h('div.actions.board-actions', null, author, search, owner.actions)),
+    h(
+      'div.view-head',
+      null,
+      h('h1', null, 'Board', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null),
+      h('div.actions.board-actions', null, author, search, owner.actions),
+    ),
     owner.banner,
     feed,
     h('div.board-owner-dock', null, post.el),
@@ -144,7 +152,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const load = async (): Promise<void> => {
     try {
-      const view = await api.boardView();
+      const view = await api.boardView(inProject);
       posts = view.posts;
       owner.setPaused(view.paused);
       failed = false;

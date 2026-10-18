@@ -7,8 +7,9 @@ import '../styles/tasks.css';
 import { api, type Agent, type Entry, type Task } from '../api';
 import { go, href } from '../router';
 import { openIde } from '../ide/open';
+import { liveProjects, projects, projectTitle, scope } from '../scope';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, clip, field, input, modal, select, textarea, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, clip, field, input, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
@@ -58,6 +59,10 @@ const cidName = (cid: number): string => {
   return a ? agentName(a) : `agent ${cid}`;
 };
 const idleWorkers = (): Agent[] => agents.get().filter((a) => a.status === 'idle' && a.tier === 'worker');
+/** The idle workers on `project`: a project's task goes only to its agents. */
+const idleMembers = (project: string | null): Agent[] => idleWorkers().filter((a) => !!project && a.project === project);
+/** The projects that take tasks now: live, their plan approved. */
+const takingTasks = () => liveProjects(projects.get()).filter((p) => p.stage === 'implementation' || p.stage === 'review');
 const statusOf = (cid: number | null): string => agents.get().find((a) => a.cid === cid)?.status ?? 'offline';
 const pad = (n: number): string => String(n).padStart(2, '0');
 
@@ -170,6 +175,8 @@ const taskId = (raw: string): string => (/^\d+$/.test(raw) ? `t${raw}` : raw);
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   const id = taskId(params[0] ?? '');
+  // Under a project the board is that project's tasks; under All projects, every task.
+  const inProject = scope.get();
   let tasks: Task[] = [];
   let current: Task | null = null;
   let timeline: Entry[] | null = null; // null while the assignee's transcript loads
@@ -230,7 +237,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         await loadTimeline(t);
         if (n !== seq) return;
       } else {
-        const list = await api.tasks();
+        const list = inProject ? await api.tasksWhere({ project: inProject }) : await api.tasks();
         if (n === seq) tasks = list;
       }
     } catch {
@@ -248,6 +255,24 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
 
   const openCreate = (): void => {
+    // Every task belongs to a project whose plan is approved: the one the console shows, or one picked here.
+    const open = takingTasks();
+    if (!open.length) {
+      const closeNone = modal(
+        'New task',
+        h(
+          'div.stack',
+          null,
+          h('p', null, 'A task belongs to a project, and no project takes tasks yet. Open one first: New project, in the project switcher.'),
+          h('div.row', null, h('span', { style: 'flex:1' }), button('Close', () => closeNone(), { kind: 'ghost' })),
+        ),
+      );
+      return;
+    }
+    const projectSel = select(
+      open.map((p) => ({ value: p.id, label: p.title })),
+      inProject && open.some((p) => p.id === inProject) ? inProject : open[0]!.id,
+    );
     const title = input({ required: true, placeholder: 'What should get done?' });
     const details = textarea({ rows: 4 });
     const acceptance = textarea({ rows: 3 });
@@ -255,14 +280,23 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const role = select([{ value: '', label: 'Any' }, ...roles.map((r) => ({ value: r, label: r }))]);
     // Empty leaves the budget to the hub's default (the hint shows it).
     const budget = input({ type: 'number', min: MIN_TASK_BUDGET, step: 1, placeholder: `${DEFAULT_TASK_BUDGET} (hub default)` });
-    const assignee = select([
-      { value: '', label: 'Let the scheduler choose' },
-      ...idleWorkers().map((a) => ({ value: String(a.cid), label: agentName(a) })),
-    ]);
+    const assignee = select([]);
+    // The assignee is one of the chosen project's idle agents.
+    const fillAssignees = (): void => {
+      replace(
+        assignee,
+        [{ value: '', label: 'Let the scheduler choose' }, ...idleMembers(projectSel.value).map((a) => ({ value: String(a.cid), label: agentName(a) }))].map((o) =>
+          h('option', { value: o.value }, o.label),
+        ),
+      );
+    };
+    fillAssignees();
+    projectSel.addEventListener('change', fillAssignees);
     const submit = h('button.btn.primary', { type: 'submit' }, icon('plus'), 'Create task');
     const form = h(
       'form.stack',
       null,
+      field('Project', projectSel),
       field('Title', title),
       field('Details', details),
       field('Acceptance', acceptance),
@@ -291,6 +325,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         () =>
           api.createTask({
             goal: detail ? `${goalTitle}\n\n${detail}` : goalTitle,
+            project: projectSel.value,
             acceptance: acceptance.value.trim() || undefined,
             role: role.value || undefined,
             budget: budgetCredits,
@@ -309,6 +344,28 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     });
     dismiss = close;
   };
+
+  /** Moves a task from before projects into one that takes tasks, with the tasks linked to it. */
+  function moveControl(t: Task): HTMLElement | null {
+    const open = takingTasks();
+    if (!open.length) return null;
+    const into = select(
+      [{ value: '', label: 'Move into a project…' }, ...open.map((p) => ({ value: p.id, label: p.title }))],
+      '',
+    );
+    into.addEventListener('change', async () => {
+      if (!into.value) return;
+      into.disabled = true;
+      const moved = await attempt(() => api.moveTask(t.id, into.value));
+      into.disabled = false;
+      if (moved) {
+        const n = moved.moved.length;
+        toast(n > 1 ? `Moved ${n} linked tasks into ${projectTitle(moved.project)}` : `Moved into ${projectTitle(moved.project)}`);
+        void load();
+      }
+    });
+    return h('div', { style: 'margin-top: 6px' }, into);
+  }
 
   /** The head strip: figures for each lane, and how many agents are working now. */
   function summary(list: Task[]): HTMLElement {
@@ -431,7 +488,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     return h(
       'div.tasks-view',
       null,
-      h('div.view-head', null, h('h1', null, 'Tasks'), h('div.actions', null, filter, button('New task', openCreate, { kind: 'primary', icon: 'plus' }))),
+      h(
+        'div.view-head',
+        null,
+        h('h1', null, 'Tasks', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null),
+        h('div.actions', null, filter, button('New task', openCreate, { kind: 'primary', icon: 'plus' })),
+      ),
       summary(tasks),
       waits(tasks),
       lanes,
@@ -465,7 +527,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
     const isOpen = t.state === 'open';
     const assignSel = select(
-      [{ value: '', label: 'Assign to…' }, ...idleWorkers().map((a) => ({ value: String(a.cid), label: agentName(a) }))],
+      [{ value: '', label: 'Assign to…' }, ...idleMembers(t.project).map((a) => ({ value: String(a.cid), label: agentName(a) }))],
       '',
     );
     assignSel.addEventListener('change', async () => {
@@ -497,8 +559,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('dd', null, assigneeLink(t.agent_cid)),
       h('dt', null, 'Budget'),
       h('dd', null, String(t.budget)),
-      t.project ? h('dt', null, 'Project') : null,
-      t.project ? h('dd', null, h('a', { href: href('work', t.project) }, t.project), h('span.faint', null, ' · its work')) : null,
+      h('dt', null, 'Project'),
+      t.project
+        ? h('dd', null, h('a', { href: href('projects', t.project) }, projectTitle(t.project)), h('span.faint', null, ' · '), h('a', { href: href('work', t.project) }, 'its work'))
+        : h('dd', null, h('span.faint', null, 'Outside projects: it does not run until it moves into one'), moveControl(t)),
       t.after.length ? h('dt', null, 'Runs after') : null,
       t.after.length ? h('dd', null, h('div.task-waits', null, taskChips(t.after))) : null,
       t.blocked_by.length || t.waiting_on.length ? h('dt', null, t.blocked_by.length ? 'Blocked by' : 'Waits on') : null,

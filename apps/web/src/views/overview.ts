@@ -4,6 +4,7 @@ import { agentName, roleLabel } from '../roles';
 
 import { api, type Agent, type AgentStep, type Entry, type Project, type Task } from '../api';
 import { go, href } from '../router';
+import { inScope, isLive, onBench, projectTitle, scope } from '../scope';
 import { agents, on, overview } from '../store';
 import { ago, attempt, badge, button, card, clip, empty, stat, textarea } from '../ui/components';
 import { h, icon, replace } from '../ui/dom';
@@ -14,6 +15,8 @@ import { FLOW_TASKS, flowSegments, planWaitsForOwner, waitsForOwner, type StepOf
 const FEED_MAX = 40;
 
 export function mount(root: HTMLElement): Cleanup {
+  // Under a project, the overview is that project's: its agents, its tasks, its budget, its activity.
+  const inProject = scope.get();
   const stats = h('div.grid.cols-4');
   const orchestrator = h('div');
   const feed = h('ol.feed');
@@ -21,7 +24,7 @@ export function mount(root: HTMLElement): Cleanup {
   const projects = h('div');
 
   root.append(
-    h('div.view-head', null, h('h1', null, 'Overview')),
+    h('div.view-head', null, h('h1', null, 'Overview', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null)),
     stats,
     h('div.grid.cols-2.overview-main', null, orchestrator, card('Activity', feed, { flush: true })),
     card('Projects', projects, { flush: true }),
@@ -36,9 +39,11 @@ export function mount(root: HTMLElement): Cleanup {
   const stepOf: StepOf = (cid) => (steps.has(cid) ? steps.get(cid) : agents.get().find((a) => a.cid === cid)?.step);
   const loadProjects = async (): Promise<void> => {
     try {
-      const [ps, ts] = await Promise.all([api.projects(), api.tasks()]);
+      const [all, ts] = await Promise.all([api.projects(), inProject ? api.tasksWhere({ project: inProject }) : api.tasks()]);
+      const ps = inProject ? all.filter((p) => p.id === inProject) : all;
       drawn = { ps, ts };
       renderProjects(projects, ps, ts, stepOf);
+      drawStats();
     } catch {
       replace(projects, empty('alert', 'Projects are unavailable', 'apid did not answer; they come back with it.'));
     }
@@ -49,23 +54,61 @@ export function mount(root: HTMLElement): Cleanup {
   };
   void loadProjects();
 
-  const offs = [
-    overview.watch((o) => {
-      if (!o) return replace(stats, empty('alert', 'apid is unreachable', 'Start apid, then reload.'));
-      const open = (o.tasks['open'] ?? 0) + (o.tasks['claimed'] ?? 0);
+  // The figures: the plaza's (with its bench), or under a project the project's.
+  let budget: number | null = null;
+  const drawStats = (): void => {
+    const o = overview.get();
+    if (!o) return replace(stats, empty('alert', 'apid is unreachable', 'Start apid, then reload.'));
+    const roster = agents.get();
+    if (inProject) {
+      const team = roster.filter((a) => a.project === inProject);
+      const ts = drawn?.ts ?? [];
+      const open = ts.filter((t) => t.state === 'open' || t.state === 'claimed').length;
+      const p = drawn?.ps[0];
       replace(
         stats,
-        stat('Agents', o.agents.total, `${o.agents.working} working · ${o.agents.offline} offline`),
-        stat('Open tasks', open, `${o.tasks['done'] ?? 0} done`),
-        stat('Worker model', o.default_model.split('/').pop() ?? '—', o.default_model.split('/')[0]),
-        stat('Orchestrator model', o.orchestrator_model.split('/').pop() ?? '—', o.orchestrator_model.split('/')[0]),
+        stat('Agents', team.length, `${team.filter((a) => a.status === 'working').length} working`),
+        stat('Open tasks', open, `${ts.filter((t) => t.state === 'done').length} done`),
+        stat('Stage', p ? p.stage.charAt(0).toUpperCase() + p.stage.slice(1) : '—', p?.paused ? 'paused' : p?.archived ? 'archived' : 'in progress'),
+        stat('Budget', budget === null ? '—' : budget.toLocaleString(), budget === null ? 'from the plaza' : 'credits left'),
       );
-    }),
+      return;
+    }
+    const open = (o.tasks['open'] ?? 0) + (o.tasks['claimed'] ?? 0);
+    const bench = roster.filter(onBench).length;
+    replace(
+      stats,
+      stat('Agents', o.agents.total, `${o.agents.working} working · ${bench} on the bench`),
+      stat('Open tasks', open, `${o.tasks['done'] ?? 0} done`),
+      stat('Worker model', o.default_model.split('/').pop() ?? '—', o.default_model.split('/')[0]),
+      stat('Orchestrator model', o.orchestrator_model.split('/').pop() ?? '—', o.orchestrator_model.split('/')[0]),
+    );
+  };
+  if (inProject)
+    void api
+      .projectBudget(inProject)
+      .then((b) => {
+        budget = b.own ? b.balance : null;
+        drawStats();
+      })
+      .catch(() => undefined);
+
+  const offs = [
+    overview.watch(() => drawStats()),
     agents.watch((list) => {
       renderOrchestrator(orchestrator, list.find((a) => a.tier === 'orchestrator'));
-      renderFleet(fleet, list);
+      renderFleet(fleet, inProject ? list.filter((a) => inScope(a, inProject)) : list);
+      drawStats();
     }),
-    on('transcript', (data) => pushFeed(feed, data as Entry)),
+    on('transcript', (data) => {
+      const entry = data as Entry;
+      // Under a project, the activity of its agents only.
+      if (inProject) {
+        const agent = agents.get().find((a) => a.cid === entry.cid);
+        if (agent && !inScope(agent, inProject)) return;
+      }
+      pushFeed(feed, entry);
+    }),
     on('project', scheduleProjects),
     on('task', scheduleProjects),
     on('agent_step', (data) => {
@@ -84,7 +127,7 @@ export function mount(root: HTMLElement): Cleanup {
 
 /** A line per project still in progress: its title, its stage and its flow line, opening its Work view. */
 function renderProjects(root: HTMLElement, list: Project[], tasks: Task[], stepOf: StepOf): void {
-  const active = list.filter((p) => p.stage !== 'delivered');
+  const active = list.filter(isLive);
   if (!active.length) {
     replace(root, empty('projects', 'No projects in progress', 'Each goal you give the orchestrator becomes a project; its flow shows here.'));
     return;
