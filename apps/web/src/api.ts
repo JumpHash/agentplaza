@@ -79,7 +79,13 @@ export interface Agent {
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
   usage: Usage; work: WorkItem | null; queue: number; species?: string;
   kind: string;
+  /** What it is doing right now (the hub's `step`); null before its first step. Live as the `agent_step` event. */
+  step?: AgentStep | null;
 }
+
+/** An agent's current step: `thinking` (waiting for the model's first token), `streaming`, `tool` (running `tool`),
+ * `approval` (waiting for the owner to decide on `tool`), `idle` or `asleep`, since `since_ms`. */
+export interface AgentStep { stage: 'thinking' | 'streaming' | 'tool' | 'approval' | 'idle' | 'asleep'; tool: string | null; since_ms: number }
 
 export interface Overview {
   agents: { total: number; idle: number; working: number; offline: number };
@@ -223,6 +229,25 @@ export interface Task {
   id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
   assignee_id: string | null; agent_cid: number | null; note: string | null; outcome: string | null;
   created_at: number; updated_at: number;
+  /** The project it is for, or null. */
+  project: string | null;
+  /** The tasks it runs after; it is `ready` (open, and every one of them done) or it waits on them. */
+  after: string[]; ready: boolean;
+  /** While it is open: the tasks in `after` not done yet, and the ones that failed or were withdrawn. */
+  waiting_on: string[]; blocked_by: string[];
+}
+
+/** A task of a project's graph (`GET /v1/projects/{id}/graph`). */
+export interface GraphTask {
+  id: string; goal: string; role: string | null; depth: number; state: string; ready: boolean; blocked_by: string[];
+  agent_cid: number | null; reviewer_cid: number | null; step: AgentStep | null;
+}
+
+/** A project's task graph: its tasks by depth, the links as `[from, to]` (`to` runs after `from`), the tasks being worked
+ * on or ready (`frontier`), the longest chain still to finish, and the ready tasks waiting for an agent, by role. */
+export interface ProjectGraph {
+  project: string; stage: ProjectStage; tasks: GraphTask[]; edges: [string, string][]; frontier: string[];
+  longest_chain: string[]; waiting: { role: string | null; tasks: string[] }[];
 }
 
 export type Block =
@@ -620,6 +645,9 @@ export const api = {
   transcriptLast: (cid: number, last = 1000) => get<Entry[]>(`/v1/agents/${cid}/transcript?last=${last}`),
 
   tasks: () => get<{ tasks: Task[] }>('/v1/tasks').then((r) => r.tasks),
+  /** The tasks of one project, or only the ready ones (`GET /v1/tasks?project=&ready=`). */
+  tasksWhere: (q: { project?: string; ready?: boolean }) =>
+    get<{ tasks: Task[] }>(`/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`).then((r) => r.tasks),
   task: (id: string) => get<Task>(`/v1/tasks/${id}`),
   createTask: (t: { goal: string; acceptance?: string; role?: string; budget?: number; assignee?: number }) => post<Task>('/v1/tasks', t),
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
@@ -672,6 +700,7 @@ export const api = {
   files: (kind?: 'deliverable' | 'shared') => get<Deliverable[]>(`/v1/files${kind ? `?kind=${kind}` : ''}`),
   projects: () => get<Project[]>('/v1/projects'),
   project: (id: string) => get<Project>(`/v1/projects/${id}`),
+  projectGraph: (id: string) => get<ProjectGraph>(`/v1/projects/${encodeURIComponent(id)}/graph`),
   approveProject: (id: string, note = '') => post<Project>(`/v1/projects/${id}/approve`, { note }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   git: () => get<{ configured: boolean; org: string }>('/v1/git'),

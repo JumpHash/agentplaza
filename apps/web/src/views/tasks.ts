@@ -13,6 +13,7 @@ import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
+import { claimant, shortSpan, waitsByRole } from './work-model';
 
 // The task budget's default and minimum: the hub's apz_plaza::tasks constants (DEFAULT_TASK_BUDGET,
 // MIN_TASK_BUDGET). The web console cannot import Rust, so these mirror them; keep them in step.
@@ -138,6 +139,30 @@ function assigneeLink(cid: number | null): HTMLElement {
   return link;
 }
 
+/** Links to the tasks `ids`, as chips; `bad` marks the ones that ended without being done. Inside a clickable card a
+ * chip opens its own task, not the card's. */
+function taskChips(ids: string[], bad = false): HTMLElement[] {
+  return ids.map((id) => {
+    const chip = h('a.task-chip', { href: href('tasks', id), class: bad ? 'bad' : null }, id);
+    chip.addEventListener('click', (e) => e.stopPropagation());
+    return chip;
+  });
+}
+
+/** Whether an open task can be claimed now, or what it waits on: the tasks it runs after that failed or were
+ * withdrawn, then the ones not done yet. */
+function waitsOn(t: Task): HTMLElement | null {
+  if (t.ready) return h('div.task-waits', null, h('span.task-ready', null, 'Ready to claim'));
+  if (!t.blocked_by.length && !t.waiting_on.length) return null;
+  return h(
+    'div.task-waits',
+    null,
+    h('span.faint', null, t.blocked_by.length ? 'Blocked by' : 'Waits on'),
+    taskChips(t.blocked_by, true),
+    taskChips(t.waiting_on),
+  );
+}
+
 const timelineRow = (e: Entry): HTMLElement => h('li', { class: `k-${e.kind}` }, h('time', null, clock(e.at_ms)), h('span', null, describe(e)));
 
 /** A task's id from its route: `t528`, or just its number (`#/tasks/528`, the link a `task #528` reference opens). */
@@ -152,11 +177,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let seq = 0;
   let dismiss: (() => void) | undefined;
+  let readyOnly = false; // the board shows only the tasks that can be claimed now
 
   const activity = new Map<number, string>(); // assignee cid -> its latest line
   const lastState = new Map<string, string>(); // task id -> the state it was last drawn in
   const seen = new Set<string>(); // task ids already drawn, so they fade in only once
-  let ticking: { el: HTMLElement; since: number }[] = []; // elapsed timers of the board
+  let ticking: { el: HTMLElement; since: number; fmt?: (ms: number) => string }[] = []; // elapsed timers of the board
 
   const render = (): void => {
     // A redraw keeps the card that had the focus (the arrow keys pick cards), so a live refresh does not drop it.
@@ -339,7 +365,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         h('div.task-meta', null, h('span.faint', null, labelOf(t.state)), h('span.faint', null, ago(t.updated_at))),
       );
     } else {
-      detail = h('div.task-meta', null, h('span.faint', null, `budget ${t.budget}`), h('span.faint', null, `created ${ago(t.created_at)}`));
+      detail = h(
+        'div.task-open',
+        null,
+        waitsOn(t),
+        h('div.task-meta', null, h('span.faint', null, `budget ${t.budget}`), h('span.faint', null, `created ${ago(t.created_at)}`)),
+      );
     }
 
     const el = h(
@@ -388,12 +419,41 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   function listPage(): HTMLElement {
+    const ready = h('input', { type: 'checkbox', checked: readyOnly || null }) as HTMLInputElement;
+    ready.addEventListener('change', () => {
+      readyOnly = ready.checked;
+      render();
+    });
+    const filter = h('label.tk-filter', { title: 'Only the tasks that can be claimed now: open, and every task they run after done' }, ready, 'Ready only');
+    const shown = readyOnly ? tasks.filter((t) => t.ready) : tasks;
+    // The board resets the timers, so it is built before the waits line adds its own.
+    const lanes = board(shown);
     return h(
       'div.tasks-view',
       null,
-      h('div.view-head', null, h('h1', null, 'Tasks'), h('div.actions', null, button('New task', openCreate, { kind: 'primary', icon: 'plus' }))),
+      h('div.view-head', null, h('h1', null, 'Tasks'), h('div.actions', null, filter, button('New task', openCreate, { kind: 'primary', icon: 'plus' }))),
       summary(tasks),
-      board(tasks),
+      waits(tasks),
+      lanes,
+    );
+  }
+
+  /** The ready tasks nobody has claimed, by the role they wait for, longest wait first: where the plaza is short of an
+   *  agent. Nothing when every ready task is taken. */
+  function waits(list: Task[]): HTMLElement | null {
+    const now = Date.now();
+    const groups = waitsByRole(list, now);
+    if (!groups.length) return null;
+    return h(
+      'p.tk-waits',
+      null,
+      h('span.tk-waits-label', null, 'Ready, not claimed'),
+      groups.map((g) => {
+        const time = h('b', null, shortSpan(g.waited));
+        ticking.push({ el: time, since: now - g.waited, fmt: shortSpan });
+        const many = g.count > 1;
+        return h('span.tk-wait', null, `${g.role ? claimant(g.role) : 'Any agent'} · ${g.count} ${many ? 'tasks' : 'task'} · ${many ? 'longest ' : 'waited '}`, time);
+      }),
     );
   }
 
@@ -437,6 +497,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('dd', null, assigneeLink(t.agent_cid)),
       h('dt', null, 'Budget'),
       h('dd', null, String(t.budget)),
+      t.project ? h('dt', null, 'Project') : null,
+      t.project ? h('dd', null, h('a', { href: href('work', t.project) }, t.project), h('span.faint', null, ' · its work')) : null,
+      t.after.length ? h('dt', null, 'Runs after') : null,
+      t.after.length ? h('dd', null, h('div.task-waits', null, taskChips(t.after))) : null,
+      t.blocked_by.length || t.waiting_on.length ? h('dt', null, t.blocked_by.length ? 'Blocked by' : 'Waits on') : null,
+      t.blocked_by.length || t.waiting_on.length
+        ? h('dd', null, h('div.task-waits', null, taskChips(t.blocked_by, true), taskChips(t.waiting_on)))
+        : null,
       h('dt', null, 'Created'),
       h('dd', null, ago(t.created_at)),
       h('dt', null, 'Updated'),
@@ -495,7 +563,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   render();
   const clockTimer = setInterval(() => {
     const now = Date.now();
-    for (const x of ticking) x.el.textContent = fmtElapsed(now - x.since);
+    for (const x of ticking) x.el.textContent = (x.fmt ?? fmtElapsed)(now - x.since);
   }, 1000);
   const offs = [
     on('task', schedule),

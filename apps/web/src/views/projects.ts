@@ -9,7 +9,7 @@ import { openIde } from '../ide/open';
 import { on } from '../store';
 import { ago, attempt, badge, button, card, empty, field, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
-import { h, replace } from '../ui/dom';
+import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
@@ -130,7 +130,12 @@ function critiquesBody(p: Project): Node {
 
 function tasksBody(p: Project): Node {
   if (!p.tasks.length) return h('p.pj-none', null, 'No tasks yet.');
-  return h('ul.pj-tasks', null, p.tasks.map((t) => h('li', null, h('a.pj-link', { href: href('tasks', t) }, t))));
+  return h(
+    'div',
+    null,
+    h('ul.pj-tasks', null, p.tasks.map((t) => h('li', null, h('a.pj-link', { href: href('tasks', t) }, t)))),
+    h('a.pj-link', { href: href('work', p.id) }, 'See them in the order they run, in Work'),
+  );
 }
 
 function historyBody(p: Project): Node {
@@ -248,17 +253,15 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const approvable = APPROVABLE.includes(p.stage);
     const canSendBack = stageIndex(p.stage) > 0;
     const refresh = (): void => void reload();
-    const actions: Node[] =
-      approvable || canSendBack
-        ? [
-            h(
-              'div.pj-actions',
-              null,
-              approvable ? button('Approve plan', () => openApprove(p, refresh), { kind: 'primary' }) : null,
-              canSendBack ? button('Send back…', () => openSendBack(p, refresh)) : null,
-            ),
-          ]
-        : [];
+    const actions: Node[] = [
+      h(
+        'div.pj-actions',
+        null,
+        approvable ? button('Approve plan', () => openApprove(p, refresh), { kind: 'primary' }) : null,
+        canSendBack ? button('Send back…', () => openSendBack(p, refresh)) : null,
+        h('a.btn', { href: href('work', p.id), title: 'The project as one flow: its plan, its tasks in order, delivery' }, icon('commit'), 'Open in Work'),
+      ),
+    ];
     const sections: Node[] = [card('Documents', docsBody(p)), card('Critiques', critiquesBody(p)), card('Tasks', tasksBody(p))];
     if (p.repo) {
       const name = p.repo.slice(p.repo.lastIndexOf('/') + 1);
