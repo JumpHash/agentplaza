@@ -69,6 +69,7 @@ mod projects;
 mod prompts;
 mod providers;
 mod replan;
+mod review_graph;
 mod role;
 mod roles_custom;
 mod rules;
@@ -94,6 +95,7 @@ mod usage;
 mod vault;
 mod vendor_relay;
 mod vm_snapshots;
+mod weft_hub;
 
 use std::process::ExitCode;
 

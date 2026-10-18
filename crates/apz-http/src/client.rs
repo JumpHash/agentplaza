@@ -200,7 +200,17 @@ pub fn post_json(
 /// Opens `GET path` as a server-sent event stream. A read waits at most
 /// `idle` (pick more than the server's heartbeat interval).
 pub fn events(port: u16, path: &str, idle: Duration) -> io::Result<EventStream> {
-    let stream = connect(port, "GET", path, &[], None, idle)?;
+    events_with(port, path, &[], idle)
+}
+
+/// [`events`] with extra headers (the internal token, say).
+pub fn events_with(
+    port: u16,
+    path: &str,
+    headers: &[(&str, &str)],
+    idle: Duration,
+) -> io::Result<EventStream> {
+    let stream = connect(port, "GET", path, headers, None, idle)?;
     stream.set_read_timeout(Some(idle))?;
     let mut reader = BufReader::new(stream);
     let (status, headers) = read_head(&mut reader)?;

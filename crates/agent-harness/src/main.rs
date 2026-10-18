@@ -88,6 +88,8 @@ mod tools;
 mod trust;
 #[cfg(target_os = "linux")]
 mod vsock;
+#[cfg(target_os = "linux")]
+mod weft_lane;
 
 use std::process::ExitCode;
 

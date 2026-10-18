@@ -76,6 +76,17 @@ const ALWAYS: &[&str] = &[
     "memory_list",
     "plaza_skills",
     "plaza_skill_read",
+    "review_tree",
+    "review_score",
+    "review_verdict",
+    "review_spawn",
+    "weft_status",
+    "weft_diff",
+    "weft_describe",
+    "weft_log",
+    "weft_show",
+    "weft_blame",
+    "weft_map",
 ];
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
@@ -156,6 +167,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_git" => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
@@ -757,6 +769,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 .or_else(|| crate::git::spec(other))
                 .or_else(|| crate::agent_proposals::spec(other))
                 .or_else(|| crate::drafts::spec(other))
+                .or_else(|| crate::review_graph::tools::spec(other))
                 .or_else(|| crate::skills::agent_tools::spec(other))
                 .or_else(|| crate::stations::tools::spec(other))?;
             return Some(ToolSpec {
@@ -1273,6 +1286,9 @@ fn host_call(
         }
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
+        other if crate::review_graph::tools::TOOLS.contains(&other) => {
+            crate::review_graph::tools::run(app, agent, work, other, input)
+        }
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) =
@@ -1397,16 +1413,13 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
     crate::membership::may_take_task(app, &target, task.project())?;
     task.claim(&agents::connected_agent(&target))
         .map_err(|e| e.to_string())?;
-    let origin = Origin {
-        task: Some(task.id().to_string()),
-        ..Origin::default()
-    };
+    let (prompt, origin) = crate::weft_hub::task_work(app, task, cid, task_text(task));
     let _ = app.work.enqueue(
         app,
         cid,
         WorkKind::Task,
         format!("task-{}", task.id()),
-        task_text(task),
+        prompt,
         origin,
     );
     Ok(())

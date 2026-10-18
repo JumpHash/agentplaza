@@ -49,6 +49,9 @@ pub struct Origin {
     /// The owner's conversation with the orchestrator this message is in (`conversations`): its answer goes there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The task's lane in Weft, for a worker's task item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<apz_proto::wire::WorkLane>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -334,6 +337,10 @@ impl Queues {
             let waiting = matches!(status, WorkStatus::Done)
                 && matches!(item.kind, WorkKind::Task)
                 && self.await_review(app, task, summary);
+            // The worker's lane is sealed for review: its last draft, signed with the worker's key.
+            if waiting {
+                crate::weft_hub::seal(app, task, cid, summary);
+            }
             if !waiting {
                 settle_task(app, task, status, summary);
                 // A task the owner's takeover requeued is open again, so its end is not news for the poster yet.
@@ -348,6 +355,8 @@ impl Queues {
             }
         }
         self.review_lost(app, item.id, "reviewer ended without a verdict");
+        // A review graph step whose agent ended without a verdict goes to another agent, once.
+        crate::review_graph::work_ended(app, item.id);
         app.agents.update(cid, |a| a.status = Status::Idle);
         // An agent on a stopping node leaves it now that its turn is over.
         if crate::mover::holds(app, cid) {
@@ -592,6 +601,10 @@ impl Queues {
                 continue;
             };
             let id = view.id.to_string();
+            // A task whose lane is sealed in Weft is reviewed by the review graph (review_graph::tick).
+            if crate::review_graph::handles(app, &id) {
+                continue;
+            }
             let summary = view.note.clone().unwrap_or_default();
             let reviewed = self
                 .reviews
@@ -890,6 +903,7 @@ impl Queues {
             kind: item.kind,
             thread: item.thread.clone(),
             prompt: item.prompt.clone(),
+            lane: item.origin.lane.clone(),
         };
         let sent = crate::fleet::send(app, cid, &json!({ "message": message }));
         if !matches!(sent, Ok((code, _)) if (200..300).contains(&code)) {
@@ -989,7 +1003,11 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
         WorkStatus::Failed | WorkStatus::Stopped => FinishOutcome::Failed,
     };
     // A task that already ended refuses the finish; that is not an error here.
-    let _ = task.finish(outcome, Some(summary.to_string()));
+    let finished = task.finish(outcome, Some(summary.to_string())).is_ok();
+    // A failed task's lane will never land.
+    if finished && matches!(outcome, FinishOutcome::Failed) {
+        crate::weft_hub::abandon(app, task.id(), summary);
+    }
     // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
     if let Some(pid) = task.project()
         && crate::membership::project_state(app, pid) == crate::membership::ProjectState::Over
@@ -1182,6 +1200,8 @@ pub fn spawn(app: Arc<App>) {
                     ask_names(&app);
                     assign_tasks(&app);
                     app.work.assign_reviews(&app);
+                    crate::review_graph::tick(&app);
+                    crate::weft_hub::land_queues(&app);
                     withdraw_stale_reviews(&app);
                     offer_motions(&app, &mut motions_seen);
                 }
@@ -1278,10 +1298,8 @@ fn assign_tasks(app: &App) {
             Some(acceptance) => format!("{}\n\nAcceptance: {acceptance}", task.goal()),
             None => task.goal().to_string(),
         };
-        let origin = Origin {
-            task: Some(task.id().to_string()),
-            ..Origin::default()
-        };
+        // The task's lane in Weft: the worker's files are checked out from it and snapshotted each turn.
+        let (prompt, origin) = crate::weft_hub::task_work(app, &task, worker.cid, prompt);
         app.work.enqueue(
             app,
             worker.cid,

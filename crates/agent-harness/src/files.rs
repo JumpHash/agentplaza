@@ -176,6 +176,13 @@ impl Workspace {
         &self.root
     }
 
+    /// The root a task's Weft lane is checked out under: the canonical root when it is mounted, else the root as given.
+    pub fn weft_root(&self) -> PathBuf {
+        self.root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone())
+    }
+
     /// The canonical workspace root, or `Unavailable` when it is not mounted.
     ///
     /// Canonicalizing once and working from the result is what makes the

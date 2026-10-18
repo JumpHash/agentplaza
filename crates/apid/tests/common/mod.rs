@@ -87,6 +87,11 @@ impl Hub {
             .expect("a scratch hub comes up")
     }
 
+    /// The internal token the agent gateway presents (a VM's calls carry it).
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
     pub fn log(&self) -> String {
         self.output
             .lock()

@@ -348,8 +348,10 @@ dependencies = [
  "sha2 0.10.9",
  "sysinfo",
  "tokenizers",
+ "toml",
  "tract-onnx",
  "ureq",
+ "weft",
  "zeroize",
 ]
 

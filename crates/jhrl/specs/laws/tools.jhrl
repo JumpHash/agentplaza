@@ -175,3 +175,51 @@ law "T-014" "Agents may use the workstation tools" {
   resource is Tool
   when resource.kind == "host" and resource.name in ["station_list", "station_lease", "station_release", "station_screenshot", "station_click", "station_type", "station_key", "station_scroll", "station_drag", "station_wait", "station_ui_tree", "station_ui_act", "station_shell", "station_run", "station_files", "station_app_list", "station_app_launch", "app_script"]
 }
+
+law "T-020" "Every agent may use Weft on its own work and its project's history" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read its task's lane, describe what its change does, and read its project's history in Weft (log, show, blame, the map) within the path rules."
+  rationale "Weft is the plaza's version control: each agent writes only its own lane, signed with its own key, and reads what its project's rules let it read."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["weft_status", "weft_diff", "weft_describe", "weft_log", "weft_show", "weft_blame", "weft_map"]
+}
+
+law "T-021" "An agent given a review step reports on it" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read, score and rule on the review step the review graph gave it, and add sub-reviews within that step's limit."
+  rationale "A review recipe names the role of each step; the step's tools act only on the step the agent was given, and its verdict is signed with its own key."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["review_tree", "review_score", "review_verdict", "review_spawn"]
+}
+
+law "T-022" "The orchestrator proposes recipes" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only an orchestrator-tier agent may propose a review recipe; the owner approves it."
+  rationale "Recipes decide how work is judged, so they come from planning and are approved by the owner."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "recipe_propose" and principal.tier == "orchestrator"
+}
+
+law "T-023" "QA and incident agents bisect; release agents draft notes" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only qa and incident agents may bisect the landed history, and only release agents may draft release notes; none of them signs a release."
+  rationale "Bisecting runs checks across many revisions, and release notes speak for the plaza; each belongs to the role that owns it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when (resource.name == "weft_bisect" and principal.role in ["qa", "incident"]) or (resource.name == "weft_release_notes" and principal.role == "release")
+}

@@ -13,6 +13,7 @@ jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
 apz-proto.workspace = true
 apz-http = { path = "../apz-http" }
+weft = { path = "../weft" }
 apz-metrics.workspace = true
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
@@ -26,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
 schemars = "1"
+toml = "1"
 ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true

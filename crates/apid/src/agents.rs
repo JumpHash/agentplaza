@@ -1427,10 +1427,7 @@ fn assign(app: &App, req: &Request, params: &Params<'_>) -> Response {
         prompt.push_str("\n\nAcceptance: ");
         prompt.push_str(acceptance);
     }
-    let origin = Origin {
-        task: Some(id.clone()),
-        ..Origin::default()
-    };
+    let (prompt, origin) = crate::weft_hub::task_work(app, &task, agent.cid, prompt);
     let work = app.work.enqueue(
         app,
         agent.cid,

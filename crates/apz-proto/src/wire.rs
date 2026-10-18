@@ -161,6 +161,13 @@ pub struct ProgramFile {
     pub executable: bool,
 }
 
+/// A task's lane in Weft: the change the worker writes, and the repo it is in (checked out at `<workspace>/<repo>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkLane {
+    pub change: String,
+    pub repo: String,
+}
+
 /// A line the host sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -200,6 +207,10 @@ pub enum HostMessage {
         kind: WorkKind,
         thread: String,
         prompt: String,
+        /// The task's lane in Weft, when it has one: the harness checks it out into the workspace and snapshots
+        /// it each turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<WorkLane>,
     },
     /// v3: the answer to a [`GuestMessage::ModelCall`].
     ModelResult {

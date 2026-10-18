@@ -123,12 +123,15 @@ pub struct Ctx {
     pub args: Args,
     pub cwd: PathBuf,
     pub json: bool,
+    /// Variables that win over the process environment (an embedded CLI, a test playing a VM).
+    pub env: BTreeMap<String, String>,
 }
 
 impl Ctx {
     fn env(&self, opt: &str, var: &str) -> Option<String> {
         self.args
             .opt(opt)
+            .or_else(|| self.env.get(var).cloned())
             .or_else(|| std::env::var(var).ok())
             .filter(|s| !s.is_empty())
     }
@@ -219,11 +222,21 @@ impl Ctx {
 }
 
 pub fn run(raw: Vec<String>) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    run_in(raw, cwd, BTreeMap::new())
+}
+
+/// [`run`] from `cwd`, with `env` before the process environment.
+pub fn run_in(raw: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Result<(), String> {
     let args = Args::parse(&raw);
     let json = args.has("json");
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let cmd: Vec<String> = args.pos.clone();
-    let cx = Ctx { args, cwd, json };
+    let cx = Ctx {
+        args,
+        cwd,
+        json,
+        env,
+    };
     let word = |i: usize| cmd.get(i).map(String::as_str).unwrap_or("");
     match (word(0), word(1)) {
         ("" | "help", _) => {
@@ -643,7 +656,7 @@ fn checkout(cx: &Ctx) -> Result<(), String> {
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| base.clone());
-    let at = if detail["state"] == "Landed" {
+    let at = if detail["state"] == "landed" {
         detail["landed"].as_str().map(str::to_string).unwrap_or(at)
     } else {
         at
