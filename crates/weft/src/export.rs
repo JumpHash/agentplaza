@@ -201,7 +201,8 @@ impl Exporter {
                 .iter()
                 .any(|r| !r.export && crate::derived::glob(&r.glob, p))
         };
-        let remote = Remote::parse(&conn.conn.remote, keys.token.clone());
+        let remote =
+            Remote::for_platform(&conn.conn.remote, &conn.conn.platform, keys.token.clone());
         let branch_ref = format!("refs/heads/{}", conn.conn.branch);
         let remote_head = gitwire::list_refs(&remote, "git-receive-pack")?
             .get(&branch_ref)

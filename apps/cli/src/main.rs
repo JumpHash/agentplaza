@@ -50,6 +50,10 @@ enum Command {
     Tasks(cmd::tasks::Cmd),
     /// Weft: the plaza's version control (history, lanes, releases, git export)
     Weft(cmd::weft::Args),
+    /// Git platforms (GitHub, GitLab, Forgejo): what the plaza is authorized on and may use, and connecting a
+    /// repository to a project.
+    #[command(subcommand)]
+    Platforms(cmd::platforms::Cmd),
     /// Review recipes
     #[command(subcommand)]
     Recipes(cmd::recipes::Cmd),
@@ -213,6 +217,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Weft(args) => cmd::weft::run(&ctx, args),
+        Command::Platforms(c) => cmd::platforms::run(&ctx, c),
         Command::Recipes(c) => cmd::recipes::run(&ctx, c),
         Command::Ide(c) => cmd::ide::run(&ctx, c),
         Command::Library(c) => cmd::library::run(&ctx, c),

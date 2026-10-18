@@ -164,6 +164,9 @@ the desktop app.
 - **Coding engines over ACP.** Twelve coding engines run as Agent Client Protocol agents inside the agent's VM: Claude Code, Codex and OpenCode are on by default; Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are off until the owner enables them.
   Their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
   (`docs/architecture.md`).
+- **Git platforms.** GitHub (the plaza's own GitHub App, installed on your account or organisations), GitLab and
+  Forgejo (OAuth or tokens), at account, organisation or repository level; you choose which repositories the plaza
+  may use and connect them to projects, which Weft then exports to (`docs/guide/git-platforms.md`).
 - **Editors over ACP.** Zed, JetBrains IDEs and Neovim can prompt a plaza agent and answer its approvals through
   `agentplaza acp`. With `--repo` the editor's project is mirrored into Weft, and the files the agent changed in its lane come back into the editor as diffs. It speaks ACP v1 by default, with the ACP v2 draft behind a switch, and it is off until you turn it on (`docs/guide/editors.md`).
 - **Vault.** Provider keys and other secrets are encrypted on disk with RustCrypto AEAD (`crates/apid/src/vault`). The

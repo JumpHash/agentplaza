@@ -32,6 +32,7 @@ import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
+import { mount as platforms } from './platforms';
 import { mount as work } from './work';
 import { mount as workstations } from './workstations';
 import { lazyMount } from './lazy';
@@ -74,6 +75,7 @@ export const SCREENS: Screen[] = [
   { key: 'tools', label: 'Tools', icon: 'wrench', section: 'Setup', mount: tools },
   { key: 'mcp', label: 'MCP', icon: 'terminal', section: 'Setup', mount: mcp },
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },
+  { key: 'platforms', label: 'Git platforms', icon: 'git', section: 'Setup', mount: platforms },
   { key: 'egress', label: 'Egress credentials', icon: 'key', section: 'Setup', mount: egressCredentials },
   { key: 'e2b', label: 'E2B API', icon: 'wrench', section: 'Setup', mount: e2b },
   { key: 'volumes', label: 'Volumes', icon: 'wrench', section: 'Setup', mount: volumes },

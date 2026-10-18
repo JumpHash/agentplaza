@@ -1,0 +1,26 @@
+meta {
+  name: List the git platforms on a fresh hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the three kinds, nothing authorized, the callback URL", function () {
+    const b = res.getBody();
+    expect(b.kinds.map((k) => k.kind)).to.eql(["github", "gitlab", "forgejo"]);
+    expect(b.integrations).to.be.an("array");
+    expect(b.registrations).to.be.an("array");
+    expect(b.callback).to.match(/\/v1\/platforms\/callback$/);
+  });
+}

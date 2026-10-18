@@ -1,0 +1,15 @@
+meta {
+  name: A callback with an unknown state does nothing
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?code=x&state=unknown
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+}

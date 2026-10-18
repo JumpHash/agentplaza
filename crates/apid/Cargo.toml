@@ -45,6 +45,8 @@ base64.workspace = true
 flate2 = "1.1"
 # The egress CA and its leaf certificates (egress_inject.rs). Already in the lock as apz-http's dev-dependency.
 rcgen = "0.13"
+# RS256 for the GitHub App's JWT (already in the tree through rcgen and rustls).
+ring = "0.17"
 # Model agents' ONNX inference: pure Rust, no native deps. The default `transformers` feature
 # (attention ops) is off: model cards describe plain feed-forward nets.
 tract-onnx = { version = "0.23.8", default-features = false }

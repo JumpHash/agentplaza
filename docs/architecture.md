@@ -655,6 +655,7 @@ module documentation (`crates/apid/src/*/routes.rs`, `api.rs`).
 | editors (ACP) | `GET /v1/acp` (WebSocket, subprotocol `apz.acp.v1`, owner or operate/govern token route, off until `acp_enabled`), `GET /v1/acp/sessions` |
 | vault | `/v1/vault` (`/seal`, `/unseal`, `/recovery`, `/rekey`, `/import`), `/v1/vault/secrets` (`/{id}`, `/value`, `/test`, `/rollback`), `/v1/vault/slots`, `/v1/vault/consumers`, `/v1/vault/audit` |
 | weft (the plaza's version control) | `/v1/weft/...` (the owner door to `weft serve`: repos, changes, revisions, log, blame, queue, releases, artifacts, console), `/v1/recipes`, `/v1/reviews/{run}`, and `/v1/tasks/{id}/reviews` |
+| git platforms | `/v1/platforms` (GitHub, GitLab, Forgejo: the plaza's GitHub App from a manifest and its installations, OAuth apps with PKCE, tokens; `namespaces`, `repos`, `grants`, `connect`, `disconnect`, `sync`), `/v1/platforms/callback` and `/v1/platforms/flows/{state}/go` (public, state-gated); see `docs/guide/git-platforms.md` |
 | IDE | `/v1/ide/workspaces` (`/{id}/tree`, `/file`, `/search`, `/changes`, `/checkpoints`, `/runs`, `/pulls`, `/branch`), `/v1/ide/terminal/{workspace}`, `/v1/ide/audit` |
 | rich content | `/v1/unfurl` (`POST` a batch, `GET` one) |
 | workstations | `/v1/stations` (`/join`, `/link`, `/codes`, `/{id}` with `/control`, `/screen`, `/thumbnail`, `/leases`, `/sync`, `/settings`, `/files`, `/drain`, `/undrain`, `/revoke`), `/v1/stations/recordings`, `/v1/stations/vms`, `/v1/stations/audit`, `/v1/stations/recording-defaults` |

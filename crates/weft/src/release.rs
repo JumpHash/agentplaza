@@ -473,7 +473,7 @@ pub fn export_release(
         None => unsigned,
     };
     let tag_id = git::oid(Kind::Tag, &bytes);
-    let remote = Remote::parse(&conn.conn.remote, token.clone());
+    let remote = Remote::for_platform(&conn.conn.remote, &conn.conn.platform, token.clone());
     let name = format!("refs/tags/{version}");
     let existing = gitwire::list_refs(&remote, "git-receive-pack")?
         .get(&name)

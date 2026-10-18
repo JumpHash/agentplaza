@@ -46,7 +46,7 @@ struct Live {
 }
 
 /// The vault binding Weft's keys are read through.
-const BINDING: &str = "weft";
+const BINDING: &str = "hub:weft";
 
 impl Weft {
     pub fn status(&self) -> Value {
@@ -419,9 +419,15 @@ pub fn export_all(app: &App, repo: &str) {
     }
 }
 
-/// A connection's credential, by its vault name (the GitHub connector's token when it names none).
+/// A connection's credential, by its vault name (the GitHub connector's token when it names none); `platform:<id>`
+/// is an authorization of a git platform (platforms.rs), whose token is minted or renewed here.
 fn credential(app: &App, name: Option<&str>) -> Option<String> {
     let name = name.unwrap_or("GITHUB_TOKEN");
+    if let Some(found) = crate::platforms::credential(app, name) {
+        return found
+            .map_err(|e| eprintln!("apid: no token for {name}: {e}"))
+            .ok();
+    }
     app.vault
         .value_for(name, "connector:github", &crate::vault::OnBehalf::Hub)
         .or_else(|| {
@@ -922,7 +928,39 @@ fn owner_door(app: &App, req: &Request, p: &Params<'_>) -> Response {
     } else {
         rest
     };
+    // A push or a fetch the console asks for takes its connection's credential here, as the hub's own exports do.
+    if let Some(with_token) = with_credential(app, req, rest) {
+        let mut req = req.clone();
+        req.body = with_token;
+        return forward(app, &req, "owner", rest);
+    }
     forward(app, req, "owner", rest)
+}
+
+/// The body of an owner's export, release export or adopt with its connection's token added, when it has none.
+fn with_credential(app: &App, req: &Request, rest: &str) -> Option<Vec<u8>> {
+    let parts: Vec<&str> = rest.split('/').collect();
+    let repo = match parts.as_slice() {
+        ["repos", repo, "export" | "adopt"] | ["repos", repo, "releases", _, "export"] => *repo,
+        _ => return None,
+    };
+    if req.method != "POST" {
+        return None;
+    }
+    let mut v: Value = req.json().ok()?;
+    if v["token"].is_string() {
+        return None;
+    }
+    let conn = v["connection"].as_str()?.to_string();
+    let detail = app.weft.get(&format!("/repos/{repo}")).ok()?;
+    let name = detail["connections"]
+        .as_array()?
+        .iter()
+        .find(|c| c["id"] == conn.as_str())?["credential"]
+        .as_str()
+        .map(str::to_string);
+    v["token"] = json!(credential(app, name.as_deref())?);
+    serde_json::to_vec(&v).ok()
 }
 
 fn agent_door(app: &App, req: &Request, p: &Params<'_>) -> Response {

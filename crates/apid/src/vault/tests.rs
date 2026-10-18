@@ -1137,4 +1137,7 @@ fn the_egress_binding_is_a_binding() {
     assert!(super::valid_binding("provider:openai"));
     assert!(!super::valid_binding("egres"));
     assert!(!super::valid_binding("egress:x"));
+    assert!(super::valid_binding("hub:weft"));
+    assert!(super::valid_binding("hub:git-platforms"));
+    assert!(!super::valid_binding("hub:"));
 }

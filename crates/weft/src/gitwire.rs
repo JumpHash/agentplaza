@@ -41,6 +41,20 @@ impl Remote {
         Remote::Local(PathBuf::from(url))
     }
 
+    /// [`Remote::parse`] with the user git's HTTP sends next to `platform`'s token ([`token_user`]).
+    pub fn for_platform(url: &str, platform: &str, secret: Option<String>) -> Remote {
+        let mut remote = Remote::parse(url, secret);
+        if let Remote::Http {
+            user,
+            secret: Some(_),
+            ..
+        } = &mut remote
+        {
+            *user = Some(token_user(platform).to_string());
+        }
+        remote
+    }
+
     /// `owner/repo` → `https://github.com/owner/repo.git`.
     pub fn github(slug: &str, secret: Option<String>) -> Remote {
         Remote::parse(
@@ -68,6 +82,16 @@ impl Remote {
             )),
             _ => None,
         }
+    }
+}
+
+/// The user git's HTTP sends with a platform's token: GitHub's `x-access-token`; GitLab needs `oauth2` with an OAuth
+/// token and takes it with any other; Forgejo reads only the token.
+pub fn token_user(platform: &str) -> &'static str {
+    if platform == "github" {
+        "x-access-token"
+    } else {
+        "oauth2"
     }
 }
 
@@ -328,5 +352,36 @@ mod tests {
             }
             _ => panic!(),
         }
+        // GitLab takes an OAuth token only as `oauth2`'s password; without a token there is no user.
+        let user_of = |r: Remote| match r {
+            Remote::Http { user, .. } => user,
+            Remote::Local(_) => None,
+        };
+        assert_eq!(
+            user_of(Remote::for_platform(
+                "https://gitlab.com/g/r.git",
+                "gitlab",
+                Some("t".into())
+            ))
+            .as_deref(),
+            Some("oauth2")
+        );
+        assert_eq!(
+            user_of(Remote::for_platform(
+                "https://codeberg.org/o/r",
+                "forgejo",
+                Some("t".into())
+            ))
+            .as_deref(),
+            Some("oauth2")
+        );
+        assert_eq!(
+            user_of(Remote::for_platform(
+                "https://gitlab.com/g/r.git",
+                "gitlab",
+                None
+            )),
+            None
+        );
     }
 }

@@ -25,7 +25,17 @@ pub enum Source {
 impl Source {
     /// A local path, or a remote fetched once (the branch's full history).
     pub fn open(location: &str, token: Option<String>, branch: &str) -> Result<Source, String> {
-        match Remote::parse(location, token) {
+        Source::open_for(location, "github", token, branch)
+    }
+
+    /// [`Source::open`] on `platform` (git's HTTP user for its token: [`gitwire::token_user`]).
+    pub fn open_for(
+        location: &str,
+        platform: &str,
+        token: Option<String>,
+        branch: &str,
+    ) -> Result<Source, String> {
+        match Remote::for_platform(location, platform, token) {
             Remote::Local(p) => Ok(Source::Local(Repo::open(&p)?)),
             remote => {
                 let refs = gitwire::list_refs(&remote, "git-upload-pack")?;
@@ -437,7 +447,12 @@ pub fn adopt(
         .clone()
         .ok_or("nothing was exported yet; import the remote instead")?;
     let ours = git::parse_oid(&ours_hex)?;
-    let source = Source::open(&conn.conn.remote, token, &conn.conn.branch)?;
+    let source = Source::open_for(
+        &conn.conn.remote,
+        &conn.conn.platform,
+        token,
+        &conn.conn.branch,
+    )?;
     let theirs = source.resolve(&conn.conn.branch)?;
     if theirs == ours {
         return Err("the remote has nothing of its own to adopt".into());

@@ -48,6 +48,7 @@ pub mod metrics;
 pub mod models;
 pub mod nodes;
 pub mod overview;
+pub mod platforms;
 pub mod project_settings;
 pub mod project_team;
 pub mod projects;
@@ -103,6 +104,8 @@ pub enum Id {
     Tools,
     Mcp,
     Vault,
+    /// The git platforms the plaza is authorized on (GitHub, GitLab, Forgejo): authorizations, grants, connections.
+    Platforms,
     Machines,
     Workstations,
     Nodes,
@@ -171,6 +174,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Tools, "Tools", "Setup", "wrench"),
     (Id::Mcp, "MCP", "Setup", "terminal"),
     (Id::Vault, "Vault", "Setup", "key"),
+    (Id::Platforms, "Git platforms", "Setup", "git"),
     (Id::Workstations, "Workstations", "Setup", "harness"),
     (Id::Nodes, "Nodes", "Setup", "link"),
     (Id::Egress, "Egress", "Setup", "external"),
@@ -203,6 +207,7 @@ pub struct Screens {
     pub tools: tools::State,
     pub mcp: mcp::State,
     pub vault: vault::State,
+    pub platforms: platforms::State,
     pub machines: machines::State,
     pub workstations: workstations::State,
     pub nodes: nodes::State,
@@ -246,6 +251,7 @@ pub enum Msg {
     Tools(tools::Msg),
     Mcp(mcp::Msg),
     Vault(vault::Msg),
+    Platforms(platforms::Msg),
     Machines(machines::Msg),
     Workstations(workstations::Msg),
     Nodes(nodes::Msg),
@@ -290,6 +296,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Tools(m) => tools::go(m),
         Msg::Mcp(m) => mcp::go(m),
         Msg::Vault(m) => vault::go(m),
+        Msg::Platforms(m) => platforms::go(m),
         Msg::Machines(m) => machines::go(m),
         Msg::Workstations(m) => workstations::go(m),
         Msg::Nodes(m) => nodes::go(m),
@@ -342,6 +349,8 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     // The new E2B key is shown once, so it does not outlive the tab either.
     e2b::leave(&mut screens.e2b);
     volumes::leave(&mut screens.volumes);
+    // The client secret and the token typed here do not outlive the tab.
+    platforms::leave(&mut screens.platforms);
     if let Id::Agent(cid) = id {
         screens.agent = agent::State {
             cid,
@@ -431,6 +440,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Tools => tools::load(&mut screens.tools, ctx).map(Msg::Tools),
         Id::Mcp => mcp::load(&mut screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::load(&mut screens.vault, ctx).map(Msg::Vault),
+        Id::Platforms => platforms::load(&mut screens.platforms, ctx).map(Msg::Platforms),
         Id::Machines => machines::load(&mut screens.machines, ctx).map(Msg::Machines),
         Id::Workstations => {
             workstations::load(&mut screens.workstations, ctx).map(Msg::Workstations)
@@ -485,6 +495,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Tools(m) => tools::update(&mut screens.tools, m, ctx).map(Msg::Tools),
         Msg::Mcp(m) => mcp::update(&mut screens.mcp, m, ctx).map(Msg::Mcp),
         Msg::Vault(m) => vault::update(&mut screens.vault, m, ctx).map(Msg::Vault),
+        Msg::Platforms(m) => platforms::update(&mut screens.platforms, m, ctx).map(Msg::Platforms),
         Msg::Machines(m) => machines::update(&mut screens.machines, m, ctx).map(Msg::Machines),
         Msg::Workstations(m) => {
             workstations::update(&mut screens.workstations, m, ctx).map(Msg::Workstations)
@@ -532,6 +543,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
         Id::History => history::subscription(ctx).map(Msg::History),
+        Id::Platforms => platforms::subscription(&screens.platforms, ctx).map(Msg::Platforms),
         Id::RobotLab | Id::HardwareLab => {
             engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
         }
@@ -604,6 +616,7 @@ pub fn view<'a>(
         Id::Tools => tools::view(&screens.tools, ctx).map(Msg::Tools),
         Id::Mcp => mcp::view(&screens.mcp, ctx).map(Msg::Mcp),
         Id::Vault => vault::view(&screens.vault, ctx).map(Msg::Vault),
+        Id::Platforms => platforms::view(&screens.platforms, ctx).map(Msg::Platforms),
         Id::Machines => machines::view(&screens.machines, ctx).map(Msg::Machines),
         Id::Workstations => workstations::view(&screens.workstations).map(Msg::Workstations),
         Id::Nodes => nodes::view(&screens.nodes, ctx).map(Msg::Nodes),

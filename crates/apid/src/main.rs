@@ -61,6 +61,7 @@ mod openapi;
 mod owner_board;
 mod payments;
 mod placement;
+mod platforms;
 mod plaza;
 mod prices;
 mod project_settings;

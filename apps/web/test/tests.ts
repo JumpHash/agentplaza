@@ -2037,3 +2037,4 @@ sectionEnd('machine view helper tests: ok');
 // The Weft screens' own suites (History; the review graph and recipes).
 import './history-tests';
 import './review-tests';
+import './platforms-tests';

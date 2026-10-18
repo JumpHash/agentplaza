@@ -784,7 +784,8 @@ pub fn router() -> Router<H> {
             let v: Value = req.json().unwrap_or(Value::Null);
             let Some(src) = v["source"].as_str() else { return fail(400, "import needs a source") };
             let branch = v["branch"].as_str().unwrap_or("main");
-            let source = match crate::import::Source::open(src, v["token"].as_str().map(str::to_string), branch) {
+            let platform = v["platform"].as_str().unwrap_or("github");
+            let source = match crate::import::Source::open_for(src, platform, v["token"].as_str().map(str::to_string), branch) {
                 Ok(s) => s,
                 Err(e) => return fail(502, e),
             };
@@ -1499,7 +1500,7 @@ pub fn repo_view(st: &State, r: &crate::state::Repo) -> Value {
     let landed = r.refs.get("main").map(|v| v.len()).unwrap_or(0);
     json!({
         "name": r.name, "project": r.project, "description": r.description, "refs": refs, "queues": queues, "rules": r.rules,
-        "connections": r.connections.values().map(|c| json!({ "id": c.conn.id, "remote": c.conn.remote, "platform": c.conn.platform, "branch": c.conn.branch, "state": c.state, "detail": c.detail, "head": c.head, "exported": c.exported.len(), "author": format!("{} <{}>", c.conn.author_name, c.conn.author_email) })).collect::<Vec<_>>(),
+        "connections": r.connections.values().map(|c| json!({ "id": c.conn.id, "remote": c.conn.remote, "platform": c.conn.platform, "credential": c.conn.credential, "branch": c.conn.branch, "state": c.state, "detail": c.detail, "head": c.head, "exported": c.exported.len(), "author": format!("{} <{}>", c.conn.author_name, c.conn.author_email) })).collect::<Vec<_>>(),
         "releases": r.releases.values().map(|x| json!({ "version": x.propose.version, "signed": x.signed.is_some(), "imported": x.propose.imported.is_some(), "from": x.propose.from })).collect::<Vec<_>>(),
         "open_changes": open, "landed": landed,
     })

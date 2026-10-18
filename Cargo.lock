@@ -342,6 +342,7 @@ dependencies = [
  "libc",
  "postgres",
  "rcgen",
+ "ring",
  "schemars 1.2.3",
  "secrecy",
  "serde",

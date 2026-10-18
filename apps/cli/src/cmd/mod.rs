@@ -23,6 +23,7 @@ pub mod models;
 pub mod node;
 pub mod nodes;
 pub mod overview;
+pub mod platforms;
 pub mod plaza;
 pub mod projects;
 pub mod prompts;
