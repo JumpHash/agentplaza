@@ -50,9 +50,12 @@
 mod acp;
 #[cfg(target_os = "linux")]
 mod agent;
+#[cfg(target_os = "linux")]
 mod bash;
 #[cfg(target_os = "linux")]
 mod checkpoints;
+// Pure parsing, built on every host so its tests run anywhere; only the Linux guest calls it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod cmdline;
 #[cfg(target_os = "linux")]
 mod egress;
