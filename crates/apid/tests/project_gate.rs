@@ -83,10 +83,12 @@ fn only_a_projects_agents_work_and_only_while_it_runs() {
     );
     assert_eq!(status, 201, "{project}");
     let pid = text(&project["id"]);
+    // For a role neither agent has: the scheduler hands a ready task to an idle member of its role, and this one is
+    // left to the claims below (else it could hand it to 300 first, as soon as 300 joins).
     let (status, task) = hub.call(
         "POST",
         "/v1/tasks",
-        Some(json!({ "goal": "First", "project": pid })),
+        Some(json!({ "goal": "First", "project": pid, "role": "qa" })),
     );
     assert_eq!(status, 201, "{task}");
     let tid = text(&task["id"]);
@@ -246,13 +248,14 @@ fn a_member_sent_back_to_the_bench_leaves_its_waiting_tasks_open_for_others() {
         Some(json!({ "cid": 300 })),
     );
     assert_eq!(status, 200, "{member}");
-    // Two tasks for 300: the first runs, the second waits in its queue behind it.
+    // Two tasks for 300: the first runs, the second waits in its queue behind it. They are for a role 300 does not
+    // have, so the scheduler hands neither out (to 300, idle) before the owner's assigns below do.
     let mut tasks = Vec::new();
     for goal in ["Runs", "Waits"] {
         let (status, task) = hub.call(
             "POST",
             "/v1/tasks",
-            Some(json!({ "goal": goal, "project": pid })),
+            Some(json!({ "goal": goal, "project": pid, "role": "qa" })),
         );
         assert_eq!(status, 201, "{task}");
         let id = text(&task["id"]);
