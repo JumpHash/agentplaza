@@ -29,6 +29,10 @@ pub struct Derived {
     names: Mutex<HashMap<Hash, Arc<NameIndex>>>,
     /// `path::qualified` → lineage id, for definitions that were renamed or moved.
     aliases: Mutex<HashMap<String, String>>,
+    /// Per `repo|ref`: how far its landed history has been read for renames and symbol history.
+    learned: Mutex<HashMap<String, Learned>>,
+    /// Change trees without divergence: a revision never changes, so neither do they.
+    trees: Mutex<HashMap<RevId, Arc<ChangeTree>>>,
 }
 
 /// Where names are defined and who refers to them, in one tree.
@@ -92,8 +96,40 @@ pub struct Provenance {
     pub model: Option<String>,
     pub turn: Option<u64>,
     pub tool_calls: Vec<String>,
-    /// The draft (or `seal`, `merge`, a git commit) that wrote these lines.
+    /// The draft (or round, `merge`, a git commit) that wrote these lines.
     pub source: String,
+    /// The change the lines came with (blame fills it in).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
+    /// An imported commit's git author.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+}
+
+/// One line of a file and who wrote it.
+#[derive(Clone, Debug, Serialize)]
+pub struct BlameLine {
+    pub line: usize,
+    pub text: String,
+    pub by: Option<Provenance>,
+}
+
+/// One step in a definition's history.
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoryEntry {
+    pub change: String,
+    pub revision: RevId,
+    pub id: String,
+    pub op: char,
+    pub from: Option<String>,
+    pub add: usize,
+    pub del: usize,
+}
+
+#[derive(Default)]
+struct Learned {
+    upto: usize,
+    by_lineage: HashMap<String, Vec<HistoryEntry>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -130,6 +166,8 @@ impl Derived {
             parsed: Mutex::new(HashMap::new()),
             names: Mutex::new(HashMap::new()),
             aliases: Mutex::new(HashMap::new()),
+            learned: Mutex::new(HashMap::new()),
+            trees: Mutex::new(HashMap::new()),
         }
     }
 
@@ -279,8 +317,37 @@ impl Derived {
             .insert(new_id.to_string(), lineage);
     }
 
+    /// The change tree of a revision without divergence, computed once.
+    pub fn cached_tree(&self, store: &Store, rev_id: &str) -> Result<Arc<ChangeTree>, String> {
+        if let Some(t) = self
+            .trees
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(rev_id)
+        {
+            return Ok(t.clone());
+        }
+        let t = Arc::new(self.change_tree_with(store, rev_id, false)?);
+        let mut trees = self.trees.lock().unwrap_or_else(|p| p.into_inner());
+        if trees.len() > 4096 {
+            trees.clear();
+        }
+        trees.insert(rev_id.to_string(), t.clone());
+        Ok(t)
+    }
+
     /// The change tree of a revision.
     pub fn change_tree(&self, store: &Store, rev_id: &str) -> Result<ChangeTree, String> {
+        self.change_tree_with(store, rev_id, true)
+    }
+
+    /// The change tree, with or without divergence from the other open lanes (history needs none).
+    pub fn change_tree_with(
+        &self,
+        store: &Store,
+        rev_id: &str,
+        with_divergence: bool,
+    ) -> Result<ChangeTree, String> {
         let (rev, change, intents, repo, others) = {
             let st = store.state();
             let rev = st
@@ -299,7 +366,11 @@ impl Derived {
                 .cloned()
                 .or_else(|| change.intents.values().last().cloned())
                 .unwrap_or_default();
-            let others = open_others(&st, &change.repo, change.id);
+            let others = if with_divergence {
+                open_others(&st, &change.repo, change.id)
+            } else {
+                vec![]
+            };
             (rev, change.clone(), intents, change.repo.clone(), others)
         };
         let base = store.tree(&rev.base)?;
@@ -542,16 +613,18 @@ impl Derived {
                 .map(|b| String::from_utf8_lossy(&b).to_string())
                 .unwrap_or_default()
         };
+        // Drafts and earlier rounds, in the order they were written.
         let mut drafts: Vec<Revision> = {
             let st = store.state();
             change
                 .drafts
                 .iter()
+                .chain(&change.rounds)
                 .filter_map(|d| st.revisions.get(d).cloned())
                 .filter(|d| d.seq < rev.seq)
                 .collect()
         };
-        drafts.sort_by_key(|d| d.n);
+        drafts.sort_by_key(|d| d.seq);
         let base_text = read(&change.base);
         let mut owners: Vec<Option<Provenance>> = vec![None; base_text.lines().count()];
         let mut prev = base_text;
@@ -563,6 +636,8 @@ impl Derived {
             turn: r.turn,
             tool_calls: r.tool_calls.clone(),
             source,
+            change: None,
+            author: None,
         };
         for d in &drafts {
             let text = read(&d.id);
@@ -590,9 +665,12 @@ impl Derived {
                     tool_calls: vec![],
                     source: format!(
                         "git {}",
-                        info.map(|i| i.git[..12.min(i.git.len())].to_string())
+                        info.as_ref()
+                            .map(|i| i.git[..12.min(i.git.len())].to_string())
                             .unwrap_or_default()
                     ),
+                    change: None,
+                    author: info.map(|i| format!("{} <{}>", i.author_name, i.author_email)),
                 })
             }
             RevKind::Landed => Some(Provenance {
@@ -603,6 +681,8 @@ impl Derived {
                 turn: None,
                 tool_calls: vec![],
                 source: "merge".into(),
+                change: None,
+                author: None,
             }),
             _ => Some(label(rev, rev.id.clone())),
         };
@@ -613,6 +693,182 @@ impl Derived {
                 None => last.clone(),
             })
             .collect()
+    }
+}
+
+impl Derived {
+    /// Who wrote each line of `path` at `at` (default: the ref's head), walking the ref's landed history.
+    pub fn blame(
+        &self,
+        store: &Store,
+        repo: &str,
+        reference: &str,
+        path: &str,
+        at: Option<&str>,
+    ) -> Result<Vec<BlameLine>, String> {
+        let chain: Vec<RevId> = {
+            let st = store.state();
+            let r = st.repo(repo)?;
+            let mut chain = r.refs.get(reference).cloned().unwrap_or_default();
+            if let Some(at) = at {
+                let end = chain
+                    .iter()
+                    .position(|x| x == at)
+                    .ok_or_else(|| format!("{at} is not on {reference}"))?;
+                chain.truncate(end + 1);
+            }
+            chain
+        };
+        let mut prev = String::new();
+        let mut owners: Vec<Option<Provenance>> = Vec::new();
+        for l in &chain {
+            let Some(bytes) = store.read(l, path)? else {
+                prev.clear();
+                owners.clear();
+                continue;
+            };
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            if text == prev {
+                continue;
+            }
+            let (rev, change) = {
+                let st = store.state();
+                let rev = st
+                    .revisions
+                    .get(l)
+                    .cloned()
+                    .ok_or_else(|| format!("no revision {l}"))?;
+                let change = st
+                    .changes
+                    .get(&rev.change)
+                    .cloned()
+                    .ok_or("revision without a change")?;
+                (rev, change)
+            };
+            let mut fresh = self.provenance(store, &change, &rev, path, &text);
+            for p in fresh.iter_mut().flatten() {
+                p.change = Some(change.name.clone());
+            }
+            let fallback = Provenance {
+                start_line: 0,
+                end_line: 0,
+                by: change.author.clone(),
+                model: None,
+                turn: None,
+                tool_calls: vec![],
+                source: rev.id.clone(),
+                change: Some(change.name.clone()),
+                author: None,
+            };
+            let kept = diff::kept_from(&prev, &text);
+            owners = kept
+                .into_iter()
+                .enumerate()
+                .map(|(i, k)| match k {
+                    Some(j) => owners.get(j).cloned().flatten(),
+                    None => fresh
+                        .get(i)
+                        .cloned()
+                        .flatten()
+                        .or_else(|| Some(fallback.clone())),
+                })
+                .collect();
+            prev = text;
+        }
+        Ok(prev
+            .lines()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut by = owners.get(i).cloned().flatten();
+                if let Some(b) = by.as_mut() {
+                    b.start_line = i + 1;
+                    b.end_line = i + 1;
+                }
+                BlameLine {
+                    line: i + 1,
+                    text: t.to_string(),
+                    by,
+                }
+            })
+            .collect())
+    }
+
+    /// Reads a ref's landed history up to its head: renames become aliases (one lineage across them), and each
+    /// definition's history is kept. Cheap when nothing landed since the last call.
+    pub fn learn(&self, store: &Store, repo: &str, reference: &str) -> Result<(), String> {
+        let key = format!("{repo}|{reference}");
+        let chain: Vec<RevId> = store
+            .state()
+            .repo(repo)?
+            .refs
+            .get(reference)
+            .cloned()
+            .unwrap_or_default();
+        let upto = self
+            .learned
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+            .map(|l| l.upto)
+            .unwrap_or(0);
+        for (i, l) in chain.iter().enumerate().skip(upto) {
+            let tree = self.change_tree_with(store, l, false)?;
+            self.trees
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(l.clone(), Arc::new(tree.clone()));
+            let mut entries = Vec::new();
+            for f in &tree.files {
+                for s in &f.symbols {
+                    if let (Some(from), '>') = (&s.from, s.op) {
+                        self.alias(repo, &s.id, from);
+                    }
+                    entries.push((
+                        self.lineage(repo, &s.id),
+                        HistoryEntry {
+                            change: tree.change.clone(),
+                            revision: l.clone(),
+                            id: s.id.clone(),
+                            op: s.op,
+                            from: s.from.clone(),
+                            add: s.add,
+                            del: s.del,
+                        },
+                    ));
+                }
+            }
+            let mut learned = self.learned.lock().unwrap_or_else(|p| p.into_inner());
+            let entry = learned.entry(key.clone()).or_default();
+            for (lineage, e) in entries {
+                entry.by_lineage.entry(lineage).or_default().push(e);
+            }
+            entry.upto = i + 1;
+        }
+        Ok(())
+    }
+
+    /// A definition's history on a ref, oldest first, across renames and moves. `id` is a lineage (`s:…`) or a
+    /// `path::qualified` name as it is now.
+    pub fn history(
+        &self,
+        store: &Store,
+        repo: &str,
+        reference: &str,
+        id: &str,
+    ) -> Result<Vec<HistoryEntry>, String> {
+        self.learn(store, repo, reference)?;
+        let lineage = if id.starts_with("s:") {
+            id.to_string()
+        } else {
+            self.lineage(repo, id)
+        };
+        Ok(self
+            .learned
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&format!("{repo}|{reference}"))
+            .and_then(|l| l.by_lineage.get(&lineage).cloned())
+            .unwrap_or_default())
     }
 }
 

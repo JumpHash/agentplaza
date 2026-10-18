@@ -144,14 +144,14 @@ impl Blobs {
         }
         if bytes.len() > CHUNK_OVER {
             let mut manifest = Vec::new();
-            for chunk in fastcdc::v2020::FastCDC::new(bytes, 256 << 10, 1 << 20, 4 << 20) {
-                let piece = &bytes[chunk.offset..chunk.offset + chunk.length];
+            for (offset, len) in chunk_plan(bytes) {
+                let piece = &bytes[offset..offset + len];
                 let h = Hash::of(piece);
                 if !self.has(&h) {
                     self.write_entry(h, piece, 0)?;
                 }
                 manifest.extend_from_slice(&h.0);
-                manifest.extend_from_slice(&(chunk.length as u64).to_le_bytes());
+                manifest.extend_from_slice(&(len as u64).to_le_bytes());
             }
             self.write_entry_raw(hash, &manifest, FLAG_MANIFEST, bytes.len() as u64)?;
         } else {
@@ -198,6 +198,60 @@ impl Blobs {
             return Ok(out);
         }
         Ok(raw)
+    }
+
+    /// The chunks of a chunked blob, `None` for a blob stored whole.
+    pub fn chunks(&self, hash: &Hash) -> Result<Option<Vec<(Hash, u64)>>, String> {
+        let loc = self
+            .lock()
+            .index
+            .get(hash)
+            .copied()
+            .ok_or_else(|| format!("no blob {}", hash.short()))?;
+        if loc.flags & FLAG_MANIFEST == 0 {
+            return Ok(None);
+        }
+        let stored = self.read_stored(loc)?;
+        let raw = if loc.flags & FLAG_ZSTD != 0 {
+            zstd::decode_all(&stored[..]).map_err(|e| e.to_string())?
+        } else {
+            stored
+        };
+        let mut out = Vec::new();
+        for entry in raw.chunks(40) {
+            let h = Hash(entry[..32].try_into().map_err(|_| "bad manifest")?);
+            let len = u64::from_le_bytes(entry[32..40].try_into().map_err(|_| "bad manifest")?);
+            out.push((h, len));
+        }
+        Ok(Some(out))
+    }
+
+    /// Records a chunked blob whose chunks were uploaded one by one; refuses it unless they add up to `hash`.
+    pub fn put_manifest(&self, hash: &Hash, chunks: &[(Hash, u64)]) -> Result<(), String> {
+        if self.has(hash) {
+            return Ok(());
+        }
+        let mut hasher = blake3::Hasher::new();
+        let mut manifest = Vec::with_capacity(chunks.len() * 40);
+        let mut total = 0u64;
+        for (h, len) in chunks {
+            let bytes = self.get(h)?;
+            if bytes.len() as u64 != *len {
+                return Err(format!(
+                    "chunk {} is {} bytes, not {len}",
+                    h.short(),
+                    bytes.len()
+                ));
+            }
+            hasher.update(&bytes);
+            manifest.extend_from_slice(&h.0);
+            manifest.extend_from_slice(&len.to_le_bytes());
+            total += len;
+        }
+        if Hash(*hasher.finalize().as_bytes()) != *hash {
+            return Err(format!("the chunks do not add up to {}", hash.short()));
+        }
+        self.write_entry_raw(*hash, &manifest, FLAG_MANIFEST, total)
     }
 
     /// The size of a blob's content.
@@ -283,6 +337,14 @@ impl Blobs {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
+}
+
+/// Where a large file is cut: `(offset, length)` of each content-defined chunk. Uploaders cut the same way, so
+/// they send only the chunks the store lacks.
+pub fn chunk_plan(bytes: &[u8]) -> Vec<(usize, usize)> {
+    fastcdc::v2020::FastCDC::new(bytes, 256 << 10, 1 << 20, 4 << 20)
+        .map(|c| (c.offset, c.length))
+        .collect()
 }
 
 fn pack_path(dir: &Path, no: u32) -> PathBuf {

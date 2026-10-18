@@ -10,16 +10,28 @@
 //! - [`store`]: the three kept consistent.
 //! - [`lang`], [`packsrc`]: language and format packs, loaded on demand.
 //! - [`diff`], [`derived`]: diffs and the data derived from the log: symbols, touches, lineage, change trees.
+//! - [`server`], [`wire`], [`client`]: `weft serve` and the protocol between it, node caches and the CLI.
+//! - [`query`], [`verify`], [`map`]: queries over changes, verification, the project map.
 
 pub mod blobs;
+pub mod cache;
+pub mod cli;
+pub mod cli_more;
+pub mod client;
 pub mod derived;
 pub mod diff;
 pub mod hash;
 pub mod keys;
 pub mod lang;
 pub mod log;
+pub mod map;
 pub mod model;
 pub mod packsrc;
+pub mod query;
 pub mod record;
+pub mod server;
 pub mod state;
 pub mod store;
+pub mod verify;
+pub mod wire;
+pub mod workdir;
