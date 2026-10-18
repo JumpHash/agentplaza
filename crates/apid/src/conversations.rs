@@ -2,7 +2,7 @@
 //! being. Each conversation is a thread of its own on the orchestrator, `conv-<n>` (also its id), so two
 //! conversations never mix: the harness keeps one chat history per thread. The owner's messages queue there as owner
 //! chat (`Origin { owner, conversation }`), and the orchestrator's answer to each is added when its work item ends.
-//! Every change publishes a `conversation` event. The turns in between (model calls, tool calls) are the
+//! Every change publishes an `owner_conversation` event (the agents' direct messages are `conversation` events). The turns in between (model calls, tool calls) are the
 //! orchestrator's transcript on the thread.
 //!
 //! Kept in `conversations.json` under the state dir, and with the plaza state (component `conversations`).
@@ -391,7 +391,8 @@ pub fn open(app: &App, text: &str, mcp: bool) -> Result<Conversation, (u16, Stri
         .open(agent.cid, text, apz_plaza::now_ms())
         .map_err(|e| (500, format!("conversations not saved: {e}")))?;
     let conversation = queue(app, &opened.id, agent.cid, text, OWNER, mcp)?;
-    app.bus.publish("conversation", &view(app, &conversation));
+    app.bus
+        .publish("owner_conversation", &view(app, &conversation));
     Ok(conversation)
 }
 
@@ -439,7 +440,8 @@ pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (
         None => text.to_string(),
     };
     let conversation = queue(app, id, agent.cid, &prompt, OWNER, mcp)?;
-    app.bus.publish("conversation", &view(app, &conversation));
+    app.bus
+        .publish("owner_conversation", &view(app, &conversation));
     Ok(conversation)
 }
 
@@ -470,7 +472,9 @@ pub fn notify(app: &App, id: &str, text: &str) {
         return;
     }
     match queue(app, id, conversation.cid, text, PLAZA, false) {
-        Ok(conversation) => app.bus.publish("conversation", &view(app, &conversation)),
+        Ok(conversation) => app
+            .bus
+            .publish("owner_conversation", &view(app, &conversation)),
         Err((_, e)) => eprintln!("apid: a notice for {id} not queued: {e}"),
     }
 }
@@ -496,7 +500,9 @@ pub fn work_ended(app: &App, item: &WorkItem, status: &str, summary: &str) {
         Ok(())
     });
     match added {
-        Ok(conversation) => app.bus.publish("conversation", &view(app, &conversation)),
+        Ok(conversation) => app
+            .bus
+            .publish("owner_conversation", &view(app, &conversation)),
         Err((_, e)) => eprintln!("apid: the answer to work {} not kept: {e}", item.id),
     }
 }
@@ -606,7 +612,8 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(())
     });
     if let Ok(conversation) = &result {
-        app.bus.publish("conversation", &view(app, conversation));
+        app.bus
+            .publish("owner_conversation", &view(app, conversation));
     }
     answer(app, result, 200)
 }

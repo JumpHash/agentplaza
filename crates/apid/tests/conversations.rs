@@ -38,13 +38,13 @@ fn pushed(gateway: &FakeDaemon) -> Vec<(u64, String, String)> {
         .collect()
 }
 
-/// Waits on the hub's event socket for a `conversation` event that `wanted` takes; its data, if one comes in time.
+/// Waits on the hub's event socket for an `owner_conversation` event that `wanted` takes; its data, if one comes in time.
 fn conversation_event(socket: &mut ws::Socket, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if let Ok(Some(Message::Text(frame))) = socket.recv(Duration::from_millis(200)) {
             let frame: Value = serde_json::from_str(&frame).unwrap_or_default();
-            if frame["event"] == "conversation" && wanted(&frame["data"]) {
+            if frame["event"] == "owner_conversation" && wanted(&frame["data"]) {
                 return Some(frame["data"].clone());
             }
         }
@@ -169,7 +169,7 @@ fn two_conversations_are_two_threads_and_each_gets_its_own_answers() {
     let event = conversation_event(&mut events, |data| {
         data["id"] == "conv-1" && data["pending"] == json!([])
     })
-    .expect("the answer arrives as a conversation event");
+    .expect("the answer arrives as an owner_conversation event");
     assert_eq!(messages(&event).len(), 2, "{event}");
     let sent = pushed(&gateway);
     assert_eq!(sent.len(), 2, "{sent:?}");

@@ -341,7 +341,7 @@ fn save(app: &App, id: &str, draft: Draft, seen: bool) -> Result<Conversation, (
         Ok(())
     })?;
     app.bus
-        .publish("conversation", &conversations::view(app, &saved));
+        .publish("owner_conversation", &conversations::view(app, &saved));
     Ok(saved)
 }
 
@@ -668,7 +668,7 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         app.bus.publish("project", &project);
     }
     app.bus
-        .publish("conversation", &conversations::view(app, &started));
+        .publish("owner_conversation", &conversations::view(app, &started));
     let new_agents: u32 = draft
         .team
         .iter()

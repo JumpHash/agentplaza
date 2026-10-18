@@ -552,8 +552,8 @@ and `POST /v1/owner/conversations/{id}/messages` `{text}` goes on with it.
   as owner chat whose origin names the conversation, so two conversations never mix: the harness keeps one chat
   history per thread.
 - **Answers.** When a message's work item ends, its answer is added to the conversation: the final text, or why
-  there is none (`failed`, `stopped`). Every change publishes a `conversation` event, so a console redraws without
-  polling.
+  there is none (`failed`, `stopped`). Every change publishes an `owner_conversation` event (the agents' direct
+  messages are `conversation` events), so a console redraws without polling.
 - **Transcripts by thread.** `GET /v1/owner/conversations/{id}/transcript`, like `GET /v1/agents/{cid}/transcript?thread=`,
   returns only the turns of that thread's work items.
 - **The list.** `GET /v1/owner/conversations` lists them newest first (`?archived=true` with the archived ones), and
