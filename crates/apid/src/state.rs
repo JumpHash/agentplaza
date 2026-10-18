@@ -331,6 +331,7 @@ impl App {
         spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
+        crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
         crate::metrics::spawn(Arc::clone(&app));
         crate::foundry::routes::spawn_tracker(Arc::clone(&app));

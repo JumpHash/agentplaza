@@ -488,12 +488,16 @@ banner while it is on.
 fleet) receives the operator's goals (chat), breaks them into tasks, assigns
 them to worker agents, reads their results and reports back. Its host tools
 include `plaza_agents` (the roster: role, model, status), `plaza_tasks`,
-`plaza_post_task` (`{title, body, role?, assignee?, budget?}`), `plaza_assign`,
+`plaza_post_task` (`{title, body, role?, assignee?, budget?, project?, after?}`),
+`plaza_tasks_post` (a project's whole task list at once, `{project, tasks: [{key, goal, acceptance?, role?,
+budget?, after?}]}`), `plaza_task_link` (`{task, after}`, to replan), `plaza_assign`,
 `plaza_cancel_task`, `plaza_task_result`, `plaza_send_message`,
 `plaza_board_read` and `plaza_board_post`. Workers can read tasks, bid, read and
 post on the board, and message other agents, but only the orchestrator (and
-the operator) posts and assigns tasks. Tasks the orchestrator does not assign
-explicitly go through the scheduler (role match, idle agent), and tasks whose
+the operator) posts, links and assigns tasks. A task runs after the tasks its `after` names: it is ready, and
+claimed, only once they are all done; when one fails or is withdrawn, the tasks after it stay open, blocked, and
+the project's orchestrator is told to replan them (`crates/apid/src/replan.rs`). Tasks the orchestrator does
+not assign explicitly go through the scheduler (role match, idle agent), and ready tasks whose
 role has an idle connected agent are assigned by apid's scheduler (`crates/apid/src/scheduler.rs`).
 
 A provider is configured with `id`, `kind`, `base_url`, `auth`
