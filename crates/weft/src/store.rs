@@ -102,6 +102,11 @@ impl Store {
         self.state.read().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The hub's key, for signing what ships beside the log (provenance envelopes).
+    pub fn hub_key(&self) -> Option<&KeyPair> {
+        self.hub.as_ref()
+    }
+
     pub fn hub_public(&self) -> Option<PublicKey> {
         self.hub.as_ref().map(|k| k.public())
     }

@@ -99,7 +99,11 @@ impl Workdir {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-                if rel == ".weft" || rel == ".git" || ignore.ignores(&rel, meta.is_dir()) {
+                if rel == ".weft"
+                    || rel == ".git"
+                    || rel == ".plaza"
+                    || ignore.ignores(&rel, meta.is_dir())
+                {
                     continue;
                 }
                 if meta.is_dir() {

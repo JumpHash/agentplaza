@@ -54,6 +54,9 @@ pub struct Hub {
     pub store: Store,
     pub derived: Derived,
     pub lander: crate::landing::Lander,
+    pub exporter: crate::export::Exporter,
+    /// The hub's SSH signing key for exported commits and tags (held in memory, like the hub key).
+    pub signing: Option<KeyPair>,
     stopped: AtomicBool,
     /// Every (repo, path) a blob has appeared at, for path rules on object reads.
     paths_of: Mutex<(u64, HashMap<Hash, BTreeSet<(String, String)>>)>,
@@ -67,6 +70,27 @@ impl Hub {
             store,
             derived,
             lander: Default::default(),
+            exporter: Default::default(),
+            signing: None,
+            stopped: AtomicBool::new(false),
+            paths_of: Mutex::new((0, HashMap::new())),
+        }))
+    }
+
+    /// Opens the hub with its SSH signing key too.
+    pub fn open_with(
+        dir: &Path,
+        hub_key: Option<KeyPair>,
+        signing: Option<KeyPair>,
+    ) -> Result<Arc<Hub>, String> {
+        let store = Store::open(dir, hub_key)?;
+        let derived = Derived::new(dir.join("derived"));
+        Ok(Arc::new(Hub {
+            store,
+            derived,
+            lander: Default::default(),
+            exporter: Default::default(),
+            signing,
             stopped: AtomicBool::new(false),
             paths_of: Mutex::new((0, HashMap::new())),
         }))
@@ -78,6 +102,8 @@ impl Hub {
             store,
             derived,
             lander: Default::default(),
+            exporter: Default::default(),
+            signing: None,
             stopped: AtomicBool::new(false),
             paths_of: Mutex::new((0, HashMap::new())),
         })
@@ -672,6 +698,209 @@ pub fn router() -> Router<H> {
                 Err(e) => refused(e),
             }
         })
+        .post("/v1/repos/{repo}/export", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "export needs a connection") };
+            let keys = crate::export::Keys { token: v["token"].as_str().map(str::to_string), signing: h.signing.as_ref() };
+            match h.exporter.export(&h.store, &h.derived, p.get("repo"), conn, keys, v["dry_run"].as_bool().unwrap_or(false)) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => fail(502, e),
+            }
+        })
+        .post("/v1/repos/{repo}/import", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(src) = v["source"].as_str() else { return fail(400, "import needs a source") };
+            let branch = v["branch"].as_str().unwrap_or("main");
+            let source = match crate::import::Source::open(src, v["token"].as_str().map(str::to_string), branch) {
+                Ok(s) => s,
+                Err(e) => return fail(502, e),
+            };
+            match crate::import::import(&h.store, p.get("repo"), &source, branch, v["ref"].as_str().unwrap_or("main")) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/repos/{repo}/adopt", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "adopt needs a connection") };
+            match crate::import::adopt(&h.store, p.get("repo"), conn, v["token"].as_str().map(str::to_string)) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/github/account", |_: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(token) = v["token"].as_str() else { return fail(400, "a token is required") };
+            match crate::connect::github_account(&crate::connect::github_api(), token, v["noreply"].as_bool().unwrap_or(false)) {
+                Ok(a) => ok(json!(a)),
+                Err(e) => fail(502, e),
+            }
+        })
+        .post("/v1/github/signing-key", |h: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let (Some(token), Some(key)) = (v["token"].as_str(), h.signing.as_ref()) else { return fail(400, "a token and the hub's signing key are needed") };
+            let line = crate::sshsig::public_line(key, "weft@agentplaza");
+            match crate::connect::register_signing_key(&crate::connect::github_api(), token, v["title"].as_str().unwrap_or("AgentPlaza (Weft export)"), &line) {
+                Ok(s) => ok(json!({ "result": s, "key": line })),
+                Err(e) => fail(502, e),
+            }
+        })
+        .get("/v1/signing-key", |h: &H, _, _| match h.signing.as_ref() {
+            Some(k) => ok(json!({ "key": crate::sshsig::public_line(k, "weft@agentplaza") })),
+            None => fail(404, "weft serve holds no signing key"),
+        })
+        .get("/v1/repos/{repo}/targets", |h: &H, req, p| {
+            let rev = q(req, "rev").unwrap_or_else(|| h.store.state().repos.get(p.get("repo")).map(|r| r.head("main")).unwrap_or_else(|| "root".into()));
+            match crate::release::targets(&h.store, &rev) {
+                Ok(t) => ok(json!({ "revision": rev, "targets": t })),
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/repos/{repo}/releases", |h: &H, _, p| {
+            let st = h.store.state();
+            match st.repo(p.get("repo")) {
+                Ok(r) => ok(json!({ "releases": r.releases.values().map(|x| release_view(&st, x)).collect::<Vec<_>>() })),
+                Err(e) => fail(404, e),
+            }
+        })
+        .post("/v1/repos/{repo}/releases", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(version) = v["version"].as_str() else { return fail(400, "a release needs a version") };
+            let body = match crate::release::proposal(&h.store, p.get("repo"), version, v["from"].as_str(), v["line"].as_str()) {
+                Ok(b) => b,
+                Err(e) => return refused(e),
+            };
+            let mut body = body;
+            if let Some(n) = v["notes"].as_str() {
+                body["notes"] = json!(n);
+            }
+            match h.store.hub_append("release.propose", body.clone()) {
+                Ok(_) => ok(body),
+                Err(e) => refused(e),
+            }
+        })
+        .get("/v1/repos/{repo}/releases/notes", |h: &H, req, p| {
+            let head = h.store.state().repos.get(p.get("repo")).map(|r| r.head("main")).unwrap_or_else(|| "root".into());
+            match crate::release::proposal(&h.store, p.get("repo"), "next", q(req, "from").as_deref().or(Some(&head)), None) {
+                Ok(v) => ok(json!({ "repo": p.get("repo"), "from": v["from"], "notes": v["notes"], "targets": v["targets"] })),
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/repos/{repo}/releases/{version}", |h: &H, _, p| {
+            let st = h.store.state();
+            match st.repo(p.get("repo")).ok().and_then(|r| r.releases.get(p.get("version"))) {
+                Some(x) => ok(release_view(&st, x)),
+                None => fail(404, "no such release"),
+            }
+        })
+        .post("/v1/repos/{repo}/releases/{version}/digest", |h: &H, req, p| {
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let artifacts: Vec<String> = serde_json::from_value(v["artifacts"].clone()).unwrap_or_default();
+            match crate::release::release_digest(&h.store.state(), p.get("repo"), p.get("version"), &artifacts) {
+                Ok(d) => ok(json!({ "repo": p.get("repo"), "version": p.get("version"), "artifacts": artifacts, "digest": d })),
+                Err(e) => fail(404, e),
+            }
+        })
+        .post("/v1/repos/{repo}/releases/{version}/export", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "export needs a connection") };
+            match crate::release::export_release(&h.store, p.get("repo"), p.get("version"), conn, v["token"].as_str().map(str::to_string), h.signing.as_ref(), h.store.hub_key()) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => fail(502, e),
+            }
+        })
+        .post("/v1/artifacts", |h: &H, req, _| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Ok(blob) = serde_json::from_value::<Hash>(v["blob"].clone()) else { return fail(400, "an artifact names its uploaded blob") };
+            let bytes = match h.store.blobs.get(&blob) {
+                Ok(b) => b,
+                Err(e) => return fail(412, e),
+            };
+            let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+            let mut body = match crate::release::artifact_body(&h.store, &s("repo"), &s("name"), v["version"].as_str(), &s("target"), &bytes, &s("built_from"), &s("builder"), &s("command")) {
+                Ok(b) => b,
+                Err(e) => return refused(e),
+            };
+            if let Some(r) = v["reproduced"].as_bool() {
+                body["reproduced"] = json!(r);
+            }
+            if let Some(c) = v["change"].as_str() {
+                body["change"] = json!(c);
+            }
+            match h.store.hub_append("artifact.put", body.clone()) {
+                Ok(_) => ok(body),
+                Err(e) => refused(e),
+            }
+        })
+        .get("/v1/artifacts", |h: &H, req, _| {
+            let st = h.store.state();
+            let rev = q(req, "revision");
+            let release = q(req, "release");
+            let in_release: Option<Vec<String>> = release.as_ref().and_then(|r| {
+                let (repo, version) = r.split_once('@')?;
+                let rel = st.repos.get(repo)?.releases.get(version)?;
+                Some(rel.signed.as_ref().map(|s| s.0.artifacts.clone()).unwrap_or_default())
+            });
+            let list: Vec<&crate::state::ArtifactInfo> = st
+                .artifacts
+                .values()
+                .filter(|a| rev.as_ref().is_none_or(|r| a.artifact.built_from == *r))
+                .filter(|a| in_release.as_ref().is_none_or(|ids| ids.contains(&a.artifact.id)))
+                .collect();
+            ok(json!({ "artifacts": list }))
+        })
+        .get("/v1/artifacts/{id}", |h: &H, _, p| match h.store.state().artifacts.get(p.get("id")) {
+            Some(a) => ok(json!(a)),
+            None => fail(404, "no such artifact"),
+        })
+        .get("/v1/artifacts/{id}/content", |h: &H, _, p| {
+            let digest = match h.store.state().artifacts.get(p.get("id")) {
+                Some(a) => a.artifact.digest,
+                None => return fail(404, "no such artifact"),
+            };
+            match h.store.blobs.get(&digest) {
+                Ok(b) => Response::new(200, "application/octet-stream", b),
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/artifacts/{id}/provenance", |h: &H, _, p| {
+            let prov = match h.store.state().artifacts.get(p.get("id")) {
+                Some(a) => a.artifact.provenance.clone(),
+                None => return fail(404, "no such artifact"),
+            };
+            match h.store.hub_key() {
+                Some(k) => ok(crate::release::dsse(&prov, k)),
+                None => ok(prov),
+            }
+        })
+        .get("/v1/changes/{change}/trace", |h: &H, _, p| match crate::trace::trace(&h.store, &h.derived, p.get("change")) {
+            Ok(t) => ok(t),
+            Err(e) => fail(404, e),
+        })
         .post("/v1/hub", |h: &H, req, _| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
@@ -1062,6 +1291,25 @@ fn diff_route(h: &Hub, req: &Request, p: &Params) -> Response {
         }
     }
     ok(json!({ "revision": rev, "base": base_id, "files": files }))
+}
+
+pub fn release_view(st: &State, r: &crate::state::Release) -> Value {
+    let artifacts: Vec<Value> = r
+        .signed
+        .as_ref()
+        .map(|s| {
+            s.0.artifacts
+                .iter()
+                .filter_map(|a| st.artifacts.get(a))
+                .map(|a| json!(a))
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "version": r.propose.version, "repo": r.propose.repo, "from": r.propose.from, "line": r.propose.line, "notes": r.propose.notes, "targets": r.propose.targets,
+        "imported": r.propose.imported, "proposed_seq": r.proposed_seq, "signed": r.signed.as_ref().map(|s| json!({ "seq": s.1, "key": s.2, "digest": s.0.digest })),
+        "artifacts": artifacts, "exports": r.exports,
+    })
 }
 
 pub fn repo_view(st: &State, r: &crate::state::Repo) -> Value {

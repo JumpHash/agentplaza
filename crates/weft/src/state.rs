@@ -42,6 +42,8 @@ pub struct ConnState {
     pub head: Option<String>,
     pub state: String,
     pub detail: String,
+    /// While the remote's own commits are being adopted: the remote head and the change that adopts it.
+    pub adopting: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1034,6 +1036,7 @@ impl State {
                             head: None,
                             state: "in-step".into(),
                             detail: String::new(),
+                            adopting: None,
                         },
                     );
                 }
@@ -1057,11 +1060,16 @@ impl State {
                 let s = format!("{} {}: {}", c.repo, c.id, c.state);
                 if !dry {
                     let conn = self.repo_mut(&c.repo)?.connections.get_mut(&c.id).unwrap();
+                    if c.state == "adopting" {
+                        conn.adopting = c.remote_head.clone().zip(c.adopt_change.clone());
+                    } else if c.state == "in-step" {
+                        conn.adopting = None;
+                        if c.remote_head.is_some() {
+                            conn.head = c.remote_head;
+                        }
+                    }
                     conn.state = c.state;
                     conn.detail = c.detail;
-                    if c.remote_head.is_some() {
-                        conn.head = c.remote_head;
-                    }
                 }
                 s
             }
@@ -1089,7 +1097,16 @@ impl State {
                         .unwrap();
                     conn.exported.push((cid, e.head.clone()));
                     conn.head = Some(e.head.clone());
-                    conn.state = "in-step".into();
+                    if conn
+                        .adopting
+                        .as_ref()
+                        .is_some_and(|(_, adopt)| *adopt == e.change)
+                    {
+                        conn.adopting = None;
+                    }
+                    if conn.adopting.is_none() {
+                        conn.state = "in-step".into();
+                    }
                     self.changes
                         .get_mut(&cid)
                         .unwrap()

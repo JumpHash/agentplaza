@@ -344,6 +344,9 @@ pub struct ConnectionState {
     pub detail: String,
     #[serde(default)]
     pub remote_head: Option<String>,
+    /// With `adopting`: the change that brings the remote's own commits in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopt_change: Option<String>,
 }
 
 /// `artifact.put`.
@@ -385,6 +388,9 @@ pub struct ReleasePropose {
     pub notes: String,
     #[serde(default)]
     pub targets: Vec<String>,
+    /// For a release imported from a git tag: the tag's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<String>,
 }
 
 /// `release.sign`: the owner signs a release (its artifacts, by digest).

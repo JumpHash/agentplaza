@@ -19,7 +19,7 @@ use crate::workdir::{self, Lane, Workdir};
 
 pub const USAGE: &str = "weft: AgentPlaza's version control
 
-  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--port-file F] [--auto-land]
+  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--signing-key F|-] [--port-file F] [--auto-land]
   weft serve --cache --dir <dir> --upstream <url> [--port N] [--token-file F] [--upstream-token-file F] [--max-mb N]
   weft init --state <dir> --plaza <name> --owner-key <file> --hub-key <file>
   weft keys new <file> | keys show <file> | keys certify <public-hex> --actor agent:<cid> [--name N --role R --project P]
@@ -578,7 +578,19 @@ fn serve(cx: &Ctx) -> Result<(), String> {
                 None => None,
             }
         };
-        let hub = crate::server::Hub::open(&state, hub_key)?;
+        // The SSH signing key for exported commits: a file, or the second line on stdin.
+        let signing = match a.opt("signing-key") {
+            Some(f) if f == "-" => {
+                let mut line = String::new();
+                std::io::stdin()
+                    .read_line(&mut line)
+                    .map_err(|e| e.to_string())?;
+                Some(KeyPair::from_hex(line.trim())?)
+            }
+            Some(f) => Some(KeyPair::load(Path::new(&f))?),
+            None => None,
+        };
+        let hub = crate::server::Hub::open_with(&state, hub_key, signing)?;
         hub.start_deriving();
         if a.has("auto-land") {
             hub.start_auto_land();
