@@ -674,18 +674,15 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         .iter()
         .map(|seat| seat.count.saturating_sub(seat.bench.len() as u32))
         .sum();
+    let staffed = staffing(task_ids.len(), joined.len(), new_agents as usize);
     let notice = format!(
-        "[plaza] The owner started project {pid} \"{}\" from this conversation's draft (revision {revision}): {} tasks posted ({}), {} agents from the bench on it, {new_agents} new ones on their way. You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this conversation.",
+        "[plaza] The owner started project {pid} \"{}\" from this conversation's draft (revision {revision}): {staffed} (tasks {}). You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this conversation.",
         draft.title.trim(),
-        task_ids.len(),
         task_ids.join(", "),
-        joined.len(),
     );
     let shown = format!(
-        "You started project {pid} \"{}\": {} tasks posted, {} agents from the bench on it, {new_agents} new ones on their way.",
-        draft.title.trim(),
-        task_ids.len(),
-        joined.len(),
+        "You started project {pid} \"{}\": {staffed}.",
+        draft.title.trim()
     );
     conversations::notify(app, id, &shown, &notice);
     let done = json!({
@@ -695,6 +692,26 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         "spawned": spawned,
     });
     Ok((app.conversations.get(id).unwrap_or(started), done))
+}
+
+/// What Start did, in words: `2 tasks posted, 1 agent from the bench on it, 1 new one on its way`; a part with none is
+/// left out (a project always has a task).
+fn staffing(tasks: usize, bench: usize, new: usize) -> String {
+    let mut parts = vec![match tasks {
+        1 => "1 task posted".to_string(),
+        n => format!("{n} tasks posted"),
+    }];
+    match bench {
+        0 => {}
+        1 => parts.push("1 agent from the bench on it".to_string()),
+        n => parts.push(format!("{n} agents from the bench on it")),
+    }
+    match new {
+        0 => {}
+        1 => parts.push("1 new one on its way".to_string()),
+        n => parts.push(format!("{n} new ones on their way")),
+    }
+    parts.join(", ")
 }
 
 /// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn (their escrow back in its budget),
@@ -719,6 +736,23 @@ fn undo(app: &App, pid: &str, tasks: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_says_what_it_did_in_words() {
+        assert_eq!(
+            staffing(7, 3, 2),
+            "7 tasks posted, 3 agents from the bench on it, 2 new ones on their way"
+        );
+        assert_eq!(
+            staffing(2, 1, 1),
+            "2 tasks posted, 1 agent from the bench on it, 1 new one on its way"
+        );
+        assert_eq!(staffing(1, 0, 2), "1 task posted, 2 new ones on their way");
+        assert_eq!(
+            staffing(1, 1, 0),
+            "1 task posted, 1 agent from the bench on it"
+        );
+    }
 
     fn task(key: &str, role: &str, after: &[&str]) -> Planned {
         Planned {

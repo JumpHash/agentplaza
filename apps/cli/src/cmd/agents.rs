@@ -1,8 +1,8 @@
-//! `agentplaza agents`: Agents: list, inspect, create, talk to, stop, restart, set models; cancel
-//! their work, retire or wipe them, put them to sleep or wake them, checkpoint, roll back and fork
-//! their VMs, drive their harness and loops, set permissions, read their infractions, sanctions and
-//! memory, and decide the proposals they make. The submodules hold the larger areas: `lifecycle`,
-//! `harness`, `oversight` and `records`.
+//! `agentplaza agents`: Agents: list (all, a project's, or the bench), inspect, create, talk to,
+//! stop, restart, set models; cancel their work, retire or wipe them, put them to sleep or wake
+//! them, checkpoint, roll back and fork their VMs, drive their harness and loops, set permissions,
+//! read their infractions, sanctions and memory, and decide the proposals they make. The
+//! submodules hold the larger areas: `lifecycle`, `harness`, `oversight` and `records`.
 
 pub mod harness;
 pub mod lifecycle;
@@ -23,7 +23,7 @@ use self::lifecycle::WipeWhat;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// The agents, with their status, role, model and queue.
+    /// The agents, with their role, project, status, model and queue, and why they wait when they do.
     List {
         /// Only agents of this role (its id, such as "orchestrator").
         #[arg(long)]
@@ -31,13 +31,20 @@ pub enum Cmd {
         /// Only agents in this status: working, idle, offline or asleep.
         #[arg(long)]
         status: Option<String>,
+        /// Only the agents on this project (its id, such as `pr3`).
+        #[arg(long, conflicts_with = "bench")]
+        project: Option<String>,
+        /// Only the agents on the bench: on no project, so they do nothing until the owner puts them on one.
+        #[arg(long)]
+        bench: bool,
     },
     /// One agent: its model, queue, current work and record.
     Show {
         /// The agent's cid (see `agents list`).
         cid: u64,
     },
-    /// Create agents of a role (the wizard's spawn).
+    /// Create agents of a role (the wizard's spawn). Without --project they wait on the bench until the owner puts
+    /// them on one.
     Create {
         /// The role id.
         #[arg(long)]
@@ -45,9 +52,12 @@ pub enum Cmd {
         /// How many to create.
         #[arg(long, default_value_t = 1)]
         count: u32,
-        /// The model to run them on, provider/model (default: the role's or the plaza's).
+        /// The model to run them on, provider/model (default: the project's, the role's or the plaza's).
         #[arg(long)]
         model: Option<String>,
+        /// The project they join when they first connect (its id, such as `pr3`).
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Send an agent a message (its chat).
     Tell {
@@ -292,9 +302,24 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             action,
         } => records::memory(ctx, cid, search.as_deref(), action),
         Cmd::Proposals { action } => records::proposals(ctx, action),
-        Cmd::List { role, status } => list(ctx, role.as_deref(), status.as_deref()),
+        Cmd::List {
+            role,
+            status,
+            project,
+            bench,
+        } => list(
+            ctx,
+            role.as_deref(),
+            status.as_deref(),
+            &list_path(project.as_deref(), bench),
+        ),
         Cmd::Show { cid } => show(ctx, cid),
-        Cmd::Create { role, count, model } => create(ctx, &role, count, model.as_deref()),
+        Cmd::Create {
+            role,
+            count,
+            model,
+            project,
+        } => create(ctx, &role, count, model.as_deref(), project.as_deref()),
         Cmd::Tell { cid, text } => tell(ctx, cid, &text),
         Cmd::Stop { cid, yes } => {
             if !confirm(yes, &format!("Stop agent {cid}?"))? {
@@ -366,7 +391,8 @@ fn required_reason(reason: &str) -> Result<String, String> {
     }
 }
 
-fn name_of(a: &Value) -> String {
+/// An agent's name, or `agent <cid>` when it has none.
+pub(crate) fn name_of(a: &Value) -> String {
     let name = ctx::s(a, "name");
     if name.is_empty() {
         format!("agent {}", ctx::text(a, "cid"))
@@ -382,8 +408,38 @@ fn work_of(a: &Value) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>) -> Result<(), String> {
-    let all = ctx.client.get("/v1/agents")?;
+/// Where an agent works: its project's id; `all` for the orchestrator, which works on every project; `bench` for one
+/// on none, which does nothing until the owner puts it on one; `-` for a model agent, which takes no work.
+pub(crate) fn place_of(a: &Value) -> String {
+    match a.get("project").and_then(Value::as_str) {
+        Some(project) => project.to_string(),
+        None if ctx::s(a, "role") == "orchestrator" || ctx::s(a, "tier") == "orchestrator" => {
+            "all".to_string()
+        }
+        None if ctx::s(a, "kind") == "model" => "-".to_string(),
+        None => "bench".to_string(),
+    }
+}
+
+/// Why an agent waits (on the bench, or on a paused project), or "-" when it may work.
+pub(crate) fn held_of(a: &Value) -> String {
+    match ctx::s(a, "held") {
+        "" => "-".to_string(),
+        why => why.to_string(),
+    }
+}
+
+/// The roster's path: every agent, a project's (`?project=<id>`), or the bench's (`?project=bench`).
+fn list_path(project: Option<&str>, bench: bool) -> String {
+    match (project, bench) {
+        (_, true) => "/v1/agents?project=bench".to_string(),
+        (Some(id), false) => format!("/v1/agents?project={}", ctx::seg(id)),
+        (None, false) => "/v1/agents".to_string(),
+    }
+}
+
+fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>, path: &str) -> Result<(), String> {
+    let all = ctx.client.get(path)?;
     let agents: Vec<Value> = all
         .as_array()
         .cloned()
@@ -400,15 +456,19 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>) -> Result<(), Strin
                     ctx::text(a, "cid"),
                     name_of(a),
                     ctx::s(a, "role").to_string(),
+                    place_of(a),
                     ctx::s(a, "status").to_string(),
                     ctx::s(a, "model").to_string(),
                     ctx::text(a, "queue"),
                     work_of(a),
+                    held_of(a),
                 ]
             })
             .collect();
         ctx::table(
-            &["cid", "name", "role", "status", "model", "queue", "work"],
+            &[
+                "cid", "name", "role", "project", "status", "model", "queue", "work", "held",
+            ],
             &rows,
         );
     });
@@ -436,6 +496,8 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
                 "status",
                 format!("{} · {}", ctx::s(a, "status"), ctx::s(a, "tier")),
             ),
+            ("project", project_of(a)),
+            ("held", held_of(a)),
             (
                 "model",
                 format!(
@@ -479,20 +541,55 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn create(ctx: &Ctx, role: &str, count: u32, model: Option<&str>) -> Result<(), String> {
-    if count == 0 {
-        return Err("--count is at least 1".into());
+/// Where an agent works, as `agents show` says it: its project and since when, the bench, or every project.
+fn project_of(a: &Value) -> String {
+    match place_of(a).as_str() {
+        "all" => "every project (the orchestrator works on all of them)".to_string(),
+        "bench" => "none: on the bench".to_string(),
+        project => match a.get("joined_ms").filter(|ms| !ms.is_null()) {
+            Some(ms) => format!("{project} since {}", ctx::when(ms)),
+            None => project.to_string(),
+        },
     }
+}
+
+/// The `POST /v1/agents` body: the role and count, and the model and project only when they are given.
+fn create_body(role: &str, count: u32, model: Option<&str>, project: Option<&str>) -> Value {
     let mut body = json!({ "role": role, "count": count });
     if let Some(m) = model {
         body["model"] = json!(m);
     }
-    let v = ctx.client.post("/v1/agents", &body)?;
+    if let Some(p) = project {
+        body["project"] = json!(p);
+    }
+    body
+}
+
+fn create(
+    ctx: &Ctx,
+    role: &str,
+    count: u32,
+    model: Option<&str>,
+    project: Option<&str>,
+) -> Result<(), String> {
+    if count == 0 {
+        return Err("--count is at least 1".into());
+    }
+    let v = ctx
+        .client
+        .post("/v1/agents", &create_body(role, count, model, project))?;
     ctx.out(&v, |_| {
-        println!(
-            "created {count} {role} agent{}",
-            if count == 1 { "" } else { "s" }
-        )
+        let (plural, they, them) = if count == 1 {
+            ("", "it waits", "it")
+        } else {
+            ("s", "they wait", "them")
+        };
+        match project {
+            Some(p) => println!("created {count} {role} agent{plural} for project {p}"),
+            None => println!(
+                "created {count} {role} agent{plural}; {they} on the bench until you put {them} on a project"
+            ),
+        }
     });
     Ok(())
 }
@@ -676,4 +773,43 @@ fn engine_update_lines(data: &Value) -> Option<Vec<String>> {
         _ => return None,
     };
     Some(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_works_on_its_project_on_every_one_or_on_none() {
+        let on = json!({ "cid": 7, "role": "builder", "tier": "worker", "kind": "llm", "project": "pr3" });
+        assert_eq!(place_of(&on), "pr3");
+        let lead =
+            json!({ "cid": 3, "role": "orchestrator", "tier": "orchestrator", "project": null });
+        assert_eq!(place_of(&lead), "all");
+        let model = json!({ "cid": 12, "role": "builder", "kind": "model", "project": null });
+        assert_eq!(place_of(&model), "-");
+        let bench = json!({ "cid": 8, "role": "qa", "kind": "llm", "project": null,
+            "held": "agent 8 is on the bench: it works only on a project, so the owner has to add it to one first" });
+        assert_eq!(place_of(&bench), "bench");
+        assert!(held_of(&bench).starts_with("agent 8 is on the bench"));
+        assert_eq!(held_of(&on), "-");
+        assert_eq!(project_of(&bench), "none: on the bench");
+        assert_eq!(project_of(&on), "pr3");
+    }
+
+    #[test]
+    fn the_list_asks_for_a_project_the_bench_or_everyone() {
+        assert_eq!(list_path(None, false), "/v1/agents");
+        assert_eq!(list_path(Some("pr3"), false), "/v1/agents?project=pr3");
+        assert_eq!(list_path(None, true), "/v1/agents?project=bench");
+    }
+
+    #[test]
+    fn create_names_the_project_only_when_one_is_given() {
+        let bare = create_body("builder", 2, None, None);
+        assert_eq!(bare, json!({ "role": "builder", "count": 2 }));
+        let staffed = create_body("builder", 1, Some("openai/gpt-6"), Some("pr3"));
+        assert_eq!(staffed["project"], "pr3");
+        assert_eq!(staffed["model"], "openai/gpt-6");
+    }
 }

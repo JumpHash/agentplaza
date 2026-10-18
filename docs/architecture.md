@@ -40,9 +40,9 @@ without the flag (tests, development) keeps an open API and says so in its log.
 
 | console | where | notes |
 |---|---|---|
-| web | `apps/web` | TypeScript, esbuild, committed `dist/`, served by `apid`. CSP; text is set with `textContent` only. |
+| web | `apps/web` | TypeScript, esbuild; CI builds `dist/` once per commit (it is not committed). Served by `apid`. CSP; text is set with `textContent` only. |
 | desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the containers for Postgres 17 and Forgejo 11. |
-| CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
+| CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza chat` to talk a project into being with the orchestrator, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
 
 All three use the same `apid` API. The **Machines** screen's 3D (the grid of machines and each machine's own view)
 is `crates/apz-engine` (wgpu, platform-agnostic) on the web as WebAssembly
@@ -283,6 +283,8 @@ state reducer); `apz-ide-web` gives its browser bindings. `apid` serves
 `/v1/ide/workspaces` (tree, file, search, changes, checkpoints and their restore,
 runs, pulls, branch), `/v1/ide/terminal/{workspace}` (PTY terminals) and
 `/v1/ide/audit`. Agents use the same workspace through the harness's `ide_*` tools.
+A conversation with the orchestrator opens there too (`conv-<n>`): the chat beside the
+project it drafts (see *Owner conversations*).
 
 ## Rich content
 
@@ -605,6 +607,26 @@ shows every value the project's agents get, each with its source (`project` or `
   `{credits}` sets credits aside from the plaza's budget, as the owner's operation (negative gives some back). Once
   it has one, its tasks are funded from it, and their refunds return to it. When the project is archived (its open
   tasks withdrawn) or delivered, the rest goes back to the plaza.
+
+### In the consoles
+
+- **The switcher.** The web console and the desktop app have a project switcher in the top bar: All projects, each
+  live project, and New project…. The web's route carries it (`#/p/<id>/…`), so a link keeps it; the desktop
+  remembers it for each hub.
+- **Under a project,** Overview, Agents (its agents and the orchestrator, with the bench beside them), Tasks, Work,
+  Board and Approvals show that project, and the plaza's setup screens say a project's own settings override them.
+  Under All projects, the Agents screen says where each agent works, with Put on… for the bench. A project's page
+  has Pause, Resume and Archive, and its Plan, Team and Settings tabs.
+- **New project** opens a conversation with the orchestrator in the IDE: the chat in the centre (an answer streams in
+  as it is written), and the draft beside it, with what still stops Start, the owner's edits and Start. Under a
+  project, the IDE is that project's: its agents, its repository and its conversation. The chat composer gives an
+  idle agent a chat turn and steers a working one.
+- **The CLI.** `agentplaza chat` is the conversation on a terminal (`/draft`, `/start`), or one message and its
+  answer off one. `agentplaza projects create|members|pause|resume|archive|settings|budget` manage projects;
+  `--project` filters `agents list` and `tasks list`, names the project of `agents create`, and is required by
+  `tasks create`; `agents list --bench` lists the bench, and `tasks move` puts a task from before projects into
+  one. The TUI's `p` and `P` switch the project its Agents and Tasks tabs show, and its Chat tab (`c`) talks to the
+  orchestrator.
 
 ## `apid` HTTP API
 

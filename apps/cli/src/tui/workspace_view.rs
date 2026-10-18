@@ -400,7 +400,7 @@ fn composer_box(
 }
 
 /// The last `max` characters of a text.
-fn tail(text: &str, max: usize) -> String {
+pub(super) fn tail(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count <= max {
         text.to_string()
@@ -518,7 +518,7 @@ fn to_line(cells: &[Cell]) -> Line<'static> {
 }
 
 /// Lines of a plain text in one style, wrapped to `width`.
-fn text_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+pub(super) fn text_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
     wrap(&plain(text, style), width)
         .into_iter()
         .map(|line| to_line(&line))
@@ -526,7 +526,7 @@ fn text_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
 }
 
 /// Agent prose as lines: wrapped, with the references and the mentions styled.
-fn prose_lines(
+pub(super) fn prose_lines(
     text: &str,
     rctx: &apz_rich::Ctx,
     accent: Color,

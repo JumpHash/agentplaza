@@ -60,8 +60,8 @@ pub const TOUR: [TourStep; 8] = [
         title: "Projects & Tasks",
         tab: Some(Tab::Tasks),
         lines: &[
-            "Tasks are the work queue; `agentplaza tasks` lists it.",
-            "Projects and their repositories: `agentplaza projects`.",
+            "Each task is in a project; p switches the project Agents and Tasks show.",
+            "Talk a project into being on the Chat tab (c), or `agentplaza chat`.",
         ],
     },
     TourStep {

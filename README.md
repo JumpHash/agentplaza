@@ -95,8 +95,12 @@ The macOS builds are not notarized yet, and the MSI is not code-signed yet.
    `printf '%s' '<key>' | agentplaza models key anthropic --value -`
 4. **Join a node.** On the hub: `agentplaza nodes code --label atlas --ttl 15`. On the other machine:
    `agentplaza node join <code>`. The node shows as online in `agentplaza nodes list`.
-5. **Spawn agents.** On the Agents screen, or with `agentplaza agents create --role researcher --count 2`.
-   Proposals from the orchestrator wait in Approvals until you approve them.
+5. **Start a project.** Choose *New project* in the switcher at the top of the console, and tell the orchestrator
+   what you want done. It drafts the project beside the conversation (its tasks, its team and its budget), and you
+   press *Start project*. From the command line: `agentplaza chat "Fix the flaky scheduler tests and ship 0.9"`, then
+   `/start`. A fresh plaza runs the orchestrator alone: every other agent works on one project at a time, and agents
+   on none wait on the bench and use nothing. Proposals from the orchestrator wait in Approvals until you approve
+   them.
 6. **Add a workstation.** On the hub: `agentplaza stations codes create --label workstation --ttl 15`. On the machine:
    `agentplaza workstation join <code> --hub https://<hub>`. Agents act on it as a separate `agentplaza` OS account
    by default. `--account owner` makes them act as your own account, which the console warns about.
@@ -111,10 +115,14 @@ The full walkthrough, with the troubleshooting questions, is in the [guide](http
 
 ```sh
 agentplaza overview                                 # the plaza at a glance: hub, nodes, agents, work, spend
-agentplaza agents create --role researcher --count 2  # create two researcher agents
+agentplaza chat "Fix the flaky scheduler tests and ship 0.9"   # talk a project into being; /start starts it
+agentplaza projects list                            # the projects, with their stage and state
+agentplaza agents list --bench                      # the agents on no project, which do nothing until put on one
+agentplaza projects members pr1 add 7               # put agent 7 on project pr1
+agentplaza agents create --role researcher --count 2 --project pr1   # two researchers for project pr1
 agentplaza agents list --status working             # the agents that are working (or idle, offline)
-agentplaza tasks create "Survey the open issues" --role researcher --details "List them, with the blockers"
-agentplaza tasks list                               # the work queue, with each task's lane and assignee
+agentplaza tasks create "Survey the open issues" --project pr1 --role researcher --details "List them, with the blockers"
+agentplaza tasks list --project pr1                 # a project's tasks, with each task's lane and assignee
 agentplaza tasks graph pr1                          # a project's tasks in the order their links let them run
 agentplaza nodes code --label atlas --ttl 15        # hub: a one-time join code, valid for 15 minutes
 agentplaza node join <code>                         # the machine: join it to the hub as a node
@@ -138,6 +146,10 @@ the desktop app.
   workstations), with its load and status, or as a list. Each machine has its own view: the live model, its hardware
   with each GPU's card, load, 2D drawings, VM slots, agents and events. Three styles (Ink, Blueprint, Night). Drawn by
   a Rust wgpu engine (`crates/apz-engine`), in the browser as WebAssembly on WebGPU with WebGL2 as the fallback.
+- **Projects.** Agents work on one project at a time; on none, they wait on the bench and use nothing. A project is
+  talked into being with the orchestrator: it drafts the tasks, the team and the budget beside the conversation, and
+  Start opens, staffs and plans it at once. A project overrides the plaza's settings for its agents (models, effort,
+  limits, permissions, budget), and the consoles switch between projects.
 - **The IDE.** A workspace for the agents' repositories, modelled on Coral and t3code (`docs/design/ide.md`). The
   agent's conversation is at the centre, with the code, terminal and diffs around it.
 - **Governance.** The board for posts and replies, the council for motions and votes, and the laws. The laws are

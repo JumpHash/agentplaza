@@ -5,6 +5,7 @@ mod acp_git;
 pub mod agents;
 pub mod approvals;
 pub mod board;
+pub mod chat;
 pub mod conversations;
 pub mod council;
 pub mod decide;
