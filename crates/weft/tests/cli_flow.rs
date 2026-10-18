@@ -173,9 +173,11 @@ fn a_research_lane_through_the_cli_and_a_node_cache() {
         ],
         &owner,
     );
-    let md = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/markdown");
-    run.ok(&dir, &["pack", "add", md.to_str().unwrap()], &owner);
+    // Every store starts with Markdown; the owner adds JSON (its grammar comes from npm, once).
     assert!(run.ok(&dir, &["packs"], &[]).contains("markdown"));
+    let json_pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/json");
+    run.ok(&dir, &["pack", "add", json_pack.to_str().unwrap()], &owner);
+    assert!(run.ok(&dir, &["packs"], &[]).contains("json"));
 
     // The hub opens Ada's lane when she claims t61.
     let change = run
@@ -348,6 +350,33 @@ fn a_research_lane_through_the_cli_and_a_node_cache() {
     assert!(
         stats["hits"].as_u64().unwrap() >= 1 && stats["objects"].as_u64().unwrap() >= 1,
         "{stats}"
+    );
+
+    // The owner edits a file directly: a change of its own, signed for the owner, landed at once.
+    let edit = serde_json::json!({ "title": "Fix the brief's title", "files": [{ "path": "README.md", "text": "# Research\n" }] });
+    let reply = apz_http::client::send_with(
+        port,
+        "POST",
+        "/v1/repos/research/edits",
+        &[("x-apz-internal", "s3cret")],
+        Some(edit.to_string().as_bytes()),
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    let edits = run.ok(
+        &dir,
+        &["log", "edits() & landed()", "--repo", "research"],
+        &[],
+    );
+    assert!(
+        edits.contains("Fix the brief's title") && edits.contains("owner"),
+        "{edits}"
     );
 
     // Rework: the hub is out of reach, so the snapshot waits in the outbox; the next command sends it.

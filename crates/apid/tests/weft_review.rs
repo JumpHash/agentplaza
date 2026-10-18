@@ -257,7 +257,8 @@ fn first_symbol(tree: &Value, ends: &str) -> String {
 const QUEUE: &str = "pub struct Queue {\n    pub items: Vec<u64>,\n}\n\nimpl Queue {\n    pub fn next(&mut self) -> Option<u64> {\n        self.items.pop()\n    }\n}\n";
 
 fn add_packs(hub: &Hub) {
-    for name in ["rust", "markdown"] {
+    // Every store starts with Markdown; the owner adds Rust.
+    for name in ["rust"] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../weft/packs")
             .join(name);
@@ -520,6 +521,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &|| owner_card().is_some(),
     );
     let card = owner_card().unwrap();
+    sample("approval-review-card", &card);
     assert!(
         text(&card["detail"]["needs_you"]).contains("security"),
         "{card}"
@@ -617,6 +619,65 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             "{commits:?}"
         );
     }
+
+    // The post-land suite runs on main and fails: a signed revert lands at once, and the author gets a fix task.
+    let reverted = || {
+        let (_, log) = hub.call(
+            "GET",
+            &format!("/v1/weft/repos/{repo}/log?q=reverts()%20%26%20landed()"),
+            None,
+        );
+        log["total"].as_u64().unwrap_or(0) == 1
+    };
+    review(
+        &hub,
+        &gateway,
+        &[303],
+        &token,
+        &home,
+        &answered,
+        &|_, node, _| {
+            assert_eq!(node, "checks");
+            Answer {
+                pass: false,
+                scores: vec![
+                    json!({ "symbol": "src/queue.rs", "axis": "tst", "level": -4, "basis": "measured", "evidence": "cargo test --workspace --release: 1 failed" }),
+                ],
+                findings: vec![],
+                notes: "the release build's tests fail",
+            }
+        },
+        &reverted,
+    );
+    let (_, runs) = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None);
+    assert!(
+        runs["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["recipe"] == "post-land@1" && r["state"] == "failed"),
+        "{runs}"
+    );
+    let (_, tasks) = hub.call("GET", &format!("/v1/tasks?project={pid}"), None);
+    assert!(
+        tasks
+            .to_string()
+            .contains(&format!("Fix what {change} broke")),
+        "{tasks}"
+    );
+    let head = hub.call("GET", &format!("/v1/weft/repos/{repo}"), None).1["refs"]["main"].clone();
+    let main_file = apz_http::client::send(
+        hub.port,
+        "GET",
+        &format!("/v1/weft/revisions/{}/file?path=src/queue.rs", text(&head)),
+        None,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(
+        main_file.status, 404,
+        "the revert takes the file back out of main"
+    );
 
     // ── the research brief ──
     let (_, project) = hub.call("POST", "/v1/projects", Some(json!({ "title": "Edge caching", "goal": "Should nodes cache objects?", "kind": "other" })));
@@ -748,4 +809,65 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         v["ok"] == true
     });
     assert_eq!(deep["ok"], true, "{deep}");
+
+    // With WEFT_SAMPLES set, the answers the consoles draw, kept as examples.
+    if std::env::var_os("WEFT_SAMPLES").is_some() {
+        let (_, v) = hub.call(
+            "POST",
+            &format!("/v1/weft/repos/{repo}/releases"),
+            Some(json!({ "version": "v0.1.0" })),
+        );
+        sample("release-proposed", &v);
+        for (name, path) in [
+            ("weft", "/v1/weft".to_string()),
+            ("repos", "/v1/weft/repos".to_string()),
+            ("repo", format!("/v1/weft/repos/{repo}")),
+            ("log", format!("/v1/weft/repos/{repo}/log?q=all()")),
+            ("change", format!("/v1/weft/changes/{change}")),
+            ("revision", format!("/v1/weft/revisions/{change}.r2")),
+            ("files", format!("/v1/weft/revisions/{change}.l/files")),
+            (
+                "change-tree",
+                format!("/v1/weft/revisions/{change}.r2/tree"),
+            ),
+            ("diff", format!("/v1/weft/revisions/{change}.r2/diff")),
+            (
+                "blame",
+                format!("/v1/weft/repos/{rrepo}/blame?path=briefs/edge-caching.md"),
+            ),
+            ("queue", format!("/v1/weft/repos/{repo}/queue")),
+            ("releases", format!("/v1/weft/repos/{repo}/releases")),
+            ("map", format!("/v1/weft/repos/{repo}/map")),
+            (
+                "map-where",
+                format!("/v1/weft/repos/{repo}/map/where?q=queue"),
+            ),
+            ("ops", "/v1/weft/ops?limit=20".to_string()),
+            ("keys", "/v1/weft/keys".to_string()),
+            ("packs", "/v1/weft/packs".to_string()),
+            ("verify-change", format!("/v1/weft/verify?subject={change}")),
+            ("artifacts", "/v1/weft/artifacts".to_string()),
+            ("task-reviews", format!("/v1/tasks/{tid}/reviews")),
+            ("review-run", format!("/v1/reviews/{rv1}")),
+            ("review-tree", format!("/v1/reviews/{rv1}/tree")),
+            ("research-reviews", format!("/v1/tasks/{rtid}/reviews")),
+            ("recipes", "/v1/recipes".to_string()),
+            ("recipe-code", "/v1/recipes/code".to_string()),
+            ("approvals", "/v1/approvals".to_string()),
+        ] {
+            let (_, v) = hub.call("GET", &path, None);
+            sample(name, &v);
+        }
+    }
+}
+
+fn sample(name: &str, v: &Value) {
+    if let Some(dir) = std::env::var_os("WEFT_SAMPLES") {
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(
+            dir.join(format!("{name}.json")),
+            serde_json::to_string_pretty(v).unwrap_or_default(),
+        );
+    }
 }

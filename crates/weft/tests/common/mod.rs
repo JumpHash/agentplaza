@@ -57,6 +57,10 @@ impl Plaza {
     /// Adds the named packs from `crates/weft/packs`, fetching grammars from npm once (cached under the target dir).
     pub fn add_packs(&self, names: &[&str]) {
         for name in names {
+            // Every store starts with Markdown.
+            if self.store.state().packs.contains_key(*name) {
+                continue;
+            }
             let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("packs")
                 .join(name);

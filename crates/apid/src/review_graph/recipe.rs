@@ -23,6 +23,9 @@ pub struct Recipe {
     pub nodes: Vec<NodeDef>,
     #[serde(default, rename = "rule")]
     pub rules: Vec<Rule>,
+    /// The slow checks that run on main after a change lands; a failure lands a revert at once.
+    #[serde(default)]
+    pub post_land: Vec<String>,
 }
 
 fn two() -> u32 {
@@ -245,6 +248,7 @@ version = 3
 title = "Code"
 axes = ["fea", "ux", "val", "con", "mem", "cpu", "prf", "sec", "cmp", "div", "leg", "tst", "cln", "dbt", "mnt"]
 rounds = 2
+post_land = ["cargo test --workspace --release"]
 
 [applies]
 kinds = ["code"]

@@ -29,6 +29,176 @@ pub struct Manifest {
     pub query: String,
 }
 
+/// The packs Weft knows how to add, compiled in: each one's manifest and its own query (when it has one; the others
+/// take the grammar package's `tags.scm`). Grammars are fetched when a pack is added, except Markdown's, which no
+/// package publishes and which every store starts with.
+pub const BUNDLED: &[(&str, &str, Option<&str>)] = &[
+    (
+        "bash",
+        include_str!("../packs/bash/pack.json"),
+        Some(include_str!("../packs/bash/symbols.scm")),
+    ),
+    ("c", include_str!("../packs/c/pack.json"), None),
+    (
+        "c_sharp",
+        include_str!("../packs/c_sharp/pack.json"),
+        Some(include_str!("../packs/c_sharp/symbols.scm")),
+    ),
+    ("cpp", include_str!("../packs/cpp/pack.json"), None),
+    (
+        "css",
+        include_str!("../packs/css/pack.json"),
+        Some(include_str!("../packs/css/symbols.scm")),
+    ),
+    ("go", include_str!("../packs/go/pack.json"), None),
+    (
+        "html",
+        include_str!("../packs/html/pack.json"),
+        Some(include_str!("../packs/html/symbols.scm")),
+    ),
+    ("java", include_str!("../packs/java/pack.json"), None),
+    (
+        "javascript",
+        include_str!("../packs/javascript/pack.json"),
+        Some(include_str!("../packs/javascript/symbols.scm")),
+    ),
+    (
+        "json",
+        include_str!("../packs/json/pack.json"),
+        Some(include_str!("../packs/json/symbols.scm")),
+    ),
+    (
+        "markdown",
+        include_str!("../packs/markdown/pack.json"),
+        Some(include_str!("../packs/markdown/symbols.scm")),
+    ),
+    ("php", include_str!("../packs/php/pack.json"), None),
+    ("python", include_str!("../packs/python/pack.json"), None),
+    ("ruby", include_str!("../packs/ruby/pack.json"), None),
+    (
+        "rust",
+        include_str!("../packs/rust/pack.json"),
+        Some(include_str!("../packs/rust/symbols.scm")),
+    ),
+    (
+        "toml",
+        include_str!("../packs/toml/pack.json"),
+        Some(include_str!("../packs/toml/symbols.scm")),
+    ),
+    ("tsx", include_str!("../packs/tsx/pack.json"), None),
+    (
+        "typescript",
+        include_str!("../packs/typescript/pack.json"),
+        Some(include_str!("../packs/typescript/symbols.scm")),
+    ),
+    (
+        "yaml",
+        include_str!("../packs/yaml/pack.json"),
+        Some(include_str!("../packs/yaml/symbols.scm")),
+    ),
+];
+
+/// The Markdown grammar (built once with `tree-sitter build --wasm` from tree-sitter-markdown 0.3.2).
+pub const MARKDOWN_WASM: &[u8] = include_bytes!("../packs/markdown/grammar.wasm");
+
+/// The names of the packs Weft can add.
+pub fn bundled_names() -> Vec<&'static str> {
+    BUNDLED.iter().map(|b| b.0).collect()
+}
+
+/// A bundled pack's manifest.
+pub fn bundled_manifest(name: &str) -> Option<Manifest> {
+    BUNDLED
+        .iter()
+        .find(|b| b.0 == name)
+        .and_then(|b| serde_json::from_str(b.1).ok())
+}
+
+/// The bundled pack a path would use (by file name, then extension), whether or not it is added.
+pub fn bundled_for(path: &str) -> Option<&'static str> {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let ext = file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    let manifests: Vec<(&str, Manifest)> = BUNDLED
+        .iter()
+        .filter_map(|b| Some((b.0, serde_json::from_str::<Manifest>(b.1).ok()?)))
+        .collect();
+    manifests
+        .iter()
+        .find(|(_, m)| m.filenames.iter().any(|f| f == file))
+        .or_else(|| {
+            manifests.iter().find(|(_, m)| {
+                ext.as_deref()
+                    .is_some_and(|e| m.extensions.iter().any(|x| x == e))
+            })
+        })
+        .map(|(n, _)| *n)
+}
+
+/// Prepares a bundled pack: its compiled-in manifest and query, its grammar from npm (through `cache`), or
+/// Markdown's compiled-in grammar.
+pub fn prepare_bundled(name: &str, cache: Option<&Path>) -> Result<Prepared, String> {
+    let (_, manifest_text, query) = BUNDLED
+        .iter()
+        .find(|b| b.0 == name)
+        .ok_or_else(|| format!("Weft has no pack {name}"))?;
+    let m: Manifest =
+        serde_json::from_str(manifest_text).map_err(|e| format!("pack {name}: {e}"))?;
+    let npm = || -> Result<Vec<(String, Vec<u8>)>, String> {
+        let package = m.source["npm"]
+            .as_str()
+            .ok_or_else(|| format!("pack {name} names no npm package"))?;
+        let version = m.source["version"]
+            .as_str()
+            .ok_or("the pack names no version")?;
+        cached_tarball(package, version, cache)
+    };
+    let wasm = if name == "markdown" {
+        MARKDOWN_WASM.to_vec()
+    } else {
+        let want = m.source["wasm"]
+            .as_str()
+            .ok_or("the pack names no wasm file")?;
+        npm()?
+            .into_iter()
+            .find(|(p, _)| p.ends_with(want))
+            .map(|(_, b)| b)
+            .ok_or_else(|| format!("{want} is not in the package"))?
+    };
+    let query = match (
+        query,
+        m.query.strip_prefix("upstream:"),
+        m.query
+            .strip_prefix("../")
+            .and_then(|q| q.split('/').next()),
+    ) {
+        (_, Some(up), _) => npm()?
+            .into_iter()
+            .find(|(p, _)| p.ends_with(up))
+            .map(|(_, b)| b)
+            .ok_or_else(|| format!("{up} is not in the package"))?,
+        (_, _, Some(other)) => BUNDLED
+            .iter()
+            .find(|b| b.0 == other)
+            .and_then(|b| b.2)
+            .ok_or_else(|| format!("pack {other} has no query"))?
+            .as_bytes()
+            .to_vec(),
+        (Some(q), _, _) => q.as_bytes().to_vec(),
+        (None, None, None) => return Err(format!("pack {name} has no query")),
+    };
+    let pack = PackAdd {
+        name: m.name,
+        version: m.version,
+        language: m.language,
+        extensions: m.extensions,
+        filenames: m.filenames,
+        shebangs: m.shebangs,
+        wasm: Hash::of(&wasm),
+        tags: Hash::of(&query),
+    };
+    Ok(Prepared { pack, wasm, query })
+}
+
 /// A pack ready to store: the body of `pack.add` (with the files' hashes) and the files.
 pub struct Prepared {
     pub pack: PackAdd,

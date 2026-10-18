@@ -95,6 +95,18 @@ impl Store {
             )
             .sign(owner),
         )?;
+        // Every store reads Markdown from the start: documents, briefs and notes are prose.
+        let md = crate::packsrc::prepare_bundled("markdown", None)?;
+        store.blobs.put(&md.wasm)?;
+        store.blobs.put(&md.query)?;
+        store.append(
+            Statement::new(
+                "pack.add",
+                Actor::Owner,
+                serde_json::to_value(&md.pack).map_err(|e| e.to_string())?,
+            )
+            .sign(owner),
+        )?;
         Ok(store)
     }
 

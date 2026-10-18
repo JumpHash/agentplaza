@@ -554,6 +554,59 @@ pub fn router() -> Router<H> {
             let st = h.store.state();
             ok(json!({ "packs": st.packs.values().collect::<Vec<_>>(), "loaded": h.derived.runtime.loaded(), "loads": h.derived.runtime.loads() }))
         })
+        .get("/v1/packs/available", |h: &H, _, _| {
+            let st = h.store.state();
+            let list: Vec<Value> = crate::packsrc::bundled_names()
+                .into_iter()
+                .filter_map(|n| crate::packsrc::bundled_manifest(n).map(|m| json!({ "name": n, "language": m.language, "extensions": m.extensions, "added": st.packs.contains_key(n) })))
+                .collect();
+            ok(json!({ "packs": list }))
+        })
+        .get("/v1/packs/missing", |h: &H, req, _| {
+            // The languages a repo's files are in that have no pack yet, and the pack that would read them.
+            let Some(repo) = q(req, "repo") else { return fail(400, "missing needs ?repo=") };
+            let head = match h.store.state().repo(&repo) {
+                Ok(r) => r.head("main"),
+                Err(e) => return fail(404, e),
+            };
+            let tree = match h.store.tree(&head) {
+                Ok(t) => t,
+                Err(e) => return fail(404, e),
+            };
+            let st = h.store.state();
+            let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            for path in tree.keys() {
+                if crate::lang::pack_for(&st.packs, path, "").is_none()
+                    && let Some(n) = crate::packsrc::bundled_for(path)
+                {
+                    *counts.entry(n).or_default() += 1;
+                }
+            }
+            ok(json!({ "repo": repo, "missing": counts.into_iter().map(|(n, c)| json!({ "pack": n, "files": c })).collect::<Vec<_>>() }))
+        })
+        .post("/v1/packs/install", |h: &H, req, _| {
+            if !matches!(caller(req), Ok(Actor::Owner)) {
+                return fail(403, "only the owner adds a pack");
+            }
+            if let Err(r) = writes_allowed(h) {
+                return r;
+            }
+            let Some(name) = req.json::<Value>().ok().and_then(|v| v["name"].as_str().map(str::to_string)) else { return fail(400, "install needs a name") };
+            let cache = h.store.dir.join("pack-cache");
+            let prepared = match crate::packsrc::prepare_bundled(&name, Some(&cache)) {
+                Ok(p) => p,
+                Err(e) => return fail(502, e),
+            };
+            for b in [&prepared.wasm, &prepared.query] {
+                if let Err(e) = h.store.blobs.put(b) {
+                    return fail(500, e);
+                }
+            }
+            match h.store.console_owner_append("pack.add", json!(prepared.pack)) {
+                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary, "pack": prepared.pack })),
+                Err(e) => refused(e),
+            }
+        })
         .get("/v1/keys", |h: &H, _, _| {
             let st = h.store.state();
             let mut keys: Vec<&crate::state::KeyInfo> = st.keys.values().collect();
@@ -651,6 +704,20 @@ pub fn router() -> Router<H> {
             match crate::map::answer(&h.store, &h.derived, p.get("repo"), &question) {
                 Ok(hits) => ok(json!({ "question": question, "hits": hits })),
                 Err(e) => fail(404, e),
+            }
+        })
+        .post("/v1/repos/{repo}/edits", |h: &H, req, p| {
+            // The owner's own edit (the IDE, the CLI): a change of its own that lands at once, signed for the owner.
+            if !matches!(caller(req), Ok(Actor::Owner)) {
+                return fail(403, "only the owner edits directly");
+            }
+            if let Err(r) = writes_allowed(h) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            match owner_edit(h, p.get("repo"), &v) {
+                Ok(r) => ok(r),
+                Err(e) => refused(e),
             }
         })
         .post("/v1/repos/{repo}/queue/step", |h: &H, req, p| {
@@ -1123,6 +1190,94 @@ pub fn router() -> Router<H> {
                 Err(e) => fail(404, e),
             }
         })
+}
+
+/// `{title, ref?, files: [{path, text? | hash?, mode?, deleted?}], intents?}` → a landed owner edit.
+fn owner_edit(h: &Hub, repo: &str, v: &Value) -> Result<Value, String> {
+    let reference = v["ref"].as_str().unwrap_or("main");
+    let title = v["title"]
+        .as_str()
+        .filter(|t| !t.trim().is_empty())
+        .ok_or("an edit needs a title")?;
+    let mut deltas = Vec::new();
+    for f in v["files"].as_array().ok_or("an edit names its files")? {
+        let path = f["path"].as_str().ok_or("a file needs a path")?.to_string();
+        let mode = f["mode"].as_u64().unwrap_or(0o100644) as u32;
+        if f["deleted"] == true {
+            deltas.push(Delta {
+                path,
+                after: None,
+                mode,
+            });
+        } else if let Some(text) = f["text"].as_str() {
+            deltas.push(Delta {
+                path,
+                after: Some(h.store.blobs.put(text.as_bytes())?),
+                mode,
+            });
+        } else {
+            let hash: Hash = serde_json::from_value(f["hash"].clone())
+                .map_err(|_| format!("{path}: give its text or the hash of an uploaded object"))?;
+            deltas.push(Delta {
+                path,
+                after: Some(hash),
+                mode,
+            });
+        }
+    }
+    let change = h.store.open_lane(
+        repo,
+        reference,
+        None,
+        title,
+        Actor::Owner,
+        None,
+        "owner-edit",
+    )?;
+    h.store.console_owner_append(
+        "revision.draft",
+        json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["owner:edit"] }),
+    )?;
+    h.store.console_owner_append(
+        "revision.seal",
+        json!({ "change": change, "n": 1, "deltas": deltas }),
+    )?;
+    let intents = if v["intents"].is_array() {
+        v["intents"].clone()
+    } else {
+        json!([{ "title": title, "kind": "change", "covers": deltas.iter().map(|d| d.path.clone()).collect::<Vec<_>>() }])
+    };
+    h.store.console_owner_append(
+        "intent.set",
+        json!({ "change": change, "n": 1, "intents": intents }),
+    )?;
+    let head = h.store.state().repo(repo)?.head(reference);
+    let base = h.store.state().change(&change)?.base.clone();
+    let landing = if base == head {
+        deltas
+    } else {
+        // Main moved while the edit was made: merge it on.
+        let m = crate::merge::merge_trees(
+            &h.store,
+            &h.derived,
+            &*h.store.tree(&base)?,
+            &*h.store.tree(&format!("{change}.r1"))?,
+            &*h.store.tree(&head)?,
+        )?;
+        if !m.clashes.is_empty() {
+            return Err(format!(
+                "the edit clashes with main on {}",
+                m.clashes
+                    .iter()
+                    .map(|c| c.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        m.deltas
+    };
+    h.store.hub_append("land", json!({ "repo": repo, "ref": reference, "change": change, "n": 1, "expected": head, "deltas": landing }))?;
+    Ok(json!({ "change": change, "landed": format!("{change}.l") }))
 }
 
 fn rev_repo(h: &Hub, rev: &str) -> Result<String, Response> {

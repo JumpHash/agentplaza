@@ -25,7 +25,7 @@ pub const USAGE: &str = "weft: AgentPlaza's version control
   weft keys new <file> | keys show <file> | keys certify <public-hex> --actor agent:<cid> [--name N --role R --project P]
   weft repo create <name> [--project P] [--description D] | repos
   weft lane open --repo R --title T --author agent:<cid> [--task T] [--stacked-on w-N]
-  weft checkout <change> [--dir D] [--paths a/**,b]    weft status    weft diff [--symbols] [path]
+  weft checkout <change> [--dir D] [--paths a/**,b] | checkout --candidate <digest> [--dir D]    weft status    weft diff [--symbols] [path]
   weft snapshot [--tool-call ID]… [--turn N] [--model M]    weft restore <revision>
   weft describe --intent <title> [--kind K] [--summary S] <path or path::symbol>…
   weft done [--model M]
@@ -159,7 +159,11 @@ impl Ctx {
         // A hub with its own certificate: the SHA-256 of its DER, in hex (`--pin`, `WEFT_PIN`).
         if let Some(pin) = self.env("pin", "WEFT_PIN") {
             let bytes = crate::hash::unhex(pin.trim()).map_err(|_| "the pin is not hex")?;
-            c.target.pin = Some(bytes.try_into().map_err(|_| "the pin is a SHA-256 (64 hex digits)")?);
+            c.target.pin = Some(
+                bytes
+                    .try_into()
+                    .map_err(|_| "the pin is a SHA-256 (64 hex digits)")?,
+            );
         }
         Ok(c)
     }
@@ -648,6 +652,39 @@ fn init(cx: &Ctx) -> Result<(), String> {
 /// `weft checkout <change>`: the lane's files, from its latest draft or round (or its base when it has none).
 fn checkout(cx: &Ctx) -> Result<(), String> {
     let c = cx.client()?;
+    // A landing candidate (for a re-check): its files, laid out once, with no lane behind them.
+    if let Some(digest) = cx.args.opt("candidate") {
+        let dir = cx
+            .args
+            .opt("dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cx.cwd.clone());
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let w = Workdir { root: dir };
+        let v = c.post("/wire/want", &json!({ "candidate": digest }))?;
+        let files: Vec<(String, Hash, u32)> = v["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                Some((
+                    f["path"].as_str()?.to_string(),
+                    serde_json::from_value(f["hash"].clone()).ok()?,
+                    f["mode"].as_u64().unwrap_or(0o100644) as u32,
+                ))
+            })
+            .collect();
+        fetch(&c, &w, files.iter().map(|f| f.1).collect())?;
+        for (p, h, mode) in &files {
+            w.write_file(p, &w.object(h).ok_or("an object did not arrive")?, *mode)?;
+        }
+        println!(
+            "candidate {digest}: {} files in {}",
+            files.len(),
+            w.root.display()
+        );
+        return Ok(());
+    }
     let change = cx.args.arg(1, "a change (w-N) or task")?;
     let detail = c.get(&format!("/changes/{change}"))?;
     let name = detail["change"]

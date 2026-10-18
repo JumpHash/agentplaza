@@ -370,13 +370,33 @@ fn restart_if_dead(app: &Arc<App>) {
 
 /// What the hub does when Weft says something happened: a landing is exported to the repo's connections.
 fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
-    if kind == "land"
-        && let Some(repo) = body["repo"].as_str()
-    {
-        let app = Arc::clone(app);
-        let repo = repo.to_string();
-        std::thread::spawn(move || export_all(&app, &repo));
+    if kind != "land" {
+        return;
     }
+    let (Some(repo), Some(change)) = (body["repo"].as_str(), body["change"].as_str()) else {
+        return;
+    };
+    let app = Arc::clone(app);
+    let (repo, change) = (repo.to_string(), change.to_string());
+    std::thread::spawn(move || {
+        // The task is done when its change lands: the worker is paid now.
+        if let Ok(detail) = app.weft.get(&format!("/changes/{change}"))
+            && let Some(task) = detail["task"].as_str()
+        {
+            if app
+                .plaza
+                .tasks
+                .find(task)
+                .is_some_and(|t| t.state() == "awaiting_review")
+            {
+                let _ = app
+                    .work
+                    .owner_verdict(&app, task, true, &format!("{change} landed"));
+            }
+            crate::review_graph::post_land(&app, &repo, &change, task);
+        }
+        export_all(&app, &repo);
+    });
 }
 
 /// Exports a repo to each of its connections, with each one's credential from the vault.
@@ -708,6 +728,14 @@ pub fn land_queues(app: &App) {
                         conflict_task(app, name, &v);
                         break;
                     }
+                    Ok(v) if v["outcome"] == "recheck" || v["outcome"] == "waiting" => {
+                        if let (Some(change), Some(digest)) =
+                            (v["change"].as_str(), v["digest"].as_str())
+                        {
+                            crate::review_graph::recheck(app, name, change, digest);
+                        }
+                        break;
+                    }
                     Ok(_) => break,
                     Err(e) => {
                         eprintln!("apid: landing {name}:{reference}: {e}");
@@ -752,7 +780,15 @@ fn conflict_task(app: &App, repo: &str, step: &Value) {
         change: change.to_string(),
         repo: repo.to_string(),
     });
+    // The task goes back to its worker: its resolution is a new round, reviewed like any other.
+    if let Some(t) = app.plaza.tasks.find(task) {
+        let _ = t.rework(Some(format!(
+            "{change} clashed with main on {}",
+            files.join(", ")
+        )));
+    }
     let origin = crate::scheduler::Origin {
+        task: Some(task.to_string()),
         lane,
         ..Default::default()
     };
@@ -760,7 +796,7 @@ fn conflict_task(app: &App, repo: &str, step: &Value) {
         app,
         cid,
         apz_proto::wire::WorkKind::Task,
-        format!("resolve-{change}"),
+        format!("task-{task}"),
         prompt,
         origin,
     );
@@ -819,6 +855,12 @@ fn owner_door(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if app.control.paused() && writes(&req.method, rest) && !rest.starts_with("wire/") {
         return Response::error(423, "STOP ALL is on: Weft takes no writes");
     }
+    // The owner's CLI on a device without the owner key: the hub signs for the owner, marked as from the console.
+    let rest = if rest == "records/unsigned" {
+        "console"
+    } else {
+        rest
+    };
     forward(app, req, "owner", rest)
 }
 

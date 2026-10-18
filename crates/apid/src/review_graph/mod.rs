@@ -189,8 +189,19 @@ pub struct Run {
     pub tree: Value,
     #[serde(default)]
     pub summary: String,
+    /// `review` (a sealed round), `recheck` (a landing candidate, `revision` is its digest) or `post-land` (main
+    /// after the change landed).
+    #[serde(default = "review_purpose")]
+    pub purpose: String,
+    /// For a re-check: the repo whose queue waits on it.
+    #[serde(default)]
+    pub repo: String,
     pub created_ms: u64,
     pub updated_ms: u64,
+}
+
+fn review_purpose() -> String {
+    "review".into()
 }
 
 impl Run {
@@ -552,6 +563,8 @@ pub fn start(app: &App, task: &str) -> Option<String> {
                 outcome: None,
                 tree,
                 summary: view.note.unwrap_or_default(),
+                purpose: review_purpose(),
+                repo: String::new(),
                 created_ms: now,
                 updated_ms: now,
             },
@@ -919,10 +932,16 @@ fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
         p.push_str(&format!("{}\n", n.def.ask));
     }
     if n.def.kind == "check" {
+        let checkout = match run.purpose.as_str() {
+            "recheck" => format!(
+                "weft checkout --candidate {} --dir /tmp/{}",
+                run.revision, run.id
+            ),
+            _ => format!("weft checkout {} --dir /tmp/{}", run.change, run.id),
+        };
         p.push_str(&format!(
-            "Run these in a fresh checkout (weft checkout {} --dir /tmp/{}), each from its root:\n{}\nReport each with review_score (basis measured, axes {}), then review_verdict: pass only when every command succeeded.\n",
-            run.change,
-            run.id,
+            "Run these in a fresh checkout ({}), each from its root:\n{}\nReport each with review_score (basis measured, axes {}), then review_verdict: pass only when every command succeeded.\n",
+            checkout,
             n.def.commands.iter().map(|c| format!("  - {c}")).collect::<Vec<_>>().join("\n"),
             if axes.is_empty() { "tst".into() } else { axes.join(", ") }
         ));
@@ -1331,6 +1350,10 @@ fn gate(app: &App, run_id: &str) {
         return;
     }
     let outcome = decide(&run);
+    // A re-check or a post-land suite decides on its own (its revision may not be one Weft has).
+    if run.purpose != "review" {
+        return settle_check(app, &run, outcome);
+    }
     let record = app
         .weft
         .hub("attest", json!({ "revision": run.revision, "digest": revision_digest(app, &run.revision), "predicate_type": "gate", "predicate": { "run": run.id, "recipe": run.recipe, "round": run.round, "outcome": outcome.decision, "reasons": outcome.reasons, "lows": run.lows() } }))
@@ -1371,9 +1394,8 @@ fn gate(app: &App, run_id: &str) {
     }
 }
 
-/// A pass: the task is done (the worker is paid) and the revision joins its project's landing queue.
-fn passed(app: &App, run: &Run, notes: &str) {
-    let _ = app.work.owner_verdict(app, &run.task, true, notes);
+/// A pass: the revision joins its project's landing queue; the task is done (and the worker paid) when it lands.
+fn passed(app: &App, run: &Run, _notes: &str) {
     let detail = app.weft.get(&format!("/changes/{}", run.change)).ok();
     if let Some(d) = detail {
         let n = d["rounds"].as_array().map(|r| r.len()).unwrap_or(0);
@@ -1547,4 +1569,251 @@ pub fn carried_findings(app: &App, run: &Run) -> Vec<Finding> {
         .flat_map(|r| r.nodes.into_iter().flat_map(|n| n.findings))
         .filter(|f| f.lineage.as_ref().is_some_and(|l| lineages.contains(l)))
         .collect()
+}
+
+// ── re-checks and the post-land suite ────────────────────────────────────────────────────────────────────────────
+
+/// A one-step run: a check node with `commands`, then the gate (a failed check fails it).
+fn check_run(
+    app: &App,
+    purpose: &str,
+    task: &str,
+    project: &str,
+    worker: u64,
+    change: &str,
+    revision: &str,
+    repo: &str,
+    commands: Vec<String>,
+) -> Option<String> {
+    if commands.is_empty() {
+        return None;
+    }
+    let check = NodeDef {
+        id: "checks".into(),
+        kind: "check".into(),
+        role: Some("qa".into()),
+        axes: vec!["tst".into()],
+        commands,
+        after: vec![],
+        ..Default::default()
+    };
+    let gate = NodeDef {
+        id: "gate".into(),
+        kind: "gate".into(),
+        after: vec!["checks".into()],
+        ..Default::default()
+    };
+    let node = |def: NodeDef| NodeRun {
+        def,
+        parent: None,
+        state: NodeState::Waiting,
+        assignee: None,
+        work: None,
+        tries: 0,
+        scores: vec![],
+        findings: vec![],
+        touches: vec![],
+        notes: String::new(),
+        record: None,
+        started_ms: 0,
+        ended_ms: 0,
+        spawned: 0,
+    };
+    let now = apz_plaza::now_ms();
+    let id = app.reviews.with(|b| {
+        b.next += 1;
+        let id = format!("rv{}", b.next);
+        b.runs.insert(
+            id.clone(),
+            Run {
+                id: id.clone(),
+                task: task.into(),
+                project: project.into(),
+                worker,
+                change: change.into(),
+                revision: revision.into(),
+                recipe: format!("{purpose}@1"),
+                round: 1,
+                rounds: 0,
+                kind: "code".into(),
+                state: RunState::Running,
+                nodes: vec![node(check), node(gate)],
+                rules: vec![recipe::Rule {
+                    when: "failed".into(),
+                    then: "fail".into(),
+                }],
+                owner_asked: false,
+                outcome: None,
+                tree: Value::Null,
+                summary: String::new(),
+                purpose: purpose.into(),
+                repo: repo.into(),
+                created_ms: now,
+                updated_ms: now,
+            },
+        );
+        id
+    });
+    app.bus.publish(
+        "review_run",
+        &json!({ "run": id, "task": task, "state": "running", "purpose": purpose }),
+    );
+    Some(id)
+}
+
+/// The commands a task's code recipe re-checks with (its `checks` node), and its post-land suite.
+fn recipe_commands(app: &App, task: &str) -> (Vec<String>, Vec<String>) {
+    let Some(run) = app
+        .reviews
+        .runs_of(task)
+        .into_iter()
+        .find(|r| r.purpose == "review")
+    else {
+        return (vec![], vec![]);
+    };
+    let (id, version) = run
+        .recipe
+        .split_once('@')
+        .map(|(i, v)| (i.to_string(), v.parse().ok()))
+        .unwrap_or((run.recipe.clone(), None));
+    let Some(recipe) = app.reviews.recipe(&id, version) else {
+        return (vec![], vec![]);
+    };
+    let checks = recipe
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "check")
+        .flat_map(|n| n.commands.clone())
+        .collect();
+    (checks, recipe.post_land.clone())
+}
+
+/// A merged landing candidate waits for its checks: a re-check run for it.
+pub fn recheck(app: &App, repo: &str, change: &str, digest: &str) -> Option<String> {
+    if app
+        .reviews
+        .book
+        .lock()
+        .ok()?
+        .runs
+        .values()
+        .any(|r| r.purpose == "recheck" && r.revision == digest)
+    {
+        return None;
+    }
+    let detail = app.weft.get(&format!("/changes/{change}")).ok()?;
+    let task = detail["task"].as_str()?.to_string();
+    let project = app.plaza.tasks.find(&task)?.project()?.to_string();
+    let worker = detail["author"]
+        .as_str()?
+        .strip_prefix("agent:")?
+        .parse()
+        .ok()?;
+    let (checks, _) = recipe_commands(app, &task);
+    match check_run(
+        app, "recheck", &task, &project, worker, change, digest, repo, checks,
+    ) {
+        Some(id) => Some(id),
+        None => {
+            // Nothing to re-check with: the candidate lands as it is.
+            let _ = app.weft.post(
+                &format!("/repos/{repo}/queue/report"),
+                &json!({ "digest": digest, "ok": true }),
+            );
+            None
+        }
+    }
+}
+
+/// After a landing: the recipe's slow checks on main, as a post-land run.
+pub fn post_land(app: &App, repo: &str, change: &str, task: &str) {
+    let Some(record) = app.plaza.tasks.find(task) else {
+        return;
+    };
+    let Some(project) = record.project().map(str::to_string) else {
+        return;
+    };
+    let worker = record.view().agent_cid.unwrap_or(0);
+    let (_, suite) = recipe_commands(app, task);
+    check_run(
+        app,
+        "post-land",
+        task,
+        &project,
+        worker,
+        change,
+        &format!("{change}.l"),
+        repo,
+        suite,
+    );
+}
+
+/// A re-check's or post-land suite's outcome.
+fn settle_check(app: &App, run: &Run, outcome: Outcome) {
+    let pass = outcome.decision == "pass";
+    let notes = run
+        .nodes
+        .iter()
+        .find(|n| n.def.id == "checks")
+        .map(|n| n.notes.clone())
+        .unwrap_or_default();
+    app.reviews.update(&run.id, |r| {
+        if let Some(g) = r.nodes.iter_mut().find(|n| n.def.kind == "gate") {
+            g.state = if pass {
+                NodeState::Passed
+            } else {
+                NodeState::Failed
+            };
+            g.ended_ms = apz_plaza::now_ms();
+        }
+        r.state = if pass {
+            RunState::Passed
+        } else {
+            RunState::Failed
+        };
+        r.outcome = Some(outcome.clone());
+    });
+    app.bus.publish("review_run", &json!({ "run": run.id, "task": run.task, "state": outcome.decision, "purpose": run.purpose }));
+    match (run.purpose.as_str(), pass) {
+        ("recheck", ok) => {
+            let _ = app.weft.post(
+                &format!("/repos/{}/queue/report", run.repo),
+                &json!({ "digest": run.revision, "ok": ok }),
+            );
+            if !ok {
+                // A merge that breaks the checks goes back to the worker; the change left the queue.
+                let reasons = vec![format!(
+                    "the re-check after merging onto main failed: {notes}"
+                )];
+                send_back(app, run, &reasons);
+            }
+        }
+        ("post-land", false) => {
+            // Main is broken: a signed revert lands at once, and the author gets a fix task.
+            let reason = format!("the post-land suite failed on {}: {notes}", run.revision);
+            match app.weft.post(
+                &format!("/changes/{}/revert", run.change),
+                &json!({ "reason": reason }),
+            ) {
+                Ok(v) => app.bus.publish(
+                    "weft_revert",
+                    &json!({ "change": run.change, "revert": v["change"], "reason": reason }),
+                ),
+                Err(e) => eprintln!("apid: reverting {}: {e}", run.change),
+            }
+            let goal = format!("Fix what {} broke: {reason}", run.change);
+            let created = app.plaza.tasks.create(&apz_plaza::tasks::CreateTask {
+                goal,
+                acceptance: Some("the post-land suite passes on main".into()),
+                budget: None,
+                role: app.agents.get(run.worker).map(|a| a.role),
+                after: vec![],
+                project: Some(run.project.clone()),
+            });
+            if let Ok(t) = created {
+                let _ = app.projects.link_task(&run.project, t.id());
+            }
+        }
+        _ => {}
+    }
 }
