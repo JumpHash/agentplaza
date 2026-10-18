@@ -55,6 +55,19 @@ pub struct Project {
     pub tasks: Vec<String>,
     #[serde(default)]
     pub updated_ms: i64,
+    /// Paused: its agents take no work until it is resumed.
+    #[serde(default)]
+    pub paused: bool,
+    /// Archived: nothing more is done for it.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+impl Project {
+    /// Whether it still has work: not archived, not delivered.
+    pub fn live(&self) -> bool {
+        !self.archived && self.stage != "delivered"
+    }
 }
 
 /// A document a planning stage produced.

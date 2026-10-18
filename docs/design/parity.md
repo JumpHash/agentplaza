@@ -130,6 +130,22 @@ feature, in the file or command named.
 | Per-role volumes (`role_volumes`) | `volumes.ts` (Roles) | `volumes.rs` (Roles) | `agentplaza volumes roles`, `mount`, `unmount` | Done in all three |
 | Sleep and wake a workstation VM | apps/web/src/views/workstations-vms.ts (Sleep, Wake) | apps/desktop/src/console/screens/workstations_vms.rs (Sleep, Wake) | agentplaza stations vms sleep, wake | Done in all three (plaza VMs) |
 
+## Sixth pass (2026-10-18): projects and conversations
+
+The project scope (`plaza-tv/PLAN-projects.md`): an agent works only on its project, the console switches between
+projects, and a project is set up in a conversation with the orchestrator. "Done" means the surface has the feature, in
+the file or command named.
+
+| Surface | Web | Desktop | CLI or TUI | State |
+|---|---|---|---|---|
+| The project switcher: All projects, each live project, New project…; remembered | `apps/web/src/ui/scope-switcher.ts`, `scope.ts` (the route carries it, `#/p/<id>/…`) | `apps/desktop/src/console/shell.rs` (the top bar), `scope.rs` (remembered per hub) | TUI `p` and `P`; `--project` on `agents list`, `tasks list` and `tasks create` | web Scope 5/8, desktop Scope 7/8, CLI Scope 8/8 |
+| New project: a conversation with the orchestrator, or a project opened directly | `apps/web/src/ui/new-project.ts` | `apps/desktop/src/console/new_project.rs` | `agentplaza chat`, `agentplaza projects create` | web 5/8, desktop 7/8, CLI 8/8 |
+| Under a project: Overview, Agents, Tasks, Work, Board and Approvals show it; the plaza's setup screens say its own settings override them | `apps/web/src/views/overview.ts`, `agent-list.ts`, `tasks.ts`, `work.ts`, `board.ts`, `approvals.ts`, `main.ts` | `apps/desktop/src/console/screens/overview.rs`, `agents.rs`, `tasks.rs`, `work.rs`, `board.rs`, `approvals.rs`, `shell.rs` (the note) | `agents list --project`, `tasks list --project`; the TUI's Agents and Tasks tabs | web 5/8, desktop 7/8, CLI 8/8 |
+| The bench: who works where, Put on…, Back to the bench; an agent's page says where it works and since when | `agent-list.ts`, `agent-detail.ts` | `agents.rs` (the Project column, the bench card), `agent.rs` | `agents list --bench`, `agents show`, `projects members add`, `remove` | web 5/8, desktop 7/8, CLI 8/8 |
+| Projects: Pause, Resume, Archive; the Team tab (members, the bench, the agents from before, new agents for it); the Settings tab (each setting inherited or overridden, models by role, the budget) | `projects.ts`, `project-team.ts`, `project-settings.ts` | `projects.rs`, `project_team.rs`, `project_settings.rs` | `projects pause`, `resume`, `archive`, `members`, `settings`, `budget` | web 5/8, desktop 7/8, CLI 8/8 |
+| Tasks: a new task names its project, its assignee one of that project's agents; a task from before projects moves into one | `tasks.ts` | `tasks.rs` | `tasks create --project`, `tasks move` | web 5/8, desktop 7/8, CLI 8/8 |
+| The IDE: conversations with the orchestrator, the draft beside the chat, Edit and Start; project mode; the chat composer talks to an idle agent and steers a working one | `apps/web/src/views/ide-conversation.ts`, `ide-sidebar.ts`, `ide-chat.ts`, `apps/web/src/ide/conversation-model.ts` | `apps/desktop/src/console/screens/ide_conversation.rs`, `ide_sidebar.rs`, `ide_panels.rs`, `ide_model.rs` | `agentplaza chat` (`/draft`, `/start`); the TUI's Chat tab | web 6/8, desktop 7/8, CLI 8/8 |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

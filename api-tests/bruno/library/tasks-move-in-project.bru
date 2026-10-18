@@ -1,0 +1,29 @@
+meta {
+  name: Refuse to move a task out of its project
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{taskId}}/move
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "project": "{{projectId}}"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("a task never leaves its project", function () {
+    expect(res.getBody().error).to.contain("never leaves its project");
+  });
+}

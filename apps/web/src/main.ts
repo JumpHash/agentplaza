@@ -9,9 +9,12 @@ import './ui/theme';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/views.css';
+import './styles/scope.css';
 import { applySidebar, sidebar, sidebarToggle } from './ui/sidebar';
 
-import { onRoute, type Route } from './router';
+import { hrefIn, onRoute, type Route } from './router';
+import { followRoute, remembered, startScope } from './scope';
+import { scopeSwitcher } from './ui/scope-switcher';
 import { noteConsoleRoute, openIde } from './ide/open';
 import { agents, overview, startShared } from './store';
 import { button, dot, modal } from './ui/components';
@@ -82,7 +85,7 @@ function topbar(title: HTMLElement): HTMLElement {
       h('span', null, dot(o.agents.working ? 'info' : 'muted'), `${o.agents.working} working · ${o.agents.idle} idle`),
     );
   });
-  return h('header.topbar', null, sidebarToggle(), title, h('span.spacer'), openIdeButton(), health, plazaControl(), signOutControl());
+  return h('header.topbar', null, sidebarToggle(), title, scopeSwitcher(), h('span.spacer'), openIdeButton(), health, plazaControl(), signOutControl());
 }
 
 function banner(): HTMLElement {
@@ -95,8 +98,27 @@ function banner(): HTMLElement {
   return el;
 }
 
+/** The setup screens hold the plaza's settings, which a project overrides in its own: under a project, they say so. */
+const PLAZA_SETTINGS = new Set(['models', 'tools', 'mcp', 'prompts', 'skills', 'rules', 'vault', 'egress']);
+
+function plazaSettingsNote(project: string): HTMLElement {
+  return h(
+    'div.banner.scope-note',
+    null,
+    icon('settings'),
+    h('span', null, 'These are the plaza\'s settings, which every project starts from. '),
+    h('a', { href: hrefIn(project, 'projects', project, 'settings') }, 'This project\'s own settings'),
+    h('span', null, ' override some of them.'),
+  );
+}
+
 function main(): void {
   startShared();
+  startScope();
+  // A visit to the console's front door opens the project chosen last time.
+  const last = remembered();
+  if (last && (!location.hash || location.hash === '#' || location.hash === '#/')) history.replaceState(null, '', hrefIn(last, 'overview'));
+
   const title = h('span.title');
   const content = h('main.view-host');
   const app = h('div.app', null, sidebar({ counts, navLinks }), h('div.main', null, topbar(title), heldBanner(), banner(), content));
@@ -123,6 +145,7 @@ function main(): void {
   let cleanup: Cleanup | undefined;
   let mounted = '';
   onRoute((route: Route) => {
+    followRoute(route.project);
     const screen = SCREENS.find((s) => s.key === route.screen) ?? SCREENS[0]!;
     for (const [key, link] of navLinks) {
       if (key === screen.key) link.setAttribute('aria-current', 'page');
@@ -132,7 +155,8 @@ function main(): void {
     if (!ide) noteConsoleRoute(location.hash);
     app.hidden = ide;
     ideHost.hidden = !ide;
-    const key = `${screen.key}/${route.params.join('/')}`;
+    // A switch of project remounts the screen: it shows another project's things.
+    const key = `${route.project ?? ''}|${screen.key}/${route.params.join('/')}`;
     if (key === mounted) return;
     mounted = key;
     cleanup?.();
@@ -146,7 +170,8 @@ function main(): void {
     } else {
       ideHost.replaceChildren();
       const root = h('div.view');
-      content.replaceChildren(root);
+      const note = route.project && PLAZA_SETTINGS.has(screen.key) ? plazaSettingsNote(route.project) : null;
+      content.replaceChildren(...(note ? [note, root] : [root]));
       cleanup = screen.mount(root, route.params);
     }
   });

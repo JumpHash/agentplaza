@@ -1,0 +1,724 @@
+//! A project's Settings tab (the web's `project-settings.ts`): every setting its agents get, inherited from the plaza
+//! or overridden here, with Change and Reset to plaza; the models by role; and the project's budget, with credits set
+//! aside from the plaza's or given back. The instructions and skills are the prompt and skills bound to
+//! `project:<id>`.
+
+use iced::widget::{column, container, row, text_input};
+use iced::{Alignment, Element, Length, Task};
+use serde_json::{Value, json};
+
+use super::Id;
+use crate::console::{Ctx, client, roles, ui};
+use crate::theme;
+
+/// How a setting is entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Input {
+    Model,
+    Number,
+    Choice(&'static [&'static str]),
+}
+
+/// One setting: its key, its label, what it does, and how it is entered.
+struct Spec {
+    key: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    input: Input,
+}
+
+const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const MODES: &[&str] = &["autonomous", "ask", "read_only"];
+
+const SPECS: [Spec; 9] = [
+    Spec {
+        key: "default_model",
+        label: "Model",
+        hint: "The project's agents' model, for a role with none of its own here",
+        input: Input::Model,
+    },
+    Spec {
+        key: "effort",
+        label: "Effort",
+        hint: "The reasoning effort of their model calls",
+        input: Input::Choice(EFFORTS),
+    },
+    Spec {
+        key: "max_tokens",
+        label: "Longest answer",
+        hint: "Tokens per model call (0 at the plaza: the provider decides)",
+        input: Input::Number,
+    },
+    Spec {
+        key: "max_turns",
+        label: "Turns per task",
+        hint: "How many model turns a work item may take (1 to 500)",
+        input: Input::Number,
+    },
+    Spec {
+        key: "compress_at",
+        label: "Compress at",
+        hint: "The conversation size, in bytes, at which it is compressed (0: never)",
+        input: Input::Number,
+    },
+    Spec {
+        key: "keep_recent",
+        label: "Turns kept",
+        hint: "How many recent turns a compression keeps (1 to 50)",
+        input: Input::Number,
+    },
+    Spec {
+        key: "task_budget",
+        label: "Task budget",
+        hint: "Credits a task gets when it names none",
+        input: Input::Number,
+    },
+    Spec {
+        key: "permission_mode",
+        label: "Permission mode",
+        hint: "For agents with no mode of their own",
+        input: Input::Choice(MODES),
+    },
+    Spec {
+        key: "review_timeout_minutes",
+        label: "Review timeout",
+        hint: "Minutes a finished task waits for a reviewer before you are asked",
+        input: Input::Number,
+    },
+];
+
+/// A change being typed: a setting (by its key) or a role's model, and the value so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    key: &'static str,
+    role: Option<String>,
+    value: String,
+}
+
+/// Credits being set aside (or, `back`, given back to the plaza).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetForm {
+    back: bool,
+    amount: String,
+}
+
+#[derive(Debug, Default)]
+pub struct State {
+    /// `GET /v1/projects/{id}/settings/effective`; None until the first load.
+    pub view: Option<Value>,
+    pub error: Option<String>,
+    /// A line for the last change ("Effort saved").
+    pub note: Option<String>,
+    pub edit: Option<Edit>,
+    /// The role named for a new role's model, before its model is picked.
+    pub new_role: Option<String>,
+    pub budget: Option<BudgetForm>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Msg {
+    Go(Id),
+    Loaded(Result<Value, String>),
+    /// Change a setting, by its key.
+    Change(&'static str),
+    /// Change a role's model.
+    ChangeRole(String),
+    Value(String),
+    Save,
+    /// Reset a setting (by its key) or a role's model to the plaza's.
+    Reset(&'static str),
+    ResetRole(String),
+    Cancel,
+    /// "Set a role's model": the role's name, then Next.
+    NewRole,
+    RoleName(String),
+    RoleNext,
+    /// Opens the budget form: set credits aside (false) or give some back (true).
+    Budget(bool),
+    Amount(String),
+    MoveBudget,
+    /// A change went through (the line to show) or failed.
+    Saved(Result<String, String>),
+}
+
+pub fn go(msg: &Msg) -> Option<Id> {
+    match msg {
+        Msg::Go(id) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+pub fn load(project: &str, ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    let path = format!("/v1/projects/{project}/settings/effective");
+    client::task(move || c.get::<Value>(&path), Msg::Loaded)
+}
+
+fn spec(key: &str) -> Option<&'static Spec> {
+    SPECS.iter().find(|s| s.key == key)
+}
+
+/// A value as the table shows it: a dash for none.
+fn shown(v: &Value) -> String {
+    match &v["value"] {
+        Value::Null => "—".into(),
+        Value::String(s) if s.is_empty() => "—".into(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The value a field holds to begin a change with: the current one, else the first choice.
+fn start_value(v: &Value, input: Input) -> String {
+    match (&v["value"], input) {
+        (Value::Null, Input::Choice(choices)) => choices[0].to_string(),
+        (Value::Null, _) => String::new(),
+        (Value::String(s), _) => s.clone(),
+        (other, _) => other.to_string(),
+    }
+}
+
+/// The patch a typed value makes, or why it cannot: a number for a number, some text for the rest.
+fn patch_of(edit: &Edit) -> Result<Value, String> {
+    let raw = edit.value.trim();
+    if raw.is_empty() {
+        return Err("Give a value, or reset it to the plaza's.".into());
+    }
+    let value = match spec(edit.key).map(|s| s.input) {
+        Some(Input::Number) => match raw.parse::<i64>() {
+            Ok(n) => json!(n),
+            Err(_) => return Err("A whole number.".into()),
+        },
+        _ => json!(raw),
+    };
+    Ok(match &edit.role {
+        Some(role) => json!({ "role_models": { role: value } }),
+        None => json!({ edit.key: value }),
+    })
+}
+
+/// `project` is the project's id, `live` whether it can still be changed.
+pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg> {
+    match msg {
+        Msg::Go(_) => Task::none(),
+        Msg::Loaded(Ok(v)) => {
+            state.view = Some(v);
+            state.error = None;
+            Task::none()
+        }
+        Msg::Loaded(Err(e)) => {
+            state.error = Some(e);
+            Task::none()
+        }
+        Msg::Change(key) => {
+            let current = state
+                .view
+                .as_ref()
+                .map(|v| v["settings"][key].clone())
+                .unwrap_or_default();
+            if let Some(s) = spec(key) {
+                state.edit = Some(Edit {
+                    key: s.key,
+                    role: None,
+                    value: start_value(&current, s.input),
+                });
+                state.budget = None;
+                state.new_role = None;
+            }
+            Task::none()
+        }
+        Msg::ChangeRole(role) => {
+            let current = state
+                .view
+                .as_ref()
+                .map(|v| v["role_models"][&role].clone())
+                .unwrap_or_default();
+            state.edit = Some(Edit {
+                key: "default_model",
+                value: start_value(&current, Input::Model),
+                role: Some(role),
+            });
+            state.budget = None;
+            state.new_role = None;
+            Task::none()
+        }
+        Msg::Value(v) => {
+            if let Some(edit) = state.edit.as_mut() {
+                edit.value = v;
+            }
+            Task::none()
+        }
+        Msg::Save => {
+            let Some(edit) = state.edit.clone() else {
+                return Task::none();
+            };
+            match patch_of(&edit) {
+                Ok(change) => {
+                    let what = match &edit.role {
+                        Some(role) => format!("{}'s model saved", roles::label(role)),
+                        None => format!("{} saved", spec(edit.key).map_or(edit.key, |s| s.label)),
+                    };
+                    state.edit = None;
+                    save(project, change, what, ctx)
+                }
+                Err(e) => {
+                    state.error = Some(e);
+                    Task::none()
+                }
+            }
+        }
+        Msg::Reset(key) => {
+            let what = format!(
+                "{} is the plaza's again",
+                spec(key).map_or(key, |s| s.label)
+            );
+            save(project, json!({ key: null }), what, ctx)
+        }
+        Msg::ResetRole(role) => {
+            let what = format!("{}'s model is the plaza's again", roles::label(&role));
+            save(project, json!({ "role_models": { role: null } }), what, ctx)
+        }
+        Msg::Cancel => {
+            state.edit = None;
+            state.new_role = None;
+            state.budget = None;
+            Task::none()
+        }
+        Msg::NewRole => {
+            state.new_role = Some(String::new());
+            state.edit = None;
+            state.budget = None;
+            Task::none()
+        }
+        Msg::RoleName(name) => {
+            if let Some(r) = state.new_role.as_mut() {
+                *r = name;
+            }
+            Task::none()
+        }
+        Msg::RoleNext => {
+            let role = state.new_role.take().unwrap_or_default().trim().to_string();
+            if role.is_empty() {
+                return Task::none();
+            }
+            state.edit = Some(Edit {
+                key: "default_model",
+                role: Some(role),
+                value: String::new(),
+            });
+            Task::none()
+        }
+        Msg::Budget(back) => {
+            state.budget = Some(BudgetForm {
+                back,
+                amount: String::new(),
+            });
+            state.edit = None;
+            state.new_role = None;
+            Task::none()
+        }
+        Msg::Amount(a) => {
+            if let Some(b) = state.budget.as_mut() {
+                b.amount = a;
+            }
+            Task::none()
+        }
+        Msg::MoveBudget => {
+            let Some(form) = state.budget.clone() else {
+                return Task::none();
+            };
+            let n = match form.amount.trim().parse::<i64>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    state.error = Some("A whole number of credits, more than 0.".into());
+                    return Task::none();
+                }
+            };
+            state.budget = None;
+            let c = ctx.client.clone();
+            let path = format!("/v1/projects/{project}/budget");
+            let credits = if form.back { -n } else { n };
+            let line = if form.back {
+                format!("{n} credits back to the plaza")
+            } else {
+                format!("{n} credits set aside")
+            };
+            client::task(
+                move || {
+                    c.post::<Value>(&path, &json!({ "credits": credits }))
+                        .map(|_| line)
+                },
+                Msg::Saved,
+            )
+        }
+        Msg::Saved(res) => {
+            match res {
+                Ok(line) => {
+                    state.note = Some(line);
+                    state.error = None;
+                }
+                Err(e) => state.error = Some(e),
+            }
+            load(project, ctx)
+        }
+    }
+}
+
+fn save(project: &str, change: Value, what: String, ctx: &Ctx) -> Task<Msg> {
+    let c = ctx.client.clone();
+    let path = format!("/v1/projects/{project}/settings");
+    client::task(
+        move || c.patch::<Value>(&path, &change).map(|_| what),
+        Msg::Saved,
+    )
+}
+
+/// Where a value comes from, as a badge.
+fn source_badge<'a>(v: &Value) -> Element<'a, Msg> {
+    if v["source"].as_str() == Some("project") {
+        ui::badge("Overridden", ui::Tone::Signal)
+    } else {
+        ui::badge("Inherited from the plaza", ui::Tone::Muted)
+    }
+}
+
+/// A table row: the name and hint, the value, where it comes from, and the actions.
+fn table_row<'a>(
+    name: Element<'a, Msg>,
+    value: String,
+    v: &Value,
+    actions: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    column![
+        row![
+            container(name).width(Length::FillPortion(4)),
+            container(ui::mono(value, 12.5, theme::palette().ink)).width(Length::FillPortion(3)),
+            container(source_badge(v)).width(Length::FillPortion(3)),
+            container(row(actions).spacing(6)).width(Length::FillPortion(3)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .padding([8, 0]),
+        ui::hairline(),
+    ]
+    .into()
+}
+
+/// The form for the change being typed.
+fn edit_form<'a>(edit: &'a Edit) -> Element<'a, Msg> {
+    let (title, hint, input) = match &edit.role {
+        Some(role) => (
+            format!("{}'s model", roles::label(role)),
+            "Its agents on this project run this model",
+            Input::Model,
+        ),
+        None => {
+            let s = spec(edit.key).unwrap_or(&SPECS[0]);
+            (s.label.to_string(), s.hint, s.input)
+        }
+    };
+    let field: Element<'a, Msg> = match input {
+        Input::Choice(choices) => row(choices.iter().map(|c| {
+            ui::btn_sm(
+                c,
+                None,
+                if edit.value == *c {
+                    ui::Kind::Primary
+                } else {
+                    ui::Kind::Secondary
+                },
+                Some(Msg::Value(c.to_string())),
+            )
+        }))
+        .spacing(6)
+        .wrap()
+        .into(),
+        Input::Model | Input::Number => text_input(
+            if input == Input::Model {
+                "provider/model, e.g. anthropic/claude-sonnet-5-5"
+            } else {
+                "A whole number"
+            },
+            &edit.value,
+        )
+        .on_input(Msg::Value)
+        .on_submit(Msg::Save)
+        .padding(8)
+        .style(theme::input)
+        .into(),
+    };
+    ui::card(
+        &format!("Change {title}"),
+        column![
+            ui::faint(hint),
+            field,
+            row![
+                ui::btn("Save", None, ui::Kind::Primary, Some(Msg::Save)),
+                ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(10)
+        .into(),
+    )
+}
+
+/// The tab for the project `project` (`live`: it can still be changed).
+pub fn view<'a>(state: &'a State, project: &'a str, live: bool) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(e) = &state.error {
+        parts.push(ui::error_line(e));
+    }
+    if let Some(n) = &state.note {
+        parts.push(ui::faint(n.clone()).into());
+    }
+    let Some(view) = &state.view else {
+        parts.push(ui::loading());
+        return column(parts).spacing(16).into();
+    };
+    if let Some(edit) = &state.edit {
+        parts.push(edit_form(edit));
+    }
+    // The settings.
+    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+    for s in &SPECS {
+        let v = &view["settings"][s.key];
+        let mut actions = Vec::new();
+        if live {
+            actions.push(ui::btn_sm(
+                "Change",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Change(s.key)),
+            ));
+            if v["source"].as_str() == Some("project") {
+                actions.push(ui::btn_sm(
+                    "Reset to plaza",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::Reset(s.key)),
+                ));
+            }
+        }
+        let name = column![
+            ui::sans(s.label, 13.0, theme::palette().ink),
+            ui::faint(s.hint).size(11.5)
+        ]
+        .spacing(2)
+        .into();
+        rows.push(table_row(name, shown(v), v, actions));
+    }
+    parts.push(ui::card("Settings", column(rows).into()));
+    // The models by role.
+    let mut roles_body: Vec<Element<'a, Msg>> = Vec::new();
+    if live {
+        roles_body.push(
+            row![ui::btn_sm(
+                "Set a role's model",
+                Some("plus"),
+                ui::Kind::Secondary,
+                Some(Msg::NewRole)
+            )]
+            .into(),
+        );
+    }
+    if let Some(name) = &state.new_role {
+        roles_body.push(
+            column![
+                ui::label("Role"),
+                ui::faint("Its agents on this project run the model you pick next"),
+                row![
+                    text_input("builder", name)
+                        .on_input(Msg::RoleName)
+                        .on_submit(Msg::RoleNext)
+                        .padding(8)
+                        .style(theme::input),
+                    ui::btn("Next", None, ui::Kind::Primary, Some(Msg::RoleNext)),
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(8)
+            .into(),
+        );
+    }
+    let role_models = view["role_models"].as_object();
+    match role_models.filter(|m| !m.is_empty()) {
+        None => roles_body.push(
+            ui::faint("No role has a model of its own here or at the plaza: every role runs the model above.").into(),
+        ),
+        Some(models) => {
+            for (role, v) in models {
+                let mut actions = Vec::new();
+                if live {
+                    actions.push(ui::btn_sm(
+                        "Change",
+                        None,
+                        ui::Kind::Ghost,
+                        Some(Msg::ChangeRole(role.clone())),
+                    ));
+                    if v["source"].as_str() == Some("project") {
+                        actions.push(ui::btn_sm(
+                            "Reset to plaza",
+                            None,
+                            ui::Kind::Ghost,
+                            Some(Msg::ResetRole(role.clone())),
+                        ));
+                    }
+                }
+                let name = ui::sans(roles::label(role), 13.0, theme::palette().ink).into();
+                roles_body.push(table_row(name, shown(v), v, actions));
+            }
+        }
+    }
+    parts.push(ui::card(
+        "Models by role",
+        column(roles_body).spacing(8).into(),
+    ));
+    // The budget.
+    let b = &view["budget"];
+    let own = b["own"].as_bool().unwrap_or(false);
+    let balance = b["balance"].as_i64().unwrap_or(0);
+    let plaza = b["plaza"].as_i64().unwrap_or(0);
+    let mut budget: Vec<Element<'a, Msg>> = vec![
+        ui::prose(if own {
+            format!("{} credits left in this project's budget. Its tasks are funded from it, and when it is over the rest goes back to the plaza.", ui::thousands(balance))
+        } else {
+            "This project has no budget of its own yet: its tasks are funded from the plaza's.".to_string()
+        })
+        .into(),
+        ui::faint(format!("The plaza's budget: {} credits.", ui::thousands(plaza))).into(),
+    ];
+    if live {
+        let mut buttons = row![ui::btn_sm(
+            "Set credits aside…",
+            Some("plus"),
+            ui::Kind::Secondary,
+            Some(Msg::Budget(false))
+        )]
+        .spacing(8);
+        if own && balance > 0 {
+            buttons = buttons.push(ui::btn_sm(
+                "Give back…",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Budget(true)),
+            ));
+        }
+        budget.push(buttons.into());
+    }
+    if let Some(form) = &state.budget {
+        budget.push(
+            column![
+                ui::faint(if form.back {
+                    "They go back to the plaza's budget."
+                } else {
+                    "They move from the plaza's budget to this project's: its tasks are funded from it."
+                }),
+                row![
+                    text_input("5000", &form.amount)
+                        .on_input(Msg::Amount)
+                        .on_submit(Msg::MoveBudget)
+                        .padding(8)
+                        .width(Length::Fixed(160.0))
+                        .style(theme::input),
+                    ui::btn(
+                        if form.back { "Give back" } else { "Set aside" },
+                        None,
+                        ui::Kind::Primary,
+                        Some(Msg::MoveBudget)
+                    ),
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(8)
+            .into(),
+        );
+    }
+    parts.push(ui::card("Budget", column(budget).spacing(10).into()));
+    // Where its instructions and skills bind.
+    parts.push(ui::card(
+        "Instructions and skills",
+        column![
+            ui::prose(format!("An AGENTS.md prompt bound to project:{project} is added to this project's agents' instructions, and skills bound to it are theirs too.")),
+            row![
+                ui::text_link("Prompts", Msg::Go(Id::Prompts)),
+                ui::text_link("Skills", Msg::Go(Id::Skills)),
+            ]
+            .spacing(14),
+        ]
+        .spacing(10)
+        .into(),
+    ));
+    column(parts).spacing(16).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> Ctx {
+        Ctx {
+            client: client::Client::new("http://127.0.0.1:9", None, None),
+            project: None,
+        }
+    }
+
+    #[test]
+    fn a_change_patches_the_setting_or_the_roles_model() {
+        let number = Edit {
+            key: "max_turns",
+            role: None,
+            value: " 30 ".into(),
+        };
+        assert_eq!(patch_of(&number), Ok(json!({ "max_turns": 30 })));
+        let words = Edit {
+            value: "thirty".into(),
+            ..number.clone()
+        };
+        assert_eq!(patch_of(&words), Err("A whole number.".into()));
+        let role = Edit {
+            key: "default_model",
+            role: Some("builder".into()),
+            value: "anthropic/claude-sonnet-5-5".into(),
+        };
+        assert_eq!(
+            patch_of(&role),
+            Ok(json!({ "role_models": { "builder": "anthropic/claude-sonnet-5-5" } }))
+        );
+        let empty = Edit {
+            value: "  ".into(),
+            ..role
+        };
+        assert!(patch_of(&empty).is_err());
+    }
+
+    #[test]
+    fn a_change_starts_from_the_value_in_force() {
+        let mut state = State {
+            view: Some(json!({
+                "settings": { "effort": { "value": null, "source": "plaza" }, "max_turns": { "value": 40, "source": "project" } },
+                "role_models": {},
+                "budget": { "own": false, "balance": 0, "plaza": 100 },
+            })),
+            ..Default::default()
+        };
+        let _ = update(&mut state, Msg::Change("effort"), "pr2", &ctx());
+        assert_eq!(state.edit.as_ref().map(|e| e.value.as_str()), Some("none"));
+        let _ = update(&mut state, Msg::Change("max_turns"), "pr2", &ctx());
+        assert_eq!(state.edit.as_ref().map(|e| e.value.as_str()), Some("40"));
+        let _ = update(&mut state, Msg::Budget(false), "pr2", &ctx());
+        assert!(state.edit.is_none() && state.budget.is_some());
+        let _ = update(&mut state, Msg::MoveBudget, "pr2", &ctx());
+        assert_eq!(
+            state.error.as_deref(),
+            Some("A whole number of credits, more than 0.")
+        );
+        assert_eq!(ui::thousands(15000), "15,000");
+        assert_eq!(ui::thousands(999), "999");
+        assert_eq!(ui::thousands(-1234), "-1,234");
+    }
+}

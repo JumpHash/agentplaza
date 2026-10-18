@@ -6,6 +6,7 @@ import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { prewake } from '../prewake';
 import { agentName } from '../roles';
+import { liveProjects, onBench, projects, projectTitle } from '../scope';
 import { agents, on, refreshAgents } from '../store';
 import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, tabs, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -548,6 +549,43 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     );
   };
 
+  /** Where the agent works, why it waits if it does, and the move: onto a project from the bench, or back to it. */
+  const projectLine = (a: Agent): HTMLElement | null => {
+    if (a.tier === 'orchestrator') return h('p.agent-project.faint', null, 'Works on every project: it opens them and runs them.');
+    if (a.kind === 'model') return null;
+    if (a.project) {
+      const pid = a.project;
+      return h(
+        'p.agent-project',
+        null,
+        'Works on ',
+        h('a', { href: href('projects', pid) }, projectTitle(pid)),
+        a.joined_ms ? h('span.faint', null, ` since ${ago(a.joined_ms)}`) : null,
+        a.held ? h('span.faint', null, ` · ${a.held}`) : null,
+        ' ',
+        button('Back to the bench', () => void act(() => attempt(() => api.removeMember(pid, cid), `${agentName(a)} is back on the bench`).then(() => void refreshAgents())), {
+          size: 'sm',
+          kind: 'ghost',
+          disabled: busy,
+        }),
+      );
+    }
+    if (!onBench(a)) return null;
+    const live = liveProjects(projects.get());
+    const put = live.length
+      ? (() => {
+          const sel = h('select.select', null, h('option', { value: '' }, 'Put on a project…'), ...live.map((p) => h('option', { value: p.id }, p.title))) as HTMLSelectElement;
+          sel.addEventListener('change', () => {
+            if (!sel.value) return;
+            const to = sel.value;
+            void act(() => attempt(() => api.addMember(to, cid), `${agentName(a)} works on ${projectTitle(to)} now`).then(() => void refreshAgents()));
+          });
+          return sel;
+        })()
+      : null;
+    return h('p.agent-project', null, h('span', null, `${agentName(a)} is on the bench: it does nothing until it works on a project. `), put);
+  };
+
   const renderAgent = (): void => {
     const a = agent;
     if (!a) return;
@@ -576,12 +614,14 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         button('Wipe…', () => wipe(a), { disabled: busy }),
         button('Retire', () => retire(a), { kind: 'danger', disabled: busy }),
       ),
+      projectLine(a),
     );
 
     composer.disabled = offline;
     send.disabled = offline || sending;
 
-    const source = a.model_source === 'agent' ? 'set for this agent' : a.model_source === 'role' ? 'from role' : 'default';
+    const source =
+      a.model_source === 'agent' ? 'set for this agent' : a.model_source === 'project' ? 'from its project' : a.model_source === 'role' ? 'from role' : 'default';
     replace(modelLine, h('strong', null, a.model), h('span.faint', null, source));
     const want = a.model_override ?? '';
     if (want !== appliedOverride) {

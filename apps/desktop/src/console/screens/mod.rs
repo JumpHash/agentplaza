@@ -17,6 +17,7 @@ pub mod git;
 pub mod ide;
 pub mod ide_chat;
 pub mod ide_chrome;
+pub mod ide_conversation;
 pub mod ide_diff;
 pub mod ide_editor;
 pub mod ide_files;
@@ -47,6 +48,8 @@ pub mod metrics;
 pub mod models;
 pub mod nodes;
 pub mod overview;
+pub mod project_settings;
+pub mod project_team;
 pub mod projects;
 pub mod prompt_editor;
 pub mod prompts;
@@ -113,6 +116,8 @@ pub enum Id {
     Task(String),
     /// One project's page, on the Projects screen, by its id.
     Project(String),
+    /// One project's page on one of its tabs (its Team, its Settings).
+    ProjectTab(String, projects::Tab),
     /// One tab of the Work screen: a project's id, or the tasks outside projects (`work::LOOSE`).
     WorkOn(String),
     /// One repository's page, on the Git screen, by its name.
@@ -306,6 +311,32 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
     }
 }
 
+/// The screen a scope switch opens from `id`: the screen itself, or for one item of it (an agent, a task, a project,
+/// a repo, a Lab job) its list, since the item belonged to the old scope. The IDE opens on its picker.
+pub fn scope_home(id: &Id) -> Id {
+    match id {
+        Id::Agent(_) => Id::Agents,
+        Id::Task(_) => Id::Tasks,
+        Id::Project(_) | Id::ProjectTab(..) => Id::Projects,
+        Id::WorkOn(_) => Id::Work,
+        Id::Repo(_) => Id::Git,
+        Id::LabJobDetail(_) => Id::LabJobs,
+        Id::LabModelDetail(_) => Id::LabModels,
+        Id::Ide(_) => Id::Ide(None),
+        other => other.clone(),
+    }
+}
+
+/// The console's scope changed: the screens that hold the old project's things start over (the Work screen's tab, an
+/// open task or project, the Overview's feed, the board); the others reload as they are.
+pub fn rescope(screens: &mut Screens) {
+    screens.work = work::State::default();
+    screens.tasks = tasks::State::default();
+    screens.projects = projects::State::default();
+    screens.overview = overview::State::default();
+    screens.board = board::State::default();
+}
+
 /// Opens a screen (sets its parameters) and loads it.
 pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     // Any screen change drops the new token from the MCP page, so it never outlives the tab.
@@ -338,6 +369,9 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
         }
         Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
         Id::Project(project) => screens.projects = projects::opened(project.clone()),
+        Id::ProjectTab(project, tab) => {
+            screens.projects = projects::opened_on(project.clone(), *tab)
+        }
         Id::WorkOn(tab) => screens.work = work::opened(tab.clone()),
         Id::Ide(Some(workspace)) => screens.ide.preselect = Some(workspace.clone()),
         Id::Repo(repo) => {
@@ -375,7 +409,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
     match id {
         Id::Overview => overview::load(&mut screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::load(&mut screens.agents, ctx).map(Msg::Agents),
-        Id::Projects | Id::Project(_) => {
+        Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
             projects::load(&mut screens.projects, ctx).map(Msg::Projects)
         }
         Id::Work | Id::WorkOn(_) => work::load(&mut screens.work, ctx).map(Msg::Work),
@@ -522,7 +556,9 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
         Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
         Id::Rules => rules::subscription(ctx).map(Msg::Rules),
-        Id::Projects | Id::Project(_) => projects::subscription(ctx).map(Msg::Projects),
+        Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
+            projects::subscription(ctx).map(Msg::Projects)
+        }
         Id::Work | Id::WorkOn(_) => work::subscription(ctx).map(Msg::Work),
         Id::Library => library::subscription(ctx).map(Msg::Library),
         Id::Tasks | Id::Task(_) => tasks::subscription(ctx).map(Msg::Tasks),
@@ -550,7 +586,9 @@ pub fn view<'a>(
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
-        Id::Projects | Id::Project(_) => projects::view(&screens.projects, ctx).map(Msg::Projects),
+        Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
+            projects::view(&screens.projects, ctx).map(Msg::Projects)
+        }
         Id::Work | Id::WorkOn(_) => work::view(&screens.work, ctx).map(Msg::Work),
         Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
         Id::Skills => skills::view(&screens.skills, ctx).map(Msg::Skills),
@@ -595,5 +633,25 @@ pub fn view<'a>(
         }
         Id::LabBreeders => lab_breeders::view(&screens.lab_breeders, ctx).map(Msg::LabBreeders),
         Id::Ide(_) => ide::view(&screens.ide, plaza).map(Msg::Ide),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scope_switch_opens_an_items_list() {
+        assert_eq!(scope_home(&Id::Agent(300)), Id::Agents);
+        assert_eq!(scope_home(&Id::Task("t3".into())), Id::Tasks);
+        assert_eq!(
+            scope_home(&Id::ProjectTab("pr2".into(), projects::Tab::Team)),
+            Id::Projects
+        );
+        assert_eq!(
+            scope_home(&Id::Ide(Some("agent:300".into()))),
+            Id::Ide(None)
+        );
+        assert_eq!(scope_home(&Id::Board), Id::Board);
     }
 }

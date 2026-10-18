@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to give back more than a project has
+  type: http
+  seq: 40
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/budget
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "credits": -100000
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

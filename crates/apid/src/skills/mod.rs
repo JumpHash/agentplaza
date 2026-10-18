@@ -460,9 +460,10 @@ pub fn valid_id(id: &str) -> bool {
     crate::prompts::valid_id(id)
 }
 
-/// `plaza`, or `role:<role>` with a lower-case role id.
+/// `plaza`, `role:<role>` with a lower-case role id, or `project:<id>` (a project's skills).
 pub fn valid_binding(binding: &str) -> bool {
     binding == "plaza"
+        || crate::prompts::project_binding(binding)
         || binding.strip_prefix("role:").is_some_and(|r| {
             !r.is_empty()
                 && r.len() <= 64

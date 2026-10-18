@@ -127,7 +127,10 @@ def main():
         shutil.copyfile(planning / name / "prompt.md", dest / "prompt.md")
 
     roles["orchestrator"] = with_slot(old_roles["orchestrator"], slots["orchestrator"])
-    MANIFEST.write_text(json.dumps({"source": SOURCE, "roles": roles}, indent=1) + "\n")
+    # The roles that boot with the node: the orchestrator alone unless the manifest says otherwise. Every role
+    # stays defined for its tools and prompt; project agents are spawned or woken when a project needs them.
+    fleet = current.get("fleet", ["orchestrator"])
+    MANIFEST.write_text(json.dumps({"source": SOURCE, "fleet": fleet, "roles": roles}, indent=1) + "\n")
     print(f"wrote {len(roles)} roles to {MANIFEST}")
 
 

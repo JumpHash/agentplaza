@@ -25,7 +25,7 @@ use vmm::spawner::{MAX_GUEST_CID, MIN_GUEST_CID};
 
 use crate::registry::{MAX_VCPUS, MAX_VMS, MIN_MEMORY_MIB};
 
-/// The roles manifest's shape: `{"source": "...", "roles": {"<role>": {...}}}`.
+/// The roles manifest's shape: `{"source": "...", "fleet": ["<role>", ...], "roles": {"<role>": {...}}}`.
 ///
 /// Unknown fields are ignored (the manifest carries provenance a daemon has no
 /// use for) and the fields a role documents are required: a role the daemon
@@ -33,6 +33,11 @@ use crate::registry::{MAX_VCPUS, MAX_VMS, MIN_MEMORY_MIB};
 #[derive(Debug, Deserialize)]
 struct Manifest {
     roles: BTreeMap<String, Role>,
+    /// The roles that boot, when only some do: the shipped manifest boots the
+    /// orchestrator alone, and project agents are spawned when a project needs
+    /// them. Each keeps the CID its slot gives it. Absent, every role boots.
+    #[serde(default)]
+    fleet: Option<Vec<String>>,
 }
 
 /// One role, as the manifest documents it.
@@ -81,6 +86,13 @@ pub enum FleetError {
     },
     /// The manifest lists no roles
     Empty,
+    /// The manifest's `fleet` names a role it does not define: {name}
+    UnknownFleetRole {
+        /// The role the fleet names.
+        name: String,
+    },
+    /// The manifest's `fleet` is an empty list
+    EmptyFleet,
     /// A role is filed under a key that disagrees with its own name: {key} vs {role}
     RoleMismatch {
         /// The key the role is filed under.
@@ -156,6 +168,14 @@ impl fmt::Display for FleetError {
             }
             Self::Json { reason } => write!(formatter, "the roles manifest is not valid: {reason}"),
             Self::Empty => write!(formatter, "the roles manifest lists no roles"),
+            Self::UnknownFleetRole { name } => write!(
+                formatter,
+                "the roles manifest's fleet names {name:?}, which it does not define"
+            ),
+            Self::EmptyFleet => write!(
+                formatter,
+                "the roles manifest's fleet boots no role: name one, or leave --agents off"
+            ),
             Self::RoleMismatch { key, role } => write!(
                 formatter,
                 "the role filed under {key:?} calls itself {role:?}"
@@ -298,13 +318,34 @@ impl Fleet {
         if entries.is_empty() {
             return Err(FleetError::Empty);
         }
-        if entries.len() > MAX_VMS as usize {
+        // Every role is placed, so a role keeps its CID whether or not it boots; then only the fleet's roles are
+        // kept.
+        let placed = place_roles(entries)?;
+        let placed = match &manifest.fleet {
+            None => placed,
+            Some(fleet) => {
+                if let Some(name) = fleet
+                    .iter()
+                    .find(|name| !manifest.roles.contains_key(*name))
+                {
+                    return Err(FleetError::UnknownFleetRole { name: name.clone() });
+                }
+                let kept: Vec<(String, u64)> = placed
+                    .into_iter()
+                    .filter(|(name, _)| fleet.contains(name))
+                    .collect();
+                if kept.is_empty() {
+                    return Err(FleetError::EmptyFleet);
+                }
+                kept
+            }
+        };
+        if placed.len() > MAX_VMS as usize {
             return Err(FleetError::TooManyRoles {
-                roles: entries.len(),
+                roles: placed.len(),
                 max: MAX_VMS as usize,
             });
         }
-        let placed = place_roles(entries)?;
         if memory_mib < MIN_MEMORY_MIB {
             return Err(FleetError::BadMemory {
                 memory_mib,
@@ -520,8 +561,24 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_manifest_pins_each_role_to_its_slot() {
+    fn the_shipped_manifest_boots_the_orchestrator_alone() {
         let fleet = Fleet::load(&shipped_manifest(), 100, 128, 1).expect("the shipped manifest");
+        let booted: Vec<(String, u64)> = fleet
+            .vms()
+            .into_iter()
+            .map(|vm| (vm.role, vm.guest_cid))
+            .collect();
+        // Its CID is the one its slot gives it, as when every role booted.
+        assert_eq!(booted, [("orchestrator".to_string(), 109)]);
+    }
+
+    #[test]
+    fn the_shipped_manifest_pins_each_role_to_its_slot() {
+        // Every role, as it would boot without the `fleet` list.
+        let text = std::fs::read_to_string(shipped_manifest()).expect("the shipped manifest");
+        let mut doc: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        doc.as_object_mut().expect("an object").remove("fleet");
+        let fleet = Fleet::parse(&doc.to_string(), 100, 128, 1).expect("every role");
         // Slot order. The sixteen roles that existed before `breeder` keep the
         // CIDs they had (alphabetical over those sixteen); `breeder` takes the
         // next slot, so no existing role's CID moves.
@@ -554,6 +611,43 @@ mod tests {
             .map(|(role, slot)| (role.to_string(), 100 + slot))
             .collect();
         assert_eq!(booted, expected);
+    }
+
+    #[test]
+    fn a_fleet_list_boots_only_its_roles_at_their_slots() {
+        let roles = slotted(&[
+            ("reviewer", Some(0)),
+            ("builder", Some(5)),
+            ("orchestrator", Some(2)),
+        ]);
+        let with = |fleet: &str| {
+            roles.replacen(
+                r#"{"source":"test","#,
+                &format!(r#"{{"source":"test","fleet":{fleet},"#),
+                1,
+            )
+        };
+        let fleet = fleet(&with(r#"["builder","orchestrator"]"#)).expect("a fleet of two");
+        assert_eq!(
+            fleet.roles().iter().map(String::as_str).collect::<Vec<_>>(),
+            ["orchestrator", "builder"]
+        );
+        assert_eq!(fleet.guest_cid(0), Some(102));
+        assert_eq!(fleet.guest_cid(1), Some(105));
+        assert_eq!(
+            fleet.vms()[1].flags,
+            "plaza.role=builder plaza.keepalive=1 plaza.vm=1"
+        );
+        assert_eq!(
+            super::Fleet::parse(&with(r#"["mayor"]"#), 100, MIN_MEMORY_MIB, 1),
+            Err(FleetError::UnknownFleetRole {
+                name: "mayor".into()
+            })
+        );
+        assert_eq!(
+            super::Fleet::parse(&with("[]"), 100, MIN_MEMORY_MIB, 1),
+            Err(FleetError::EmptyFleet)
+        );
     }
 
     #[test]

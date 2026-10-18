@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown project's suggested agents
+  type: http
+  seq: 28
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/suggested-members
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -410,6 +410,9 @@ pub struct State {
     pub steer: text_editor::Content,
     pub steer_busy: bool,
     pub steer_notice: Option<String>,
+    /// The agent is working: the composer's text steers the work in flight; idle, it is a chat turn of its own (the
+    /// IDE sets it before each send).
+    pub agent_working: bool,
     pub held: Vec<Held>,
     pub approvals_loaded: bool,
     pub approvals_error: Option<String>,
@@ -660,8 +663,16 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             st.steer_busy = true;
             st.steer_notice = None;
             let c = client.clone();
-            let path = format!("/v1/agents/{cid}/control");
-            let body = json!({ "action": "steer", "text": text });
+            // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says why when
+            // the agent is on the bench, or its project is paused).
+            let (path, body) = if st.agent_working {
+                (
+                    format!("/v1/agents/{cid}/control"),
+                    json!({ "action": "steer", "text": text }),
+                )
+            } else {
+                (format!("/v1/agents/{cid}/chat"), json!({ "text": text }))
+            };
             client::task(
                 move || c.post::<Value>(&path, &body),
                 move |res| Msg::Steered {

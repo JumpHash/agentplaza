@@ -1,7 +1,7 @@
 meta {
   name: Create a task
   type: http
-  seq: 2
+  seq: 3
 }
 
 post {
@@ -15,7 +15,8 @@ body:json {
     "goal": "Write the release notes",
     "acceptance": "The notes list every merged change",
     "budget": 200,
-    "role": "writer"
+    "role": "writer",
+    "project": "{{projectId}}"
   }
 }
 
@@ -33,6 +34,7 @@ tests {
     const body = res.getBody();
     expect(body.id).to.be.a("string");
     expect(body.outcome).to.equal(null);
+    expect(body.project).to.equal(bru.getVar("projectId"));
   });
 }
 

@@ -80,12 +80,12 @@
 //! `TaskLifecycle.tla`'s release, not a transition either model lacks.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::treasury::{PostError, Treasury};
+use crate::treasury::{PLAZA_OWNER, PostError, Treasury};
 use crate::{ConnectedAgent, now_ms};
 
 /// The most tasks the ledger holds. v0 never removes a task (a task ends
@@ -341,6 +341,48 @@ impl std::fmt::Display for LinkError {
 }
 
 impl std::error::Error for LinkError {}
+
+/// Why a task outside projects could not move into one ([`TaskLedger::adopt`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdoptError {
+    /// No task has that id.
+    NotFound(String),
+    /// The project id is outside the ledger's contract.
+    Invalid(String),
+    /// The task is already in a project, which it never leaves.
+    InProject {
+        /// The task's id.
+        task: String,
+        /// The project it is in.
+        project: String,
+    },
+}
+
+impl AdoptError {
+    /// The HTTP status this error is reported as.
+    pub fn status(&self) -> u16 {
+        match self {
+            AdoptError::NotFound(_) => 404,
+            AdoptError::Invalid(_) => 400,
+            AdoptError::InProject { .. } => 409,
+        }
+    }
+}
+
+impl std::fmt::Display for AdoptError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdoptError::NotFound(id) => write!(formatter, "no task with id {id}"),
+            AdoptError::Invalid(reason) => write!(formatter, "{reason}"),
+            AdoptError::InProject { task, project } => write!(
+                formatter,
+                "task {task} is in project {project}: a task never leaves its project"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AdoptError {}
 
 /// Task ids as a sentence lists them: `t1`, `t1 and t2`, `t1, t2 and t3`.
 fn names(ids: &[String]) -> String {
@@ -716,8 +758,9 @@ pub struct Task {
     budget: u64,
     /// The role the task was created for, when it named one.
     role: Option<String>,
-    /// The project the task was created for, when it named one.
-    project: Option<String>,
+    /// The project the task is for, when it is one's: named when it was created, or set once when a task
+    /// outside projects moves into one ([`TaskLedger::adopt`]). A task never leaves its project.
+    project: OnceLock<String>,
     /// The treasury entry that minted this task's budget into its escrow, when
     /// it had one: set once, when the task was created, and never changed. The
     /// agora reads it as a call's `escrow_entry`.
@@ -834,9 +877,9 @@ impl Task {
         self.lock().state == TaskState::Open
     }
 
-    /// The project the task was created for, when it named one.
+    /// The project the task is for, when it is one's.
     pub fn project(&self) -> Option<&str> {
-        self.project.as_deref()
+        self.project.get().map(String::as_str)
     }
 
     /// The ids of the tasks this one runs after, in the order they were named.
@@ -879,7 +922,7 @@ impl Task {
             acceptance: self.acceptance.as_deref(),
             budget: self.budget,
             role: self.role.as_deref(),
-            project: self.project.as_deref(),
+            project: self.project(),
             after: link_ids(&inner.after),
             state: inner.state.as_str(),
             ready: open && links.all_done(),
@@ -1033,7 +1076,7 @@ impl Task {
             state: inner.state.as_str(),
             assignee: inner.assignee_id.clone(),
             agent_cid: inner.agent_cid,
-            project: self.project.clone(),
+            project: self.project.get().cloned(),
             ready: inner.state == TaskState::Open && LinkStates::of(&inner.after).all_done(),
         }
     }
@@ -1134,7 +1177,7 @@ impl TaskLedger {
             let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
             entry = Some(
                 self.treasury
-                    .fund_task(&id, amount)
+                    .fund_task_from(&id, amount, &self.budget_for(checked.project.as_deref()))
                     .map_err(CreateError::Treasury)?,
             );
         }
@@ -1224,7 +1267,11 @@ impl TaskLedger {
             }
             // `checked` bounds the budget to `i64::MAX`.
             let amount = i64::try_from(task.budget).unwrap_or(i64::MAX);
-            match self.treasury.fund_task(id, amount) {
+            match self.treasury.fund_task_from(
+                id,
+                amount,
+                &self.budget_for(task.project.as_deref()),
+            ) {
                 Ok(entry) => entries.push(Some(entry)),
                 Err(refused) => {
                     for (funded, entry) in ids.iter().zip(&entries) {
@@ -1290,7 +1337,7 @@ impl TaskLedger {
             acceptance: checked.acceptance,
             budget: checked.budget,
             role: checked.role,
-            project: checked.project,
+            project: checked.project.map(OnceLock::from).unwrap_or_default(),
             escrow_entry: entry,
             created_at: now,
             events: Arc::clone(&self.events),
@@ -1307,6 +1354,15 @@ impl TaskLedger {
                 dependents: Vec::new(),
             }),
         })
+    }
+
+    /// The town budget a task of `project` is funded from: the project's own once its budget is set aside, else
+    /// the plaza's.
+    fn budget_for(&self, project: Option<&str>) -> String {
+        match project {
+            Some(project) if self.treasury.has_town_budget(project) => project.to_string(),
+            _ => PLAZA_OWNER.to_string(),
+        }
     }
 
     /// The task with that id, if there is one.
@@ -1332,8 +1388,7 @@ impl TaskLedger {
             .find(|task| task.id == id)
             .cloned()
             .ok_or_else(|| LinkError::NotFound(id.to_string()))?;
-        let links =
-            resolve(&inner.tasks, &after, task.project.as_deref()).map_err(LinkError::Invalid)?;
+        let links = resolve(&inner.tasks, &after, task.project()).map_err(LinkError::Invalid)?;
         let not_open = |state: TaskState| LinkError::NotOpen {
             task: id.to_string(),
             state,
@@ -1380,6 +1435,69 @@ impl TaskLedger {
         Ok(task)
     }
 
+    /// Moves task `id`, which is in no project, into `project`, together with every task linked to it: the tasks it
+    /// runs after and the ones that run after it, transitively. Links stay inside a project, so a linked group moves
+    /// as one, and every task of it is outside projects too. Returns the tasks moved, oldest first; each one's `task`
+    /// event goes out again with its project.
+    pub fn adopt(&self, id: &str, project: &str) -> Result<Vec<Arc<Task>>, AdoptError> {
+        let project =
+            required_text("project", project, MAX_PROJECT).map_err(AdoptError::Invalid)?;
+        let inner = self.lock();
+        let task = inner
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .cloned()
+            .ok_or_else(|| AdoptError::NotFound(id.to_string()))?;
+        if let Some(current) = task.project() {
+            return Err(AdoptError::InProject {
+                task: id.to_string(),
+                project: current.to_string(),
+            });
+        }
+        // The linked group, over links in both directions, one task's lock at a time.
+        let mut group: Vec<Arc<Task>> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut queue = VecDeque::from([task]);
+        while let Some(next) = queue.pop_front() {
+            if !seen.insert(next.id.clone()) {
+                continue;
+            }
+            let (upstream, downstream): (Vec<Arc<Task>>, Vec<Arc<Task>>) = {
+                let locked = next.lock();
+                (
+                    locked
+                        .after
+                        .iter()
+                        .map(|Link(linked)| Arc::clone(linked))
+                        .collect(),
+                    locked.dependents.iter().filter_map(Weak::upgrade).collect(),
+                )
+            };
+            queue.extend(upstream);
+            queue.extend(downstream);
+            group.push(next);
+        }
+        for member in &group {
+            // Unset on every member: the group is outside projects, and the ledger's lock is held.
+            let _ = member.project.set(project.clone());
+        }
+        let order: HashMap<&str, usize> = inner
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(index, task)| (task.id.as_str(), index))
+            .collect();
+        group.sort_by_key(|task| order.get(task.id.as_str()).copied().unwrap_or(usize::MAX));
+        drop(order);
+        drop(inner);
+        for member in &group {
+            let event = member.event(&member.lock());
+            self.events.publish(event);
+        }
+        Ok(group)
+    }
+
     /// Of the tasks `after` names, the ones that are not done: what a task
     /// created with these links would wait on. An id that names no task is
     /// left out; the create refuses it.
@@ -1418,10 +1536,10 @@ fn resolve(
                 .iter()
                 .find(|task| task.id == *id)
                 .ok_or_else(|| format!("after names {id}, which is not a task"))?;
-            if task.project.as_deref() != project {
+            if task.project() != project {
                 return Err(format!(
                     "{id} is in {}, and this task is in {}: a task runs after tasks of its own project only",
-                    in_project(task.project.as_deref()),
+                    in_project(task.project()),
                     in_project(project)
                 ));
             }
@@ -1533,7 +1651,7 @@ impl Task {
             agent_cid: inner.agent_cid,
             note: inner.note.clone(),
             updated_at: inner.updated_at,
-            project: self.project.clone(),
+            project: self.project.get().cloned(),
             after: link_ids(&inner.after),
         }
     }
@@ -1548,7 +1666,7 @@ impl Task {
             acceptance: record.acceptance,
             budget: record.budget,
             role: record.role,
-            project: record.project,
+            project: record.project.map(OnceLock::from).unwrap_or_default(),
             escrow_entry: record.escrow_entry,
             created_at: record.created_at,
             events: Arc::clone(events),
@@ -2728,6 +2846,52 @@ mod tests {
         let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
         let wide = linked(&ledger, "after many", &roots, None).expect("the bound is inside");
         assert_eq!(wide.after().len(), MAX_AFTER);
+    }
+
+    #[test]
+    fn a_task_outside_projects_moves_into_one_with_its_linked_group() {
+        let ledger = TaskLedger::new(EventBus::new());
+        create(&ledger, "design");
+        linked(&ledger, "build", &["t1"], None).expect("linked");
+        linked(&ledger, "test", &["t2"], None).expect("linked");
+        create(&ledger, "unrelated");
+        linked(&ledger, "elsewhere", &[], Some("pr1")).expect("in pr1");
+
+        // Moving the middle task moves the whole chain, oldest first; the unrelated task stays outside.
+        let moved = ledger.adopt("t2", "pr2").expect("moved");
+        let ids: Vec<&str> = moved.iter().map(|task| task.id()).collect();
+        assert_eq!(ids, ["t1", "t2", "t3"]);
+        for task in &moved {
+            assert_eq!(task.project(), Some("pr2"));
+            assert_eq!(task.view().project, Some("pr2"));
+        }
+        assert_eq!(ledger.find("t4").expect("t4").project(), None);
+        // The chain's links still hold, now inside pr2, and a new pr2 task may run after them.
+        assert_eq!(ledger.find("t3").expect("t3").after(), vec!["t2"]);
+        linked(&ledger, "ship", &["t3"], Some("pr2")).expect("a pr2 task runs after a moved one");
+
+        // A task in a project never leaves it; unknown tasks and bad ids are refused.
+        let refused = ledger.adopt("t1", "pr3").expect_err("in pr2 already");
+        assert_eq!(
+            refused,
+            AdoptError::InProject {
+                task: "t1".into(),
+                project: "pr2".into()
+            }
+        );
+        assert_eq!(refused.status(), 409);
+        assert_eq!(ledger.adopt("t5", "pr2").expect_err("in pr1").status(), 409);
+        assert_eq!(
+            ledger.adopt("t99", "pr2").expect_err("no such task"),
+            AdoptError::NotFound("t99".into())
+        );
+        assert_eq!(ledger.adopt("t4", " ").expect_err("blank").status(), 400);
+
+        // The move is in the snapshot.
+        let restored = TaskLedger::new(EventBus::new());
+        restored.restore(&ledger.snapshot()).expect("restores");
+        assert_eq!(restored.find("t2").expect("t2").project(), Some("pr2"));
+        assert_eq!(restored.find("t4").expect("t4").project(), None);
     }
 
     #[test]

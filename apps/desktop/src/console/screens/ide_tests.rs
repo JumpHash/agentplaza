@@ -5,6 +5,7 @@ use super::*;
 fn ctx() -> Ctx {
     Ctx {
         client: Client::new("http://127.0.0.1:9", None, None),
+        project: None,
     }
 }
 

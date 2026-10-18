@@ -1,5 +1,6 @@
 //! The screens around the floor: the header, the tab bar, each tab's body, the event log and the
-//! footer. Every value is shown as the hub sent it.
+//! footer. Every value is shown as the hub sent it. The Agents and Tasks tabs list the project the
+//! switcher shows (`scope`), which the header names.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -9,6 +10,9 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use serde_json::Value;
 
 use super::app::{App, Tab};
+use super::scope;
+use super::workspace_view::tail;
+use crate::cmd::agents::{held_of, place_of};
 use crate::rich;
 
 /// A value as text: strings bare, missing or null as "-", anything else as its JSON.
@@ -137,6 +141,13 @@ pub fn header(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(palette.muted),
         ),
         Span::raw(format!("working {working}  idle {idle}  ")),
+        Span::styled(
+            format!(
+                "project: {}  ",
+                scope::label(app.scope.as_deref(), app.projects())
+            ),
+            Style::new().fg(palette.muted),
+        ),
     ];
     if app.paused() {
         spans.push(Span::styled(
@@ -226,6 +237,21 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(palette.muted),
             ),
         ])
+    } else if let Some(compose) = &app.compose {
+        Line::from(vec![
+            Span::styled(
+                format!(" {}: ", compose.label()),
+                Style::new().fg(palette.accent),
+            ),
+            Span::raw(format!(
+                "{}_",
+                tail(compose.text(), usize::from(area.width).saturating_sub(60))
+            )),
+            Span::styled(
+                "   Enter sends · Esc cancels",
+                Style::new().fg(palette.muted),
+            ),
+        ])
     } else if let Some(panel) = &app.desk {
         Line::from(vec![
             Span::styled(
@@ -255,12 +281,17 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         ))
     } else if app.tab == Tab::Workstations {
         Line::from(Span::styled(
-            " 1-9,0,w tabs · Tab next · ↑↓ move · T take over · r refresh · ? tour · q quit",
+            " 1-9,0,w,c tabs · Tab next · ↑↓ move · T take over · r refresh · ? tour · q quit",
+            Style::new().fg(palette.muted),
+        ))
+    } else if app.tab == Tab::Chat {
+        Line::from(Span::styled(
+            " 1-9,0,w,c tabs · ↑↓ conversation · t message · n new conversation · S start the draft · r refresh · q quit",
             Style::new().fg(palette.muted),
         ))
     } else {
         Line::from(Span::styled(
-            " 1-9,0,w tabs · Tab next · ↑↓ move · Enter details · t message · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
+            " 1-9,0,w,c tabs · Tab next · ↑↓ move · Enter details · t message · p/P project · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
             Style::new().fg(palette.muted),
         ))
     };
@@ -328,11 +359,33 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// A table's title: its name, and the project the switcher shows when it shows one.
+fn scoped(name: &str, app: &App) -> String {
+    match app.scope.as_deref() {
+        Some(_) => format!(
+            "{name} of {}",
+            scope::label(app.scope.as_deref(), app.projects())
+        ),
+        None => name.to_string(),
+    }
+}
+
+/// Where an agent works and since when: its project, the bench, or every project for the orchestrator.
+fn place(agent: &Value) -> String {
+    let place = place_of(agent);
+    match agent.get("joined_ms").and_then(Value::as_i64) {
+        Some(ms) if place != "bench" && place != "all" => {
+            format!("{place} · since {}", local_time(ms))
+        }
+        _ => place,
+    }
+}
+
 pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
-    let list = app.agents();
+    let list = app.shown_agents();
     let (table_area, detail_area) = if app.detail && !list.is_empty() {
         let [table, detail] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(10)]).areas(area);
+            Layout::vertical([Constraint::Min(0), Constraint::Length(12)]).areas(area);
         (table, Some(detail))
     } else {
         (area, None)
@@ -344,6 +397,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
                 show(a.get("cid")),
                 show(a.get("name")),
                 show(a.get("role_label")),
+                place_of(a),
                 show(a.get("status")),
                 show(a.get("model")),
                 show(a.get("queue")),
@@ -354,13 +408,16 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
     grid(
         frame,
         table_area,
-        "agents",
-        &["CID", "NAME", "ROLE", "STATUS", "MODEL", "QUEUE", "DOING"],
+        &scoped("agents", app),
+        &[
+            "CID", "NAME", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
+        ],
         rows,
         &[
             Constraint::Length(6),
             Constraint::Length(14),
             Constraint::Length(16),
+            Constraint::Length(8),
             Constraint::Length(9),
             Constraint::Length(24),
             Constraint::Length(6),
@@ -368,7 +425,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
         ],
         app,
     );
-    if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected)) {
+    if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected).copied()) {
         let lines = vec![
             kv("name", show(agent.get("name")), app),
             kv(
@@ -390,6 +447,8 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
                 app,
             ),
             kv("status", show(agent.get("status")), app),
+            kv("project", place(agent), app),
+            kv("held", held_of(agent), app),
             kv(
                 "run / vm",
                 format!("{} / {}", show(agent.get("run")), show(agent.get("vm"))),
@@ -418,8 +477,8 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
 pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
     let rich_ctx = app.rich_ctx();
     let rows: Vec<Vec<Cell<'static>>> = app
-        .wrapped("/v1/tasks", "tasks")
-        .iter()
+        .shown_tasks()
+        .into_iter()
         .map(|t| {
             // The tasks it runs after (the Work screen's links); "-" for none.
             let after: Vec<&str> = t
@@ -429,6 +488,7 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or_default();
             vec![
                 Cell::from(clip(&show(t.get("id")), 10)),
+                Cell::from(show(t.get("project"))),
                 Cell::from(crate::cmd::tasks::state_word(t).to_string()),
                 Cell::from(show(t.get("role"))),
                 Cell::from(show(t.get("agent_cid"))),
@@ -444,11 +504,12 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
     grid(
         frame,
         area,
-        "tasks",
-        &["ID", "STATE", "ROLE", "AGENT", "AFTER", "GOAL"],
+        &scoped("tasks", app),
+        &["ID", "PROJECT", "STATE", "ROLE", "AGENT", "AFTER", "GOAL"],
         rows,
         &[
             Constraint::Length(10),
+            Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(7),

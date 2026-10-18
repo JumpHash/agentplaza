@@ -58,7 +58,11 @@ fn in_scope(st: &State) -> impl Fn(u64, Option<&str>) -> bool + '_ {
             return true;
         }
         let Some(project) = project else { return true };
-        project.members.contains(&cid)
+        // Its agents: the ones working on it, and the ones that worked on it before membership.
+        st.roster
+            .iter()
+            .any(|a| a.cid == cid && a.project.as_deref() == Some(project.id.as_str()))
+            || project.members.contains(&cid)
             || task.is_some_and(|t| project.tasks.iter().any(|id| id == t))
     }
 }
@@ -463,6 +467,8 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Panels(msg) => {
+            st.panels.agent_working =
+                ide::selected_agent(st).is_some_and(|a| a.status == "working");
             let answers_run = matches!(
                 msg,
                 ide_panels::Msg::Started { .. } | ide_panels::Msg::Polled { .. }

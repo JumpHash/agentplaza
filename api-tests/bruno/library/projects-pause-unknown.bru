@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when pausing an unknown project
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

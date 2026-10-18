@@ -219,13 +219,16 @@ impl Tool for MessageOrchestrator {
     }
 
     fn description(&self) -> &'static str {
-        "Sends the owner's message to the orchestrator, as a chat in the owner's thread."
+        "Sends the owner's message to the orchestrator: in one of the owner's conversations when `conversation` names it (conv-<n>; the answer is added to it), else as a chat in the owner's thread."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": { "text": { "type": "string", "minLength": 1 } },
+            "properties": {
+                "text": { "type": "string", "minLength": 1 },
+                "conversation": { "type": "string", "description": "the owner's conversation to send it in (conv-<n>)" },
+            },
             "required": ["text"],
             "additionalProperties": false,
         })
@@ -240,7 +243,12 @@ impl Tool for MessageOrchestrator {
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        ctx.plaza.message_orchestrator(text_arg(args, "text")?)
+        let conversation = args
+            .get("conversation")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty());
+        ctx.plaza
+            .message_orchestrator(text_arg(args, "text")?, conversation)
     }
 
     fn summary(&self, out: &Value) -> String {
@@ -382,7 +390,7 @@ impl Tool for CreateTask {
     }
 
     fn description(&self) -> &'static str {
-        "Files a task, the same as the console's New task: the budget rule applies, and the task is open for the plaza to claim once every task it runs after (after) is done. A task for a project needs the project's plan approved, and runs after that project's tasks only."
+        "Files a task in a project, the same as the console's New task: the budget rule applies, and the task is open for the project's agents to claim once every task it runs after (after) is done. Every task belongs to a project whose plan is approved, and runs after that project's tasks only."
     }
 
     fn input_schema(&self) -> Value {
@@ -401,7 +409,7 @@ impl Tool for CreateTask {
                 },
                 "project": { "type": "string", "description": "the project it is for (pr<n>)" },
             },
-            "required": ["title"],
+            "required": ["title", "project"],
             "additionalProperties": false,
         })
     }

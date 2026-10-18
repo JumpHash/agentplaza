@@ -6,7 +6,7 @@
 //! role (when new) and spawns the agents. Saved in Postgres ("agent_proposals").
 //!
 //! GET  /v1/agent-proposals                    → [AgentProposal], newest first
-//! POST /v1/agent-proposals/{id}/approve  body {role?: RoleDef, count?, model?} → the proposal (spawned)
+//! POST /v1/agent-proposals/{id}/approve  body {role?: RoleDef, count?, model?, project?} → the proposal (spawned)
 //! POST /v1/agent-proposals/{id}/reject   body {reason}                         → the proposal
 
 use std::sync::{Mutex, MutexGuard};
@@ -58,6 +58,9 @@ pub struct AgentProposal {
     /// Agents spawned on approval (cids, when known).
     #[serde(default)]
     pub spawned: Vec<u64>,
+    /// The project the agents work on once they connect; none leaves them on the bench.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Default)]
@@ -128,6 +131,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
                     "budget": {"type": "integer"},
                     "count": {"type": "integer", "minimum": 1, "maximum": 8},
                     "model": {"type": "string"},
+                    "project": {"type": "string", "description": "the project the agents will work on (pr<n>); without one they wait on the bench until the owner puts them on one"},
                     "reason": {"type": "string"},
                     "instruction": {"type": "string"}
                 }),
@@ -197,6 +201,10 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         (def, true)
     };
     check_model(app, &role.id, &model)?;
+    let project = Some(text(input, "project")).filter(|p| !p.is_empty());
+    if let Some(project) = &project {
+        check_project(app, project)?;
+    }
     let proposal = app.agent_proposals.add(AgentProposal {
         id: String::new(),
         role,
@@ -212,6 +220,7 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         decided_ms: 0,
         note: String::new(),
         spawned: Vec::new(),
+        project,
     });
     app.bus.publish("agent_proposal", &proposal);
     Ok(format!(
@@ -221,13 +230,15 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
 }
 
 /// Saves the role when new and spawns `count` agents of it. `edited` replaces the proposal's
-/// role (saved as a new or replaced custom role); `count` and `model` override the proposal's.
+/// role (saved as a new or replaced custom role); `count`, `model` and `project` override the
+/// proposal's. The agents join the project at their first hello.
 pub fn approve(
     app: &App,
     id: &str,
     edited: Option<RoleDef>,
     count: Option<u32>,
     model: Option<String>,
+    project: Option<String>,
 ) -> Result<AgentProposal, String> {
     let _decide = app.agent_proposals.deciding();
     let p = pending(app, id)?;
@@ -247,6 +258,10 @@ pub fn approve(
     }
     let model = model.unwrap_or_else(|| p.model.clone());
     check_model(app, &role.id, &model)?;
+    let project = project.or_else(|| p.project.clone());
+    if let Some(project) = &project {
+        check_project(app, project)?;
+    }
     if new_role {
         app.custom_roles
             .save(role.clone())
@@ -258,6 +273,7 @@ pub fn approve(
         count,
         (!model.is_empty()).then_some(model.as_str()),
         None,
+        project.as_deref(),
     )?;
     let cids: Vec<u64> = spawned
         .get("cids")
@@ -274,6 +290,7 @@ pub fn approve(
             item.state = APPROVED.into();
             item.decided_ms = now_ms();
             item.spawned = cids;
+            item.project = project;
         })
         .ok_or_else(|| format!("no proposal {id}"))?;
     app.bus.publish("agent_proposal", &decided);
@@ -322,7 +339,13 @@ fn approve_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         .and_then(Value::as_u64)
         .and_then(|n| u32::try_from(n).ok());
     let model = v.get("model").and_then(Value::as_str).map(str::to_string);
-    match approve(app, params.get("id"), edited, count, model) {
+    let project = v
+        .get("project")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    match approve(app, params.get("id"), edited, count, model, project) {
         Ok(p) => Response::json(200, &p),
         Err(e) => Response::error(409, &e),
     }
@@ -386,6 +409,16 @@ fn check_role_shape(def: &RoleDef) -> Result<(), String> {
 }
 
 /// The model, when given, must be allowed for the role's tier.
+/// A proposal's project must exist and still take agents.
+fn check_project(app: &App, project: &str) -> Result<(), String> {
+    use crate::membership::ProjectState;
+    match crate::membership::project_state(app, project) {
+        ProjectState::Missing => Err(format!("no project {project}")),
+        ProjectState::Over => Err(format!("project {project} is over (archived or delivered)")),
+        ProjectState::Active | ProjectState::Paused => Ok(()),
+    }
+}
+
 fn check_model(app: &App, role: &str, model: &str) -> Result<(), String> {
     if model.is_empty() {
         return Ok(());
@@ -476,6 +509,7 @@ mod tests {
             decided_ms: 0,
             note: String::new(),
             spawned: vec![],
+            project: None,
         }
     }
 

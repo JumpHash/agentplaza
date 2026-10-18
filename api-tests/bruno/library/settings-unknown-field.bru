@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a setting projects do not have
+  type: http
+  seq: 32
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "colour": "red"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

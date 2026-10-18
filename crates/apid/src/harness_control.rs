@@ -269,6 +269,10 @@ pub fn tick(app: &App) {
         .cloned()
         .collect();
     for l in due {
+        // An agent on the bench, or on a paused project, is not prompted: the loop waits until it works again.
+        if crate::membership::held_cid(app, l.cid).is_some() {
+            continue;
+        }
         // The agent is still busy with the previous run of this loop: wait for it.
         if let Some(previous) = l.last_work
             && app.work.current(l.cid).is_some_and(|w| w.id == previous)
@@ -503,6 +507,7 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             if cid == agent.cid {
                 return Err("an agent may not control itself".into());
             }
+            same_project(app, agent, cid)?;
             act(app, cid, input, caller(agent))
         }
         "plaza_loop" => run_loop(app, agent, input),
@@ -517,9 +522,8 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             if cid == agent.cid {
                 return Err("an agent may not loop itself".into());
             }
-            app.agents
-                .get(cid)
-                .ok_or_else(|| format!("no agent {cid}"))?;
+            loop_target(app, cid)?;
+            same_project(app, agent, cid)?;
             let prompt = input["prompt"]
                 .as_str()
                 .map(str::trim)
@@ -576,6 +580,37 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     }
 }
 
+/// Checks that a loop can run for agent `cid`: it is on a project, or it is the orchestrator. A loop for an agent on
+/// the bench would never run.
+fn loop_target(app: &App, cid: u64) -> Result<(), String> {
+    let agent = app
+        .agents
+        .get(cid)
+        .ok_or_else(|| format!("no agent {cid}"))?;
+    if !crate::membership::plaza_wide(&agent.role) && app.members.project_of(cid).is_none() {
+        return Err(format!(
+            "agent {cid} is on the bench: a loop runs only for an agent on a project"
+        ));
+    }
+    Ok(())
+}
+
+/// A mayor manages only its own project's agents; the orchestrator manages every project's.
+fn same_project(app: &App, agent: &Agent, cid: u64) -> Result<(), String> {
+    if crate::membership::plaza_wide(&agent.role)
+        || app
+            .members
+            .project_of(agent.cid)
+            .is_some_and(|own| app.members.project_of(cid).as_deref() == Some(own.as_str()))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "agent {cid} is not on your project: you manage only your project's agents"
+        ))
+    }
+}
+
 /// The name a tool call acts under (the role when the agent has no name).
 fn caller(agent: &Agent) -> &str {
     if agent.name.is_empty() {
@@ -623,6 +658,9 @@ fn start_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(err) => return Response::error(400, &format!("bad body: {err}")),
     };
+    if let Err(err) = loop_target(app, body.cid) {
+        return Response::error(400, &err);
+    }
     match app.harness.start_loop(
         body.cid,
         &body.prompt,

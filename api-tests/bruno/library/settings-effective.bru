@@ -1,0 +1,19 @@
+meta {
+  name: Show where each of a project's settings comes from
+  type: http
+  seq: 33
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/settings/effective
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.settings.effort.source: eq "project"
+  res.body.settings.max_turns.source: eq "plaza"
+  res.body.budget.own: eq false
+}

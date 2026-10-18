@@ -1508,6 +1508,7 @@ mod cancel_check {
         let url = serve_fixture();
         let ctx = Ctx {
             client: client::Client::new(&url, None, None),
+            project: None,
         };
         let snap = fetch(&ctx.client, "tj-cancel", 0).expect("the fixture job loads");
         let mut state = State {

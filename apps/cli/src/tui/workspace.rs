@@ -175,9 +175,10 @@ fn by_name(agents: &[Value], mut cids: Vec<u64>) -> Vec<u64> {
     cids
 }
 
-/// The agents grouped by project, as the IDE groups them (`apps/web/src/ide/groups.ts`): an agent sits under every project
-/// it leads and every project holding a task it is assigned to (claimed, or working on now). Projects come most recently
-/// active first; the agents in none go to `NO_PROJECT`, last. Groups with no agent are left out.
+/// The agents grouped by project, as the IDE groups them (`apps/web/src/ide/groups.ts`): an agent that works on a project
+/// sits under it, and only it; one on no project (the orchestrator, or an agent from before membership) sits under every
+/// project it leads and every project holding a task it is assigned to (claimed, or working on now). Projects come most
+/// recently active first; the agents in none go to `NO_PROJECT`, last. Groups with no agent are left out.
 pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &str) -> Vec<Group> {
     let mut sorted: Vec<&Value> = projects
         .iter()
@@ -198,6 +199,7 @@ pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &st
             continue;
         }
         let origin = agent.pointer("/work/origin/task").and_then(Value::as_str);
+        let member_of = str_of(agent, "project").filter(|p| !p.is_empty());
         let mut placed = false;
         for (list, project) in lists.iter_mut().zip(&sorted) {
             let leads = project.get("lead_cid").and_then(Value::as_u64) == Some(cid);
@@ -209,7 +211,11 @@ pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &st
                         .filter_map(Value::as_str)
                         .any(|id| origin == Some(id) || assignees.get(id) == Some(&cid))
                 });
-            if leads || holds {
+            let in_it = match member_of {
+                Some(id) => str_of(project, "id") == Some(id),
+                None => leads || holds,
+            };
+            if in_it {
                 list.push(cid);
                 placed = true;
             }
@@ -1138,6 +1144,28 @@ mod tests {
             "4 and 5 were missed"
         );
         assert_eq!(t.last_seq(), 6);
+    }
+
+    #[test]
+    fn a_member_is_under_its_project_only_and_the_others_under_what_they_lead_or_hold() {
+        let mut ada = agent(1, "Ada", "idle", None);
+        ada["project"] = json!("pr2");
+        let lead = agent(9, "Atlas", "idle", None);
+        let projects = vec![
+            json!({"id": "pr1", "title": "Docs", "lead_cid": 1, "tasks": ["t1"], "updated_ms": 2}),
+            json!({"id": "pr2", "title": "Release", "lead_cid": 9, "tasks": [], "updated_ms": 1}),
+        ];
+        let tasks = vec![json!({"id": "t1", "agent_cid": 1})];
+        let g = groups(&[ada, lead], &projects, &tasks, "");
+        let titles: Vec<(&str, Vec<u64>)> = g
+            .iter()
+            .map(|g| (g.title.as_str(), g.cids.clone()))
+            .collect();
+        assert_eq!(
+            titles,
+            vec![("Release", vec![1, 9])],
+            "Ada works on pr2 though she leads pr1 and holds its task; the orchestrator is under what it leads"
+        );
     }
 
     #[test]

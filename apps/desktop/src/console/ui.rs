@@ -358,7 +358,13 @@ fn sized_btn<'a, M: Clone + 'a>(
     on_press: Option<M>,
     size: BtnSize,
 ) -> Element<'a, M> {
+    // A button with nothing to do is drawn as the web's `.btn:disabled`: ink at 40% on the sheet, whatever its kind.
+    let disabled_ink = Color {
+        a: 0.4,
+        ..crate::theme::palette().ink
+    };
     let fg = match kind {
+        _ if on_press.is_none() => disabled_ink,
         Kind::Primary => crate::theme::palette().on_signal,
         Kind::Danger => Color::WHITE,
         Kind::DangerOutline => crate::theme::palette().crit,
@@ -377,6 +383,22 @@ fn sized_btn<'a, M: Clone + 'a>(
     let b = button(inner)
         .padding(size.padding)
         .style(move |_: &Theme, status: button::Status| {
+            if status == button::Status::Disabled {
+                return button::Style {
+                    background: (kind != Kind::Ghost).then(|| crate::theme::palette().sheet.into()),
+                    text_color: disabled_ink,
+                    border: Border {
+                        color: if kind == Kind::Ghost {
+                            Color::TRANSPARENT
+                        } else {
+                            disabled_ink
+                        },
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
+                    ..Default::default()
+                };
+            }
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let (bg, border) = match kind {
                 Kind::Primary => (
@@ -458,6 +480,25 @@ pub fn link<'a, M: Clone + 'a>(label_text: &str, msg: M, mono: bool) -> Element<
         });
     // The text carries no colour of its own: it takes the button's, so the hover signal reaches it.
     button(column![body, underline].spacing(1))
+        .padding(0.0)
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                crate::theme::palette().signal_ink
+            } else {
+                crate::theme::palette().ink
+            },
+            border: Border::default(),
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// A link that keeps its text's width, for a name among other things in a row: the label in ink, signal-ink under the
+/// pointer, no rule under it ([`link`]'s rule spans the space it is given).
+pub fn text_link<'a, M: Clone + 'a>(label_text: &str, msg: M) -> Element<'a, M> {
+    button(text(label_text.to_string()).font(SANS_MEDIUM).size(TYPE_UI))
         .padding(0.0)
         .style(|_: &Theme, status: button::Status| button::Style {
             background: None,
@@ -1254,6 +1295,12 @@ pub fn usd(v: f64) -> String {
     let s = format!("{:.2}", v.abs());
     let (int, frac) = s.split_once('.').unwrap_or((&s, "00"));
     format!("{sign}${}.{frac}", commas(int))
+}
+
+/// A whole number with thousands separators: 15000 is "15,000".
+pub fn thousands(n: i64) -> String {
+    let sign = if n < 0 { "-" } else { "" };
+    format!("{sign}{}", commas(&n.unsigned_abs().to_string()))
 }
 
 /// Digits with thousands separators.

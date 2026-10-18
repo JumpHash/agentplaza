@@ -1,18 +1,40 @@
-// Hash routes: `#/agents/105` → screen `agents`, params `['105']`.
+// Hash routes: `#/agents/105` → screen `agents`, params `['105']`. Under a project, the route carries it first:
+// `#/p/pr4/agents/105` is the same screen with the console scoped to project pr4 (scope.ts).
 
 export interface Route {
   screen: string;
   params: string[];
+  /** The project the console is scoped to (`#/p/<id>/…`), or null for All projects. */
+  project: string | null;
 }
 
 export function parse(hash: string): Route {
   // A query (`#/hardware-lab?model=…`) is read by its screen; the route is the part before it.
   const parts = (hash.replace(/^#\/?/, '').split('?')[0] ?? '').split('/').filter(Boolean).map(decodeURIComponent);
-  return { screen: parts[0] ?? 'overview', params: parts.slice(1) };
+  if (parts[0] === 'p' && parts[1]) {
+    const rest = parts.slice(2);
+    return { screen: rest[0] ?? 'overview', params: rest.slice(1), project: parts[1] };
+  }
+  return { screen: parts[0] ?? 'overview', params: parts.slice(1), project: null };
 }
 
+/** The scope links carry: the project of the route on screen (the shell sets it on every route). */
+let linkScope: string | null = null;
+
+/** Sets the project every `href` carries from now on (null: All projects). */
+export function setLinkScope(project: string | null): void {
+  linkScope = project;
+}
+
+/** A link to `screen` in the console's current scope. */
 export function href(screen: string, ...params: (string | number)[]): string {
-  return `#/${[screen, ...params.map((p) => encodeURIComponent(String(p)))].join('/')}`;
+  return hrefIn(linkScope, screen, ...params);
+}
+
+/** A link to `screen` scoped to `project` (null: All projects). */
+export function hrefIn(project: string | null, screen: string, ...params: (string | number)[]): string {
+  const path = [screen, ...params.map((p) => encodeURIComponent(String(p)))].join('/');
+  return project ? `#/p/${encodeURIComponent(project)}/${path}` : `#/${path}`;
 }
 
 export function go(screen: string, ...params: (string | number)[]): void {

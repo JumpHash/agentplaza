@@ -416,7 +416,8 @@ pub fn valid_id(id: &str) -> bool {
             .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 
-/// A binding allowed for `kind`: `role:<role>` for system prompts, `plaza` for AGENTS.md, none for fragments.
+/// A binding allowed for `kind`: `role:<role>` for system prompts, `plaza` or `project:<id>` (a project's rules)
+/// for AGENTS.md, none for fragments.
 pub fn valid_binding(kind: Kind, binding: &str) -> bool {
     match kind {
         Kind::System => binding.strip_prefix("role:").is_some_and(|r| {
@@ -425,9 +426,20 @@ pub fn valid_binding(kind: Kind, binding: &str) -> bool {
                 && r.bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         }),
-        Kind::AgentsMd => binding == "plaza",
+        Kind::AgentsMd => binding == "plaza" || project_binding(binding),
         Kind::Fragment => false,
     }
+}
+
+/// Whether `binding` is a project's: `project:` and a project id (`pr<n>`, lower-case letters, digits and dashes).
+pub fn project_binding(binding: &str) -> bool {
+    binding.strip_prefix("project:").is_some_and(|id| {
+        !id.is_empty()
+            && id.len() <= 64
+            && id
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    })
 }
 
 fn invalid(msg: impl Into<String>) -> StoreError {

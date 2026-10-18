@@ -19,7 +19,9 @@ Everything is stored in the database and managed properly.
   - **Bindings:**
     - `role:<role>` (system kind only): the published version *replaces* that role's built-in or custom prompt;
     - `plaza` (agents_md kind only): the published version is appended to every agent's system prompt, under
-      `## House rules (AGENTS.md)`.
+      `## House rules (AGENTS.md)`;
+    - `project:<id>` (agents_md kind only): the published version is appended to the system prompt of the agents
+      working on that project, under `## Project rules (AGENTS.md)`.
   - At most one live (not archived) prompt holds a given binding.
 - **A version** is immutable once written: the body, its sha256, a note, the author, and the check result (score and
   findings) under the rule set it was scored with. Saving a body equal to the latest version does not create a new

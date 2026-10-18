@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a project with no title
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "A goal with no title"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

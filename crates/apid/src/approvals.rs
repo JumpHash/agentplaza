@@ -195,12 +195,31 @@ impl Store {
     /// The gate for one call. `class` is the tool's risk class. A held call is
     /// recorded with `held`: its thread, and the harness call waiting on the owner
     /// (a second identical call that joins a pending item adds its waiter to it).
+    #[cfg(test)]
     pub fn gate(&self, cid: u64, tool: &str, class: &str, input: &Value, held: &Held) -> Gate {
+        self.gate_with(cid, tool, class, input, held, Mode::default())
+    }
+
+    /// The mode the owner set for agent `cid`, if they set one.
+    pub fn explicit(&self, cid: u64) -> Option<Mode> {
+        self.lock().modes.get(&cid).copied()
+    }
+
+    /// [`Store::gate`], with `fallback` the mode of an agent the owner set none for (its project's).
+    pub fn gate_with(
+        &self,
+        cid: u64,
+        tool: &str,
+        class: &str,
+        input: &Value,
+        held: &Held,
+        fallback: Mode,
+    ) -> Gate {
         if class == "read" {
             return Gate::Run;
         }
         let mut inner = self.lock();
-        match inner.modes.get(&cid).copied().unwrap_or_default() {
+        match inner.modes.get(&cid).copied().unwrap_or(fallback) {
             Mode::Autonomous => Gate::Run,
             Mode::ReadOnly => {
                 Gate::Refused(format!("this agent is read-only: {tool} is not allowed"))
@@ -348,9 +367,16 @@ fn push_pending(inner: &mut Inner, cid: u64, kind: &str, subject: &str, detail: 
 /// Called on the tool path before a call runs. Publishes a newly queued approval and
 /// returns the gate's answer.
 pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate {
-    let gate = app
-        .approvals
-        .gate(cid, tool, crate::laws::risk_class(tool), input, held);
+    // An agent the owner set no mode for has its project's.
+    let fallback = crate::project_settings::permission_mode(app, cid);
+    let gate = app.approvals.gate_with(
+        cid,
+        tool,
+        crate::laws::risk_class(tool),
+        input,
+        held,
+        fallback,
+    );
     if let Gate::Held {
         created: Some(item),
         ..
@@ -566,7 +592,15 @@ fn get_mode(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     let Some(cid) = cid_param(p) else {
         return Response::error(400, "cid must be a number");
     };
-    Response::json(200, &json!({ "mode": app.approvals.mode(cid) }))
+    // The mode in force, and whether the owner set it for this agent or it is its project's (or the default).
+    let (mode, source) = match app.approvals.explicit(cid) {
+        Some(mode) => (mode, "agent"),
+        None => match crate::project_settings::of_agent(app, cid).and_then(|s| s.permission_mode) {
+            Some(mode) => (mode, "project"),
+            None => (Mode::default(), "default"),
+        },
+    };
+    Response::json(200, &json!({ "mode": mode, "source": source }))
 }
 
 fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {

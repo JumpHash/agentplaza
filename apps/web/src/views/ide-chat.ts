@@ -1,4 +1,5 @@
-// The IDE's Chat view: one agent's transcript as a reading column, and the composer that steers it.
+// The IDE's Chat view: one agent's transcript as a reading column, and the composer that talks to it: a chat turn when
+// it is idle, a note that steers the work in flight when it is working.
 // The transcript is reloaded (debounced) when the plaza reports a transcript or work frame for this agent.
 
 import css from '../styles/ide-chat.css';
@@ -140,7 +141,7 @@ function injectStyle(): void {
   document.head.append(style);
 }
 
-/** A chat pane for one agent: its transcript, and a composer that sends steering text to it. */
+/** A chat pane for one agent: its transcript, and a composer that talks to it (a chat turn, or a steer while it works). */
 export function chatPane(opts: ChatPaneOpts): ChatPane {
   injectStyle();
 
@@ -223,7 +224,10 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     sending = true;
     syncComposer();
     try {
-      await api.agentControl(opts.cid, { action: 'steer', text });
+      // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says so when the agent
+      // is on the bench, or its project is paused).
+      if (opts.working()) await api.agentControl(opts.cid, { action: 'steer', text });
+      else await api.chat(opts.cid, text);
       if (!alive) return;
       input.value = '';
       resize();

@@ -1,6 +1,7 @@
 //! `agentplaza`: the AgentPlaza command line. Every console feature as a command (the same hub API
-//! the web console and the desktop app use), `agentplaza tui` for the plaza live in the terminal,
-//! and `agentplaza node` to make this machine a node of a network.
+//! the web console and the desktop app use), `agentplaza chat` to talk a project into being with the
+//! orchestrator, `agentplaza tui` for the plaza live in the terminal, and `agentplaza node` to make
+//! this machine a node of a network.
 
 mod cmd;
 mod ctx;
@@ -35,13 +36,16 @@ struct Cli {
 enum Command {
     /// The plaza at a glance: hub, nodes, agents, work, spend.
     Overview,
-    /// Agents: list, inspect, create, talk to, stop, restart, set models.
+    /// Talk to the orchestrator: a conversation drafts a project (its tasks, team, budget and settings), and /start
+    /// opens, staffs and plans it at once. `--list` lists your conversations.
+    Chat(cmd::chat::Args),
+    /// Agents: list (all, a project's, or the bench), inspect, create, talk to, stop, restart, set models.
     #[command(subcommand)]
     Agents(cmd::agents::Cmd),
-    /// Projects and their repositories.
+    /// Projects: open one, put agents on it, pause, resume or archive it, its settings and budget, its plan's stages.
     #[command(subcommand)]
     Projects(cmd::projects::Cmd),
-    /// Tasks: the work queue.
+    /// Tasks: the work queue, each task in a project.
     #[command(subcommand)]
     Tasks(cmd::tasks::Cmd),
     /// Git: the plaza's repositories, branches and changes.
@@ -65,7 +69,7 @@ enum Command {
     /// The society: roles, bonds, reputation.
     #[command(subcommand)]
     Society(cmd::society::Cmd),
-    /// Conversations between agents and with the owner.
+    /// Conversations between agents (yours with the orchestrator are `chat`).
     #[command(subcommand)]
     Conversations(cmd::conversations::Cmd),
     /// The board: posts and announcements.
@@ -129,7 +133,8 @@ enum Command {
     Decide(cmd::decide::Args),
     /// Stream the plaza's live events (the hub's WebSocket).
     Events(cmd::events::Args),
-    /// The terminal UI: every screen, and the plaza drawn live (a setup and a tour on first start).
+    /// The terminal UI: every screen, the plaza drawn live, a project switcher and the chat with the orchestrator (a
+    /// setup and a tour on first start).
     Tui(tui::Args),
     /// Hubs: sign in to one, list and pick the saved ones.
     #[command(subcommand)]
@@ -201,6 +206,7 @@ fn run(cli: Cli) -> Result<(), String> {
     ctx.rich = rich::Mode::decide(&terminal, Some(ctx.client.base()));
     match cli.command {
         Command::Overview => cmd::overview::run(&ctx),
+        Command::Chat(a) => cmd::chat::run(&ctx, a),
         Command::Agents(c) => cmd::agents::run(&ctx, c),
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
@@ -265,5 +271,105 @@ mod tests {
         let cli = super::Cli::try_parse_from(["agentplaza", "e2b", "keys", "list"]).unwrap();
         assert!(matches!(cli.command, super::Command::E2b(_)));
         assert!(super::Cli::try_parse_from(["agentplaza", "e2b"]).is_err());
+    }
+
+    /// `chat` takes its message as words, and goes on with a conversation by its id; `--list` stands alone.
+    #[test]
+    fn chat_takes_a_message_and_a_conversation() {
+        let cli = super::Cli::try_parse_from([
+            "agentplaza",
+            "chat",
+            "--conversation",
+            "conv-3",
+            "ship",
+            "0.9",
+        ])
+        .unwrap();
+        let super::Command::Chat(args) = cli.command else {
+            panic!("chat parses as chat");
+        };
+        assert_eq!(args.conversation.as_deref(), Some("conv-3"));
+        assert_eq!(args.message, ["ship", "0.9"]);
+        assert_eq!(args.wait, 600);
+        assert!(super::Cli::try_parse_from(["agentplaza", "chat", "--list"]).is_ok());
+        assert!(
+            super::Cli::try_parse_from(["agentplaza", "chat", "--list", "hello"]).is_err(),
+            "--list takes no message"
+        );
+        assert!(
+            super::Cli::try_parse_from(["agentplaza", "chat", "--archived"]).is_err(),
+            "--archived goes with --list"
+        );
+    }
+
+    /// The project-scoped flags and subcommands parse as their help says.
+    #[test]
+    fn the_project_flags_and_subcommands_parse() {
+        let ok = |args: &[&str]| {
+            let mut all = vec!["agentplaza"];
+            all.extend_from_slice(args);
+            super::Cli::try_parse_from(all).is_ok()
+        };
+        assert!(ok(&["agents", "list", "--project", "pr3"]));
+        assert!(ok(&["agents", "list", "--bench"]));
+        assert!(!ok(&["agents", "list", "--bench", "--project", "pr3"]));
+        assert!(ok(&[
+            "agents",
+            "create",
+            "--role",
+            "builder",
+            "--project",
+            "pr3"
+        ]));
+        assert!(ok(&["tasks", "list", "--project", "pr3"]));
+        assert!(ok(&["tasks", "create", "Fix it", "--project", "pr3"]));
+        assert!(ok(&["tasks", "move", "t4", "--project", "pr3"]));
+        assert!(ok(&[
+            "projects",
+            "create",
+            "Release 0.9",
+            "--goal",
+            "Tag it",
+            "--kind",
+            "code"
+        ]));
+        assert!(!ok(&[
+            "projects",
+            "create",
+            "Release 0.9",
+            "--goal",
+            "Tag it",
+            "--kind",
+            "film"
+        ]));
+        assert!(ok(&["projects", "members", "pr3"]));
+        assert!(ok(&["projects", "members", "pr3", "add", "7"]));
+        assert!(ok(&["projects", "members", "pr3", "remove", "7", "--yes"]));
+        assert!(ok(&["projects", "members", "pr3", "suggested"]));
+        assert!(ok(&["projects", "pause", "pr3"]));
+        assert!(ok(&["projects", "resume", "pr3"]));
+        assert!(ok(&["projects", "archive", "pr3", "--yes"]));
+        assert!(ok(&["projects", "settings", "pr3"]));
+        assert!(ok(&["projects", "settings", "pr3", "effective"]));
+        assert!(ok(&[
+            "projects",
+            "settings",
+            "pr3",
+            "set",
+            "effort=high",
+            "max_turns=40"
+        ]));
+        assert!(
+            !ok(&["projects", "settings", "pr3", "set"]),
+            "set needs a pair"
+        );
+        assert!(ok(&["projects", "settings", "pr3", "unset", "effort"]));
+        assert!(ok(&["projects", "budget", "pr3"]));
+        assert!(ok(&["projects", "budget", "pr3", "add", "5000"]));
+        assert!(ok(&["projects", "budget", "pr3", "return", "1000"]));
+        assert!(
+            !ok(&["projects", "budget", "pr3", "add", "0"]),
+            "credits are at least 1"
+        );
     }
 }

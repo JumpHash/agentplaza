@@ -123,12 +123,18 @@ pub struct App {
     pub library: crate::library::Store,
     /// The Library of deliverables: files agents handed in, in Garage or a local folder.
     pub deliverables: Arc<crate::deliverables::Store>,
-    /// Hire bonuses, posting counts and outreach times.
+    /// Hire bonuses and posting counts.
     pub society: crate::society::Society,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
+    /// The project each agent works on; one with none is on the bench and does nothing (`membership`).
+    pub members: crate::membership::Members,
+    /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
+    pub conversations: crate::conversations::Store,
+    /// Each project's overrides of the plaza's settings (`project_settings`).
+    pub project_settings: crate::project_settings::Store,
     /// Loops and per-agent harness limits.
     pub harness: crate::harness_control::Store,
     /// The plaza's git host (Forgejo) and the agents' identities on it.
@@ -252,6 +258,13 @@ impl App {
             society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
+            members: crate::membership::Members::load(config.state_dir.join("members.json")),
+            conversations: crate::conversations::Store::load(
+                config.state_dir.join("conversations.json"),
+            ),
+            project_settings: crate::project_settings::Store::load(
+                config.state_dir.join("project-settings.json"),
+            ),
             harness: crate::harness_control::Store::load(&config.state_dir),
             forge: crate::git::Forge::load(&config.state_dir, &env),
             db: Arc::clone(&db),

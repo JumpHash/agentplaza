@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::wizard::{self, ProposalView, WizardMsg};
 use super::{Id, sanctions};
-use crate::console::{Ctx, client, rich, ui};
+use crate::console::{Ctx, client, rich, scope, ui};
 use crate::theme::SANS;
 
 const STRONG: Font = Font {
@@ -40,6 +40,8 @@ pub struct State {
     proposals: Vec<Proposal>,
     /// (cid, name) of every agent, to name the agents the approvals belong to.
     agents: Vec<(u64, String)>,
+    /// The agents as the hub sent them: under a project, the approvals its agents asked for.
+    roster: Vec<Value>,
     /// The sanction ids of the suspensions in force: an escalation offers Lift only for these.
     suspensions: HashSet<u64>,
     /// Reasons typed but not yet sent, keyed `ap-<id>` (approval) or `pp-<id>` (proposal).
@@ -314,6 +316,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Agents(res) => {
             if let Ok(v) = res {
                 state.agents = list(&v, agent_entry);
+                state.roster = v.as_array().cloned().unwrap_or_default();
             }
             settled(state, ctx)
         }
@@ -422,9 +425,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// Whether an approval shows under `scope`: under a project, the ones its agents asked for and the orchestrator's (it
+/// works on every project), and the plaza's own (cid 0).
+fn in_scope(state: &State, cid: u64, scope: Option<&str>) -> bool {
+    if scope.is_none() || cid == 0 {
+        return true;
+    }
+    match state.roster.iter().find(|a| a["cid"].as_u64() == Some(cid)) {
+        Some(agent) => scope::in_scope(agent, scope),
+        None => true,
+    }
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let rctx = rich::context(&state.cards, None, None, None);
-    let page = page(state, &rctx);
+    let page = page(state, &rctx, ctx.project.as_deref());
     if state.wizard.open {
         Stack::new()
             .push(page)
@@ -435,7 +450,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     }
 }
 
-fn page<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
+fn page<'a>(state: &'a State, rctx: &rich::RichCtx, scope: Option<&str>) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
@@ -443,17 +458,21 @@ fn page<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
     if !state.proposals.is_empty() {
         parts.push(proposals_view(state, rctx));
     }
-    parts.push(pending_view(state, rctx));
+    parts.push(pending_view(state, rctx, scope));
     parts.push(subhead("Decided"));
-    parts.push(history_view(state));
+    parts.push(history_view(state, scope));
     ui::sheet(
-        ui::view_head("Approvals", vec![]),
+        ui::view_head(&scope::heading("Approvals", scope), vec![]),
         column(parts).spacing(22).width(Length::Fill).into(),
     )
 }
 
 /// The waiting approvals, longest wait first, each a card with the owner's call.
-fn pending_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> {
+fn pending_view<'a>(
+    state: &'a State,
+    rctx: &rich::RichCtx,
+    scope: Option<&str>,
+) -> Element<'a, Msg> {
     if !state.loaded {
         return Space::new().into();
     }
@@ -463,7 +482,7 @@ fn pending_view<'a>(state: &'a State, rctx: &rich::RichCtx) -> Element<'a, Msg> 
     let mut waiting: Vec<&Approval> = state
         .approvals
         .iter()
-        .filter(|a| a.state == "pending")
+        .filter(|a| a.state == "pending" && in_scope(state, a.cid, scope))
         .collect();
     waiting.sort_by_key(|a| a.created_ms);
     if waiting.is_empty() {
@@ -614,11 +633,11 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     line.into()
 }
 
-fn history_view<'a>(state: &'a State) -> Element<'a, Msg> {
+fn history_view<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
     let mut past: Vec<&Approval> = state
         .approvals
         .iter()
-        .filter(|a| a.state != "pending")
+        .filter(|a| a.state != "pending" && in_scope(state, a.cid, scope))
         .collect();
     past.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
     if past.is_empty() {

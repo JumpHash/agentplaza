@@ -1,0 +1,25 @@
+/* The project scope: the top bar's switcher, the New project dialog, the bench and team rows, a project's settings. */
+
+.scope-switcher { max-width: 260px; margin-left: 14px; font: 600 12px var(--sans); }
+
+.banner.scope-note { color: var(--ink-2); background: var(--surface-2); border-color: var(--rule); font-weight: 500; }
+.banner.scope-note a { color: var(--accent); }
+
+.new-project { display: grid; gap: 22px; min-width: min(560px, 80vw); }
+.new-project section { display: grid; gap: 10px; }
+.new-project section + section { padding-top: 18px; border-top: 1px solid var(--rule); }
+.new-project h3 { margin: 0; font: 600 14px var(--sans); }
+.new-project .actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.bench-row, .team-row { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule-faint); }
+.bench-row:last-child, .team-row:last-child { border-bottom: 0; }
+.team-who { flex: 1; min-width: 0; }
+.team-who a { color: var(--ink); text-decoration: none; }
+
+.agent-project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; flex-basis: 100%; }
+
+.pj-over { opacity: 0.6; }
+.pj-settings td { vertical-align: top; padding: 10px 12px; }
+.pj-settings td.mono { white-space: nowrap; }
+.pj-cell-actions { white-space: nowrap; text-align: right; }
+.pj-cell-actions .btn + .btn { margin-left: 4px; }

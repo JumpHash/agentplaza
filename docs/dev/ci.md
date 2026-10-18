@@ -2,8 +2,9 @@
 
 The workflows live in `.github/workflows` and run on the organisation's self-hosted runners.
 
-**Pull requests are tested; main only builds.** Every pull request to `main` runs the gate
-(`pr.yml`). It merges through the merge queue, which runs the gate again on the exact commit that
+**Pull requests are tested; main only builds.** Every pull request to `main` that is ready for review
+runs the gate (`pr.yml`). A draft runs nothing: its jobs are all skipped, and marking it ready for
+review starts its run. A pull request merges through the merge queue, which runs the gate again on the exact commit that
 will land. The push to `main` then builds, packages and releases that commit without testing it
 again. A nightly run tests every platform, to catch what the gate's path filter let through.
 
@@ -166,7 +167,7 @@ fuzzing. Then open `api-out/site/index.html`.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `pr.yml` | every pull request (also one stacked on another branch), merge-queue entries | The gate, above |
+| `pr.yml` | every pull request ready for review (also one stacked on another branch; a draft's jobs are skipped), merge-queue entries | The gate, above |
 | `release.yml` | pushes to main with code in them, or by hand | Picks the next version (`packaging/scripts/next-version.sh`), builds and packages every platform (no tests: the queue tested the commit), and publishes the GitHub Release |
 | `check-results.yml` | after each `pr.yml` run (from main), or by hand | Comments on the pull request with the run's results: Tests, Lint, Web console |
 | `api-report.yml` | after each `pr.yml` run (from main), or by hand | Builds the hub API report from the run's results and publishes it to Pages; comments on the pull request with it |

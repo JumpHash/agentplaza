@@ -1,17 +1,19 @@
 //! The Projects screen (parity with the web console's `projects` view).
 //!
-//! The list of goals, and one project's page: its brief, the eight-stage track, documents,
-//! critiques, tasks, repository and history. The owner approves the plan or sends the project
-//! back to an earlier stage with a reason.
+//! The list of projects, with New project, and one project's page: its brief, the eight-stage
+//! track, Pause, Resume and Archive, and three tabs: Plan (documents, critiques, tasks, repository
+//! and history; the owner approves the plan or sends the project back to an earlier stage with a
+//! reason), Team ([`super::project_team`]) and Settings ([`super::project_settings`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{Space, button, column, container, row, text, text_input};
+use iced::widget::{Space, Stack, button, column, container, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme, font};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Id, ide};
+use super::wizard::WizardMsg;
+use super::{Id, ide, project_settings, project_team};
 use crate::console::{Ctx, client, events, ui};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
@@ -60,6 +62,21 @@ pub struct Project {
     pub history: Vec<Event>,
     pub approved_by: Option<String>,
     pub updated_ms: i64,
+    #[serde(default)]
+    pub created_ms: i64,
+    /// Paused: its agents take no work until it is resumed.
+    #[serde(default)]
+    pub paused: bool,
+    /// Archived: nothing more is done for it.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+impl Project {
+    /// Whether it still has work: not archived, not delivered.
+    pub fn live(&self) -> bool {
+        !self.archived && self.stage != "delivered"
+    }
 }
 
 /// A document a stage produced.
@@ -96,6 +113,37 @@ pub struct Event {
     pub note: String,
 }
 
+/// A project page's tabs: its plan and history, the agents working on it, its settings and budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    #[default]
+    Plan,
+    Team,
+    Settings,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 3] = [Tab::Plan, Tab::Team, Tab::Settings];
+
+    /// A tab by its name (`plan`, `team`, `settings`), as the web's route names it.
+    pub fn named(name: &str) -> Option<Tab> {
+        match name.trim() {
+            "plan" => Some(Tab::Plan),
+            "team" => Some(Tab::Team),
+            "settings" => Some(Tab::Settings),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Plan => "Plan",
+            Tab::Team => "Team",
+            Tab::Settings => "Settings",
+        }
+    }
+}
+
 /// A send-back in progress: the stage it returns to and the reason the team must act on.
 #[derive(Debug, Clone)]
 pub struct SendBack {
@@ -122,6 +170,12 @@ pub struct State {
     pub loading: bool,
     /// A hub event came while a reload was in flight: one more reload when it lands.
     pub again: bool,
+    /// The open project's tab.
+    pub tab: Tab,
+    /// The Archive confirmation is open.
+    pub confirm_archive: bool,
+    pub team: project_team::State,
+    pub settings: project_settings::State,
 }
 
 #[derive(Debug, Clone)]
@@ -151,37 +205,113 @@ pub enum Msg {
     OpenRepo(String),
     /// The repository's default branch, read for `OpenRepo`; the IDE opens on it when it is in.
     RepoBranch(String, Result<Value, String>),
+    /// New project: the shell's dialog (the console opens it).
+    NewProject,
+    /// The open project's tab.
+    Tab(Tab),
+    Pause,
+    Resume,
+    /// Archive: asked (OpenArchive), then done or not.
+    OpenArchive,
+    Archive,
+    CancelArchive,
+    Team(project_team::Msg),
+    Settings(project_settings::Msg),
 }
 
 /// The navigation this message asks for, if any.
 pub fn go(msg: &Msg) -> Option<Id> {
-    if let Msg::Go(id) = msg {
-        Some(id.clone())
-    } else {
-        None
+    match msg {
+        Msg::Go(id) => Some(id.clone()),
+        Msg::Team(m) => project_team::go(m),
+        Msg::Settings(m) => project_settings::go(m),
+        _ => None,
     }
 }
 
 /// The screen as it opens on one project's page (the Work screen's plan cards open it this way); the load that
 /// follows reads that project.
 pub fn opened(id: String) -> State {
+    opened_on(id, Tab::Plan)
+}
+
+/// The screen as it opens on one project's page, on `tab`.
+pub fn opened_on(id: String, tab: Tab) -> State {
     State {
         open: Some(id),
+        tab,
         ..Default::default()
     }
 }
 
-/// Loads the screen's data (called when it opens and on every poll tick).
+/// Loads the screen's data (called when it opens and on every poll tick): the list, or the open project and its tab.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     match state.open.clone() {
-        Some(id) => fetch_detail(ctx, id),
+        Some(id) => Task::batch([fetch_detail(ctx, id.clone()), load_tab(state, &id, ctx)]),
         None => fetch_list(ctx),
+    }
+}
+
+/// The open tab's own data: the team, or the settings (the plan is the project itself).
+fn load_tab(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
+    let live = state.detail.as_ref().is_none_or(Project::live);
+    match state.tab {
+        Tab::Plan => Task::none(),
+        Tab::Team => project_team::load(id, live, ctx).map(Msg::Team),
+        Tab::Settings => project_settings::load(id, ctx).map(Msg::Settings),
     }
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => Task::none(),
+        Msg::Go(_) | Msg::NewProject => Task::none(),
+        Msg::Tab(tab) => {
+            state.tab = tab;
+            match state.open.clone() {
+                Some(id) => load_tab(state, &id, ctx),
+                None => Task::none(),
+            }
+        }
+        Msg::Pause | Msg::Resume | Msg::Archive => {
+            let Some(p) = state.detail.as_ref() else {
+                return Task::none();
+            };
+            state.confirm_archive = false;
+            let (path, done) = match msg {
+                Msg::Pause => (
+                    format!("/v1/projects/{}/pause", p.id),
+                    "Paused: its agents wait",
+                ),
+                Msg::Resume => (format!("/v1/projects/{}/resume", p.id), "Resumed"),
+                _ => (format!("/v1/projects/{}/archive", p.id), "Archived"),
+            };
+            let client = ctx.client.clone();
+            client::task(
+                move || client.post::<Project>(&path, &json!({})),
+                move |r| Msg::Acted(r, done),
+            )
+        }
+        Msg::OpenArchive => {
+            state.confirm_archive = true;
+            Task::none()
+        }
+        Msg::CancelArchive => {
+            state.confirm_archive = false;
+            Task::none()
+        }
+        Msg::Team(m) => {
+            let Some(p) = state.detail.as_ref() else {
+                return Task::none();
+            };
+            let (id, title, live) = (p.id.clone(), p.title.clone(), p.live());
+            project_team::update(&mut state.team, m, &id, &title, live, ctx).map(Msg::Team)
+        }
+        Msg::Settings(m) => {
+            let Some(id) = state.open.clone() else {
+                return Task::none();
+            };
+            project_settings::update(&mut state.settings, m, &id, ctx).map(Msg::Settings)
+        }
         Msg::OpenRepo(repo) => {
             let c = ctx.client.clone();
             let path = format!("/v1/git/repos/{repo}");
@@ -268,24 +398,24 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 }
                 Err(e) => state.error = Some(e),
             }
-            Task::none()
+            // A pause, a resume or an archive moves agents: the open tab reads them again.
+            match state.open.clone() {
+                Some(id) => load_tab(state, &id, ctx),
+                None => Task::none(),
+            }
         }
         Msg::Open(id) => {
-            state.open = Some(id.clone());
-            state.detail = None;
-            state.notice = None;
-            state.approve = None;
-            state.send_back = None;
-            state.error = None;
+            *state = State {
+                list: state.list.take(),
+                ..opened(id.clone())
+            };
             fetch_detail(ctx, id)
         }
         Msg::Back => {
-            state.open = None;
-            state.detail = None;
-            state.notice = None;
-            state.approve = None;
-            state.send_back = None;
-            state.error = None;
+            *state = State {
+                list: state.list.take(),
+                ..State::default()
+            };
             fetch_list(ctx)
         }
         Msg::OpenApprove => {
@@ -369,10 +499,24 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     match (&state.open, &state.detail) {
         (None, _) => list_view(state),
-        (Some(_), Some(p)) => detail(state, p),
+        (Some(_), Some(p)) => {
+            let page = detail(state, p);
+            // The Team tab's wizard spawns new agents for the project, over the page.
+            if state.tab == Tab::Team && state.team.wizard.open {
+                Stack::new()
+                    .push(page)
+                    .push(
+                        super::wizard::view(&state.team.wizard, ctx)
+                            .map(|m: WizardMsg| Msg::Team(project_team::Msg::Wizard(m))),
+                    )
+                    .into()
+            } else {
+                page
+            }
+        }
         (Some(_), None) => {
             // A failed read is "not found" on the web (the toast carries the reason).
             let body: Element<'a, Msg> = match &state.error {
@@ -617,14 +761,32 @@ fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
 
 // ---- the list ------------------------------------------------------------------------
 
+/// A project's life as a badge: paused or archived (a delivered one says so in its stage).
+fn life_badge<'a>(p: &Project) -> Option<Element<'a, Msg>> {
+    if p.archived {
+        Some(ui::badge("Archived", ui::Tone::Muted))
+    } else if p.paused {
+        Some(ui::badge("Paused", ui::Tone::Warn))
+    } else {
+        None
+    }
+}
+
 fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
-    let main = column![
-        row![
-            semibold(p.title.as_str(), 15.0),
-            ui::badge(&p.kind, ui::Tone::Muted)
-        ]
+    // A project that is over is listed after the live ones, its title faint.
+    let title = if p.live() {
+        semibold(p.title.as_str(), 15.0)
+    } else {
+        semibold(p.title.as_str(), 15.0).color(crate::theme::palette().ink_3)
+    };
+    let mut head = row![title, ui::badge(&p.kind, ui::Tone::Muted)]
         .spacing(10)
-        .align_y(Alignment::Center),
+        .align_y(Alignment::Center);
+    if let Some(b) = life_badge(p) {
+        head = head.push(b);
+    }
+    let main = column![
+        head,
         track(&p.stage),
         ui::sans(
             format!(
@@ -666,7 +828,7 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
 
 fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let mut body: Vec<Element<'a, Msg>> = vec![container(
-        ui::prose("Every goal goes through brief, research, proposal, critique and approval before anything is built.").color(crate::theme::palette().ink_2),
+        ui::prose("Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.").color(crate::theme::palette().ink_2),
     )
     .max_width(620)
     .into()];
@@ -675,11 +837,19 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     match &state.list {
         None => body.push(ui::loading()),
-        Some(list) if list.is_empty() => body.push(ui::empty(
-            "projects",
-            "No projects yet.",
-            "The orchestrator opens one for each goal you give it.",
-        )),
+        Some(list) if list.is_empty() => {
+            body.push(ui::empty(
+                "projects",
+                "No projects yet.",
+                "Start one in a conversation with the orchestrator: it drafts the tasks, the team and the budget, and you start it.",
+            ));
+            body.push(
+                container(new_project_button())
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .into(),
+            );
+        }
         Some(list) => {
             // The web's `.pj-list` ruled register: a rule above the rows, one under each.
             body.push(
@@ -691,12 +861,36 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
                     })
                     .into(),
             );
-            body.push(column(list.iter().map(row_item)).spacing(0).into());
+            // The live projects first, newest first; the ones that are over after them.
+            let mut ordered: Vec<&Project> = list.iter().collect();
+            ordered.sort_by_key(|p| (!p.live(), std::cmp::Reverse(p.created_ms)));
+            body.push(column(ordered.into_iter().map(row_item)).spacing(0).into());
         }
     }
     ui::sheet(
-        ui::view_head("Projects", vec![]),
-        column(body).spacing(18).into(),
+        ui::view_head("Projects", vec![new_project_button()]),
+        scrolled(body),
+    )
+}
+
+/// A page's body, scrolling under its head: the shell leaves this screen's scrolling to it, so a long list or a
+/// project's long tab scrolls instead of being squeezed into the window.
+fn scrolled<'a>(body: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    ui::scroll(column(body).spacing(18).padding(iced::Padding {
+        top: 0.0,
+        right: 14.0,
+        bottom: 0.0,
+        left: 0.0,
+    }))
+    .into()
+}
+
+fn new_project_button<'a>() -> Element<'a, Msg> {
+    ui::btn(
+        "New project",
+        Some("plus"),
+        ui::Kind::Primary,
+        Some(Msg::NewProject),
     )
 }
 
@@ -705,10 +899,14 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
 fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     let idx = stage_index(&p.stage);
 
+    let live = p.live();
     let mut badges: Vec<Element<'a, Msg>> = vec![
         ui::badge(&p.kind, ui::Tone::Muted),
         ui::badge(&label(&p.stage), ui::Tone::Signal),
     ];
+    if let Some(b) = life_badge(p) {
+        badges.push(b);
+    }
     if let Some(by) = &p.approved_by {
         badges.push(ui::faint(format!("approved by {by}")).into());
     }
@@ -728,7 +926,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             Some(Msg::OpenApprove),
         ));
     }
-    if idx > 0 {
+    if idx > 0 && live {
         actions.push(ui::btn(
             "Send back…",
             None,
@@ -743,7 +941,46 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         ui::Kind::Secondary,
         Some(Msg::Go(Id::WorkOn(p.id.clone()))),
     ));
-    body.push(row(actions).spacing(8).into());
+    if live && !p.paused {
+        actions.push(ui::btn(
+            "Pause",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Pause),
+        ));
+    }
+    if live && p.paused {
+        actions.push(ui::btn(
+            "Resume",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::Resume),
+        ));
+    }
+    if live {
+        actions.push(ui::btn(
+            "Archive…",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::OpenArchive),
+        ));
+    }
+    body.push(row(actions).spacing(8).wrap().into());
+    if state.confirm_archive {
+        body.push(ui::card(
+            "Archive project?",
+            column![
+                ui::prose(format!("Nothing more is done for {}: its open tasks are withdrawn, its agents go back to the bench, and the rest of its budget goes back to the plaza. Its history stays.", p.title)),
+                row![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelArchive)),
+                    ui::btn("Archive", None, ui::Kind::Danger, Some(Msg::Archive)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(10)
+            .into(),
+        ));
+    }
 
     if let Some(note) = &state.approve {
         let field = text_input("A note for the team (optional)", note)
@@ -806,6 +1043,20 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         body.push(ui::faint(n).into());
     }
 
+    let tabs: Vec<(Tab, &str)> = Tab::ALL.iter().map(|t| (*t, t.label())).collect();
+    body.push(ui::tabs(&tabs, state.tab, Msg::Tab));
+    match state.tab {
+        Tab::Team => {
+            body.push(project_team::view(&state.team, &p.id, live).map(Msg::Team));
+            return page(p, badges, body);
+        }
+        Tab::Settings => {
+            body.push(project_settings::view(&state.settings, &p.id, live).map(Msg::Settings));
+            return page(p, badges, body);
+        }
+        Tab::Plan => {}
+    }
+
     let mut sections: Vec<Element<'a, Msg>> = vec![
         ui::card("Documents", docs_body(p)),
         ui::card("Critiques", critiques_body(p)),
@@ -827,11 +1078,16 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     }
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());
+    page(p, badges, body)
+}
 
-    ui::sheet(
-        ui::view_head(&p.title, badges),
-        column(body).spacing(18).into(),
-    )
+/// A project's page: its title and badges over the body.
+fn page<'a>(
+    p: &'a Project,
+    badges: Vec<Element<'a, Msg>>,
+    body: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    ui::sheet(ui::view_head(&p.title, badges), scrolled(body))
 }
 
 fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {

@@ -1,12 +1,14 @@
 //! The shell around every screen: the sidebar (brand, sections, an icon + label per screen, counts;
-//! resizable, collapsible to a rail), the top bar (sidebar toggle, the screen title, hub
-//! health, STOP ALL / RESUME) and the held banner — as on the web console.
+//! resizable, collapsible to a rail), the top bar (sidebar toggle, the screen title, the project
+//! switcher, hub health, STOP ALL / RESUME), the held banner and the New project dialog — as on the
+//! web console.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use iced::widget::{
-    Space, Stack, button, column, container, mouse_area, row, stack, text, text_input, tooltip,
+    Space, Stack, button, column, container, mouse_area, pick_list, row, stack, text, text_input,
+    tooltip,
 };
 use iced::{
     Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme, alignment,
@@ -14,8 +16,8 @@ use iced::{
 };
 
 use super::events;
-use super::screens::{Id, NAV};
-use super::{Ctx, toast, ui};
+use super::screens::{Id, NAV, projects::Tab};
+use super::{Ctx, new_project, scope, toast, ui};
 use crate::theme::SANS;
 
 /// The open sidebar's default width (the web's `DEFAULT_WIDTH`) and its limits.
@@ -100,6 +102,12 @@ pub struct State {
     handle_hot: bool,
     /// The entry the tour is describing: drawn marked, as on the web.
     pub highlight: Option<Id>,
+    /// The project the console is scoped to (the console's `Ctx::project`, kept here for the top bar).
+    pub project: Option<String>,
+    /// Every project, as `/v1/projects` lists them: the switcher offers the live ones.
+    pub projects: Vec<serde_json::Value>,
+    /// The New project dialog, while it is open.
+    pub new_project: Option<new_project::Form>,
 }
 
 impl Default for State {
@@ -130,8 +138,72 @@ impl Default for State {
             pointer_x: 0.0,
             handle_hot: false,
             highlight: None,
+            project: None,
+            projects: Vec::new(),
+            new_project: None,
         }
     }
+}
+
+/// One entry of the top bar's project switcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeChoice {
+    All,
+    /// A project: its id and title.
+    Project(String, String),
+    New,
+}
+
+impl std::fmt::Display for ScopeChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeChoice::All => f.write_str("All projects"),
+            ScopeChoice::Project(_, title) => f.write_str(title),
+            ScopeChoice::New => f.write_str("New project…"),
+        }
+    }
+}
+
+/// The switcher's entries: All projects, each live project newest first, and New project…. A scope on a project that
+/// is over (or not listed yet) still shows, so the switcher says where the console is.
+pub fn scope_choices(projects: &[serde_json::Value], current: Option<&str>) -> Vec<ScopeChoice> {
+    let mut choices = vec![ScopeChoice::All];
+    for p in scope::live_projects(projects) {
+        if let Some(id) = p["id"].as_str() {
+            choices.push(ScopeChoice::Project(
+                id.to_string(),
+                scope::title_in(projects, id),
+            ));
+        }
+    }
+    if let Some(id) = current
+        && !choices
+            .iter()
+            .any(|c| matches!(c, ScopeChoice::Project(pid, _) if pid == id))
+    {
+        choices.push(ScopeChoice::Project(
+            id.to_string(),
+            scope::title_in(projects, id),
+        ));
+    }
+    choices.push(ScopeChoice::New);
+    choices
+}
+
+/// The screens that hold the plaza's settings, which a project overrides in its own (the web's `PLAZA_SETTINGS`):
+/// under a project, they say so.
+fn plaza_settings(id: &Id) -> bool {
+    matches!(
+        id,
+        Id::Models
+            | Id::Tools
+            | Id::Mcp
+            | Id::Prompts
+            | Id::Skills
+            | Id::Rules
+            | Id::Vault
+            | Id::Egress
+    )
 }
 
 /// An open confirmation: STOP ALL with its optional reason, or RESUME.
@@ -187,16 +259,28 @@ pub enum Msg {
     ToggleTheme,
     /// The OS appearance, at start and when it changes; it counts only until the owner chooses a theme.
     Appearance(iced::theme::Mode),
+    /// Scopes the console to a project (None: All projects) and opens a screen (None: the one on show, or its
+    /// list). The console handles it: the scope is its `Ctx`.
+    Scope(Option<String>, Option<Id>),
+    /// Opens the New project dialog (the switcher's last entry).
+    OpenNewProject,
+    NewProject(new_project::Msg),
 }
 
-/// The shell's own data: the plaza's held state and the sidebar counts.
+/// The shell's own data: the plaza's held state, the sidebar counts and the projects the switcher offers.
 pub fn load(ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
     super::client::task(
         move || {
             let overview: serde_json::Value = client.get("/v1/overview")?;
             let control: serde_json::Value = client.get("/v1/plaza/state")?;
-            Ok(serde_json::json!({ "overview": overview, "control": control }))
+            // The projects are the switcher's; a hub that cannot list them leaves the last list as it was.
+            let projects = client
+                .get::<serde_json::Value>("/v1/projects")
+                .unwrap_or_default();
+            Ok(
+                serde_json::json!({ "overview": overview, "control": control, "projects": projects }),
+            )
         },
         Msg::Loaded,
     )
@@ -221,6 +305,40 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::Go(id) => {
             state.current = id.clone();
             (Task::none(), Some(id))
+        }
+        // The console scopes itself (it owns the `Ctx`); the message never reaches here from it.
+        Msg::Scope(..) => (Task::none(), None),
+        Msg::OpenNewProject => {
+            state.new_project = Some(new_project::Form::default());
+            (Task::none(), None)
+        }
+        Msg::NewProject(msg) => {
+            let Some(form) = state.new_project.as_mut() else {
+                return (Task::none(), None);
+            };
+            let (task, effect) = new_project::update(form, msg, ctx);
+            match effect {
+                new_project::Effect::None => (task.map(Msg::NewProject), None),
+                new_project::Effect::Close => {
+                    state.new_project = None;
+                    (Task::none(), None)
+                }
+                // The conversation opens in the IDE, where the orchestrator drafts the project beside it.
+                new_project::Effect::Conversation(id) => {
+                    state.new_project = None;
+                    let id = Id::Ide(Some(id));
+                    state.current = id.clone();
+                    (Task::none(), Some(id))
+                }
+                // A project opened directly: the console is scoped to it, on its page.
+                new_project::Effect::Project(id) => {
+                    state.new_project = None;
+                    (
+                        Task::done(Msg::Scope(Some(id.clone()), Some(Id::Project(id)))),
+                        None,
+                    )
+                }
+            }
         }
         Msg::ToggleTheme => {
             let light = !crate::theme::is_light();
@@ -340,14 +458,25 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             state.hub = ctx.client.base().to_string();
             state.target = Some(ctx.client.target.clone());
             state.loading = false;
-            (
-                if std::mem::take(&mut state.again) {
-                    load(ctx)
-                } else {
-                    Task::none()
-                },
-                None,
-            )
+            let again = if std::mem::take(&mut state.again) {
+                load(ctx)
+            } else {
+                Task::none()
+            };
+            if let Some(list) = v["projects"].as_array() {
+                state.projects = list.clone();
+                scope::remember_titles(list);
+                // A remembered project that no longer exists sends the console back to All projects.
+                if let Some(current) = &state.project
+                    && !list.iter().any(|p| p["id"].as_str() == Some(current))
+                {
+                    return (
+                        Task::batch([again, Task::done(Msg::Scope(None, None))]),
+                        None,
+                    );
+                }
+            }
+            (again, None)
         }
         Msg::Loaded(Err(_)) => {
             state.hub_ok = false;
@@ -434,6 +563,11 @@ pub fn view<'a, M: Clone + 'a>(
         if state.paused {
             main = main.push(held_banner(state, wrap));
         }
+        if let Some(project) = &state.project
+            && plaza_settings(&state.current)
+        {
+            main = main.push(settings_note(project, wrap));
+        }
         if let Some(adapter) = &state.software_gpu {
             main = main.push(gpu_banner(adapter));
         }
@@ -463,6 +597,9 @@ pub fn view<'a, M: Clone + 'a>(
     if let Some(which) = &state.confirm {
         layers = layers.push(confirm_view(which, wrap));
     }
+    if let Some(form) = &state.new_project {
+        layers = layers.push(new_project::view(form).map(move |m| wrap(Msg::NewProject(m))));
+    }
     if !state.toasts.is_empty() {
         layers = layers.push(toast::view(&state.toasts));
     }
@@ -487,6 +624,7 @@ fn shows(entry: &Id, current: &Id) -> bool {
             (Id::Tasks, Id::Task(_))
                 | (Id::Git, Id::Repo(_))
                 | (Id::Projects, Id::Project(_))
+                | (Id::Projects, Id::ProjectTab(..))
                 | (Id::Work, Id::WorkOn(_))
         )
 }
@@ -501,6 +639,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Agents
             | Id::Projects
             | Id::Project(_)
+            | Id::ProjectTab(..)
             | Id::Tasks
             | Id::Task(_)
             | Id::Git
@@ -1004,10 +1143,32 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             wrap(Msg::StopAll),
         ));
     }
+    // The project switcher: All projects, each live project, New project….
+    let choices = scope_choices(&state.projects, state.project.as_deref());
+    let selected = match &state.project {
+        None => ScopeChoice::All,
+        Some(id) => choices
+            .iter()
+            .find(|c| matches!(c, ScopeChoice::Project(pid, _) if pid == id))
+            .cloned()
+            .unwrap_or_else(|| ScopeChoice::Project(id.clone(), id.clone())),
+    };
+    let switcher = pick_list(choices, Some(selected), move |choice| {
+        wrap(match choice {
+            ScopeChoice::All => Msg::Scope(None, None),
+            ScopeChoice::Project(id, _) => Msg::Scope(Some(id), None),
+            ScopeChoice::New => Msg::OpenNewProject,
+        })
+    })
+    .style(crate::theme::pick_list)
+    .text_size(12.5)
+    .font(SANS)
+    .padding([6, 10]);
     container(
         row![
             toggle,
             ui::sans(title.to_string(), 13.0, crate::theme::palette().ink),
+            switcher,
             Space::new().width(Length::Fill),
             right
         ]
@@ -1017,6 +1178,40 @@ fn top_bar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     .padding([10, 16])
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Under a project, a setup screen says it holds the plaza's settings, with the way to the project's own.
+fn settings_note<'a, M: Clone + 'a>(project: &str, wrap: fn(Msg) -> M) -> Element<'a, M> {
+    let ink_2 = crate::theme::palette().ink_2;
+    container(
+        row![
+            ui::icon("settings", 14.0, ink_2),
+            ui::sans(
+                "These are the plaza's settings, which every project starts from.",
+                12.5,
+                ink_2
+            ),
+            ui::text_link(
+                "This project's own settings",
+                wrap(Msg::Go(Id::ProjectTab(project.to_string(), Tab::Settings))),
+            ),
+            ui::sans("override some of them.", 12.5, ink_2),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([8, 16])
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().sheet.into()),
         border: Border {
             color: crate::theme::palette().rule,
             width: 1.0,
@@ -1212,6 +1407,37 @@ mod tests {
         let resumed = serde_json::json!({ "paused": false, "since_ms": 0, "by": "", "reason": "", "cancelled": 0 });
         assert!(!apply_frame(&mut s, "plaza", &resumed));
         assert!(!s.paused);
+    }
+
+    #[test]
+    fn the_switcher_offers_all_projects_the_live_ones_and_new_project() {
+        let projects = vec![
+            serde_json::json!({ "id": "pr1", "title": "Docs refresh", "stage": "build", "created_ms": 1 }),
+            serde_json::json!({ "id": "pr2", "title": "Release 0.9", "stage": "brief", "created_ms": 2 }),
+            serde_json::json!({ "id": "pr3", "title": "Old", "stage": "delivered", "created_ms": 3 }),
+        ];
+        let names = |c: Vec<ScopeChoice>| c.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            names(scope_choices(&projects, None)),
+            [
+                "All projects",
+                "Release 0.9",
+                "Docs refresh",
+                "New project…"
+            ]
+        );
+        assert_eq!(
+            names(scope_choices(&projects, Some("pr3"))),
+            [
+                "All projects",
+                "Release 0.9",
+                "Docs refresh",
+                "Old",
+                "New project…"
+            ],
+            "a scope on a project that is over still shows"
+        );
+        assert!(plaza_settings(&Id::Models) && !plaza_settings(&Id::Agents));
     }
 
     #[test]

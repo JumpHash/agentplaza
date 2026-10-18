@@ -412,9 +412,13 @@ fn fork_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     });
     let mut forks = Vec::with_capacity(reply.forks.len());
     for (fork, name) in reply.forks.iter().zip(names) {
-        // The fork's first hello is matched to this role and model (see `Spawned::expect`).
-        app.spawned
-            .expect(&agent.role, agent.model_override.clone());
+        // The fork's first hello is matched to this role and model (see `Spawned::expect`), and it works on
+        // its parent's project.
+        app.spawned.expect(
+            &agent.role,
+            agent.model_override.clone(),
+            app.members.project_of(cid),
+        );
         if let Err(err) = app.names.set(fork.cid, &name) {
             eprintln!("apid: name of fork {} not saved: {err}", fork.cid);
         }
