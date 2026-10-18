@@ -288,8 +288,14 @@ pub fn join_project(app: &App, cid: u64, project: &str) -> Result<Agent, (u16, S
     if app.members.project_of(cid).as_deref() == Some(project) {
         return Ok(agent);
     }
-    // Work for the old project stops before the agent starts on the new one.
-    release(app, cid, &format!("agent {cid} moved to project {project}"));
+    // Work for the old project (or for none) stops before the agent starts on the new one. Work for the new one stays:
+    // a task of it the agent took before projects had members runs again once the agent is on it.
+    release_except(
+        app,
+        cid,
+        project,
+        &format!("agent {cid} moved to project {project}"),
+    );
     app.members
         .join(cid, project, apz_plaza::now_ms())
         .map_err(|e| (500, format!("membership not saved: {e}")))?;
@@ -333,8 +339,55 @@ pub fn release_project(app: &App, project: &str) -> Vec<u64> {
 fn release(app: &App, cid: u64, reason: &str) {
     app.work.cancel(app, cid, reason);
     for item in app.work.queued(cid) {
-        app.work.cancel_queued(app, cid, item.id, reason);
+        drop_waiting(app, cid, &item, reason);
     }
+}
+
+/// Takes waiting item `item` off agent `cid`: a task the agent claimed goes back to open, for another of its project's
+/// agents (or, outside projects, to be moved into one) rather than failing; any other item ends as stopped. The item
+/// in flight is not this one's: its cancel ends it, as the agent says.
+fn drop_waiting(app: &App, cid: u64, item: &crate::scheduler::WorkItem, reason: &str) {
+    let claimed_by_it = item
+        .origin
+        .task
+        .as_deref()
+        .and_then(|task| app.plaza.tasks.find(task))
+        .is_some_and(|task| task.state() == "claimed" && task.view().agent_cid == Some(cid));
+    if claimed_by_it
+        && let Some(task) = item.origin.task.as_deref()
+        && crate::scheduler::requeue_task(app, task, reason).is_ok()
+    {
+        return;
+    }
+    app.work.cancel_queued(app, cid, item.id, reason);
+}
+
+/// Stops agent `cid`'s work as [`release`] does, except its work for project `keep` (see [`keeps`]).
+fn release_except(app: &App, cid: u64, keep: &str, reason: &str) {
+    let project_of = |task: &str| {
+        app.plaza
+            .tasks
+            .find(task)
+            .and_then(|t| t.project().map(str::to_string))
+    };
+    if app
+        .work
+        .current(cid)
+        .is_some_and(|item| !keeps(item.origin.task.as_deref(), keep, project_of))
+    {
+        app.work.cancel(app, cid, reason);
+    }
+    for item in app.work.queued(cid) {
+        if !keeps(item.origin.task.as_deref(), keep, project_of) {
+            drop_waiting(app, cid, &item, reason);
+        }
+    }
+}
+
+/// Whether work for `task` (None: work of no task) goes on when its agent joins `project`: only a task of `project`
+/// does (`project_of` says a task's project); the rest was for the agent's old project, or for none.
+fn keeps(task: Option<&str>, project: &str, project_of: impl Fn(&str) -> Option<String>) -> bool {
+    task.and_then(project_of).as_deref() == Some(project)
 }
 
 /// After a membership change: the agent's profile (its project's place in its prompt) is pushed, the roster's
@@ -494,6 +547,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Members::load(dir.join("members.json"))
+    }
+
+    #[test]
+    fn joining_keeps_only_the_work_for_the_project_joined() {
+        let project_of = |task: &str| match task {
+            "t1" => Some("pr1".to_string()),
+            "t2" => Some("pr2".to_string()),
+            _ => None,
+        };
+        assert!(
+            keeps(Some("t1"), "pr1", project_of),
+            "a task of the project joined runs again"
+        );
+        assert!(
+            !keeps(Some("t2"), "pr1", project_of),
+            "another project's task stops"
+        );
+        assert!(
+            !keeps(Some("t9"), "pr1", project_of),
+            "a task of no project stops"
+        );
+        assert!(!keeps(None, "pr1", project_of), "work of no task stops");
     }
 
     #[test]

@@ -1109,8 +1109,10 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
         Err(e) => return Response::error(409, &e),
     };
     if project.archived {
-        // Nothing more is done for it: its open tasks are withdrawn (their escrow back in its budget), its agents go
-        // back to the bench, and the rest of its budget goes to the plaza.
+        // Nothing more is done for it: its agents go back to the bench (the tasks waiting in their queues open
+        // again), then its open tasks are withdrawn (their escrow back in its budget), and the rest of its budget
+        // goes to the plaza.
+        crate::membership::release_project(app, id);
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
                 && task.is_open()
@@ -1118,7 +1120,6 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
                 let _ = task.withdraw();
             }
         }
-        crate::membership::release_project(app, id);
         crate::project_settings::return_rest(app, id);
     } else if !project.paused {
         // Resumed: its agents' waiting work goes out.

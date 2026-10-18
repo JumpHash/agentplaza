@@ -4,9 +4,11 @@
 
 mod common;
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
-use common::{Hub, Scratch, text};
+use common::{FakeDaemon, Hub, Scratch, text};
 
 /// Agent `cid`'s model call, as its harness sends one mid-turn: the hub's answer.
 fn model_call(hub: &Hub, cid: u64) -> Value {
@@ -200,4 +202,109 @@ fn a_task_from_before_projects_moves_into_one_with_its_links() {
     );
     assert_eq!(status, 200, "{suggested}");
     assert_eq!(suggested, json!([]));
+}
+
+#[test]
+fn a_member_sent_back_to_the_bench_leaves_its_waiting_tasks_open_for_others() {
+    // The agent gateway and noded report one builder, 300; the gateway takes the work it is sent.
+    let noded = FakeDaemon::serve(|method, path, _| {
+        if method == "GET" && path.starts_with("/v1/runs") {
+            let runs = json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": [{ "id": 0, "guest_cid": 300, "role": "builder" }] }] });
+            (200, runs.to_string())
+        } else {
+            (200, "{}".into())
+        }
+    });
+    let gateway = FakeDaemon::serve(|_, path, _| {
+        if path.starts_with("/v1/status") {
+            (
+                200,
+                json!({ "agents": [{ "cid": 300, "role": "builder" }] }).to_string(),
+            )
+        } else {
+            (200, r#"{"ok":true}"#.into())
+        }
+    });
+    let roles = json!({ "roles": { "builder": { "role": "builder", "title": "Builder", "tools": ["bash"] } } });
+    let scratch = Scratch::new("project-gate-leave");
+    let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
+    let agent = hub.wait_for("/v1/agents/300", Duration::from_secs(20), |a| {
+        a["status"] == "idle"
+    });
+    assert_eq!(agent["status"], "idle", "{agent}\n{}", hub.log());
+
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Leave", "goal": "Hand the work on" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, member) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/members"),
+        Some(json!({ "cid": 300 })),
+    );
+    assert_eq!(status, 200, "{member}");
+    // Two tasks for 300: the first runs, the second waits in its queue behind it.
+    let mut tasks = Vec::new();
+    for goal in ["Runs", "Waits"] {
+        let (status, task) = hub.call(
+            "POST",
+            "/v1/tasks",
+            Some(json!({ "goal": goal, "project": pid })),
+        );
+        assert_eq!(status, 201, "{task}");
+        let id = text(&task["id"]);
+        let (status, assigned) = hub.call(
+            "POST",
+            "/v1/agents/300/assign",
+            Some(json!({ "task_id": id })),
+        );
+        assert_eq!(status, 200, "{assigned}");
+        tasks.push(id);
+    }
+    let queued = hub.wait_for("/v1/agents/300", Duration::from_secs(10), |a| {
+        a["queue"] == 1 && a["work"].is_object()
+    });
+    assert_eq!(queued["queue"], 1, "{queued}");
+
+    // Back to the bench: the running work is cancelled, and the waiting task is open again rather than failed.
+    let (status, left) = hub.call("DELETE", &format!("/v1/projects/{pid}/members/300"), None);
+    assert_eq!(status, 200, "{left}");
+    let (_, waiting) = hub.call("GET", &format!("/v1/tasks/{}", tasks[1]), None);
+    assert_eq!(waiting["state"], "open", "{waiting}");
+    assert_eq!(waiting["agent_cid"], Value::Null, "{waiting}");
+    let (_, running) = hub.call("GET", &format!("/v1/tasks/{}", tasks[0]), None);
+    assert_eq!(
+        running["state"], "claimed",
+        "the running one ends when the agent stops it: {running}"
+    );
+    let cancels = gateway
+        .seen()
+        .into_iter()
+        .filter(|(_, _, body)| body.contains("\"cancel\""))
+        .count();
+    assert_eq!(cancels, 1, "the running work is told to stop");
+    let (_, agent) = hub.call("GET", "/v1/agents/300", None);
+    assert_eq!(agent["queue"], 0, "{agent}");
+
+    // Back on the project, the work it still runs for it goes on, and the open task waits behind it again. An
+    // archive then withdraws the waiting task: it opens as its agent goes, and an archived project's open tasks go.
+    let (status, member) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/members"),
+        Some(json!({ "cid": 300 })),
+    );
+    assert_eq!(status, 200, "{member}");
+    let (status, assigned) = hub.call(
+        "POST",
+        "/v1/agents/300/assign",
+        Some(json!({ "task_id": tasks[1] })),
+    );
+    assert_eq!(status, 200, "{assigned}");
+    let (status, archived) = hub.call("POST", &format!("/v1/projects/{pid}/archive"), None);
+    assert_eq!(status, 200, "{archived}");
+    let (_, waiting) = hub.call("GET", &format!("/v1/tasks/{}", tasks[1]), None);
+    assert_eq!(waiting["state"], "withdrawn", "{waiting}");
 }

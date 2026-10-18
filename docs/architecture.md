@@ -529,14 +529,17 @@ nothing (`crates/apid/src/membership.rs`). Memberships are kept in `members.json
   from before projects moves into one with `POST /v1/tasks/{id}/move` `{project}`, together with the tasks linked to
   it, since links stay inside a project. It never leaves that project.
 - **Membership.** The owner opens a project (`POST /v1/projects`, its plan theirs), puts agents on it
-  (`POST /v1/projects/{id}/members` `{cid}`, which stops the agent's work for its old project) and sends them back
-  (`DELETE /v1/projects/{id}/members/{cid}`). A spawn can name the project its agents join at their first hello
+  (`POST /v1/projects/{id}/members` `{cid}`, which stops the agent's work for its old project, or for none; work it
+  holds for this project, a task it took before projects had members, goes on) and sends them back
+  (`DELETE /v1/projects/{id}/members/{cid}`). Work that stops is cancelled when it runs; a task that waits in the
+  agent's queue goes back to open instead, for another of its project's agents, or outside projects to be moved
+  into one. A spawn can name the project its agents join at their first hello
   (`POST /v1/agents` `{project}`, and an agent proposal's `project`); a fork joins its parent's project.
   `GET /v1/agents?project=<id>|bench` lists a project's agents or the bench, and `GET /v1/projects/{id}/suggested-members`
   the agents that hold a project's tasks, for a project from before membership. Each agent's view carries `project`,
   `joined_ms` and `held` (why it waits), and its system prompt a `## Your project` section.
 - **A project's life.** `POST /v1/projects/{id}/pause` holds its agents until `/resume`. `/archive`, or delivery,
-  sends them back to the bench: their work is cancelled and their queues dropped.
+  sends them back to the bench and stops their work for it; an archive then withdraws its open tasks.
 - **The bench sleeps.** A bench agent with nothing running sleeps after a minute (`sleep::BENCH_GRACE_MS`), when
   sleep is on, and keeps its memory.
 - **Society.** Hires, messages, motions and the board stay inside a project. Agents no longer reach out on a timer.
