@@ -64,8 +64,32 @@ impl Client {
         serde_json::from_value(self.call("PATCH", path, Some(body))?).map_err(|e| e.to_string())
     }
 
+    pub fn put<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, String> {
+        serde_json::from_value(self.call("PUT", path, Some(body))?).map_err(|e| e.to_string())
+    }
+
     pub fn delete(&self, path: &str) -> Result<Value, String> {
         self.call("DELETE", path, None)
+    }
+
+    /// A `PUT` whose body is raw bytes (a file's), with a JSON answer. Big files get a minute per 16 MB.
+    pub fn put_bytes<T: DeserializeOwned>(&self, path: &str, bytes: &[u8]) -> Result<T, String> {
+        let timeout = self.timeout + Duration::from_secs(60 * (bytes.len() as u64 >> 24));
+        let reply = apz_http::client::request(&self.target, "PUT", path, Some(bytes), timeout)
+            .map_err(|e| e.to_string())?;
+        let value: Value = if reply.body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?
+        };
+        if !(200..300).contains(&reply.status) {
+            return Err(value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("HTTP {}", reply.status)));
+        }
+        serde_json::from_value(value).map_err(|e| e.to_string())
     }
 }
 

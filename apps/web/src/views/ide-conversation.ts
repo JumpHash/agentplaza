@@ -12,6 +12,8 @@ import { roleLabel } from '../roles';
 import { projectTitle, refreshProjects } from '../scope';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, field, input, modal, textarea, toast } from '../ui/components';
+import { attachBar, maySend } from '../ui/attach-bar';
+import { sizeText } from '../ui/file-drop';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import { openNewProject } from '../ui/new-project';
@@ -33,6 +35,15 @@ function orchestratorName(cid: number): string {
   return agent?.name || 'The orchestrator';
 }
 
+/** The files a message carries: each a link to its bytes, opened in a new tab. */
+function filesOf(files: NonNullable<OwnerMessage['attachments']>): HTMLElement {
+  return h(
+    'div.attach-chips.cv-files',
+    null,
+    files.map((a) => h('a.attach-chip', { href: api.fileUrl(a.id), target: '_blank', rel: 'noopener', title: a.name }, h('span.name', null, a.name), h('span', null, sizeText(a.size)))),
+  );
+}
+
 /** One message of the chat. */
 function bubble(m: OwnerMessage, who: string): HTMLElement {
   if (m.from === 'plaza') return h('div.cv-note', null, renderMarkdown(m.text));
@@ -41,7 +52,8 @@ function bubble(m: OwnerMessage, who: string): HTMLElement {
     `div.cv-msg.${m.from === 'owner' ? 'cv-owner' : 'cv-orch'}`,
     { class: failed ? 'cv-failed' : null },
     h('div.cv-who', null, m.from === 'owner' ? 'You' : who, h('span.cv-when', null, ago(m.at_ms))),
-    h('div.cv-text', null, m.from === 'owner' ? h('p', null, m.text) : renderMarkdown(m.text)),
+    m.text ? h('div.cv-text', null, m.from === 'owner' ? h('p', null, m.text) : renderMarkdown(m.text)) : null,
+    m.attachments?.length ? filesOf(m.attachments) : null,
     failed ? h('div.cv-why', null, m.status === 'failed' ? 'This turn failed.' : 'This turn was stopped.') : null,
   );
 }
@@ -90,6 +102,11 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
 
   const composerInput = h('textarea.cv-input', { rows: 2, placeholder: 'Write to the orchestrator… (Enter sends, Shift+Enter breaks the line)' }) as HTMLTextAreaElement;
   const sendBtn = button('Send', () => void send(), { kind: 'primary' });
+  // Files: picked, dropped on the conversation or pasted into it. Each uploads as it is taken and goes with the next message.
+  const bar = attachBar({ onChange: () => syncSend() });
+  const syncSend = (): void => {
+    sendBtn.disabled = sending || !conversation || conversation.archived || bar.busy() || bar.failed();
+  };
   composerInput.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
@@ -97,6 +114,7 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     }
   });
 
+  const main = h('main.cv-main', null, log, live, h('div.cv-composer', null, bar.el, composerInput, bar.button, sendBtn));
   root.append(
     h(
       'div.cv-frame',
@@ -108,10 +126,11 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
         head,
       ),
       side,
-      h('main.cv-main', null, log, live, h('div.cv-composer', null, composerInput, sendBtn)),
+      main,
       draftEl,
     ),
   );
+  const unbind = bar.bind(main);
 
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'Escape' && !document.querySelector('.modal-backdrop')) location.hash = consoleOrigin();
@@ -245,7 +264,7 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     drawHead();
     drawLog();
     drawDraft();
-    sendBtn.disabled = sending || !conversation || conversation.archived;
+    syncSend();
   }
 
   async function load(): Promise<void> {
@@ -263,15 +282,17 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
 
   async function send(): Promise<void> {
     const text = composerInput.value.trim();
-    if (!text || sending || !conversation) return;
+    const ids = bar.ids();
+    if (!conversation || !maySend(text, ids, sending || bar.busy() || bar.failed())) return;
     sending = true;
     draw();
-    const c = await attempt(() => api.sayInConversation(id, text));
+    const c = await attempt(() => api.sayInConversation(id, text, ids));
     sending = false;
     if (!alive) return;
     if (c) {
       conversation = c;
       composerInput.value = '';
+      bar.clear();
       log.scrollTop = log.scrollHeight;
     }
     draw();
@@ -315,6 +336,7 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     alive = false;
     offs.forEach((off) => off());
     document.removeEventListener('keydown', onKey);
+    unbind();
     root.classList.remove('cv-host');
   };
 }

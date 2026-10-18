@@ -1,0 +1,61 @@
+/* Files dropped or picked (ui/file-drop.ts): a zone that lights while files are dragged over it, and the chips of a
+   message's attachments. */
+
+.drop-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: var(--accent-bg);
+}
+
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.drop-zone .drop-actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.attach-chips {
+  display: flex;
+  gap: var(--s1);
+  flex-wrap: wrap;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  max-width: 260px;
+  padding: 2px var(--s2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+}
+
+.attach-chip .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-chip button {
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 0 2px;
+}

@@ -7,6 +7,7 @@
 //! conflict, and the owner reloads or keeps theirs. Changes come from the hub as a unified diff.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -452,6 +453,8 @@ pub enum Msg {
     /// Opens a conversation with the orchestrator in place of the workspace.
     OpenConversation(String),
     Conversation(ide_conversation::Msg),
+    /// A file dropped on the window: it goes to the composer on screen (the conversation's, else the agent chat's).
+    Dropped(PathBuf),
     /// The conversations, as the hub listed them.
     Conversations(Result<Value, String>),
     /// The roster, projects and tasks, as the hub answered.
@@ -1674,6 +1677,17 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Some(conv) => ide_conversation::update(conv, msg, ctx).map(Msg::Conversation),
             None => Task::none(),
         },
+        Msg::Dropped(path) => match (st.conversation.as_ref(), st.ide.workspace.as_ref()) {
+            (Some(conv), _) => Task::done(Msg::Conversation(ide_conversation::Msg::Attach {
+                id: conv.id.clone(),
+                paths: vec![path],
+            })),
+            (None, Some(ws)) => Task::done(Msg::Panels(ide_panels::Msg::Attach {
+                ws: ws.to_string(),
+                paths: vec![path],
+            })),
+            (None, None) => Task::none(),
+        },
         Msg::Conversations(res) => {
             if let Ok(list) = res {
                 st.conversations = list.as_array().cloned().unwrap_or_default();
@@ -2065,13 +2079,23 @@ pub fn subscription(st: &State, ctx: &Ctx) -> Subscription<Msg> {
             tabs.subscription().map(Msg::Terminals)
         });
     let resized = iced::window::resize_events().map(|(_, size)| Msg::Resized(size.width));
+    let dropped = iced::event::listen_with(dropped_file).map(Msg::Dropped);
     Subscription::batch([
         keys,
         drag,
         events::subscription(&ctx.client).map(Msg::Event),
         terminals,
         resized,
+        dropped,
     ])
+}
+
+/// A file dropped on the window: the window reports each file once.
+fn dropped_file(event: iced::Event, _: Status, _: iced::window::Id) -> Option<PathBuf> {
+    match event {
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => Some(path),
+        _ => None,
+    }
 }
 
 /// The pointer while a panel edge is dragged: its moves, and the button coming up, from anywhere in the window.

@@ -17,6 +17,7 @@ import { harnessCard } from './agent-harness';
 import { bytesText } from './workstations-model';
 import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
 import { embedContextFromStore } from '../ui/embeds';
+import { attachBar, maySend } from '../ui/attach-bar';
 import { renderMarkdown } from '../ui/markdown';
 
 const NEAR_BOTTOM_PX = 80;
@@ -94,6 +95,12 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const transcript = h('div.transcript');
   const composer = textarea({ placeholder: 'Message this agent…', rows: 3 });
   const send = button('Send', () => void submit(), { kind: 'primary', icon: 'send', title: 'Send (Ctrl+Enter)' });
+  // Files: picked, dropped on the composer or pasted into it. Each uploads as it is taken and goes with the next message.
+  const attach = attachBar({
+    onChange: () => {
+      send.disabled = isOffline() || sending || attach.busy() || attach.failed();
+    },
+  });
   // The agent's model override ('' = the default), offered by its tier, and its reasoning
   // effort, stored together as `provider/model@effort`.
   const saveModel = (value: string): void => {
@@ -134,7 +141,8 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   // The transcript and the memory library share one space; a tab picks which shows.
   const memoryHost = h('div.memory-host', { style: 'display:none' });
   const transcriptCard = card(null, transcript, { flush: true });
-  const composerRow = h('div.composer', null, composer, h('div.row', null, h('span', { style: 'flex:1' }), send));
+  const composerRow = h('div.composer', null, attach.el, composer, h('div.row', null, h('span', { style: 'flex:1' }), attach.button, send));
+  const unbindAttach = attach.bind(composerRow);
   const tabLabels: Record<Tab, string> = { transcript: 'Transcript', memory: 'Memory' };
   let tab: Tab = 'transcript';
   let unmountMemory: (() => void) | null = null;
@@ -618,7 +626,8 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     );
 
     composer.disabled = offline;
-    send.disabled = offline || sending;
+    attach.button.disabled = offline;
+    send.disabled = offline || sending || attach.busy() || attach.failed();
 
     const source =
       a.model_source === 'agent' ? 'set for this agent' : a.model_source === 'project' ? 'from its project' : a.model_source === 'role' ? 'from role' : 'default';
@@ -662,13 +671,17 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   const submit = async (): Promise<void> => {
     const text = composer.value.trim();
-    if (!text || sending || isOffline()) return;
+    const ids = attach.ids();
+    if (isOffline() || !maySend(text, ids, sending || attach.busy() || attach.failed())) return;
     sending = true;
     send.disabled = true;
-    const ok = await attempt(() => api.chat(cid, text));
+    const ok = await attempt(() => api.chat(cid, text, ids));
     sending = false;
-    send.disabled = isOffline();
-    if (ok) composer.value = '';
+    send.disabled = isOffline() || attach.busy() || attach.failed();
+    if (ok) {
+      composer.value = '';
+      attach.clear();
+    }
   };
 
   composer.addEventListener('keydown', (e) => {
@@ -811,6 +824,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   return () => {
     alive = false;
+    unbindAttach();
     harness.destroy();
     conduct.destroy();
     window.clearInterval(profileTimer);

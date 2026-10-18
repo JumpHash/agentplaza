@@ -45,8 +45,9 @@ export function switchTo(project: string | null): void {
 }
 
 /** Whether a project still has work: not archived, not delivered. */
-export function isLive(p: Pick<Project, 'archived' | 'stage'>): boolean {
-  return !p.archived && p.stage !== 'delivered';
+export function isLive(p: Pick<Project, 'archived' | 'stage'> & { mode?: Project['mode'] }): boolean {
+  // A delivered project in maintenance is still looked after: its agents watch it and its picked work runs.
+  return !p.archived && (p.stage !== 'delivered' || p.mode === 'maintenance');
 }
 
 /** The projects the switcher offers: the live ones, newest first. */

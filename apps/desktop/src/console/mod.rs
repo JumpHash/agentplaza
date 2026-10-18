@@ -14,6 +14,7 @@ pub use apz_engine as engine;
 pub mod chart;
 pub mod client;
 pub mod events;
+pub mod files;
 pub mod floor_engine;
 pub mod hubs;
 pub mod icons;
@@ -174,7 +175,7 @@ fn boot() -> (Console, Task<Msg>) {
     }
     // `APZ_PROJECT=<id>` and `APZ_TASK=<id>` open that project's page and that task's page (capture hooks).
     if let Ok(project) = std::env::var("APZ_PROJECT") {
-        // `APZ_PROJECT_TAB=team|settings` opens that tab of its page.
+        // `APZ_PROJECT_TAB=maintenance|environments|team|settings` opens that tab of its page.
         console.shell.current = match std::env::var("APZ_PROJECT_TAB")
             .ok()
             .and_then(|tab| screens::projects::Tab::named(&tab))

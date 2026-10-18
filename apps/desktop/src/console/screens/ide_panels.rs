@@ -7,18 +7,20 @@
 //! the owner has left is dropped (the same rule as the screen's `is_current`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use apz_ide::WorkspaceId;
 use apz_ide::state::Panel;
-use iced::widget::{Space, column, container, mouse_area, row, text_editor, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::{Space, button, column, container, mouse_area, row, text_editor, text_input};
+use iced::{Alignment, Border, Element, Length, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ide::{self, FileView};
 use super::ide_terminal::TerminalTabs;
 use crate::console::client::{self, Client};
+use crate::console::files::{self, Attachment};
 use crate::console::ui::{self, Kind};
 use crate::theme;
 
@@ -410,6 +412,9 @@ pub struct State {
     pub steer: text_editor::Content,
     pub steer_busy: bool,
     pub steer_notice: Option<String>,
+    /// The files the composer sends with its next note: uploaded, and how many are still going up.
+    pub attachments: Vec<Attachment>,
+    pub uploading: usize,
     /// The agent is working: the composer's text steers the work in flight; idle, it is a chat turn of its own (the
     /// IDE sets it before each send).
     pub agent_working: bool,
@@ -435,8 +440,23 @@ pub enum Msg {
     SteerSend,
     Steered {
         ws: String,
+        /// The attachments the note carried, so a sent one leaves the composer.
+        sent: Vec<String>,
         res: Result<Value, String>,
     },
+    /// The composer's paperclip: opens the file picker.
+    Pick,
+    /// Files to attach to the note: picked, or dropped on the window.
+    Attach {
+        ws: String,
+        paths: Vec<PathBuf>,
+    },
+    Attached {
+        ws: String,
+        res: Result<Attachment, String>,
+    },
+    /// A file taken off the note, by its id.
+    Detach(String),
     Held {
         ws: String,
         res: Result<Value, String>,
@@ -481,6 +501,8 @@ impl Msg {
         match self {
             Msg::Transcript { ws, .. }
             | Msg::Steered { ws, .. }
+            | Msg::Attach { ws, .. }
+            | Msg::Attached { ws, .. }
             | Msg::Held { ws, .. }
             | Msg::Current { ws, .. }
             | Msg::Decided { ws, .. }
@@ -516,6 +538,16 @@ fn transcript_task(client: &Client, ws: &WorkspaceId, cid: u64) -> Task<Msg> {
             res,
         },
     )
+}
+
+/// The system's file picker, for files to attach to a note or a message. Cancelled, it picks nothing.
+pub async fn pick_files() -> Vec<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .set_title("Attach files")
+        .pick_files()
+        .await
+        .map(|files| files.iter().map(|f| f.path().to_path_buf()).collect())
+        .unwrap_or_default()
 }
 
 /// The held calls of the workspace's agent (none for a repo workspace).
@@ -652,7 +684,11 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             if st.steer_busy {
                 return Task::none();
             }
-            if text.is_empty() {
+            if st.uploading > 0 {
+                st.steer_notice = Some("Wait for the files to attach.".to_string());
+                return Task::none();
+            }
+            if text.is_empty() && st.attachments.is_empty() {
                 st.steer_notice = Some("Write a note first.".to_string());
                 return Task::none();
             }
@@ -663,29 +699,35 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             st.steer_busy = true;
             st.steer_notice = None;
             let c = client.clone();
+            let sent: Vec<String> = st.attachments.iter().map(|a| a.id.clone()).collect();
             // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says why when
             // the agent is on the bench, or its project is paused).
             let (path, body) = if st.agent_working {
                 (
                     format!("/v1/agents/{cid}/control"),
-                    json!({ "action": "steer", "text": text }),
+                    json!({ "action": "steer", "text": text, "attachments": sent }),
                 )
             } else {
-                (format!("/v1/agents/{cid}/chat"), json!({ "text": text }))
+                (
+                    format!("/v1/agents/{cid}/chat"),
+                    json!({ "text": text, "attachments": sent }),
+                )
             };
             client::task(
                 move || c.post::<Value>(&path, &body),
                 move |res| Msg::Steered {
                     ws: here.clone(),
+                    sent: sent.clone(),
                     res,
                 },
             )
         }
-        Msg::Steered { res, .. } => {
+        Msg::Steered { sent, res, .. } => {
             st.steer_busy = false;
             match res {
                 Ok(answer) => {
                     st.steer = text_editor::Content::new();
+                    st.attachments.retain(|a| !sent.contains(&a.id));
                     st.steer_notice = Some(
                         answer
                             .get("result")
@@ -696,6 +738,37 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
                 }
                 Err(e) => st.steer_notice = Some(format!("The note was not sent: {e}")),
             }
+            Task::none()
+        }
+        Msg::Pick => Task::perform(pick_files(), move |paths| Msg::Attach {
+            ws: here.clone(),
+            paths,
+        }),
+        Msg::Attach { paths, .. } => {
+            st.uploading += paths.len();
+            st.steer_notice = None;
+            Task::batch(paths.into_iter().map(|path| {
+                let c = client.clone();
+                let key = here.clone();
+                client::task(
+                    move || files::attach(&c, &path),
+                    move |res| Msg::Attached {
+                        ws: key.clone(),
+                        res,
+                    },
+                )
+            }))
+        }
+        Msg::Attached { res, .. } => {
+            st.uploading = st.uploading.saturating_sub(1);
+            match res {
+                Ok(file) => st.attachments.push(file),
+                Err(e) => st.steer_notice = Some(format!("The file was not attached: {e}")),
+            }
+            Task::none()
+        }
+        Msg::Detach(id) => {
+            st.attachments.retain(|a| a.id != id);
             Task::none()
         }
         Msg::Held { res, .. } => {
@@ -953,6 +1026,52 @@ fn held_card<'a>(st: &'a State, held: &'a Held) -> Element<'a, Msg> {
         .width(Length::Fill)
         .style(ui::frame(None, p.rule))
         .into()
+}
+
+/// The files a composer will send, as chips (name and size; × takes one off), and a line while some still go up.
+/// None when there is nothing to show. `remove` makes the message for a file's id.
+pub fn attachment_chips<'a, M: Clone + 'a>(
+    files: &'a [Attachment],
+    uploading: usize,
+    remove: impl Fn(String) -> M + 'a,
+) -> Option<Element<'a, M>> {
+    if files.is_empty() && uploading == 0 {
+        return None;
+    }
+    let p = theme::palette();
+    let mut chips = row![].spacing(6).align_y(Alignment::Center);
+    for file in files {
+        let label = format!("{} · {}", file.name, files::size_text(file.size));
+        let take = button(ui::icon("x", 11.0, p.ink_3))
+            .padding(0)
+            .style(move |_, _| button::Style {
+                background: None,
+                text_color: p.ink_3,
+                ..Default::default()
+            })
+            .on_press(remove(file.id.clone()));
+        chips = chips.push(
+            container(
+                row![ui::sans(label, 11.5, p.ink_2), take]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+            )
+            .padding([2, 8])
+            .style(move |_| container::Style {
+                background: Some(p.hover.into()),
+                border: Border {
+                    color: p.rule,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            }),
+        );
+    }
+    if uploading > 0 {
+        chips = chips.push(ui::faint(format!("Attaching {uploading}…")));
+    }
+    Some(ui::scroll_x(chips).into())
 }
 
 /// The Approvals panel: the agent's held calls, each with its input or its diff, and Approve or Deny.

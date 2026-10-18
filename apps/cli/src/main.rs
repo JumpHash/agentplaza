@@ -379,5 +379,44 @@ mod tests {
             !ok(&["projects", "budget", "pr3", "add", "0"]),
             "credits are at least 1"
         );
+        // A project's life after launch: its mode, adopting one, maintenance, environments, files.
+        assert!(ok(&["projects", "modes"]));
+        assert!(ok(&["projects", "mode", "pr3", "maintenance"]));
+        assert!(
+            !ok(&["projects", "mode", "pr3", "frozen"]),
+            "only the hub's modes"
+        );
+        assert!(ok(&[
+            "projects",
+            "adopt",
+            "Shop",
+            "--git",
+            "https://example.com/shop.git",
+            "--env",
+            "production=production,https://shop.example.com"
+        ]));
+        assert!(ok(&["projects", "maintenance", "pr3"]));
+        assert!(ok(&["projects", "maintenance", "pr3", "sweep"]));
+        assert!(ok(&[
+            "projects",
+            "maintenance",
+            "pr3",
+            "approve",
+            "mp7",
+            "--note",
+            "this week"
+        ]));
+        assert!(ok(&[
+            "projects",
+            "maintenance",
+            "pr3",
+            "decline",
+            "mp8",
+            "--reason",
+            "not now"
+        ]));
+        assert!(ok(&["projects", "env", "pr3"]));
+        assert!(ok(&["projects", "env", "pr3", "deploy", "staging"]));
+        assert!(ok(&["projects", "upload", "pr3", "README.md"]));
     }
 }

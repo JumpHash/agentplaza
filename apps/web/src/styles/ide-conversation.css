@@ -37,7 +37,10 @@
 .cv-dots { letter-spacing: 3px; color: var(--ink-2); animation: cv-pulse 1.2s ease-in-out infinite; }
 @keyframes cv-pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .cv-dots { animation: none; } }
-.cv-composer { display: flex; gap: 10px; align-items: flex-end; padding: 12px 22px 16px; border-top: 1px solid var(--rule); }
+.cv-composer { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; padding: 12px 22px 16px; border-top: 1px solid var(--rule); }
+.cv-composer .attach-chips { flex: 0 0 100%; }
+.cv-files { margin-top: 6px; }
+.cv-files .attach-chip { text-decoration: none; }
 .cv-input { flex: 1; resize: vertical; min-height: 44px; max-height: 240px; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; }
 
 .cv-draft { grid-area: draft; overflow: auto; border-left: 1px solid var(--rule); padding: 16px 18px; display: grid; gap: 10px; align-content: start; }

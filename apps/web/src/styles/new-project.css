@@ -1,0 +1,62 @@
+/* The new-project dialog (ui/new-project.ts). The dialog's frame (sections, fields, actions) is in scope.css; this adds the
+   pieces of its three paths: the attachment line, the files summary, the checkboxes, and the environment rows. */
+
+.new-project [hidden] { display: none !important; }
+
+.new-project .np-group { display: grid; gap: var(--s2); }
+
+.new-project .np-files { display: grid; gap: var(--s2); }
+
+.new-project .drop-zone.np-small {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--s2) var(--s3);
+  text-align: left;
+}
+
+.new-project .np-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.new-project .np-status,
+.new-project .np-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.new-project .np-sub {
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.new-project .np-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.new-project .np-envs { display: grid; gap: var(--s2); }
+
+.new-project .np-env {
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) 120px minmax(140px, 2fr) auto;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.new-project .np-add { display: flex; justify-content: flex-start; }
+
+@media (max-width: 560px) {
+  .new-project .np-env { grid-template-columns: 1fr 1fr auto; }
+  .new-project .np-env > .np-url { grid-column: 1 / 3; grid-row: 2; }
+  .new-project .np-env > .np-rm { grid-column: 3; grid-row: 1; }
+}
