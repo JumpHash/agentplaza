@@ -509,6 +509,15 @@ impl CreateTask {
     }
 }
 
+/// One task of a batch ([`TaskLedger::create_all`]).
+#[derive(Debug, Clone)]
+pub struct BatchTask {
+    /// The task as a create takes it: its `after` names tasks that exist already.
+    pub request: CreateTask,
+    /// The earlier tasks of the same batch it runs after, by their place in the batch.
+    pub after_batch: Vec<usize>,
+}
+
 /// A task's links, checked for what needs no ledger: at most [`MAX_AFTER`],
 /// and no task named twice.
 fn checked_after(after: &[String]) -> Result<Vec<String>, String> {
@@ -1130,8 +1139,152 @@ impl TaskLedger {
             );
         }
         inner.next_seq += 1;
+        let task = self.open_task(id, checked, entry, after, now_ms());
+        inner.tasks.push(Arc::clone(&task));
+        // Each task it runs after learns of it, so it is announced when that
+        // one ends.
+        for upstream in &upstreams {
+            upstream.lock().dependents.push(Arc::downgrade(&task));
+        }
+        // The task is registered under the ledger's lock, so a subscriber sees
+        // it appear exactly once and in order.
+        let event = task.event(&task.lock());
+        self.events.publish(event);
+        Ok(task)
+    }
+
+    /// Creates every task of `batch`, in order, or none of them: a project's whole task list,
+    /// posted at once. Each request is held to the rules a create holds it to, and its
+    /// `after_batch` names earlier tasks of the same batch, in its own project, that it runs after.
+    /// It all happens under the ledger's lock, so no claim and no subscriber sees part of a batch.
+    ///
+    /// Every budget is minted into its task's escrow before any task is registered. If the
+    /// treasury refuses one, what the batch had minted goes back to the plaza's budget, the ids
+    /// whose escrows were funded are not handed out again (the escrows keep the mint and the
+    /// refund as their history), and no task is created.
+    pub fn create_all(&self, batch: &[BatchTask]) -> Result<Vec<Arc<Task>>, CreateError> {
+        let mut checked: Vec<Checked> = Vec::with_capacity(batch.len());
+        for (at, item) in batch.iter().enumerate() {
+            let place = |reason: String| {
+                CreateError::Invalid(format!("task {} of the batch: {reason}", at + 1))
+            };
+            let task = item.request.checked().map_err(place)?;
+            let mut seen = HashSet::new();
+            for &from in &item.after_batch {
+                if from >= at {
+                    return Err(place(format!(
+                        "it may run after an earlier task of the batch only, not task {}",
+                        from + 1
+                    )));
+                }
+                if !seen.insert(from) {
+                    return Err(place(format!(
+                        "it names task {} of the batch twice",
+                        from + 1
+                    )));
+                }
+                if checked[from].project != task.project {
+                    return Err(place(format!(
+                        "task {} of the batch is in {}, and this task is in {}: a task runs after tasks of its own project only",
+                        from + 1,
+                        in_project(checked[from].project.as_deref()),
+                        in_project(task.project.as_deref())
+                    )));
+                }
+            }
+            let links = task.after.len() + item.after_batch.len();
+            if links > MAX_AFTER {
+                return Err(place(format!(
+                    "after may name at most {MAX_AFTER} tasks, not {links}"
+                )));
+            }
+            checked.push(task);
+        }
+        let mut inner = self.lock();
+        let mut existing = Vec::with_capacity(batch.len());
+        for (at, task) in checked.iter().enumerate() {
+            existing.push(
+                resolve(&inner.tasks, &task.after, task.project.as_deref()).map_err(|reason| {
+                    CreateError::Invalid(format!("task {} of the batch: {reason}", at + 1))
+                })?,
+            );
+        }
+        if inner.tasks.len() + batch.len() > MAX_TASKS {
+            return Err(CreateError::Full { max: MAX_TASKS });
+        }
+        let first = inner.next_seq + 1;
+        let ids: Vec<String> = (0..batch.len() as u64)
+            .map(|at| format!("t{}", first + at))
+            .collect();
+        let mut entries: Vec<Option<u64>> = Vec::with_capacity(batch.len());
+        for (task, id) in checked.iter().zip(&ids) {
+            if task.budget == 0 {
+                entries.push(None);
+                continue;
+            }
+            // `checked` bounds the budget to `i64::MAX`.
+            let amount = i64::try_from(task.budget).unwrap_or(i64::MAX);
+            match self.treasury.fund_task(id, amount) {
+                Ok(entry) => entries.push(Some(entry)),
+                Err(refused) => {
+                    for (funded, entry) in ids.iter().zip(&entries) {
+                        if entry.is_some() {
+                            // Best effort: a refund refused too leaves that escrow held.
+                            let _ = self.treasury.refund_task_to_budget(funded);
+                        }
+                    }
+                    let burned = entries
+                        .iter()
+                        .rposition(Option::is_some)
+                        .map_or(0, |at| at + 1);
+                    inner.next_seq += burned as u64;
+                    return Err(CreateError::Treasury(refused));
+                }
+            }
+        }
+        inner.next_seq += batch.len() as u64;
         let now = now_ms();
-        let task = Arc::new(Task {
+        let mut created: Vec<Arc<Task>> = Vec::with_capacity(batch.len());
+        let parts = batch
+            .iter()
+            .zip(checked)
+            .zip(existing)
+            .zip(ids.into_iter().zip(entries));
+        for (((item, task), mut links), (id, entry)) in parts {
+            links.extend(
+                item.after_batch
+                    .iter()
+                    .map(|&from| Link(Arc::clone(&created[from]))),
+            );
+            let upstreams: Vec<Arc<Task>> = links
+                .iter()
+                .map(|Link(linked)| Arc::clone(linked))
+                .collect();
+            let new = self.open_task(id, task, entry, links, now);
+            inner.tasks.push(Arc::clone(&new));
+            for upstream in &upstreams {
+                upstream.lock().dependents.push(Arc::downgrade(&new));
+            }
+            created.push(new);
+        }
+        // Announced once the whole batch is registered, in order.
+        for task in &created {
+            let event = task.event(&task.lock());
+            self.events.publish(event);
+        }
+        Ok(created)
+    }
+
+    /// A new task in `open`, as a create registers it.
+    fn open_task(
+        &self,
+        id: String,
+        checked: Checked,
+        entry: Option<u64>,
+        after: Vec<Link>,
+        now: u64,
+    ) -> Arc<Task> {
+        Arc::new(Task {
             id,
             goal: checked.goal,
             acceptance: checked.acceptance,
@@ -1153,18 +1306,7 @@ impl TaskLedger {
                 after,
                 dependents: Vec::new(),
             }),
-        });
-        inner.tasks.push(Arc::clone(&task));
-        // Each task it runs after learns of it, so it is announced when that
-        // one ends.
-        for upstream in &upstreams {
-            upstream.lock().dependents.push(Arc::downgrade(&task));
-        }
-        // The task is registered under the ledger's lock, so a subscriber sees
-        // it appear exactly once and in order.
-        let event = task.event(&task.lock());
-        self.events.publish(event);
-        Ok(task)
+        })
     }
 
     /// The task with that id, if there is one.
@@ -2924,5 +3066,131 @@ mod tests {
             announced(&receiver).last(),
             Some(&("t2".to_string(), "open", true))
         );
+    }
+
+    /// One task of a batch in project `project`, running after `after` (existing ids) and
+    /// `after_batch` (earlier tasks of the batch).
+    fn item(goal: &str, budget: Option<u64>, after: &[&str], after_batch: &[usize]) -> BatchTask {
+        BatchTask {
+            request: CreateTask {
+                goal: goal.to_string(),
+                acceptance: None,
+                budget,
+                role: None,
+                after: after.iter().map(|id| id.to_string()).collect(),
+                project: Some("pr1".to_string()),
+            },
+            after_batch: after_batch.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_batch_is_created_whole_with_its_links() {
+        let events = EventBus::new();
+        let ledger = TaskLedger::new(Arc::clone(&events));
+        linked(&ledger, "already there", &[], Some("pr1")).expect("an existing task");
+        let receiver = events.subscribe();
+
+        let created = ledger
+            .create_all(&[
+                item("design", Some(300), &[], &[]),
+                item("build", Some(300), &[], &[0]),
+                item("ship", None, &["t1"], &[0, 1]),
+            ])
+            .expect("a batch inside the contract");
+        let ids: Vec<&str> = created.iter().map(|task| task.id()).collect();
+        assert_eq!(ids, vec!["t2", "t3", "t4"]);
+        assert_eq!(created[1].after(), vec!["t2"]);
+        assert_eq!(created[2].after(), vec!["t1", "t2", "t3"]);
+        assert!(created[0].is_ready());
+        assert!(!created[1].is_ready() && !created[2].is_ready());
+        assert_eq!(ledger.treasury().escrow_balance("t2"), 300);
+        assert_eq!(
+            announced(&receiver),
+            vec![
+                ("t2".to_string(), "open", true),
+                ("t3".to_string(), "open", false),
+                ("t4".to_string(), "open", false),
+            ],
+            "the batch is announced once it is all there, in order"
+        );
+        // The links inside the batch announce like any other.
+        run(&created[0], FinishOutcome::Done);
+        assert!(created[1].is_ready());
+        assert_eq!(created[2].view().waiting_on, vec!["t1", "t3"]);
+    }
+
+    #[test]
+    fn a_batch_outside_the_contract_creates_nothing() {
+        let ledger = TaskLedger::new(EventBus::new());
+        linked(&ledger, "elsewhere", &[], Some("pr2")).expect("another project's task");
+        let refused = |batch: &[BatchTask]| {
+            let error = ledger.create_all(batch).expect_err("refused");
+            assert_eq!(error.status(), 400, "{error}");
+            error.to_string()
+        };
+        assert_eq!(
+            refused(&[item("a", None, &[], &[1]), item("b", None, &[], &[])]),
+            "task 1 of the batch: it may run after an earlier task of the batch only, not task 2"
+        );
+        assert_eq!(
+            refused(&[item("a", None, &[], &[]), item("b", None, &[], &[0, 0])]),
+            "task 2 of the batch: it names task 1 of the batch twice"
+        );
+        let mut other = item("b", None, &[], &[0]);
+        other.request.project = Some("pr3".to_string());
+        assert_eq!(
+            refused(&[item("a", None, &[], &[]), other]),
+            "task 2 of the batch: task 1 of the batch is in project pr1, and this task is in project pr3: a task runs after tasks of its own project only"
+        );
+        assert_eq!(
+            refused(&[item("a", None, &["t1"], &[])]),
+            "task 1 of the batch: t1 is in project pr2, and this task is in project pr1: a task runs after tasks of its own project only"
+        );
+        assert_eq!(
+            refused(&[item("", None, &[], &[])]),
+            "task 1 of the batch: goal must not be empty"
+        );
+        assert_eq!(ledger.list().len(), 1, "no refused batch created a task");
+        assert_eq!(create(&ledger, "next").id(), "t2", "and none took an id");
+    }
+
+    #[test]
+    fn a_batch_the_treasury_cannot_fund_is_given_back_whole() {
+        let ledger = TaskLedger::new(EventBus::new());
+        // Leave room for one more account: the first escrow takes it, the second is refused.
+        for index in 0..crate::treasury::MAX_ACCOUNTS - 3 {
+            ledger
+                .treasury()
+                .open_account(
+                    crate::treasury::AccountKind::TownBudget,
+                    &format!("town{index}"),
+                    0,
+                )
+                .expect("an account under the cap");
+        }
+        let budget_before = ledger.treasury().plaza_budget_balance();
+        let refused = ledger
+            .create_all(&[
+                item("first", Some(300), &[], &[]),
+                item("second", Some(300), &[], &[0]),
+            ])
+            .expect_err("the second escrow cannot be opened");
+        assert!(
+            matches!(
+                refused,
+                CreateError::Treasury(PostError::AccountsFull { .. })
+            ),
+            "{refused:?}"
+        );
+        assert!(ledger.list().is_empty(), "no task of the batch was created");
+        assert_eq!(
+            ledger.treasury().escrow_balance("t1"),
+            0,
+            "the first mint went back"
+        );
+        assert_eq!(ledger.treasury().plaza_budget_balance(), budget_before);
+        // t1's escrow keeps its mint and its refund, so its id is not handed out again.
+        assert_eq!(create(&ledger, "free").id(), "t2");
     }
 }

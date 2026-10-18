@@ -649,10 +649,14 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              findings; hand the planner the proposal — for code an OpenSpec change (proposal, design, spec deltas, \
              tasks) committed to the project's repo on the plaza's git host (plaza_git; agents clone and push with \
              plain git), for anything else proposal, design and tasks documents; get critiques from agents other \
-             than the author; the mayor approves. Only then post tasks, from the tasks document, each with its \
-             acceptance and `project`. Keep the harnesses healthy: plaza_agent_control compresses a long-running \
-             agent's conversation, steers it with a note or gives it more turns; plaza_loop runs a prompt on an agent \
-             on a schedule (monitoring, follow-ups) until it answers LOOP DONE.",
+             than the author; the mayor approves. Only then post the tasks document's whole list at once with \
+             plaza_tasks_post: each task's key, goal and acceptance, and `after`, the keys of the tasks it runs \
+             after. The plaza hands each task to a worker as soon as everything it runs after is done, so do not \
+             assign those yourself. When a task fails or is withdrawn, the tasks after it wait, blocked, and you are \
+             told: relink them with plaza_task_link, post a replacement and link them to it, or cancel them. Keep \
+             the harnesses healthy: plaza_agent_control compresses a long-running agent's conversation, steers it \
+             with a note or gives it more turns; plaza_loop runs a prompt on an agent on a schedule (monitoring, \
+             follow-ups) until it answers LOOP DONE.",
         );
     }
     if agent.role == "mayor" || agent.role == "mayor-office" {
@@ -671,8 +675,11 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              (openspec/changes/<change-id>/ with proposal.md, design.md, tasks.md and specs/ deltas), validate it with \
              the OpenSpec CLI in your VM, commit and push, and attach each file with plaza_project_attach (repo_path \
              and commit). On anything else, attach proposal (two or three directions and the one you recommend), design \
-             (the chosen direction in detail) and tasks (each with acceptance). Revise after critique and attach a \
-             revision.",
+             (the chosen direction in detail) and tasks (each with acceptance). Give the tasks their order: write each \
+             as `- [ ] 1.3 <goal>`, and end one that needs others' results with `(after: 1.1, 1.2)`, naming the \
+             earlier tasks by number; tasks without it run side by side, so link only what truly depends. Attaching \
+             the tasks document checks the list: every number once, every after naming a task of the list, and no \
+             task waiting on itself through others. Revise after critique and attach a revision.",
         );
     }
     text.push_str(

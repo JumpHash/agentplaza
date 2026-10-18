@@ -626,7 +626,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             obj(json!({"id": {"type": "string"}}), &[]),
         ),
         "plaza_project_attach" => (
-            "Attach a document to a project: brief, research, proposal, design, spec (OpenSpec change, code projects), tasks, revision or deliverable. Give a shared file id (share_file) or a repo path, and a one-paragraph summary.",
+            "Attach a document to a project: brief, research, proposal, design, spec (OpenSpec change, code projects), tasks, revision or deliverable. Give a shared file id (share_file) or a repo path, and a one-paragraph summary. A tasks document's list is checked as it is attached: write each task as `- [ ] 1.3 <goal> (after: 1.1, 1.2)`, every number once, every after naming a task of the list, and no task waiting on itself through others.",
             obj(
                 json!({"id": {"type": "string"}, "kind": {"type": "string", "enum": ["brief", "research", "proposal", "design", "spec", "tasks", "revision", "deliverable"]}, "title": {"type": "string"}, "file": {"type": "string"}, "repo_path": {"type": "string"}, "commit": {"type": "string"}, "summary": {"type": "string"}}),
                 &["id", "kind", "title", "summary"],
@@ -764,8 +764,19 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
                 by: String::new(),
                 at_ms: 0,
             };
+            // A tasks list is checked as a graph before it is attached, so the planner fixes its
+            // order before the critique.
+            let checked = if doc.kind == "tasks" {
+                Some(check_tasks_doc(app, id, &doc)?)
+            } else {
+                None
+            };
             let project = app.projects.attach(id, &actor, doc)?;
-            answer(app, &project, stage_hint(&project.stage))
+            let hint = stage_hint(&project.stage);
+            match checked {
+                Some(found) => answer(app, &project, &format!("{found}. {hint}")),
+                None => answer(app, &project, hint),
+            }
         }
         "plaza_project_critique" => {
             let project = app.projects.critique(
@@ -800,6 +811,39 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         }
         other => Err(format!("not a project tool: {other}")),
     }
+}
+
+/// How a tasks list marks its order, for the refusals and hints that ask for it.
+const TASKS_FORMAT: &str = "write each task as `- [ ] 1.3 <goal> (after: 1.1, 1.2)`: every number once, every after naming a task of the list, and no task waiting on itself through others";
+
+/// Checks a `tasks` document's list before it is attached. A list that does not hold together
+/// refuses the attach, with what is wrong. Otherwise the answer says what was found, or why the
+/// list could not be read; neither blocks the attach, since posting checks the list again.
+fn check_tasks_doc(app: &App, id: &str, doc: &Doc) -> Result<String, String> {
+    let project = app
+        .projects
+        .get(id)
+        .ok_or_else(|| format!("no project {id}"))?;
+    let text = match crate::task_plan::read_doc(
+        app,
+        &project,
+        doc.file.as_deref(),
+        doc.repo_path.as_deref(),
+        doc.commit.as_deref(),
+    ) {
+        Ok(text) => text,
+        Err(why) => return Ok(format!("The tasks list was not checked ({why})")),
+    };
+    let tasks = crate::task_plan::parse(&text)
+        .map_err(|why| format!("the tasks document's list does not read: {why}; {TASKS_FORMAT}"))?;
+    if tasks.is_empty() {
+        return Ok(format!(
+            "No task list was found in it, so its order was not checked; {TASKS_FORMAT}"
+        ));
+    }
+    crate::task_plan::check(&tasks, |_| false)
+        .map_err(|why| format!("the tasks list does not hold together: {why}; {TASKS_FORMAT}"))?;
+    Ok(crate::task_plan::summary(&tasks))
 }
 
 /// A required, non-blank string argument.
@@ -851,12 +895,12 @@ fn stage_hint(stage: &str) -> &'static str {
         "brief" => "plaza_project_advance moves it to research",
         "research" => "researchers attach findings",
         "proposal" => {
-            "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM)"
+            "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM). In the tasks list, end a task that needs others' results with (after: 1.1, 1.2); tasks without it run side by side"
         }
         "critique" => "agents other than the author critique with plaza_project_critique",
         "approval" => "the mayor approves with plaza_project_approve",
         "implementation" => {
-            "the orchestrator posts tasks from the tasks document, each with its acceptance, and links them"
+            "the orchestrator posts the tasks list whole with plaza_tasks_post (each task's key, goal, acceptance and after): each task goes to a worker as soon as everything it runs after is done"
         }
         "review" => "QA and reviewers check the deliverables; attach a deliverable doc",
         "delivered" => "report to the operator",

@@ -102,6 +102,8 @@ const GATED: &[&str] = &[
     "plaza_agents",
     "plaza_money",
     "plaza_post_task",
+    "plaza_tasks_post",
+    "plaza_task_link",
     "plaza_assign",
     "plaza_cancel_task",
     "plaza_task_result",
@@ -137,6 +139,8 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_agents"
         | "plaza_money"
         | "plaza_post_task"
+        | "plaza_tasks_post"
+        | "plaza_task_link"
         | "plaza_assign"
         | "plaza_cancel_task"
         | "plaza_task_result"
@@ -603,7 +607,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(json!({"task": {"type": "string"}}), &[]),
         ),
         "plaza_post_task" => (
-            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000, minimum 200; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved.",
+            "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000, minimum 200; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved. `after` names the ids of tasks it runs after: it is handed out once they are all done (so it cannot be assigned before). To post a plan's whole list, use plaza_tasks_post.",
             obj(
                 json!({
                     "title": {"type": "string"},
@@ -612,9 +616,47 @@ fn spec(name: &str) -> Option<ToolSpec> {
                     "assignee": {"type": "integer"},
                     "budget": {"type": "integer", "minimum": MIN_TASK_BUDGET},
                     "acceptance": {"type": "string"},
-                    "project": {"type": "string"}
+                    "project": {"type": "string"},
+                    "after": {"type": "array", "items": {"type": "string"}, "maxItems": 32}
                 }),
                 &["title", "body"],
+            ),
+        ),
+        "plaza_tasks_post" => (
+            "Post a project's whole task list at once, once its plan is approved: each task with its key from the plan's tasks list, its goal, acceptance, role and budget, and `after`: the keys of the tasks of this list it runs after (or ids of tasks posted before). Every task is created or none is, and each goes to a worker as soon as everything it runs after is done. Answers with each key's task id.",
+            obj(
+                json!({
+                    "project": {"type": "string"},
+                    "tasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": crate::task_plan::MAX_PLANNED,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "key": {"type": "string"},
+                                "goal": {"type": "string"},
+                                "acceptance": {"type": "string"},
+                                "role": {"type": "string"},
+                                "budget": {"type": "integer", "minimum": MIN_TASK_BUDGET},
+                                "after": {"type": "array", "items": {"type": "string"}, "maxItems": 32}
+                            },
+                            "required": ["key", "goal"],
+                            "additionalProperties": false
+                        }
+                    }
+                }),
+                &["project", "tasks"],
+            ),
+        ),
+        "plaza_task_link" => (
+            "Change which tasks an open task runs after, to replan: give the whole new list of task ids ([] for none). Refused when it would close a cycle (the refusal names it) or the task is no longer open.",
+            obj(
+                json!({
+                    "task": {"type": "string"},
+                    "after": {"type": "array", "items": {"type": "string"}, "maxItems": 32}
+                }),
+                &["task", "after"],
             ),
         ),
         "plaza_assign" => (
@@ -1018,6 +1060,18 @@ fn host_call(
         "plaza_post_task" => {
             let title = str_arg(input, "title")?;
             let body = str_arg(input, "body")?;
+            let after = ids_arg(input, "after")?;
+            // An assignee starts at once, so a task that still waits on its links cannot have one.
+            if input.get("assignee").and_then(Value::as_u64).is_some() {
+                let waiting = app.plaza.tasks.not_done(&after);
+                if !waiting.is_empty() {
+                    let verb = if waiting.len() == 1 { "is" } else { "are" };
+                    return Err(format!(
+                        "the assignee cannot start it yet: it runs after {}, which {verb} not done; post it without an assignee and the plaza hands it out once they are",
+                        waiting.join(", ")
+                    ));
+                }
+            }
             // An unfunded task would stop at its first model call: give it a working default.
             let budget = budget_arg(input)?;
             let role = input
@@ -1054,7 +1108,7 @@ fn host_call(
                         .map(str::to_string),
                     budget: Some(budget),
                     role,
-                    after: Vec::new(),
+                    after,
                     project: project.map(str::to_string),
                 })
                 .map_err(|e| format!("{e:?}"))?;
@@ -1076,6 +1130,39 @@ fn host_call(
                 }
                 None => Ok(task_json(&task).to_string()),
             }
+        }
+        "plaza_tasks_post" => {
+            let project = str_arg(input, "project")?;
+            let tasks: Vec<crate::task_plan::Planned> =
+                serde_json::from_value(input.get("tasks").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| {
+                        format!("`tasks` must be a list of {{key, goal, acceptance?, role?, budget?, after?}}: {e}")
+                    })?;
+            let posted = crate::task_plan::post(&app.projects, &app.plaza.tasks, project, &tasks)?;
+            for task in &posted {
+                app.work.note_poster(&task.id, agent.cid);
+                crate::society::note_posted(app, agent.cid);
+            }
+            Ok(format!(
+                "{}\nNext: each task goes to a worker as soon as everything it runs after is done; follow them with plaza_task_result.",
+                json!({ "project": project, "tasks": posted })
+            ))
+        }
+        "plaza_task_link" => {
+            let task = str_arg(input, "task")?;
+            if input.get("after").is_none() {
+                return Err(
+                    "missing list `after`: the whole new list of the tasks it runs after ([] for none)"
+                        .to_string(),
+                );
+            }
+            let after = ids_arg(input, "after")?;
+            let task = app
+                .plaza
+                .tasks
+                .relink(task, &after)
+                .map_err(|e| e.to_string())?;
+            Ok(task_json(&task).to_string())
         }
         "plaza_assign" => {
             let task = task_arg(app, input)?;
@@ -1240,14 +1327,36 @@ fn task_text(task: &Task) -> String {
 
 /// A task as the model sees it.
 fn task_json(task: &Task) -> Value {
+    let view = task.view();
     json!({
-        "id": task.id(),
-        "goal": task.goal(),
-        "state": task.state(),
-        "budget": task.budget(),
-        "role": task.role(),
-        "acceptance": task.acceptance()
+        "id": view.id,
+        "goal": view.goal,
+        "state": view.state,
+        "budget": view.budget,
+        "role": view.role,
+        "acceptance": view.acceptance,
+        "project": view.project,
+        "after": view.after,
+        "ready": view.ready,
+        "waiting_on": view.waiting_on,
+        "blocked_by": view.blocked_by
     })
+}
+
+/// A list of task ids: absent is none, and anything but an array of strings is refused.
+fn ids_arg(input: &Value, key: &str) -> Result<Vec<String>, String> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("`{key}` must be a list of task ids"))
+            })
+            .collect(),
+        Some(_) => Err(format!("`{key}` must be a list of task ids")),
+    }
 }
 
 /// The task named by the `task` argument.
@@ -1595,6 +1704,11 @@ mod tests {
             assert!(worker.iter().any(|n| n == "plaza_bid"));
             assert!(!worker.iter().any(|n| n == "plaza_post_task"));
             assert!(orchestrator.iter().any(|n| n == "plaza_post_task"));
+            // The order of a plan's tasks is the orchestrator's too: it posts the list and relinks.
+            for tool in ["plaza_tasks_post", "plaza_task_link"] {
+                assert!(orchestrator.iter().any(|n| n == tool), "{tool}");
+                assert!(!worker.iter().any(|n| n == tool), "{tool}");
+            }
             assert!(!orchestrator.iter().any(|n| n == "plaza_bid"));
             assert!(!worker.iter().any(|n| n == "plaza_vote"));
             let seated = offered("finance", &[]);
@@ -1643,6 +1757,9 @@ mod tests {
         {
             assert!(refusal("worker", "plaza_post_task").is_some());
             assert!(refusal(ORCHESTRATOR_ROLE, "plaza_post_task").is_none());
+            assert!(refusal("builder", "plaza_task_link").is_some());
+            assert!(refusal(ORCHESTRATOR_ROLE, "plaza_task_link").is_none());
+            assert!(refusal("planner", "plaza_tasks_post").is_some());
             assert!(refusal("worker", "bash").is_some());
         }
     }

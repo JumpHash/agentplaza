@@ -342,6 +342,15 @@ impl Queues {
             .insert(task.to_string(), cid);
     }
 
+    /// The agent that posted `task`, while its end has not been told yet.
+    pub fn poster_of(&self, task: &str) -> Option<u64> {
+        self.posters
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(task)
+            .copied()
+    }
+
     /// Tells a task's poster (the orchestrator) that it ended, continuing the
     /// poster's conversation with the operator so it keeps its plan.
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
