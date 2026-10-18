@@ -144,6 +144,8 @@ impl Plaza for FakePlaza {
                         acceptance: None,
                         budget: None,
                         role: None,
+                        after: Vec::new(),
+                        project: None,
                     })
                     .expect("a task");
                 if let Some((cid, role)) = claimant {

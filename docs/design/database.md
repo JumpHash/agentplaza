@@ -72,7 +72,7 @@ registered `.route` or match-arm path (the list of 239 paths was taken from `cra
 | 3 | looks | `Look{species, dealt_ms}` by cid (`looks.rs:39`) | = agents | species set | `PUT /v1/agents/{cid}/species`, `/v1/robots/species` |
 | 4 | custom_roles | `RoleDef{id,title,purpose,responsibilities,deliverables,collaboration,boundaries,tools,budget,model,prompt,created_by,created_ms}` (`roles_custom.rs:22`) | tens | create, edit, delete | `/v1/roles`, `/v1/roles/{id}` |
 | 5 | agent_proposals | `AgentProposal{id, role: RoleDef, new_role, count, model, reason, instruction, by_cid, by, created_ms, state, decided_ms, note, spawned: Vec<u64>}` (`agent_proposals.rs:35`) | grows; decided kept | create, decide | `/v1/agent-proposals`, `/{id}/approve`, `/{id}/reject` |
-| 6 | tasks | `TaskRecord{id, goal, acceptance, budget, role, escrow_entry, created_at, state, assignee_id, verifier_id, agent_cid, note, updated_at}` (`apz-plaza/src/tasks.rs:882`); cap `MAX_TASKS = 1024` (`tasks.rs:86`) | <= 1024 in memory | every transition (state machine) | `/v1/tasks`, `/v1/tasks/{id}`, `/{id}/bid`, `/award`, `/claim`, `/finish` |
+| 6 | tasks | `TaskRecord{id, goal, acceptance, budget, role, escrow_entry, created_at, state, assignee_id, verifier_id, agent_cid, note, updated_at, project, after}` (`apz-plaza/src/tasks.rs:882`); cap `MAX_TASKS = 1024` (`tasks.rs:86`) | <= 1024 in memory | every transition (state machine) | `/v1/tasks`, `/v1/tasks/{id}`, `/{id}/bid`, `/award`, `/claim`, `/finish` |
 | 7 | agora | `AgoraInner{bids: HashMap<task, Vec<BidView>>, awards}`, `CallView`, `BidView`, `AwardView` (`agora.rs`); `MAX_BIDS_PER_TASK=32`, `AGORA_LIMIT=256` | 256 calls | bid, award | `/v1/agora` |
 | 8 | board (social) | `PostView{id, agent_cid, role, subject, body, task, posted_by, created_at, comments: Vec<CommentView>, attachments}` (`social.rs:356`); `MAX_POSTS=100_000`, `MAX_COMMENTS=200`, `BOARD_LIMIT=256` | 100k posts, comments embedded | post, comment, read cursor | `/v1/board`, `/v1/board/read`, `/v1/board/{id}/comments` |
 | 9 | conversations (social) | `ConversationView{id, from_cid, to_cid, from_role, to_role, text, created_at, delivered, delivery, attachments}` (`social.rs:478`); `MAX_CONVERSATIONS=100_000`, `MAX_PAIRS=256` | 100k messages in one Vec | send, say | `/v1/conversations`, `/v1/conversations/{a}/{b}`, `/v1/agents/{cid}/chat`, `/v1/messages` |
@@ -295,8 +295,13 @@ Full worked example in section 5.4. The schema:
   NOT NULL CHECK in (open, claimed, awaiting_review, done, failed, withdrawn) (the `TaskState`
   variants at `tasks.rs:98`), outcome text CHECK in (done, failed, withdrawn) NULL (verify
   against `tasks.rs`), assignee_id text, agent_cid bigint FK agents ON DELETE RESTRICT, verifier_id
-  text, note text, created_at timestamptz, updated_at timestamptz).
+  text, note text, created_at timestamptz, updated_at timestamptz, project text NULL (a project id; its FK
+  once projects have a table)).
   Indexes: `(state, seq)` for the list filter, `(agent_cid)` partial where not null for "my tasks".
+- `task_links` (task_seq bigint FK tasks ON DELETE RESTRICT, after_seq bigint FK tasks ON DELETE RESTRICT, PRIMARY
+  KEY (task_seq, after_seq), CHECK (task_seq <> after_seq)). A task's `after` (the schema draft's `core.task_deps`):
+  the tasks it runs after, at most 32, in its own project, closing no cycle. The ledger checks all three today and
+  keeps the links in the snapshot record. Index `(after_seq)` for "what runs after this task".
 - `task_transitions` (id bigint identity PK, task_seq FK tasks RESTRICT, from_state, to_state,
   agent_cid NULL, at timestamptz, note text). Plain table, insert-only by convention. The current code keeps no history; this
   adds the audit that the escrow refund story needs.

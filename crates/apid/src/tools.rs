@@ -1054,6 +1054,8 @@ fn host_call(
                         .map(str::to_string),
                     budget: Some(budget),
                     role,
+                    after: Vec::new(),
+                    project: project.map(str::to_string),
                 })
                 .map_err(|e| format!("{e:?}"))?;
             if let Some(pid) = project {
@@ -1190,6 +1192,8 @@ pub fn post_and_assign(
             acceptance,
             budget: Some(budget),
             role: None,
+            after: Vec::new(),
+            project: None,
         })
         .map_err(|e| format!("{e:?}"))?;
     app.work.note_poster(task.id(), poster);
@@ -1206,7 +1210,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         .get(cid)
         .ok_or_else(|| format!("no connected agent {cid}"))?;
     task.claim(&agents::connected_agent(&target))
-        .map_err(|e| format!("{e:?}"))?;
+        .map_err(|e| e.to_string())?;
     let origin = Origin {
         task: Some(task.id().to_string()),
         motion: None,

@@ -481,6 +481,10 @@ fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
 /// assignee is checked first (so a refusal leaves the ledger untouched), the
 /// task is claimed for it, and the assignee's work queue gets the task. An
 /// absent `budget` gets `DEFAULT_TASK_BUDGET`; one under `MIN_TASK_BUDGET` is a 400.
+///
+/// `after` names the tasks it runs after: it is handed out once they are all done, so an assignee is refused
+/// while any of them is not. `project` files it under a project whose plan is approved (implementation or
+/// review, as for an agent's `plaza_post_task`) and links it there; its `after` stays inside that project.
 pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
     let request: CreateTask = match parse(body, "create").and_then(with_budget) {
         Ok(request) => request,
@@ -497,13 +501,45 @@ pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
         },
         None => None,
     };
+    if assignee.is_some() {
+        let waiting = app.plaza.tasks.not_done(&request.after);
+        if !waiting.is_empty() {
+            let verb = if waiting.len() == 1 { "is" } else { "are" };
+            return Response::error(
+                409,
+                &format!(
+                    "the assignee cannot start it yet: it runs after {}, which {verb} not done",
+                    waiting.join(", ")
+                ),
+            );
+        }
+    }
+    // A blank project is the ledger's to refuse (a 400).
+    if let Some(pid) = request.project.as_deref().filter(|p| !p.trim().is_empty()) {
+        let Some(project) = app.projects.get(pid) else {
+            return Response::error(404, &format!("no project {pid}"));
+        };
+        if !matches!(project.stage.as_str(), "implementation" | "review") {
+            return Response::error(
+                409,
+                &format!(
+                    "project {pid} is at {}: tasks can be posted only once its plan is approved",
+                    project.stage
+                ),
+            );
+        }
+    }
     let task = match app.plaza.tasks.create(&request) {
         Ok(task) => task,
         Err(err) => return Response::error(err.status(), &err.to_string()),
     };
+    if let Some(pid) = task.project()
+        && let Err(refused) = app.projects.link_task(pid, task.id())
+    {
+        return Response::error(409, &refused);
+    }
     if let Some((cid, agent)) = assignee {
         if let Err(refused) = task.claim(&agent) {
-            let refused = ClaimError::Refused(refused);
             return Response::error(refused.status(), &refused.to_string());
         }
         let id = task.id().to_string();
@@ -534,7 +570,7 @@ fn get_task(app: &App, id: &str) -> Response {
 
 /// `POST /v1/tasks/{id}/claim`: binds an open task to a connected agent. The
 /// register check is made here; the ledger refuses the claim itself when the
-/// task is not open.
+/// task is not open, or not ready (it runs after a task that is not done).
 fn claim_task(app: &App, id: &str, body: &[u8]) -> Response {
     let Some(task) = app.plaza.tasks.find(id) else {
         return Response::error(404, &format!("no task with id {id}"));
@@ -549,10 +585,7 @@ fn claim_task(app: &App, id: &str, body: &[u8]) -> Response {
     };
     match task.claim(&agent) {
         Ok(()) => Response::json(200, &task.view()),
-        Err(refused) => {
-            let refused = ClaimError::Refused(refused);
-            Response::error(refused.status(), &refused.to_string())
-        }
+        Err(refused) => Response::error(refused.status(), &refused.to_string()),
     }
 }
 
@@ -1174,6 +1207,23 @@ mod tests {
             Some(7)
         );
         assert!(parse::<Assignee>(br#"{"assignee": "seven"}"#, "create").is_err());
+    }
+
+    #[test]
+    fn a_create_body_may_name_its_links_and_its_project() {
+        let request: CreateTask = parse(
+            br#"{"goal": "work", "after": ["t1", "t2"], "project": "pr1"}"#,
+            "create",
+        )
+        .expect("a create body with links");
+        assert_eq!(request.after, vec!["t1", "t2"]);
+        assert_eq!(request.project.as_deref(), Some("pr1"));
+        // A body from before links names neither.
+        let request: CreateTask =
+            parse(br#"{"goal": "work"}"#, "create").expect("a create body without");
+        assert!(request.after.is_empty());
+        assert_eq!(request.project, None);
+        assert!(parse::<CreateTask>(br#"{"goal": "work", "after": "t1"}"#, "create").is_err());
     }
 
     #[test]

@@ -127,7 +127,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::tasks::Task;
+use crate::tasks::{ClaimError, Task};
 use crate::{ConnectedAgent, now_ms};
 
 /// The most bids one call holds. A fresh bid past the cap is refused (a 409);
@@ -257,6 +257,10 @@ pub enum AwardError {
         /// The guest CID the caller asked to award to.
         agent_cid: u64,
     },
+    /// The ledger refused the claim the award makes for a reason other than
+    /// the task's state: the task runs after tasks that are not done
+    /// ([`ClaimError::Waiting`]), so the call can be awarded once they are.
+    Claim(ClaimError),
     /// The bid's price is above the call's ceiling. The bid rule already
     /// refused this at bid time and the budget never changes, so this guard
     /// fires only on a store that was corrupted some other way — it is the
@@ -294,6 +298,7 @@ impl std::fmt::Display for AwardError {
                 formatter,
                 "award to guest CID {agent_cid} matches no bid on call {task}"
             ),
+            AwardError::Claim(refused) => refused.fmt(formatter),
             AwardError::PriceAboveMax { price, max_price } => {
                 write!(formatter, "bid price {price} exceeds max_price {max_price}")
             }
@@ -540,13 +545,17 @@ impl Agora {
             });
         }
         // The award performs the claim: the ledger's own transition, its own
-        // enforcement point, its own event. A refusal here means the task
-        // stopped being open under us, which is the same conflict the state
-        // check above reports.
+        // enforcement point, its own event. A refused transition means the
+        // task stopped being open under us, which is the same conflict the
+        // state check above reports; a task that waits on its links is not
+        // ready to be awarded yet.
         if let Err(refused) = task.claim(agent) {
-            return Err(AwardError::NotOpen {
-                task: task.id().to_string(),
-                state: refused.from.as_str(),
+            return Err(match refused {
+                ClaimError::Refused(refused) => AwardError::NotOpen {
+                    task: task.id().to_string(),
+                    state: refused.from.as_str(),
+                },
+                other => AwardError::Claim(other),
             });
         }
         let award = AwardView {
@@ -747,6 +756,8 @@ mod tests {
                 acceptance: Some("the suite is green".to_string()),
                 budget: Some(budget),
                 role: Some(role.to_string()),
+                after: Vec::new(),
+                project: None,
             })
             .expect("a roled, budgeted task inside the contract")
     }
@@ -763,6 +774,51 @@ mod tests {
     }
 
     #[test]
+    fn a_call_whose_task_waits_on_its_links_is_awarded_only_once_they_are_done() {
+        let events = EventBus::new();
+        let (ledger, agora) = lab(&events);
+        let base = call_task(&ledger, "lay the base", "builder", 300);
+        let next = ledger
+            .create(&CreateTask {
+                goal: "build on it".to_string(),
+                acceptance: None,
+                budget: Some(300),
+                role: Some("builder".to_string()),
+                after: vec!["t1".to_string()],
+                project: None,
+            })
+            .expect("a linked call");
+        agora
+            .bid(&next, &agent(101, "builder"), 250)
+            .expect("a waiting call takes bids");
+
+        let refused = agora
+            .award(&next, &agent(101, "builder"))
+            .expect_err("the award would claim a task that is not ready");
+        assert_eq!(
+            refused,
+            AwardError::Claim(ClaimError::Waiting {
+                task: "t2".to_string(),
+                waiting_on: vec!["t1".to_string()],
+                blocked_by: Vec::new(),
+            })
+        );
+        assert_eq!(refused.status(), 409);
+        assert_eq!(
+            refused.to_string(),
+            "task t2 runs after t1, which is not done yet"
+        );
+        assert!(next.is_open(), "a refused award claims nothing");
+
+        base.claim(&agent(100, "builder")).expect("claim");
+        base.finish(FinishOutcome::Done, None).expect("done");
+        agora
+            .award(&next, &agent(101, "builder"))
+            .expect("the refused award recorded nothing, and the link is done");
+        assert_eq!(next.state(), "claimed");
+    }
+
+    #[test]
     fn a_call_is_a_roled_task_and_the_board_is_derived_from_the_ledger() {
         let events = EventBus::new();
         let (ledger, agora) = lab(&events);
@@ -774,6 +830,8 @@ mod tests {
                 acceptance: None,
                 budget: Some(5),
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect("a task");
         assert_eq!(
@@ -1116,6 +1174,8 @@ mod tests {
                 acceptance: None,
                 budget: None,
                 role: None,
+                after: Vec::new(),
+                project: None,
             })
             .expect("a task");
 

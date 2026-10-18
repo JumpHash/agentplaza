@@ -1071,10 +1071,11 @@ fn ask_names(app: &App) {
     }
 }
 
-/// Gives each open task with no work behind it to an idle worker of its role.
+/// Gives each ready task (open, and every task it runs after done) with no work behind it to an idle worker of
+/// its role. A task that waits on its links stays open; the pass after its last link is done hands it out.
 fn assign_tasks(app: &App) {
     for task in app.plaza.tasks.list() {
-        if !task.is_open() {
+        if !task.is_ready() {
             continue;
         }
         let busy = app.work.locked().holds_task(task.id());
