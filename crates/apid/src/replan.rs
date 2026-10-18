@@ -51,7 +51,12 @@ fn tell(app: &App, ended: &str, state: &str) {
         }
         // A project started from a conversation hears of it there.
         if let Some(conversation) = crate::scheduler::project_conversation(app, ended, cid) {
-            crate::conversations::notify(app, &conversation, &prompt);
+            crate::conversations::notify(
+                app,
+                &conversation,
+                crate::conversations::shown_line(&prompt),
+                &prompt,
+            );
             continue;
         }
         app.work.enqueue(

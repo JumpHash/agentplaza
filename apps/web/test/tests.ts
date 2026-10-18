@@ -1,6 +1,8 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
 import { inScope, isLive, liveProjects, onBench } from '../src/scope';
+import { afterText, budgetText, isConversationId, seatLine, settingsLine, startBlock, streamed, teamLine } from '../src/ide/conversation-model';
+import type { ProjectDraft } from '../src/api';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
@@ -247,6 +249,39 @@ eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 // Hardware models (assets/hardware): every file validates, the index lists every file, the loader builds them.
 eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [], project: null }, 'a query is not part of the route');
 eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its project before a query');
+
+// ---- The IDE's conversation view (ide/conversation-model.ts) ----
+{
+  const roster = [{ cid: 300, name: 'Ada' }, { cid: 304, name: 'Rhea' }];
+  eq(isConversationId('conv-12'), true, 'a conversation workspace id');
+  eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
+  eq(isConversationId(null), false, 'nothing open is not one');
+  eq(seatLine({ role: 'builder', count: 2, bench: [300] }, roster), '2 Builder (Ada from the bench, 1 new)', 'a seat from the bench and new');
+  eq(seatLine({ role: 'librarian', count: 1, bench: [304] }, roster), '1 Librarian (Rhea from the bench)', 'a seat all from the bench');
+  eq(seatLine({ role: 'qa', count: 1 }, roster), '1 QA (1 new)', 'a seat all new');
+  eq(seatLine({ role: 'qa', count: 1, bench: [999] }, roster), '1 QA (agent 999 from the bench)', 'an agent the roster does not know');
+  eq(teamLine([{ role: 'qa', count: 1 }, { role: 'release', count: 1 }], roster), '1 QA (1 new) · 1 Release (1 new)', 'the team in one line');
+  eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
+  eq(afterText({}), '', 'one that runs at once');
+  const draft = { problems: [] as string[], budget: 15000 } as unknown as ProjectDraft;
+  eq(startBlock({ draft, project: undefined, archived: false }), null, 'a draft with no problems starts');
+  eq(startBlock({ draft: { ...draft, problems: ['the draft has no tasks yet'] }, project: undefined, archived: false }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
+  eq(startBlock({ draft, project: 'pr2', archived: false }), 'The project is started.', 'a started one does not start again');
+  eq(startBlock({ draft: undefined, project: undefined, archived: false })?.startsWith('There is no draft yet'), true, 'no draft yet');
+  eq(budgetText({ budget: 15000 }), '15,000 credits', 'a budget');
+  eq(budgetText({}), 'From the plaza’s budget', 'no budget of its own');
+  eq(
+    settingsLine({ role_models: { builder: 'anthropic/claude-sonnet-5-5' }, effort: 'high', permission_mode: 'ask' }),
+    'Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask',
+    'settings in words',
+  );
+  eq(settingsLine(undefined), '', 'no settings');
+  eq(
+    streamed([{ work: 4, delta: { type: 'text', text: 'Which ' } }, { work: 4, delta: { type: 'thinking', text: 'hmm' } }, { work: 5, delta: { type: 'text', text: 'x' } }, { work: 4, delta: { type: 'text', text: 'repo?' } }], [4]),
+    'Which repo?',
+    "a pending reply's text, without its thinking or another reply's",
+  );
+}
 
 // ---- The project scope (scope.ts) ----
 {
@@ -1377,6 +1412,8 @@ sectionEnd('rich card tests: ok');
   eq(groupByProject([ag(2, 'amy')], [pj('p1', 'Alpha', 1, [], 5)], [tk('t9', 2)])[0]?.title, 'No project', 'groupByProject: a claimed task outside every project does not place the agent');
   eq(projectOf(agents[1], projects, tasks)?.id, 'p2', 'projectOf: the most recently active project of the agent');
   eq(projectOf(agents[2], projects, tasks), null, 'projectOf: null for an agent in no project');
+  eq(projectOf(ag(2, 'amy', { project: 'p1' }), projects, tasks)?.id, 'p1', 'projectOf: a member is under its project only (amy also leads Beta)');
+  eq(groupByProject([ag(6, 'eve', { project: 'p3' })], projects, tasks).map((g) => g.title).join(','), 'Gamma', 'groupByProject: a member of a project with no tasks yet is under it');
 
   eq([...sharedNames([ag(1, 'Ada'), ag(2, 'ada'), ag(3, 'Bo')])].sort().join(','), '1,2', 'sharedNames: names that collide, case-insensitively');
   eq(sharedNames([ag(1, 'Ada'), ag(2, 'Bo')]).size, 0, 'sharedNames: no collision, no cid shown');

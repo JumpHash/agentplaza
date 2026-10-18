@@ -445,10 +445,10 @@ pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (
     Ok(conversation)
 }
 
-/// Tells conversation `id`'s orchestrator `text`, a plaza notice (a project started, a task ended), on the
-/// conversation's thread: it shows in the conversation, and so does the orchestrator's answer. A notice for a
-/// conversation whose orchestrator is gone is dropped.
-pub fn notify(app: &App, id: &str, text: &str) {
+/// Tells conversation `id`'s orchestrator `prompt`, a plaza notice (a project started, a task ended), on the
+/// conversation's thread. The owner sees `shown` in the conversation (the prompt's instructions are the
+/// orchestrator's), and the orchestrator's answer. A notice for a conversation whose orchestrator is gone is dropped.
+pub fn notify(app: &App, id: &str, shown: &str, prompt: &str) {
     let Some(conversation) = app.conversations.get(id) else {
         return;
     };
@@ -456,10 +456,9 @@ pub fn notify(app: &App, id: &str, text: &str) {
         eprintln!("apid: a notice for {id} dropped: its orchestrator is gone");
         return;
     }
-    let first_line = text.lines().next().unwrap_or_default();
     let message = Message {
         from: PLAZA.into(),
-        text: first_line.chars().take(MAX_ANSWER_CHARS).collect(),
+        text: shown.chars().take(MAX_ANSWER_CHARS).collect(),
         at_ms: apz_plaza::now_ms(),
         work: 0,
         status: None,
@@ -471,12 +470,18 @@ pub fn notify(app: &App, id: &str, text: &str) {
         eprintln!("apid: a notice for {id} not kept: {e}");
         return;
     }
-    match queue(app, id, conversation.cid, text, PLAZA, false) {
+    match queue(app, id, conversation.cid, prompt, PLAZA, false) {
         Ok(conversation) => app
             .bus
             .publish("owner_conversation", &view(app, &conversation)),
         Err((_, e)) => eprintln!("apid: a notice for {id} not queued: {e}"),
     }
+}
+
+/// What the owner sees of a plaza notice: its first line, without the `[plaza]` mark.
+pub fn shown_line(prompt: &str) -> &str {
+    let first = prompt.lines().next().unwrap_or_default();
+    first.strip_prefix("[plaza] ").unwrap_or(first)
 }
 
 /// A work item ended as `status` (`done`, `failed`, `stopped`): when a conversation queued it, the orchestrator's
@@ -721,6 +726,18 @@ mod tests {
         assert_eq!(other.list().len(), 2);
         assert!(other.restore("not json").is_err());
         assert_eq!(other.list().len(), 2, "a refused restore changes nothing");
+    }
+
+    #[test]
+    fn the_owner_sees_a_notices_first_line_without_its_mark() {
+        assert_eq!(
+            shown_line(
+                "[plaza] Task t3, worked by Ada, ended: done.\nSummary: fixed\n\nTell the owner."
+            ),
+            "Task t3, worked by Ada, ended: done."
+        );
+        assert_eq!(shown_line("No mark here.\nMore."), "No mark here.");
+        assert_eq!(shown_line(""), "");
     }
 
     #[test]

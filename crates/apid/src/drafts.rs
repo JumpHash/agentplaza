@@ -681,7 +681,13 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         task_ids.join(", "),
         joined.len(),
     );
-    conversations::notify(app, id, &notice);
+    let shown = format!(
+        "You started project {pid} \"{}\": {} tasks posted, {} agents from the bench on it, {new_agents} new ones on their way.",
+        draft.title.trim(),
+        task_ids.len(),
+        joined.len(),
+    );
+    conversations::notify(app, id, &shown, &notice);
     let done = json!({
         "project": pid,
         "tasks": posted,

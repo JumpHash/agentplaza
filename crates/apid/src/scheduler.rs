@@ -381,7 +381,12 @@ impl Queues {
         );
         // A project started from a conversation hears of its tasks there.
         if let Some(conversation) = project_conversation(app, task, poster) {
-            crate::conversations::notify(app, &conversation, &prompt);
+            crate::conversations::notify(
+                app,
+                &conversation,
+                crate::conversations::shown_line(&prompt),
+                &prompt,
+            );
             return;
         }
         self.enqueue(
