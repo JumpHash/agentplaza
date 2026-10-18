@@ -888,6 +888,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("List the projects"))
         .get("/v1/projects/{id}", get_route)
         .doc(RouteDoc::new("Get a project").errors(&[404]))
+        .get("/v1/projects/{id}/graph", graph_route)
+        .doc(RouteDoc::new("Get a project's task graph").errors(&[404]))
         .post("/v1/projects/{id}/approve", approve_route)
         .doc(RouteDoc::new("Approve a project's current stage").errors(&[409]))
         .post("/v1/projects/{id}/veto", veto_route)
@@ -897,6 +899,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
 fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match app.projects.get(p.get("id")) {
         Some(project) => Response::json(200, &project),
+        None => Response::error(404, "no such project"),
+    }
+}
+
+/// `GET /v1/projects/{id}/graph`: the project's tasks in the order their links let them run
+/// ([`crate::task_graph`]).
+fn graph_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    match crate::task_graph::of_project(app, p.get("id")) {
+        Some(graph) => Response::json(200, &graph),
         None => Response::error(404, "no such project"),
     }
 }

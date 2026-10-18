@@ -1,0 +1,30 @@
+meta {
+  name: Refuse links that would close a cycle
+  type: http
+  seq: 15
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{firstTaskId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "after": ["{{secondTaskId}}"]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the cycle", function () {
+    expect(res.getBody().error).to.contain("cycle");
+    expect(res.getBody().error).to.contain(bru.getVar("secondTaskId"));
+  });
+}
