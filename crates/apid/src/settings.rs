@@ -89,8 +89,6 @@ pub struct Settings {
     /// link-local addresses are always refused by the egress proxy.
     pub fetch_block: Vec<String>,
     pub prices: BTreeMap<String, Price>,
-    /// Minutes between an idle agent's outreach rounds (finding people to work with); 0 = off.
-    pub outreach_minutes: u32,
     /// Whether apid resizes agents' VM memory with their work (through the balloon).
     pub memory_autoscale: bool,
     /// Whether the hub checkpoints an agent's whole VM before an irreversible tool call runs (see
@@ -245,7 +243,6 @@ impl Default for Settings {
             max_tokens: 0,
             fetch_block: Vec::new(),
             prices: BTreeMap::new(),
-            outreach_minutes: crate::society::DEFAULT_OUTREACH_MINUTES,
             memory_autoscale: true,
             vm_auto_checkpoints: true,
             retention: Retention::default(),

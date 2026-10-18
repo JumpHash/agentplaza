@@ -136,6 +136,12 @@ pub struct Project {
     pub history: Vec<Event>,
     pub created_ms: u64,
     pub updated_ms: u64,
+    /// The owner paused it: its agents' work waits until it is resumed (`membership`).
+    #[serde(default)]
+    pub paused: bool,
+    /// The owner archived it: its agents went back to the bench, and nothing more is done for it.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// Who is acting: an agent (cid, name, role) or the owner (cid 0, role "owner").
@@ -316,9 +322,66 @@ impl Store {
                 history: vec![event(by, "opened", &title, now)],
                 created_ms: now,
                 updated_ms: now,
+                paused: false,
+                archived: false,
             };
             items.push(project.clone());
             Ok(project)
+        })
+    }
+
+    /// Opens a project for the owner, its plan already theirs: it starts at "implementation", approved by the
+    /// owner, so its tasks can be posted at once and its agents put on it. It has no orchestrator lead.
+    pub fn open_for_owner(&self, title: &str, goal: &str, kind: &str) -> Result<Project, String> {
+        let owner = Actor::owner();
+        let opened = self.open(&owner, title, goal, kind, true)?;
+        self.mutate(|items| {
+            let p = find_mut(items, &opened.id)?;
+            let now = now_ms();
+            p.lead_cid = 0;
+            p.stage = "implementation".into();
+            p.approved_by = Some("owner".into());
+            p.history.push(event(
+                &owner,
+                "approved",
+                "opened by the owner, its plan theirs",
+                now,
+            ));
+            p.updated_ms = now;
+            Ok(p.clone())
+        })
+    }
+
+    /// Pauses or resumes a project: while paused, its agents' work waits (`membership`).
+    pub fn set_paused(&self, id: &str, paused: bool) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.paused != paused {
+                let now = now_ms();
+                p.paused = paused;
+                let what = if paused { "paused" } else { "resumed" };
+                p.history.push(event(&Actor::owner(), what, "", now));
+                p.updated_ms = now;
+            }
+            Ok(p.clone())
+        })
+    }
+
+    /// Archives a project: nothing more is done for it (its agents are sent back to the bench by the caller).
+    pub fn archive(&self, id: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if !p.archived {
+                let now = now_ms();
+                p.archived = true;
+                p.paused = false;
+                p.history.push(event(&Actor::owner(), "archived", "", now));
+                p.updated_ms = now;
+            }
+            Ok(p.clone())
         })
     }
 
@@ -691,6 +754,20 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         },
         role: agent.role.clone(),
     };
+    // A project's agent works on its own project only; the orchestrator runs them all.
+    if let Some(id) = opt_str(input, "id")
+        && !crate::membership::plaza_wide(&agent.role)
+        && app.members.project_of(agent.cid).as_deref() != Some(id.as_str())
+    {
+        return Err(format!(
+            "you work on {}, not on project {id}",
+            app.members
+                .project_of(agent.cid)
+                .map_or("no project (the bench)".to_string(), |own| format!(
+                    "project {own}"
+                ))
+        ));
+    }
     match name {
         "plaza_project_open" => {
             if !matches!(
@@ -801,6 +878,10 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
+            // Delivered: the project's agents go back to the bench.
+            if project.stage == "delivered" {
+                crate::membership::release_project(app, &project.id);
+            }
             answer(app, &project, stage_hint(&project.stage))
         }
         "plaza_project_approve" => {
@@ -932,12 +1013,91 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("List the projects"))
         .get("/v1/projects/{id}", get_route)
         .doc(RouteDoc::new("Get a project").errors(&[404]))
+        .post("/v1/projects", create_route)
+        .doc(
+            RouteDoc::new("Open a project for the owner, its plan approved")
+                .status(201)
+                .errors(&[400]),
+        )
         .get("/v1/projects/{id}/graph", graph_route)
         .doc(RouteDoc::new("Get a project's task graph").errors(&[404]))
+        .post("/v1/projects/{id}/pause", |app, _, p| {
+            lifecycle(app, p.get("id"), Lifecycle::Pause)
+        })
+        .doc(RouteDoc::new("Pause a project: its agents' work waits").errors(&[404, 409]))
+        .post("/v1/projects/{id}/resume", |app, _, p| {
+            lifecycle(app, p.get("id"), Lifecycle::Resume)
+        })
+        .doc(RouteDoc::new("Resume a paused project").errors(&[404, 409]))
+        .post("/v1/projects/{id}/archive", |app, _, p| {
+            lifecycle(app, p.get("id"), Lifecycle::Archive)
+        })
+        .doc(
+            RouteDoc::new("Archive a project: its agents go back to the bench").errors(&[404, 409]),
+        )
         .post("/v1/projects/{id}/approve", approve_route)
         .doc(RouteDoc::new("Approve a project's current stage").errors(&[409]))
         .post("/v1/projects/{id}/veto", veto_route)
         .doc(RouteDoc::new("Veto a project at a stage").errors(&[409]))
+}
+
+/// `POST /v1/projects` `{title, goal, kind?}`: the owner opens a project with its plan already theirs
+/// (see [`Store::open_for_owner`]); `kind` is `code` (the default) or `other`. Its repo is made as for an
+/// orchestrator's project.
+fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    let body: Value = match serde_json::from_slice(&req.body) {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("bad body: {e}")),
+    };
+    let text = |key: &str| body.get(key).and_then(Value::as_str).unwrap_or("");
+    let kind = match text("kind") {
+        "" => "code",
+        kind => kind,
+    };
+    let project = match app
+        .projects
+        .open_for_owner(text("title"), text("goal"), kind)
+    {
+        Ok(project) => project,
+        Err(e) => return Response::error(400, &e),
+    };
+    let project = match repo_for(app, &project) {
+        Some(_) => app.projects.get(&project.id).unwrap_or(project),
+        None => project,
+    };
+    app.bus.publish("project", &project);
+    Response::json(201, &project)
+}
+
+/// A change the owner makes to a project's life.
+enum Lifecycle {
+    Pause,
+    Resume,
+    Archive,
+}
+
+/// Pauses, resumes or archives project `id`; an archive sends its agents back to the bench.
+fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
+    if app.projects.get(id).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let result = match change {
+        Lifecycle::Pause => app.projects.set_paused(id, true),
+        Lifecycle::Resume => app.projects.set_paused(id, false),
+        Lifecycle::Archive => app.projects.archive(id),
+    };
+    let project = match result {
+        Ok(project) => project,
+        Err(e) => return Response::error(409, &e),
+    };
+    if project.archived {
+        crate::membership::release_project(app, id);
+    } else if !project.paused {
+        // Resumed: its agents' waiting work goes out.
+        app.work.dispatch_idle(app);
+    }
+    app.bus.publish("project", &project);
+    Response::json(200, &project)
 }
 
 fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {

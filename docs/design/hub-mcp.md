@@ -116,7 +116,7 @@ namespace them.
 
 | Tool | Input | Effect |
 |---|---|---|
-| `create_task` | `title`, `acceptance?`, `role?`, `budget?`, `after?` (task ids, at most 32), `project?` | Files a task, the same as the console's New task: open for the plaza to claim once every task in `after` is done. A project's task needs the project's plan approved. |
+| `create_task` | `title`, `project`, `acceptance?`, `role?`, `budget?`, `after?` (task ids, at most 32) | Files a task in a project, the same as the console's New task: open for the project's agents to claim once every task in `after` is done. Every task belongs to a project whose plan is approved. |
 | `message_orchestrator` | `text` | Sends the owner's message to the orchestrator. It is recorded as coming over MCP. |
 | `tell_agent` | `cid`, `text` | Sends a note to one agent (`/v1/agents/{cid}/tell`). |
 | `post_board` | `text`, `reply_to?` | Posts, or comments, on the board as the owner. |

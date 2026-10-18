@@ -363,6 +363,10 @@ impl Queues {
             return;
         };
         crate::society::task_ended(app, task, poster, worker, state == "done");
+        // A poster that may not work now (it left the project) is not told: its queue would only hold it.
+        if crate::membership::held_cid(app, poster).is_some() {
+            return;
+        }
         let worker_name = app
             .agents
             .get(worker)
@@ -548,9 +552,20 @@ impl Queues {
         if record.state() != TaskState::AwaitingReview.as_str() {
             return false;
         }
-        let reviewers = app
-            .agents
-            .select(|a| (a.role == REVIEWER_ROLE && a.status == Status::Idle).then(|| a.clone()));
+        // The review is the task's project's: only a reviewer working on it takes it.
+        let Some(project) = record.project().map(str::to_string) else {
+            return false;
+        };
+        if crate::membership::project_state(app, &project)
+            != crate::membership::ProjectState::Active
+        {
+            return false;
+        }
+        let members = app.members.members(&project);
+        let reviewers = app.agents.select(|a| {
+            (a.role == REVIEWER_ROLE && a.status == Status::Idle && members.contains(&a.cid))
+                .then(|| a.clone())
+        });
         let Some(reviewer) = next_reviewer(&reviewers, worker) else {
             return false;
         };
@@ -766,8 +781,13 @@ impl Queues {
     /// Sends the next waiting item to `cid` if it is reachable and idle. An asleep agent is woken
     /// first and its work stays queued until its hello (`dispatch_idle`).
     fn dispatch(&self, app: &App, cid: u64) {
-        let status = app.agents.get(cid).map(|a| a.status);
-        match dispatch_step(status, app.control.paused()) {
+        let agent = app.agents.get(cid);
+        let status = agent.as_ref().map(|a| a.status);
+        // An agent on the bench, or on a paused project, keeps its work queued and is not woken for it.
+        let held = agent
+            .as_ref()
+            .is_some_and(|a| crate::membership::held(app, a).is_some());
+        match dispatch_step(status, app.control.paused() || held) {
             DispatchStep::Hold => return,
             DispatchStep::Wake => {
                 crate::sleep::wake_with(app, cid, crate::sleep::WakePriority::Background);
@@ -822,7 +842,8 @@ impl Queues {
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.
 #[derive(Debug, PartialEq, Eq)]
 enum DispatchStep {
-    /// Keep it queued: STOP ALL holds the plaza, or the agent is gone (or unknown).
+    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (on the bench, or its project
+    /// paused, see `membership`), or the agent is gone (or unknown).
     Hold,
     /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
     Wake,
@@ -830,9 +851,10 @@ enum DispatchStep {
     Send,
 }
 
-fn dispatch_step(status: Option<Status>, paused: bool) -> DispatchStep {
+/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`).
+fn dispatch_step(status: Option<Status>, held: bool) -> DispatchStep {
     match status {
-        _ if paused => DispatchStep::Hold,
+        _ if held => DispatchStep::Hold,
         None | Some(Status::Offline) => DispatchStep::Hold,
         Some(Status::Asleep | Status::Dozing) => DispatchStep::Wake,
         Some(Status::Idle | Status::Working) => DispatchStep::Send,
@@ -1055,7 +1077,6 @@ pub fn spawn(app: Arc<App>) {
                 // While STOP ALL holds the plaza, nothing new starts; usage still drains.
                 if !app.control.paused() {
                     ask_names(&app);
-                    crate::society::outreach(&app);
                     assign_tasks(&app);
                     app.work.assign_reviews(&app);
                     withdraw_stale_reviews(&app);
@@ -1083,9 +1104,14 @@ pub fn spawn(app: Arc<App>) {
 /// Asks each unnamed agent, once and only after its session settled, to name itself.
 fn ask_names(app: &App) {
     let now = apz_plaza::now_ms();
+    // An agent on the bench is asked once it joins a project: until then it does nothing, not even this.
     let unnamed = app.agents.select(|agent| {
         let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        (agent.name.is_empty() && agent.status == Status::Idle && settled).then_some(agent.cid)
+        (agent.name.is_empty()
+            && agent.status == Status::Idle
+            && settled
+            && crate::membership::held(app, agent).is_none())
+        .then_some(agent.cid)
     });
     for cid in unnamed {
         if app.names.first_ask(cid) {
@@ -1103,22 +1129,35 @@ fn ask_names(app: &App) {
 }
 
 /// Gives each ready task (open, and every task it runs after done) with no work behind it to an idle worker of
-/// its role. A task that waits on its links stays open; the pass after its last link is done hands it out.
+/// its role on its project. A task that waits on its links stays open; the pass after its last link is done hands
+/// it out. A task outside projects, or of a paused or ended project, is not handed out (`membership`).
 fn assign_tasks(app: &App) {
     for task in app.plaza.tasks.list() {
         if !task.is_ready() {
+            continue;
+        }
+        let Some(project) = task.project().map(str::to_string) else {
+            continue;
+        };
+        if crate::membership::project_state(app, &project)
+            != crate::membership::ProjectState::Active
+        {
             continue;
         }
         let busy = app.work.locked().holds_task(task.id());
         if busy {
             continue;
         }
+        let members = app.members.members(&project);
         let role = task.role().map(str::to_string);
+        // A model agent (a promoted model, no VM) takes no task.
         let worker = app
             .agents
             .select(|a| {
                 (a.status == Status::Idle
+                    && a.kind != "model"
                     && tier_of(&a.role) == Tier::Worker
+                    && members.contains(&a.cid)
                     && role.as_deref().is_none_or(|r| a.role == r))
                 .then_some(a.cid)
             })
@@ -1154,9 +1193,18 @@ fn assign_tasks(app: &App) {
 fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
     let view = app.plaza.council.motions(MOTION_SCAN_LIMIT);
     for motion in view.motions.iter().filter(|m| m.state == "open") {
-        let seated = app
-            .agents
-            .select(|a| (a.status != Status::Offline && is_seated(&a.role)).then_some(a.cid));
+        // A motion is its proposer's project's: only the seated agents working on that project vote on it.
+        let Some(project) = app.members.project_of(motion.proposer_cid) else {
+            continue;
+        };
+        let members = app.members.members(&project);
+        let seated = app.agents.select(|a| {
+            (a.status != Status::Offline
+                && is_seated(&a.role)
+                && members.contains(&a.cid)
+                && crate::membership::held(app, a).is_none())
+            .then_some(a.cid)
+        });
         for cid in seated {
             if motion.votes.iter().any(|v| v.agent_cid == cid) {
                 continue;
@@ -1465,6 +1513,11 @@ mod tests {
         assert_eq!(
             dispatch_step(Some(Status::Working), false),
             DispatchStep::Send
+        );
+        assert_eq!(
+            dispatch_step(Some(Status::Idle), true),
+            DispatchStep::Hold,
+            "an agent on the bench (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
         );
 
         // A wake sends nothing: the item waits in the lane, not in flight, until the agent is idle.

@@ -91,6 +91,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
             relink_task(app, p.get("id"), &req.body)
         })
         .doc(RouteDoc::new("Relink an open task").errors(&[400, 404, 409]))
+        .post("/v1/tasks/{id}/move", |app, req, p| {
+            move_task(app, p.get("id"), &req.body)
+        })
+        .doc(
+            RouteDoc::new(
+                "Move a task outside projects into a project, with the tasks linked to it",
+            )
+            .errors(&[400, 404, 409]),
+        )
         .delete("/v1/tasks/{id}", |app, _, p| {
             withdraw_task(app, p.get("id"))
         })
@@ -223,6 +232,27 @@ fn connected(app: &App, cid: u64) -> Result<ConnectedAgent, Response> {
         return Err(Response::error(refused.status(), &refused.to_string()));
     }
     Ok(agents::connected_agent(&agent))
+}
+
+/// Checks that connected agent `cid` may take a task of `project` (see `membership::may_take_task`): a 409 when it
+/// may not.
+fn takes(app: &App, cid: u64, project: Option<&str>) -> Result<(), Response> {
+    let Some(agent) = app.agents.get(cid) else {
+        return Err(Response::error(
+            404,
+            &format!("no agent with guest CID {cid}"),
+        ));
+    };
+    crate::membership::may_take_task(app, &agent, project).map_err(|why| Response::error(409, &why))
+}
+
+/// Checks that connected agent `cid` works now (see `membership::held`): a 409 when it is on the bench or its
+/// project is paused or over.
+fn works_now(app: &App, cid: u64) -> Result<(), Response> {
+    match crate::membership::held_cid(app, cid) {
+        Some(why) => Err(Response::error(409, &why)),
+        None => Ok(()),
+    }
 }
 
 /// The prompt an assigned task is worked from: its goal, and its acceptance
@@ -522,8 +552,9 @@ fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
 /// absent `budget` gets `DEFAULT_TASK_BUDGET`; one under `MIN_TASK_BUDGET` is a 400.
 ///
 /// `after` names the tasks it runs after: it is handed out once they are all done, so an assignee is refused
-/// while any of them is not. `project` files it under a project whose plan is approved (implementation or
-/// review, as for an agent's `plaza_post_task`) and links it there; its `after` stays inside that project.
+/// while any of them is not. `project` is required: every task belongs to a project whose plan is approved
+/// (implementation or review, as for an agent's `plaza_post_task`) and that is not archived. The task is linked
+/// there, its `after` stays inside that project, and an assignee must work on it.
 pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
     let request: CreateTask = match parse(body, "create").and_then(with_budget) {
         Ok(request) => request,
@@ -553,20 +584,34 @@ pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
             );
         }
     }
-    // A blank project is the ledger's to refuse (a 400).
-    if let Some(pid) = request.project.as_deref().filter(|p| !p.trim().is_empty()) {
-        let Some(project) = app.projects.get(pid) else {
-            return Response::error(404, &format!("no project {pid}"));
-        };
-        if !matches!(project.stage.as_str(), "implementation" | "review") {
-            return Response::error(
-                409,
-                &format!(
-                    "project {pid} is at {}: tasks can be posted only once its plan is approved",
-                    project.stage
-                ),
-            );
-        }
+    let Some(pid) = request.project.as_deref().filter(|p| !p.trim().is_empty()) else {
+        return Response::error(
+            400,
+            "a task belongs to a project: name it with `project` (POST /v1/projects opens one)",
+        );
+    };
+    let Some(project) = app.projects.get(pid) else {
+        return Response::error(404, &format!("no project {pid}"));
+    };
+    if project.archived {
+        return Response::error(
+            409,
+            &format!("project {pid} is archived: it takes no new tasks"),
+        );
+    }
+    if !matches!(project.stage.as_str(), "implementation" | "review") {
+        return Response::error(
+            409,
+            &format!(
+                "project {pid} is at {}: tasks can be posted only once its plan is approved",
+                project.stage
+            ),
+        );
+    }
+    if let Some((cid, _)) = &assignee
+        && let Err(refused) = takes(app, *cid, Some(pid))
+    {
+        return refused;
     }
     let task = match app.plaza.tasks.create(&request) {
         Ok(task) => task,
@@ -622,6 +667,62 @@ fn relink_task(app: &App, id: &str, body: &[u8]) -> Response {
     }
 }
 
+/// The `POST /v1/tasks/{id}/move` body: the project the task goes to.
+#[derive(Debug, Deserialize)]
+struct MoveRequest {
+    project: String,
+}
+
+/// `POST /v1/tasks/{id}/move` `{project}`: files a task outside projects under a project whose plan is approved and
+/// that is not archived, with every task linked to it (links stay inside a project). A task outside projects never
+/// runs, so this is how one from before projects gets done. Answers `{project, moved}`: the tasks moved, oldest
+/// first.
+fn move_task(app: &App, id: &str, body: &[u8]) -> Response {
+    let request: MoveRequest = match parse(body, "move") {
+        Ok(request) => request,
+        Err(refused) => return refused,
+    };
+    let pid = request.project.trim();
+    if pid.is_empty() {
+        return Response::error(400, "name the project the task moves to");
+    }
+    let Some(project) = app.projects.get(pid) else {
+        return Response::error(404, &format!("no project {pid}"));
+    };
+    if project.archived {
+        return Response::error(
+            409,
+            &format!("project {pid} is archived: it takes no new tasks"),
+        );
+    }
+    if !matches!(project.stage.as_str(), "implementation" | "review") {
+        return Response::error(
+            409,
+            &format!(
+                "project {pid} is at {}: tasks can be moved in only once its plan is approved",
+                project.stage
+            ),
+        );
+    }
+    let moved = match app.plaza.tasks.adopt(id, pid) {
+        Ok(moved) => moved,
+        Err(refused) => return Response::error(refused.status(), &refused.to_string()),
+    };
+    for task in &moved {
+        if let Err(refused) = app.projects.link_task(pid, task.id()) {
+            eprintln!(
+                "apid: task {} not linked to project {pid}: {refused}",
+                task.id()
+            );
+        }
+    }
+    if let Some(project) = app.projects.get(pid) {
+        app.bus.publish("project", &project);
+    }
+    let views: Vec<_> = moved.iter().map(|task| task.view()).collect();
+    Response::json(200, &serde_json::json!({ "project": pid, "moved": views }))
+}
+
 /// `GET /v1/tasks/{id}`: one task.
 fn get_task(app: &App, id: &str) -> Response {
     match app.plaza.tasks.find(id) {
@@ -645,6 +746,9 @@ fn claim_task(app: &App, id: &str, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    if let Err(refused) = takes(app, agent.cid, task.project()) {
+        return refused;
+    }
     match task.claim(&agent) {
         Ok(()) => Response::json(200, &task.view()),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
@@ -717,6 +821,9 @@ fn bid_task(app: &App, id: &str, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    if let Err(refused) = takes(app, agent.cid, task.project()) {
+        return refused;
+    }
     match app.plaza.agora.bid(&task, &agent, request.price) {
         Ok(bid) => Response::json(200, &bid),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
@@ -746,6 +853,28 @@ fn award_task(app: &App, id: &str, body: &[u8]) -> Response {
         },
         None => None,
     };
+    // The contractor works on the task's project, and so does the employer (or it is the orchestrator).
+    if let Err(refused) = takes(app, agent.cid, task.project()) {
+        return refused;
+    }
+    if let Some(awarder) = &awarder {
+        if let Err(refused) = works_now(app, awarder.cid) {
+            return refused;
+        }
+        let plaza_wide = awarder
+            .role
+            .as_deref()
+            .is_some_and(crate::membership::plaza_wide);
+        if !plaza_wide && app.members.project_of(awarder.cid).as_deref() != task.project() {
+            return Response::error(
+                409,
+                &format!(
+                    "agent {} works on another project than the task's",
+                    awarder.cid
+                ),
+            );
+        }
+    }
     match app.plaza.agora.award(&task, &agent) {
         Ok(()) => {
             // The award is made; the hiring note and contact links are
@@ -823,13 +952,14 @@ fn board_view(app: &App, req: &Request) -> Response {
 }
 
 /// `POST /v1/board`: a connected agent posts. The author is always an agent;
-/// the driver defaults to the caller.
+/// the driver defaults to the caller. The post is on the author's project's
+/// board; an agent on the bench, or on a paused project, does not post (409).
 fn board_post(app: &App, body: &[u8]) -> Response {
     let request: PostRequest = match parse(body, "post") {
         Ok(request) => request,
         Err(refused) => return refused,
     };
-    let post = match request.checked() {
+    let mut post = match request.checked() {
         Ok(post) => post,
         Err(reason) => return Response::error(400, &reason),
     };
@@ -842,6 +972,10 @@ fn board_post(app: &App, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    if let Some(why) = crate::membership::held_cid(app, author.cid) {
+        return Response::error(409, &why);
+    }
+    post.project = app.members.project_of(author.cid);
     match app.plaza.social.post(&author, post) {
         Ok(post) => Response::json(201, &post),
         Err(refused) => Response::error(refused.status(), refused.message()),
@@ -899,7 +1033,8 @@ pub(crate) fn notify_post_author(
         return;
     }
     let (author_cid, subject) = (found.agent_cid, found.subject);
-    if Some(author_cid) == commenter {
+    // An author on the bench, or on a paused project, sees the comment when it works again.
+    if Some(author_cid) == commenter || crate::membership::held_cid(app, author_cid).is_some() {
         return;
     }
     app.work.enqueue(
@@ -1119,6 +1254,9 @@ fn motion_propose(app: &App, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    if let Err(refused) = works_now(app, proposer.cid) {
+        return refused;
+    }
     match council_now(app).propose(&proposer, proposal) {
         Ok(motion) => Response::json(201, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),
@@ -1139,6 +1277,27 @@ fn motion_vote(app: &App, id: &str, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
+    if let Err(refused) = works_now(app, voter.cid) {
+        return refused;
+    }
+    // A motion is its proposer's project's: its agents vote on it (the orchestrator on every project's).
+    if let Some(motion) = council_now(app).motion(id) {
+        let plaza_wide = voter
+            .role
+            .as_deref()
+            .is_some_and(crate::membership::plaza_wide);
+        if !plaza_wide
+            && app.members.project_of(motion.proposer_cid) != app.members.project_of(voter.cid)
+        {
+            return Response::error(
+                409,
+                &format!(
+                    "motion {id} is another project's: agent {} does not vote on it",
+                    voter.cid
+                ),
+            );
+        }
+    }
     match council_now(app).vote(id, &voter, cast) {
         Ok(motion) => Response::json(200, &motion),
         Err(refused) => Response::error(refused.status(), &refused.to_string()),

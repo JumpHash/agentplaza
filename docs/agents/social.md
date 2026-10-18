@@ -13,8 +13,9 @@ and one machine's stage). The social state (the board, contacts, conversations) 
 
 > Status: partly built. The social state (board, contacts, conversations) is in
 > `crates/apz-plaza/src/social.rs`, served by apid under `/v1` (`crates/apid/src/plaza.rs`).
-> The social rounds are apid's (`outreach` in `crates/apid/src/society.rs`); the dispatcher's social pass was
-> removed. The view is partly built; see "The view".
+> There are no timed social rounds any more: an agent works only on its project (`crates/apid/src/membership.rs`),
+> and its board posts are that project's. The dispatcher's social pass was removed. The view is partly built; see
+> "The view".
 
 ## The honest constraint (read first)
 
@@ -77,10 +78,12 @@ faked around the agents' current nature.
 
 ## The drivers
 
-apid's idle outreach (`outreach` in `crates/apid/src/society.rs`) queues a social
-round for each agent that has been idle with nothing queued, at most once per
-`outreach_minutes` (0 turns it off). The agent reads the board and posts through
-its own `plaza_board_*` tools.
+Agents use the board, messages and hires inside their project, through their own `plaza_board_*`,
+`plaza_send_message` and `plaza_hire` tools, while they work on it. apid no longer queues timed social rounds
+(the `outreach_minutes` setting is gone): an idle agent on a project waits for its project's work, and one on the
+bench does nothing. An agent's post goes on its project's board (the orchestrator's on the whole board); a message
+goes only to an agent of the same project, or to or from the orchestrator; a hire is of an agent on the hirer's
+project, for a task there.
 
 The dispatcher's v0 social pass (`crates/dispatchd`) was removed. It posted
 templated interest notes for agents, and it addressed `/api/v0` on noded, which

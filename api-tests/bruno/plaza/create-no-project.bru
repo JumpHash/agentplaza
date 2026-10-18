@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a task outside a project
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "A task nobody owns",
+    "budget": 200
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal says a task belongs to a project", function () {
+    expect(res.getBody().error).to.contain("belongs to a project");
+  });
+}

@@ -382,7 +382,7 @@ impl Tool for CreateTask {
     }
 
     fn description(&self) -> &'static str {
-        "Files a task, the same as the console's New task: the budget rule applies, and the task is open for the plaza to claim once every task it runs after (after) is done. A task for a project needs the project's plan approved, and runs after that project's tasks only."
+        "Files a task in a project, the same as the console's New task: the budget rule applies, and the task is open for the project's agents to claim once every task it runs after (after) is done. Every task belongs to a project whose plan is approved, and runs after that project's tasks only."
     }
 
     fn input_schema(&self) -> Value {
@@ -401,7 +401,7 @@ impl Tool for CreateTask {
                 },
                 "project": { "type": "string", "description": "the project it is for (pr<n>)" },
             },
-            "required": ["title"],
+            "required": ["title", "project"],
             "additionalProperties": false,
         })
     }

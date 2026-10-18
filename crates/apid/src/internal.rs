@@ -678,9 +678,14 @@ fn model_call(
     work: u64,
     mut request: ChatRequest,
 ) -> HostMessage {
-    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn.
-    if app.control.paused() {
-        let e = "the plaza is held (STOP ALL); waiting for the owner to resume".to_string();
+    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent on the bench, or on
+    // a paused project, does not think either (see `membership`).
+    let held = if app.control.paused() {
+        Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
+    } else {
+        crate::membership::held(app, agent)
+    };
+    if let Some(e) = held {
         app.transcripts
             .record(&app.bus, cid, work, "error", json!({ "message": e }));
         return HostMessage::ModelResult {
@@ -889,9 +894,13 @@ fn tool_request(
         .into_iter()
         .map(|t| t.name)
         .collect();
-    // The plaza's laws and the grant come first (see `gate_call`).
-    let verdict = gate_call(app.laws, cid, &agent.role, &granted, name, input)
-        .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err));
+    // An agent on the bench, or on a paused project, runs no tool (see `membership`). Then the plaza's laws and
+    // the grant (see `gate_call`).
+    let verdict = match crate::membership::held(app, agent) {
+        Some(why) => Err(why),
+        None => gate_call(app.laws, cid, &agent.role, &granted, name, input)
+            .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err)),
+    };
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue. An ACP engine's own request may wait
     // open for the owner (see `holds_for_owner`); the held call keeps its work's thread.

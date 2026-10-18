@@ -71,23 +71,23 @@ registered `.route` or match-arm path (the list of 239 paths was taken from `cra
 | 2 | names | `BTreeMap<u64,String>` (`agents.rs`, `names`) | = agents | rename | `PATCH /v1/agents/{cid}` |
 | 3 | looks | `Look{species, dealt_ms}` by cid (`looks.rs:39`) | = agents | species set | `PUT /v1/agents/{cid}/species`, `/v1/robots/species` |
 | 4 | custom_roles | `RoleDef{id,title,purpose,responsibilities,deliverables,collaboration,boundaries,tools,budget,model,prompt,created_by,created_ms}` (`roles_custom.rs:22`) | tens | create, edit, delete | `/v1/roles`, `/v1/roles/{id}` |
-| 5 | agent_proposals | `AgentProposal{id, role: RoleDef, new_role, count, model, reason, instruction, by_cid, by, created_ms, state, decided_ms, note, spawned: Vec<u64>}` (`agent_proposals.rs:35`) | grows; decided kept | create, decide | `/v1/agent-proposals`, `/{id}/approve`, `/{id}/reject` |
-| 6 | tasks | `TaskRecord{id, goal, acceptance, budget, role, escrow_entry, created_at, state, assignee_id, verifier_id, agent_cid, note, updated_at, project, after}` (`apz-plaza/src/tasks.rs:882`); cap `MAX_TASKS = 1024` (`tasks.rs:86`) | <= 1024 in memory | every transition (state machine) | `/v1/tasks`, `/v1/tasks/{id}`, `/{id}/bid`, `/award`, `/claim`, `/finish` |
+| 5 | agent_proposals | `AgentProposal{id, role: RoleDef, new_role, count, model, reason, instruction, by_cid, by, created_ms, state, decided_ms, note, spawned: Vec<u64>, project}` (`agent_proposals.rs:35`) | grows; decided kept | create, decide | `/v1/agent-proposals`, `/{id}/approve`, `/{id}/reject` |
+| 6 | tasks | `TaskRecord{id, goal, acceptance, budget, role, escrow_entry, created_at, state, assignee_id, verifier_id, agent_cid, note, updated_at, project, after}` (`apz-plaza/src/tasks.rs:882`); cap `MAX_TASKS = 1024` (`tasks.rs:86`) | <= 1024 in memory | every transition (state machine); a task outside projects gets its `project` once, on a move | `/v1/tasks`, `/v1/tasks/{id}`, `/{id}/bid`, `/award`, `/claim`, `/finish`, `/move` |
 | 7 | agora | `AgoraInner{bids: HashMap<task, Vec<BidView>>, awards}`, `CallView`, `BidView`, `AwardView` (`agora.rs`); `MAX_BIDS_PER_TASK=32`, `AGORA_LIMIT=256` | 256 calls | bid, award | `/v1/agora` |
 | 8 | board (social) | `PostView{id, agent_cid, role, subject, body, task, posted_by, created_at, comments: Vec<CommentView>, attachments}` (`social.rs:356`); `MAX_POSTS=100_000`, `MAX_COMMENTS=200`, `BOARD_LIMIT=256` | 100k posts, comments embedded | post, comment, read cursor | `/v1/board`, `/v1/board/read`, `/v1/board/{id}/comments` |
 | 9 | conversations (social) | `ConversationView{id, from_cid, to_cid, from_role, to_role, text, created_at, delivered, delivery, attachments}` (`social.rs:478`); `MAX_CONVERSATIONS=100_000`, `MAX_PAIRS=256` | 100k messages in one Vec | send, say | `/v1/conversations`, `/v1/conversations/{a}/{b}`, `/v1/agents/{cid}/chat`, `/v1/messages` |
 | 10 | contacts (social) | `ContactView{peer_cid, role, since, kind}` per cid (`social.rs:445`); `MAX_CONTACTS_PER_AGENT=256` | 256 per agent | contact add | `/v1/agents/{cid}/contacts` |
 | 11 | bonds | `Contact{kind, since_ms, last_ms, count, log: Vec<(i64,f64)>, note, blocked}`, `OpinionEdge{r, s, updated_ms, rated_at, ratings: Vec<(i64,f64)>}` (`apz-plaza/src/bonds.rs:133,172`); `MAX_LOG=200` | per pair | every interaction and rating | `/v1/agents/{cid}/rating`, society reads |
-| 12 | society | JSON `{bonuses, posted, outreach}` maps (`society.rs:461`) | per agent | counters | `/v1/society` |
+| 12 | society | JSON `{bonuses, posted}` maps (`society.rs`; an older snapshot's `outreach` is ignored) | per agent | counters | `/v1/society` |
 | 13 | council | `Motion{id, proposer_cid, proposer_role, kind, text, amount, needs_owner, votes: [Option<Cast>; 4], decision: Option<Decision>, counted: Option<Quorum>, created_at, updated_at}` (`council.rs:828`); `MAX_MOTIONS=256` | 256 | propose, vote, owner decide | `/v1/motions`, `/{id}`, `/{id}/vote`, `/{id}/decide` |
-| 14 | projects | `Project{id, title, goal, kind, stage, lead_cid, owner_approval, repo, docs: Vec<Doc>, critiques: Vec<Critique>, revision, approved_by, tasks: Vec<String>, history: Vec<Event>, created_ms, updated_ms}` (`projects.rs:95`) | open | stage change, critique | `/v1/projects`, `/{id}`, `/{id}/approve`, `/{id}/veto` |
+| 14 | projects | `Project{id, title, goal, kind, stage, lead_cid, owner_approval, repo, docs: Vec<Doc>, critiques: Vec<Critique>, revision, approved_by, tasks: Vec<String>, history: Vec<Event>, created_ms, updated_ms, paused, archived}` (`projects.rs:95`) | open | stage change, critique, pause, archive | `/v1/projects`, `/{id}`, `/{id}/approve`, `/{id}/veto`, `/{id}/pause`, `/{id}/resume`, `/{id}/archive` |
 | 15 | toolbox | `Discovery{id, name, kind, what_for, how, verdict, url, tags, by_cid, by, at_ms, endorsed_by: Vec<u64>, flagged}` (`toolbox.rs:39`); `MAX_DISCOVERIES=500` | 500 | discover, endorse, flag | `/v1/toolbox`, `/{id}`, `/{id}/flag` |
 | 16 | harness | `Saved{loops, limits}` (`harness_control.rs:73`) | per agent | loop start/stop, limits | `/v1/loops`, `/v1/loops/{id}`, `/v1/agents/{cid}/limits` |
 | 17 | approvals | `Snapshot{modes, pending: queue, seq}` (`approvals.rs:399`); `QUEUE_CAP=500`; modes also in `permissions.json` (`approvals.rs:109`) | 500 pending | every approval-gated call | `/v1/approvals`, `/v1/approvals/{id}`, `/v1/agents/{cid}/permissions` |
 | 18 | library | `Entry{name, version, author_cid, author, description, command, requires, input_schema: Value, state, files: Vec<FileInfo>, hash, created_ms, calls, review_note}` (`library.rs:43`); `MAX_FILE_BYTES=4 MiB` | packages | publish, review, call counter | `/v1/library`, `/{name}/{version}`, `/files`, `/review` |
 | 19 | deliverables | `Deliverable{id, name, title, description, content_type, size, author_cid, author, task, created_ms, sha256, store, kind, audience, allowed: Vec<u64>}` (`deliverables.rs:28`); bytes in the store, not in the blob | grows | create, grant | `/v1/files`, `/v1/files/{id}`, `/{id}/content` |
 | 20 | connectors | `Snapshot{settings: map<id, Setting{enabled, roles}>, proposals: Vec<Plan{connector, action, values: BTreeMap<String,String>}>}` (`connectors.rs:552,926,1207`) | small | toggle, propose, review | `/v1/connectors`, `/{id}`, `/{id}/secret`, `/{id}/test`, `/v1/connectors/proposals`, `/{id}/review` |
-| 21 | settings | `Settings{default_model, orchestrator_model, role_models: map, model_policy, effort, max_turns, max_tokens, fetch_block: Vec, prices: map<String,Price>, outreach_minutes, memory_autoscale, retention, sanctions, laws, payments{approve_over, charge_models}, foundry, allow_training_models, review_timeout_minutes}` (`settings.rs:73,188`) | 1 doc | owner edits | `/v1/settings` (GET, PUT) |
+| 21 | settings | `Settings{default_model, orchestrator_model, role_models: map, model_policy, effort, max_turns, max_tokens, fetch_block: Vec, prices: map<String,Price>, memory_autoscale, retention, sanctions, laws, payments{approve_over, charge_models}, foundry, allow_training_models, review_timeout_minutes}` (`settings.rs:73,188`) | 1 doc | owner edits | `/v1/settings` (GET, PUT) |
 | 22 | providers | gateway provider list; `snapshot` clears secret fields (`providers.rs:589`) | few | edit, secret set, test | `/v1/providers`, `/{id}`, `/{id}/models`, `/{id}/test`, `/{id}/secret`; `/v1/provider-kinds` |
 | 23 | laws (violations) | `Violation{law, at_ms, detail}` in `BTreeMap<String cid, Vec<Violation>>` (`laws.rs:60,1138`) | per infraction | each violation | `/v1/laws/violations`, `/v1/laws/check` |
 | 24 | rules (C-tier) | `OwnerRule{id, title, source, enabled, created_ms, updated_ms, author}` (`laws.rs:126`), `Override{law, disabled_by, reason, at_ms}` (`:138`), `LawChange{law, title, tier, disabled, by, reason, at_ms, confirmed}` history (`:148,168`) | history pruned oldest first (`laws.rs:610`) | owner edits | `/v1/laws/rules`, `/{id}`, `/{id}/enable`, `/{id}/disable`, `/v1/laws/overrides/{law}` |
@@ -105,6 +105,7 @@ registered `.route` or match-arm path (the list of 239 paths was taken from `cra
 | 36 | work | `scheduler::Saved{next_id, lanes: queues}` (`scheduler.rs:755,765`) | in-flight queues | every lane change, hot | none (internal) |
 | 37 | transcript (table) | `transcript.rs` `KEEP=5_000` in memory; table `transcript(cid, seq, work, kind, at_ms, data)` | per record | every agent record | `/v1/agents/{cid}/transcript` |
 | 38 | infraction (table) | `infraction(id, cid, law, at_ms, tool, detail)` | per infraction | per violation | `/v1/infractions`, `/v1/agents/{cid}/infractions` |
+| 39 | members | `BTreeMap<cid, Membership{project, since_ms}>` (`membership.rs`); an agent with no entry is on the bench; `members.json` without a database | one per agent on a project | join, leave, a project archived or delivered | `/v1/projects/{id}/members`, `/{id}/members/{cid}`, `/{id}/suggested-members`, `/v1/agents?project=` |
 
 Non-component state that must move too: `hub_auth.rs` sessions (`SignIn`, `:178`), `git-users.json`
 (`git.rs:56`), approvals `permissions.json` (`approvals.rs:109`), the foundry `state.json`, HF
@@ -347,7 +348,7 @@ Full worked example in section 5.4. The schema:
   timestamptz, rated_at timestamptz). One row per directed edge, so the eigen computation reads a
   table. Scores are doubles, documented as such.
 - `society_counters` (agent_cid bigint PK FK agents, bonus_credits bigint, bonus_count bigint,
-  bonus_last bigint, posted bigint, outreach bigint). The tuple `(u64, u64, i64)` for bonuses is
+  bonus_last bigint, posted bigint). The tuple `(u64, u64, i64)` for bonuses is
   unnamed in the code; the names above are a guess to confirm in `society.rs`.
 
 ### 2.9 council (0010)
@@ -472,7 +473,7 @@ Full worked example in section 5.4. The schema:
 Settings is a singleton row, typed. There is no key/value table and no JSON document.
 
 - `settings` (singleton: id smallint PK CHECK id = 1, default_model text, orchestrator_model text,
-  effort text NULL, max_turns int CHECK >= 1, max_tokens int CHECK >= 1, outreach_minutes int,
+  effort text NULL, max_turns int CHECK >= 1, max_tokens int CHECK >= 1,
   memory_autoscale bool, allow_training_models bool, review_timeout_minutes int, model_policy text
   (verify the `ModelPolicy` variants), fetch_block_enabled bool, retention_calls_max int CHECK <=
   100000, retention_days int CHECK <= 3650, sanctions_* typed columns, laws_* typed columns,

@@ -50,6 +50,7 @@ mod lifecycle;
 mod llm_proxy;
 mod looks;
 mod mcp;
+mod membership;
 mod memory;
 mod metrics;
 mod node_link;

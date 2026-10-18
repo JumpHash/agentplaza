@@ -1,0 +1,29 @@
+meta {
+  name: Open a project to archive
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "Old idea",
+    "goal": "Something the owner drops",
+    "kind": "other"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.kind: eq "other"
+}
+
+script:post-response {
+  bru.setVar("archivedProjectId", res.getBody().id);
+}

@@ -1,7 +1,7 @@
 meta {
   name: Create a task others will run after
   type: http
-  seq: 11
+  seq: 12
 }
 
 post {
@@ -13,7 +13,8 @@ post {
 body:json {
   {
     "goal": "Draft the plan",
-    "budget": 200
+    "budget": 200,
+    "project": "{{projectId}}"
   }
 }
 

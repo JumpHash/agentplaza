@@ -529,14 +529,17 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         name: agent.name.clone(),
         role: agent.role.clone(),
         model: model_of(app, agent),
-        system: with_skills(
-            with_house_rules(
-                render_vars(&system_prompt(agent, role_prompt), agent),
-                app.prompts
-                    .bound_body("plaza")
-                    .map(|rules| render_vars(&rules, agent)),
+        system: with_project(
+            with_skills(
+                with_house_rules(
+                    render_vars(&system_prompt(agent, role_prompt), agent),
+                    app.prompts
+                        .bound_body("plaza")
+                        .map(|rules| render_vars(&rules, agent)),
+                ),
+                crate::skills::agent_tools::prompt_section(app, &agent.role),
             ),
-            crate::skills::agent_tools::prompt_section(app, &agent.role),
+            crate::membership::prompt_section(app, agent.cid, &agent.role),
         ),
         tools: crate::tools::specs_for_agent(app, agent),
         max_turns: limits.max_turns.unwrap_or(app.settings.get().max_turns),
@@ -594,6 +597,15 @@ fn with_house_rules(system: String, rules: Option<String>) -> String {
 fn with_skills(system: String, section: Option<String>) -> String {
     match section {
         Some(section) => format!("{system}\n\n{section}"),
+        None => system,
+    }
+}
+
+/// Appends the agent's `## Your project` section (`membership::prompt_section`): the project it works on, or the
+/// bench. The orchestrator, which works on every project, has none.
+fn with_project(system: String, section: Option<String>) -> String {
+    match section {
+        Some(section) => format!("{system}\n\n## Your project\n\n{section}"),
         None => system,
     }
 }
@@ -727,8 +739,23 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
-    let registered = app.spawned.hello(cid, role);
+    let arrival = app.spawned.hello(cid, role);
+    let registered = arrival.model;
     let role = role_on_hello(app.spawned.role_of(cid));
+    // An agent spawned for a project starts on it (one that ended since leaves it on the bench).
+    if let Some(project) = arrival.project {
+        use crate::membership::ProjectState;
+        match crate::membership::project_state(app, &project) {
+            ProjectState::Active | ProjectState::Paused => {
+                if let Err(e) = app.members.join(cid, &project, now) {
+                    eprintln!("apid: agent {cid} not put on project {project}: {e}");
+                }
+            }
+            ProjectState::Over | ProjectState::Missing => eprintln!(
+                "apid: agent {cid} was spawned for project {project}, which is over: it waits on the bench"
+            ),
+        }
+    }
     // The first hello of an agent deals its species (its look is kept after that).
     let species = app.looks.ensure(cid, &role, now, || app.agents.list());
     let agent = Agent {
@@ -920,8 +947,8 @@ fn reconcile_once(app: &App) {
 /// stop, tell, transcript).
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/agents", |app, _req, _p| list(app))
-        .doc(RouteDoc::new("List the agents"))
+        .get("/v1/agents", |app, req, _p| list(app, req))
+        .doc(RouteDoc::new("List the agents").errors(&[404]))
         .post("/v1/agents", |app, req, _p| spawn(app, req))
         .doc(RouteDoc::new("Spawn agents of a role").errors(&[400, 502]))
         .get("/v1/agents/{cid}", |app, _req, p| match agent_at(app, p) {
@@ -948,7 +975,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/agents/{cid}/tell", |app, req, p| {
             to_hub(app, req, p, "tell")
         })
-        .doc(RouteDoc::new("Send an agent a message").errors(&[404]))
+        .doc(RouteDoc::new("Send an agent a message").errors(&[404, 409]))
         .get("/v1/agents/{cid}/transcript", |app, req, p| {
             transcript(app, req, p)
         })
@@ -1000,6 +1027,15 @@ pub(crate) fn view(app: &App, agent: &Agent) -> Value {
         obj.insert("work".into(), json!(app.work.current(agent.cid)));
         obj.insert("queue".into(), json!(app.work.queued(agent.cid).len()));
         obj.insert("step".into(), json!(crate::steps::of(agent.cid)));
+        // The project it works on and since when (null: the bench, or the orchestrator's every project), and
+        // why it waits, if it does.
+        let membership = app.members.of(agent.cid);
+        obj.insert(
+            "project".into(),
+            json!(membership.as_ref().map(|m| m.project.as_str())),
+        );
+        obj.insert("joined_ms".into(), json!(membership.map(|m| m.since_ms)));
+        obj.insert("held".into(), json!(crate::membership::held(app, agent)));
     }
     v
 }
@@ -1028,6 +1064,8 @@ struct SpawnBody {
     model: Option<String>,
     /// The node to run on (`n0`, the hub's own machine, when absent).
     node: Option<String>,
+    /// The project the agents work on once they connect; absent, they wait on the bench.
+    project: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1045,8 +1083,34 @@ pub(crate) fn list_views(app: &App) -> Vec<Value> {
     app.agents.list().iter().map(|a| view(app, a)).collect()
 }
 
-fn list(app: &App) -> Response {
-    Response::json(200, &list_views(app))
+/// `GET /v1/agents?project=`: every agent, or a project's agents (`project=<id>`), or the bench
+/// (`project=bench`: the agents that could join a project and are on none).
+fn list(app: &App, req: &Request) -> Response {
+    let Some(project) = req
+        .query_param("project")
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
+        return Response::json(200, &list_views(app));
+    };
+    if project != "bench" && app.projects.get(project).is_none() {
+        return Response::error(404, &format!("no project {project}"));
+    }
+    let views: Vec<Value> = app
+        .agents
+        .list()
+        .iter()
+        .filter(|agent| {
+            let on = app.members.project_of(agent.cid);
+            if project == "bench" {
+                on.is_none() && agent.kind != "model" && !crate::membership::plaza_wide(&agent.role)
+            } else {
+                on.as_deref() == Some(project)
+            }
+        })
+        .map(|agent| view(app, agent))
+        .collect();
+    Response::json(200, &views)
 }
 
 /// Spawns `count` runs of `role` via noded. `model` is validated against the
@@ -1063,6 +1127,7 @@ fn spawn(app: &App, req: &Request) -> Response {
         b.count.unwrap_or(1),
         b.model.as_deref(),
         b.node.as_deref(),
+        b.project.as_deref(),
     ) {
         Ok(value) => Response::json(200, &value),
         Err(e) if e.starts_with("noded") => Response::error(502, &e),
@@ -1071,8 +1136,9 @@ fn spawn(app: &App, req: &Request) -> Response {
 }
 
 /// Spawns `count` agents of `role` on `node` (default: the best node for the role, see
-/// `placement::choose_node`): checks the role, the count, the model's tier and that the node takes
-/// new agents, asks its noded for the runs and records them.
+/// `placement::choose_node`): checks the role, the count, the model's tier, the project and that the
+/// node takes new agents, asks its noded for the runs and records them. With a `project`, each agent
+/// joins it at its first hello; without one, it waits on the bench.
 /// Returns noded's reply; errors are the message for the caller.
 pub fn spawn_agents(
     app: &App,
@@ -1080,6 +1146,7 @@ pub fn spawn_agents(
     count: u32,
     model: Option<&str>,
     node: Option<&str>,
+    project: Option<&str>,
 ) -> Result<Value, String> {
     let node = match node {
         Some(node) => node.to_string(),
@@ -1103,6 +1170,19 @@ pub fn spawn_agents(
     if let Some(model) = model {
         app.settings.allowed(tier_of(role), model)?;
     }
+    if let Some(project) = project {
+        use crate::membership::ProjectState;
+        if crate::membership::plaza_wide(role) {
+            return Err("the orchestrator works on every project: spawn it without one".into());
+        }
+        match crate::membership::project_state(app, project) {
+            ProjectState::Missing => return Err(format!("no project {project}")),
+            ProjectState::Over => {
+                return Err(format!("project {project} is over (archived or delivered)"));
+            }
+            ProjectState::Active | ProjectState::Paused => {}
+        }
+    }
     // The same shape as the starting fleet (noded --agents-memory-mib defaults to 1024).
     let mut payload = json!({"n": count, "role": role, "vcpus": 1, "memory_mib": 1024});
     // The role's shared data volumes (settings `role_volumes`), mounted read-only by every agent.
@@ -1121,7 +1201,8 @@ pub fn spawn_agents(
                 return Err(format!("noded: status {status}: {value}"));
             }
             for _ in 0..count {
-                app.spawned.expect(role, model.map(str::to_string));
+                app.spawned
+                    .expect(role, model.map(str::to_string), project.map(str::to_string));
             }
             Ok(value)
         }
@@ -1224,6 +1305,10 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
     if agent.status == Status::Offline {
         return Response::error(409, "agent is offline");
     }
+    // An agent on the bench, or on a paused project, takes no chat: the turn would only wait.
+    if let Some(why) = crate::membership::held(app, &agent) {
+        return Response::error(409, &why);
+    }
     let b: TextBody = match body(req) {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -1271,6 +1356,9 @@ fn assign(app: &App, req: &Request, params: &Params<'_>) -> Response {
     if !task.is_open() {
         return Response::error(409, "task is not open");
     }
+    if let Err(why) = crate::membership::may_take_task(app, &agent, task.project()) {
+        return Response::error(409, &why);
+    }
     if let Err(e) = task.claim(&connected_agent(&agent)) {
         return Response::error(409, &e.to_string());
     }
@@ -1311,6 +1399,12 @@ fn to_hub(app: &App, req: &Request, params: &Params<'_>, action: &str) -> Respon
         Ok(agent) => agent,
         Err(resp) => return resp,
     };
+    // An agent on the bench, or on a paused project, is not told anything (that would wake it to wait).
+    if action == "tell"
+        && let Some(why) = crate::membership::held(app, &agent)
+    {
+        return Response::error(409, &why);
+    }
     // A tell wakes a sleeping agent first: the gateway has no session to deliver it to otherwise.
     if action == "tell"
         && let Err(resp) = crate::sleep::awake_or_503(app, agent.cid)

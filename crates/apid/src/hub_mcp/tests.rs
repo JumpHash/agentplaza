@@ -69,6 +69,8 @@ impl Plaza for FakePlaza {
     fn create_task(&self, input: &Value) -> Result<Value, String> {
         if input["goal"] == "" {
             Err("goal must be a non-empty string".into())
+        } else if input["project"].is_null() {
+            Err("a task belongs to a project: name it with `project`".into())
         } else {
             Ok(
                 json!({ "id": "t2", "goal": input["goal"], "after": input["after"], "project": input["project"] }),
@@ -1169,23 +1171,33 @@ fn request_decision_records_a_recommendation_and_never_decides() {
 }
 
 #[test]
-fn create_task_files_a_task_and_refuses_an_empty_title() {
+fn create_task_files_a_task_in_a_project_and_refuses_an_empty_title() {
     let h = harness(true);
     let (operate, _) = h.mint(Scope::Operate, &[], None);
     let session = h.session(&operate);
     let made = body_of(&h.call(
         &operate,
         Some(&session),
-        tool_call("create_task", json!({ "title": "Ship it" })),
+        tool_call(
+            "create_task",
+            json!({ "title": "Ship it", "project": "pr1" }),
+        ),
     ));
     assert_eq!(made["result"]["isError"], false, "{made}");
     assert_eq!(made["result"]["structuredContent"]["id"], "t2");
     let refused = body_of(&h.call(
         &operate,
         Some(&session),
-        tool_call("create_task", json!({ "title": "" })),
+        tool_call("create_task", json!({ "title": "", "project": "pr1" })),
     ));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
+    // Every task belongs to a project.
+    let loose = body_of(&h.call(
+        &operate,
+        Some(&session),
+        tool_call("create_task", json!({ "title": "Ship it" })),
+    ));
+    assert_eq!(loose["result"]["isError"], true, "{loose}");
     // The links and the project go to the plaza as the console's New task sends them.
     let linked = body_of(&h.call(
         &operate,
@@ -1358,7 +1370,10 @@ mod open_modes {
             let resp = h.call(
                 &token,
                 Some(&session),
-                tool_call("create_task", json!({ "title": "from a token" })),
+                tool_call(
+                    "create_task",
+                    json!({ "title": "from a token", "project": "pr1" }),
+                ),
             );
             assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
         }

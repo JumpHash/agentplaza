@@ -44,6 +44,11 @@ fn tell(app: &App, ended: &str, state: &str) {
         return;
     };
     for (cid, prompt) in notices(task, state, &tasks, |blocked| replanner(app, blocked)) {
+        // A replanner that does not work now (on the bench, or its project paused) is not told; the owner
+        // sees the task blocked on its view.
+        if crate::membership::held_cid(app, cid).is_some() {
+            continue;
+        }
         app.work.enqueue(
             app,
             cid,

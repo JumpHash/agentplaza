@@ -934,10 +934,13 @@ fn host_call(
             let subject: String = text.chars().take(60).collect();
             let request: PostRequest =
                 from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
+            // The post is on the author's project's board (the orchestrator's on the whole board).
+            let mut post = request.checked()?;
+            post.project = app.members.project_of(agent.cid);
             let mut view = app
                 .plaza
                 .social
-                .post(&me, request.checked()?)
+                .post(&me, post)
                 .map_err(|e| e.to_string())?;
             if !files.is_empty() {
                 app.plaza
@@ -956,6 +959,7 @@ fn host_call(
                 .agents
                 .get(to_cid)
                 .ok_or_else(|| format!("no connected agent {to_cid}"))?;
+            may_message(app, agent, &recipient)?;
             grant_files(app, &files, agent.cid, to_cid)?;
             let mut suffix = String::new();
             for id in &files {
@@ -1053,7 +1057,15 @@ fn host_call(
                 .agents
                 .list()
                 .iter()
-                .map(|a| json!({"cid": a.cid, "name": a.name, "role": a.role, "status": a.status}))
+                .map(|a| {
+                    json!({
+                        "cid": a.cid,
+                        "name": a.name,
+                        "role": a.role,
+                        "status": a.status,
+                        "project": app.members.project_of(a.cid),
+                    })
+                })
                 .collect();
             Ok(Value::Array(rows).to_string())
         }
@@ -1078,22 +1090,34 @@ fn host_call(
                 .get("role")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            // A project's task is refused until the project's plan is approved.
-            let project = input
+            // Every task belongs to a project: the one named, else the poster's own. A project's agent posts
+            // only to its own project; the orchestrator names the project it posts to.
+            let named = input
                 .get("project")
                 .and_then(Value::as_str)
-                .filter(|p| !p.trim().is_empty());
-            if let Some(pid) = project {
-                let p = app
-                    .projects
-                    .get(pid)
-                    .ok_or_else(|| format!("no project {pid}"))?;
-                if !matches!(p.stage.as_str(), "implementation" | "review") {
-                    return Err(format!(
-                        "project {pid} is at {}: tasks can be posted only once its plan is approved",
-                        p.stage
-                    ));
-                }
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string);
+            let project = own_project(app, agent, named)?;
+            let pid = project.as_str();
+            // A project's task is refused until the project's plan is approved, and once it is archived.
+            takes_tasks(app, pid)?;
+            let p = app
+                .projects
+                .get(pid)
+                .ok_or_else(|| format!("no project {pid}"))?;
+            if !matches!(p.stage.as_str(), "implementation" | "review") {
+                return Err(format!(
+                    "project {pid} is at {}: tasks can be posted only once its plan is approved",
+                    p.stage
+                ));
+            }
+            // The assignee works on the project: checked before the task exists, so a refusal posts nothing.
+            if let Some(cid) = input.get("assignee").and_then(Value::as_u64) {
+                let target = app
+                    .agents
+                    .get(cid)
+                    .ok_or_else(|| format!("no connected agent {cid}"))?;
+                crate::membership::may_take_task(app, &target, Some(pid))?;
             }
             let task = app
                 .plaza
@@ -1109,12 +1133,10 @@ fn host_call(
                     budget: Some(budget),
                     role,
                     after,
-                    project: project.map(str::to_string),
+                    project: Some(project.clone()),
                 })
                 .map_err(|e| format!("{e:?}"))?;
-            if let Some(pid) = project {
-                app.projects.link_task(pid, task.id())?;
-            }
+            app.projects.link_task(pid, task.id())?;
             app.work.note_poster(task.id(), agent.cid);
             crate::society::note_posted(app, agent.cid);
             match input.get("assignee").and_then(Value::as_u64) {
@@ -1133,6 +1155,8 @@ fn host_call(
         }
         "plaza_tasks_post" => {
             let project = str_arg(input, "project")?;
+            own_project(app, agent, Some(project.to_string()))?;
+            takes_tasks(app, project)?;
             let tasks: Vec<crate::task_plan::Planned> =
                 serde_json::from_value(input.get("tasks").cloned().unwrap_or(Value::Null))
                     .map_err(|e| {
@@ -1270,6 +1294,7 @@ pub fn post_and_assign(
     acceptance: Option<String>,
     budget: u64,
     worker: u64,
+    project: &str,
 ) -> Result<String, String> {
     let task = app
         .plaza
@@ -1280,14 +1305,67 @@ pub fn post_and_assign(
             budget: Some(budget),
             role: None,
             after: Vec::new(),
-            project: None,
+            project: Some(project.to_string()),
         })
         .map_err(|e| format!("{e:?}"))?;
+    app.projects.link_task(project, task.id())?;
     app.work.note_poster(task.id(), poster);
     crate::society::note_posted(app, poster);
     assign(app, &task, worker)?;
     crate::society::interact(app, poster, worker, apz_plaza::bonds::Interaction::Task);
     Ok(task.id().to_string())
+}
+
+/// The project a task `agent` posts goes to: `named`, else the agent's own. An agent on a project posts only to
+/// it; the orchestrator, which works on every project, names one.
+fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String, String> {
+    if crate::membership::plaza_wide(&agent.role) {
+        return named.ok_or_else(|| {
+            "a task belongs to a project: name it with `project` (plaza_projects lists them)"
+                .to_string()
+        });
+    }
+    let own = app
+        .members
+        .project_of(agent.cid)
+        .ok_or("you are on the bench: you post tasks only for your project")?;
+    match named {
+        Some(named) if named != own => Err(format!(
+            "you work on project {own}: you post tasks only for it, not for {named}"
+        )),
+        _ => Ok(own),
+    }
+}
+
+/// Refuses tasks for an archived project: it is over, and its agents are back on the bench.
+fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
+    match app.projects.get(pid) {
+        None => Err(format!("no project {pid}")),
+        Some(p) if p.archived => Err(format!("project {pid} is archived: it takes no new tasks")),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Whether `from` may message `to`: both work now, on the same project, or one of them is the orchestrator.
+fn may_message(app: &App, from: &Agent, to: &Agent) -> Result<(), String> {
+    if let Some(why) = crate::membership::held(app, to) {
+        return Err(format!("{} cannot be messaged now: {why}", to.name));
+    }
+    if crate::membership::plaza_wide(&from.role) || crate::membership::plaza_wide(&to.role) {
+        return Ok(());
+    }
+    let (mine, theirs) = (
+        app.members.project_of(from.cid),
+        app.members.project_of(to.cid),
+    );
+    if mine == theirs {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} works on another project: you message only your project's agents and the orchestrator",
+            to.name
+        ))
+    }
 }
 
 /// Claims `task` for the agent `cid` and queues the work for it.
@@ -1296,6 +1374,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         .agents
         .get(cid)
         .ok_or_else(|| format!("no connected agent {cid}"))?;
+    crate::membership::may_take_task(app, &target, task.project())?;
     task.claim(&agents::connected_agent(&target))
         .map_err(|e| e.to_string())?;
     let origin = Origin {

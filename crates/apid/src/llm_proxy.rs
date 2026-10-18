@@ -900,6 +900,10 @@ fn relay(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    // An agent on the bench, or on a paused project, makes no model call (see `membership`).
+    if let Some(why) = crate::membership::held(app, &agent) {
+        return Err(Response::error(409, &why));
+    }
     let charge = current_charge(app, cid);
     let mut body: Value = req
         .json()
@@ -1035,6 +1039,9 @@ fn relay_gemini(
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
+    if let Some(why) = crate::membership::held(app, &agent) {
+        return Err(Response::error(409, &why));
+    }
     let charge = current_charge(app, cid);
     let body: Value = req
         .json()
@@ -1211,6 +1218,9 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Charge, Stri
         return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
     }
     let agent = app.agents.get(grant.cid).ok_or("unknown agent")?;
+    if let Some(why) = crate::membership::held(&app, &agent) {
+        return Err(why);
+    }
     if let Some(list) = held_to(&app, &agent) {
         check_model(
             body,
