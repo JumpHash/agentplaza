@@ -54,6 +54,7 @@
     { "match": "plaza_cancel_task", "category": "plan" },
     { "match": "plaza_bid", "category": "plan" },
     { "match": "plaza_project_open", "category": "plan" },
+    { "match": "plaza_project_draft", "category": "plan" },
     { "match": "plaza_project_attach", "category": "plan" },
     { "match": "todo_write", "category": "plan" },
     { "match": "plaza_pay", "category": "money" },

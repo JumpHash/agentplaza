@@ -49,6 +49,11 @@ fn tell(app: &App, ended: &str, state: &str) {
         if crate::membership::held_cid(app, cid).is_some() {
             continue;
         }
+        // A project started from a conversation hears of it there.
+        if let Some(conversation) = crate::scheduler::project_conversation(app, ended, cid) {
+            crate::conversations::notify(app, &conversation, &prompt);
+            continue;
+        }
         app.work.enqueue(
             app,
             cid,

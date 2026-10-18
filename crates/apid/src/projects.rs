@@ -352,6 +352,17 @@ impl Store {
         })
     }
 
+    /// Makes agent `cid` project `id`'s lead: the orchestrator a conversation started it from, told of its tasks to
+    /// replan.
+    pub fn set_lead(&self, id: &str, cid: u64) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            p.lead_cid = cid;
+            p.updated_ms = now_ms();
+            Ok(p.clone())
+        })
+    }
+
     /// Pauses or resumes a project: while paused, its agents' work waits (`membership`).
     pub fn set_paused(&self, id: &str, paused: bool) -> Result<Project, String> {
         self.mutate(|items| {
@@ -723,6 +734,12 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 /// Runs one of TOOLS for `agent`.
 /// Creates the project's repo (`<id>-<slug of the title>`) and records it; None when the
 /// git host is not configured or refuses (the project works without one).
+/// Gives project `project` its repository on the plaza's git host, when the host is configured; the repository's
+/// name, if it got one.
+pub(crate) fn attach_repo(app: &App, project: &Project) -> Option<String> {
+    repo_for(app, project)
+}
+
 fn repo_for(app: &App, project: &Project) -> Option<String> {
     if !app.forge.configured() {
         return None;

@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a draft edit with a field drafts do not have
+  type: http
+  seq: 13
+}
+
+patch {
+  url: {{baseUrl}}/v1/owner/conversations/conv-999/draft
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "revision": 0,
+    "owner": "me"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

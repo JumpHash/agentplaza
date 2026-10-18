@@ -379,6 +379,11 @@ impl Queues {
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
         );
+        // A project started from a conversation hears of its tasks there.
+        if let Some(conversation) = project_conversation(app, task, poster) {
+            crate::conversations::notify(app, &conversation, &prompt);
+            return;
+        }
         self.enqueue(
             app,
             poster,
@@ -843,6 +848,15 @@ impl Queues {
         );
         crate::sleep::touch(app, cid);
     }
+}
+
+/// The conversation task `task`'s project was started from, when agent `cid` is the orchestrator it talks to: where
+/// that orchestrator hears of the project's tasks.
+pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<String> {
+    let pid = app.plaza.tasks.find(task)?.project()?.to_string();
+    crate::conversations::of_project(app, &pid)
+        .filter(|conversation| conversation.cid == cid)
+        .map(|conversation| conversation.id)
 }
 
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.

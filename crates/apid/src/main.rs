@@ -28,6 +28,7 @@ mod conversations;
 mod db;
 mod decisions;
 mod deliverables;
+mod drafts;
 mod e2b;
 mod e2b_net;
 mod e2b_obs;

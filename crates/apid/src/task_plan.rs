@@ -28,24 +28,24 @@ pub const MAX_PLANNED: usize = 64;
 const MAX_DOC_BYTES: usize = 256 * 1024;
 
 /// One task of a plan's list.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Planned {
     /// The task's key in the list (`1.3`), which other tasks' `after` names.
     pub key: String,
     /// What the task is for.
     pub goal: String,
     /// How the work is judged complete.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance: Option<String>,
     /// The role it is for.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// Its budget, in credits (the default when absent).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u64>,
     /// The keys of the tasks of the list it runs after (or, when posting, the ids of tasks that
     /// exist already).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<String>,
 }
 

@@ -38,11 +38,13 @@ const MAX_ANSWER_CHARS: usize = 20_000;
 pub const OWNER: &str = "owner";
 /// Who the answers are from.
 pub const ORCHESTRATOR: &str = "orchestrator";
+/// Who the plaza's notices in a conversation are from (a project started, a task ended).
+pub const PLAZA: &str = "plaza";
 
 /// One message of a conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
-    /// [`OWNER`] or [`ORCHESTRATOR`].
+    /// [`OWNER`], [`ORCHESTRATOR`] or [`PLAZA`].
     pub from: String,
     pub text: String,
     pub at_ms: u64,
@@ -73,6 +75,13 @@ pub struct Conversation {
     /// The project it set up, once there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The project the orchestrator drafts with the owner, which the owner starts (`drafts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<crate::drafts::Draft>,
+    /// The draft revision the orchestrator last read or wrote: an edit of the owner's after it is pointed out with the
+    /// next message.
+    #[serde(default)]
+    pub draft_seen: u64,
 }
 
 impl Conversation {
@@ -157,6 +166,8 @@ impl Store {
             updated_ms: now,
             archived: false,
             project: None,
+            draft: None,
+            draft_seen: 0,
         };
         conversation.push(owner_message(first, now));
         next.items.push(conversation.clone());
@@ -245,6 +256,14 @@ fn owner_message(text: &str, now: u64) -> Message {
     }
 }
 
+/// The conversation that started project `pid`, if one did: the project's line to the orchestrator.
+pub fn of_project(app: &App, pid: &str) -> Option<Conversation> {
+    app.conversations
+        .list()
+        .into_iter()
+        .find(|c| c.project.as_deref() == Some(pid))
+}
+
 /// Holds `items` (oldest first) to [`KEEP`]: the oldest archived conversation goes first, then the oldest.
 fn keep_within(items: &mut Vec<Conversation>) {
     while items.len() > KEEP {
@@ -253,11 +272,15 @@ fn keep_within(items: &mut Vec<Conversation>) {
     }
 }
 
-/// The API view of a conversation: its fields, its `thread` and the work items still `pending` an answer.
-pub fn view(conversation: &Conversation) -> Value {
+/// The API view of a conversation: its fields, its `thread`, the work items still `pending` an answer, and its draft
+/// with what still stops Start (`draft.problems`).
+pub fn view(app: &App, conversation: &Conversation) -> Value {
     let mut value = serde_json::to_value(conversation).unwrap_or(Value::Null);
     value["thread"] = json!(conversation.id);
     value["pending"] = json!(conversation.pending());
+    if let Some(draft) = &conversation.draft {
+        value["draft"] = crate::drafts::view(app, draft);
+    }
     value
 }
 
@@ -278,6 +301,7 @@ fn summary(conversation: &Conversation) -> Value {
         "updated_ms": conversation.updated_ms,
         "archived": conversation.archived,
         "project": conversation.project,
+        "draft": conversation.draft.as_ref().map(|d| json!({"revision": d.revision, "title": d.title})),
         "messages": conversation.messages.len(),
         "pending": conversation.pending().len(),
         "last": last,
@@ -315,16 +339,18 @@ fn reachable(app: &App, agent: &Agent) -> Result<(), (u16, String)> {
     })
 }
 
-/// Queues the owner's `text` on conversation `id`'s thread, and records the work item on its message.
+/// Queues `prompt` on conversation `id`'s thread, as the owner's chat (`from` [`OWNER`]) or as a plaza notice
+/// ([`PLAZA`]), and records the work item on the message from `from` added last.
 fn queue(
     app: &App,
     id: &str,
     cid: u64,
-    text: &str,
+    prompt: &str,
+    from: &str,
     mcp: bool,
 ) -> Result<Conversation, (u16, String)> {
     let origin = Origin {
-        owner: true,
+        owner: from == OWNER,
         mcp,
         conversation: Some(id.to_string()),
         ..Origin::default()
@@ -334,7 +360,7 @@ fn queue(
         cid,
         WorkKind::Chat,
         id.to_string(),
-        text.to_string(),
+        prompt.to_string(),
         origin,
     );
     app.conversations.update(id, |c| {
@@ -343,7 +369,7 @@ fn queue(
             .messages
             .iter_mut()
             .rev()
-            .find(|m| m.from == OWNER && m.work == 0)
+            .find(|m| m.from == from && m.work == 0)
         {
             message.work = work;
         }
@@ -364,8 +390,8 @@ pub fn open(app: &App, text: &str, mcp: bool) -> Result<Conversation, (u16, Stri
         .conversations
         .open(agent.cid, text, apz_plaza::now_ms())
         .map_err(|e| (500, format!("conversations not saved: {e}")))?;
-    let conversation = queue(app, &opened.id, agent.cid, text, mcp)?;
-    app.bus.publish("conversation", &view(&conversation));
+    let conversation = queue(app, &opened.id, agent.cid, text, OWNER, mcp)?;
+    app.bus.publish("conversation", &view(app, &conversation));
     Ok(conversation)
 }
 
@@ -393,13 +419,60 @@ pub fn say(app: &App, id: &str, text: &str, mcp: bool) -> Result<Conversation, (
     })?;
     reachable(app, &agent)?;
     let now = apz_plaza::now_ms();
+    // The owner's edits of the draft since the orchestrator last read it are pointed out with this message.
+    let mut note = None;
     app.conversations.update(id, |c| {
         c.push(owner_message(text, now));
+        if let Some(draft) = &c.draft
+            && draft.revision > c.draft_seen
+            && draft.updated_by == OWNER
+        {
+            note = Some(draft.revision);
+            c.draft_seen = draft.revision;
+        }
         Ok(())
     })?;
-    let conversation = queue(app, id, agent.cid, text, mcp)?;
-    app.bus.publish("conversation", &view(&conversation));
+    let prompt = match note {
+        Some(revision) => format!(
+            "[plaza] The owner edited the project draft: it is at revision {revision} now. Read it with plaza_project_draft before you change it.\n\n{text}"
+        ),
+        None => text.to_string(),
+    };
+    let conversation = queue(app, id, agent.cid, &prompt, OWNER, mcp)?;
+    app.bus.publish("conversation", &view(app, &conversation));
     Ok(conversation)
+}
+
+/// Tells conversation `id`'s orchestrator `text`, a plaza notice (a project started, a task ended), on the
+/// conversation's thread: it shows in the conversation, and so does the orchestrator's answer. A notice for a
+/// conversation whose orchestrator is gone is dropped.
+pub fn notify(app: &App, id: &str, text: &str) {
+    let Some(conversation) = app.conversations.get(id) else {
+        return;
+    };
+    if app.agents.get(conversation.cid).is_none() {
+        eprintln!("apid: a notice for {id} dropped: its orchestrator is gone");
+        return;
+    }
+    let first_line = text.lines().next().unwrap_or_default();
+    let message = Message {
+        from: PLAZA.into(),
+        text: first_line.chars().take(MAX_ANSWER_CHARS).collect(),
+        at_ms: apz_plaza::now_ms(),
+        work: 0,
+        status: None,
+    };
+    if let Err((_, e)) = app.conversations.update(id, |c| {
+        c.push(message);
+        Ok(())
+    }) {
+        eprintln!("apid: a notice for {id} not kept: {e}");
+        return;
+    }
+    match queue(app, id, conversation.cid, text, PLAZA, false) {
+        Ok(conversation) => app.bus.publish("conversation", &view(app, &conversation)),
+        Err((_, e)) => eprintln!("apid: a notice for {id} not queued: {e}"),
+    }
 }
 
 /// A work item ended as `status` (`done`, `failed`, `stopped`): when a conversation queued it, the orchestrator's
@@ -423,7 +496,7 @@ pub fn work_ended(app: &App, item: &WorkItem, status: &str, summary: &str) {
         Ok(())
     });
     match added {
-        Ok(conversation) => app.bus.publish("conversation", &view(&conversation)),
+        Ok(conversation) => app.bus.publish("conversation", &view(app, &conversation)),
         Err((_, e)) => eprintln!("apid: the answer to work {} not kept: {e}", item.id),
     }
 }
@@ -466,9 +539,9 @@ fn text_body(req: &Request) -> Result<String, Response> {
         .map_err(|e| Response::error(400, &format!("bad body: {e}")))
 }
 
-fn answer(result: Result<Conversation, (u16, String)>, status: u16) -> Response {
+fn answer(app: &App, result: Result<Conversation, (u16, String)>, status: u16) -> Response {
     match result {
-        Ok(conversation) => Response::json(status, &view(&conversation)),
+        Ok(conversation) => Response::json(status, &view(app, &conversation)),
         Err((code, e)) => Response::error(code, &e),
     }
 }
@@ -489,14 +562,14 @@ fn list_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
 /// Body: `{text}`, the first message.
 fn open_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     match text_body(req) {
-        Ok(text) => answer(open(app, &text, false), 201),
+        Ok(text) => answer(app, open(app, &text, false), 201),
         Err(refused) => refused,
     }
 }
 
 fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match app.conversations.get(p.get("id")) {
-        Some(conversation) => Response::json(200, &view(&conversation)),
+        Some(conversation) => Response::json(200, &view(app, &conversation)),
         None => Response::error(404, "no such conversation"),
     }
 }
@@ -533,15 +606,15 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(())
     });
     if let Ok(conversation) = &result {
-        app.bus.publish("conversation", &view(conversation));
+        app.bus.publish("conversation", &view(app, conversation));
     }
-    answer(result, 200)
+    answer(app, result, 200)
 }
 
 /// Body: `{text}`.
 fn message_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     match text_body(req) {
-        Ok(text) => answer(say(app, p.get("id"), &text, false), 200),
+        Ok(text) => answer(app, say(app, p.get("id"), &text, false), 200),
         Err(refused) => refused,
     }
 }
@@ -663,6 +736,8 @@ mod tests {
                 updated_ms: n,
                 archived: n == 7,
                 project: None,
+                draft: None,
+                draft_seen: 0,
             })
             .collect();
         keep_within(&mut items);

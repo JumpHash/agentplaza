@@ -493,7 +493,7 @@ include `plaza_agents` (the roster: role, model, status), `plaza_tasks`,
 `plaza_tasks_post` (a project's whole task list at once, `{project, tasks: [{key, goal, acceptance?, role?,
 budget?, after?}]}`), `plaza_task_link` (`{task, after}`, to replan), `plaza_assign`,
 `plaza_cancel_task`, `plaza_task_result`, `plaza_send_message`,
-`plaza_board_read` and `plaza_board_post`. Workers can read tasks, bid, read and
+`plaza_board_read`, `plaza_board_post` and, in the owner's conversations, `plaza_project_draft`. Workers can read tasks, bid, read and
 post on the board, and message other agents, but only the orchestrator (and
 the operator) posts, links and assigns tasks. A task runs after the tasks its `after` names: it is ready, and
 claimed, only once they are all done; when one fails or is withdrawn, the tasks after it stay open, blocked, and
@@ -559,6 +559,27 @@ and `POST /v1/owner/conversations/{id}/messages` `{text}` goes on with it.
 - **The list.** `GET /v1/owner/conversations` lists them newest first (`?archived=true` with the archived ones), and
   `PATCH /v1/owner/conversations/{id}` `{title?, archived?}` renames or archives one. The hub MCP's
   `message_orchestrator` takes a `conversation` to talk in one.
+
+**Drafts and Start** (`crates/apid/src/drafts.rs`). As the conversation goes, the orchestrator keeps the
+conversation's project draft current with `plaza_project_draft`: title, goal, kind, repo, the task list (as a
+plan's, with `after`), the team (roles and counts, with agents from the bench by CID), the budget and the settings
+overrides.
+
+- **Revisions.** The owner edits it too (`PATCH /v1/owner/conversations/{id}/draft`). Every edit bumps its
+  revision, a write names the revision it read, and the orchestrator is told of the owner's edits with the next
+  message.
+- **Problems.** `GET …/draft` and the conversation's view list what still stops Start: no tasks, an unknown role,
+  a bench agent that is not on the bench, a task for a role the team lacks, a model the role may not use, or a
+  budget below the tasks'.
+- **Start** (`POST …/start` `{revision}`) takes the revision the owner looked at, then, all or nothing:
+  - opens the project, its plan the owner's and the orchestrator its lead;
+  - posts the tasks;
+  - spawns the agents the team still needs (they join at their first hello);
+  - puts the named ones on it from the bench.
+
+  A step that fails undoes the ones before it. Afterwards the conversation is the project's line: the orchestrator
+  is told there that it started, the project's notices (a task ended, tasks to replan) come there, and a task it
+  posts there goes to the project.
 
 ## `apid` HTTP API
 

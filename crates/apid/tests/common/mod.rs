@@ -65,12 +65,23 @@ impl Hub {
     /// A scratch hub in `scratch`, whose gateway and noded are at `gateway` and `noded` when given (else ports nothing
     /// listens on).
     pub fn start(scratch: &Scratch, gateway: Option<u16>, noded: Option<u16>) -> Hub {
+        Hub::start_with_roles(scratch, gateway, noded, None)
+    }
+
+    /// [`Hub::start`] with a roles manifest (`roles`, the JSON of one) instead of none.
+    pub fn start_with_roles(
+        scratch: &Scratch,
+        gateway: Option<u16>,
+        noded: Option<u16>,
+        roles: Option<&Value>,
+    ) -> Hub {
         (1..=ATTEMPTS)
             .find_map(|attempt| {
                 boot(
                     &scratch.0.join(format!("attempt-{attempt}")),
                     gateway,
                     noded,
+                    roles,
                 )
             })
             .expect("a scratch hub comes up")
@@ -168,13 +179,22 @@ fn capture<R: Read + Send + 'static>(reader: R, sink: Arc<Mutex<String>>) {
 
 /// Starts apid with everything under `dir` and waits until it listens. `None` when it does not come up (a port
 /// taken in between, say); the caller tries again.
-fn boot(dir: &Path, gateway: Option<u16>, noded: Option<u16>) -> Option<Hub> {
+fn boot(
+    dir: &Path,
+    gateway: Option<u16>,
+    noded: Option<u16>,
+    roles: Option<&Value>,
+) -> Option<Hub> {
     let port = free_port();
     let state = dir.join("state");
     let config = dir.join("config");
     std::fs::create_dir_all(&config).expect("create the config directory");
     let env_file = dir.join("empty.env");
     std::fs::write(&env_file, "").expect("write the empty env file");
+    let manifest = dir.join("roles.json");
+    if let Some(roles) = roles {
+        std::fs::write(&manifest, roles.to_string()).expect("write the roles manifest");
+    }
     let mut command = apz_os::runner::command(Path::new(APID));
     command
         .arg("--port")
@@ -190,7 +210,7 @@ fn boot(dir: &Path, gateway: Option<u16>, noded: Option<u16>) -> Option<Hub> {
         .arg("--env-file")
         .arg(&env_file)
         .arg("--roles")
-        .arg(dir.join("no-roles.json"))
+        .arg(&manifest)
         .arg("--prompts")
         .arg(dir.join("no-prompts"))
         .arg("--console")

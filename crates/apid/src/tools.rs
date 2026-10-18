@@ -91,6 +91,7 @@ const IN_VM: &[&str] = &[
 /// Host tools offered only by tier or seat (see [`permitted`]).
 const GATED: &[&str] = &[
     "plaza_agent_propose",
+    "plaza_project_draft",
     "plaza_project_open",
     "plaza_project_advance",
     "plaza_project_approve",
@@ -154,6 +155,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::projects::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_git" => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
@@ -750,6 +752,7 @@ fn spec(name: &str) -> Option<ToolSpec> {
                 .or_else(|| crate::harness_control::spec(other))
                 .or_else(|| crate::git::spec(other))
                 .or_else(|| crate::agent_proposals::spec(other))
+                .or_else(|| crate::drafts::spec(other))
                 .or_else(|| crate::skills::agent_tools::spec(other))
                 .or_else(|| crate::stations::tools::spec(other))?;
             return Some(ToolSpec {
@@ -1257,6 +1260,7 @@ fn host_call(
             crate::stations::tools::run(app, agent, other, input)
         }
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
+        "plaza_project_draft" => crate::drafts::run(app, agent, input),
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
             let (connector, action) =
@@ -1316,7 +1320,15 @@ pub fn post_and_assign(
 /// it; the orchestrator, which works on every project, names one.
 fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String, String> {
     if crate::membership::plaza_wide(&agent.role) {
-        return named.ok_or_else(|| {
+        // In the conversation a project was started from, the task is that project's unless another is named.
+        let from_conversation = || {
+            app.work
+                .current(agent.cid)
+                .and_then(|item| item.origin.conversation)
+                .and_then(|id| app.conversations.get(&id))
+                .and_then(|c| c.project)
+        };
+        return named.or_else(from_conversation).ok_or_else(|| {
             "a task belongs to a project: name it with `project` (plaza_projects lists them)"
                 .to_string()
         });
