@@ -1,0 +1,25 @@
+meta {
+  name: List the language packs Weft has loaded
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/packs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the packs answer with their loaded languages and list", function () {
+    expect(res.getBody()).to.have.property("loaded");
+    expect(res.getBody().loaded).to.be.an("array");
+    expect(res.getBody()).to.have.property("packs");
+    expect(res.getBody().packs).to.be.an("array");
+  });
+}

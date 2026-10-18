@@ -1,0 +1,23 @@
+meta {
+  name: List the Weft repositories on a fresh hub
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/repos
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("a fresh store has a repos list", function () {
+    expect(res.getBody()).to.have.property("repos");
+    expect(res.getBody().repos).to.be.an("array");
+  });
+}

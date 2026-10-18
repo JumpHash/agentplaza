@@ -107,6 +107,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "weft",
  "winresource",
 ]
 
@@ -560,6 +561,7 @@ dependencies = [
  "rcgen",
  "serde",
  "serde_json",
+ "weft",
 ]
 
 [[package]]

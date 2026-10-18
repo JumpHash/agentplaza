@@ -51,6 +51,11 @@ enum Command {
     /// Git: the plaza's repositories, branches and changes.
     #[command(subcommand)]
     Git(cmd::git::Cmd),
+    /// Weft: the plaza's version control (history, lanes, releases, git export)
+    Weft(cmd::weft::Args),
+    /// Review recipes
+    #[command(subcommand)]
+    Recipes(cmd::recipes::Cmd),
     /// The IDE: an agent's workspace or a project repo, browsed, edited, diffed, checkpointed, searched and run.
     #[command(subcommand)]
     Ide(cmd::ide::Cmd),
@@ -211,6 +216,8 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Git(c) => cmd::git::run(&ctx, c),
+        Command::Weft(args) => cmd::weft::run(&ctx, args),
+        Command::Recipes(c) => cmd::recipes::run(&ctx, c),
         Command::Ide(c) => cmd::ide::run(&ctx, c),
         Command::Library(c) => cmd::library::run(&ctx, c),
         Command::Prompts(c) => cmd::prompts::run(&ctx, c),

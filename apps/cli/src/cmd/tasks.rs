@@ -87,7 +87,27 @@ pub enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// A task's review: the newest review run in full (its verdict, the four readings, each step with its reviewer,
+    /// the findings), then the earlier rounds.
+    Review {
+        /// The task's id.
+        id: String,
+    },
+    /// Your ruling on a task's review: `pass`, `rework` (sent back to its worker) or `fail`.
+    Rule {
+        /// The task's id.
+        id: String,
+        /// pass, rework or fail.
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(RULINGS))]
+        decision: String,
+        /// Why (optional).
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
+
+/// The rulings on a review card: pass, send back to the worker, or fail.
+const RULINGS: [&str; 3] = ["pass", "rework", "fail"];
 
 /// The objects of a JSON array.
 fn array(v: &Value) -> &[Value] {
@@ -172,6 +192,7 @@ pub(crate) fn state_word(t: &Value) -> &str {
         }
         "claimed" => "working",
         "awaiting_review" => "in review",
+        "rework" => "sent back",
         other => other,
     }
 }
@@ -355,6 +376,208 @@ fn graph_lines(g: &Value) -> Vec<String> {
         lines.push(format!("Ready, not claimed: {}", waiting.join(" · ")));
     }
     lines
+}
+
+/// A review run's state as people say it: a run sent back to its worker is "sent back".
+fn run_state_word(state: &str) -> &str {
+    match state {
+        "rework" => "sent back",
+        other => other,
+    }
+}
+
+/// A reading's level: a signed number and a word, or "not measured" when no step measured it.
+fn level_text(level: Option<&Value>) -> String {
+    match level.and_then(Value::as_i64) {
+        None => "not measured".to_string(),
+        Some(n) => {
+            let word = match n {
+                ..=-4 => "much worse",
+                -3..=-1 => "worse",
+                0 => "same",
+                1..=3 => "better",
+                _ => "much better",
+            };
+            let sign = if n > 0 { "+" } else { "" };
+            format!("{sign}{n} ({word})")
+        }
+    }
+}
+
+/// The findings of a review run, in the order of its steps.
+fn findings_of(run: &Value) -> Vec<Value> {
+    array_at(run, "nodes")
+        .iter()
+        .flat_map(|node| array_at(node, "findings").iter().cloned())
+        .collect()
+}
+
+/// Rows as aligned columns, indented two spaces, two spaces apart (the last column is not padded).
+fn aligned(rows: &[Vec<String>]) -> Vec<String> {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..columns)
+        .map(|c| {
+            rows.iter()
+                .filter_map(|row| row.get(c))
+                .map(|cell| cell.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    rows.iter()
+        .map(|row| {
+            let mut line = String::from("  ");
+            for (c, cell) in row.iter().enumerate() {
+                if c + 1 < row.len() {
+                    line.push_str(&format!("{cell:<w$}  ", w = widths[c]));
+                } else {
+                    line.push_str(cell);
+                }
+            }
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// A task's review as lines: the newest run in full (its state, round, recipe and verdict, the reasons the decision
+/// gave, the four readings, each step with its state and reviewer, the findings), then the earlier rounds.
+fn review_lines(reviews: &Value, findings: &[Value]) -> Vec<String> {
+    let task = ctx::s(reviews, "task");
+    let Some((newest, earlier)) = array_at(reviews, "runs").split_first() else {
+        return vec![format!("No review of task {task} yet.")];
+    };
+    let mut lines = vec![
+        format!(
+            "Review of {task}: {}, round {} of {}, recipe {}",
+            run_state_word(ctx::s(newest, "state")),
+            ctx::text(newest, "round"),
+            ctx::text(newest, "rounds"),
+            ctx::s(newest, "recipe"),
+        ),
+        ctx::s(newest, "verdict").to_string(),
+    ];
+    if let Some(outcome) = newest.get("outcome").filter(|o| !o.is_null()) {
+        let reasons: Vec<&str> = outcome["reasons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if !reasons.is_empty() {
+            lines.push(format!(
+                "{} decided {}: {}",
+                ctx::s(outcome, "by"),
+                ctx::s(outcome, "decision"),
+                reasons.join("; ")
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push("Readings".to_string());
+    let readings: Vec<Vec<String>> = array_at(newest, "readings")
+        .iter()
+        .map(|r| vec![ctx::s(r, "name").to_string(), level_text(r.get("level"))])
+        .collect();
+    lines.extend(aligned(&readings));
+    lines.push(String::new());
+    lines.push("Steps".to_string());
+    let steps: Vec<Vec<String>> = array_at(newest, "nodes")
+        .iter()
+        .map(|n| {
+            let role = match ctx::s(n, "role") {
+                "" => "-",
+                role => role,
+            };
+            let reviewer = n
+                .get("assignee")
+                .and_then(Value::as_u64)
+                .map(|cid| format!("agent {cid}"))
+                .unwrap_or_default();
+            vec![
+                ctx::s(n, "id").to_string(),
+                ctx::s(n, "kind").to_string(),
+                ctx::s(n, "state").to_string(),
+                role.to_string(),
+                reviewer,
+            ]
+        })
+        .collect();
+    lines.extend(aligned(&steps));
+    lines.push(String::new());
+    lines.push("Findings".to_string());
+    if findings.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        let rows: Vec<Vec<String>> = findings
+            .iter()
+            .map(|f| {
+                let at = match ctx::s(f, "symbol") {
+                    "" => ctx::s(f, "node"),
+                    symbol => symbol,
+                };
+                vec![
+                    ctx::s(f, "severity").to_string(),
+                    at.to_string(),
+                    ctx::s(f, "text").to_string(),
+                ]
+            })
+            .collect();
+        lines.extend(aligned(&rows));
+    }
+    if !earlier.is_empty() {
+        lines.push(String::new());
+        lines.push("Earlier rounds".to_string());
+        let rows: Vec<Vec<String>> = earlier
+            .iter()
+            .map(|r| {
+                vec![
+                    format!(
+                        "round {} of {}",
+                        ctx::text(r, "round"),
+                        ctx::text(r, "rounds")
+                    ),
+                    run_state_word(ctx::s(r, "state")).to_string(),
+                    ctx::s(r, "verdict").to_string(),
+                ]
+            })
+            .collect();
+        lines.extend(aligned(&rows));
+    }
+    lines
+}
+
+/// The approval's answer to a review card: pass approves; rework and fail deny it, and rework sends the task back.
+fn ruling_body(decision: &str, reason: Option<&str>) -> Value {
+    let mut body = json!({ "approve": decision == "pass" });
+    if decision == "rework" {
+        body["action"] = json!("rework");
+    }
+    if let Some(reason) = reason {
+        body["reason"] = json!(reason);
+    }
+    body
+}
+
+/// The review card of a task that waits for the owner: a pending approval of kind `review`, the newest if there are
+/// several.
+fn pending_review_of<'a>(approvals: &'a Value, task: &str) -> Option<&'a Value> {
+    array(approvals)
+        .iter()
+        .filter(|a| {
+            ctx::s(a, "kind") == "review"
+                && ctx::s(a, "state") == "pending"
+                && a.pointer("/detail/task").and_then(Value::as_str) == Some(task)
+        })
+        .max_by_key(|a| a.get("created_ms").and_then(Value::as_u64).unwrap_or(0))
+}
+
+/// What a ruling did to the task, in a sentence.
+fn ruling_sentence(task: &str, decision: &str) -> String {
+    match decision {
+        "pass" => format!("passed the review of task {task}"),
+        "rework" => format!("sent task {task} back to its worker"),
+        _ => format!("failed the review of task {task}"),
+    }
 }
 
 /// What `tasks create` says without `--project`: a task belongs to a project, and how to find or open one.
@@ -585,6 +808,49 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&t, |_| println!("withdrew task {id}"));
             Ok(())
         }
+        Cmd::Review { id } => {
+            let reviews = ctx
+                .client
+                .get(&format!("/v1/tasks/{}/reviews", ctx::seg(&id)))?;
+            // The list has the steps but not their findings: the newest run's own record has them (people only; the
+            // raw answer of `--json` is the list).
+            let findings = match array_at(&reviews, "runs").first() {
+                Some(newest) if !ctx.json => findings_of(
+                    &ctx.client
+                        .get(&format!("/v1/reviews/{}", ctx::seg(ctx::s(newest, "run"))))?,
+                ),
+                _ => Vec::new(),
+            };
+            ctx.out(&reviews, |r| {
+                for line in review_lines(r, &findings) {
+                    println!("{line}");
+                }
+            });
+            Ok(())
+        }
+        Cmd::Rule {
+            id,
+            decision,
+            reason,
+        } => {
+            let approvals = ctx.client.get("/v1/approvals")?;
+            let card = pending_review_of(&approvals, &id).ok_or_else(|| {
+                format!(
+                    "no review of task {id} is waiting for you (`agentplaza tasks review {id}` shows its last one)"
+                )
+            })?;
+            let reason = reason
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty());
+            let decided = ctx.client.post(
+                &format!("/v1/approvals/{}", ctx::seg(ctx::s(card, "id"))),
+                &ruling_body(&decision, reason.as_deref()),
+            )?;
+            ctx.out(&decided, |_| {
+                println!("{}", ruling_sentence(&id, &decision))
+            });
+            Ok(())
+        }
     }
 }
 
@@ -736,5 +1002,337 @@ mod tests {
             .collect();
         assert_eq!(kept, vec![1, 2, 7, 8]);
         assert!(timeline_of("t9", array(&entries)).is_empty());
+    }
+    /// `GET /v1/tasks/t1/reviews` as the hub answers it: two rounds, the newest first.
+    const TASK_REVIEWS: &str = r##"{
+  "task": "t1",
+  "runs": [
+    {
+      "run": "rv2",
+      "task": "t1",
+      "change": "w-1",
+      "revision": "w-1.r2",
+      "recipe": "code@3",
+      "round": 2,
+      "rounds": 2,
+      "kind": "code",
+      "state": "passed",
+      "verdict": "Every review step passed.",
+      "outcome": {
+        "decision": "pass",
+        "reasons": [
+          "fine for now; queues stay small"
+        ],
+        "replan": [],
+        "at_ms": 1792351122547,
+        "by": "owner"
+      },
+      "readings": [
+        {
+          "name": "what it does",
+          "level": null
+        },
+        {
+          "name": "cost to run",
+          "level": null
+        },
+        {
+          "name": "risk",
+          "level": -3
+        },
+        {
+          "name": "code health",
+          "level": null
+        }
+      ],
+      "nodes": [
+        {
+          "id": "tree",
+          "kind": "tool",
+          "role": null,
+          "state": "passed",
+          "assignee": null,
+          "parent": null
+        },
+        {
+          "id": "checks",
+          "kind": "check",
+          "role": "qa",
+          "state": "passed",
+          "assignee": 303,
+          "parent": null
+        },
+        {
+          "id": "function",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "resources",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "risk",
+          "kind": "agent",
+          "role": "security-reviewer",
+          "state": "passed",
+          "assignee": 302,
+          "parent": null
+        },
+        {
+          "id": "divergence",
+          "kind": "tool",
+          "role": null,
+          "state": "passed",
+          "assignee": null,
+          "parent": null
+        },
+        {
+          "id": "quality",
+          "kind": "agent",
+          "role": "qa",
+          "state": "passed",
+          "assignee": 303,
+          "parent": null
+        },
+        {
+          "id": "constraints",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "gate",
+          "kind": "gate",
+          "role": null,
+          "state": "failed",
+          "assignee": null,
+          "parent": null
+        }
+      ],
+      "created_ms": 1792351118693,
+      "updated_ms": 1792351122547
+    },
+    {
+      "run": "rv1",
+      "task": "t1",
+      "change": "w-1",
+      "revision": "w-1.r1",
+      "recipe": "code@3",
+      "round": 1,
+      "rounds": 2,
+      "kind": "code",
+      "state": "rework",
+      "verdict": "quality, gate did not pass; worse on tests -3.",
+      "outcome": {
+        "decision": "rework",
+        "reasons": [
+          "tests is -3 (rule: tst <= -3)",
+          "quality did not pass"
+        ],
+        "replan": [],
+        "at_ms": 1792351118401,
+        "by": "gate"
+      },
+      "readings": [
+        {
+          "name": "what it does",
+          "level": null
+        },
+        {
+          "name": "cost to run",
+          "level": null
+        },
+        {
+          "name": "risk",
+          "level": null
+        },
+        {
+          "name": "code health",
+          "level": -3
+        }
+      ],
+      "nodes": [
+        {
+          "id": "tree",
+          "kind": "tool",
+          "role": null,
+          "state": "passed",
+          "assignee": null,
+          "parent": null
+        },
+        {
+          "id": "checks",
+          "kind": "check",
+          "role": "qa",
+          "state": "passed",
+          "assignee": 303,
+          "parent": null
+        },
+        {
+          "id": "function",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "resources",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "risk",
+          "kind": "agent",
+          "role": "security-reviewer",
+          "state": "passed",
+          "assignee": 302,
+          "parent": null
+        },
+        {
+          "id": "divergence",
+          "kind": "tool",
+          "role": null,
+          "state": "passed",
+          "assignee": null,
+          "parent": null
+        },
+        {
+          "id": "quality",
+          "kind": "agent",
+          "role": "qa",
+          "state": "failed",
+          "assignee": 303,
+          "parent": null
+        },
+        {
+          "id": "constraints",
+          "kind": "agent",
+          "role": "reviewer",
+          "state": "passed",
+          "assignee": 301,
+          "parent": null
+        },
+        {
+          "id": "gate",
+          "kind": "gate",
+          "role": null,
+          "state": "failed",
+          "assignee": null,
+          "parent": null
+        }
+      ],
+      "created_ms": 1792351113919,
+      "updated_ms": 1792351118418
+    }
+  ]
+}"##;
+
+    #[test]
+    fn a_review_prints_its_newest_run_then_the_earlier_rounds() {
+        let reviews: Value = serde_json::from_str(TASK_REVIEWS).unwrap();
+        assert_eq!(
+            review_lines(&reviews, &[]),
+            [
+                "Review of t1: passed, round 2 of 2, recipe code@3",
+                "Every review step passed.",
+                "owner decided pass: fine for now; queues stay small",
+                "",
+                "Readings",
+                "  what it does  not measured",
+                "  cost to run   not measured",
+                "  risk          -3 (worse)",
+                "  code health   not measured",
+                "",
+                "Steps",
+                "  tree         tool   passed  -",
+                "  checks       check  passed  qa                 agent 303",
+                "  function     agent  passed  reviewer           agent 301",
+                "  resources    agent  passed  reviewer           agent 301",
+                "  risk         agent  passed  security-reviewer  agent 302",
+                "  divergence   tool   passed  -",
+                "  quality      agent  passed  qa                 agent 303",
+                "  constraints  agent  passed  reviewer           agent 301",
+                "  gate         gate   failed  -",
+                "",
+                "Findings",
+                "  none",
+                "",
+                "Earlier rounds",
+                "  round 1 of 2  sent back  quality, gate did not pass; worse on tests -3.",
+            ]
+        );
+    }
+
+    #[test]
+    fn findings_name_the_symbol_or_the_step_they_came_from() {
+        let run = json!({ "nodes": [
+            { "def": { "id": "quality" }, "findings": [
+                { "symbol": "src/queue.rs::impl Queue › fn next", "text": "next() has no test", "severity": "major", "node": "quality", "round": 1 }
+            ] },
+            { "def": { "id": "risk" }, "findings": [
+                { "symbol": "", "text": "a secret in the log", "severity": "critical", "node": "risk", "round": 1 }
+            ] },
+            { "def": { "id": "tree" }, "findings": [] }
+        ]});
+        let reviews: Value = serde_json::from_str(TASK_REVIEWS).unwrap();
+        let lines = review_lines(&reviews, &findings_of(&run));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("  major") && l.ends_with("next() has no test")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("  critical")
+                && l.contains("risk")
+                && l.ends_with("a secret in the log")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_review_that_has_not_run_says_so() {
+        let none = json!({ "task": "t7", "runs": [] });
+        assert_eq!(review_lines(&none, &[]), ["No review of task t7 yet."]);
+    }
+
+    #[test]
+    fn a_ruling_answers_the_review_card_as_the_hub_reads_it() {
+        assert_eq!(ruling_body("pass", None), json!({ "approve": true }));
+        assert_eq!(
+            ruling_body("rework", Some("tests first")),
+            json!({ "approve": false, "action": "rework", "reason": "tests first" })
+        );
+        assert_eq!(ruling_body("fail", None), json!({ "approve": false }));
+    }
+
+    #[test]
+    fn the_ruling_finds_the_pending_review_card_of_the_task() {
+        let approvals = json!([
+            { "id": "a0", "kind": "sanction", "state": "pending", "created_ms": 5, "detail": { "task": "t1" } },
+            { "id": "a1", "kind": "review", "state": "approved", "created_ms": 6, "detail": { "task": "t1", "run": "rv1" } },
+            { "id": "a2", "kind": "review", "state": "pending", "created_ms": 7, "detail": { "task": "t1", "run": "rv2" } },
+            { "id": "a3", "kind": "review", "state": "pending", "created_ms": 8, "detail": { "task": "t9", "run": "rv3" } }
+        ]);
+        assert_eq!(
+            pending_review_of(&approvals, "t1").map(|a| ctx::s(a, "id")),
+            Some("a2")
+        );
+        assert!(pending_review_of(&approvals, "t5").is_none());
+        assert_eq!(state_word(&json!({ "state": "rework" })), "sent back");
     }
 }

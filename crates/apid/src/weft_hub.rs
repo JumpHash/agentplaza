@@ -114,15 +114,13 @@ fn store_dir(app: &App) -> PathBuf {
     app.config.state_dir.join("weft")
 }
 
-/// The owner's key on this machine: `APZ_OWNER_KEY`, else beside the env file, else in the state folder.
-pub fn owner_key_path(app: &App) -> PathBuf {
+/// The owner's key on this machine: `APZ_OWNER_KEY`, else the platform's config folder (`owner.key` beside the CLI's
+/// `cli.json`, where `agentplaza weft` finds it).
+pub fn owner_key_path(_app: &App) -> PathBuf {
     if let Ok(p) = std::env::var("APZ_OWNER_KEY") {
         return PathBuf::from(p);
     }
-    match app.config.env_file.as_deref().and_then(|f| f.parent()) {
-        Some(dir) => dir.join("owner.key"),
-        None => app.config.state_dir.join("owner.key"),
-    }
+    apz_os::dirs::config().join("owner.key")
 }
 
 /// A key the vault keeps (made on first use); a file in the state folder while the vault is sealed or absent.
