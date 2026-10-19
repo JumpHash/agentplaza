@@ -537,10 +537,18 @@ pub fn start(app: &App, task: &str) -> Option<String> {
         .unwrap_or_default();
     let kind = recipe::kind_of(&tree, &project_kind).to_string();
     let recipe = pick_recipe(app, &kind, record.role().unwrap_or(""))?;
-    let round = app.reviews.runs_of(task).len() as u32 + 1;
     let (nodes, owner) = plan(&recipe, &tree);
     let now = apz_plaza::now_ms();
-    let id = app.reviews.with(|b| {
+    // The checks above ran unlocked, and the scheduler (`handles`) and the review tick both start runs: they are made
+    // again under the book's lock, which also numbers the round, so two callers cannot start the same round twice.
+    let (id, round) = app.reviews.with(|b| {
+        let of_task = || b.runs.values().filter(|r| r.task == task);
+        if of_task().any(|r| {
+            r.revision == revision || matches!(r.state, RunState::Running | RunState::Owner)
+        }) {
+            return None;
+        }
+        let round = of_task().count() as u32 + 1;
         b.next += 1;
         let id = format!("rv{}", b.next);
         b.runs.insert(
@@ -569,8 +577,8 @@ pub fn start(app: &App, task: &str) -> Option<String> {
                 updated_ms: now,
             },
         );
-        id
-    });
+        Some((id, round))
+    })?;
     app.bus.publish(
         "review_run",
         &json!({ "run": id, "task": task, "state": "running", "round": round }),
