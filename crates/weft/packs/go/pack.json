@@ -1,0 +1,16 @@
+{
+  "name": "go",
+  "version": 1,
+  "language": "go",
+  "extensions": [
+    "go"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-go",
+    "version": "0.25.0",
+    "wasm": "tree-sitter-go.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "yaml",
+  "version": 1,
+  "language": "yaml",
+  "extensions": [
+    "yaml",
+    "yml"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "@tree-sitter-grammars/tree-sitter-yaml",
+    "version": "0.7.1",
+    "wasm": "tree-sitter-yaml.wasm"
+  },
+  "query": "symbols.scm"
+}

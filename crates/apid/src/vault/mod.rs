@@ -1828,10 +1828,11 @@ fn valid_binding(binding: &str) -> bool {
             })
     };
     // `egress`: the hub's egress credential rules (`egress_inject`), which name the secret they add.
+    // `hub:<id>`: the hub's own background consumers (`hub:weft`, Weft's keys; `hub:git-platforms`, the platforms').
     binding == "hf"
         || binding == "egress"
         || binding.split_once(':').is_some_and(|(prefix, id)| {
-            matches!(prefix, "provider" | "connector" | "mcp" | "tool") && id_ok(id)
+            matches!(prefix, "provider" | "connector" | "mcp" | "tool" | "hub") && id_ok(id)
         })
 }
 
@@ -1840,7 +1841,7 @@ fn validate_bindings(list: &[String]) -> Result<Vec<String>, VaultError> {
     for binding in list {
         if !valid_binding(binding) {
             return Err(VaultError::Invalid(format!(
-                "{binding} is not a binding (provider:, connector:, mcp:, tool:, hf or egress)"
+                "{binding} is not a binding (provider:, connector:, mcp:, tool:, hub:, hf or egress)"
             )));
         }
         out.push(binding.clone());

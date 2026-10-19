@@ -1,0 +1,27 @@
+meta {
+  name: Start creating the GitHub App
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/github/app
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("a state and the page the browser opens", function () {
+    const b = res.getBody();
+    expect(b.state).to.match(/^[0-9a-f]{32}$/);
+    expect(b.go).to.include("/v1/platforms/flows/" + b.state + "/go");
+  });
+}

@@ -2,42 +2,41 @@
 //!
 //! - `agent:<cid>`: the owner's view of an agent's `/workspace`, reached through the agent's own `ide_*` tools
 //!   (`crates/agent-harness/src/ide.rs`). The harness takes the checkpoints and checks the real filesystem.
-//! - `repo:<name>@<ref>`: a project's repo on the plaza's git host, at one branch. Reads come from the Forgejo
-//!   API, and an edit is a commit on that branch through the contents API, as the admin (the token the Git
-//!   screen uses). A checkpoint is a commit. Only project repos are offered; the platform's own source repo
-//!   never is (`PLATFORM_REPOS`).
+//! - `repo:<name>@<ref>`: a project's repo in Weft, on `main`. Reads come from main's head, and an edit is the
+//!   owner's edit, which lands at once (signed for the owner by the hub). A checkpoint is a landing. Only project
+//!   repos are offered; the platform's own source repo never is (`PLATFORM_REPOS`).
 //! - `station:<id>`: an online workstation's work folder (docs/design/workstations.md section 3). Its files, runs
 //!   and terminals go to the workstation's daemon over its live link, which scopes them to its work folder. A
 //!   workstation has no checkpoints, so it has no changes, no restore and no branch. STOP ALL refuses every
 //!   operation on it.
 //!
 //! Every route checks its paths with `apz_ide::path` before anything is sent. This module logs each owner
-//! action (a write, a branch, a pull request, a restore, a run and its stop) to the append-only audit (the
+//! action (a write, a restore, a run and its stop) to the append-only audit (the
 //! `ide_audit` table in Postgres; `<state-dir>/ide-audit.jsonl` with no database, see `db`) and publishes an
 //! `ide` bus event. Owner actions do not pass the laws classifier. The owner is the principal, so no write
 //! needs an approval.
 //!
 //! Routes (owner-only: the hub's gate in `hub_auth` covers every `/v1` path). The agent kind answers through
-//! the agent's tools, the repo kind through Forgejo:
+//! the agent's tools, the repo kind through Weft:
 //!
 //! | route | agent | repo | station |
 //! |---|---|---|---|
-//! | `GET /v1/ide/workspaces` | agents with a VM | project repos at their default branch | online workstations |
-//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | contents API, 500 per page | `files list` |
-//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | contents API, text only, 1 MiB | `files read` (chunks) |
-//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | commit `owner edit: <path>` on the branch | `files write`, audited in both logs |
-//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | compare `<base>...<head>`: its file list, then each file at both refs, diffed here | 501 (no checkpoints) |
-//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | the branch's recent commits | `{checkpoints: [], reason}` |
-//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (use git revert) | 501 |
+//! | `GET /v1/ide/workspaces` | agents with a VM | project repos, on main | online workstations |
+//! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | main's files, 500 per page | `files list` |
+//! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | main's file, text only, 1 MiB | `files read` (chunks) |
+//! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | an owner edit that lands at once | `files write`, audited in both logs |
+//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | main against the landing before it (or `base`, a revision or change): Weft's diff | 501 (no checkpoints) |
+//! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | what landed, newest first | `{checkpoints: [], reason}` |
+//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (revert the change in History) | 501 |
 //! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 | `files search` |
 //! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 501 | `run start/poll/stop` |
-//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | opens a pull request from the branch (201, its row) | 400 |
-//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | a new branch from the ref (201, `{id}`) | 400 |
+//! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | 410 (gone with the git host) | 400 |
+//! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | 410 | 400 |
 //! | `GET /v1/ide/audit?workspace=&limit=` | (audit log) | (audit log) | (audit log) |
 //!
 //! A tell that fails maps to: 404 unknown agent, 409 no session, 504 no answer in time, 403 a tool the
 //! agent's role does not grant, 400 a refusal (`ok: false`) with the agent's text, and 502 anything else. A
-//! forge answer keeps its status and message. A station answer maps to: 409 STOP ALL, not linked or draining,
+//! Weft answer keeps its status and message. A station answer maps to: 409 STOP ALL, not linked or draining,
 //! 504 no answer in time, 400 a refusal. A write that finds the file moved answers 409
 //! `{error: "conflict", current_hash}` in every kind.
 
@@ -54,7 +53,6 @@ use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
 use crate::db::Db;
-use crate::git::{self, ForgeApi, ORG};
 use crate::plaza::percent_decode;
 use crate::state::App;
 use crate::stations::link::LINK_CLOSED;
@@ -91,8 +89,7 @@ const NO_CHECKPOINTS: &str =
 type Reply = Result<Value, Response>;
 
 /// What the routes need from the world: the agents' tool calls, the database (the audit lives there), the bus,
-/// the git host and the projects' repos. The live hub implements it with the fleet, the app and the forge; the
-/// tests with a fake.
+/// Weft and the projects' repos. The live hub implements it with the fleet and the app; the tests with a fake.
 pub trait Host {
     /// One tool call on agent `cid`: the gateway's status and body (vsockd's `/tell` answer).
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
@@ -100,8 +97,13 @@ pub trait Host {
     fn db(&self) -> &Db;
     /// Publishes one `ide` bus event.
     fn publish(&self, data: &Value);
-    /// The git host's API, as the admin (the repo workspaces).
-    fn forge(&self) -> &dyn ForgeApi;
+    /// Weft, as the owner (the repo workspaces): one call under `weft serve`'s `/v1`, its status and body.
+    fn weft(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Vec<u8>), String>;
     /// The repo name (without the org) of every project that has one.
     fn project_repos(&self) -> Vec<String>;
     /// The workstations the IDE can open now: online, not revoked and not draining.
@@ -112,7 +114,7 @@ pub trait Host {
     fn frozen(&self) -> bool;
 }
 
-/// The live hub: tells go through the fleet, and the database, the bus, the forge and the projects are the app's.
+/// The live hub: tells go through the fleet, and the database, the bus, Weft and the projects are the app's.
 struct Live<'a>(&'a App);
 
 impl Host for Live<'_> {
@@ -135,8 +137,29 @@ impl Host for Live<'_> {
         self.0.bus.publish("ide", data);
     }
 
-    fn forge(&self) -> &dyn ForgeApi {
-        &self.0.forge
+    fn weft(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Vec<u8>), String> {
+        let client = self.0.weft.client("owner")?;
+        let mut target = client.target.clone();
+        if body.is_some() {
+            target
+                .headers
+                .push(("content-type".into(), "application/json".into()));
+        }
+        let bytes = body.map(|b| b.to_string().into_bytes());
+        apz_http::client::request(
+            &target,
+            method,
+            &format!("{}{path}", client.prefix),
+            bytes.as_deref(),
+            Duration::from_secs(60),
+        )
+        .map(|reply| (reply.status, reply.body))
+        .map_err(|err| err.to_string())
     }
 
     fn project_repos(&self) -> Vec<String> {
@@ -144,10 +167,7 @@ impl Host for Live<'_> {
             .projects
             .list()
             .into_iter()
-            .filter_map(|project| {
-                let full = project.repo?;
-                full.strip_prefix(&format!("{ORG}/")).map(str::to_string)
-            })
+            .filter_map(|project| project.repo)
             .collect()
     }
 
@@ -309,30 +329,60 @@ fn tool(host: &dyn Host, cid: u64, name: &str, args: &Value) -> Reply {
     reply(call(host, cid, name, args)?)
 }
 
-/// One Forgejo call as the owner: its JSON answer, or the Forgejo status and message.
-fn forge_call(host: &dyn Host, method: &str, path: &str, body: Option<&Value>) -> Reply {
-    git::forge_on(host.forge(), method, path, body, None)
-        .map_err(|f| Response::error(f.status, &f.message))
-}
-
-/// One Forgejo call as the owner, raw: the status and the body, so the caller can read a conflict. A transport
-/// failure is 503.
-fn forge_raw(
+/// One Weft call as the owner, raw: its status and body. A transport failure is 503.
+fn weft_raw(
     host: &dyn Host,
     method: &str,
     path: &str,
     body: Option<&Value>,
-) -> Result<(u16, Value), Response> {
-    host.forge()
-        .call(method, path, body, None)
-        .map_err(|err| Response::error(503, &err))
+) -> Result<(u16, Vec<u8>), Response> {
+    host.weft(method, path, body)
+        .map_err(|err| Response::error(503, &format!("Weft: {err}")))
 }
 
-/// The message in a Forgejo answer, or a generic one.
-fn message_of(answer: &Value) -> &str {
-    answer["message"]
-        .as_str()
-        .unwrap_or("the git host refused the request")
+/// One Weft call as the owner, answered with JSON; Weft's refusal keeps its status and message.
+fn weft_json(host: &dyn Host, method: &str, path: &str, body: Option<&Value>) -> Reply {
+    let (status, bytes) = weft_raw(host, method, path, body)?;
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if (200..300).contains(&status) {
+        Ok(value)
+    } else {
+        Err(Response::error(
+            status,
+            value["error"]
+                .as_str()
+                .unwrap_or("Weft refused the request"),
+        ))
+    }
+}
+
+/// A file's bytes at a revision; `None` when it is not there.
+fn weft_file(host: &dyn Host, rev: &str, path: &str) -> Result<Option<Vec<u8>>, Response> {
+    let (status, bytes) = weft_raw(
+        host,
+        "GET",
+        &format!(
+            "/revisions/{rev}/file?path={}",
+            weft::server::percent_encode(path)
+        ),
+        None,
+    )?;
+    match status {
+        200 => Ok(Some(bytes)),
+        404 => Ok(None),
+        _ => {
+            let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            Err(Response::error(
+                status,
+                value["error"].as_str().unwrap_or("Weft refused the read"),
+            ))
+        }
+    }
+}
+
+/// The content hash Weft names a file by.
+fn weft_hash(bytes: &[u8]) -> String {
+    weft::hash::Hash::of(bytes).hex()
 }
 
 fn respond(result: Reply) -> Response {
@@ -413,7 +463,7 @@ fn record(host: &dyn Host, row: Value, data: Value) -> Result<(), Response> {
     Ok(())
 }
 
-/// A path, cleaned by `check`. A refused path is 400 and nothing is sent to the agent or the forge.
+/// A path, cleaned by `check`. A refused path is 400 and nothing is sent to the agent or Weft.
 fn checked(
     raw: Option<&str>,
     check: fn(&str) -> Result<String, PathError>,
@@ -426,15 +476,6 @@ fn arg_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, Response> {
     body.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| Response::error(400, &format!("\"{key}\" must be a string")))
-}
-
-/// An optional string field of a JSON body: absent or null is `None`.
-fn opt_str<'a>(body: &'a Value, key: &str) -> Result<Option<&'a str>, Response> {
-    match body.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text.as_str())),
-        Some(_) => Err(Response::error(400, &format!("\"{key}\" must be a string"))),
-    }
 }
 
 fn parse_u64(raw: &str, name: &str) -> Result<u64, Response> {
@@ -460,14 +501,9 @@ fn status_name(status: Status) -> &'static str {
     }
 }
 
-/// The repo workspaces the IDE opens: each project repo that Forgejo still has, at its default branch. The
-/// platform's own repo is left out. Without a git host there are none; a repo that cannot be read is skipped
-/// and logged, so one bad repo does not hide the rest.
+/// The repo workspaces the IDE opens: each project repo Weft has, on main. The platform's own repo is left out. Without
+/// Weft there are none; a repo that cannot be read is skipped and logged, so one bad repo does not hide the rest.
 pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
-    let forge = host.forge();
-    if !forge.is_configured() {
-        return Vec::new();
-    }
     let names: BTreeSet<String> = host
         .project_repos()
         .into_iter()
@@ -476,25 +512,22 @@ pub fn open_repos(host: &dyn Host) -> Vec<RepoSpace> {
     names
         .into_iter()
         .filter_map(|name| {
-            match git::forge_on(
-                forge,
+            match weft_raw(
+                host,
                 "GET",
-                &format!("/api/v1/repos/{ORG}/{}", git::seg(&name)),
-                None,
+                &format!("/repos/{}", weft::server::percent_encode(&name)),
                 None,
             ) {
-                Ok(repo) => Some(RepoSpace {
-                    default_branch: repo["default_branch"].as_str()?.to_string(),
+                Ok((200, _)) => Some(RepoSpace {
                     name,
+                    default_branch: "main".into(),
                 }),
-                Err(failure) if failure.status == 404 => None,
-                Err(failure) => {
-                    eprintln!(
-                        "apid: the IDE cannot read {ORG}/{name}: {}",
-                        failure.message
-                    );
+                Ok((404, _)) => None,
+                Ok((status, _)) => {
+                    eprintln!("apid: the IDE cannot read the repo {name} in Weft ({status})");
                     None
                 }
+                Err(_) => None,
             }
         })
         .collect()
@@ -1093,27 +1126,22 @@ pub fn station_run_stop(host: &dyn Host, id: &str, run: &str) -> Reply {
     Ok(done)
 }
 
-// The repo kind. Every call goes to the forge as the admin; nothing runs in a VM.
+// The repo kind: a project's repo in Weft, on main. Reads come from main's head; a write is the owner's edit, which
+// lands on main at once (signed for the owner). Weft has no branches or pull requests: agents' work arrives as
+// reviewed changes. Nothing runs in a VM.
 
-/// The text of a repo entry's Forgejo `type`, as the IDE's kinds name it.
-fn repo_entry(item: &Value) -> Value {
-    let kind = match item["type"].as_str() {
-        Some("dir") => "dir",
-        Some("symlink") => "symlink",
-        _ => "file",
-    };
-    let hash = if kind == "file" {
-        item["sha"].clone()
-    } else {
-        Value::Null
-    };
-    json!({
-        "path": item["path"],
-        "kind": kind,
-        "size": item["size"].as_u64().unwrap_or(0),
-        "hash": hash,
-        "binary": false,
-    })
+/// The revision a repo workspace reads: its ref's head.
+fn head_of(host: &dyn Host, ws: &RepoWs) -> Result<String, Response> {
+    let repo = weft_json(
+        host,
+        "GET",
+        &format!("/repos/{}", weft::server::percent_encode(&ws.name)),
+        None,
+    )?;
+    Ok(repo["refs"][ws.git_ref.as_str()]
+        .as_str()
+        .unwrap_or("root")
+        .to_string())
 }
 
 /// The last segment of an entry's path: its name.
@@ -1126,7 +1154,7 @@ fn entry_name(entry: &Value) -> &str {
         .unwrap_or("")
 }
 
-/// `GET .../tree` of a repo: one page of a directory at the branch. Directories come first, then names
+/// `GET .../tree` of a repo: one page of a directory on main. Directories come first, then names
 /// (case-insensitively, then exactly), as the agent kind lists them. The cursor is the next index.
 pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Option<&str>) -> Reply {
     let path = checked(path, check_dir)?;
@@ -1136,20 +1164,53 @@ pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Optio
             Response::error(400, "\"cursor\" must be a cursor from a previous page")
         })?,
     };
-    let listing = forge_call(
-        host,
-        "GET",
-        &git::contents_path(&ws.name, &path, Some(&ws.git_ref)),
-        None,
-    )?;
-    let Some(items) = listing.as_array() else {
-        return Err(Response::error(400, &format!("{path} is not a directory")));
+    let head = head_of(host, ws)?;
+    let listing = weft_json(host, "GET", &format!("/revisions/{head}/files"), None)?;
+    let dir = path.trim_matches('/').to_string();
+    let prefix = if dir.is_empty() {
+        String::new()
+    } else {
+        format!("{dir}/")
     };
-    let mut entries: Vec<Value> = items.iter().map(repo_entry).collect();
+    let mut dirs: BTreeSet<String> = BTreeSet::new();
+    let mut entries: Vec<Value> = Vec::new();
+    for f in listing["files"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let full = f["path"].as_str().unwrap_or("");
+        if full == dir && !dir.is_empty() {
+            return Err(Response::error(400, &format!("{path} is not a directory")));
+        }
+        let Some(rest) = full.strip_prefix(&prefix) else {
+            continue;
+        };
+        match rest.split_once('/') {
+            Some((sub, _)) => {
+                dirs.insert(format!("{prefix}{sub}"));
+            }
+            None => {
+                let kind = if f["mode"].as_u64() == Some(0o120000) {
+                    "symlink"
+                } else {
+                    "file"
+                };
+                entries.push(json!({ "path": full, "kind": kind, "size": f["size"].as_u64().unwrap_or(0), "hash": if kind == "file" { f["hash"].clone() } else { Value::Null }, "binary": false }));
+            }
+        }
+    }
+    if !dir.is_empty() && dirs.is_empty() && entries.is_empty() {
+        return Err(Response::error(404, &format!("no directory {path}")));
+    }
+    entries
+        .extend(dirs.into_iter().map(
+            |d| json!({ "path": d, "kind": "dir", "size": 0, "hash": null, "binary": false }),
+        ));
     entries.sort_by(|a, b| {
-        let dir = |entry: &Value| entry["kind"] == json!("dir");
-        dir(b)
-            .cmp(&dir(a))
+        let is_dir = |entry: &Value| entry["kind"] == json!("dir");
+        is_dir(b)
+            .cmp(&is_dir(a))
             .then_with(|| {
                 entry_name(a)
                     .to_lowercase()
@@ -1163,161 +1224,104 @@ pub fn repo_tree(host: &dyn Host, ws: &RepoWs, path: Option<&str>, cursor: Optio
     Ok(json!({ "entries": &entries[from..end], "next": next }))
 }
 
-/// `GET .../file` of a repo: a text file at the branch, with its blob hash. A binary file, one that is not UTF-8,
-/// one over 1 MiB, and a directory are refused.
+/// `GET .../file` of a repo: a text file on main, with its hash. A binary file, one that is not UTF-8, one over
+/// 1 MiB, and a directory are refused.
 pub fn repo_read(host: &dyn Host, ws: &RepoWs, path: Option<&str>) -> Reply {
     let path = checked(path, check_read)?;
-    let file = forge_call(
-        host,
-        "GET",
-        &git::contents_path(&ws.name, &path, Some(&ws.git_ref)),
-        None,
-    )?;
-    if file.is_array() {
+    let head = head_of(host, ws)?;
+    let Some(bytes) = weft_file(host, &head, &path)? else {
+        // A folder is not a file: say which it is.
+        let listing = weft_json(host, "GET", &format!("/revisions/{head}/files"), None)?;
+        let folder = format!("{}/", path.trim_end_matches('/'));
+        let is_dir = listing["files"].as_array().is_some_and(|f| {
+            f.iter()
+                .any(|x| x["path"].as_str().is_some_and(|p| p.starts_with(&folder)))
+        });
+        return Err(if is_dir {
+            Response::error(
+                400,
+                &format!("{path} is a directory; the IDE reads one file"),
+            )
+        } else {
+            Response::error(404, &format!("no file {path}"))
+        });
+    };
+    if bytes.len() as u64 > MAX_TEXT {
         return Err(Response::error(
             400,
-            &format!("{path} is a directory; the IDE reads one file"),
+            &format!(
+                "{path} is {} bytes, over the {MAX_TEXT}-byte cap",
+                bytes.len()
+            ),
         ));
     }
-    let size = file["size"].as_u64().unwrap_or(0);
-    if size > MAX_TEXT {
-        return Err(Response::error(
-            400,
-            &format!("{path} is {size} bytes, over the {MAX_TEXT}-byte cap"),
-        ));
-    }
-    let content = file["content"]
-        .as_str()
-        .ok_or_else(|| Response::error(502, &format!("the git host sent no content for {path}")))?;
-    let bytes = git::base64_decode(content).map_err(|err| Response::error(502, &err))?;
     if bytes.contains(&0) {
         return Err(Response::error(
             400,
             &format!("{path} is binary (it holds a NUL byte); the IDE opens text only"),
         ));
     }
+    let hash = weft_hash(&bytes);
     let text = String::from_utf8(bytes)
         .map_err(|_| Response::error(400, &format!("{path} is not UTF-8 text")))?;
-    Ok(json!({ "path": path, "size": text.len(), "hash": file["sha"], "text": text }))
+    Ok(json!({ "path": path, "size": text.len(), "hash": hash, "text": text }))
 }
 
-/// The blob hash of `path` at the workspace's branch: None when the file is not there.
-fn repo_hash(host: &dyn Host, ws: &RepoWs, path: &str) -> Result<Option<String>, Response> {
-    let (status, answer) = forge_raw(
-        host,
-        "GET",
-        &git::contents_path(&ws.name, path, Some(&ws.git_ref)),
-        None,
-    )?;
-    match status {
-        200..=299 => Ok(answer["sha"].as_str().map(str::to_string)),
-        404 => Ok(None),
-        _ => Err(Response::error(status, message_of(&answer))),
-    }
-}
-
-/// `PUT .../file` of a repo: a commit on the branch, `owner edit: <path>`, through the contents API. A new file
-/// is created when `expected_hash` is null; an existing one is updated with `sha` = `expected_hash`. A stale
-/// hash (Forgejo answers 409 or 422, or 404 when the file was removed) is a 409 with the hash the file has now,
-/// and nothing is committed. Answers `{path, hash, checkpoint}` with the commit's sha as the checkpoint.
+/// `PUT .../file` of a repo: the owner's edit, which lands on main at once as a change of its own. A new file is
+/// created when `expected_hash` is null; an existing one must still have `expected_hash`, else the answer is a 409
+/// with the hash the file has now, and nothing lands. Answers `{path, hash, checkpoint}`, the checkpoint being the
+/// landed revision.
 pub fn repo_write(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
     let WriteArgs {
         path,
         text,
         expected,
     } = write_args(body)?;
-    let url = git::contents_path(&ws.name, &path, None);
-    let mut payload = json!({
-        "content": git::base64(text.as_bytes()),
-        "message": format!("owner edit: {path}"),
-        "branch": ws.git_ref,
-    });
-    let updating = expected.is_string();
-    if let Some(sha) = expected.as_str() {
-        payload["sha"] = json!(sha);
+    let head = head_of(host, ws)?;
+    let now = weft_file(host, &head, &path)?.map(|b| weft_hash(&b));
+    if now.as_deref() != expected.as_str() {
+        return Err(Response::json(
+            409,
+            &json!({ "error": "conflict", "current_hash": now }),
+        ));
     }
-    let method = if updating { "PUT" } else { "POST" };
-    let (status, answer) = forge_raw(host, method, &url, Some(&payload))?;
-    if (200..300).contains(&status) {
-        let hash = answer["content"]["sha"]
-            .as_str()
-            .ok_or_else(|| Response::error(502, "the git host answered a write with no file hash"))?
-            .to_string();
-        let checkpoint = answer["commit"]["sha"].clone();
-        let id = ws.id();
-        let row = audit_row(
-            &id,
-            "write",
-            Some(path.as_str()),
-            json!({ "hash_before": expected, "hash_after": hash, "checkpoint": checkpoint }),
-        );
-        record(host, row, event(&id, Some(path.as_str()), "write"))?;
-        return Ok(json!({ "path": path, "hash": hash, "checkpoint": checkpoint }));
-    }
-    let moved = matches!(status, 409 | 422) || (updating && status == 404);
-    if moved {
-        let now = repo_hash(host, ws, &path)?;
-        if now.as_deref() != expected.as_str() {
-            return Err(Response::json(
-                409,
-                &json!({ "error": "conflict", "current_hash": now }),
-            ));
-        }
-    }
-    Err(Response::error(status, message_of(&answer)))
-}
-
-/// The first line of a commit message.
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("")
-}
-
-/// The default branch of a project repo.
-fn default_branch(host: &dyn Host, name: &str) -> Result<String, Response> {
-    let repo = forge_call(
+    let edit = json!({ "title": format!("owner edit: {path}"), "ref": ws.git_ref, "files": [{ "path": path, "text": text }] });
+    let landed = weft_json(
         host,
-        "GET",
-        &format!("/api/v1/repos/{ORG}/{}", git::seg(name)),
-        None,
+        "POST",
+        &format!("/repos/{}/edits", weft::server::percent_encode(&ws.name)),
+        Some(&edit),
     )?;
-    repo["default_branch"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| Response::error(502, "the git host sent no default branch"))
+    let hash = weft_hash(text.as_bytes());
+    let checkpoint = landed["landed"].clone();
+    let id = ws.id();
+    let row = audit_row(
+        &id,
+        "write",
+        Some(path.as_str()),
+        json!({ "hash_before": expected, "hash_after": hash, "checkpoint": checkpoint, "change": landed["change"] }),
+    );
+    record(host, row, event(&id, Some(path.as_str()), "write"))?;
+    Ok(json!({ "path": path, "hash": hash, "checkpoint": checkpoint }))
 }
 
-/// One side of a repo file at a ref. `Absent` is a file that is not there; `Binary` is one the IDE does not
-/// show as lines (a NUL in its first 8 KiB, not UTF-8, over 1 MiB, or not a regular file), with its blob hash.
+/// One side of a repo file at a revision. `Absent` is a file that is not there; `Binary` is one the IDE does not
+/// show as lines (a NUL in its first 8 KiB, not UTF-8, or over 1 MiB), with its hash.
 enum Side {
     Absent,
     Text(String),
     Binary(String),
 }
 
-/// A repo file at `reference` (a branch, a tag or a commit), through the contents API. 404 is `Absent`.
-fn repo_side(host: &dyn Host, ws: &RepoWs, path: &str, reference: &str) -> Result<Side, Response> {
-    let (status, answer) = forge_raw(
-        host,
-        "GET",
-        &git::contents_path(&ws.name, path, Some(reference)),
-        None,
-    )?;
-    match status {
-        404 => return Ok(Side::Absent),
-        200..=299 => {}
-        _ => return Err(Response::error(status, message_of(&answer))),
+fn repo_side(host: &dyn Host, rev: &str, path: &str) -> Result<Side, Response> {
+    if rev == "root" {
+        return Ok(Side::Absent);
     }
-    let hash = answer["sha"].as_str().unwrap_or_default().to_string();
-    let regular = !answer.is_array() && answer["type"].as_str().is_none_or(|kind| kind == "file");
-    let size = answer["size"].as_u64().unwrap_or(0);
-    if !regular || size > MAX_TEXT {
-        return Ok(Side::Binary(hash));
-    }
-    let content = answer["content"]
-        .as_str()
-        .ok_or_else(|| Response::error(502, &format!("the git host sent no content for {path}")))?;
-    let bytes = git::base64_decode(content).map_err(|err| Response::error(502, &err))?;
-    if bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
+    let Some(bytes) = weft_file(host, rev, path)? else {
+        return Ok(Side::Absent);
+    };
+    let hash = weft_hash(&bytes);
+    if bytes.len() as u64 > MAX_TEXT || bytes[..bytes.len().min(BINARY_PROBE)].contains(&0) {
         return Ok(Side::Binary(hash));
     }
     Ok(match String::from_utf8(bytes) {
@@ -1327,7 +1331,7 @@ fn repo_side(host: &dyn Host, ws: &RepoWs, path: &str, reference: &str) -> Resul
 }
 
 /// The diff text of one changed file between its two sides. Two text sides are diffed line by line; anything else
-/// is a `Binary files ... differ` entry, and a binary file whose blob hash is the same on both sides is no change.
+/// is a `Binary files ... differ` entry, and a binary file whose hash is the same on both sides is no change.
 fn file_diff(old_path: Option<&str>, new_path: Option<&str>, old: &Side, new: &Side) -> String {
     match (old, new) {
         (Side::Binary(a), Side::Binary(b)) if a == b && old_path == new_path => String::new(),
@@ -1342,78 +1346,70 @@ fn file_diff(old_path: Option<&str>, new_path: Option<&str>, old: &Side, new: &S
     }
 }
 
-/// `GET .../changes?base=` of a repo, as a unified diff from the base to the branch's head. The git host's compare
-/// JSON gives the changed files; each is read at both refs and diffed here, since Forgejo has no compare diff
-/// in its API. A renamed file is read at its old name on the base side. At most `MAX_CHANGED_FILES` files are
-/// diffed, and `truncated` says whether more changed. The base is `branch:<name>` (a compare of `<name>...<head>`).
-/// With no base, the default branch compares its last commit with that commit's parent, and any other branch
-/// compares with the default branch. The checkpoint is the head commit's sha.
+/// `GET .../changes?base=` of a repo, as a unified diff from the base to main's head. The base is `rev:<revision>`
+/// or `change:<w-N>` (its landed revision); without one, main's last landing against the revision before it. At
+/// most `MAX_CHANGED_FILES` files are diffed, and `truncated` says whether more changed. The checkpoint is main's
+/// head.
 pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
-    let commits = forge_call(
-        host,
-        "GET",
-        &format!(
-            "/api/v1/repos/{ORG}/{}/commits?sha={}&limit=1&stat=false",
-            git::seg(&ws.name),
-            git::seg(&ws.git_ref)
-        ),
-        None,
-    )?;
-    let head = commits
-        .get(0)
-        .ok_or_else(|| Response::error(404, &format!("no commits on {}", ws.git_ref)))?;
-    let head_sha = head["sha"]
-        .as_str()
-        .ok_or_else(|| Response::error(502, "the git host sent a commit with no sha"))?
-        .to_string();
-    let (label, base_ref) = match base {
+    let head = head_of(host, ws)?;
+    if head == "root" {
+        return Err(Response::error(
+            404,
+            &format!("nothing has landed on {}", ws.git_ref),
+        ));
+    }
+    // `work_start` is an agent workspace's base; on a repo, as with none, it is the landing before main's head.
+    let (label, base_rev) = match base.filter(|b| !matches!(*b, "" | "work_start")) {
         Some(raw) => {
-            let name = raw
-                .strip_prefix("branch:")
-                .ok_or_else(|| Response::error(400, "base must be branch:<name>"))?;
-            check_branch(name)?;
-            (raw.to_string(), name.to_string())
-        }
-        None => {
-            let default = default_branch(host, &ws.name)?;
-            if default == ws.git_ref {
-                let parent = head["parents"][0]["sha"].as_str().ok_or_else(|| {
-                    Response::error(400, "the last commit has no earlier commit to compare with; pass base=branch:<name>")
-                })?;
-                (format!("commit:{parent}"), parent.to_string())
+            if let Some(rev) = raw.strip_prefix("rev:") {
+                (raw.to_string(), rev.to_string())
+            } else if let Some(change) = raw.strip_prefix("change:") {
+                let c = weft_json(
+                    host,
+                    "GET",
+                    &format!("/changes/{}", weft::server::percent_encode(change)),
+                    None,
+                )?;
+                let landed = c["landed"]
+                    .as_str()
+                    .ok_or_else(|| Response::error(400, &format!("{change} has not landed")))?;
+                (raw.to_string(), landed.to_string())
             } else {
-                (format!("branch:{default}"), default)
+                return Err(Response::error(
+                    400,
+                    "base must be rev:<revision> or change:<w-N>",
+                ));
             }
         }
+        None => {
+            let rev = weft_json(host, "GET", &format!("/revisions/{head}"), None)?;
+            let before = rev["base"].as_str().unwrap_or("root").to_string();
+            (format!("rev:{before}"), before)
+        }
     };
-    let compare = forge_call(
+    let changed = weft_json(
         host,
         "GET",
         &format!(
-            "/api/v1/repos/{ORG}/{}/compare/{}...{}",
-            git::seg(&ws.name),
-            git::pct(&base_ref, true),
-            git::pct(&head_sha, true)
+            "/revisions/{head}/diff?base={}",
+            weft::server::percent_encode(&base_rev)
         ),
         None,
     )?;
-    let listed = compare["files"]
+    let listed = changed["files"]
         .as_array()
-        .ok_or_else(|| Response::error(502, "the git host sent no file list for the compare"))?;
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let truncated = listed.len() > MAX_CHANGED_FILES;
     let mut diff = String::new();
     for item in listed.iter().take(MAX_CHANGED_FILES) {
-        let name = item["filename"]
+        let name = item["path"]
             .as_str()
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| Response::error(502, "the git host sent a changed file with no name"))?;
-        let from = match (item["status"].as_str(), item["previous_filename"].as_str()) {
-            (Some("renamed"), Some(previous)) if !previous.is_empty() => previous,
-            _ => name,
-        };
-        let old = repo_side(host, ws, from, &base_ref)?;
-        let new = repo_side(host, ws, name, &head_sha)?;
-        let old_path = (!matches!(old, Side::Absent)).then_some(from);
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| Response::error(502, "Weft sent a changed file with no path"))?;
+        let old = repo_side(host, &base_rev, name)?;
+        let new = repo_side(host, &head, name)?;
+        let old_path = (!matches!(old, Side::Absent)).then_some(name);
         let new_path = (!matches!(new, Side::Absent)).then_some(name);
         diff.push_str(&file_diff(old_path, new_path, &old, &new));
         if diff.len() > MAX_DIFF {
@@ -1426,100 +1422,49 @@ pub fn repo_changes(host: &dyn Host, ws: &RepoWs, base: Option<&str>) -> Reply {
     let set = parse_unified(&diff).map_err(|err| {
         Response::error(
             502,
-            &format!("the diff built from the git host's files does not parse: {err}"),
+            &format!("the diff built from Weft's files does not parse: {err}"),
         )
     })?;
     let stats = set.stats();
-    Ok(json!({
-        "base": label,
-        "checkpoint": head_sha,
-        "diff": diff,
-        "files": set.files,
-        "stats": stats,
-        "truncated": truncated,
-    }))
+    Ok(
+        json!({ "base": label, "checkpoint": head, "diff": diff, "files": set.files, "stats": stats, "truncated": truncated }),
+    )
 }
 
-/// `GET .../checkpoints` of a repo: the branch's newest commits, newest first. `n` is the index in that list.
+/// `GET .../checkpoints` of a repo: what landed on main, newest first. `n` is the index in that list.
 pub fn repo_checkpoints(host: &dyn Host, ws: &RepoWs) -> Reply {
-    let path = format!(
-        "/api/v1/repos/{ORG}/{}/commits?sha={}&limit={CHECKPOINT_LIMIT}&stat=false",
-        git::seg(&ws.name),
-        git::seg(&ws.git_ref)
-    );
-    let commits = forge_call(host, "GET", &path, None)?;
-    let rows: Vec<Value> = commits
+    let log = weft_json(
+        host,
+        "GET",
+        &format!(
+            "/repos/{}/log?q=landed()&limit={CHECKPOINT_LIMIT}",
+            weft::server::percent_encode(&ws.name)
+        ),
+        None,
+    )?;
+    let rows: Vec<Value> = log["changes"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[])
         .iter()
         .enumerate()
-        .map(|(n, commit)| {
-            json!({
-                "n": n,
-                "label": first_line(commit["commit"]["message"].as_str().unwrap_or("")),
-                "created_ms": rfc3339_ms(commit["commit"]["committer"]["date"].as_str().unwrap_or("")),
-                "sha": commit["sha"],
-            })
-        })
+        .map(|(n, c)| json!({ "n": n, "label": c["title"], "created_ms": c["at_ms"], "sha": c["landed"], "change": c["change"] }))
         .collect();
     Ok(json!({ "checkpoints": rows }))
 }
 
-/// `POST .../branch` of a repo: a new branch from the workspace's ref. Answers the new workspace's id.
-pub fn repo_branch(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
-    let name = arg_str(body, "name")?;
-    check_branch(name)?;
-    let payload = json!({ "new_branch_name": name, "old_branch_name": ws.git_ref, "old_ref_name": ws.git_ref });
-    forge_call(
-        host,
-        "POST",
-        &format!("/api/v1/repos/{ORG}/{}/branches", git::seg(&ws.name)),
-        Some(&payload),
-    )?;
-    let row = audit_row(
-        &ws.id(),
-        "branch",
-        None,
-        json!({ "branch": name, "from": ws.git_ref }),
-    );
-    record(host, row, event(&ws.id(), None, "branch"))?;
-    Ok(json!({ "id": format!("repo:{}@{name}", ws.name) }))
+/// Why a repo workspace has no branches and no pull requests.
+const NO_BRANCHES: &str = "Weft has no branches or pull requests: your edits land on main directly, and agents' work arrives as reviewed changes (History)";
+
+/// `POST .../branch` of a repo: gone with the git host.
+pub fn repo_branch(_host: &dyn Host, _ws: &RepoWs, body: &Value) -> Reply {
+    check_branch(arg_str(body, "name")?)?;
+    Err(Response::error(410, NO_BRANCHES))
 }
 
-/// `POST .../pulls` of a repo: a pull request from the workspace's branch into `base` (the default branch when
-/// absent). `title` is required and trimmed; `body` is optional. Answers the pull request's row.
-pub fn repo_pull(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
-    let title = arg_str(body, "title")?.trim();
-    if title.is_empty() {
-        return Err(Response::error(400, "\"title\" is empty"));
-    }
-    let text = opt_str(body, "body")?.unwrap_or("");
-    let base = match opt_str(body, "base")?.filter(|name| !name.is_empty()) {
-        Some(name) => {
-            check_branch(name)?;
-            name.to_string()
-        }
-        None => default_branch(host, &ws.name)?,
-    };
-    let row = git::open_pr(
-        host.forge(),
-        None,
-        &ws.name,
-        &ws.git_ref,
-        &base,
-        title,
-        text,
-    )
-    .map_err(|f| Response::error(f.status, &f.message))?;
-    let id = ws.id();
-    let detail = json!({ "number": row["number"], "head": ws.git_ref, "base": base });
-    record(
-        host,
-        audit_row(&id, "pull", None, detail),
-        event(&id, None, "pull"),
-    )?;
-    Ok(row)
+/// `POST .../pulls` of a repo: gone with the git host.
+pub fn repo_pull(_host: &dyn Host, _ws: &RepoWs, _body: &Value) -> Reply {
+    Err(Response::error(410, NO_BRANCHES))
 }
 
 /// Milliseconds since the Unix epoch of an RFC 3339 instant, such as `2026-10-14T09:30:00Z` or one with
@@ -1811,16 +1756,16 @@ mod tests {
     use crate::stations::link::tests as link_tests;
 
     type Answerer = Box<dyn Fn(&str, &Value) -> Result<(u16, Value), String>>;
-    type ForgeAnswerer = Box<dyn Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String>>;
+    type WeftAnswerer = Box<dyn Fn(&str, &str, Option<&Value>) -> Result<(u16, Vec<u8>), String>>;
 
-    /// A host whose tool calls and forge calls `answer` decides. It records each call and each event.
+    /// A host whose tool calls and Weft calls `answer` decides. It records each call and each event.
     struct Fake {
         answer: Answerer,
         log: RefCell<Vec<(String, Value)>>,
         events: RefCell<Vec<Value>>,
-        forge_answer: ForgeAnswerer,
-        /// (method, path, body or null) of each forge call.
-        forge_log: RefCell<Vec<(String, String, Value)>>,
+        weft_answer: WeftAnswerer,
+        /// (method, path, body or null) of each Weft call.
+        weft_log: RefCell<Vec<(String, String, Value)>>,
         projects: Vec<String>,
         /// The workstations the IDE opens, and the live link each one answers through.
         stations: Vec<StationSpace>,
@@ -1847,13 +1792,13 @@ mod tests {
                 answer: Box::new(answer),
                 log: RefCell::default(),
                 events: RefCell::default(),
-                forge_answer: Box::new(|_, path, _| {
-                    Ok((
+                weft_answer: Box::new(|_, path, _| {
+                    wjson(
                         404,
-                        json!({ "message": format!("no forge answer for {path}") }),
-                    ))
+                        json!({ "error": format!("no Weft answer for {path}") }),
+                    )
                 }),
-                forge_log: RefCell::default(),
+                weft_log: RefCell::default(),
                 projects: Vec::new(),
                 stations: Vec::new(),
                 links: Vec::new(),
@@ -1863,12 +1808,12 @@ mod tests {
             }
         }
 
-        /// The forge answers with `answer`: (method, path, body).
-        fn with_forge(
+        /// Weft answers with `answer`: (method, path, body).
+        fn with_weft(
             mut self,
-            answer: impl Fn(&str, &str, Option<&Value>) -> Result<(u16, Value), String> + 'static,
+            answer: impl Fn(&str, &str, Option<&Value>) -> Result<(u16, Vec<u8>), String> + 'static,
         ) -> Self {
-            self.forge_answer = Box::new(answer);
+            self.weft_answer = Box::new(answer);
             self
         }
 
@@ -1908,18 +1853,18 @@ mod tests {
                 .unwrap_or(Value::Null)
         }
 
-        /// The forge calls made so far, as `METHOD path`.
-        fn forge_paths(&self) -> Vec<String> {
-            self.forge_log
+        /// The Weft calls made so far, as `METHOD path`.
+        fn weft_paths(&self) -> Vec<String> {
+            self.weft_log
                 .borrow()
                 .iter()
                 .map(|(method, path, _)| format!("{method} {path}"))
                 .collect()
         }
 
-        /// The body of the last forge call.
-        fn last_forge_body(&self) -> Value {
-            self.forge_log
+        /// The body of the last Weft call.
+        fn last_weft_body(&self) -> Value {
+            self.weft_log
                 .borrow()
                 .last()
                 .map(|(_, _, body)| body.clone())
@@ -1956,33 +1901,22 @@ mod tests {
             self.events.borrow_mut().push(data.clone());
         }
 
-        fn forge(&self) -> &dyn ForgeApi {
-            self
-        }
-
-        fn project_repos(&self) -> Vec<String> {
-            self.projects.clone()
-        }
-    }
-
-    impl ForgeApi for Fake {
-        fn is_configured(&self) -> bool {
-            true
-        }
-
-        fn call(
+        fn weft(
             &self,
             method: &str,
             path: &str,
             body: Option<&Value>,
-            _sudo: Option<&str>,
-        ) -> Result<(u16, Value), String> {
-            self.forge_log.borrow_mut().push((
+        ) -> Result<(u16, Vec<u8>), String> {
+            self.weft_log.borrow_mut().push((
                 method.to_string(),
                 path.to_string(),
                 body.cloned().unwrap_or(Value::Null),
             ));
-            (self.forge_answer)(method, path, body)
+            (self.weft_answer)(method, path, body)
+        }
+
+        fn project_repos(&self) -> Vec<String> {
+            self.projects.clone()
         }
     }
 
@@ -2031,9 +1965,47 @@ mod tests {
         Ok((200, json!({ "ok": false, "output": text })))
     }
 
-    /// A forge answer with a JSON body.
-    fn forge_ok(status: u16, value: Value) -> Result<(u16, Value), String> {
-        Ok((status, value))
+    /// A Weft answer with a JSON body.
+    fn wjson(status: u16, value: Value) -> Result<(u16, Vec<u8>), String> {
+        Ok((status, value.to_string().into_bytes()))
+    }
+
+    /// A Weft answer with raw bytes (a file).
+    fn wbytes(bytes: &[u8]) -> Result<(u16, Vec<u8>), String> {
+        Ok((200, bytes.to_vec()))
+    }
+
+    /// A repo in Weft whose main is at `head` with these files (path, text).
+    fn weft_repo(
+        head: &'static str,
+        files: Vec<(&'static str, &'static [u8])>,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<(u16, Vec<u8>), String> + 'static {
+        move |method, path, body| {
+            let listing: Vec<Value> = files.iter().map(|(p, b)| json!({ "path": p, "hash": weft_hash(b), "mode": 0o100644, "size": b.len() })).collect();
+            match (method, path) {
+                ("GET", "/repos/p1-plaza") => {
+                    wjson(200, json!({ "name": "p1-plaza", "refs": { "main": head } }))
+                }
+                ("GET", p) if p == format!("/revisions/{head}/files") => {
+                    wjson(200, json!({ "files": listing }))
+                }
+                ("GET", p) if p.starts_with(&format!("/revisions/{head}/file?path=")) => {
+                    let want = crate::plaza::percent_decode(p.split_once("path=").unwrap().1);
+                    match files.iter().find(|(f, _)| *f == want) {
+                        Some((_, b)) => wbytes(b),
+                        None => wjson(404, json!({ "error": "no such file" })),
+                    }
+                }
+                ("POST", "/repos/p1-plaza/edits") => wjson(
+                    200,
+                    json!({ "change": "w-9", "landed": "w-9.l", "body": body }),
+                ),
+                _ => wjson(
+                    404,
+                    json!({ "error": format!("unexpected {method} {path}") }),
+                ),
+            }
+        }
     }
 
     fn status_of<T>(result: Result<T, Response>) -> u16 {
@@ -2126,117 +2098,81 @@ mod tests {
     }
 
     #[test]
-    fn open_repos_lists_project_repos_that_forgejo_has_and_never_the_platform_one() {
-        let fake = Fake::new("open", |_, _| ok(json!({})))
+    fn open_repos_lists_the_project_repos_weft_has_and_never_the_platform_one() {
+        let fake = Fake::new("repos", |_, _| ok(json!({})))
             .with_projects(&["p1-plaza", "agentplaza", "p2-gone"])
-            .with_forge(|method, path, _| {
-                assert_eq!(method, "GET");
-                assert!(
-                    !path.contains("agentplaza/agentplaza"),
-                    "the platform repo must not be asked for: {path}"
-                );
-                match path {
-                    "/api/v1/repos/agentplaza/p1-plaza" => {
-                        forge_ok(200, json!({ "default_branch": "main" }))
-                    }
-                    _ => forge_ok(404, json!({ "message": "not found" })),
-                }
+            .with_weft(|_, path, _| match path {
+                "/repos/p1-plaza" => wjson(
+                    200,
+                    json!({ "name": "p1-plaza", "refs": { "main": "w-1.l" } }),
+                ),
+                _ => wjson(404, json!({ "error": "no such repo" })),
             });
-        let repos = open_repos(&fake);
         assert_eq!(
-            repos,
+            open_repos(&fake),
             vec![RepoSpace {
                 name: "p1-plaza".into(),
                 default_branch: "main".into()
             }]
         );
-        assert_eq!(
-            fake.forge_paths(),
-            vec![
-                "GET /api/v1/repos/agentplaza/p1-plaza",
-                "GET /api/v1/repos/agentplaza/p2-gone"
-            ]
+        assert!(
+            !fake.weft_paths().iter().any(|p| p.contains("agentplaza")),
+            "the platform's repo is never asked for"
         );
     }
 
     #[test]
-    fn repo_tree_maps_forgejo_entries_dirs_first_and_pages_at_500() {
-        let fake = Fake::new("rtree", |_, _| ok(json!({}))).with_forge(|method, path, _| {
-            assert_eq!(method, "GET");
-            assert_eq!(path, "/api/v1/repos/agentplaza/p1-plaza/contents/docs?ref=main");
-            forge_ok(200, json!([
-                {"name": "b.txt", "path": "docs/b.txt", "type": "file", "size": 3, "sha": "blob-b"},
-                {"name": "Zed", "path": "docs/Zed", "type": "dir", "size": 0, "sha": "tree-z"},
-                {"name": "a.md", "path": "docs/a.md", "type": "file", "size": 9, "sha": "blob-a"},
-                {"name": "link", "path": "docs/link", "type": "symlink", "size": 4, "sha": "l"}
-            ]))
-        });
-        let page = repo_tree(&fake, &repo("p1-plaza", "main"), Some("docs/"), None).unwrap();
-        let entries = page["entries"].as_array().unwrap();
-        let paths: Vec<&str> = entries
+    fn repo_tree_lists_main_with_folders_first_and_pages() {
+        let fake = Fake::new("rtree", |_, _| ok(json!({}))).with_weft(weft_repo(
+            "w-3.l",
+            vec![
+                ("docs/b.md", b"b"),
+                ("docs/a.md", b"a"),
+                ("docs/guides/x.md", b"x"),
+                ("README.md", b"r"),
+            ],
+        ));
+        let ws = repo("p1-plaza", "main");
+        let page = repo_tree(&fake, &ws, Some("docs/"), None).unwrap();
+        let names: Vec<&str> = page["entries"]
+            .as_array()
+            .unwrap()
             .iter()
             .map(|e| e["path"].as_str().unwrap())
             .collect();
+        assert_eq!(names, ["docs/guides", "docs/a.md", "docs/b.md"]);
+        assert_eq!(page["entries"][0]["kind"], "dir");
+        assert_eq!(page["entries"][1]["hash"], json!(weft_hash(b"a")));
+        let root = repo_tree(&fake, &ws, None, None).unwrap();
+        assert_eq!(root["entries"].as_array().unwrap().len(), 2);
         assert_eq!(
-            paths,
-            vec!["docs/Zed", "docs/a.md", "docs/b.txt", "docs/link"]
-        );
-        assert_eq!(entries[0]["kind"], json!("dir"));
-        assert_eq!(entries[0]["hash"], Value::Null);
-        assert_eq!(entries[1]["hash"], json!("blob-a"));
-        assert_eq!(entries[3]["kind"], json!("symlink"));
-        assert_eq!(page["next"], Value::Null);
-    }
-
-    #[test]
-    fn repo_tree_pages_by_index_and_refuses_a_bad_cursor() {
-        let listing: Vec<Value> = (0..501)
-            .map(|i| json!({"name": format!("f{i:03}"), "path": format!("big/f{i:03}"), "type": "file", "size": 1, "sha": format!("s{i}")}))
-            .collect();
-        let fake = Fake::new("rpage", |_, _| ok(json!({})))
-            .with_forge(move |_, _, _| forge_ok(200, Value::Array(listing.clone())));
-        let ws = repo("p1-plaza", "main");
-        let first = repo_tree(&fake, &ws, Some("big"), None).unwrap();
-        assert_eq!(first["entries"].as_array().unwrap().len(), PAGE_SIZE);
-        assert_eq!(first["next"], json!("500"));
-        let second = repo_tree(&fake, &ws, Some("big"), Some("500")).unwrap();
-        assert_eq!(second["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(second["entries"][0]["path"], json!("big/f500"));
-        assert_eq!(second["next"], Value::Null);
-        assert_eq!(
-            status_of(repo_tree(&fake, &ws, Some("big"), Some("abc"))),
+            status_of(repo_tree(&fake, &ws, Some("docs"), Some("abc"))),
             400
         );
         assert_eq!(status_of(repo_tree(&fake, &ws, Some("../x"), None)), 400);
+        assert_eq!(
+            status_of(repo_tree(&fake, &ws, Some("README.md"), None)),
+            400
+        );
+        assert_eq!(status_of(repo_tree(&fake, &ws, Some("nope"), None)), 404);
     }
 
     #[test]
-    fn repo_read_returns_the_text_with_the_blob_hash() {
-        let fake = Fake::new("rread", |_, _| ok(json!({}))).with_forge(|_, path, _| {
-            assert_eq!(path, "/api/v1/repos/agentplaza/p1-plaza/contents/notes/a.txt?ref=main");
-            forge_ok(200, json!({"type": "file", "name": "a.txt", "path": "notes/a.txt", "size": 6, "sha": "blob-1", "content": git::base64(b"hello\n")}))
-        });
-        let file = repo_read(&fake, &repo("p1-plaza", "main"), Some("notes/a.txt")).unwrap();
-        assert_eq!(file["text"], json!("hello\n"));
-        assert_eq!(file["hash"], json!("blob-1"));
-        assert_eq!(file["size"], json!(6));
-    }
-
-    #[test]
-    fn repo_read_refuses_binary_huge_and_directory_answers() {
-        let fake = Fake::new("rrefuse", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("bin.dat") => forge_ok(
-                200,
-                json!({"size": 3, "sha": "b", "content": git::base64(b"a\0b")}),
-            ),
-            p if p.contains("huge.txt") => forge_ok(
-                200,
-                json!({"size": 1_048_577u64, "sha": "h", "content": ""}),
-            ),
-            p if p.contains("docs") => forge_ok(200, json!([])),
-            _ => forge_ok(404, json!({"message": "gone"})),
-        });
+    fn repo_read_returns_text_with_its_hash_and_refuses_what_is_not_text() {
+        static HUGE: [u8; 1_100_000] = [b'a'; 1_100_000];
+        let fake = Fake::new("rread", |_, _| ok(json!({}))).with_weft(weft_repo(
+            "w-3.l",
+            vec![
+                ("notes/a.txt", b"hello\n"),
+                ("bin.dat", b"a\0b"),
+                ("huge.txt", &HUGE),
+                ("docs/x.md", b"x"),
+            ],
+        ));
         let ws = repo("p1-plaza", "main");
+        let file = repo_read(&fake, &ws, Some("notes/a.txt")).unwrap();
+        assert_eq!(file["text"], "hello\n");
+        assert_eq!(file["hash"], json!(weft_hash(b"hello\n")));
         assert_eq!(status_of(repo_read(&fake, &ws, Some("bin.dat"))), 400);
         assert_eq!(status_of(repo_read(&fake, &ws, Some("huge.txt"))), 400);
         assert_eq!(status_of(repo_read(&fake, &ws, Some("docs"))), 400);
@@ -2244,496 +2180,115 @@ mod tests {
         assert_eq!(
             status_of(repo_read(&fake, &ws, Some(".env"))),
             400,
-            "a secret file is refused before the forge"
+            "a secret file is refused before Weft"
         );
     }
 
     #[test]
-    fn repo_create_commits_a_new_file_on_the_branch_and_audits_it() {
-        let fake = Fake::new("rcreate", |_, _| ok(json!({}))).with_forge(|method, path, _| {
-            assert_eq!(
-                (method, path),
-                (
-                    "POST",
-                    "/api/v1/repos/agentplaza/p1-plaza/contents/notes/new.txt"
-                )
-            );
-            forge_ok(
-                201,
-                json!({"content": {"sha": "blob-new"}, "commit": {"sha": "commit-9"}}),
-            )
-        });
-        let body = json!({ "path": "notes/new.txt", "text": "one\n", "expected_hash": null });
-        let done = repo_write(&fake, &repo("p1-plaza", "feature/x"), &body).unwrap();
-        assert_eq!(
-            done,
-            json!({"path": "notes/new.txt", "hash": "blob-new", "checkpoint": "commit-9"})
-        );
-
-        let sent = fake.last_forge_body();
-        assert_eq!(sent["branch"], json!("feature/x"));
-        assert_eq!(sent["message"], json!("owner edit: notes/new.txt"));
-        assert_eq!(sent["content"], json!(git::base64(b"one\n")));
-        assert!(sent.get("sha").is_none(), "a create sends no sha");
-
-        let rows = fake
-            .db
-            .ide_audit(Some("repo:p1-plaza@feature/x"), 10)
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["kind"], json!("write"));
-        assert_eq!(rows[0]["hash_before"], Value::Null);
-        assert_eq!(rows[0]["hash_after"], json!("blob-new"));
-        assert_eq!(rows[0]["checkpoint"], json!("commit-9"));
-        assert_eq!(
-            fake.events.borrow()[0],
-            json!({ "workspace": "repo:p1-plaza@feature/x", "path": "notes/new.txt", "kind": "write" })
-        );
-    }
-
-    #[test]
-    fn repo_write_conflicts_carry_the_current_hash_and_keep_other_refusals() {
-        // A stale sha on update is a conflict: 409 with the file's current hash. A refused write is not audited.
-        {
-            let fake =
-                Fake::new("rstale", |_, _| ok(json!({}))).with_forge(
-                    |method, path, _| match method {
-                        "PUT" => forge_ok(422, json!({"message": "sha does not match"})),
-                        _ => {
-                            assert_eq!(
-                                path,
-                                "/api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=main"
-                            );
-                            forge_ok(200, json!({"sha": "now"}))
-                        }
-                    },
-                );
-            let body = json!({ "path": "a.txt", "text": "two", "expected_hash": "old" });
-            let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
-            assert_eq!(response.status, 409);
-            let answer = body_of(response);
-            assert_eq!(answer, json!({"error": "conflict", "current_hash": "now"}));
-            assert_eq!(
-                fake.forge_paths()[0],
-                "PUT /api/v1/repos/agentplaza/p1-plaza/contents/a.txt"
-            );
-            assert_eq!(fake.forge_log.borrow()[0].2["sha"], json!("old"));
-            assert!(
-                fake.db.ide_audit(None, 10).unwrap().is_empty(),
-                "a refused write is not audited"
-            );
-            assert!(fake.events.borrow().is_empty());
-        }
-        // Update of a file that is gone: the PUT is 404 and the file has no hash now, so the hash is null.
-        {
-            let gone =
-                Fake::new("rgone", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-                    "PUT" => forge_ok(404, json!({"message": "file does not exist"})),
-                    _ => forge_ok(404, json!({"message": "file does not exist"})),
-                });
-            let update = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
-            let response = repo_write(&gone, &repo("p1-plaza", "main"), &update).unwrap_err();
-            assert_eq!(
-                body_of(response),
-                json!({"error": "conflict", "current_hash": null})
-            );
-        }
-        // A create over a file that exists: the POST is 422 and the file has a hash.
-        {
-            let exists =
-                Fake::new("rexists", |_, _| ok(json!({}))).with_forge(
-                    |method, _, _| match method {
-                        "POST" => forge_ok(422, json!({"message": "already exists"})),
-                        _ => forge_ok(200, json!({"sha": "now"})),
-                    },
-                );
-            let create = json!({ "path": "a.txt", "text": "x", "expected_hash": null });
-            let response = repo_write(&exists, &repo("p1-plaza", "main"), &create).unwrap_err();
-            assert_eq!(
-                body_of(response),
-                json!({"error": "conflict", "current_hash": "now"})
-            );
-        }
-        // The file still has the hash the owner read, so the 422 is some other refusal and keeps its status and message.
-        {
-            let fake =
-                Fake::new("rother", |_, _| ok(json!({}))).with_forge(|method, _, _| match method {
-                    "PUT" => forge_ok(422, json!({"message": "branch is protected"})),
-                    _ => forge_ok(200, json!({"sha": "old"})),
-                });
-            let body = json!({ "path": "a.txt", "text": "x", "expected_hash": "old" });
-            let response = repo_write(&fake, &repo("p1-plaza", "main"), &body).unwrap_err();
-            assert_eq!(response.status, 422);
-            assert_eq!(body_of(response)["error"], json!("branch is protected"));
-        }
-    }
-
-    #[test]
-    fn a_repo_write_with_a_bad_path_is_refused_before_the_forge() {
-        let fake =
-            Fake::new("rbad", |_, _| ok(json!({}))).with_forge(|_, _, _| forge_ok(200, json!({})));
+    fn a_repo_write_lands_as_the_owners_edit_and_a_stale_hash_is_a_conflict() {
+        let fake = Fake::new("rwrite", |_, _| ok(json!({})))
+            .with_weft(weft_repo("w-3.l", vec![("notes/a.txt", b"hello\n")]));
         let ws = repo("p1-plaza", "main");
-        for path in [".plaza/state.json", "config/.env", "../x", "/etc/passwd"] {
-            let body = json!({ "path": path, "text": "x", "expected_hash": null });
-            assert_eq!(status_of(repo_write(&fake, &ws, &body)), 400, "{path}");
-        }
-        assert!(fake.forge_paths().is_empty());
-    }
-
-    /// The sample repo's files at two refs: (path, ref, text). A path absent at a ref is not listed.
-    const DEFAULT_SIDES: &[(&str, &str, &str)] = &[
-        ("a.txt", "par0", "keep\nold\n"),
-        ("a.txt", "head1", "keep\nnew\n"),
-        ("b.txt", "head1", "hello\n"),
-    ];
-
-    /// The contents API's answer for `path` (a `/contents/<path>?ref=<ref>` call) from `files`.
-    fn contents(
-        files: &'static [(&'static str, &'static str, &'static str)],
-        path: &str,
-    ) -> Result<(u16, Value), String> {
-        let Some((name, reference)) = path
-            .strip_prefix("/api/v1/repos/agentplaza/p1-plaza/contents/")
-            .and_then(|rest| rest.split_once("?ref="))
-        else {
-            return forge_ok(404, json!({"message": format!("unexpected {path}")}));
-        };
-        match files.iter().find(|(n, r, _)| *n == name && *r == reference) {
-            Some((_, _, text)) => forge_ok(
-                200,
-                json!({"type": "file", "size": text.len(), "sha": format!("blob-{name}-{reference}"), "content": git::base64(text.as_bytes())}),
-            ),
-            None => forge_ok(404, json!({"message": "file does not exist"})),
-        }
-    }
-
-    #[test]
-    fn changes_on_the_default_branch_are_its_last_commit_against_the_parent() {
-        let fake = Fake::new("rlast", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => {
-                forge_ok(200, json!([{"sha": "head1", "parents": [{"sha": "par0"}], "commit": {"message": "x"}}]))
-            }
-            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/par0...head1" => forge_ok(
-                200,
-                json!({"files": [{"filename": "a.txt", "status": "changed"}, {"filename": "b.txt", "status": "added"}]}),
-            ),
-            p => contents(DEFAULT_SIDES, p),
-        });
-        let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
-        assert_eq!(reply["base"], json!("commit:par0"));
-        assert_eq!(reply["checkpoint"], json!("head1"));
+        let body = json!({ "path": "notes/a.txt", "text": "hello, world\n", "expected_hash": weft_hash(b"hello\n") });
+        let done = repo_write(&fake, &ws, &body).unwrap();
+        assert_eq!(done["checkpoint"], "w-9.l");
+        assert_eq!(done["hash"], json!(weft_hash(b"hello, world\n")));
+        let sent = fake.last_weft_body();
+        assert_eq!(sent["title"], "owner edit: notes/a.txt");
         assert_eq!(
-            reply["diff"],
-            json!(
-                "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n\
-                 diff --git a/b.txt b/b.txt\nnew file mode 100644\n--- /dev/null\n+++ b/b.txt\n@@ -0,0 +1 @@\n+hello\n"
-            )
+            sent["files"][0],
+            json!({ "path": "notes/a.txt", "text": "hello, world\n" })
         );
-        assert_eq!(reply["files"].as_array().unwrap().len(), 2);
-        assert_eq!(reply["files"][0]["status"], json!("modified"));
-        assert_eq!(reply["files"][1]["status"], json!("added"));
-        assert_eq!(reply["stats"]["additions"], json!(2));
-        assert_eq!(reply["stats"]["deletions"], json!(1));
-        assert_eq!(reply["truncated"], json!(false));
-        assert!(fake.forge_paths().contains(
-            &"GET /api/v1/repos/agentplaza/p1-plaza/contents/a.txt?ref=par0".to_string()
-        ));
-        assert!(fake.forge_paths().contains(
-            &"GET /api/v1/repos/agentplaza/p1-plaza/contents/b.txt?ref=head1".to_string()
-        ));
+        assert!(fake.events.borrow().iter().any(|e| e["kind"] == "write"));
+        // A stale hash: nothing lands, and the answer names the hash the file has now.
+        let stale = json!({ "path": "notes/a.txt", "text": "x", "expected_hash": "old" });
+        let response = repo_write(&fake, &ws, &stale).unwrap_err();
+        assert_eq!(response.status, 409);
+        assert_eq!(
+            body_of(response)["current_hash"],
+            json!(weft_hash(b"hello\n"))
+        );
+        // A new file must be new.
+        let create = json!({ "path": "notes/a.txt", "text": "x", "expected_hash": null });
+        assert_eq!(status_of(repo_write(&fake, &ws, &create)), 409);
+        let new = json!({ "path": "notes/b.txt", "text": "b", "expected_hash": null });
+        assert_eq!(repo_write(&fake, &ws, &new).unwrap()["checkpoint"], "w-9.l");
+        for path in ["../x", ".env"] {
+            assert_eq!(
+                status_of(repo_write(
+                    &fake,
+                    &ws,
+                    &json!({ "path": path, "text": "x", "expected_hash": null })
+                )),
+                400,
+                "{path}"
+            );
+        }
     }
 
     #[test]
-    fn changes_on_another_branch_compare_with_the_default_branch_and_a_named_base_is_used() {
-        const SIDES: &[(&str, &str, &str)] = &[
-            ("a.txt", "main", "keep\nold\n"),
-            ("a.txt", "head2", "keep\nnew\n"),
-            ("b.txt", "head2", "hello\n"),
-        ];
-        let fake = Fake::new("rbranch", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.contains("commits?sha=feature%2Fx") => forge_ok(200, json!([{"sha": "head2", "parents": [], "commit": {}}])),
-            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/main...head2" => forge_ok(
-                200,
-                json!({"files": [{"filename": "a.txt", "status": "changed"}, {"filename": "b.txt", "status": "added"}]}),
-            ),
-            p => contents(SIDES, p),
+    fn changes_diff_main_against_the_landing_before_or_a_named_base() {
+        let fake = Fake::new("rchanges", |_, _| ok(json!({}))).with_weft(|_, path, _| match path {
+            "/repos/p1-plaza" => wjson(200, json!({ "refs": { "main": "w-4.l" } })),
+            "/revisions/w-4.l" => wjson(200, json!({ "id": "w-4.l", "base": "w-3.l" })),
+            "/changes/w-2" => wjson(200, json!({ "landed": "w-2.l" })),
+            p if p.starts_with("/revisions/w-4.l/diff?base=") => wjson(200, json!({ "files": [{ "path": "src/a.rs" }, { "path": "logo.png", "binary": true }] })),
+            p if p.starts_with("/revisions/w-4.l/file?path=src") => wbytes(b"fn a() {}\nfn b() {}\n"),
+            p if p.starts_with("/revisions/w-3.l/file?path=src") || p.starts_with("/revisions/w-2.l/file?path=src") => wbytes(b"fn a() {}\n"),
+            p if p.starts_with("/revisions/w-4.l/file?path=logo") => wbytes(b"\x89PNG\0new"),
+            p if p.contains("/file?path=logo") => wbytes(b"\x89PNG\0old"),
+            _ => wjson(404, json!({ "error": "no" })),
         });
-        let reply = repo_changes(&fake, &repo("p1-plaza", "feature/x"), None).unwrap();
-        assert_eq!(reply["base"], json!("branch:main"));
-        assert_eq!(reply["files"].as_array().unwrap().len(), 2);
+        let ws = repo("p1-plaza", "main");
+        let changes = repo_changes(&fake, &ws, None).unwrap();
+        assert_eq!(changes["base"], "rev:w-3.l");
+        assert_eq!(changes["checkpoint"], "w-4.l");
+        assert_eq!(
+            repo_changes(&fake, &ws, Some("work_start")).unwrap()["base"],
+            "rev:w-3.l",
+            "the IDE's default base is the landing before, as with none"
+        );
+        let diff = changes["diff"].as_str().unwrap();
         assert!(
-            fake.forge_paths()
+            diff.contains("+fn b() {}") && diff.contains("Binary files"),
+            "{diff}"
+        );
+        assert_eq!(
+            repo_changes(&fake, &ws, Some("change:w-2")).unwrap()["base"],
+            "change:w-2"
+        );
+        assert!(
+            fake.weft_paths()
                 .iter()
-                .any(|p| p.ends_with("compare/main...head2"))
+                .any(|p| p.contains("diff?base=w-2.l"))
         );
+        assert_eq!(status_of(repo_changes(&fake, &ws, Some("branch:dev"))), 400);
     }
 
     #[test]
-    fn changes_refuse_a_base_or_compare_they_cannot_make() {
-        // A base that is not a branch is refused, and an empty compare has no files.
-        {
-            let fake =
-                Fake::new("rbase", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-                    p if p.contains("commits?sha=") => {
-                        forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
-                    }
-                    "/api/v1/repos/agentplaza/p1-plaza/compare/main...h" => {
-                        forge_ok(200, json!({"files": []}))
-                    }
-                    _ => forge_ok(200, json!({"default_branch": "main"})),
-                });
-            let ws = repo("p1-plaza", "main");
-            assert_eq!(
-                status_of(repo_changes(&fake, &ws, Some("checkpoint:3"))),
-                400
-            );
-            assert_eq!(
-                status_of(repo_changes(&fake, &ws, Some("branch:a..b"))),
-                400
-            );
-            let empty = repo_changes(&fake, &ws, Some("branch:main")).unwrap();
-            assert_eq!(empty["files"], json!([]));
-            assert_eq!(empty["stats"]["files"], json!(0));
-            assert_eq!(empty["diff"], json!(""));
-        }
-        // A compare with no file list is the git host's fault.
-        {
-            let fake =
-                Fake::new("rnolist", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-                    p if p.contains("commits?sha=") => forge_ok(
-                        200,
-                        json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
-                    ),
-                    p if p.contains("/compare/") => forge_ok(200, json!({"total_commits": 1})),
-                    _ => forge_ok(200, json!({"default_branch": "main"})),
-                });
-            assert_eq!(
-                status_of(repo_changes(&fake, &repo("p1-plaza", "main"), None)),
-                502,
-                "a compare with no file list is the git host's fault"
-            );
-        }
-        // The first commit has no parent to compare with.
-        {
-            let root =
-                Fake::new("rroot", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-                    p if p.contains("commits?sha=") => {
-                        forge_ok(200, json!([{"sha": "h", "parents": [], "commit": {}}]))
-                    }
-                    _ => forge_ok(200, json!({"default_branch": "main"})),
-                });
-            assert_eq!(
-                status_of(repo_changes(&root, &repo("p1-plaza", "main"), None)),
-                400
-            );
-        }
-    }
-
-    #[test]
-    fn changes_follow_renames_and_list_binary_files_without_lines() {
-        const SIDES: &[(&str, &str, &str)] = &[
-            ("old.txt", "par9", "line\n"),
-            ("moved.txt", "head3", "line\n"),
-            ("bin.dat", "par9", "\0\u{1}"),
-            ("bin.dat", "head3", "\0\u{2}"),
-        ];
-        let fake = Fake::new("rren", |_, _| ok(json!({}))).with_forge(|_, path, _| match path {
-            p if p.ends_with("/commits?sha=main&limit=1&stat=false") => forge_ok(
-                200,
-                json!([{"sha": "head3", "parents": [{"sha": "par9"}], "commit": {}}]),
-            ),
-            "/api/v1/repos/agentplaza/p1-plaza" => forge_ok(200, json!({"default_branch": "main"})),
-            "/api/v1/repos/agentplaza/p1-plaza/compare/par9...head3" => forge_ok(
-                200,
-                json!({"files": [
-                    {"filename": "moved.txt", "status": "renamed", "previous_filename": "old.txt"},
-                    {"filename": "bin.dat", "status": "changed"},
-                ]}),
-            ),
-            p => contents(SIDES, p),
+    fn checkpoints_are_what_landed_newest_first_and_branches_and_pulls_are_gone() {
+        let fake = Fake::new("rcheck", |_, _| ok(json!({}))).with_weft(|_, path, _| match path {
+            p if p.starts_with("/repos/p1-plaza/log") => wjson(200, json!({ "changes": [{ "change": "w-4", "title": "Faster queue", "at_ms": 20, "landed": "w-4.l" }, { "change": "w-3", "title": "Queue", "at_ms": 10, "landed": "w-3.l" }] })),
+            _ => wjson(404, json!({})),
         });
-        let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
-        assert_eq!(
-            reply["diff"],
-            json!(
-                "diff --git a/old.txt b/moved.txt\nrename from old.txt\nrename to moved.txt\n\
-                 diff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n"
-            )
-        );
-        let files = reply["files"].as_array().unwrap();
-        assert_eq!(
-            (files[0]["status"].clone(), files[0]["old_path"].clone()),
-            (json!("renamed"), json!("old.txt"))
-        );
-        assert_eq!(files[0]["hunks"], json!([]));
-        assert_eq!(
-            (files[1]["path"].clone(), files[1]["binary"].clone()),
-            (json!("bin.dat"), json!(true))
-        );
-    }
-
-    #[test]
-    fn changes_list_at_most_300_files_and_say_so_when_there_are_more() {
-        let listed: Vec<Value> = (0..301)
-            .map(|i| json!({"filename": format!("f{i}.txt"), "status": "changed"}))
-            .collect();
-        let listing = json!({"files": listed});
-        let fake =
-            Fake::new("rmany", |_, _| ok(json!({}))).with_forge(move |_, path, _| match path {
-                p if p.ends_with("/commits?sha=main&limit=1&stat=false") => forge_ok(
-                    200,
-                    json!([{"sha": "h", "parents": [{"sha": "p"}], "commit": {}}]),
-                ),
-                "/api/v1/repos/agentplaza/p1-plaza" => {
-                    forge_ok(200, json!({"default_branch": "main"}))
-                }
-                "/api/v1/repos/agentplaza/p1-plaza/compare/p...h" => forge_ok(200, listing.clone()),
-                // The same text at both refs: each file is read, and none differs.
-                _ => forge_ok(
-                    200,
-                    json!({"type": "file", "size": 2, "sha": "s", "content": git::base64(b"x\n")}),
-                ),
-            });
-        let reply = repo_changes(&fake, &repo("p1-plaza", "main"), None).unwrap();
-        assert_eq!(reply["truncated"], json!(true));
-        assert_eq!(reply["files"], json!([]));
-        let reads = fake
-            .forge_paths()
-            .iter()
-            .filter(|p| p.contains("/contents/"))
-            .count();
-        assert_eq!(reads, 2 * MAX_CHANGED_FILES);
-    }
-
-    #[test]
-    fn checkpoints_are_the_branchs_commits_newest_first_with_their_first_line_and_time() {
-        let fake = Fake::new("rcp", |_, _| ok(json!({}))).with_forge(|_, path, _| {
-            assert_eq!(path, "/api/v1/repos/agentplaza/p1-plaza/commits?sha=main&limit=50&stat=false");
-            forge_ok(200, json!([
-                {"sha": "c2", "commit": {"message": "Fix it\n\nBody", "committer": {"date": "2026-10-14T09:30:00Z"}}},
-                {"sha": "c1", "commit": {"message": "First", "committer": {"date": "not a date"}}}
-            ]))
-        });
-        let list = repo_checkpoints(&fake, &repo("p1-plaza", "main")).unwrap();
-        let rows = list["checkpoints"].as_array().unwrap();
-        assert_eq!(
-            rows[0],
-            json!({"n": 0, "label": "Fix it", "created_ms": 1_791_970_200_000u64, "sha": "c2"})
-        );
-        assert_eq!(
-            rows[1],
-            json!({"n": 1, "label": "First", "created_ms": null, "sha": "c1"})
-        );
-    }
-
-    #[test]
-    fn a_pull_request_opens_from_the_branch_into_the_default_branch_and_is_audited() {
-        let fake = Fake::new("rpull", |_, _| ok(json!({}))).with_forge(|method, path, _| match (method, path) {
-            ("GET", "/api/v1/repos/agentplaza/p1-plaza") => forge_ok(200, json!({"default_branch": "main"})),
-            ("POST", "/api/v1/repos/agentplaza/p1-plaza/pulls") => forge_ok(201, json!({
-                "number": 4, "title": "Add the IDE", "state": "open", "user": {"login": "admin"},
-                "head": {"ref": "feature/x"}, "base": {"ref": "main"}, "comments": 0, "mergeable": true
-            })),
-            ("GET", "/api/v1/repos/agentplaza/p1-plaza/pulls/4/reviews") => forge_ok(200, json!([])),
-            _ => forge_ok(404, json!({"message": format!("unexpected {method} {path}")})),
-        });
-        let body = json!({ "title": "  Add the IDE  ", "body": "details" });
-        let row = repo_pull(&fake, &repo("p1-plaza", "feature/x"), &body).unwrap();
-        assert_eq!(row["number"], json!(4));
-        assert_eq!(row["base"], json!("main"));
-        assert_eq!(row["head"], json!("feature/x"));
-
-        let sent = fake
-            .forge_log
-            .borrow()
-            .iter()
-            .find(|(m, p, _)| m == "POST" && p.ends_with("/pulls"))
-            .unwrap()
-            .2
-            .clone();
-        assert_eq!(
-            sent,
-            json!({"head": "feature/x", "base": "main", "title": "Add the IDE", "body": "details"})
-        );
-
-        let rows = fake
-            .db
-            .ide_audit(Some("repo:p1-plaza@feature/x"), 10)
-            .unwrap();
-        assert_eq!(rows[0]["kind"], json!("pull"));
-        assert_eq!(rows[0]["number"], json!(4));
-        assert_eq!(fake.events.borrow()[0]["kind"], json!("pull"));
-    }
-
-    #[test]
-    fn a_pull_request_needs_a_title_and_a_real_base() {
-        let fake = Fake::new("rpullbad", |_, _| ok(json!({})))
-            .with_forge(|_, _, _| forge_ok(200, json!({})));
-        let ws = repo("p1-plaza", "feature/x");
-        assert_eq!(
-            status_of(repo_pull(&fake, &ws, &json!({"title": "   "}))),
-            400
-        );
-        assert_eq!(status_of(repo_pull(&fake, &ws, &json!({}))), 400);
-        assert_eq!(
-            status_of(repo_pull(&fake, &ws, &json!({"title": "T", "body": 3}))),
-            400
-        );
-        assert_eq!(
-            status_of(repo_pull(
-                &fake,
-                &ws,
-                &json!({"title": "T", "base": "a..b"})
-            )),
-            400
-        );
-        assert!(
-            fake.forge_paths().is_empty(),
-            "nothing is sent for a refused pull request"
-        );
-    }
-
-    #[test]
-    fn a_branch_is_created_from_the_ref_and_answers_its_workspace_id() {
-        let fake = Fake::new("rbranch2", |_, _| ok(json!({}))).with_forge(|method, path, body| {
-            assert_eq!(
-                (method, path),
-                ("POST", "/api/v1/repos/agentplaza/p1-plaza/branches")
-            );
-            let body = body.unwrap();
-            assert_eq!(body["new_branch_name"], json!("feature/y"));
-            assert_eq!(body["old_ref_name"], json!("main"));
-            forge_ok(201, json!({"name": "feature/y"}))
-        });
-        let done = repo_branch(
-            &fake,
-            &repo("p1-plaza", "main"),
-            &json!({"name": "feature/y"}),
-        )
-        .unwrap();
-        assert_eq!(done, json!({"id": "repo:p1-plaza@feature/y"}));
-        let rows = fake.db.ide_audit(Some("repo:p1-plaza@main"), 10).unwrap();
-        assert_eq!(rows[0]["kind"], json!("branch"));
-        assert_eq!(rows[0]["branch"], json!("feature/y"));
-    }
-
-    #[test]
-    fn a_bad_branch_name_is_refused_before_the_forge() {
-        let fake = Fake::new("rbadbranch", |_, _| ok(json!({})))
-            .with_forge(|_, _, _| forge_ok(201, json!({})));
         let ws = repo("p1-plaza", "main");
+        let rows = repo_checkpoints(&fake, &ws).unwrap();
         assert_eq!(
-            status_of(repo_branch(&fake, &ws, &json!({"name": "bad name"}))),
+            rows["checkpoints"][0],
+            json!({ "n": 0, "label": "Faster queue", "created_ms": 20, "sha": "w-4.l", "change": "w-4" })
+        );
+        assert_eq!(
+            status_of(repo_branch(&fake, &ws, &json!({ "name": "dev" }))),
+            410
+        );
+        assert_eq!(
+            status_of(repo_branch(&fake, &ws, &json!({ "name": "../bad" }))),
             400
         );
         assert_eq!(
-            status_of(repo_branch(&fake, &ws, &json!({"name": "a..b"}))),
-            400
+            status_of(repo_pull(&fake, &ws, &json!({ "title": "x" }))),
+            410
         );
-        assert_eq!(status_of(repo_branch(&fake, &ws, &json!({}))), 400);
-        assert!(fake.forge_paths().is_empty());
     }
 
     #[test]

@@ -62,6 +62,8 @@ struct Job {
     kind: WorkKind,
     thread: String,
     prompt: String,
+    /// The task's lane in Weft.
+    lane: Option<apz_proto::wire::WorkLane>,
 }
 
 /// A chat thread's conversation, kept between its work items.
@@ -123,6 +125,8 @@ struct Agent<'a, 'l, S, W> {
     steers: Vec<(String, String)>,
     /// The operator asked for the work item in progress to be compressed.
     compress_requested: bool,
+    /// The lane of the work in flight (Weft).
+    lane: Option<apz_proto::wire::WorkLane>,
     /// The conversation's size right after the last compression of this work item: an automatic
     /// compression waits until it has grown by a quarter of `compress_at` since.
     compressed_size: u64,
@@ -285,6 +289,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             cancelled: None,
             steers: Vec::new(),
             compress_requested: false,
+            lane: None,
             compressed_size: 0,
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
@@ -447,12 +452,14 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 kind,
                 thread,
                 prompt,
+                lane,
             } => {
                 self.queue.push_back(Job {
                     work,
                     kind,
                     thread,
                     prompt,
+                    lane,
                 });
                 Incoming::Handled
             }
@@ -626,6 +633,16 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         }
 
         let _ = crate::checkpoints::snapshot(self.workspace, &format!("work-{}", job.work));
+        // The task's lane: its files in the workspace, each turn kept as a draft in Weft.
+        self.lane = job.lane.clone();
+        if let Some(lane) = &self.lane
+            && let Err(err) = crate::weft_lane::checkout(&self.workspace.weft_root(), lane)
+        {
+            self.shared.note(&format!(
+                "agent-harness: lane {} not checked out: {err}",
+                lane.change
+            ));
+        }
         self.current = Some(job.work);
         self.cancelled = None;
         self.steers.clear();
@@ -633,6 +650,22 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         self.compressed_size = 0;
         self.extra_turns = 0;
         let result = self.drive(job.work, &profile, &mut messages);
+        // The last state, so the seal has it.
+        if let Some(lane) = self.lane.take()
+            && let Err(err) = crate::weft_lane::snapshot(
+                &self.workspace.weft_root(),
+                &lane,
+                u32::MAX,
+                &[],
+                &profile.model,
+            )
+            && !err.contains("nothing new")
+        {
+            self.shared.note(&format!(
+                "agent-harness: lane {} not snapshotted: {err}",
+                lane.change
+            ));
+        }
         self.current = None;
         let (status, summary) = result?;
         if chat {
@@ -740,6 +773,28 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 });
             }
             if ran_tools {
+                // This turn's files, as a draft of the task's lane, with the tool calls that made them.
+                if let Some(lane) = &self.lane {
+                    let ids: Vec<String> = results
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Err(err) = crate::weft_lane::snapshot(
+                        &self.workspace.weft_root(),
+                        lane,
+                        turns,
+                        &ids,
+                        &profile.model,
+                    ) {
+                        self.shared.note(&format!(
+                            "agent-harness: lane {} turn {turns} not snapshotted: {err}",
+                            lane.change
+                        ));
+                    }
+                }
                 messages.push(Message {
                     role: Role::User,
                     content: results,

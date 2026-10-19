@@ -280,7 +280,7 @@ fn transcript_texts(entries: &[Value]) -> Vec<&str> {
 /// Asks the hub for the cards of the transcript's references that it does not hold yet.
 fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let texts = transcript_texts(&state.entries);
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
@@ -1787,7 +1787,7 @@ fn meter<'a>(value: f64, max: f64, fill: Color, caption: String) -> Element<'a, 
 }
 
 fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let (rctx, cards) = (&rctx, &state.cards);
     // Entries group into their work item's section; a rule divides one section from the next.
     let mut groups: Vec<Vec<&'a Value>> = Vec::new();

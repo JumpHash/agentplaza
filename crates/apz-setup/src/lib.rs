@@ -3,10 +3,10 @@
 //! ([`Check::fix`]) and agreed. The desktop app's chooser (`console/boot.rs`) and the CLI
 //! (`agentplaza setup`, and the TUI's Dependencies step) both use this crate.
 //!
-//! - `checks`: what is there (the services next to the app, Docker, its daemon, the Postgres,
-//!   Forgejo and Garage containers, the hypervisor, the ports).
+//! - `checks`: what is there (the services next to the app, Docker, its daemon, the Postgres and
+//!   Garage containers, the hypervisor, the ports).
 //! - `docker`: installing Docker and starting its daemon, per platform.
-//! - `provision`: the Postgres, Forgejo and Garage containers, and their settings in apid's `keys.env`.
+//! - `provision`: the Postgres and Garage containers, and their settings in apid's `keys.env`.
 //! - `runner`: the commands and files of the above, behind [`Runner`] so tests can mock them.
 //! - `node`: the node's service plan (apz-link, vsockd, noded) and the process check (a process is the
 //!   plan's by its name and exact arguments, so a hub's services on the same machine are never taken
@@ -38,26 +38,23 @@ pub enum Need {
     DockerRunning,
     /// The container `agentplaza-postgres` running, and `APZ_DATABASE_URL` in keys.env.
     Postgres,
-    /// The container `agentplaza-forgejo` running, with its admin token in keys.env.
-    Forgejo,
     /// The container `agentplaza-garage` (the S3 object store the library keeps files in) running,
     /// and its endpoint and keys in keys.env. Optional: apid keeps files locally without it.
     Garage,
     /// Agents' VMs: /dev/kvm usable (Linux), Apple silicon (macOS), the Windows Hypervisor
     /// Platform feature (Windows). Only a warning: the hub runs without it.
     Hypervisor,
-    /// The plaza's ports free (7700, 8899, 19080; 5434 and 3300 unless our containers hold them).
+    /// The plaza's ports free (7700, 8899, 19080; 5434 unless our container holds it).
     Ports,
 }
 
 impl Need {
     /// Every need, in the order the checklist shows them.
-    pub const ALL: [Need; 8] = [
+    pub const ALL: [Need; 7] = [
         Need::Services,
         Need::Docker,
         Need::DockerRunning,
         Need::Postgres,
-        Need::Forgejo,
         Need::Garage,
         Need::Hypervisor,
         Need::Ports,
@@ -70,7 +67,6 @@ impl Need {
             Need::Docker => "docker",
             Need::DockerRunning => "docker-running",
             Need::Postgres => "postgres",
-            Need::Forgejo => "forgejo",
             Need::Garage => "garage",
             Need::Hypervisor => "hypervisor",
             Need::Ports => "ports",
@@ -176,7 +172,6 @@ pub fn fix_with(env: &Env, need: Need, log: &mut dyn FnMut(String)) -> Result<()
         Need::Docker => docker::install(env, log),
         Need::DockerRunning => docker::start(env, log),
         Need::Postgres => provision::postgres(env, log),
-        Need::Forgejo => provision::forgejo(env, log),
         Need::Garage => provision::garage(env, log),
         Need::Services | Need::Hypervisor | Need::Ports => {
             Err("this one needs you: see its note".to_string())

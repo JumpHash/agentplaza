@@ -18,7 +18,7 @@
       {
         "id": "deps",
         "title": "Dependencies",
-        "body": "The plaza's requirements: Docker and its containers (Postgres, Forgejo, Garage) and the services beside the app. Anything missing is set up from here, after you have read what it will run."
+        "body": "The plaza's requirements: Docker and its containers (Postgres, Garage) and the services beside the app. Anything missing is set up from here, after you have read what it will run."
       },
       {
         "id": "keys",
@@ -60,10 +60,11 @@
       "web_host": "Docker and the containers run on the host, not in the hub: check them there with",
       "web_services": "Start AgentPlaza on the host (desktop app: Start locally)",
       "web_hypervisor": "Turn on virtualization in the firmware: agents run in VMs",
+      "web_weft": "Weft runs inside the hub: restarting the hub starts it",
       "rows": {
         "services": "Services",
         "hypervisor": "Hypervisor",
-        "git": "Git host",
+        "weft": "Weft",
         "host": "Docker and containers"
       }
     }

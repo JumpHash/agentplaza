@@ -1,0 +1,16 @@
+{
+  "name": "css",
+  "version": 1,
+  "language": "css",
+  "extensions": [
+    "css"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-css",
+    "version": "0.25.0",
+    "wasm": "tree-sitter-css.wasm"
+  },
+  "query": "symbols.scm"
+}

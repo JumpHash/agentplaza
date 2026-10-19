@@ -313,7 +313,7 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         .collect(),
         None => Vec::new(),
     };
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
@@ -1550,7 +1550,7 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
 /// One task in full: the goal, acceptance and result, the facts (with assign and withdraw while
 /// it is open), and the timeline of its assignee's work.
 fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let back: Element<'a, Msg> = ui::btn(
         "Tasks",
         Some("chevronRight"),

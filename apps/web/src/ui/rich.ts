@@ -18,14 +18,10 @@ export interface AgentName {
 export interface RichCtx {
   /** The project in view. Its presence makes `#N` a task. */
   project?: string | null;
-  /** The project's repository on the plaza git host, "owner/repo". Makes `PR #N` a plaza git pull. */
-  project_repo?: string | null;
   /** The workspace's known paths: files, and folders with a trailing `/`. A Set is used as it is (no copy). */
   paths?: ReadonlySet<string> | readonly string[] | null;
   /** The agents `@Name` may name. */
   agents?: readonly AgentName[] | null;
-  /** The plaza's git host (a host or an origin). Its links are plaza git references. */
-  plaza_git_host?: string | null;
   /** The hub's own host. Its `/v1/files` and `/v1/library` links are library references. */
   hub_host?: string | null;
 }
@@ -37,12 +33,12 @@ interface Repo {
 
 /** A recognised reference. Every field of a kind is present. */
 export type Ref =
-  | (Repo & { kind: 'github_pull' | 'github_issue' | 'plaza_git_pull' | 'plaza_git_issue'; number: number })
-  | (Repo & { kind: 'github_commit' | 'plaza_git_commit'; sha: string })
-  | (Repo & { kind: 'github_repo' | 'plaza_git_repo' })
-  | (Repo & { kind: 'github_file' | 'plaza_git_file'; ref: string; path: string; line: number | null; dir: boolean })
-  | (Repo & { kind: 'github_release' | 'plaza_git_release'; tag: string })
-  | (Repo & { kind: 'github_run' | 'plaza_git_run'; id: number })
+  | (Repo & { kind: 'github_pull' | 'github_issue'; number: number })
+  | (Repo & { kind: 'github_commit'; sha: string })
+  | (Repo & { kind: 'github_repo' })
+  | (Repo & { kind: 'github_file'; ref: string; path: string; line: number | null; dir: boolean })
+  | (Repo & { kind: 'github_release'; tag: string })
+  | (Repo & { kind: 'github_run'; id: number })
   | { kind: 'gist'; id: string }
   | { kind: 'agent'; name: string | null; cid: number | null }
   | { kind: 'mention_all' }
@@ -76,17 +72,15 @@ const RUST_WHITESPACE = new RegExp('^[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u20
 
 interface Cx {
   hasProject: boolean;
-  projectRepo: string | null;
   paths: ReadonlySet<string>;
   agents: readonly AgentName[];
-  plazaHost: string;
   hubHost: string;
 }
 
 const EMPTY_PATHS: ReadonlySet<string> = new Set();
 
 /** Splits `text` into spans. The four passes match the crate: inline code, markdown links and images, bare URLs, then
- * words (`#528`, `@Name`, `task #528`, `PR #12`, workspace paths, hub routes). Code is never split. */
+ * words (`#528`, `@Name`, `task #528`, workspace paths, hub routes). Code is never split. */
 export function classify(text: string, ctx: RichCtx = {}): Span[] {
   const cx = context(ctx);
   let spans = codeSpans(text);
@@ -101,25 +95,18 @@ export function label(r: Ref): string {
   switch (r.kind) {
     case 'github_pull':
     case 'github_issue':
-    case 'plaza_git_pull':
-    case 'plaza_git_issue':
       return `${r.owner}/${r.repo} #${r.number}`;
     case 'github_commit':
-    case 'plaza_git_commit':
       return `${r.owner}/${r.repo} @${r.sha.slice(0, 7)}`;
     case 'github_repo':
-    case 'plaza_git_repo':
       return `${r.owner}/${r.repo}`;
-    case 'github_file':
-    case 'plaza_git_file': {
+    case 'github_file': {
       const shown = folderPath(r.path, r.dir);
       return r.line !== null ? `${r.repo}: ${shown}:${r.line}` : `${r.repo}: ${shown}`;
     }
     case 'github_release':
-    case 'plaza_git_release':
       return `${r.owner}/${r.repo} release ${r.tag}`;
     case 'github_run':
-    case 'plaza_git_run':
       return `${r.owner}/${r.repo} run ${r.id}`;
     case 'gist':
       return `gist ${r.id}`;
@@ -160,10 +147,8 @@ function context(ctx: RichCtx): Cx {
   else if (paths) set = new Set(paths as readonly string[]);
   return {
     hasProject: ctx.project != null,
-    projectRepo: ctx.project_repo ?? null,
     paths: set,
     agents: ctx.agents ?? [],
-    plazaHost: hostOf(ctx.plaza_git_host ?? ''),
     hubHost: hostOf(ctx.hub_host ?? ''),
   };
 }
@@ -218,7 +203,7 @@ function stripQuery(url: string): string {
   return url.slice(0, firstOf(url, 0, ['?', '#']));
 }
 
-/** A GitHub or Forgejo owner, repository or library name. */
+/** A GitHub owner, repository or library name. */
 function validName(text: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(text) && text !== '.' && text !== '..';
 }
@@ -469,23 +454,22 @@ function wordSpans(text: string, cx: Cx): Span[] {
       i++;
       continue;
     }
-    // Two words: `task #528`, `PR #12`, `pull #12`. The gap is spaces and tabs only, and the first word has no trailing
-    // punctuation.
+    // Two words: `task #528`. `PR #12` and `pull #12` are text, and so is their `#12`. The gap is spaces and tabs only,
+    // and the first word has no trailing punctuation.
     const next = tokens[i + 1];
     if (next && b === raw.b && /^[ \t]+$/.test(text.slice(raw.b, next.a))) {
       const { a: c, b: d } = trimToken(text, next.a, next.b);
       const word = asciiLower(text.slice(a, b));
-      const isTask = word === 'task';
-      const isPull = word === 'pr' || word === 'pull';
       const number = hashNumber(text.slice(c, d));
-      if ((isTask || isPull) && number !== null) {
-        // Both words are consumed: `PR #12` without a repository stays text, not a task.
-        const whole: Ref | null = isTask ? { kind: 'task', number } : plazaPull(number, cx);
-        if (whole) {
-          pushText(out, text.slice(plainFrom, a));
-          out.push({ kind: 'ref', value: { raw: text.slice(a, d), r: whole, text: null } });
-          plainFrom = d;
-        }
+      if (word === 'task' && number !== null) {
+        pushText(out, text.slice(plainFrom, a));
+        out.push({ kind: 'ref', value: { raw: text.slice(a, d), r: { kind: 'task', number }, text: null } });
+        plainFrom = d;
+        i += 2;
+        continue;
+      }
+      const isPr = word === 'pr' || word === 'pull';
+      if (isPr && number !== null) {
         i += 2;
         continue;
       }
@@ -563,17 +547,6 @@ function hashNumber(word: string): number | null {
   return word.startsWith('#') ? unsignedDigits(word.slice(1), U64_MAX) : null;
 }
 
-/** `PR #12` in a project with a repository: a plaza git pull of that repository. */
-function plazaPull(number: number, cx: Cx): Ref | null {
-  const repo = cx.projectRepo;
-  if (repo === null) return null;
-  const slash = repo.indexOf('/');
-  if (slash < 0) return null;
-  const owner = repo.slice(0, slash);
-  const name = repo.slice(slash + 1);
-  return validName(owner) && validName(name) ? { kind: 'plaza_git_pull', owner, repo: name, number } : null;
-}
-
 // ---- URLs ------------------------------------------------------------------
 
 /** What an http(s) URL refers to. `link` for anything not recognised. Null when the text is not an http(s) URL with a
@@ -593,13 +566,11 @@ export function classifyUrl(url: string, cx: Cx): Ref | null {
   if (host === '') return null;
   const line = fragment !== null ? lineOfFragment(fragment) : null;
   const segments = path.split('/').filter((s) => s !== '');
-  const trailingSlash = path.endsWith('/');
 
   // The first route that recognises the URL wins; the host decides which routes apply.
   let routed: Ref | null = null;
   if (host === 'gist.github.com') routed = gist(segments);
-  if (routed === null && (host === 'github.com' || host === 'www.github.com')) routed = forge(segments, 'github', line, trailingSlash);
-  if (routed === null && cx.plazaHost !== '' && host === cx.plazaHost) routed = forge(segments, 'plaza', line, trailingSlash);
+  if (routed === null && (host === 'github.com' || host === 'www.github.com')) routed = forge(segments, line);
   if (routed === null && cx.hubHost !== '' && host === cx.hubHost) routed = hubRoute(segments);
   return routed ?? media(url, segments) ?? { kind: 'link', url };
 }
@@ -621,62 +592,58 @@ function gist(segments: string[]): Ref | null {
   return id !== undefined && /^[A-Za-z0-9]+$/.test(id) ? { kind: 'gist', id } : null;
 }
 
-/** GitHub and Forgejo: the same route shapes, except where the plaza's is its own (`src/branch/...`). */
-function forge(segments: string[], host: 'github' | 'plaza', line: number | null, trailingSlash: boolean): Ref | null {
+/** GitHub's routes: the pull, issue, commit, release, run and file pages of a repository. */
+function forge(segments: string[], line: number | null): Ref | null {
   if (segments.length < 2) return null;
   const owner = segments[0] ?? '';
   const repo = segments[1] ?? '';
   if (!validName(owner) || !validName(repo)) return null;
   const rest = segments.slice(2);
-  const plaza = host === 'plaza';
   const first = rest[0];
   const second = rest[1];
   const third = rest[2];
 
-  if (rest.length === 0) return plaza ? { kind: 'plaza_git_repo', owner, repo } : { kind: 'github_repo', owner, repo };
+  if (rest.length === 0) return { kind: 'github_repo', owner, repo };
   if ((first === 'pull' || first === 'pulls') && rest.length === 2) {
     const number = unsignedDigits(second ?? '', U64_MAX);
     if (number === null) return null;
-    return plaza ? { kind: 'plaza_git_pull', owner, repo, number } : { kind: 'github_pull', owner, repo, number };
+    return { kind: 'github_pull', owner, repo, number };
   }
   if ((first === 'issues' || first === 'issue') && rest.length === 2) {
     const number = unsignedDigits(second ?? '', U64_MAX);
     if (number === null) return null;
-    return plaza ? { kind: 'plaza_git_issue', owner, repo, number } : { kind: 'github_issue', owner, repo, number };
+    return { kind: 'github_issue', owner, repo, number };
   }
   if (first === 'commit' && rest.length === 2 && isHex(second ?? '', 7, 40)) {
-    const sha = second ?? '';
-    return plaza ? { kind: 'plaza_git_commit', owner, repo, sha } : { kind: 'github_commit', owner, repo, sha };
+    return { kind: 'github_commit', owner, repo, sha: second ?? '' };
   }
   if (first === 'releases' && second === 'tag' && rest.length === 3 && (third ?? '') !== '') {
-    const tag = percentDecode(third ?? '');
-    return plaza ? { kind: 'plaza_git_release', owner, repo, tag } : { kind: 'github_release', owner, repo, tag };
+    return { kind: 'github_release', owner, repo, tag: percentDecode(third ?? '') };
   }
   if (first === 'actions' && second === 'runs' && rest.length === 3) {
     const id = unsignedDigits(third ?? '', U64_MAX);
     if (id === null) return null;
-    return plaza ? { kind: 'plaza_git_run', owner, repo, id } : { kind: 'github_run', owner, repo, id };
+    return { kind: 'github_run', owner, repo, id };
   }
-  if (!plaza && first === 'blob' && rest.length >= 3) {
-    return fileRef(owner, repo, second ?? '', rest.slice(2), false, line, plaza);
+  if (first === 'blob' && rest.length >= 3) {
+    return fileRef(owner, repo, second ?? '', rest.slice(2), false, line);
   }
-  if (!plaza && first === 'tree' && rest.length >= 2) {
-    return fileRef(owner, repo, second ?? '', rest.slice(2), true, null, plaza);
-  }
-  if (plaza && first === 'src' && (second === 'branch' || second === 'commit' || second === 'tag') && rest.length >= 3) {
-    const path = rest.slice(3);
-    const dir = path.length === 0 || trailingSlash;
-    return fileRef(owner, repo, third ?? '', path, dir, dir ? null : line, plaza);
+  if (first === 'tree' && rest.length >= 2) {
+    return fileRef(owner, repo, second ?? '', rest.slice(2), true, null);
   }
   return null;
 }
 
-function fileRef(owner: string, repo: string, reference: string, path: string[], dir: boolean, line: number | null, plaza: boolean): Ref {
-  const ref = percentDecode(reference);
-  const filePath = percentDecode(path.join('/'));
-  return plaza
-    ? { kind: 'plaza_git_file', owner, repo, ref, path: filePath, line, dir }
-    : { kind: 'github_file', owner, repo, ref, path: filePath, line, dir };
+function fileRef(owner: string, repo: string, reference: string, path: string[], dir: boolean, line: number | null): Ref {
+  return {
+    kind: 'github_file',
+    owner,
+    repo,
+    ref: percentDecode(reference),
+    path: percentDecode(path.join('/')),
+    line,
+    dir,
+  };
 }
 
 /** Image, video and HTML files by the extension of the last path segment. */

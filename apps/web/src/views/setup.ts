@@ -4,6 +4,7 @@
 
 import '../styles/setup.css';
 import { api, ApiError, vaultApi, type VaultStatus } from '../api';
+import { weft } from '../api-weft';
 import { COPY } from '../onboarding/flow';
 import { href } from '../router';
 import { badge, button, card, type Tone } from '../ui/components';
@@ -17,7 +18,7 @@ interface Row { label: string; status: Status; detail: string; fix?: Fix }
 
 const STAMP: Record<Status, string> = { checking: 'CHECKING', ok: 'OK', warning: 'WARNING', failed: 'FAILED', desktop: 'DESKTOP', pending: 'PENDING' };
 const TONE: Record<Status, Tone> = { checking: 'muted', ok: 'ok', warning: 'warn', failed: 'danger', desktop: 'info', pending: 'muted' };
-const WEB_LABELS = ['Hub reachable', 'Hub identity', 'Hub service', 'Node here', 'Network', 'Machine and hypervisor', 'Vault', 'Model providers', 'Default model', 'Git host'];
+const WEB_LABELS = ['Hub reachable', 'Hub identity', 'Hub service', 'Node here', 'Network', 'Machine and hypervisor', 'Vault', 'Model providers', 'Default model', 'Weft'];
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
@@ -43,13 +44,13 @@ function vaultRow(v: VaultStatus): Row {
 
 /** Asks the hub for every fact the web can check; never throws. */
 async function collect(): Promise<Row[]> {
-  const [over, ident, mach, vaultState, providers, git, link] = await Promise.allSettled([
+  const [over, ident, mach, vaultState, providers, weftState, link] = await Promise.allSettled([
     api.overview(),
     api.hubIdentity(),
     api.machine(),
     vaultApi.status(),
     api.providers(),
-    api.git(),
+    weft.status(),
     api.nodeLink(),
   ]);
   const overview = settled(over);
@@ -116,18 +117,20 @@ async function collect(): Promise<Row[]> {
       : { label: 'Default model', status: 'warning', detail: 'none set: agents have no model by default', fix: { text: 'Pick a default model', to: 'models' } });
   }
 
-  const gitInfo = settled(git);
-  if (!gitInfo) {
-    rows.push({ label: 'Git host', status: 'warning', detail: 'could not ask the git host', fix: { text: 'Open Git', to: 'git' } });
-  } else if (gitInfo.configured) {
-    rows.push({ label: 'Git host', status: 'ok', detail: `org ${gitInfo.org}` });
+  const weftInfo = settled(weftState);
+  if (!weftInfo) {
+    rows.push({ label: 'Weft', status: 'warning', detail: 'could not ask the hub about Weft', fix: { text: 'Open History', to: 'history' } });
+  } else if (weftInfo.running) {
+    rows.push({ label: 'Weft', status: 'ok', detail: `running (${weftInfo.mode})` });
   } else {
-    rows.push({ label: 'Git host', status: 'warning', detail: 'the git host is not configured', fix: { text: 'Set FORGEJO_URL and FORGEJO_TOKEN for the hub, then restart apid', to: 'git' } });
+    // A stopped Weft says why.
+    const why = weftInfo.why || 'not running';
+    rows.push({ label: 'Weft', status: 'warning', detail: why, fix: { text: 'Open History', to: 'history' } });
   }
 
   rows.push(
     desktop('AgentPlaza services', 'apid, vsockd and noded installed beside the app'),
-    desktop('Docker and containers', 'Docker running, with the Postgres and Forgejo containers'),
+    desktop('Docker and containers', 'Docker running, with the Postgres container'),
     desktop('Ports', '7700, 8899 and 19080 free, or held by AgentPlaza itself'),
   );
   return rows;

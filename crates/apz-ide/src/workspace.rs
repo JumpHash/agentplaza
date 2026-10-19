@@ -1,5 +1,5 @@
 //! Workspace identities: `agent:<cid>` for an agent's `/workspace`, `repo:<name>@<ref>` for a project's
-//! Forgejo repo at one branch, and `station:<id>` for a workstation's work folder (`<id>` is `w<seq>`).
+//! Weft repo at one branch (`main`), and `station:<id>` for a workstation's work folder (`<id>` is `w<seq>`).
 
 use std::fmt;
 use std::str::FromStr;

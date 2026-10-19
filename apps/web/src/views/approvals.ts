@@ -6,17 +6,45 @@
 import '../styles/approvals.css';
 import { inScope, projectTitle, scope } from '../scope';
 import { api, type AgentProposal, type Approval, type ApprovalAction } from '../api';
+import { review, type ReviewChoice, type ReviewReading } from '../api-review';
 import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, empty, textarea, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, card, dot, empty, textarea, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
+import { reviewPanel } from './review-graph';
+import { readingTone } from './review-model';
 
 const DEBOUNCE_MS = 300;
+
+/** A review card's detail: the run it is about, and the summary the hub wrote for the owner. */
+interface ReviewDetail {
+  task: string;
+  run: string;
+  goal?: string;
+  worker?: string;
+  verdict?: string;
+  needs_you?: string;
+  readings?: ReviewReading[];
+  change?: string;
+  round?: number;
+}
+
+/** The review a `review` approval is about, when its detail names a run; any other approval has none. */
+function reviewOf(a: Approval): ReviewDetail | null {
+  const d = a.detail as Partial<ReviewDetail> | null;
+  return a.kind === 'review' && d && typeof d.run === 'string' && d.run !== '' && typeof d.task === 'string' ? (d as ReviewDetail) : null;
+}
+
+/** A reading's dot on a review card: better is ok, worse is danger, neutral or not measured is muted. */
+function readingDot(level: number | null): Tone {
+  const t = readingTone(level);
+  return t === 'better' ? 'ok' : t === 'worse' ? 'danger' : 'muted';
+}
 
 /** The sanction a sanction escalation is about: `sanction_id` in its detail. */
 function sanctionIdOf(a: Approval): number | null {
@@ -71,6 +99,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let timer: number | undefined;
   // Reasons typed but not yet sent survive a re-render, keyed by approval id.
   const drafts = new Map<string, string>();
+  // The review cards whose review is open under them, so a redraw keeps it open.
+  const openReviews = new Set<string>();
   // The sanctions in force as suspensions, by sanction id: only these can be lifted from here.
   let suspended = new Set<number>();
 
@@ -124,7 +154,49 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const age = h('time.approval-age', null, ago(a.created_ms));
 
     let el: HTMLElement;
-    if (a.kind === 'sanction') {
+    const rv = reviewOf(a);
+    if (rv) {
+      // The owner's call on one review round: pass (the owner's hand), send it back, or fail. The review opens under the card.
+      const reviewDecide = async (verdict: ReviewChoice, done: string): Promise<void> => {
+        for (const b of choices) b.disabled = true;
+        const ok = await attempt(() => review.decide(a.id, verdict, reason.value), done);
+        if (ok !== undefined) drafts.delete(a.id);
+        void load();
+      };
+      const fail = button('Fail', () => void reviewDecide('fail', 'Failed'), { kind: 'danger' });
+      const sendBack = button('Send back', () => void reviewDecide('rework', 'Sent back'));
+      const pass = button('Pass', () => void reviewDecide('pass', 'Passed'), { kind: 'primary' });
+      choices.push(fail, sendBack, pass);
+      const isOpen = openReviews.has(a.id);
+      const panel = h('div.review-panel', isOpen ? null : { hidden: true }, isOpen ? reviewPanel(rv.task, rv.run) : null);
+      const see = button(isOpen ? 'Hide the review' : 'See the review', () => {
+        const now = !openReviews.has(a.id);
+        if (now) openReviews.add(a.id);
+        else openReviews.delete(a.id);
+        panel.hidden = !now;
+        replace(panel, now ? reviewPanel(rv.task, rv.run) : null);
+        see.textContent = now ? 'Hide the review' : 'See the review';
+      }, { kind: 'ghost', size: 'sm' });
+      see.classList.add('review-see');
+      const chips = (rv.readings ?? []).map((r) => h('span.review-chip', null, dot(readingDot(r.level)), r.name));
+      const worker = rv.worker?.trim() ? rv.worker : nameOf(a.cid);
+      el = card(
+        null,
+        h(
+          'div.stack',
+          null,
+          h('header.approval-head', null, who, badge('Review', 'accent'), h('strong', null, rv.goal || `Review of ${rv.task}`), age),
+          rv.verdict ? h('p.review-verdict', null, rv.verdict) : null,
+          rv.needs_you ? h('p.review-needs', null, h('strong', null, 'Needs you: '), rv.needs_you) : null,
+          chips.length ? h('div.review-readings', null, chips) : null,
+          h('p.review-meta', null, [`Worker: ${worker}`, rv.change ? `change ${rv.change}` : null, rv.round ? `round ${rv.round}` : null].filter(Boolean).join(' · ')),
+          see,
+          panel,
+          h('div.approval-decide', null, reason, h('div.approval-buttons', null, fail, sendBack, pass)),
+        ),
+      );
+      el.classList.add('review-card');
+    } else if (a.kind === 'sanction') {
       const sid = sanctionIdOf(a);
       const lift = sid !== null && suspended.has(sid) ? choice('Lift', { approve: false, action: 'lift', done: 'Lifted' }) : null;
       const acknowledge = choice('Acknowledge', { approve: true, action: 'acknowledge', done: 'Acknowledged', kind: 'primary' });

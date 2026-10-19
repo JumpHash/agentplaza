@@ -19,9 +19,8 @@ import type { Cleanup } from './index';
 
 const DEBOUNCE_MS = 300;
 
-/** The rich-content context of one project's documents and critiques: its id (`task #N` is a task) and its repository
- * on the plaza's git host (the organisation is the forge's, apid's ORG). */
-const richOf = (p: Project) => embedContextFromStore({ project: p.id, project_repo: p.repo });
+/** The rich-content context of one project's documents and critiques: its id (`task #N` is a task). */
+const richOf = (p: Project) => embedContextFromStore({ project: p.id });
 const VERDICT_TONE: Record<ProjectCritique['verdict'], Tone> = { approve: 'ok', revise: 'danger', comment: 'muted' };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 
@@ -251,16 +250,9 @@ function openArchive(p: Project, done: () => void): void {
   );
 }
 
-/** Opens a project's repository in the IDE at its default branch (the branch the repo list reports). */
-async function openRepo(name: string): Promise<void> {
-  const repos = await attempt(() => api.gitRepos());
-  if (!repos) return;
-  const repo = repos.find((r) => r.name === name);
-  if (!repo) {
-    toast(`The repository ${name} was not found`, 'error');
-    return;
-  }
-  openIde(`repo:${name}@${repo.default_branch}`);
+/** Opens a project's repository in the IDE at `main`, which every Weft repository has. */
+function openRepo(name: string): void {
+  openIde(`repo:${name}@main`);
 }
 
 /** The detail page's tabs: its plan and history, the agents working on it, its settings and budget. */
@@ -325,7 +317,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       sections.push(
         card(
           'Repository',
-          h('div', { style: 'display: flex; gap: 12px; align-items: center; flex-wrap: wrap' }, h('a.pj-link', { href: href('git', name) }, p.repo), button('Open repo', () => void openRepo(name), { size: 'sm', icon: 'square-code', title: 'Open the repository in the IDE, at its default branch' })),
+          h('div', { style: 'display: flex; gap: 12px; align-items: center; flex-wrap: wrap' }, h('a.pj-link', { href: href('history', name) }, p.repo), button('Open repo', () => void openRepo(name), { size: 'sm', icon: 'square-code', title: 'Open the repository in the IDE, on main' })),
         ),
       );
     }

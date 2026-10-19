@@ -9,7 +9,7 @@
 import '../styles/embeds.css';
 import { api, type UnfurlAnswer, type UnfurlCard } from '../api';
 import { go } from '../router';
-import { agents as roster, overview } from '../store';
+import { agents as roster } from '../store';
 import { agentHue } from '../views/floor-common';
 import { BRAND_ICONS } from './brands.gen';
 import { ago } from './components';
@@ -136,7 +136,6 @@ function settle(key: string, answer: UnfurlAnswer): void {
 function carded(kind: string): boolean {
   return (
     kind.startsWith('github_') ||
-    kind.startsWith('plaza_git_') ||
     kind === 'gist' ||
     kind === 'agent' ||
     kind === 'task' ||
@@ -217,12 +216,9 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
   const c = answer.card;
   switch (r.kind) {
     case 'github_pull':
-    case 'plaza_git_pull':
     case 'github_issue':
-    case 'plaza_git_issue':
       return issueBody(label(r), c, r.kind.endsWith('pull'));
-    case 'github_commit':
-    case 'plaza_git_commit': {
+    case 'github_commit': {
       const files = num(c, 'files');
       const added = num(c, 'additions');
       const removed = num(c, 'deletions');
@@ -233,8 +229,7 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
         meta(when(num(c, 'date_ms')), files === null ? null : plural(files, 'file'), diffText(added, removed)),
       ];
     }
-    case 'github_repo':
-    case 'plaza_git_repo': {
+    case 'github_repo': {
       const stars = num(c, 'stars');
       return [
         kicker('Repository'),
@@ -245,10 +240,8 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
       ];
     }
     case 'github_file':
-    case 'plaza_git_file':
       return fileBody(label(r), c);
     case 'github_release':
-    case 'plaza_git_release':
       return [
         kicker(label(r)),
         titleOf(str(c, 'name') ?? str(c, 'tag') ?? label(r)),
@@ -257,7 +250,6 @@ function bodyOf(r: Ref, answer: UnfurlAnswer | undefined): Block[] {
         meta(when(num(c, 'created_ms'))),
       ];
     case 'github_run':
-    case 'plaza_git_run':
       return [
         kicker(label(r)),
         titleOf(str(c, 'title') ?? str(c, 'name') ?? label(r)),
@@ -382,10 +374,9 @@ function brandMark(name: string): SVGSVGElement | null {
   return svg;
 }
 
-/** The leading mark of a chip: the GitHub or plaza git mark, the agent's dot, a file or library icon. */
+/** The leading mark of a chip: the GitHub mark, the agent's dot, a file or library icon. */
 function leading(r: Ref): Node | null {
   if (r.kind.startsWith('github_') || r.kind === 'gist') return brandMark('github');
-  if (r.kind.startsWith('plaza_git_')) return icon('git', 'embed-icon');
   switch (r.kind) {
     case 'agent':
       return h('span.embed-dot', { 'aria-hidden': 'true' });
@@ -430,10 +421,10 @@ function actionFor(r: Ref, embeds: EmbedContext): (() => void) | null {
 
 /** The state a chip shows once its card lands: pull and issue states, a task's or an agent's status. */
 function paint(el: HTMLElement, r: Ref, card: UnfurlCard): void {
-  if (r.kind === 'github_pull' || r.kind === 'plaza_git_pull' || r.kind === 'github_issue' || r.kind === 'plaza_git_issue') {
+  if (r.kind === 'github_pull' || r.kind === 'github_issue') {
     const state = str(card, 'state');
     if (state) el.dataset.tone = toneOf('change', state);
-  } else if (r.kind === 'github_run' || r.kind === 'plaza_git_run') {
+  } else if (r.kind === 'github_run') {
     const state = str(card, 'conclusion') ?? str(card, 'state');
     if (state) el.dataset.tone = toneOf('run', state);
   } else if (r.kind === 'task') {
@@ -446,7 +437,7 @@ function paint(el: HTMLElement, r: Ref, card: UnfurlCard): void {
 }
 
 function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): HTMLElement {
-  const forge = r.kind.startsWith('github_') || r.kind.startsWith('plaza_git_') || r.kind === 'gist';
+  const forge = r.kind.startsWith('github_') || r.kind === 'gist';
   const target = targetOf(raw);
   const href = forge && /^https?:\/\//i.test(target) ? target : null;
   const agentCid = r.kind === 'agent' ? cidOf(r, embeds) : null;
@@ -817,9 +808,9 @@ function openLibraryPage(id: string): void {
   else go('library', id);
 }
 
-/** The page's rich-content context: the agent roster (names to cids), the plaza's git host from the overview, and the
- * handlers that open an agent's page, a task and a library item. A page passes what it knows in `extra`: the project,
- * its repository and the workspace paths (the IDE), and its own handlers. */
+/** The page's rich-content context: the agent roster (names to cids), the hub's own host, and the handlers that open an
+ * agent's page, a task and a library item. A page passes what it knows in `extra`: the project and the workspace paths
+ * (the IDE), and its own handlers. */
 export function embedContextFromStore(extra: Partial<EmbedContext> = {}): EmbedContext {
   const names = roster
     .get()
@@ -827,8 +818,6 @@ export function embedContextFromStore(extra: Partial<EmbedContext> = {}): EmbedC
     .map((a) => ({ name: a.name, cid: a.cid }));
   return {
     project: null,
-    project_repo: null,
-    plaza_git_host: overview.get()?.git_host ?? null,
     hub_host: typeof location === 'undefined' ? null : location.host,
     paths: [],
     agents: names,

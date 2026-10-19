@@ -1,0 +1,23 @@
+meta {
+  name: Show whether Weft is running on a fresh hub
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/weft
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hub always answers whether Weft runs", function () {
+    expect(res.getBody()).to.have.property("running");
+    expect(res.getBody().running).to.be.a("boolean");
+  });
+}

@@ -291,7 +291,7 @@ pub struct Settings {
     /// Whether editors may connect to the hub's ACP server. Off until the owner turns it on.
     #[serde(default)]
     pub acp_enabled: bool,
-    /// Whether an editor offers to apply an agent's pull request to the editor's project. Off until the owner turns it on.
+    /// Whether an editor offers to apply an agent's change to the editor's project. Off until the owner turns it on.
     #[serde(default)]
     pub acp_write_back: bool,
     /// Whether editors and coding engines that ask for protocol 2 get the ACP v2 draft. Off until the owner turns it on.

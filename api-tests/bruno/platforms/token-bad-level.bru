@@ -1,0 +1,19 @@
+meta {
+  name: An organisation-level token must name its organisation
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "gitlab", "token": "x", "level": "org"}
+}
+
+assert {
+  res.status: eq 400
+}

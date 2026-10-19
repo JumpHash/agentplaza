@@ -32,7 +32,6 @@ export interface Frame {
   consoleBtn: HTMLButtonElement;
   crumb: HTMLElement;
   state: HTMLElement;
-  git: HTMLElement;
   scrim: HTMLElement;
   side: HTMLElement;
   centre: { el: HTMLElement; dot: HTMLElement; title: HTMLElement; seg: Record<CentreView, HTMLButtonElement>; popout: HTMLButtonElement; views: Record<CentreView, HTMLElement> };
@@ -63,7 +62,6 @@ export function buildFrame(inp: FrameInputs): Frame {
   consoleBtn.classList.add('iw-console');
   const crumb = h('nav.iw-crumb', { 'aria-label': 'Breadcrumb' });
   const state = h('div.iw-state');
-  const git = h('div.iw-git');
 
   const top = h(
     'header.iw-top',
@@ -73,7 +71,6 @@ export function buildFrame(inp: FrameInputs): Frame {
     crumb,
     state,
     h('span.spacer'),
-    git,
     inp.held,
     inp.theme,
     consoleBtn,
@@ -117,7 +114,6 @@ export function buildFrame(inp: FrameInputs): Frame {
     consoleBtn,
     crumb,
     state,
-    git,
     scrim,
     side,
     centre: { el: centreEl, dot, title, seg, popout, views },

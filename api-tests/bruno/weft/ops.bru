@@ -1,0 +1,23 @@
+meta {
+  name: List the Weft operations log, newest first
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/ops?limit=20
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the operations log is a list", function () {
+    expect(res.getBody()).to.have.property("ops");
+    expect(res.getBody().ops).to.be.an("array");
+  });
+}

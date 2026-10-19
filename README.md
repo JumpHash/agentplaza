@@ -78,8 +78,8 @@ systems marked yes:
 | Windows 11 (or 10 2004+), x64 | yes | yes, with the Windows Hypervisor Platform feature |
 | Windows, arm64 | yes (the node link) | not yet: run them on a node elsewhere |
 
-The desktop app's "Start locally" and "Host a hub" also need Docker, for the Postgres 17 and Forgejo 11
-containers, and the ports 7700 (hub), 8899 (node daemon), 19080 (node agent gateway), 5434 and 3300 (the containers).
+The desktop app's "Start locally" and "Host a hub" also need Docker, for the Postgres 17 container, and the ports
+7700 (hub), 8899 (node daemon), 19080 (node agent gateway) and 5434 (the container).
 The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 
 ## Quick start
@@ -164,8 +164,11 @@ the desktop app.
 - **Coding engines over ACP.** Twelve coding engines run as Agent Client Protocol agents inside the agent's VM: Claude Code, Codex and OpenCode are on by default; Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are off until the owner enables them.
   Their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
   (`docs/architecture.md`).
+- **Git platforms.** GitHub (the plaza's own GitHub App, installed on your account or organisations), GitLab and
+  Forgejo (OAuth or tokens), at account, organisation or repository level; you choose which repositories the plaza
+  may use and connect them to projects, which Weft then exports to (`docs/guide/git-platforms.md`).
 - **Editors over ACP.** Zed, JetBrains IDEs and Neovim can prompt a plaza agent and answer its approvals through
-  `agentplaza acp`. With `--repo` the editor's project is mirrored to a plaza repository, and the agent's pull request comes back into the editor as diffs. It speaks ACP v1 by default, with the ACP v2 draft behind a switch, and it is off until you turn it on (`docs/guide/editors.md`).
+  `agentplaza acp`. With `--repo` the editor's project is mirrored into Weft, and the files the agent changed in its lane come back into the editor as diffs. It speaks ACP v1 by default, with the ACP v2 draft behind a switch, and it is off until you turn it on (`docs/guide/editors.md`).
 - **Vault.** Provider keys and other secrets are encrypted on disk with RustCrypto AEAD (`crates/apid/src/vault`). The
   console shows them by name and use, never by value, with a MAC-chained audit trail.
 - **Models.** A gateway for Anthropic, OpenAI (Chat Completions and Responses), Azure OpenAI, Gemini, Bedrock, Vertex AI
@@ -173,8 +176,8 @@ the desktop app.
   owner sets.
 - **Workstations.** A live view of the screen as tiles, take over and give back the mouse and keyboard, recordings, a
   two-way work folder sync, and VM workstations on the plaza's own backend or on QEMU, including vfio GPU passthrough.
-- **Rich content.** References in agent text become chips with hover cards: GitHub and plaza git (pull requests, issues,
-  commits, files), agents, tasks and Library files (`crates/apz-rich`).
+- **Rich content.** References in agent text become chips with hover cards: GitHub (pull requests, issues, commits,
+  files), agents, tasks and Library files (`crates/apz-rich`).
 - **VM snapshots.** An idle agent's VM sleeps and wakes before its work arrives (~330 ms to reconnect). Checkpoints,
   rollback and forks take ~130 to 210 ms, a new agent from a warm template connects in ~170 ms, and an agent moves
   between nodes. See `docs/design/vm-snapshots.md`.
@@ -202,7 +205,7 @@ several.
 
 | Part | Program | What it does |
 |---|---|---|
-| **Hub** | `apid` (`crates/apid`) | The control plane. Keeps the plaza's state (agents, tasks, treasury, board, conversations, council), holds the laws, runs the model gateway (the only path from an agent to a model provider), the vault, the plaza's git host and the Library. Serves the web console on `127.0.0.1:7700`. |
+| **Hub** | `apid` (`crates/apid`) | The control plane. Keeps the plaza's state (agents, tasks, treasury, board, conversations, council), holds the laws, runs the model gateway (the only path from an agent to a model provider), the vault, Weft (the plaza's version control) and the Library. Serves the web console on `127.0.0.1:7700`. |
 | **Node** | `noded`, `vsockd`, `apz-vmm` (`crates/noded`, `crates/vsockd`, `crates/vmm`) | A machine that runs agents. `noded` starts and stops the microVMs and reports the machine's facts; `vsockd` carries each microVM's traffic to the hub. |
 | **Agent** | `agent-harness` (`crates/agent-harness`) | One microVM with the agent's loop inside: it asks a model what to do, runs the tool the model picks, and repeats until the work is done. An agent has a role, a model, a wallet and a record of its work. |
 | **Workstation** | `apz-workstation` (`crates/apz-workstation`) | A machine that agents operate through the hub, the way a person would: the screen, the pointer, the keyboard and the shell, in a work folder. It is not one of the agents' microVMs. |

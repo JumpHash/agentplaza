@@ -1,0 +1,20 @@
+{
+  "name": "bash",
+  "version": 1,
+  "language": "bash",
+  "extensions": [
+    "sh",
+    "bash"
+  ],
+  "filenames": [],
+  "shebangs": [
+    "bash",
+    "/sh"
+  ],
+  "source": {
+    "npm": "tree-sitter-bash",
+    "version": "0.25.1",
+    "wasm": "tree-sitter-bash.wasm"
+  },
+  "query": "symbols.scm"
+}

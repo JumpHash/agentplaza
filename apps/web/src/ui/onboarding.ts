@@ -4,6 +4,7 @@
 
 import '../styles/onboarding.css';
 import { api, type Machine, type Overview, type Provider } from '../api';
+import { weft } from '../api-weft';
 import { go } from '../router';
 import { TOUR_STEPS, WIZARD_STEPS, browserStore, COPY, fill, keysSet, moveStep, readFlag, writeFlag } from '../onboarding/flow';
 import { button, dot, type Tone } from './components';
@@ -16,7 +17,7 @@ import { h, replace } from './dom';
 export interface Deps {
   services: boolean | null;
   hypervisor: boolean | null;
-  git: boolean | null;
+  weft: boolean | null;
 }
 
 /** What the checks found. `keys` is null when the providers could not be read. */
@@ -35,12 +36,12 @@ interface Row {
   detail: string;
 }
 
-/** The checks the wizard's steps show: the hub's overview, providers, machine and git host. */
+/** The checks the wizard's steps show: the hub's overview, providers, machine and Weft. */
 export async function loadStatus(): Promise<Status> {
   let overview: Overview | null = null;
   let providers: Provider[] | null = null;
   let machine: Machine | null = null;
-  let git: { configured: boolean } | null = null;
+  let weftStatus: { running: boolean } | null = null;
   try {
     overview = await api.overview();
   } catch {
@@ -57,9 +58,9 @@ export async function loadStatus(): Promise<Status> {
     // unknown hypervisor: the row says so
   }
   try {
-    git = await api.git();
+    weftStatus = await weft.status();
   } catch {
-    // unknown git host: the row says so
+    // unknown Weft: the row says so
   }
   return {
     reachable: overview !== null,
@@ -69,7 +70,7 @@ export async function loadStatus(): Promise<Status> {
     deps: {
       services: overview ? overview.hub : null,
       hypervisor: machine ? Boolean(machine.backend) : null,
-      git: git ? git.configured : null,
+      weft: weftStatus ? weftStatus.running : null,
     },
   };
 }
@@ -90,7 +91,7 @@ interface DepRow {
 export function depRows(s: Status | null): DepRow[] {
   const D = COPY.wizard.deps;
   const unread = (label: string): DepRow => ({ label, tone: 'muted', detail: COPY.wizard.checking });
-  const d: Deps = s?.deps ?? { services: null, hypervisor: null, git: null };
+  const d: Deps = s?.deps ?? { services: null, hypervisor: null, weft: null };
   return [
     d.services === null
       ? unread(D.rows.services)
@@ -102,11 +103,11 @@ export function depRows(s: Status | null): DepRow[] {
       : d.hypervisor
         ? { label: D.rows.hypervisor, tone: 'ok', detail: 'Available' }
         : { label: D.rows.hypervisor, tone: 'warn', detail: 'Not available', hint: D.web_hypervisor },
-    d.git === null
-      ? unread(D.rows.git)
-      : d.git
-        ? { label: D.rows.git, tone: 'ok', detail: 'Configured' }
-        : { label: D.rows.git, tone: 'warn', detail: 'Not configured', command: 'agentplaza setup --fix forgejo' },
+    d.weft === null
+      ? unread(D.rows.weft)
+      : d.weft
+        ? { label: D.rows.weft, tone: 'ok', detail: 'Running' }
+        : { label: D.rows.weft, tone: 'warn', detail: 'Not running', hint: D.web_weft },
     { label: D.rows.host, tone: 'muted', detail: D.web_host, command: 'agentplaza setup' },
   ];
 }

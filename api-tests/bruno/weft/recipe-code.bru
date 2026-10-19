@@ -1,0 +1,26 @@
+meta {
+  name: Show the code review recipe as its TOML
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/code
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the code recipe answers with its parsed form and its TOML", function () {
+    const body = res.getBody();
+    expect(body.recipe.id).to.equal("code");
+    expect(body.recipe.version).to.be.a("number");
+    expect(body.toml).to.be.a("string");
+    expect(body.toml).to.include("id = \"code\"");
+  });
+}

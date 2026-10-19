@@ -1,0 +1,16 @@
+{
+  "name": "php",
+  "version": 1,
+  "language": "php",
+  "extensions": [
+    "php"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-php",
+    "version": "0.24.2",
+    "wasm": "tree-sitter-php.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

@@ -35,7 +35,7 @@ pub struct Recipe {
     pub schema: Value,
     pub vetted_by: Option<String>,
     pub vetted_ms: Option<u64>,
-    /// A recipe from this repo's trainer tree, pinned by a hash of its files, not a Forgejo commit.
+    /// A recipe from this repo's trainer tree, pinned by a hash of its files, not a commit.
     pub local_dev: bool,
 }
 

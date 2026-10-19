@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::widget::{Space, Stack, button, column, container, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme, font};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::wizard::WizardMsg;
 use super::{Id, ide, project_settings, project_team};
@@ -201,10 +201,8 @@ pub enum Msg {
     /// Open a document's file in the system viewer, by its hub file id.
     OpenFile(String),
     Opened(Result<(), String>),
-    /// Opens the project's repository in the IDE on its default branch (the branch is read first).
+    /// Opens the project's repository in the IDE at `main`, which every Weft repository has.
     OpenRepo(String),
-    /// The repository's default branch, read for `OpenRepo`; the IDE opens on it when it is in.
-    RepoBranch(String, Result<Value, String>),
     /// New project: the shell's dialog (the console opens it).
     NewProject,
     /// The open project's tab.
@@ -312,36 +310,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             };
             project_settings::update(&mut state.settings, m, &id, ctx).map(Msg::Settings)
         }
-        Msg::OpenRepo(repo) => {
-            let c = ctx.client.clone();
-            let path = format!("/v1/git/repos/{repo}");
-            client::task(
-                move || c.get::<Value>(&path),
-                move |res| Msg::RepoBranch(repo.clone(), res),
-            )
-        }
-        Msg::RepoBranch(repo, res) => match res {
-            Ok(info) => match info
-                .get("default_branch")
-                .and_then(Value::as_str)
-                .filter(|b| !b.is_empty())
-            {
-                // The screen navigates through `Msg::Go`, the same as its other links.
-                Some(branch) => Task::done(Msg::Go(Id::Ide(Some(ide::target(
-                    &format!("repo:{repo}@{branch}"),
-                    false,
-                    None,
-                ))))),
-                None => {
-                    state.error = Some(format!("{repo} has no default branch to open."));
-                    Task::none()
-                }
-            },
-            Err(e) => {
-                state.error = Some(format!("Could not open {repo} in the IDE: {e}"));
-                Task::none()
-            }
-        },
+        // The screen navigates through `Msg::Go`, the same as its other links.
+        Msg::OpenRepo(repo) => Task::done(Msg::Go(Id::Ide(Some(ide::target(
+            &format!("repo:{repo}@main"),
+            false,
+            None,
+        ))))),
         Msg::List(res) => {
             match res {
                 Ok(list) => {
@@ -1064,7 +1038,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     ];
     if let Some(repo) = &p.repo {
         let repo_card: Element<'a, Msg> = column![
-            link(repo, Msg::Go(Id::Repo(repo.clone()))),
+            link(repo, Msg::Go(Id::History)),
             ui::btn_sm(
                 "Open repo",
                 Some("square-code"),

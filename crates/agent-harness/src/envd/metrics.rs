@@ -87,9 +87,15 @@ fn disk(path: &Path) -> Option<(u64, u64)> {
     if result != 0 {
         return None;
     }
-    let block = stat.f_frsize as u64;
-    let total = stat.f_blocks as u64 * block;
-    let free = stat.f_bfree as u64 * block;
+    // The field types differ by target (`c_ulong`, `fsblkcnt_t`): u64 already on some, narrower on others.
+    #[allow(clippy::unnecessary_cast)]
+    let (block, blocks, bfree) = (
+        stat.f_frsize as u64,
+        stat.f_blocks as u64,
+        stat.f_bfree as u64,
+    );
+    let total = blocks * block;
+    let free = bfree * block;
     Some((total.saturating_sub(free), total))
 }
 

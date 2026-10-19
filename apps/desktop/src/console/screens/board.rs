@@ -250,7 +250,7 @@ fn prefetch_posts(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             std::iter::once(p.body.as_str()).chain(p.comments.iter().map(|c| c.body.as_str()))
         })
         .collect();
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &texts).map(Msg::Rich)
 }
 
@@ -1017,7 +1017,7 @@ fn body<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     } else {
         clamp(src)
     };
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let mut col: Vec<Element<'a, Msg>> = vec![rich::view(&shown, &rctx, &state.cards, &on_rich)];
     if clamped {
         let label = if open { "Show less" } else { "Show more" };
@@ -1150,7 +1150,7 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
     } else {
         crate::theme::palette().ink
     };
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let mut main: Vec<Element<'a, Msg>> = vec![
         row![ui::sans(name, 12.0, colour), ui::faint(ago(c.created_at))]
             .spacing(10)

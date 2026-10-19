@@ -830,11 +830,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let text = match (switch, on) {
                 (AcpSwitch::Enabled, true) => "Editors can connect to this hub.",
                 (AcpSwitch::Enabled, false) => "Editors can no longer connect to this hub.",
-                (AcpSwitch::WriteBack, true) => {
-                    "Editors will offer to apply an agent's pull request."
-                }
+                (AcpSwitch::WriteBack, true) => "Editors will offer to apply an agent's change.",
                 (AcpSwitch::WriteBack, false) => {
-                    "Editors will no longer offer to apply pull requests."
+                    "Editors will no longer offer to apply agents' changes."
                 }
                 (AcpSwitch::V2, true) => {
                     "Editors and engines that ask for protocol 2 get the ACP v2 draft."
@@ -1418,7 +1416,7 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
     let enabled = state.acp_enabled.unwrap_or(false);
     // Without an on_toggle the checkbox is greyed out: the write-back switch waits for editors to be on.
     let mut write_back = checkbox(state.acp_write_back.unwrap_or(false))
-        .label("Offer to apply an agent's pull request to the editor's project");
+        .label("Offer to apply an agent's change to the editor's project");
     if enabled {
         write_back = write_back.on_toggle(Msg::SetAcpWriteBack);
     }
@@ -1433,7 +1431,7 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
             .into(),
         ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
         write_back.into(),
-        ui::faint("With agentplaza acp --repo, the agent works on a branch of the mirrored repository. When this is on, the editor asks you whether to apply its pull request; the editor writes the files, the agent never does.").into(),
+        ui::faint("With agentplaza acp --repo, the agent works in a lane of its own on the editor's project, mirrored in Weft. When this is on, the editor asks you whether to apply the files it changed; the editor writes them, the agent never does.").into(),
         v2.into(),
         ui::faint("Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.").into(),
     ];

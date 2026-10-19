@@ -1,8 +1,8 @@
 //! The text scanner. Four passes, each splitting the plain-text spans the earlier ones left: inline code, markdown
-//! links and images, bare URLs, then the words (`#528`, `@Name`, `task #528`, `PR #12`, workspace paths, hub
-//! library routes). Code is never split. Pure.
+//! links and images, bare URLs, then the words (`#528`, `@Name`, `task #528`, workspace paths, hub library
+//! routes). Code is never split. Pure.
 
-use crate::url::{classify_url, hub_route, strip_scheme, valid_name};
+use crate::url::{classify_url, hub_route, strip_scheme};
 use crate::{Ctx, Ref, Span};
 
 /// Splits `text` into spans. See the crate docs for the rules.
@@ -202,30 +202,28 @@ fn word_spans(text: &str, ctx: &Ctx) -> Vec<Span> {
             i += 1;
             continue;
         }
-        // Two words: `task #528`, `PR #12`, `pull #12`. The gap is spaces only, and the first word has no trailing punctuation.
+        // Two words: `task #528`. `PR #12` and `pull #12` are text, and so is their `#12`. The gap is spaces only,
+        // and the first word has no trailing punctuation.
         if let Some(&(next_a, next_b)) = tokens.get(i + 1) {
             let gap = &text[raw_b..next_a];
             if b == raw_b && !gap.is_empty() && gap.bytes().all(|c| c == b' ' || c == b'\t') {
                 let (c, d) = trim(text, next_a, next_b);
                 let word = &text[a..b];
-                let is_task = word.eq_ignore_ascii_case("task");
-                let is_pull = word.eq_ignore_ascii_case("pr") || word.eq_ignore_ascii_case("pull");
-                if let (true, Some(number)) = (is_task || is_pull, hash_number(&text[c..d])) {
-                    // Both words are consumed: `PR #12` without a repository stays text, not a task.
-                    let whole = if is_task {
-                        Some(Ref::Task { number })
-                    } else {
-                        plaza_pull(number, ctx)
-                    };
-                    if let Some(r) = whole {
-                        push_text(&mut out, &text[plain_from..a]);
-                        out.push(Span::Ref {
-                            raw: text[a..d].to_string(),
-                            r,
-                            text: None,
-                        });
-                        plain_from = d;
-                    }
+                if let (true, Some(number)) =
+                    (word.eq_ignore_ascii_case("task"), hash_number(&text[c..d]))
+                {
+                    push_text(&mut out, &text[plain_from..a]);
+                    out.push(Span::Ref {
+                        raw: text[a..d].to_string(),
+                        r: Ref::Task { number },
+                        text: None,
+                    });
+                    plain_from = d;
+                    i += 2;
+                    continue;
+                }
+                let is_pr = word.eq_ignore_ascii_case("pr") || word.eq_ignore_ascii_case("pull");
+                if is_pr && hash_number(&text[c..d]).is_some() {
                     i += 2;
                     continue;
                 }
@@ -334,17 +332,6 @@ fn hash_number(word: &str) -> Option<u64> {
     (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
         .then(|| digits.parse().ok())
         .flatten()
-}
-
-/// `PR #12` in a project with a repository: a plaza git pull of that repository.
-fn plaza_pull(number: u64, ctx: &Ctx) -> Option<Ref> {
-    let repo = ctx.project_repo.as_deref()?;
-    let (owner, name) = repo.split_once('/')?;
-    (valid_name(owner) && valid_name(name)).then(|| Ref::PlazaGitPull {
-        owner: owner.to_string(),
-        repo: name.to_string(),
-        number,
-    })
 }
 
 /// Maximal runs of non-whitespace, as byte ranges.

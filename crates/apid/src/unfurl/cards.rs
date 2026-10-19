@@ -1,11 +1,11 @@
-//! The cards: what the unfurl shows for a reference, built from the body of one GitHub or Forgejo answer. Pure, so the
-//! tests run them on recorded fixtures. GitHub and Forgejo answer the same shapes, except where a field name differs
-//! (`stargazers_count` and `stars_count`); the readers take whichever is there.
+//! The cards: what the unfurl shows for a reference, built from the body of one GitHub answer. Pure, so the tests run
+//! them on recorded fixtures.
 
 use apz_rich::Ref;
+use base64::Engine;
 use serde_json::{Value, json};
 
-use crate::git::{base64_decode, pct, seg};
+use super::{pct, seg};
 use crate::ide::rfc3339_ms;
 
 /// The most characters of a body a card shows.
@@ -30,20 +30,20 @@ pub fn kind_of(r: &Ref) -> String {
 }
 
 /// The card for `r` from its answer's `body`: the reference's kind and its web link are added here.
-pub fn card(r: &Ref, body: &Value, origin: &str) -> Value {
+pub fn card(r: &Ref, body: &Value) -> Value {
     let mut card = match r {
-        Ref::GithubPull { .. } | Ref::PlazaGitPull { .. } => pull(body),
-        Ref::GithubIssue { .. } | Ref::PlazaGitIssue { .. } => issue(body),
-        Ref::GithubCommit { .. } | Ref::PlazaGitCommit { .. } => commit(body),
-        Ref::GithubRepo { .. } | Ref::PlazaGitRepo { .. } => repo(body),
-        Ref::GithubFile { .. } | Ref::PlazaGitFile { .. } => file(r, body),
-        Ref::GithubRelease { .. } | Ref::PlazaGitRelease { .. } => release(body),
+        Ref::GithubPull { .. } => pull(body),
+        Ref::GithubIssue { .. } => issue(body),
+        Ref::GithubCommit { .. } => commit(body),
+        Ref::GithubRepo { .. } => repo(body),
+        Ref::GithubFile { .. } => file(r, body),
+        Ref::GithubRelease { .. } => release(body),
         Ref::GithubRun { .. } => run(body),
         Ref::Gist { .. } => gist(body),
         _ => Value::Null,
     };
     card["kind"] = json!(kind_of(r));
-    card["url"] = web_url(r, origin).map_or(Value::Null, Value::String);
+    card["url"] = web_url(r).map_or(Value::Null, Value::String);
     card
 }
 
@@ -54,14 +54,14 @@ pub fn ttl_ms(item: &Value) -> u64 {
     }
     let card = &item["card"];
     match (card["kind"].as_str(), card["state"].as_str()) {
-        (Some("github_commit" | "plaza_git_commit"), _) => SETTLED_TTL,
+        (Some("github_commit"), _) => SETTLED_TTL,
         (_, Some("merged" | "closed" | "completed")) => SETTLED_TTL,
         _ => OPEN_TTL,
     }
 }
 
-/// The page a reference links to on GitHub, or on the plaza's git host (`origin`, which may be unset).
-pub fn web_url(r: &Ref, origin: &str) -> Option<String> {
+/// The page a reference links to on GitHub.
+pub fn web_url(r: &Ref) -> Option<String> {
     let github = "https://github.com";
     let url = match r {
         Ref::GithubPull {
@@ -97,38 +97,6 @@ pub fn web_url(r: &Ref, origin: &str) -> Option<String> {
         }
         Ref::GithubRun { owner, repo, id } => format!("{github}/{owner}/{repo}/actions/runs/{id}"),
         Ref::Gist { id } => format!("https://gist.github.com/{id}"),
-        _ if origin.is_empty() => return None,
-        Ref::PlazaGitPull {
-            owner,
-            repo,
-            number,
-        } => format!("{origin}/{owner}/{repo}/pulls/{number}"),
-        Ref::PlazaGitIssue {
-            owner,
-            repo,
-            number,
-        } => format!("{origin}/{owner}/{repo}/issues/{number}"),
-        Ref::PlazaGitCommit { owner, repo, sha } => format!("{origin}/{owner}/{repo}/commit/{sha}"),
-        Ref::PlazaGitRepo { owner, repo } => format!("{origin}/{owner}/{repo}"),
-        Ref::PlazaGitFile {
-            owner,
-            repo,
-            reference,
-            path,
-            line,
-            ..
-        } => {
-            let anchor = line.map(|n| format!("#L{n}")).unwrap_or_default();
-            format!(
-                "{origin}/{owner}/{repo}/src/branch/{}/{}{anchor}",
-                seg(reference),
-                pct(path, true)
-            )
-        }
-        Ref::PlazaGitRelease { owner, repo, tag } => {
-            format!("{origin}/{owner}/{repo}/releases/tag/{}", seg(tag))
-        }
-        Ref::PlazaGitRun { .. } => return None,
         _ => return None,
     };
     Some(url)
@@ -217,12 +185,6 @@ fn file(r: &Ref, body: &Value) -> Value {
             path,
             line,
             ..
-        }
-        | Ref::PlazaGitFile {
-            reference,
-            path,
-            line,
-            ..
         } => (reference, path, line),
         _ => return Value::Null,
     };
@@ -236,7 +198,9 @@ fn file(r: &Ref, body: &Value) -> Value {
     }
     let bytes = body["content"].as_str().and_then(|text| {
         let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        base64_decode(&compact).ok()
+        base64::engine::general_purpose::STANDARD
+            .decode(compact)
+            .ok()
     });
     let (lines, binary) = match bytes {
         Some(bytes) if bytes.contains(&0) => (Value::Null, true),

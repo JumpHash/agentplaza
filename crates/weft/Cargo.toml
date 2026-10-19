@@ -1,0 +1,39 @@
+[package]
+name = "weft"
+description = "Weft: AgentPlaza's agent-native version control (store, server, node cache and CLI in one binary)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "weft"
+path = "src/main.rs"
+
+[features]
+default = ["packs"]
+# Language packs: tree-sitter grammars compiled to WebAssembly, loaded on demand.
+packs = ["dep:tree-sitter"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+sha2.workspace = true
+apz-http.workspace = true
+ureq.workspace = true
+blake3 = "1.8"
+zstd = "0.13"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha1 = "0.10"
+flate2 = "1.1"
+similar = "2"
+fastcdc = "3"
+toml = "1"
+tree-sitter = { version = "0.27.1", features = ["wasm"], optional = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

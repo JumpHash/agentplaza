@@ -1,0 +1,16 @@
+{
+  "name": "tsx",
+  "version": 1,
+  "language": "tsx",
+  "extensions": [
+    "tsx"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-typescript",
+    "version": "0.23.2",
+    "wasm": "tree-sitter-tsx.wasm"
+  },
+  "query": "../typescript/symbols.scm"
+}

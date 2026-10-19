@@ -1,0 +1,24 @@
+meta {
+  name: List the Weft keys, with the owner's on a fresh hub
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/keys
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the store has its owner key and a keys list", function () {
+    expect(res.getBody()).to.have.property("owner");
+    expect(res.getBody()).to.have.property("keys");
+    expect(res.getBody().keys).to.be.an("array");
+  });
+}

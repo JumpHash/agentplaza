@@ -1,0 +1,19 @@
+{
+  "name": "python",
+  "version": 1,
+  "language": "python",
+  "extensions": [
+    "py",
+    "pyi"
+  ],
+  "filenames": [],
+  "shebangs": [
+    "python"
+  ],
+  "source": {
+    "npm": "tree-sitter-python",
+    "version": "0.25.0",
+    "wasm": "tree-sitter-python.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

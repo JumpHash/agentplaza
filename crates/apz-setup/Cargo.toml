@@ -1,6 +1,6 @@
 [package]
 name = "apz-setup"
-description = "First-run setup of a local plaza: the requirements checked (Docker, Postgres, Forgejo, Garage, hypervisor, ports) and the missing ones fixed, through an injectable command runner. Shared by the desktop app and the CLI; no GUI dependencies."
+description = "First-run setup of a local plaza: the requirements checked (Docker, Postgres, Garage, hypervisor, ports) and the missing ones fixed, through an injectable command runner. Shared by the desktop app and the CLI; no GUI dependencies."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

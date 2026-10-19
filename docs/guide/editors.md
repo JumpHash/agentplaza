@@ -47,7 +47,7 @@ desktop app has the same switch; the setting is `acp_v2`). An editor that asks f
 
 An editor on v2 gives up three things:
 
-- Write-back. v2 has no `fs/write_text_file`, so the hub never offers to apply a pull request's files,
+- Write-back. v2 has no `fs/write_text_file`, so the hub never offers to apply an agent's change,
   even with `acp_write_back` on.
 - `session/load`, which answers method not found. `session/resume` still continues the session, and
   replays nothing.
@@ -111,28 +111,28 @@ Pass `--repo <name>` to have the agent work on the project open in the editor. I
 {"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp", "--repo", "<name>"]}}}
 ```
 
-`<name>` is a plaza repository: lowercase letters, digits, `.`, `_` and `-`, up to 100
-characters. It is created if it does not exist. Before each session and each prompt, the CLI
-pushes the project's current branch to it as `editor/<branch>` (`editor/detached-<sha>` on a
-detached HEAD). Only committed work is pushed. When the project has uncommitted changes, the
-agent is told so, and they are not in the branch.
+`<name>` is a plaza repository in Weft: lowercase letters, digits, `.`, `_` and `-`, up to 100
+characters. Before each session and each prompt, the CLI mirrors the project's current commit
+into it, as the latest draft of the editor lane `editor/<branch>` (`editor/detached-<sha>` on a
+detached HEAD; yours, and never landed). Only committed work is mirrored, and only the files the
+hub does not have yet travel. When the project has uncommitted changes, the agent is told so,
+and they are not in the mirror.
 
-The push goes through a local relay on the CLI's own pinned connection, so git never sees the
-owner token, and it works with a remote hub. The agent clones the repository in its VM, works
-on a branch `acp/<session>`, pushes it and opens a pull request into `editor/<branch>`. The
-editor shows that pull request as a tool call whose changes are diffs, with its link.
+The mirror goes over the CLI's own pinned connection, so it works with a remote hub. The
+session's agent works in a lane of its own, `acp/<session>`, opened on the editor lane and
+checked out in its VM; each of its turns is kept as a draft. The editor shows the files that lane
+changed as a tool call whose changes are diffs, with a link to the change in History.
 
 ## Applying the changes
 
-The agent never writes to your machine. Applying its pull request to the editor's project is
-off by default. Turn it on in Setup › MCP › This hub as a server › **Offer to apply an agent's
-pull request to the editor's project** (the desktop app has the same switch; the setting is
-`acp_write_back`). With it on, the
-editor asks you each time an agent's pull request is ready to apply, and on yes it writes the
-changed files into the project. Deleted files are listed for you to remove yourself. Only the
-owner, or a token with the `govern` scope, is asked; an `operate` token sees the pull request
+The agent never writes to your machine. Applying its change to the editor's project is off by
+default. Turn it on in Setup › MCP › This hub as a server › **Offer to apply an agent's change to
+the editor's project** (the desktop app has the same switch; the setting is `acp_write_back`).
+With it on, the editor asks you each time an agent's change is ready to apply, and on yes it
+writes the changed files into the project. Deleted files are listed for you to remove yourself.
+Only the owner, or a token with the `govern` scope, is asked; an `operate` token sees the change
 but is not asked. An ask you deny or leave unanswered for 10 minutes writes nothing, and the
-pull request stays on its branch. An editor that does not advertise file writes in ACP is
+change stays in its lane. An editor that does not advertise file writes in ACP is
 never asked.
 
 ## Engines your agents can run

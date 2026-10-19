@@ -4,13 +4,13 @@
 //! |---|---|
 //! | `initialize` | protocol 1; `loadSession`; prompts take text and embedded resources; sessions can be listed, resumed and closed |
 //! | `session/new` | a new session on the connection's agent (`agentplaza acp --agent`), else `_meta.agentplaza.agent`, else the orchestrator; the editor's `mcpServers` are not connected (a notice says so); modes are the agent's approval modes |
-//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner; the turn's end reports `usage_update`, and the first prompt titles the session (`session_info_update`); a prompt that is one of the [`COMMANDS`] runs it on the agent instead of queuing chat; a session linked to a plaza repository (`_meta.agentplaza.repo`, on new/load/resume/prompt) gets a note on that repository's branch, and the pull request its work opened comes back as a `tool_call` of diffs |
+//! | `session/prompt` | a chat work item on the session's thread; its stream as updates until its end; `stopReason` from the end (`end_turn`, `cancelled`); a failed item is a JSON-RPC error; an approval the work waits on is asked as `session/request_permission` and answered for the owner; the turn's end reports `usage_update`, and the first prompt titles the session (`session_info_update`); a prompt that is one of the [`COMMANDS`] runs it on the agent instead of queuing chat; a session linked to a plaza repository (`_meta.agentplaza.repo`, on new/load/resume/prompt) works in a lane of its own in Weft, opened on the editor's lane (`editor/<branch>`, which `agentplaza acp --repo` mirrors), and the files that lane changed come back as a `tool_call` of diffs |
 //! | `session/cancel` | cancels the session's work item: the one in progress, or one still queued |
 //! | `session/load` | replays the session's work items, then continues; the commands and the model options come first |
 //! | `session/list`, `session/resume`, `session/close` | the sessions; resume without replay; close ends it |
 //! | `session/set_mode` | the agent's approval mode: `autonomous`, `ask`, `read_only` (`current_mode_update` follows) |
 //! | `session/set_config_option` | the agent's `model`, within its tier's list; the reply carries the options |
-//! | write-back | with the owner's `acp_write_back` on, the editor's `fs.writeTextFile`, and a caller that may govern: after the pull request's `tool_call`, `session/request_permission` asks to apply its files to the project (`apply-pr-<n>`, 10 minutes); on `apply` the editor gets one `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`; deleted files are left for the owner. The agent never writes the project itself. Never on a v2 connection, which has no `fs/write_text_file` |
+//! | write-back | with the owner's `acp_write_back` on, the editor's `fs.writeTextFile`, and a caller that may govern: after the change's `tool_call`, `session/request_permission` asks to apply its files to the project (`apply-w-<n>`, 10 minutes); on `apply` the editor gets one `fs/write_text_file` per changed file (30 seconds each), then a `tool_call_update`; deleted files are left for the owner. The agent never writes the project itself. Never on a v2 connection, which has no `fs/write_text_file` |
 //! | v2 draft | with the owner's `acp_v2` on, an editor that asks for protocol 2 gets it (see [`apz_acp::compat`]): the updates go out as v2 updates, a chunk takes the message id of its turn; `session/prompt` answers `{messageId}` at once and its turn follows as `state_update`s (running, then idle with the stop reason and the usage); `session/new` replies with the commands; `session/resume` replays nothing; `session/load` and `session/set_mode` are method not found |
 
 use std::collections::HashSet;
@@ -31,6 +31,8 @@ use apz_acp::types::{self, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
 
 use super::feed::{self, End, Feed};
+use apz_proto::wire::WorkLane;
+
 use super::store::{RepoLink, Session, Sessions};
 use crate::events::Frame;
 use crate::hub_mcp::auth::Scope;
@@ -45,8 +47,18 @@ pub trait Hub: Sync {
     /// Subscribes to the bus. Taken before the work is queued, so no frame is missed.
     fn subscribe(&self) -> Receiver<Frame>;
     /// Queues `text` as the owner's chat on agent `cid`, thread `thread` (origin: the owner, over
-    /// ACP); the work item's id.
-    fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String>;
+    /// ACP), in `lane` when the session has one; the work item's id.
+    fn chat(
+        &self,
+        cid: u64,
+        thread: &str,
+        text: &str,
+        lane: Option<WorkLane>,
+    ) -> Result<u64, String>;
+    /// The lane in Weft that session `session` of agent `cid` works in on the linked repository: opened the first
+    /// time on the editor's lane (`repo.branch`), the same lane after. None without Weft or without that editor
+    /// lane (the editor has not mirrored the project yet).
+    fn session_lane(&self, cid: u64, session: &str, repo: &RepoLink) -> Option<WorkLane>;
     /// Cancels work item `work` of agent `cid` if it is in progress or queued; false otherwise.
     fn cancel(&self, cid: u64, work: u64) -> bool;
     /// The transcript entries of agent `cid` for the given work items, oldest first.
@@ -80,25 +92,25 @@ pub trait Hub: Sync {
     }
     /// Sets agent `cid`'s model, when its tier allows it.
     fn set_model(&self, cid: u64, model: &str) -> Result<(), String>;
-    /// The open pull request of repository `name` whose head branch is `head`, with its changed text
-    /// files. None when there is none, or when the forge does not answer: the turn then reports no
-    /// pull request rather than failing.
-    fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull>;
-    /// Whether the owner has turned on write-back: an editor that can write files may apply a pull
-    /// request's files to its project, on the owner's yes in the editor.
+    /// The open lane of repository `name` titled `head` (a session's, `acp/<session>`), with the text files its
+    /// latest draft changed. None when there is none, or when Weft does not answer: the turn then reports no
+    /// change rather than failing.
+    fn session_change(&self, name: &str, head: &str) -> Option<SessionChange>;
+    /// Whether the owner has turned on write-back: an editor that can write files may apply a session's
+    /// change to its project, on the owner's yes in the editor.
     fn write_back(&self) -> bool;
     fn now_ms(&self) -> u64;
 }
 
-/// A pull request a session's work opened on its repository (see [`Hub::repo_pull`]).
+/// The change a session's work made in its lane (see [`Hub::session_change`]): `number` is the change's (`w-<n>`).
 #[derive(Debug, Clone)]
-pub struct RepoPull {
+pub struct SessionChange {
     pub url: String,
     pub number: u64,
     pub files: Vec<RepoFile>,
 }
 
-/// One changed file of a [`RepoPull`]. `path` is repository-relative, as the file is after the change;
+/// One changed file of a [`SessionChange`]. `path` is repository-relative, as the file is after the change;
 /// a text is None on the side the file is not on (added or removed).
 #[derive(Debug, Clone)]
 pub struct RepoFile {
@@ -184,7 +196,7 @@ pub struct Conn<'h> {
     /// The editor's `clientInfo`, once `initialize` named it. The connection owns it; each call
     /// borrows it (the socket's handlers build a `Conn` per message over the connection's state).
     pub client: &'h Mutex<String>,
-    /// Whether the editor's `initialize` advertised `fs.writeTextFile`: it can apply a pull request's files.
+    /// Whether the editor's `initialize` advertised `fs.writeTextFile`: it can apply a session's change to the project.
     pub editor_writes: &'h AtomicBool,
     /// The protocol version `initialize` negotiated: 1, or 2 for an editor on the ACP v2 draft.
     pub version: &'h AtomicU16,
@@ -260,9 +272,9 @@ const POLL: Duration = Duration::from_millis(200);
 const APPROVALS_EVERY: Duration = Duration::from_secs(2);
 /// How long the editor has to answer an approval before its request is left pending.
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// How long the owner has to say, in the editor, whether to apply a pull request to the project.
+/// How long the owner has to say, in the editor, whether to apply a session's change to the project.
 const APPLY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// How long the editor has to write one file of an applied pull request.
+/// How long the editor has to write one file of an applied change.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most attached file text one prompt carries; the rest of the files are left out.
 pub(crate) const PROMPT_BYTES: usize = 256 * 1024;
@@ -443,13 +455,17 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     // them, so none is lost while `chat` returns.
     let frames = conn.hub.subscribe();
     // The agent is told where the editor's project lives; the session keeps the editor's own text.
+    let lane = session
+        .repo
+        .as_ref()
+        .and_then(|repo| conn.hub.session_lane(session.cid, &session.id, repo));
     let chat = match &session.repo {
-        Some(repo) => format!("{}\n\n{text}", repo_context(&session.id, repo)),
+        Some(repo) => format!("{}\n\n{text}", repo_context(repo, lane.as_ref())),
         None => text.clone(),
     };
     let work = conn
         .hub
-        .chat(session.cid, &session.id, &chat)
+        .chat(session.cid, &session.id, &chat, lane)
         .map_err(internal)?;
     let had_title = !session.title.is_empty();
     conn.sessions
@@ -497,9 +513,9 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
     );
     // The turn's tokens are reported whatever its end: a failed work spent them too.
     report_usage(conn.hub, peer, &session.id, session.cid, work);
-    // A pull request the work opened is reported whatever the end too: it is on the repository.
+    // The change the work made is reported whatever the end too: it is in the session's lane.
     if let Some(repo) = &session.repo
-        && let Some(pull) = report_repo_pull(conn.hub, peer, &session, repo, Wire::default())
+        && let Some(pull) = report_change(conn.hub, peer, &session, repo, Wire::default())
     {
         offer_write_back(conn, peer, &session, &pull);
     }
@@ -535,9 +551,9 @@ impl Turn {
             self.govern,
             wire,
         );
-        // A pull request the work opened is reported whatever the end, as on v1. v2 offers no write-back.
+        // The change the work made is reported whatever the end, as on v1. v2 offers no write-back.
         if let Some(repo) = &self.session.repo {
-            report_repo_pull(hub, peer, &self.session, repo, wire);
+            report_change(hub, peer, &self.session, repo, wire);
         }
         let stop = match &result {
             Ok(reply) => reply["stopReason"]
@@ -646,10 +662,10 @@ fn repo_of(params: &Value) -> Option<RepoLink> {
     })
 }
 
-/// The note put before the editor's text on a session linked to a repository: where the project is
-/// mirrored, and what to do with the work (a branch of its own, and a pull request into the editor's).
-fn repo_context(session_id: &str, repo: &RepoLink) -> String {
-    let mut facts = format!("branch {}", repo.branch);
+/// The note put before the editor's text on a session linked to a repository: where the project is, and
+/// where the work goes (the session's lane, checked out in the agent's workspace).
+fn repo_context(repo: &RepoLink, lane: Option<&WorkLane>) -> String {
+    let mut facts = format!("editor lane {}", repo.branch);
     if !repo.commit.is_empty() {
         let short: String = repo.commit.chars().take(7).collect();
         facts.push_str(&format!(", commit {short}"));
@@ -657,25 +673,32 @@ fn repo_context(session_id: &str, repo: &RepoLink) -> String {
     if repo.dirty {
         facts.push_str("; the editor had uncommitted changes that are not included");
     }
-    format!(
-        "The editor's project is mirrored to the plaza repository {name} ({facts}). Clone http://plaza.gateway/git/agentplaza/{name}.git, check out {branch}, and work on a branch acp/{session_id} made from it. Commit, push that branch, and open a pull request into {branch} with plaza_git (or update the open one). End your reply with the pull request's link.",
-        name = repo.name,
-        branch = repo.branch,
-    )
+    match lane {
+        Some(lane) => format!(
+            "The editor's project is the plaza repository {name} ({facts}). Your work on it is lane {change} in Weft, checked out in ./{dir}/ in your workspace: change the files there; every turn is kept as a draft, and the editor is shown the files you changed. Name what the change does with weft_describe.",
+            name = repo.name,
+            change = lane.change,
+            dir = lane.repo,
+        ),
+        None => format!(
+            "The editor's project is the plaza repository {name} ({facts}), but Weft has no mirror of it yet (agentplaza acp --repo makes one): answer from what the editor sends.",
+            name = repo.name,
+        ),
+    }
 }
 
-/// Shows the editor the pull request the session's work opened on its repository: a completed
-/// `tool_call` with each changed file's diff, and a message with the link. Nothing when there is none.
-/// Returns the pull request it showed, for the write-back.
-fn report_repo_pull(
+/// Shows the editor the change the session's work made in its lane: a completed `tool_call` with each changed
+/// file's diff, and a message with the link. Nothing when there is none. Returns the change it showed, for the
+/// write-back.
+fn report_change(
     hub: &dyn Hub,
     peer: &Peer,
     session: &Session,
     repo: &RepoLink,
     wire: Wire,
-) -> Option<RepoPull> {
+) -> Option<SessionChange> {
     let head = format!("acp/{}", session.id);
-    let pull = hub.repo_pull(&repo.name, &head)?;
+    let pull = hub.session_change(&repo.name, &head)?;
     let mut content = Vec::new();
     let mut locations = Vec::new();
     for file in &pull.files {
@@ -697,8 +720,8 @@ fn report_repo_pull(
         wire,
         json!({
             "sessionUpdate": "tool_call",
-            "toolCallId": format!("pr-{}", pull.number),
-            "title": format!("Pull request #{} on {}", pull.number, repo.name),
+            "toolCallId": format!("w-{}", pull.number),
+            "title": format!("Change w-{} on {}", pull.number, repo.name),
             "kind": "edit",
             "status": "completed",
             "content": content,
@@ -711,13 +734,13 @@ fn report_repo_pull(
         wire,
         json!({
             "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": format!("Pull request #{}: {}", pull.number, pull.url)},
+            "content": {"type": "text", "text": format!("Change w-{}: {}", pull.number, pull.url)},
         }),
     );
     Some(pull)
 }
 
-/// The absolute path of a pull request's file in the editor's project. ACP wants absolute paths, and the
+/// The absolute path of a changed file in the editor's project. ACP wants absolute paths, and the
 /// project root is the repository's root. None for a file that would leave the project, and for a
 /// project root that is not absolute.
 fn project_path(cwd: &str, path: &str) -> Option<String> {
@@ -735,12 +758,12 @@ fn repo_relative(path: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_)))
 }
 
-/// Asks the editor whether to apply the pull request's changed files to the project, and writes them
+/// Asks the editor whether to apply the change's files to the project, and writes them
 /// on the owner's yes. The editor does the writing (`fs/write_text_file`), file by file: the agent never
 /// touches the project. Nothing is asked unless write-back is on, the editor can write files, the caller
 /// may govern, and a changed file has new text. A deleted file is left for the owner to remove.
 /// Never on a v2 connection: v2 has no `fs/write_text_file`, so the editor cannot write the project.
-fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &RepoPull) {
+fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &SessionChange) {
     if conn.is_v2()
         || !conn.hub.write_back()
         || !conn.editor_writes.load(Ordering::Relaxed)
@@ -762,7 +785,7 @@ fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &Repo
     if writes.is_empty() {
         return;
     }
-    let id = format!("apply-pr-{}", pull.number);
+    let id = format!("apply-w-{}", pull.number);
     let locations: Vec<Value> = writes
         .iter()
         .map(|(path, _)| json!({"path": path}))
@@ -774,7 +797,7 @@ fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &Repo
             "toolCall": {
                 "toolCallId": id,
                 "title": format!(
-                    "Apply pull request #{} to your project ({} files)",
+                    "Apply change w-{} to your project ({} files)",
                     pull.number,
                     writes.len(),
                 ),
@@ -784,12 +807,12 @@ fn offer_write_back(conn: &Conn<'_>, peer: &Peer, session: &Session, pull: &Repo
             },
             "options": [
                 {"optionId": "apply", "name": "Apply to my project", "kind": "allow_once"},
-                {"optionId": "skip", "name": "Keep it on the branch", "kind": "reject_once"},
+                {"optionId": "skip", "name": "Keep it in its lane", "kind": "reject_once"},
             ],
         }),
         APPLY_TIMEOUT,
     );
-    // A cancelled or failed ask writes nothing; the pull request stays on its branch.
+    // A cancelled or failed ask writes nothing; the change stays in its lane.
     let Ok(reply) = asked else {
         return;
     };
@@ -1416,8 +1439,10 @@ mod tests {
         models: Mutex<(String, Vec<String>)>,
         /// The approvals the session's thread holds (each as the approvals API shows it).
         approvals: Mutex<Vec<Value>>,
-        /// What `repo_pull` reports: the pull request the work opened, if any.
-        pull: Mutex<Option<RepoPull>>,
+        /// What `session_lane` reports: the session's lane, if Weft has one for it.
+        lane: Mutex<Option<WorkLane>>,
+        /// What `session_change` reports: the change the work made, if any.
+        pull: Mutex<Option<SessionChange>>,
         /// What `write_back` reports: the owner's setting.
         write_back: Mutex<bool>,
     }
@@ -1448,7 +1473,16 @@ mod tests {
             frames.remove(0)
         }
 
-        fn chat(&self, cid: u64, thread: &str, text: &str) -> Result<u64, String> {
+        fn chat(
+            &self,
+            cid: u64,
+            thread: &str,
+            text: &str,
+            lane: Option<WorkLane>,
+        ) -> Result<u64, String> {
+            if let Some(lane) = lane {
+                self.record(format!("chat_lane {}", lane.change));
+            }
             self.record(format!("chat {cid} {thread} {text}"));
             Ok(42)
         }
@@ -1519,8 +1553,16 @@ mod tests {
             Ok(())
         }
 
-        fn repo_pull(&self, name: &str, head: &str) -> Option<RepoPull> {
-            self.record(format!("repo_pull {name} {head}"));
+        fn session_lane(&self, cid: u64, session: &str, repo: &RepoLink) -> Option<WorkLane> {
+            self.record(format!(
+                "session_lane {cid} {session} {} {}",
+                repo.name, repo.branch
+            ));
+            lock(&self.lane).clone()
+        }
+
+        fn session_change(&self, name: &str, head: &str) -> Option<SessionChange> {
+            self.record(format!("session_change {name} {head}"));
             lock(&self.pull).clone()
         }
 
@@ -1576,6 +1618,7 @@ mod tests {
                     ],
                 )),
                 approvals: Mutex::default(),
+                lane: Mutex::default(),
                 pull: Mutex::default(),
                 write_back: Mutex::new(false),
             },
@@ -2597,30 +2640,61 @@ mod tests {
             p
         });
         let calls = h.plaza.hub.calls();
+        assert!(
+            calls.contains(&format!("session_lane 7 {id} app editor/main")),
+            "{calls:?}"
+        );
+        // Weft has no mirror of the project yet: the agent is told so, and works without a lane.
         let note = format!(
-            "chat 7 {id} The editor's project is mirrored to the plaza repository app (branch editor/main, commit abc1234; the editor had uncommitted changes that are not included). Clone http://plaza.gateway/git/agentplaza/app.git, check out editor/main, and work on a branch acp/{id} made from it. Commit, push that branch, and open a pull request into editor/main with plaza_git (or update the open one). End your reply with the pull request's link.\n\nFix the parser"
+            "chat 7 {id} The editor's project is the plaza repository app (editor lane editor/main, commit abc1234; the editor had uncommitted changes that are not included), but Weft has no mirror of it yet (agentplaza acp --repo makes one): answer from what the editor sends.\n\nFix the parser"
         );
         assert!(calls.contains(&note), "{calls:?}");
-        assert_eq!(h.plaza.sessions.get(&id).unwrap().title, "Fix the parser");
-        // No pull request on the repository: nothing is reported for it.
         assert!(
-            calls.contains(&format!("repo_pull app acp/{id}")),
+            !calls.iter().any(|c| c.starts_with("chat_lane")),
+            "{calls:?}"
+        );
+        assert_eq!(h.plaza.sessions.get(&id).unwrap().title, "Fix the parser");
+        // No change in a lane: nothing is reported for it.
+        assert!(
+            calls.contains(&format!("session_change app acp/{id}")),
             "{calls:?}"
         );
         let said = serde_json::to_string(&h.client.updates()).expect("serialize");
         assert!(!said.contains("\"sessionUpdate\":\"tool_call\""), "{said}");
+
+        // With the editor's lane mirrored, the session's work goes into its own lane, checked out for the agent.
+        *lock(&h.plaza.hub.lane) = Some(WorkLane {
+            change: "w-5".to_string(),
+            repo: "app".to_string(),
+        });
+        // The second turn takes the next bus receiver.
+        let (frames, rx) = mpsc::channel();
+        lock(&h.plaza.hub.frames).push(rx);
+        frames.send(work_end()).expect("the bus is open");
+        call_with(
+            &h,
+            "session/prompt",
+            &id,
+            json!({"prompt": [{"type": "text", "text": "And the lexer"}]}),
+        );
+        let calls = h.plaza.hub.calls();
+        assert!(calls.contains(&"chat_lane w-5".to_string()), "{calls:?}");
+        let note = format!(
+            "chat 7 {id} The editor's project is the plaza repository app (editor lane editor/main, commit abc1234; the editor had uncommitted changes that are not included). Your work on it is lane w-5 in Weft, checked out in ./app/ in your workspace: change the files there; every turn is kept as a draft, and the editor is shown the files you changed. Name what the change does with weft_describe.\n\nAnd the lexer"
+        );
+        assert!(calls.contains(&note), "{calls:?}");
     }
 
     #[test]
-    fn the_pull_request_comes_back_as_one_tool_call_of_absolute_diffs() {
+    fn the_change_comes_back_as_one_tool_call_of_absolute_diffs() {
         let h = harness(None);
         let cwd = if cfg!(windows) {
             r"C:\work\app"
         } else {
             "/work/app"
         };
-        *lock(&h.plaza.hub.pull) = Some(RepoPull {
-            url: "http://plaza.gateway/git/agentplaza/app/pulls/3".to_string(),
+        *lock(&h.plaza.hub.pull) = Some(SessionChange {
+            url: "https://hub.test/#/history/app/change/w-3".to_string(),
             number: 3,
             files: vec![
                 RepoFile {
@@ -2667,7 +2741,7 @@ mod tests {
             h.plaza
                 .hub
                 .calls()
-                .contains(&format!("repo_pull app acp/{id}")),
+                .contains(&format!("session_change app acp/{id}")),
             "{:?}",
             h.plaza.hub.calls()
         );
@@ -2678,11 +2752,8 @@ mod tests {
             1,
             "{said}"
         );
-        assert!(said.contains("\"toolCallId\":\"pr-3\""), "{said}");
-        assert!(
-            said.contains("\"title\":\"Pull request #3 on app\""),
-            "{said}"
-        );
+        assert!(said.contains("\"toolCallId\":\"w-3\""), "{said}");
+        assert!(said.contains("\"title\":\"Change w-3 on app\""), "{said}");
         let lib = Path::new(cwd)
             .join("src/lib.rs")
             .to_string_lossy()
@@ -2701,9 +2772,9 @@ mod tests {
         // A path that leaves the repository is skipped, whatever its form.
         assert!(!said.contains("escape.txt"), "{said}");
         assert!(!said.contains("passwd"), "{said}");
-        // The link to the pull request is the message.
+        // The link to the change is the message.
         assert!(
-            said.contains("Pull request #3: http://plaza.gateway/git/agentplaza/app/pulls/3"),
+            said.contains("Change w-3: https://hub.test/#/history/app/change/w-3"),
             "{said}"
         );
     }
@@ -2718,12 +2789,12 @@ mod tests {
         assert!(!repo_relative("a\\b"));
     }
 
-    /// A pull request on repository `app`: a changed file, an added file, a deleted file, and a file that
+    /// A change on repository `app`: a changed file, an added file, a deleted file, and a file that
     /// leaves the project.
-    fn pull_with_changes() -> RepoPull {
+    fn pull_with_changes() -> SessionChange {
         let text = |s: &str| Some(s.to_string());
-        RepoPull {
-            url: "http://plaza.gateway/git/agentplaza/app/pulls/3".to_string(),
+        SessionChange {
+            url: "https://hub.test/#/history/app/change/w-3".to_string(),
             number: 3,
             files: vec![
                 RepoFile {
@@ -2783,14 +2854,14 @@ mod tests {
         id
     }
 
-    /// The params of each question the agent asked the editor about applying pull request #3.
+    /// The params of each question the agent asked the editor about applying change w-3.
     fn apply_asks(h: &Harness) -> Vec<Value> {
         h.client
             .agent_requests()
             .into_iter()
             .filter(|(method, params)| {
                 method == CLIENT_METHOD_NAMES.session_request_permission
-                    && params["toolCall"]["toolCallId"] == "apply-pr-3"
+                    && params["toolCall"]["toolCallId"] == "apply-w-3"
             })
             .map(|(_, params)| params)
             .collect()
@@ -2812,9 +2883,9 @@ mod tests {
         *lock(&h.plaza.hub.pull) = Some(pull_with_changes());
         h.client.initialize().expect("initialize");
         linked_turn(&h);
-        // The pull request is still shown; nothing asks the editor to apply it.
+        // The change is still shown; nothing asks the editor to apply it.
         let said = serde_json::to_string(&h.client.updates()).expect("serialize");
-        assert!(said.contains("\"toolCallId\":\"pr-3\""), "{said}");
+        assert!(said.contains("\"toolCallId\":\"w-3\""), "{said}");
         assert!(apply_asks(&h).is_empty(), "{:?}", h.client.agent_requests());
         assert!(writes_of(&h).is_empty());
     }
@@ -2867,7 +2938,7 @@ mod tests {
         let tool_call = &asks[0]["toolCall"];
         assert_eq!(
             tool_call["title"],
-            "Apply pull request #3 to your project (2 files)"
+            "Apply change w-3 to your project (2 files)"
         );
         assert_eq!(tool_call["kind"], "edit");
         assert_eq!(asks[0]["options"][0]["optionId"], "apply");
@@ -2887,7 +2958,7 @@ mod tests {
         assert_eq!(h.client.file(&new).as_deref(), Some("hi\n"));
         // The update says the files are applied, and names the deleted one for the owner.
         let said = serde_json::to_string(&h.client.updates()).expect("serialize");
-        assert!(said.contains("\"toolCallId\":\"apply-pr-3\""), "{said}");
+        assert!(said.contains("\"toolCallId\":\"apply-w-3\""), "{said}");
         assert!(
             said.contains("Applied 2 files; 1 deleted files were left for you to remove:"),
             "{said}"
@@ -2907,11 +2978,11 @@ mod tests {
         *lock(&h.plaza.hub.write_back) = true;
         h.client.initialize().expect("initialize");
         linked_turn(&h);
-        // The owner is asked and keeps the pull request on its branch: no write, no update for it.
+        // The owner is asked and keeps the change in its lane: no write, no update for it.
         assert_eq!(apply_asks(&h).len(), 1, "{:?}", h.client.agent_requests());
         assert!(writes_of(&h).is_empty());
         let said = serde_json::to_string(&h.client.updates()).expect("serialize");
-        assert!(!said.contains("apply-pr-3"), "{said}");
+        assert!(!said.contains("apply-w-3"), "{said}");
     }
 
     #[test]

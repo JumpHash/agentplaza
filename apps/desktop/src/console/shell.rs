@@ -453,7 +453,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                 "agents",
                 v["overview"]["agents"]["total"].as_u64().unwrap_or(0) as u32,
             );
-            super::rich::set_plaza_git_host(&v["overview"]);
             set_control(state, &v["control"]);
             state.hub = ctx.client.base().to_string();
             state.target = Some(ctx.client.target.clone());
@@ -616,13 +615,12 @@ pub static SIDEBAR_SCROLL: std::sync::LazyLock<iced::widget::Id> =
     std::sync::LazyLock::new(iced::widget::Id::unique);
 
 /// Whether the sidebar entry `entry` is the screen that shows `current`: a task opened from a project is
-/// shown by the Tasks screen, and a repo by the Git screen.
+/// shown by the Tasks screen.
 fn shows(entry: &Id, current: &Id) -> bool {
     entry == current
         || matches!(
             (entry, current),
             (Id::Tasks, Id::Task(_))
-                | (Id::Git, Id::Repo(_))
                 | (Id::Projects, Id::Project(_))
                 | (Id::Projects, Id::ProjectTab(..))
                 | (Id::Work, Id::WorkOn(_))
@@ -642,8 +640,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::ProjectTab(..)
             | Id::Tasks
             | Id::Task(_)
-            | Id::Git
-            | Id::Repo(_)
             | Id::Library
             | Id::RobotLab
             | Id::HardwareLab

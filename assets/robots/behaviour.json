@@ -37,7 +37,7 @@
     { "match": "research", "category": "research" },
     { "match": "share_file", "category": "ship" },
     { "match": "deliver_file", "category": "ship" },
-    { "match": "plaza_git", "category": "ship" },
+    { "match": "weft_describe", "category": "ship" },
     { "match": "plaza_task_result", "category": "ship" },
     { "match": "submit_claim", "category": "ship" },
     { "match": "plaza_project_advance", "category": "ship" },

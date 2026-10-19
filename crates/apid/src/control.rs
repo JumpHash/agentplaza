@@ -77,6 +77,8 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
     app.control.set(state.clone());
     // Every workstation freezes: input stops, pixel sessions end, shells and runs stop (docs/design/workstations.md).
     crate::stations::freeze_all(app, true, by);
+    // Weft takes no writes: no drafts, seals, landings, releases or exports.
+    crate::weft_hub::hold(app, true);
     app.bus.publish("plaza", &state);
     state
 }
@@ -93,6 +95,7 @@ pub fn resume(app: &App, by: &str) -> PlazaState {
     };
     app.control.set(state.clone());
     crate::stations::freeze_all(app, false, by);
+    crate::weft_hub::hold(app, false);
     app.bus.publish("plaza", &state);
     app.work.dispatch_idle(app);
     state

@@ -2,8 +2,8 @@
 // agent-first layout: projects and agents on the left; the selected agent's chat, terminal, editor or diff in the centre;
 // the board, files, tasks, approvals and activity on the right; a terminal and run drawer under the centre (Ctrl+`); a
 // status bar. This module builds the frame and wires it to the modules that split the controller: layout (ide-layout),
-// selection (ide-select), data (ide-data), editing (ide-editing), panels (ide-panels), keys (ide-keys), git (ide-git),
-// the terminal host (ide-term-host) and rendering (ide-render). The state lives on the context (ide-ctx). The model is the
+// selection (ide-select), data (ide-data), editing (ide-editing), panels (ide-panels), keys (ide-keys), the terminal
+// host (ide-term-host) and rendering (ide-render). The state lives on the context (ide-ctx). The model is the
 // wasm IDE state (ide/wasm). Console (and Escape) goes back to the screen the IDE was opened from.
 
 import ideCss from '../styles/ide.css';

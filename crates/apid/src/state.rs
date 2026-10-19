@@ -137,8 +137,12 @@ pub struct App {
     pub project_settings: crate::project_settings::Store,
     /// Loops and per-agent harness limits.
     pub harness: crate::harness_control::Store,
-    /// The plaza's git host (Forgejo) and the agents' identities on it.
-    pub forge: crate::git::Forge,
+    /// Weft, the plaza's version control: `weft serve` beside the hub, and apid as its door (weft_hub.rs).
+    pub weft: crate::weft_hub::Weft,
+    /// The git platforms the owner authorized (GitHub, GitLab, Forgejo) and what the plaza may use there.
+    pub platforms: crate::platforms::Store,
+    /// The review graph's runs and recipes (review_graph), at `<state-dir>/review-graph.json`.
+    pub reviews: crate::review_graph::Reviews,
     /// Postgres, the plaza's state of record (memory is the working copy).
     pub db: Arc<crate::db::Db>,
     /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
@@ -266,7 +270,9 @@ impl App {
                 config.state_dir.join("project-settings.json"),
             ),
             harness: crate::harness_control::Store::load(&config.state_dir),
-            forge: crate::git::Forge::load(&config.state_dir, &env),
+            weft: crate::weft_hub::Weft::default(),
+            platforms: crate::platforms::Store::load(&config.state_dir),
+            reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
             unfurl: crate::unfurl::Cache::default(),
             vault: Arc::clone(&vault),
@@ -390,6 +396,8 @@ impl App {
             apz_plaza::now_ms(),
         );
         crate::vault::spawn_saver(Arc::clone(&app));
+        // Weft starts once the vault can give it its keys.
+        crate::weft_hub::start(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents, &app.looks);
         crate::db::spawn_writer(Arc::clone(&app));

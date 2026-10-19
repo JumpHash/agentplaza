@@ -1,5 +1,5 @@
 //! Rich text for the terminal (docs/design/workspace.md, section 3.4). The references in agent-written text
-//! (GitHub and plaza git links, `@Name`, `#528`, `src/main.rs:42`, library files) become their short labels
+//! (GitHub links, `@Name`, `#528`, `src/main.rs:42`, library files) become their short labels
 //! (`GH o/r #12`, `@Name`, `task #528` shown as `#528`), styled per kind and, where the terminal supports them,
 //! wrapped in OSC 8 hyperlinks. Labels, colour and links are for a terminal only: when stdout is piped or
 //! redirected, or `--plain` is given, the text prints unchanged, so a script gets the URLs and names as the agent
@@ -176,8 +176,8 @@ pub fn display(r: &Ref) -> String {
     }
 }
 
-/// The colour of a kind (SGR parameter): forge references cyan (plaza git bright cyan), agents magenta, tasks
-/// yellow, paths green, library files blue, links bright blue.
+/// The colour of a kind (SGR parameter): forge references cyan, agents magenta, tasks yellow, paths green, library
+/// files blue, links bright blue.
 fn sgr_colour(r: &Ref) -> u8 {
     match r {
         Ref::GithubPull { .. }
@@ -188,13 +188,6 @@ fn sgr_colour(r: &Ref) -> u8 {
         | Ref::GithubRelease { .. }
         | Ref::GithubRun { .. }
         | Ref::Gist { .. } => 36,
-        Ref::PlazaGitPull { .. }
-        | Ref::PlazaGitIssue { .. }
-        | Ref::PlazaGitCommit { .. }
-        | Ref::PlazaGitRepo { .. }
-        | Ref::PlazaGitFile { .. }
-        | Ref::PlazaGitRelease { .. }
-        | Ref::PlazaGitRun { .. } => 96,
         Ref::Agent { .. } | Ref::MentionAll => 35,
         Ref::Task { .. } => 33,
         Ref::Path { .. } => 32,
@@ -269,7 +262,7 @@ fn link_of(raw: &str, r: &Ref, ctx: &RichCtx, mode: &Mode) -> Option<String> {
         Ref::Link { url } | Ref::Image { url } | Ref::Video { url } | Ref::Html { url } => {
             url.clone()
         }
-        // The plaza git host is not known to the CLI, and paths and library files have no web page of their own.
+        // Paths and library files have no web page of their own.
         _ => return None,
     };
     safe(url)

@@ -119,6 +119,9 @@ pub enum TaskState {
     /// The claiming agent reports the work done; it waits for a reviewer's
     /// verdict, and its escrow stays held until the verdict ends the task.
     AwaitingReview,
+    /// A review sent the work back to its worker: the claim, the escrow and the worker's lane stay, and the
+    /// worker's next done brings it back to `awaiting_review` for the next round.
+    Rework,
     /// Ended: the work is accepted.
     Done,
     /// Ended: the agent reports the work failed.
@@ -129,10 +132,11 @@ pub enum TaskState {
 
 impl TaskState {
     /// Every state, in the order a task moves through them.
-    pub const ALL: [TaskState; 6] = [
+    pub const ALL: [TaskState; 7] = [
         TaskState::Open,
         TaskState::Claimed,
         TaskState::AwaitingReview,
+        TaskState::Rework,
         TaskState::Done,
         TaskState::Failed,
         TaskState::Withdrawn,
@@ -144,6 +148,7 @@ impl TaskState {
             TaskState::Open => "open",
             TaskState::Claimed => "claimed",
             TaskState::AwaitingReview => "awaiting_review",
+            TaskState::Rework => "rework",
             TaskState::Done => "done",
             TaskState::Failed => "failed",
             TaskState::Withdrawn => "withdrawn",
@@ -166,6 +171,10 @@ impl TaskState {
                 | (TaskState::Claimed, TaskState::Failed)
                 | (TaskState::AwaitingReview, TaskState::Done)
                 | (TaskState::AwaitingReview, TaskState::Failed)
+                | (TaskState::AwaitingReview, TaskState::Rework)
+                | (TaskState::Rework, TaskState::AwaitingReview)
+                | (TaskState::Rework, TaskState::Failed)
+                | (TaskState::Rework, TaskState::Withdrawn)
                 | (TaskState::Open, TaskState::Withdrawn)
                 | (TaskState::Claimed, TaskState::Withdrawn)
                 | (TaskState::AwaitingReview, TaskState::Withdrawn)
@@ -186,7 +195,10 @@ impl TaskState {
     /// closes), in the schema's outcome enum. `None` while the task lives.
     fn outcome(self) -> Option<&'static str> {
         match self {
-            TaskState::Open | TaskState::Claimed | TaskState::AwaitingReview => None,
+            TaskState::Open
+            | TaskState::Claimed
+            | TaskState::AwaitingReview
+            | TaskState::Rework => None,
             TaskState::Done => Some("accepted"),
             TaskState::Failed => Some("failed"),
             TaskState::Withdrawn => Some("cancelled"),
@@ -731,7 +743,10 @@ impl LinkStates {
             match task.lock().state {
                 TaskState::Done => {}
                 TaskState::Failed | TaskState::Withdrawn => states.blocked_by.push(task.id.clone()),
-                TaskState::Open | TaskState::Claimed | TaskState::AwaitingReview => {
+                TaskState::Open
+                | TaskState::Claimed
+                | TaskState::AwaitingReview
+                | TaskState::Rework => {
                     states.waiting_on.push(task.id.clone());
                 }
             }
@@ -1002,6 +1017,22 @@ impl Task {
     /// a verdict (or the owner's ruling) finishes it.
     pub fn await_review(&self, note: Option<String>) -> Result<(), RefusedTransition> {
         let to = TaskState::AwaitingReview;
+        let mut inner = self.lock();
+        let from = inner.state;
+        if !from.can_transition_to(to) {
+            return Err(RefusedTransition { from, to });
+        }
+        inner.state = to;
+        inner.note = note;
+        inner.updated_at = now_ms();
+        self.events.publish(self.event(&inner));
+        Ok(())
+    }
+
+    /// Sends a task awaiting review back to its worker (`rework`), with the review's findings as its note. The
+    /// claim and the escrow stay.
+    pub fn rework(&self, note: Option<String>) -> Result<(), RefusedTransition> {
+        let to = TaskState::Rework;
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(to) {
@@ -1889,9 +1920,9 @@ mod tests {
     }
 
     /// `core.task_transitions`, restricted to the states noded v0 implements
-    /// (`awaiting_review` is the schema's `verifying`), and the v0 requeue
+    /// (`awaiting_review` is the schema's `verifying`, and `rework` its `rework`), and the v0 requeue
     /// (`claimed` -> `open`), which the schema has no row for.
-    const ALLOWED: [(TaskState, TaskState); 10] = [
+    const ALLOWED: [(TaskState, TaskState); 14] = [
         (TaskState::Open, TaskState::Claimed),
         (TaskState::Claimed, TaskState::Open),
         (TaskState::Claimed, TaskState::AwaitingReview),
@@ -1902,6 +1933,10 @@ mod tests {
         (TaskState::Open, TaskState::Withdrawn),
         (TaskState::Claimed, TaskState::Withdrawn),
         (TaskState::AwaitingReview, TaskState::Withdrawn),
+        (TaskState::AwaitingReview, TaskState::Rework),
+        (TaskState::Rework, TaskState::AwaitingReview),
+        (TaskState::Rework, TaskState::Failed),
+        (TaskState::Rework, TaskState::Withdrawn),
     ];
 
     #[test]

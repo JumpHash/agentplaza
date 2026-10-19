@@ -1,6 +1,6 @@
 //! The local services this machine runs, started and stopped by the console: in local mode the
-//! hub (apid), the agent gateway (vsockd) and the node (noded), plus Postgres / Forgejo (Docker
-//! containers) and Garage when installed; as a node, apz-link + vsockd + noded.
+//! hub (apid), the agent gateway (vsockd) and the node (noded), plus Postgres (a Docker container) and
+//! Garage when installed; as a node, apz-link + vsockd + noded.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -234,12 +234,6 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
             name: "postgres",
             how: How::Container {
                 docker: "agentplaza-postgres",
-            },
-        },
-        Svc {
-            name: "forgejo",
-            how: How::Container {
-                docker: "agentplaza-forgejo",
             },
         },
         Svc {

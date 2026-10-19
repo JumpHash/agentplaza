@@ -1,4 +1,4 @@
-//! Unfurl tests: the cards built from recorded GitHub and Forgejo answers (fixtures under `fixtures/`), the cache's
+//! Unfurl tests: the cards built from recorded GitHub answers (fixtures under `fixtures/`), the cache's
 //! time to live with an injected clock, the checks on what a client may ask for, and the error for each failed answer.
 //! No network: `Fixtures` answers every provider call.
 
@@ -18,20 +18,12 @@ fn fixture(text: &str) -> Value {
 #[derive(Default)]
 struct Fixtures {
     github: HashMap<String, (u16, Value)>,
-    forge: HashMap<String, (u16, Value)>,
-    origin: String,
-    forge_error: Option<&'static str>,
     calls: Mutex<Vec<String>>,
 }
 
 impl Fixtures {
     fn answer_github(mut self, path: &str, status: u16, body: Value) -> Self {
         self.github.insert(path.to_string(), (status, body));
-        self
-    }
-
-    fn answer_forge(mut self, path: &str, status: u16, body: Value) -> Self {
-        self.forge.insert(path.to_string(), (status, body));
         self
     }
 
@@ -49,39 +41,13 @@ impl Source for Fixtures {
             .cloned()
             .unwrap_or((404, json!({"message": "Not Found"}))))
     }
-
-    fn forge(&self, path: &str) -> Result<(u16, Value), &'static str> {
-        self.calls.lock().unwrap().push(format!("forge {path}"));
-        if let Some(error) = self.forge_error {
-            return Err(error);
-        }
-        Ok(self
-            .forge
-            .get(path)
-            .cloned()
-            .unwrap_or((404, json!({"message": "not found"}))))
-    }
-
-    fn forge_origin(&self) -> String {
-        self.origin.clone()
-    }
 }
-
-const PLAZA: &str = "https://git.plaza.test";
 
 fn github_pull_ref() -> Ref {
     Ref::GithubPull {
         owner: "o".into(),
         repo: "r".into(),
         number: 12,
-    }
-}
-
-fn plaza_pull_ref() -> Ref {
-    Ref::PlazaGitPull {
-        owner: "agentplaza".into(),
-        repo: "pr-1".into(),
-        number: 2,
     }
 }
 
@@ -123,33 +89,6 @@ fn a_github_pull_card_comes_from_the_recorded_answer() {
     );
     assert_eq!(card["url"], "https://github.com/o/r/pull/12");
     assert_eq!(src.calls(), ["github /repos/o/r/pulls/12"]);
-}
-
-#[test]
-fn a_plaza_pull_that_merged_is_merged_and_links_to_the_plaza() {
-    let src = Fixtures {
-        origin: PLAZA.into(),
-        ..Default::default()
-    }
-    .answer_forge(
-        "/api/v1/repos/agentplaza/pr-1/pulls/2",
-        200,
-        fixture(include_str!("fixtures/forgejo_pull.json")),
-    );
-    let item = resolve_remote(&src, &Cache::default(), &plaza_pull_ref(), 0);
-    let card = card_of(&item);
-    assert_eq!(card["kind"], "plaza_git_pull");
-    assert_eq!(card["state"], "merged", "merged wins over closed");
-    assert_eq!(card["author"]["login"], "zarathos");
-    assert_eq!(
-        card["created_ms"], 1_791_525_600_000u64,
-        "an offset (+02:00) is applied"
-    );
-    assert_eq!(
-        card["url"],
-        "https://git.plaza.test/agentplaza/pr-1/pulls/2"
-    );
-    assert_eq!(src.calls(), ["forge /api/v1/repos/agentplaza/pr-1/pulls/2"]);
 }
 
 #[test]
@@ -213,31 +152,7 @@ fn a_commit_card_has_the_message_author_date_and_size() {
 }
 
 #[test]
-fn a_plaza_commit_reads_the_git_commits_route() {
-    let sha = "1122334455667788990011223344556677889900";
-    let src = Fixtures {
-        origin: PLAZA.into(),
-        ..Default::default()
-    }
-    .answer_forge(
-        &format!("/api/v1/repos/agentplaza/pr-1/git/commits/{sha}"),
-        200,
-        fixture(include_str!("fixtures/forgejo_commit.json")),
-    );
-    let r = Ref::PlazaGitCommit {
-        owner: "agentplaza".into(),
-        repo: "pr-1".into(),
-        sha: sha.into(),
-    };
-    let card = card_of(&resolve_remote(&src, &Cache::default(), &r, 0)).clone();
-    assert_eq!(card["title"], "Tidy the cards");
-    assert_eq!(card["message"], "Tidy the cards");
-    assert_eq!(card["date_ms"], 1_791_270_000_000u64);
-    assert_eq!(card["files"], 1);
-}
-
-#[test]
-fn a_repo_card_reads_stars_under_either_name() {
+fn a_repo_card_reads_its_stars_and_language() {
     let github = Fixtures::default().answer_github(
         "/repos/o/r",
         200,
@@ -262,26 +177,6 @@ fn a_repo_card_reads_stars_under_either_name() {
         (Some("o/r"), Some(1234), Some("Rust"))
     );
     assert_eq!(card["updated_ms"], 1_791_878_400_000u64);
-
-    let forge = Fixtures {
-        origin: PLAZA.into(),
-        ..Default::default()
-    }
-    .answer_forge(
-        "/api/v1/repos/agentplaza/pr-1",
-        200,
-        fixture(include_str!("fixtures/forgejo_repo.json")),
-    );
-    let r = Ref::PlazaGitRepo {
-        owner: "agentplaza".into(),
-        repo: "pr-1".into(),
-    };
-    let card = card_of(&resolve_remote(&forge, &Cache::default(), &r, 0)).clone();
-    assert_eq!(
-        (card["stars"].as_u64(), card["description"].as_str()),
-        (Some(3), Some("Project one"))
-    );
-    assert_eq!(card["url"], "https://git.plaza.test/agentplaza/pr-1");
 }
 
 #[test]
@@ -473,15 +368,6 @@ fn a_failed_answer_says_why() {
         resolve_remote(&missing, &Cache::default(), &github_pull_ref(), 0)["error"],
         "not_found"
     );
-
-    let down = Fixtures {
-        forge_error: Some("not_configured"),
-        ..Default::default()
-    };
-    assert_eq!(
-        resolve_remote(&down, &Cache::default(), &plaza_pull_ref(), 0)["error"],
-        "not_configured"
-    );
 }
 
 #[test]
@@ -507,15 +393,6 @@ fn only_allow_listed_calls_with_checked_names_reach_a_provider() {
             sha: "xyz".into(),
         },
         Ref::Gist { id: "a/b".into() },
-        Ref::PlazaGitRepo {
-            owner: "agentplaza".into(),
-            repo: "x?y".into(),
-        },
-        Ref::PlazaGitRun {
-            owner: "agentplaza".into(),
-            repo: "pr-1".into(),
-            id: 4,
-        },
         Ref::Path {
             path: "src/main.rs".into(),
             line: None,
@@ -540,38 +417,6 @@ fn only_allow_listed_calls_with_checked_names_reach_a_provider() {
 }
 
 #[test]
-fn the_plaza_routes_carry_the_api_prefix_and_github_does_not() {
-    assert_eq!(
-        plan(&plaza_pull_ref()),
-        Some(Call {
-            host: Host::Forge,
-            path: "/api/v1/repos/agentplaza/pr-1/pulls/2".into()
-        })
-    );
-    assert_eq!(
-        plan(&github_pull_ref()),
-        Some(Call {
-            host: Host::GitHub,
-            path: "/repos/o/r/pulls/12".into()
-        })
-    );
-    assert_eq!(
-        plan(&Ref::PlazaGitFile {
-            owner: "agentplaza".into(),
-            repo: "pr-1".into(),
-            reference: "feature/x".into(),
-            path: "a b/c.rs".into(),
-            line: None,
-            dir: false
-        }),
-        Some(Call {
-            host: Host::Forge,
-            path: "/api/v1/repos/agentplaza/pr-1/contents/a%20b/c.rs?ref=feature%2Fx".into()
-        })
-    );
-}
-
-#[test]
 fn resolve_caches_each_answer_for_its_ttl() {
     // an open item is served from the cache for ten minutes, then refetched
     {
@@ -589,20 +434,14 @@ fn resolve_caches_each_answer_for_its_ttl() {
     }
     // a merged item is kept an hour, and a failure a minute
     {
-        let merged = Fixtures {
-            origin: PLAZA.into(),
-            ..Default::default()
-        }
-        .answer_forge(
-            "/api/v1/repos/agentplaza/pr-1/pulls/2",
-            200,
-            fixture(include_str!("fixtures/forgejo_pull.json")),
-        );
+        let mut answer = fixture(include_str!("fixtures/github_pull.json"));
+        answer["merged"] = json!(true);
+        let merged = Fixtures::default().answer_github("/repos/o/r/pulls/12", 200, answer);
         let store = Cache::default();
-        resolve_remote(&merged, &store, &plaza_pull_ref(), 0);
-        resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL - 1);
+        resolve_remote(&merged, &store, &github_pull_ref(), 0);
+        resolve_remote(&merged, &store, &github_pull_ref(), cards::SETTLED_TTL - 1);
         assert_eq!(merged.calls().len(), 1);
-        resolve_remote(&merged, &store, &plaza_pull_ref(), cards::SETTLED_TTL);
+        resolve_remote(&merged, &store, &github_pull_ref(), cards::SETTLED_TTL);
         assert_eq!(merged.calls().len(), 2);
 
         let missing = Fixtures::default();
@@ -622,7 +461,7 @@ fn the_time_to_live_follows_the_state_and_the_kind() {
     let merged = json!({"ok": true, "card": {"kind": "github_pull", "state": "merged"}});
     let closed = json!({"ok": true, "card": {"kind": "github_issue", "state": "closed"}});
     let run_done = json!({"ok": true, "card": {"kind": "github_run", "state": "completed"}});
-    let commit = json!({"ok": true, "card": {"kind": "plaza_git_commit", "state": null}});
+    let commit = json!({"ok": true, "card": {"kind": "github_commit", "state": null}});
     let repo = json!({"ok": true, "card": {"kind": "github_repo"}});
     let failure = json!({"ok": false, "error": "not_found"});
     assert_eq!(cards::ttl_ms(&open), cards::OPEN_TTL);
@@ -655,50 +494,18 @@ fn the_memory_copy_stays_within_its_limit() {
 
 #[test]
 fn the_web_links_point_at_the_pages() {
-    let origin = PLAZA;
     assert_eq!(
-        cards::web_url(
-            &Ref::GithubIssue {
-                owner: "o".into(),
-                repo: "r".into(),
-                number: 7
-            },
-            ""
-        ),
+        cards::web_url(&Ref::GithubIssue {
+            owner: "o".into(),
+            repo: "r".into(),
+            number: 7
+        }),
         Some("https://github.com/o/r/issues/7".into())
     );
     assert_eq!(
-        cards::web_url(
-            &Ref::PlazaGitFile {
-                owner: "agentplaza".into(),
-                repo: "pr-1".into(),
-                reference: "main".into(),
-                path: "a b.rs".into(),
-                line: Some(4),
-                dir: false
-            },
-            origin
-        ),
-        Some("https://git.plaza.test/agentplaza/pr-1/src/branch/main/a%20b.rs#L4".into())
-    );
-    assert_eq!(
-        cards::web_url(
-            &Ref::PlazaGitRepo {
-                owner: "agentplaza".into(),
-                repo: "pr-1".into()
-            },
-            ""
-        ),
-        None,
-        "no origin, no link"
-    );
-    assert_eq!(
-        cards::web_url(
-            &Ref::Gist {
-                id: "abc123".into()
-            },
-            ""
-        ),
+        cards::web_url(&Ref::Gist {
+            id: "abc123".into()
+        }),
         Some("https://gist.github.com/abc123".into())
     );
 }

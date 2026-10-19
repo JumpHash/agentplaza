@@ -23,7 +23,7 @@ use std::time::Duration;
 use apz_http::ws::{self, Limits, Message, Socket};
 use serde_json::{Value, json};
 
-use super::acp_git;
+use super::acp_weft;
 use crate::cmd::mcp::bridge::error_line;
 use crate::ctx::{self, Client, Ctx};
 
@@ -436,7 +436,7 @@ trait Mirror {
     fn dirty(&self, top: &Path) -> Result<bool, String>;
     fn repo_exists(&self, name: &str) -> Result<bool, String>;
     fn create_repo(&self, name: &str) -> Result<(), String>;
-    /// Force-pushes `refspec` of the repository at `top` to the plaza repository `name`.
+    /// Mirrors `refspec` of the repository at `top` into Weft repo `name` (its editor lane).
     fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String>;
 }
 
@@ -470,7 +470,7 @@ impl Mirror for Plaza {
 
     fn repo_exists(&self, name: &str) -> Result<bool, String> {
         // `Client::get` cannot tell a 404 from other failures, so the status is read here.
-        let path = format!("/v1/git/repos/{name}");
+        let path = format!("/v1/weft/repos/{name}");
         let (status, value) = apz_http::client::request_json(
             &self.client.target,
             "GET",
@@ -492,12 +492,20 @@ impl Mirror for Plaza {
 
     fn create_repo(&self, name: &str) -> Result<(), String> {
         self.client
-            .post("/v1/git/repos", &json!({ "name": name }))
+            .post(
+                "/v1/weft/console",
+                &json!({ "kind": "repo.create", "body": { "repo": name, "description": "an editor's project" } }),
+            )
             .map(|_| ())
     }
 
     fn push(&self, top: &Path, name: &str, refspec: &str) -> Result<(), String> {
-        acp_git::push(&self.client, top, name, refspec)
+        // `HEAD:refs/heads/editor/<branch>`: the editor lane of that name, in Weft.
+        let branch = refspec
+            .split_once(":refs/heads/")
+            .map(|(_, b)| b)
+            .unwrap_or(refspec);
+        acp_weft::upload(&self.client, top, name, branch).map(|_| ())
     }
 }
 
@@ -649,7 +657,7 @@ fn repo_meta(name: &str, mirrored: &Mirrored) -> Value {
         "branch": mirrored.branch,
         "commit": mirrored.commit,
         "dirty": mirrored.dirty,
-        "note": "the branch holds commits only: uncommitted changes in the editor are not in it",
+        "note": "the editor lane holds commits only: uncommitted changes in the editor are not in it",
     })
 }
 

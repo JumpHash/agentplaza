@@ -8,7 +8,7 @@
 # built, not run, and its MSI is not installed. That needs LLVM (ring builds its arm64 code with
 # clang) and Visual Studio's "MSVC v143 ARM64 build tools" on the runner, so the arm64 leg runs
 # only when the repository variable APZ_WINDOWS_ARM64 is `on`; without it a release ships x64. Speed: cargo's build directory persists on the
-# runner (only changed crates compile), one release build for tests and packages, rust-lld, nextest; the checkout keeps the mtimes
+# runner (only changed crates compile), one release build for tests and packages, nextest; the checkout keeps the mtimes
 # this runner last built with (.github/ci/build-cache.py) and a pull request tests only what it changes (`only`).
 name: Windows
 run-name: "${{ format('Windows by hand: {0}', inputs.package && 'package' || 'test') }}"
@@ -57,9 +57,8 @@ env:
   # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
   # instead"), and the build directory kept on the runner already keeps unchanged crates built.
   RUSTC_WRAPPER: ""
-  # LLVM's linker instead of link.exe: much faster on large binaries.
-  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
-  CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER: rust-lld
+  # Visual Studio's link.exe, not rust-lld: binaries linked by rust-lld crash with an access violation
+  # in wasmtime as soon as Weft loads a tree-sitter language pack (zed-industries/zed#38460).
   VERSION: ${{ inputs.version || '0.0.0-ci' }}
 
 defaults:
@@ -93,6 +92,10 @@ jobs:
         run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      # cmake on PATH: tree-sitter's wasm runtime (wasmtime's C API, weft's language packs) builds with it.
+      # The runner's own if there, else Kitware's release, checked and kept in the runner's cache.
+      - name: cmake
+        run: .github/ci/cmake.sh
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
       # save theirs (the guest) with zstd; without it here they are not found, and what this job
       # saves is not found on Linux. Kept in the runner user's profile.
@@ -145,16 +148,16 @@ jobs:
       - name: Test (the guest harness runs only inside Linux VMs)
         id: test
         if: matrix.arch == 'x64' && inputs.tests
-        run: CARGO_INCREMENTAL=1 cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
+        run: CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh ${{ env.TRIPLE }} cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (arm64 cannot run here)
         id: build_tests
         if: matrix.arch != 'x64' && inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which x64 cannot.
         run: |
           if [ "${{ inputs.link }}" = true ]; then
-            CARGO_INCREMENTAL=1 cargo test --workspace --exclude agent-harness --locked --profile checked --target ${{ env.TRIPLE }} --no-run
+            CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh ${{ env.TRIPLE }} cargo test --workspace --exclude agent-harness --locked --profile checked --target ${{ env.TRIPLE }} --no-run
           else
-            CARGO_INCREMENTAL=1 cargo check --workspace --exclude agent-harness --locked --profile checked --target ${{ env.TRIPLE }} --all-targets
+            CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh ${{ env.TRIPLE }} cargo check --workspace --exclude agent-harness --locked --profile checked --target ${{ env.TRIPLE }} --all-targets
           fi
       # The pull request's Tests comment (check-results.yml) is made from these.
       - name: Results for the pull request

@@ -732,16 +732,14 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 /// Runs one of TOOLS for `agent`.
-/// Creates the project's repo (`<id>-<slug of the title>`) and records it; None when the
-/// git host is not configured or refuses (the project works without one).
-/// Gives project `project` its repository on the plaza's git host, when the host is configured; the repository's
-/// name, if it got one.
+/// Gives project `project` its repo in Weft (`<id>-<slug of the title>`) and records it; None when Weft is not
+/// running (the project works without one).
 pub(crate) fn attach_repo(app: &App, project: &Project) -> Option<String> {
     repo_for(app, project)
 }
 
 fn repo_for(app: &App, project: &Project) -> Option<String> {
-    if !app.forge.configured() {
+    if !app.weft.running() {
         return None;
     }
     let slug: String = project
@@ -756,9 +754,9 @@ fn repo_for(app: &App, project: &Project) -> Option<String> {
         .collect::<Vec<_>>()
         .join("-");
     let name = format!("{}-{}", project.id, slug);
-    let repo = app.forge.create_repo(&name, &project.title).ok()?;
-    app.projects.set_repo(&project.id, &repo).ok()?;
-    Some(repo)
+    // The project's repo in Weft (created by the owner's console when it is not there yet).
+    app.projects.set_repo(&project.id, &name).ok()?;
+    crate::weft_hub::ensure_repo(app, &project.id).ok()
 }
 
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {

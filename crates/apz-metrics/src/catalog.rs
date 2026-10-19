@@ -1222,7 +1222,7 @@ pub const CATALOG: &[MetricDef] = &[
         Standard,
         Service,
         [],
-        "hourly size reads of Garage, Forgejo and Postgres",
+        "hourly size reads of Garage, Weft and Postgres",
         "one size query per store per hour",
         "Size of a plaza store: objects, git, database tables (the metrics tables listed apart)."
     ),

@@ -82,7 +82,7 @@ impl HvfVm {
     /// assumption would otherwise fault on hardware rather than here.
     fn map(&mut self, host: *const u8, ipa: u64, len: usize) -> Result<(), HvfError> {
         let page = host_page_size();
-        let aligned = |value: usize| value % page == 0;
+        let aligned = |value: usize| value.is_multiple_of(page);
         if !aligned(host as usize) {
             return Err(HvfError::Mapping {
                 ipa,

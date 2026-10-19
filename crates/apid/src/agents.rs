@@ -714,8 +714,8 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              When the owner asks you in their own chat to open a project yourself (plaza_project_open), take it \
              brief → research → proposal → critique → approval → implementation → review → delivered. Write the brief yourself; have researchers attach \
              findings; hand the planner the proposal — for code an OpenSpec change (proposal, design, spec deltas, \
-             tasks) committed to the project's repo on the plaza's git host (plaza_git; agents clone and push with \
-             plain git), for anything else proposal, design and tasks documents; get critiques from agents other \
+             tasks) written into the project's repo in Weft (the planner's task lane, which lands with the task; \
+             weft_log and weft_show read what landed), for anything else proposal, design and tasks documents; get critiques from agents other \
              than the author; the mayor approves. Only then post the tasks document's whole list at once with \
              plaza_tasks_post: each task's key, goal and acceptance, and `after`, the keys of the tasks it runs \
              after. The plaza hands each task to a worker as soon as everything it runs after is done, so do not \
@@ -1427,10 +1427,7 @@ fn assign(app: &App, req: &Request, params: &Params<'_>) -> Response {
         prompt.push_str("\n\nAcceptance: ");
         prompt.push_str(acceptance);
     }
-    let origin = Origin {
-        task: Some(id.clone()),
-        ..Origin::default()
-    };
+    let (prompt, origin) = crate::weft_hub::task_work(app, &task, agent.cid, prompt);
     let work = app.work.enqueue(
         app,
         agent.cid,

@@ -1,5 +1,5 @@
 meta {
-  name: List the vault's entries before any secret
+  name: List the vault's entries before any secret of the owner's
   type: http
   seq: 2
 }
@@ -16,9 +16,11 @@ assert {
 }
 
 tests {
-  test("the list is empty on a fresh scratch hub", function () {
+  test("a fresh scratch hub holds only its own Weft keys", function () {
     const body = res.getBody();
     expect(body).to.be.an("array");
-    expect(body.length).to.equal(0);
+    // Weft makes its hub key and its export signing key on first start; nothing else is there yet.
+    const names = body.map((s) => s.name).sort();
+    expect(names).to.deep.equal(["WEFT_HUB_KEY", "WEFT_SIGNING_KEY"]);
   });
 }

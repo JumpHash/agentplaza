@@ -197,7 +197,7 @@ fn name_of(agents: &[(u64, String)], cid: u64) -> String {
 }
 
 /// Relative time, as the web's `ago`.
-fn ago(ms: i64) -> String {
+pub(super) fn ago(ms: i64) -> String {
     if ms == 0 {
         return "—".to_string();
     }
@@ -246,7 +246,7 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         .filter(|t| !t.is_empty())
         .map(String::as_str)
         .collect();
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     rich::prefetch(&mut state.cards, &ctx.client, &rctx, &refs).map(Msg::Rich)
 }
 
@@ -438,7 +438,7 @@ fn in_scope(state: &State, cid: u64, scope: Option<&str>) -> bool {
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
-    let rctx = rich::context(&state.cards, None, None, None);
+    let rctx = rich::context(&state.cards, None, None);
     let page = page(state, &rctx, ctx.project.as_deref());
     if state.wizard.open {
         Stack::new()
@@ -499,6 +499,10 @@ fn pending_view<'a>(
 
 /// One waiting approval: who, what, the input, and the owner's reason and call.
 fn entry<'a>(state: &'a State, a: &'a Approval, rctx: &rich::RichCtx) -> Element<'a, Msg> {
+    // A review the owner decides (a review of a task's run) draws as its own card.
+    if a.kind == "review" && a.detail.get("run").is_some_and(|run| !run.is_null()) {
+        return review_card(state, a);
+    }
     let busy = state.busy.contains(&a.id);
     let key = format!("ap-{}", a.id);
     let draft = state
@@ -602,6 +606,112 @@ fn entry<'a>(state: &'a State, a: &'a Approval, rctx: &rich::RichCtx) -> Element
         ));
     }
     frame(stack.spacing(10).into())
+}
+
+/// A review the owner decides: the verdict, what needs them, the four readings as level dots, the goal and the worker,
+/// a reason, and the three calls (Pass, Send back, Fail). The calls post `{approve, action}` like any approval.
+fn review_card<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
+    let busy = state.busy.contains(&a.id);
+    let d = &a.detail;
+    let palette = crate::theme::palette();
+    let key = format!("ap-{}", a.id);
+    let draft = state
+        .drafts
+        .get(&key)
+        .map(String::as_str)
+        .unwrap_or("")
+        .to_string();
+    let reason = text_input("Reason (optional)", &draft)
+        .on_input(move |s| Msg::Draft(key.clone(), s))
+        .size(13.0)
+        .width(Length::Fill);
+    let decide = |approve: bool, action: Option<&'static str>| {
+        (!busy).then(|| Msg::Decide(a.id.clone(), approve, action))
+    };
+    let round = d.get("round").and_then(Value::as_u64).unwrap_or(0);
+    let worker = match field(d, "worker") {
+        name if name.is_empty() => name_of(&state.agents, a.cid),
+        name => name,
+    };
+    let readings: Vec<Element<'a, Msg>> = d
+        .get("readings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(reading)
+        .collect();
+
+    let mut head = row![ui::mono(field(d, "change"), 12.0, palette.ink_2)]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    if round > 0 {
+        head = head.push(ui::badge(&format!("round {round}"), ui::Tone::Muted));
+    }
+    head = head.push(Space::new().width(Length::Fill));
+    head = head.push(ui::faint(ago(a.created_ms)));
+
+    let mut body = column![
+        head,
+        text(field(d, "goal"))
+            .font(STRONG)
+            .size(15.0)
+            .color(palette.ink),
+        ui::prose(field(d, "verdict"))
+            .size(14.0)
+            .color(palette.ink_2),
+    ]
+    .spacing(8);
+    let needs = field(d, "needs_you");
+    if !needs.is_empty() {
+        body = body.push(
+            text(format!("Needs you: {needs}"))
+                .font(ui::SANS_SEMIBOLD)
+                .size(13.0)
+                .color(ui::Tone::Danger.color()),
+        );
+    }
+    body = body.push(row(readings).spacing(22));
+    body = body.push(ui::faint(format!("Worker: {worker}")));
+    body = body.push(reason);
+    body = body.push(
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn("Fail", None, ui::Kind::Danger, decide(false, None)),
+            ui::btn(
+                "Send back",
+                None,
+                ui::Kind::Secondary,
+                decide(false, Some("rework"))
+            ),
+            ui::btn("Pass", None, ui::Kind::Primary, decide(true, None)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    );
+    frame(body.into())
+}
+
+/// One of a review's four readings: a dot in its level's tone (a ring when the level is not known), and its name.
+fn reading<'a>(r: &Value) -> Element<'a, Msg> {
+    let level = r.get("level").and_then(Value::as_i64);
+    row![
+        super::history::dot::<Msg>(reading_tone(level).color(), level.is_some(), 10.0),
+        ui::sans(field(r, "name"), 12.0, crate::theme::palette().ink_2),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A level's tone as the review reads it: better above zero, watch at -1 and -2, needs you at -3 and worse (the gate's
+/// rule), and neutral or unknown otherwise.
+fn reading_tone(level: Option<i64>) -> ui::Tone {
+    match level {
+        Some(l) if l <= -3 => ui::Tone::Danger,
+        Some(l) if l < 0 => ui::Tone::Warn,
+        Some(l) if l > 0 => ui::Tone::Ok,
+        _ => ui::Tone::Muted,
+    }
 }
 
 /// One decided approval, as a line of the history.

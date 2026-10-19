@@ -1,0 +1,17 @@
+{
+  "name": "c",
+  "version": 1,
+  "language": "c",
+  "extensions": [
+    "c",
+    "h"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-c",
+    "version": "0.24.1",
+    "wasm": "tree-sitter-c.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "cpp",
+  "version": 1,
+  "language": "cpp",
+  "extensions": [
+    "cc",
+    "cpp",
+    "cxx",
+    "hpp",
+    "hh",
+    "hxx"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "tree-sitter-cpp",
+    "version": "0.23.4",
+    "wasm": "tree-sitter-cpp.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

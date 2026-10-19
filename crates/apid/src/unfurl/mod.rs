@@ -3,8 +3,7 @@
 //! for it. Both are owner routes (hub_auth gates every `/v1` route that is not public).
 //!
 //! The hub fetches only from an allow-list: GitHub's API (with the owner's GitHub token when there is one, else
-//! anonymous), the plaza's git host (Forgejo, as the admin), and its own agents, tasks, library tools and
-//! deliverables. Workspace files are not unfurled here: clients read them through the IDE routes. Remote answers are
+//! anonymous), and its own agents, tasks, library tools and deliverables. Workspace files are not unfurled here: clients read them through the IDE routes. Remote answers are
 //! cached (open items 10 minutes, merged, closed and completed items and commits an hour, failures a minute; see
 //! `cards::ttl_ms`), in Postgres (`unfurl_cache`) or, without Postgres, in memory. Agents, tasks and the hub's records
 //! are live state and are read on every request.
@@ -14,6 +13,7 @@ mod cards;
 mod tests;
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -22,7 +22,6 @@ use apz_rich::{AgentName, Ctx, Ref, Span};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::git;
 use crate::state::App;
 
 /// The most references one request may ask for.
@@ -35,14 +34,10 @@ const GITHUB_TIMEOUT: Duration = Duration::from_secs(15);
 /// The most answers the memory copy keeps.
 const MEMORY_LIMIT: usize = 4096;
 
-/// Where remote answers come from. The live hub reads GitHub and the plaza's git host; tests answer from fixtures.
+/// Where remote answers come from. The live hub reads GitHub; tests answer from fixtures.
 pub trait Source: Sync {
     /// A GET on the GitHub API (`path` starts with `/`): the status and the JSON body, or why the call could not be made.
     fn github(&self, path: &str) -> Result<(u16, Value), &'static str>;
-    /// A GET on the plaza's git host (`path` starts with `/api/v1/`): the status and the JSON body.
-    fn forge(&self, path: &str) -> Result<(u16, Value), &'static str>;
-    /// The plaza's git host's web origin, for the links on its cards ("" when unset).
-    fn forge_origin(&self) -> String;
 }
 
 /// One stored answer.
@@ -121,7 +116,7 @@ impl Store for Backed<'_> {
     }
 }
 
-/// The hub's providers: the GitHub API with the owner's token, and the plaza's git host as the admin.
+/// The hub's provider: the GitHub API with the owner's token.
 struct Live<'a>(&'a App);
 
 impl Source for Live<'_> {
@@ -135,36 +130,43 @@ impl Source for Live<'_> {
             headers.push(("Authorization", format!("Bearer {token}")));
         }
         let url = format!("{GITHUB_API}{path}");
-        let (status, _, bytes) =
-            git::send_within("GET", &url, &headers, Vec::new(), GITHUB_TIMEOUT)
-                .map_err(|_| "unavailable")?;
-        Ok((status, git::json_body(&bytes)))
-    }
-
-    fn forge(&self, path: &str) -> Result<(u16, Value), &'static str> {
-        if !self.0.forge.configured() {
-            return Err("not_configured");
-        }
-        self.0.forge.quick_get(path).map_err(|_| "unavailable")
-    }
-
-    fn forge_origin(&self) -> String {
-        self.0.forge.base_url().unwrap_or("").to_string()
+        let (status, bytes) =
+            get_within(&url, &headers, GITHUB_TIMEOUT).map_err(|_| "unavailable")?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
     }
 }
 
-/// Which provider a call goes to.
-#[derive(Debug, PartialEq, Eq)]
-enum Host {
-    GitHub,
-    Forge,
-}
-
-/// One provider call.
-#[derive(Debug, PartialEq, Eq)]
-struct Call {
-    host: Host,
-    path: String,
+/// One GET with a time limit: the status and the body bytes of the reply.
+fn get_within(
+    url: &str,
+    headers: &[(&str, String)],
+    timeout: Duration,
+) -> Result<(u16, Vec<u8>), String> {
+    let mut builder = ureq::http::Request::builder().method("GET").uri(url);
+    for (key, value) in headers {
+        builder = builder.header(*key, value.as_str());
+    }
+    let request = builder
+        .body(Vec::new())
+        .map_err(|e| format!("bad request: {e}"))?;
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build();
+    let response = ureq::Agent::new_with_config(config)
+        .run(request)
+        .map_err(|e| format!("no answer: {e}"))?;
+    let status = response.status().as_u16();
+    let mut bytes = Vec::new();
+    response
+        .into_body()
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("reading the answer: {e}"))?;
+    Ok((status, bytes))
 }
 
 /// The answers for `refs`, in order. Agents, tasks and the hub's own records are read live; remote references come
@@ -223,15 +225,12 @@ fn resolve_remote(source: &dyn Source, store: &dyn Store, r: &Ref, now: u64) -> 
 
 /// Calls the provider for `r` and builds its card. The error is the reason the card is missing.
 fn fetch(source: &dyn Source, r: &Ref) -> Result<Value, &'static str> {
-    let call = plan(r).ok_or("unsupported")?;
-    let (status, body) = match call.host {
-        Host::GitHub => source.github(&call.path)?,
-        Host::Forge => source.forge(&call.path)?,
-    };
+    let path = plan(r).ok_or("unsupported")?;
+    let (status, body) = source.github(&path)?;
     if !(200..300).contains(&status) {
         return Err(status_error(status, &body));
     }
-    Ok(cards::card(r, &body, &source.forge_origin()))
+    Ok(cards::card(r, &body))
 }
 
 /// The error for a failed provider answer: a rate limit (GitHub answers 403 with a "rate limit" message, or 429), a
@@ -251,102 +250,47 @@ fn status_error(status: u16, body: &Value) -> &'static str {
     }
 }
 
-/// The provider call for a remote reference, with every name it puts in the path checked: the Ref may come from a
-/// client's JSON, and the forge call carries the admin's token. None for a reference with no provider.
-fn plan(r: &Ref) -> Option<Call> {
-    let (host, path) = match r {
+/// The GitHub API path for a remote reference, with every name it puts in the path checked: the Ref may come from a
+/// client's JSON, and the call may carry the owner's token. None for a reference with no provider.
+fn plan(r: &Ref) -> Option<String> {
+    let path = match r {
         Ref::GithubPull {
             owner,
             repo,
             number,
-        } => (
-            Host::GitHub,
-            format!("{}/pulls/{number}", repo_path(owner, repo)?),
-        ),
+        } => format!("{}/pulls/{number}", repo_path(owner, repo)?),
         Ref::GithubIssue {
             owner,
             repo,
             number,
-        } => (
-            Host::GitHub,
-            format!("{}/issues/{number}", repo_path(owner, repo)?),
-        ),
-        Ref::GithubCommit { owner, repo, sha } => (
-            Host::GitHub,
-            format!("{}/commits/{}", repo_path(owner, repo)?, sha_of(sha)?),
-        ),
-        Ref::GithubRepo { owner, repo } => (Host::GitHub, repo_path(owner, repo)?),
+        } => format!("{}/issues/{number}", repo_path(owner, repo)?),
+        Ref::GithubCommit { owner, repo, sha } => {
+            format!("{}/commits/{}", repo_path(owner, repo)?, sha_of(sha)?)
+        }
+        Ref::GithubRepo { owner, repo } => repo_path(owner, repo)?,
         Ref::GithubFile {
             owner,
             repo,
             reference,
             path,
             ..
-        } => (Host::GitHub, contents_path(owner, repo, reference, path)?),
-        Ref::GithubRelease { owner, repo, tag } => (
-            Host::GitHub,
-            format!(
-                "{}/releases/tags/{}",
-                repo_path(owner, repo)?,
-                name_of_tag(tag)?
-            ),
+        } => contents_path(owner, repo, reference, path)?,
+        Ref::GithubRelease { owner, repo, tag } => format!(
+            "{}/releases/tags/{}",
+            repo_path(owner, repo)?,
+            name_of_tag(tag)?
         ),
-        Ref::GithubRun { owner, repo, id } => (
-            Host::GitHub,
-            format!("{}/actions/runs/{id}", repo_path(owner, repo)?),
-        ),
-        Ref::Gist { id } => (Host::GitHub, format!("/gists/{}", name_of(id)?)),
-        Ref::PlazaGitPull {
-            owner,
-            repo,
-            number,
-        } => (
-            Host::Forge,
-            format!("{}/pulls/{number}", forge_repo(owner, repo)?),
-        ),
-        Ref::PlazaGitIssue {
-            owner,
-            repo,
-            number,
-        } => (
-            Host::Forge,
-            format!("{}/issues/{number}", forge_repo(owner, repo)?),
-        ),
-        Ref::PlazaGitCommit { owner, repo, sha } => (
-            Host::Forge,
-            format!("{}/git/commits/{}", forge_repo(owner, repo)?, sha_of(sha)?),
-        ),
-        Ref::PlazaGitRepo { owner, repo } => (Host::Forge, forge_repo(owner, repo)?),
-        Ref::PlazaGitFile {
-            owner,
-            repo,
-            reference,
-            path,
-            ..
-        } => (
-            Host::Forge,
-            format!("/api/v1{}", contents_path(owner, repo, reference, path)?),
-        ),
-        Ref::PlazaGitRelease { owner, repo, tag } => (
-            Host::Forge,
-            format!(
-                "{}/releases/tags/{}",
-                forge_repo(owner, repo)?,
-                name_of_tag(tag)?
-            ),
-        ),
-        // Forgejo's run reads are not in the plaza's git client: a run is not unfurled on the plaza.
+        Ref::GithubRun { owner, repo, id } => {
+            format!("{}/actions/runs/{id}", repo_path(owner, repo)?)
+        }
+        Ref::Gist { id } => format!("/gists/{}", name_of(id)?),
         _ => return None,
     };
-    Some(Call { host, path })
+    Some(path)
 }
 
 fn repo_path(owner: &str, repo: &str) -> Option<String> {
     (name_ok(owner) && name_ok(repo)).then(|| format!("/repos/{owner}/{repo}"))
-}
-
-fn forge_repo(owner: &str, repo: &str) -> Option<String> {
-    repo_path(owner, repo).map(|path| format!("/api/v1{path}"))
 }
 
 /// `/repos/o/r/contents/<path>?ref=<ref>` for a file or folder; every segment of the path checked.
@@ -363,9 +307,9 @@ fn contents_path(owner: &str, repo: &str, reference: &str, path: &str) -> Option
     let tail = if joined.is_empty() {
         String::new()
     } else {
-        format!("/{}", git::pct(&joined, true))
+        format!("/{}", pct(&joined, true))
     };
-    Some(format!("{base}/contents{tail}?ref={}", git::seg(reference)))
+    Some(format!("{base}/contents{tail}?ref={}", seg(reference)))
 }
 
 fn sha_of(sha: &str) -> Option<&str> {
@@ -377,10 +321,10 @@ fn name_of(text: &str) -> Option<&str> {
 }
 
 fn name_of_tag(tag: &str) -> Option<String> {
-    (!tag.is_empty() && !tag.contains('/')).then(|| git::seg(tag))
+    (!tag.is_empty() && !tag.contains('/')).then(|| seg(tag))
 }
 
-/// A GitHub or Forgejo owner or repository: letters, digits, `-`, `_` and `.`; not `.` or `..`.
+/// A GitHub owner or repository: letters, digits, `-`, `_` and `.`; not `.` or `..`.
 fn name_ok(text: &str) -> bool {
     !text.is_empty()
         && text != "."
@@ -516,10 +460,9 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-/// The classifier's context on this hub: the plaza's git host, the hub's own host and the agent names.
+/// The classifier's context on this hub: the hub's own host and the agent names.
 fn server_ctx(app: &App) -> Ctx {
     Ctx {
-        plaza_git_host: app.forge.base_url().map(str::to_string),
         hub_host: Some(app.config.public_url.clone()),
         agents: app
             .agents
@@ -572,7 +515,7 @@ fn one_route(app: &App, req: &Request) -> Response {
     let Some(raw) = req.query_param("url") else {
         return Response::error(400, "the url query is missing");
     };
-    let url = git::unescape(raw);
+    let url = unescape(raw);
     let found = apz_rich::classify(&url, &server_ctx(app))
         .into_iter()
         .find_map(|span| match span {
@@ -583,4 +526,58 @@ fn one_route(app: &App, req: &Request) -> Response {
         Some(r) => Response::json(200, &unfurl(app, &[r], now()).remove(0)),
         None => Response::error(422, "not a reference the hub unfurls"),
     }
+}
+
+/// Percent-encodes for a URL; `/` stays when `slash` is set.
+fn pct(raw: &str, slash: bool) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b'~')
+            || (slash && b == b'/')
+        {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// One percent-encoded path segment.
+fn seg(raw: &str) -> String {
+    pct(raw, false)
+}
+
+fn hex(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// A query value decoded: `%XX` escapes and `+` for a space.
+fn unescape(raw: &str) -> String {
+    let b = raw.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (
+            b[i],
+            b.get(i + 1).and_then(|c| hex(*c)),
+            b.get(i + 2).and_then(|c| hex(*c)),
+        ) {
+            (b'%', Some(hi), Some(lo)) => {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+            (b'+', _, _) => out.push(b' '),
+            (c, _, _) => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

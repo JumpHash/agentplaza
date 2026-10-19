@@ -17,7 +17,10 @@ const EFFORTS: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
 const TOOL_GROUPS: &[(&str, &[&str])] = &[
     ("Code & files", &["code_engine", "tool_package"]),
     ("Plaza", &["plaza_hire"]),
-    ("Git", &["plaza_git"]),
+    (
+        "Weft",
+        &["weft_status", "weft_diff", "weft_describe", "weft_log"],
+    ),
 ];
 const MIN_BUDGET: i64 = 200;
 const MAX_BUDGET: i64 = 50_000;

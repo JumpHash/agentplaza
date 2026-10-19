@@ -1,7 +1,7 @@
 //! One module per console area; each owns its subcommands (`Cmd`) and `run`.
 
 pub mod acp;
-mod acp_git;
+mod acp_weft;
 pub mod agents;
 pub mod approvals;
 pub mod board;
@@ -12,7 +12,6 @@ pub mod decide;
 pub mod e2b;
 pub mod egress;
 pub mod events;
-pub mod git;
 pub mod hub;
 pub mod ide;
 pub mod lab;
@@ -24,9 +23,11 @@ pub mod models;
 pub mod node;
 pub mod nodes;
 pub mod overview;
+pub mod platforms;
 pub mod plaza;
 pub mod projects;
 pub mod prompts;
+pub mod recipes;
 pub mod rules;
 pub mod sanctions;
 pub mod setup;
@@ -41,4 +42,5 @@ pub mod unfurl;
 pub mod usage;
 pub mod vault;
 pub mod volumes;
+pub mod weft;
 pub mod workstation;

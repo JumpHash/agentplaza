@@ -1,0 +1,21 @@
+{
+  "name": "ruby",
+  "version": 1,
+  "language": "ruby",
+  "extensions": [
+    "rb"
+  ],
+  "filenames": [
+    "Gemfile",
+    "Rakefile"
+  ],
+  "shebangs": [
+    "ruby"
+  ],
+  "source": {
+    "npm": "tree-sitter-ruby",
+    "version": "0.23.1",
+    "wasm": "tree-sitter-ruby.wasm"
+  },
+  "query": "upstream:queries/tags.scm"
+}

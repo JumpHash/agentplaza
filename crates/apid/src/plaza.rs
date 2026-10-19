@@ -636,10 +636,7 @@ pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
         }
         let id = task.id().to_string();
         let prompt = task_prompt(task.goal(), task.acceptance());
-        let origin = Origin {
-            task: Some(id.clone()),
-            ..Default::default()
-        };
+        let (prompt, origin) = crate::weft_hub::task_work(app, &task, cid, prompt);
         app.work.enqueue(
             app,
             cid,

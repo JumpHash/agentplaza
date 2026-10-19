@@ -637,7 +637,7 @@ fn prefetch_reading(side: &mut Side, ctx: &Ctx) -> Task<SideMsg> {
         return Task::none();
     };
     let body = note.body.clone();
-    let rctx = rich::context(&side.cards, None, None, None);
+    let rctx = rich::context(&side.cards, None, None);
     rich::prefetch(&mut side.cards, &ctx.client, &rctx, &[body.as_str()]).map(SideMsg::Rich)
 }
 
@@ -966,7 +966,7 @@ pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
     let reader: Element<'a, SideMsg> = match &side.reading {
         Some(doc) => {
-            let rctx = rich::context(&side.cards, None, None, None);
+            let rctx = rich::context(&side.cards, None, None);
             reader_view(doc, &side.notes, &rctx, &side.cards)
         }
         None => ui::faint("Choose a note to read it.").into(),

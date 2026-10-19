@@ -168,10 +168,13 @@ pub fn is_public(method: &str, path: &str) -> bool {
             | ("POST" | "DELETE", "/v1/auth/session")
             // The editors' socket checks its own caller (`acp::authenticate`): the owner, or a hub MCP token.
             | ("GET", "/v1/acp")
-    ) || (path.starts_with("/v1/nodes/n")
-        && (path.ends_with("/commands")
-            || path.ends_with("/results")
-            || path.ends_with("/heartbeat")))
+            // A git platform sends the owner's browser back here; it acts only on a state an owner's call made.
+            | ("GET", "/v1/platforms/callback")
+    ) || (path.starts_with("/v1/platforms/flows/") && path.ends_with("/go") && method == "GET")
+        || (path.starts_with("/v1/nodes/n")
+            && (path.ends_with("/commands")
+                || path.ends_with("/results")
+                || path.ends_with("/heartbeat")))
         || path.starts_with("/internal/")
         || !path.starts_with("/v1/")
 }

@@ -14,6 +14,7 @@ base64.workspace = true
 flate2 = "1.1"
 serde.workspace = true
 serde_json.workspace = true
+weft = { path = "../weft", default-features = false }
 
 [dev-dependencies]
 rcgen = "0.13"

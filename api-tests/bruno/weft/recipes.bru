@@ -1,0 +1,29 @@
+meta {
+  name: List the review recipes and the proposals waiting
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the built-in recipes are listed, with no proposal yet", function () {
+    const body = res.getBody();
+    expect(body.recipes).to.be.an("array");
+    const ids = body.recipes.map((r) => r.id);
+    expect(ids).to.include("code");
+    expect(ids).to.include("docs");
+    expect(ids).to.include("research");
+    expect(body.proposals).to.be.an("array");
+    expect(body.proposals).to.have.lengthOf(0);
+  });
+}
